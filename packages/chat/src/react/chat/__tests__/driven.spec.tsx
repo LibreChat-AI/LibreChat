@@ -954,30 +954,38 @@ describe('useDrivenContract', () => {
     it('settles steers left waiting by a run that ended while the conversation was not open', async () => {
       const { calls, steers } = record();
       const harness = createTransport();
-      const parked = [{ steerId: 'steer-parked', text: 'Parked by the server' }];
-      harness.setStatus({ active: false, unrecoveredSteers: parked } as ChatStreamStatus);
+      const parked = { steerId: 'steer-parked', text: 'Parked by the server' };
+      /** A pause that expired: reported over before the server has parked what it accepted. */
+      const accepted = { steerId: 'steer-accepted', text: 'Accepted, not parked yet' };
+      harness.setStatus({
+        active: false,
+        generationProtocolVersion: 2,
+        unrecoveredSteers: [parked],
+        resumeState: { pendingSteers: [parked, accepted] },
+      } as ChatStreamStatus);
       const { ready } = setup({ beside: { steers }, harness });
       await ready();
       await settle();
 
+      /**
+       * Both lists, each steer once, under the protocol the status speaks: no stream is open to
+       * have named one. Then what the stored rows hold is settled, and no chip is left waiting.
+       */
       const stored = [user, reply('response-1', 'Hi')];
-      expect(calls.map(([name]) => name)).toEqual([
-        'appliedIds',
-        'settle',
-        'adopt',
-        'toQueued',
-        'sweep',
+      expect(calls).toEqual([
+        ['toQueued', conversationId, [parked, accepted], { generationProtocolVersion: 2 }],
+        ['settle', conversationId, stored],
+        ['seed', conversationId, []],
       ]);
-      expect(calls[1]).toEqual(['settle', conversationId, stored]);
-      expect(calls[3]).toEqual(['toQueued', conversationId, parked, {}]);
-      expect(calls[4]).toEqual([
-        'sweep',
-        conversationId,
-        {
-          excludeSteerIds: new Set(['steer-taken', 'steer-promoted', 'steer-parked']),
-          generationProtocolVersion: undefined,
-        },
-      ]);
+    });
+
+    it('restores nothing, and still clears stale chips, when nothing was left behind', async () => {
+      const { calls, steers } = record();
+      const { ready } = setup({ beside: { steers } });
+      await ready();
+      await settle();
+
+      expect(calls.map(([name]) => name)).toEqual(['settle', 'seed']);
     });
 
     it('settles nothing from stored rows while a generation is running, or after one that ended on its reply', async () => {

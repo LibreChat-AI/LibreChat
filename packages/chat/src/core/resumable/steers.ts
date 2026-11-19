@@ -8,7 +8,8 @@ import type {
 import type { ResumableSteers, StreamStatusResponse } from './host';
 import type { GenerationProtocolVersion } from '../protocol';
 import type { StartGenerationError } from './start';
-import { supportsGenerationProtocolV2 } from '../protocol';
+import { supportsGenerationProtocolV2, getGenerationProtocolVersion } from '../protocol';
+import { dedupeSteersById } from '../steer/steer';
 import { getRecoverySteerId } from './start';
 
 /** The steer bookkeeping a run's ordinary final frame reaches. */
@@ -188,4 +189,40 @@ export function restoreReleasedSource(
     allowPreviouslyConvertedIds: [recoverySteerId],
   });
   return true;
+}
+
+/**
+ * Settles the reader's steers for a conversation found with nothing running: the run they were
+ * sent to ended while no one was following it.
+ *
+ * A terminal drain may have parked acknowledged steers no subscriber received (tab closed, or
+ * a reload racing the final event); they are restored as queued follow-ups. A pause that
+ * expired can report the run inactive before the sweeper parks its steers, which then still
+ * ride `resumeState.pendingSteers`, so both lists are converted, deduplicated by id. They are
+ * converted under the protocol the status itself speaks: no stream is open to have named one,
+ * and a parked steer restored without it would never consume its source.
+ *
+ * The run is terminal, so any chip still shown as waiting is stale: its steer either applied
+ * (an inline part in the stored reply) or rode the lists above.
+ */
+export function settleFinishedSteers(
+  steers: Pick<ResumableSteers, 'convertToQueued' | 'settleApplied' | 'seed'>,
+  conversationId: string,
+  status: Pick<
+    StreamStatusResponse,
+    'resumeState' | 'unrecoveredSteers' | 'generationProtocolVersion'
+  >,
+  messages: TMessage[] | undefined,
+): void {
+  const leftoverSteers = dedupeSteersById(
+    status.unrecoveredSteers,
+    status.resumeState?.pendingSteers,
+  );
+  if (conversationId && leftoverSteers.length > 0) {
+    steers.convertToQueued(conversationId, leftoverSteers, {
+      generationProtocolVersion: getGenerationProtocolVersion(status),
+    });
+  }
+  steers.settleApplied(conversationId, messages);
+  steers.seed(conversationId, []);
 }

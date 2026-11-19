@@ -4,7 +4,6 @@ import type { TMessage, ChatEvent, ChatFinalFrame } from 'librechat-data-provide
 import type {
   ChatStatus,
   ChatStream,
-  ChatStreamStatus,
   ChatTransport,
   SubmittedTurn,
   ChatConnection,
@@ -30,6 +29,7 @@ import {
   describeSubmittedTurn,
   getRecoverySteerId,
   settleStoredSteers,
+  settleFinishedSteers,
   restoreRefusedStart,
   toStartGenerationError,
   restoreReleasedSource,
@@ -495,28 +495,25 @@ export function useFollowChat({
       current.failure == null &&
       (current.terminal == null || current.terminal.reconcile === true);
     /**
-     * Settles the reader's steers against the rows just read and the run's last status. Nothing
-     * while a generation is running under the conversation: its own frames settle them.
+     * Settles the reader's steers, for a run this chat followed to an end that carried no reply,
+     * against the rows just read and the run's last status. Nothing while a generation is
+     * running under the conversation: its own frames settle them.
      */
-    const settleSteers = async (
-      current?: Attachment,
-      turn?: SubmittedTurn,
-      known?: ChatStreamStatus,
-    ): Promise<void> => {
+    const settleSteers = async (current: Attachment, turn?: SubmittedTurn): Promise<void> => {
       const steers = host.current.beside?.steers;
       if (steers == null) {
         return;
       }
-      const status =
-        known ??
-        (await Promise.resolve(host.current.transport.getStatus?.(id)).catch(() => undefined));
+      const status = await Promise.resolve(host.current.transport.getStatus?.(id)).catch(
+        () => undefined,
+      );
       if (stale || status?.active === true) {
         return;
       }
       settleStoredSteers(steers, id, {
         messages: chat.messages,
         status,
-        promoted: current?.terminal?.promotedSteers,
+        promoted: current.terminal?.promotedSteers,
         recoverySteerId: turn == null ? null : getRecoverySteerId(turn.submission),
         generationProtocolVersion: generation?.protocolVersion,
       });
@@ -827,7 +824,7 @@ export function useFollowChat({
         }
         reading = true;
         await read();
-        if (unsettled(last)) {
+        if (last != null && unsettled(last)) {
           await settleSteers(last);
         }
         if (stale) {
@@ -896,8 +893,9 @@ export function useFollowChat({
          * Nothing is running, so a steer still shown as waiting is waiting on a run that ended
          * while this conversation was not open: it is settled against what that run left.
          */
-        if (status != null) {
-          await settleSteers(undefined, undefined, status);
+        const steers = host.current.beside?.steers;
+        if (status != null && steers != null) {
+          settleFinishedSteers(steers, id, status, chat.messages);
         }
       } catch {
         if (!stale) {

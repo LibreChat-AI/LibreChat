@@ -3,6 +3,7 @@ import type { FinalSteers } from '../resumable/steers';
 import {
   settleStoredSteers,
   restoreRefusedStart,
+  settleFinishedSteers,
   restoreReleasedSource,
 } from '../resumable/steers';
 
@@ -23,10 +24,13 @@ const record = () => {
     convertLocalToQueued: log('sweep'),
     blockRecovery: log('block'),
     restoreQueued: log('restore'),
+    seed: log('seed'),
   };
   return {
     calls,
-    steers: steers as unknown as FinalSteers & Parameters<typeof restoreRefusedStart>[0],
+    steers: steers as unknown as FinalSteers &
+      Parameters<typeof restoreRefusedStart>[0] &
+      Parameters<typeof settleFinishedSteers>[0],
   };
 };
 
@@ -141,5 +145,48 @@ describe('restoreReleasedSource', () => {
 
     expect(restoreReleasedSource(steers, 'thread-1', 'steer-parked', status, 2)).toBe(false);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('settleFinishedSteers', () => {
+  const accepted = [
+    ...parked,
+    { steerId: 'steer-accepted', text: 'Accepted, not parked yet' },
+  ] as TPendingSteer[];
+
+  it('restores what the server parked and what it had only accepted, once each, under the status’s protocol', () => {
+    const { calls, steers } = record();
+
+    settleFinishedSteers(
+      steers,
+      'thread-1',
+      {
+        generationProtocolVersion: 2,
+        unrecoveredSteers: parked,
+        resumeState: { pendingSteers: accepted } as never,
+      },
+      stored,
+    );
+
+    expect(calls).toEqual([
+      ['toQueued', 'thread-1', accepted, { generationProtocolVersion: 2 }],
+      ['settle', 'thread-1', stored],
+      ['seed', 'thread-1', []],
+    ]);
+  });
+
+  it('reads a status that names no protocol as the first one, and converts nothing when nothing is left', () => {
+    const legacy = record();
+    settleFinishedSteers(legacy.steers, 'thread-1', { unrecoveredSteers: parked }, stored);
+    expect(legacy.calls[0]).toEqual([
+      'toQueued',
+      'thread-1',
+      parked,
+      { generationProtocolVersion: 1 },
+    ]);
+
+    const { calls, steers } = record();
+    settleFinishedSteers(steers, 'thread-1', {}, stored);
+    expect(calls.map(([name]) => name)).toEqual(['settle', 'seed']);
   });
 });
