@@ -7,6 +7,7 @@ endpoints:
   agents:
     remoteApi:
       integrations:
+        mode: delegated
         resources:
           warehouse:
             url: https://warehouse.example/mcp

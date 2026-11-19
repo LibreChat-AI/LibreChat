@@ -30,15 +30,14 @@ function setup(getAppConfig?: ApiKeyHandlerDependencies['getAppConfig']) {
 }
 
 describe('listApiKeys', () => {
-  it('lists keys without the flag where the operator left key runs unlimited', async () => {
+  it('lists keys as before where nothing says grants are in use', async () => {
     const { list, keys } = setup();
     expect(await list()).toEqual({ keys });
-    expect(await setup(async () => configured('owner')).list()).toEqual({ keys });
+    for (const config of [undefined, configured(), configured('owner')])
+      expect(await setup(async () => config).list()).toEqual({ keys });
   });
 
-  it('tells the client when key runs are limited to what the owner granted, which is the default', async () => {
-    for (const config of [undefined, configured()])
-      expect(await setup(async () => config).list()).toMatchObject({ grants: true });
+  it('tells the client when key runs are limited to what the owner granted', async () => {
     const getAppConfig = jest.fn(async () => configured('delegated'));
     const { list, keys } = setup(getAppConfig);
     expect(await list()).toEqual({ keys, grants: true });
