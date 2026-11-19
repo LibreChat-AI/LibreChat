@@ -170,6 +170,36 @@ export class DiscordGatewayApp {
                     context.rates,
                   ),
                   retryDelayMs: this.policy.inbox.retryDelayMs,
+                  inspect: async (job, inspectionSignal) => {
+                    const application = await this.ownership.bootstrap(
+                      context.owner,
+                      inspectionSignal,
+                    );
+                    if (!application) return null;
+                    const current = new DiscordClient(
+                      {
+                        botToken: application.botToken,
+                        timeoutMs: this.policy.requestTimeoutMs,
+                        maxResponseBytes: this.policy.maxResponseBytes,
+                      },
+                      this.transport,
+                      context.rates,
+                    );
+                    const source = await current.inspectGuildTextActorSource(
+                      {
+                        applicationId: context.owner.applicationId,
+                        botUserId: application.botUserId,
+                        guildId: job.inspection.guildId,
+                        channelId: job.inspection.externalChannelId,
+                        authorId: job.inspection.externalUserId,
+                      },
+                      inspectionSignal,
+                    );
+                    return this.control.resolve(
+                      { fence: job.fence, owner: context.owner, source },
+                      inspectionSignal,
+                    );
+                  },
                 },
                 context.signal,
               );

@@ -3,9 +3,12 @@ import {
   discordGatewayOwnerSchema,
   discordGuildThreadSourceSchema,
   discordThreadRouteSchema,
+  discordGuildTextActorSourceSchema,
+  discordGuildTextActorUsable,
 } from 'librechat-data-provider';
 import type {
   DiscordGatewayOwner,
+  DiscordGuildTextActorSource,
   DiscordGuildThreadSource,
   DiscordInboxFence,
   DiscordThreadRoute,
@@ -19,6 +22,7 @@ import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { touchDiscordGatewayOwner } from './discordGateway';
 import { createAgentChannelModel } from '~/models/channel';
+import { touchChannelAuthority } from './channelScope';
 import { touchDiscordInstallation } from './discord';
 
 export interface DiscordInboxResolutionStorage {
@@ -32,6 +36,12 @@ export interface DiscordInboxResolutionStorage {
     owner: DiscordGatewayOwner,
     source: DiscordGuildThreadSource,
     route: DiscordThreadRoute,
+    now: number,
+  ): Promise<DiscordInboxResult<DiscordInboxRecord>>;
+  resolveText(
+    fence: DiscordInboxFence,
+    owner: DiscordGatewayOwner,
+    source: DiscordGuildTextActorSource,
     now: number,
   ): Promise<DiscordInboxResult<DiscordInboxRecord>>;
   unavailable(
@@ -92,7 +102,30 @@ export function createDiscordInboxResolutionStorage(
       .select('+action +encryptedToken +encryptedReply')
       .session(session)
       .lean();
-    if (!record || (record.routing !== 'inspection' && !record.thread)) return null;
+    if (!record) return null;
+    const textAsk =
+      record.routing !== 'inspection' && !record.thread && record.action?.kind === 'ask';
+    if (record.routing !== 'inspection' && !record.thread && !textAsk) return null;
+    if (
+      textAsk &&
+      !(await touchChannelAuthority(
+        mongoose,
+        {
+          tenantId: tenant(),
+          provider: 'discord',
+          channelId: record.channelId,
+          channelRevision: record.channelRevision,
+          agentId: record.agentId,
+          applicationId: record.applicationId,
+          applicationRevision: record.applicationRevision,
+          guildId: record.guildId,
+          externalChannelId: record.externalChannelId,
+          now,
+        },
+        session,
+      ))
+    )
+      return null;
     if (
       record.routing === 'inspection' &&
       !(await touchDiscordInstallation(
@@ -201,6 +234,55 @@ export function createDiscordInboxResolutionStorage(
           .lean();
         if (!updated || updated.routing === 'inspection') return stale();
         return { ok: true, value: updated };
+      });
+    },
+    async resolveText(fence, owner, input, now) {
+      const source = discordGuildTextActorSourceSchema.parse(input);
+      return withRequiredTransaction(mongoose, async (session) => {
+        const record = await owned(fence, owner, now, session);
+        if (
+          !record ||
+          record.routing === 'inspection' ||
+          record.thread ||
+          record.state !== 'processing' ||
+          record.action?.kind !== 'ask' ||
+          record.inspectionEpoch === fence.epoch
+        )
+          return stale();
+        const parent = await createAgentChannelModel(mongoose)
+          .findOne({
+            tenantId: tenant() ?? null,
+            channelId: record.channelId,
+            revision: record.channelRevision,
+            type: 'discord',
+            status: 'active',
+          })
+          .select('discord.botUserId')
+          .session(session)
+          .lean();
+        if (
+          !discordGuildTextActorUsable(source) ||
+          !parent ||
+          source.applicationId !== record.applicationId ||
+          source.guildId !== record.guildId ||
+          source.channelId !== record.externalChannelId ||
+          source.authorId !== record.externalUserId ||
+          source.botUserId !== parent.discord?.botUserId
+        )
+          return changed();
+        const updated = await inbox
+          .findOneAndUpdate(
+            {
+              ...live(fence, owner, now),
+              state: 'processing',
+              inspectionEpoch: { $ne: fence.epoch },
+            },
+            { $set: { inspectionEpoch: fence.epoch } },
+            { new: true, session },
+          )
+          .select('+action +encryptedToken +encryptedReply')
+          .lean();
+        return updated && updated.routing !== 'inspection' ? { ok: true, value: updated } : stale();
       });
     },
     async unavailable(fence, owner, encryptedReply, now) {

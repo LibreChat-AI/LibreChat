@@ -255,3 +255,143 @@ it('runs enabled Gateway messages through the same application owner and protect
   expect(released).toBe(true);
   expect(destroy).toHaveBeenCalledTimes(1);
 });
+
+it.each(['visible', 'denied', 'outage'] as const)(
+  'preflights signed text prompts through the owned rate-coordinated actor inspector (%s)',
+  async (state) => {
+    const visible = state === 'visible';
+    const outage = state === 'outage';
+    let complete!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    let held = false;
+    let claimed = false;
+    let ownerId = '';
+    let resolutions = 0;
+    let writes = 0;
+    let deferrals = 0;
+    const expiresAt = Date.now() + 10000;
+    const observed: string[] = [];
+    const transport: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const path = url.pathname;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+      if (url.hostname === 'discord.com') {
+        expect(held).toBe(true);
+        if (init?.method === 'GET') {
+          expect(new Headers(init.headers).get('authorization')).toBe(
+            'Bot private-inspection-token',
+          );
+          observed.push(path);
+          if (path.endsWith('/permissions/member/456'))
+            return Response.json({ permissions: '68608' });
+          if (path.endsWith('/permissions/member/600'))
+            return outage
+              ? Response.json({ message: 'Private actor REST diagnostic' }, { status: 503 })
+              : Response.json({ permissions: visible ? '1024' : '0' });
+          if (path.endsWith('/guilds/900/members/600'))
+            return Response.json({ user: { id: '600' } });
+          expect(path).toBe('/api/v10/channels/800');
+          return Response.json({ id: '800', guild_id: '900', type: 0 });
+        }
+        expect(path).toBe(
+          `/api/v10/webhooks/${applicationId}/interaction-token/messages/@original`,
+        );
+        writes++;
+        expect(outage).toBe(false);
+        expect(body.content).toBe(visible ? 'Authorized.' : 'Unavailable.');
+        return Response.json({ id: eventId });
+      }
+      if (path.endsWith('/runtime/applications'))
+        return Response.json({
+          applications: [{ applicationId, applicationRevision, tenantId: 'canonical' }],
+        });
+      if (path.endsWith('/runtime/channels')) return Response.json({ channels: [] });
+      if (path.endsWith('/gateway/acquire')) {
+        held = true;
+        ownerId = body.owner.ownerId;
+        return new Response(null, { status: 204 });
+      }
+      if (path.endsWith('/gateway/renew')) return new Response(null, { status: 204 });
+      if (path.endsWith('/gateway/release')) {
+        held = false;
+        return new Response(null, { status: 204 });
+      }
+      if (path.endsWith('/gateway/bootstrap')) {
+        expect(body.owner).toEqual({ applicationId, applicationRevision, ownerId });
+        return Response.json({
+          applicationId,
+          applicationRevision,
+          botUserId: '456',
+          botToken: 'private-inspection-token',
+          policy: policy.gateway,
+        });
+      }
+      if (path.endsWith('/inbox/claim')) {
+        if (claimed) return new Response(null, { status: 204 });
+        claimed = true;
+        return Response.json({
+          fence: { applicationId, eventId, owner: ownerId, epoch: 1 },
+          applicationRevision,
+          expiresAt,
+          inspection: { guildId: '900', externalChannelId: '800', externalUserId: '600' },
+        });
+      }
+      if (path.endsWith('/inbox/resolve')) {
+        resolutions++;
+        expect(outage).toBe(false);
+        expect(observed).toHaveLength(4);
+        expect(body.owner).toEqual({ applicationId, applicationRevision, ownerId });
+        expect(body.source).toEqual(
+          visible
+            ? {
+                kind: 'guild_text',
+                applicationId,
+                botUserId: '456',
+                guildId: '900',
+                channelId: '800',
+                permissions: '68608',
+                authorId: '600',
+                authorMember: true,
+                authorPermissions: '1024',
+              }
+            : null,
+        );
+        return Response.json({
+          fence: body.fence,
+          applicationRevision,
+          expiresAt,
+          token: 'interaction-token',
+          reply: { content: visible ? 'Authorized.' : 'Unavailable.' },
+        });
+      }
+      if (path.endsWith('/inbox/defer')) {
+        expect(outage).toBe(true);
+        expect(body.fence).toEqual({ applicationId, eventId, owner: ownerId, epoch: 1 });
+        expect(body.retryAt).toBeGreaterThan(Date.now());
+        expect(body.retryAt).toBeLessThanOrEqual(expiresAt);
+        deferrals++;
+        complete();
+        return new Response(null, { status: 204 });
+      }
+      if (path.endsWith('/inbox/finish')) {
+        expect(outage).toBe(false);
+        complete();
+        return new Response(null, { status: 204 });
+      }
+      throw new Error('Unexpected request');
+    };
+    const running = new DiscordGatewayApp(config, policy, log, transport).run(controller.signal);
+    try {
+      await finished;
+    } finally {
+      controller.abort();
+      await running;
+    }
+    expect(held).toBe(false);
+    expect(resolutions).toBe(outage ? 0 : 1);
+    expect(writes).toBe(outage ? 0 : 1);
+    expect(deferrals).toBe(outage ? 1 : 0);
+  },
+);
