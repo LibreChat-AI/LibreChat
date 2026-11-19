@@ -30,6 +30,19 @@ const pending: ChannelLinkView = {
   state: 'pending',
   expiresAtMs: Date.now() + 60000,
 };
+const discordPending: ChannelLinkView = {
+  ...pending,
+  identity: {
+    provider: 'discord',
+    tenantId: 'tenant',
+    channelId: 'channel',
+    channelRevision: 'c-rev',
+    agentId: 'agent',
+    applicationId: '123456789012345678',
+    guildId: '234567890123456789',
+    externalUserId: '345678901234567890',
+  },
+};
 let api: jest.Mocked<ChannelIdentityClient>;
 function renderPage(element: React.ReactElement) {
   const client = new QueryClient({
@@ -401,31 +414,62 @@ test('accepted consent clearly points back to the verified Slack workspace witho
   expect(screen.queryByText('com_ui_channel_link_active')).not.toBeInTheDocument();
 });
 
-test('does not send a Discord identity to the Slack return link', async () => {
-  api.preview.mockResolvedValue({
-    ok: true,
-    value: {
-      ...pending,
-      state: 'active',
-      identity: {
-        provider: 'discord',
-        tenantId: 'tenant',
-        channelId: 'channel',
-        channelRevision: 'c-rev',
-        agentId: 'agent',
-        applicationId: '123456789012345678',
-        guildId: '234567890123456789',
-        externalUserId: '345678901234567890',
-      },
-    },
+test.each(['accepted', 'active'] as const)(
+  'Discord %s consent returns to the server with provider details and disclosure',
+  async (state) => {
+    api.preview.mockResolvedValue({ ok: true, value: { ...discordPending, state } });
+    renderPage(
+      <Link api={api} accountLabel="Account A" principalKey="tenant:user-a" ticket="ticket" />,
+    );
+    await screen.findByRole('status');
+    expect(
+      screen.queryByRole('link', { name: 'com_ui_channel_link_open_slack' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'com_ui_channel_link_open_discord' })).toHaveAttribute(
+      'href',
+      'https://discord.com/channels/234567890123456789',
+    );
+    expect(screen.getByText('com_ui_channel_link_discord_visibility')).toBeVisible();
+    expect(screen.getByText('com_ui_channel_link_discord_server')).toBeInTheDocument();
+    expect(screen.getByText('234567890123456789')).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_channel_link_workspace')).not.toBeInTheDocument();
+  },
+);
+
+test('Discord acceptance still requires external confirmation and never activates browser consent', async () => {
+  const user = userEvent.setup();
+  api.preview.mockResolvedValue({ ok: true, value: discordPending });
+  api.accept.mockImplementation(async () => {
+    const result = { ok: true as const, value: { ...discordPending, state: 'accepted' as const } };
+    api.preview.mockResolvedValue(result);
+    return result;
   });
   renderPage(
     <Link api={api} accountLabel="Account A" principalKey="tenant:user-a" ticket="ticket" />,
   );
-  await screen.findByRole('status');
   expect(
-    screen.queryByRole('link', { name: 'com_ui_channel_link_open_slack' }),
-  ).not.toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'com_ui_channel_link_discord_title' }),
+  ).toBeVisible();
+  await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_accept' }));
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'com_ui_channel_link_confirm_discord',
+  );
+  expect(screen.queryByText('com_ui_channel_link_active')).not.toBeInTheDocument();
+  expect(api.accept).toHaveBeenCalledWith({ ticket: 'ticket', expectedRevision: 'revision' });
+});
+
+test('mixed provider account links retain provider labels and decorative icons without duplicate IDs', async () => {
+  api.list.mockResolvedValue([
+    { ...pending, state: 'active' },
+    { ...discordPending, linkId: 'discord-one', state: 'active' },
+    { ...discordPending, linkId: 'discord-two', state: 'active' },
+  ]);
+  const { container } = renderPage(<Links api={api} principalKey="tenant:user-a" />);
+  await screen.findByText('com_ui_channel_link_slack_ids');
+  expect(screen.getAllByText('com_ui_channel_link_discord_ids')).toHaveLength(2);
+  expect(container.querySelectorAll('img[src="assets/slack.svg"]')).toHaveLength(1);
+  const ids = Array.from(container.querySelectorAll('[id]'), (element) => element.id);
+  expect(new Set(ids).size).toBe(ids.length);
 });
 
 test('each link is a row: the agent name, the Slack ids, a status and a hover-only revoke', async () => {

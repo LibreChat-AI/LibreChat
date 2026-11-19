@@ -1,8 +1,8 @@
 import { useId, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { MutationKeys, QueryKeys } from 'librechat-data-provider';
-import { Alert, Button, Spinner, TooltipAnchor } from '@librechat/client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, Button, Spinner, TooltipAnchor, DiscordIcon } from '@librechat/client';
 import type { ChannelIdentityClient, ChannelLinkView } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import DeleteChannelDialog from '~/components/SidePanel/Agents/DeleteChannelDialog';
@@ -29,7 +29,7 @@ const dotColors: Record<ChannelLinkView['state'], string> = {
   unavailable: 'bg-status-error',
 };
 
-/** The agent's own name when it can be read. While it loads the row reads as a Slack agent; when
+/** The agent's own name when it can be read. While it loads the row reads as a channel agent; when
  *  it cannot be read (deleted, or no longer shared) the id stays, so two such links stay distinct. */
 function LinkAgentName({ agentId }: { agentId: string }) {
   const localize = useLocalize();
@@ -101,7 +101,11 @@ function OwnedLinks({ api, principalKey }: { api: ChannelIdentityClient; princip
                 render={
                   <span className="relative shrink-0">
                     <span className="bg-surface-fixed flex size-7 items-center justify-center overflow-hidden rounded-md">
-                      <img src="assets/slack.svg" alt="" className="size-4" />
+                      {link.identity.provider === 'discord' ? (
+                        <DiscordIcon />
+                      ) : (
+                        <img src="assets/slack.svg" alt="" className="size-4" />
+                      )}
                     </span>
                     <span
                       className={cn(
@@ -117,10 +121,18 @@ function OwnedLinks({ api, principalKey }: { api: ChannelIdentityClient; princip
                   <LinkAgentName agentId={link.identity.agentId} />
                 </span>
                 <span className="text-text-secondary truncate text-xs">
-                  {localize('com_ui_channel_link_slack_ids', {
-                    0: link.identity.externalUserId,
-                    1: link.identity.teamId,
-                  })}
+                  {localize(
+                    link.identity.provider === 'discord'
+                      ? 'com_ui_channel_link_discord_ids'
+                      : 'com_ui_channel_link_slack_ids',
+                    {
+                      0: link.identity.externalUserId,
+                      1:
+                        link.identity.provider === 'discord'
+                          ? link.identity.guildId
+                          : link.identity.teamId,
+                    },
+                  )}
                 </span>
               </div>
               <span role="status" className="sr-only">
