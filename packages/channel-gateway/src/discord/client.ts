@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import type { DiscordRatePermit } from './rates';
+import { DiscordRateCoordinator, DiscordRateQueueError } from './rates';
 
 export type DiscordWriteOutcome = 'permanent' | 'retryable' | 'unknown';
 export class DiscordWriteError extends Error {
@@ -27,21 +29,6 @@ export interface DiscordMessageReceipt {
 const idPattern = /^[0-9]{1,20}$/;
 const noMentions = { parse: [], replied_user: false };
 
-/** Discord documents both retry sources in seconds; never retry before either valid delay. */
-function rateLimitDelay(response: Response, body?: unknown): number {
-  const retry =
-    body && typeof body === 'object' && 'retry_after' in body ? body.retry_after : undefined;
-  const values = [
-    Number(response.headers.get('retry-after')),
-    typeof retry === 'number' ? retry : 0,
-  ];
-  const delays = values.filter(
-    (seconds) =>
-      Number.isFinite(seconds) && seconds > 0 && seconds <= Number.MAX_SAFE_INTEGER / 1000,
-  );
-  return delays.length ? Math.ceil(Math.max(...delays) * 1000) : 1000;
-}
-
 /** Stable across retries, within Discord's 25 character nonce bound. */
 export function discordNonce(operationId: string): string {
   return createHash('sha256').update(operationId).digest('hex').slice(0, 25);
@@ -52,6 +39,7 @@ export class DiscordClient {
   constructor(
     private readonly options: DiscordClientOptions,
     private readonly transport: typeof fetch = fetch,
+    private readonly rates: DiscordRateCoordinator = new DiscordRateCoordinator(),
   ) {
     const base = new URL(options.apiBase ?? 'https://discord.com/api/v10/');
     if (
@@ -79,6 +67,32 @@ export class DiscordClient {
     payload: object | undefined,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    const segments = path.split('/');
+    const route = {
+      route: `${method} ${path.replace(/\/\d+(?=\/|$)/g, '/:id')}`,
+      major: `${segments[1]}:${segments[2]}`,
+    };
+    let permit: DiscordRatePermit;
+    try {
+      permit = await this.rates.acquire(route, signal);
+    } catch (error) {
+      if (error instanceof DiscordRateQueueError)
+        throw new DiscordWriteError('retryable', error.retryAfterMs);
+      throw error;
+    }
+    try {
+      return await this.send(method, path, payload, permit, signal);
+    } finally {
+      permit.release();
+    }
+  }
+  private async send(
+    method: string,
+    path: string,
+    payload: object | undefined,
+    permit: DiscordRatePermit,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     let response: Response;
     try {
       response = await this.transport(this.base + path, {
@@ -97,6 +111,7 @@ export class DiscordClient {
     } catch {
       throw new DiscordWriteError('unknown');
     }
+    permit.observe(response);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -115,14 +130,15 @@ export class DiscordClient {
       let outcome: DiscordWriteOutcome = 'unknown';
       if ([400, 401, 403, 404].includes(response.status)) outcome = 'permanent';
       else if (response.status === 429)
-        throw new DiscordWriteError('retryable', rateLimitDelay(response));
+        throw new DiscordWriteError('retryable', this.rates.retryAfter(response));
       throw new DiscordWriteError(outcome);
     } finally {
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
     }
+    permit.observe(response, value);
     if (response.status === 429)
-      throw new DiscordWriteError('retryable', rateLimitDelay(response, value));
+      throw new DiscordWriteError('retryable', this.rates.retryAfter(response, value));
     if (!response.ok)
       throw new DiscordWriteError(
         [400, 401, 403, 404].includes(response.status) ? 'permanent' : 'unknown',
