@@ -269,3 +269,45 @@ test.describe('on a small screen', () => {
     await expect(composer).toHaveValue('Still reachable');
   });
 });
+
+test('a saved conversation beside a temporary chat keeps its turns @scenario:side-chat-turn-is-not-temporary-beside-a-temporary-chat', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const saved = uniqueLabel('saved');
+  const followUp = uniqueLabel('kept');
+  const savedUrl = await startChat(page, saved);
+
+  /** The chat on screen is a new one the reader has made temporary. */
+  await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+  await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+  const temporary = page.getByRole('button', { name: 'Temporary Chat' });
+  await temporary.click();
+  await expect(temporary).toHaveAttribute('aria-pressed', 'true');
+
+  await openChatHistory(page);
+  const row = conversationRow(page, savedUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  const sideChat = page.getByRole('region', { name: 'Side chat' });
+  await expect(sideChat).toContainText(replyText(saved), { timeout: 30_000 });
+
+  /** Temporary is what the chat on screen is, not the saved conversation beside it. */
+  const composer = sideChat.getByRole('textbox', { name: 'Message input' });
+  await composer.click();
+  await page.keyboard.type(replyPrompt(followUp));
+  const [start] = await Promise.all([
+    page.waitForRequest(
+      (request) =>
+        request.method() === 'POST' &&
+        /\/api\/agents\/chat\/[^/]+$/.test(new URL(request.url()).pathname) &&
+        !request.url().endsWith('/abort'),
+    ),
+    page.keyboard.press('Enter'),
+  ]);
+  const posted = start.postDataJSON() as { conversationId?: string; isTemporary?: boolean };
+  expect(savedUrl).toContain(posted.conversationId ?? 'none');
+  expect(posted.isTemporary).toBe(false);
+  await expect(sideChat).toContainText(replyText(followUp), { timeout: 30_000 });
+});
