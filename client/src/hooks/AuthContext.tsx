@@ -49,6 +49,7 @@ import {
 import { resetChatFilterSessionAtom } from '~/components/Conversations/chatFilters';
 import { TAuthConfig, TUserContext, TAuthContext, TResError } from '~/common';
 import { resetFacetsAtom } from '~/components/Conversations/facets';
+import { resetMCPStateAtom } from '~/store/mcp';
 import useTimeout from './useTimeout';
 import store from '~/store';
 
@@ -66,6 +67,7 @@ if (import.meta.hot) {
  * path the other was wired into. */
 const endSessionClientState = (): void => {
   getDefaultStore().set(resetChatFilterSessionAtom);
+  getDefaultStore().set(resetMCPStateAtom);
   getDefaultStore().set(resetFacetsAtom);
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
