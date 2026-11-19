@@ -63,7 +63,7 @@ const execution = createChannelExecutionAdapter({
     cancelResponse: cancelBackgroundResponse,
     readPreview: createChannelResponsePreview({
       jobs: GenerationJobManager,
-      getConfig: policy.runConfig,
+      getConfig: (run) => policy.appConfig(run.tenantId),
     }),
   }),
 });
