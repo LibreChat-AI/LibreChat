@@ -459,6 +459,18 @@ describe('Session', () => {
     expect(toggle()).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it('leaves the docked rail out of the tab trap', async () => {
+    jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index({ tasks: [] }));
+    renderSession();
+    const rail = await openRail();
+    expect(rail).not.toHaveAttribute('aria-modal');
+    expect(toggle()).toHaveFocus();
+    await userEvent.tab();
+    expect(within(rail).getByRole('button', { name: 'com_ui_session_close' })).toHaveFocus();
+    await userEvent.tab();
+    expect(rail).not.toContainElement(document.activeElement as HTMLElement);
+  });
+
   describe('on a small screen', () => {
     beforeEach(() => {
       mockSheet.current = true;
@@ -485,6 +497,36 @@ describe('Session', () => {
       await userEvent.keyboard('{Escape}');
       expect(screen.queryByRole('dialog')).toBeNull();
       expect(toggle()).toHaveFocus();
+    });
+
+    it('keeps keyboard focus inside the sheet, which covers everything else', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index({ tasks: [] }));
+      renderSession();
+      await userEvent.click(toggle());
+      const sheet = await screen.findByRole('dialog', { name: 'com_ui_session' });
+      expect(sheet).toHaveAttribute('aria-modal', 'true');
+      const close = within(sheet).getByRole('button', { name: 'com_ui_session_close' });
+      expect(close).toHaveFocus();
+
+      /** The control behind the sheet is the next tab stop in the page, and is not reached. */
+      await userEvent.tab();
+      expect(sheet).toContainElement(document.activeElement as HTMLElement);
+      await userEvent.tab({ shift: true });
+      expect(sheet).toContainElement(document.activeElement as HTMLElement);
+
+      await userEvent.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(toggle()).toHaveFocus();
+    });
+
+    it('starts on the close button, not on the control that stops everything', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      renderSession();
+      await waitFor(() => expect(toggle()).not.toHaveAccessibleName('com_ui_session'));
+      await userEvent.click(toggle());
+      const sheet = await screen.findByRole('dialog', { name: 'com_ui_session' });
+      expect(within(sheet).getByTestId('session-stop-all')).toBeInTheDocument();
+      expect(within(sheet).getByRole('button', { name: 'com_ui_session_close' })).toHaveFocus();
     });
 
     it('gets out of the way of the thread it opens', async () => {

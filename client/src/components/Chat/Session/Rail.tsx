@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { Square, X } from 'lucide-react';
 import { getToolDisplayLabel } from '@librechat/chat';
-import { Button, IconButton, TooltipAnchor } from '@librechat/client';
+import { Button, IconButton, TooltipAnchor, useFocusTrap } from '@librechat/client';
 import {
   resolveChildAgent,
   activeSubagentPanel,
@@ -12,7 +12,6 @@ import {
   readableSubagentTitle,
   durableSubagentSelection,
 } from '@librechat/chat/react';
-import type { KeyboardEvent } from 'react';
 import type { BackgroundTasksView } from '../BackgroundTasks/useTasks';
 import type { TaskRow } from '../BackgroundTasks/rows';
 import { findTaskTarget, focusTaskTarget, scrollToTaskTarget } from '../BackgroundTasks/jump';
@@ -49,6 +48,10 @@ export default function SessionRail({
 }) {
   const localize = useLocalize();
   const titleId = useId();
+  const rootRef = useRef<HTMLElement | null>(null);
+  const setRoot = useCallback((element: HTMLElement | null) => {
+    rootRef.current = element;
+  }, []);
   const closeRef = useRef<HTMLButtonElement>(null);
   const agentsMap = useAgentsMapContext();
   const parent = useParentSubagents();
@@ -67,7 +70,13 @@ export default function SessionRail({
     stopAllLabel = localize('com_ui_background_tasks_stop_available');
   }
 
-  /** The sheet covers the page, so it takes focus as it opens; the docked rail leaves it. */
+  /**
+   * The sheet covers the page, so it holds focus and answers Escape the way the other sheets
+   * do; the docked rail sits beside the page and leaves focus where it is. The trap starts on
+   * the first control, which while something runs is the one that stops everything, so focus is
+   * then moved to the close button.
+   */
+  useFocusTrap(rootRef, sheet, onClose);
   useEffect(() => {
     if (sheet) closeRef.current?.focus({ preventScroll: true });
   }, [sheet]);
@@ -103,13 +112,6 @@ export default function SessionRail({
   );
 
   const stopRow = useCallback((row: TaskRow) => void stop(row), [stop]);
-
-  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (sheet && event.key === 'Escape' && !event.defaultPrevented) {
-      event.stopPropagation();
-      onClose();
-    }
-  };
 
   const summary = (group: TaskRow[]) => {
     const active = group.filter(isActive).length;
@@ -188,10 +190,11 @@ export default function SessionRail({
   return (
     <Root
       id={SESSION_RAIL_ID}
+      ref={setRoot}
       role={sheet ? 'dialog' : undefined}
+      aria-modal={sheet || undefined}
       aria-labelledby={titleId}
       data-testid="session-rail"
-      onKeyDown={onKeyDown}
       className={cn(
         'bg-surface-sidebar text-text-primary flex h-full shrink-0 flex-col',
         sheet ? 'fixed inset-0 z-[100]' : 'border-border-light w-80 border-s',
