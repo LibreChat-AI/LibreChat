@@ -5498,7 +5498,6 @@ describe('Agent Methods', () => {
 
       const stored = await Agent.findOne({ id: agentId }).lean();
       expect(stored?.is_official).toBe(false);
-      expect(stored?.is_certified).toBe(false);
     });
 
     test('setAgentOfficialStatus writes no version and reports a missing agent as null', async () => {
@@ -6004,7 +6003,7 @@ describe('Support Contact Field', () => {
     });
 
     test('returns and filters the official flag in the list projection', async () => {
-      await Agent.collection.updateOne({ _id: agentA2._id }, { $set: { is_certified: true } });
+      await Agent.collection.updateOne({ _id: agentA2._id }, { $set: { is_official: true } });
 
       const result = await getListAgentsByAccess({
         accessibleIds: null,
@@ -6013,7 +6012,6 @@ describe('Support Contact Field', () => {
 
       expect(result.data.map((agent) => agent.id)).toEqual([agentA2.id]);
       expect(result.data[0].is_official).toBe(true);
-      expect(result.data[0]).not.toHaveProperty('is_certified');
     });
 
     test('should return empty list when user has no accessible agents (empty accessibleIds)', async () => {

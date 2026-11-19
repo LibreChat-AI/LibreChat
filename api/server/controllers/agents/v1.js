@@ -1504,7 +1504,6 @@ const duplicateAgentHandler = async (req, res) => {
       tool_resources: _tool_resources = {},
       versions: _versions,
       is_official: _is_official,
-      is_certified: _is_certified,
       __v: _v,
       ...cloneData
     } = agent;
@@ -1812,15 +1811,7 @@ const deleteAgentHandler = async (req, res) => {
 const getListAgentsHandler = async (req, res) => {
   try {
     const userId = req.user.id;
-    const {
-      category,
-      search,
-      limit = 100,
-      cursor,
-      promoted,
-      is_official,
-      is_certified,
-    } = req.query;
+    const { category, search, limit = 100, cursor, promoted, is_official } = req.query;
     const listQuery = resolveMarketplaceListQuery(req.query);
     const sortMode = listQuery.sort;
     let requiredPermission = req.query.requiredPermission;

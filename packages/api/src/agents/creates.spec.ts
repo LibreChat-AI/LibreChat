@@ -109,7 +109,7 @@ describe('Agent Management create handler', () => {
   it('strips caller-supplied official state before creation', async () => {
     const deps = makeDeps();
     const request = makeRequest({
-      body: { ...validBody, is_official: true, is_certified: true },
+      body: { ...validBody, is_official: true },
     });
     const response = makeResponse();
 
@@ -117,7 +117,6 @@ describe('Agent Management create handler', () => {
 
     expect(deps.createAgent).toHaveBeenCalledWith(request, expect.anything());
     expect(request.body).not.toHaveProperty('is_official');
-    expect(request.body).not.toHaveProperty('is_certified');
   });
 
   it('rejects a null model as invalid input before persistence', async () => {

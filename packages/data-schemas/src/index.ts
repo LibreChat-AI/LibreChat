@@ -177,7 +177,6 @@ export {
   backfillMCPServerNormalizedNames,
   backfillSearchTokens,
   warnOnMissingSearchTokens,
-  migrateLegacyAgentOfficialStatus,
 } from './migrations';
 export type { SearchTokenBackfillResult } from './migrations';
 

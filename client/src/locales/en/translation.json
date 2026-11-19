@@ -476,7 +476,7 @@
   "com_agents_file_search_disabled": "Agent must be created before uploading files for File Search.",
   "com_agents_file_search_info": "Turns uploaded files into a searchable knowledge base. The agent retrieves the most relevant passages on demand, so it works well even with large document sets.",
   "com_agents_filter_mine": "Only Agents I created",
-  "com_agents_filter_official_agents": "Official agents",
+  "com_agents_filter_official_agents": "Official",
   "com_agents_grid_announcement": "Showing {{count}} agents in {{category}} category",
   "com_agents_instructions_placeholder": "The system instructions that the agent uses",
   "com_agents_instructions_prompt_empty": "No prompts available",

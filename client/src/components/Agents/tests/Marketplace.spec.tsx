@@ -20,7 +20,7 @@ const mockLocalize = jest.fn((key: string, options?: { count?: number; category?
     com_nav_toggle_nav: 'Open sidebar',
     com_agents_marketplace: 'Agent Marketplace',
     com_agents_filter_mine: 'Only Agents I created',
-    com_agents_filter_official_agents: 'Official agents',
+    com_agents_filter_official_agents: 'Official',
     com_agents_my_agents: 'My agents',
     com_agents_sort_label: 'Sort by',
     com_agents_sort_newest: 'Newest first',
@@ -277,7 +277,7 @@ describe('Marketplace controls and agent results', () => {
     renderMarketplace('/agents/productivity?q=invoice');
     await screen.findByRole('list');
 
-    const officialFilter = screen.getByRole('button', { name: 'Official agents' });
+    const officialFilter = screen.getByRole('button', { name: 'Official' });
     expect(officialFilter).toHaveClass('h-8', 'rounded-full');
     expect(
       officialFilter.compareDocumentPosition(screen.getByRole('tab', { name: /Productivity/ })),
@@ -299,7 +299,7 @@ describe('Marketplace controls and agent results', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Official agents' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Official' }));
     await waitFor(() => {
       expect(currentUrl()).toBe('/agents/productivity?q=invoice');
     });
@@ -318,7 +318,7 @@ describe('Marketplace controls and agent results', () => {
       renderMarketplace('/agents/productivity?is_official=true');
       await screen.findByRole('list');
 
-      expect(screen.queryByRole('button', { name: 'Official agents' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Official' })).not.toBeInTheDocument();
       expect(marketplace.mock.calls[0][0]).not.toHaveProperty('is_official');
     } finally {
       mockOfficialStatusEnabled = true;

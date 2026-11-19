@@ -101,7 +101,7 @@ describe('Agent Management update handler', () => {
   it('delegates a partial update and returns the management projection', async () => {
     const deps = makeDeps();
     const request = makeRequest({
-      body: { name: updatedAgent.name, is_official: true, is_certified: true },
+      body: { name: updatedAgent.name, is_official: true },
     });
     const response = makeResponse();
 

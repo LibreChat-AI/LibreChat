@@ -21,7 +21,7 @@ describe('OfficialAgentIcon', () => {
 
     const icon = screen.getByRole('img', { name: 'Official agent' });
     expect(icon).toHaveClass('text-status-info');
-    expect(icon.querySelector('svg')).toHaveClass('lucide-shield-check', 'size-full');
+    expect(icon.querySelector('svg')).toHaveClass('lucide-badge-check', 'size-full');
     await user.tab();
 
     expect(icon).toHaveFocus();

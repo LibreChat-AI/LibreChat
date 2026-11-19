@@ -1281,12 +1281,7 @@ export function createAgentMethods(
         agentData.skills_enabled = false;
       }
     }
-    const {
-      author: _author,
-      is_official: _isOfficial,
-      is_certified: _isCertified,
-      ...versionData
-    } = agentData;
+    const { author: _author, is_official: _isOfficial, ...versionData } = agentData;
     const timestamp = new Date();
     const initialAgentData = {
       ...agentData,
@@ -1541,7 +1536,6 @@ export function createAgentMethods(
       const currentObject = currentAgent.toObject() as unknown as Record<string, unknown>;
       const { __v, _id, id: __id, versions, author: _author, ...versionData } = currentObject;
       delete versionData.is_official;
-      delete versionData.is_certified;
       const { $push, $pull, $addToSet, $unset, ...directUpdates } = updateData;
 
       /** Self-heal: drop allowlist ids whose skill no longer exists in the
@@ -2184,12 +2178,6 @@ export function createAgentMethods(
         ? { tenantId: tenantId ?? null }
         : { _id: { $in: accessibleIds } }),
     };
-    if (baseQuery.is_official === true) {
-      delete baseQuery.is_official;
-      const existingAnd = Array.isArray(baseQuery.$and) ? baseQuery.$and : [];
-      baseQuery.$and = [...existingAnd, { $or: [{ is_official: true }, { is_certified: true }] }];
-    }
-
     // `.find()` casts query values against the schema automatically; the aggregate
     // branch below builds a raw `$match` stage, which does not. Cast unconditionally
     // (both branches) so this stays true even if the `.find()` branch changes later.
@@ -2211,7 +2199,6 @@ export function createAgentMethods(
       support_contact: 1,
       is_promoted: 1,
       is_official: 1,
-      is_certified: 1,
     };
 
     if (includeSkillConfig) {
@@ -2236,8 +2223,7 @@ export function createAgentMethods(
     }
 
     const finalizeAgent = (agent: Record<string, unknown>): Record<string, unknown> => {
-      agent.is_official = agent.is_official === true || agent.is_certified === true;
-      delete agent.is_certified;
+      agent.is_official = agent.is_official === true;
       if (includeExecutionConfig) {
         agent.tools =
           Array.isArray(agent.tools) && agent.tools.includes(EToolResources.execute_code)
@@ -2813,7 +2799,6 @@ export function createAgentMethods(
     delete revertToVersion.author;
     delete revertToVersion.updatedBy;
     delete revertToVersion.is_official;
-    delete revertToVersion.is_certified;
 
     /** Version snapshots can predate skill deletions; restoring one verbatim
      *  would resurrect dangling allowlist ids that scope the catalog to
@@ -2908,7 +2893,7 @@ export function createAgentMethods(
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const updated = await Agent.findOneAndUpdate(
       { id },
-      { $set: { is_official: isOfficial, is_certified: isOfficial } },
+      { $set: { is_official: isOfficial } },
       { new: true, projection: { id: 1, is_official: 1 } },
     ).lean<IAgent>();
     if (!updated) {

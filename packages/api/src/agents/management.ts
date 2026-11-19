@@ -61,8 +61,6 @@ export type AgentManagementProjectionSource = Partial<
     'id' | 'provider' | 'model' | 'version' | 'createdAt' | 'updatedAt' | 'avatar'
   >
 > & {
-  /** @deprecated Legacy field retained while existing records are migrated. */
-  is_certified?: boolean;
   id?: string;
   provider?: string;
   model?: string | null;
@@ -110,7 +108,6 @@ export function stripAgentOfficialStatusFromPayload(body: unknown): unknown {
 
   const payload: Record<string, unknown> = { ...body };
   delete payload.is_official;
-  delete payload.is_certified;
   return payload;
 }
 
@@ -294,7 +291,7 @@ export function projectAgentManagementResponse(
     provider: source.provider,
     sdk_runtime: source.sdk_runtime,
     model: source.model,
-    is_official: source.is_official === true || source.is_certified === true,
+    is_official: source.is_official === true,
     version: getVersion(source),
     createdAt: toTimestamp(source.createdAt),
     updatedAt: toTimestamp(source.updatedAt),

@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { BadgeCheck } from 'lucide-react';
 import { TooltipAnchor } from '@librechat/client';
 import { useAgentOfficialStatus, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -17,7 +17,10 @@ interface OfficialAgentIconProps {
  * admin-configured explanation becomes its description, so a screen reader hears both. The
  * description lives in a `hidden` node because `role="img"` does not support `aria-description`.
  */
-export default function OfficialAgentIcon({ className, static: isStatic = false }: OfficialAgentIconProps) {
+export default function OfficialAgentIcon({
+  className,
+  static: isStatic = false,
+}: OfficialAgentIconProps) {
   const localize = useLocalize();
   const descriptionId = useId();
   const { enabled, description } = useAgentOfficialStatus();
@@ -29,11 +32,11 @@ export default function OfficialAgentIcon({ className, static: isStatic = false 
   const label = localize('com_ui_official_agent');
   const hasExplanation = description !== label;
   const badgeClass = cn(
-    'text-status-info inline-flex size-[1.1em] shrink-0 items-center',
+    'text-status-info inline-flex size-[0.8em] shrink-0 items-center',
     !isStatic && 'cursor-help',
     className,
   );
-  const badge = <ShieldCheck aria-hidden="true" className="size-full" />;
+  const badge = <BadgeCheck aria-hidden="true" className="size-full" />;
 
   if (isStatic) {
     return (
