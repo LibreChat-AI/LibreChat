@@ -174,6 +174,13 @@ function enrollmentSchema<Consent extends z.ZodTypeAny>(consent: Consent) {
        */
       tools: z.array(scheduledMCPToolSelectionSchema).max(MAX_SERVER_AGENTS).optional(),
       /**
+       * The whole agent, as it is and as it becomes: every tool, skill and MCP server its
+       * agents use, including one added after the grant was made. `consents` lists the
+       * servers known then, for the credentials a run acts with there; nothing is left out
+       * for not being listed.
+       */
+      everything: z.literal(true).optional(),
+      /**
        * The grant's own lifetime. A grant made before it was stored here has it only on its
        * consents, which every such grant has at least one of.
        */
@@ -182,7 +189,10 @@ function enrollmentSchema<Consent extends z.ZodTypeAny>(consent: Consent) {
       revokedAtMs: timestamp.nullable().optional(),
     })
     .strict()
-    .refine((value) => value.consents.length > 0 || (value.tools?.length ?? 0) > 0)
+    .refine(
+      (value) =>
+        value.everything === true || value.consents.length > 0 || (value.tools?.length ?? 0) > 0,
+    )
     .refine((value) => value.consents.length > 0 || value.absoluteExpiresAtMs != null);
 }
 
@@ -247,11 +257,25 @@ const consentChoice = z.object({
    * stored grant's choice is kept for the tools still on offer.
    */
   tools: z.array(identifier).max(MAX_AGENT_TOOLS).optional(),
+  /**
+   * The whole agent, including what is added to it later. Nothing is chosen one by one with
+   * it, so `allow` is empty and `tools` is left out; `ask` may still name tools on offer.
+   */
+  everything: z.literal(true).optional(),
 });
 
-/** Something must be allowed: an MCP tool, or one of the other tools. */
-const allowsSomething = (value: { allow: Record<string, string[]>; tools?: string[] }): boolean =>
-  Object.values(value.allow).some((tools) => tools.length > 0) || (value.tools?.length ?? 0) > 0;
+interface Choice {
+  allow: Record<string, string[]>;
+  tools?: string[];
+  everything?: true;
+}
+
+/** Something must be allowed: the whole agent, or else an MCP tool or one of the other tools. */
+const allowsSomething = (value: Choice): boolean =>
+  value.everything === true
+    ? Object.keys(value.allow).length === 0 && value.tools == null
+    : Object.values(value.allow).some((tools) => tools.length > 0) ||
+      (value.tools?.length ?? 0) > 0;
 
 export const confirmScheduleMCPConsentSchema = consentChoice.strict().refine(allowsSomething);
 export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
@@ -288,11 +312,14 @@ export interface ScheduleMCPConsentView {
    * ones the stored grant allows.
    */
   tools: { offered: string[]; allowed: string[] };
+  /** Whether the stored grant is for the whole agent, including what is added to it later. */
+  everything: boolean;
   /** Whether a scheduled run can pause for the owner's approval on this deployment. */
   approval: boolean;
   /** With no grant: whether the schedule's MCP tools are refused until the owner confirms. */
   required: boolean;
   /** With no grant and not yet required: when the operator's deadline makes it so. */
   requireAfterMs: number | null;
-  offer: { digest: string; maxLifetimeHours: number } | null;
+  /** `everything`: the grant may be made for the whole agent, not only tool by tool. */
+  offer: { digest: string; maxLifetimeHours: number; everything?: true } | null;
 }

@@ -33,7 +33,7 @@ export default function Authorize({
   const valid =
     offer != null &&
     !query.isFetching &&
-    state.count > 0 &&
+    state.some &&
     Number.isInteger(hours) &&
     hours >= 1 &&
     hours <= offer.maxLifetimeHours;
@@ -42,9 +42,7 @@ export default function Authorize({
     ? JSON.stringify({
         offerDigest: offer.digest,
         lifetimeHours: hours,
-        allow: state.choice,
-        ask: state.ask,
-        tools: state.other,
+        ...state.request,
       })
     : null;
   const owed = offer != null;
@@ -83,7 +81,7 @@ export default function Authorize({
           onChange={(event) => setHours(Number(event.target.value))}
         />
       </div>
-      {state.count === 0 && (
+      {!state.some && (
         <p className="text-text-secondary text-xs">
           {localize('com_ui_schedule_consent_none_selected')}
         </p>

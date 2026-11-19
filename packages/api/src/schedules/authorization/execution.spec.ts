@@ -563,6 +563,104 @@ describe('the tools a run loads under a grant', () => {
     expect(fixture.execution.grantsTool('stranger', 'web_search')).toBe(false);
   });
 
+  it('loads and allows every tool under a grant of the whole agent, while it lasts', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { everything: true });
+    const all = [...keys, 'sys__server__sys_mcp_archive', 'sys__all__sys_mcp_archive'];
+    // Nothing was listed, on a server with no consent or as another tool, and nothing is left out.
+    expect(fixture.execution.narrow('root', all)).toEqual(all);
+    expect(fixture.execution.narrow('stranger', all)).toEqual(all);
+    expect(fixture.execution.grants('later', 'archive', 'purge')).toBe(true);
+    expect(fixture.execution.grantsTool('root', 'execute_code')).toBe(true);
+    const policy = createScheduledMCPRunPolicy(fixture.execution, [
+      { id: 'root', toolDefinitions: [{ name: 'purge_mcp_archive', serverName: 'archive' }] },
+    ]);
+    const decide = (toolName: string) =>
+      policy.hook(
+        { toolName, toolInput: {}, executingAgentId: 'root' } as Parameters<
+          HookCallback<'PreToolUse'>
+        >[0],
+        new AbortController().signal,
+      );
+    // A skill, a file read, a tool added to the agent since: none of them is on any list.
+    expect(await decide('skill')).toEqual({});
+    expect(await decide('read_file')).toEqual({});
+    expect(await decide('purge_mcp_archive')).toEqual({});
+
+    fixture.expire();
+    expect(fixture.execution.grantsTool('root', 'execute_code')).toBe(false);
+    expect(fixture.execution.narrow('root', all)).not.toContain('web_search');
+    expect(await decide('skill')).toMatchObject({ decision: 'deny' });
+  });
+
+  it('pauses a whole-agent run for a tool the owner approves each time, whoever calls it and however it is selected', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      everything: true,
+      ask: ['query'],
+    });
+    const key = 'query_mcp_warehouse';
+    expect(fixture.execution.mayAsk).toBe(true);
+    expect(fixture.execution.asksAbout('root', key)).toBe(true);
+    // An agent added since the grant was made is asked about it too.
+    expect(fixture.execution.asksAbout('later', key)).toBe(true);
+    expect(fixture.execution.asksAboutAny([key])).toBe(true);
+    expect(fixture.execution.asksAbout('root', 'export_mcp_warehouse')).toBe(false);
+    // The agents come to select the whole server: the consent names no tool, the question stays.
+    for (const consent of fixture.snapshot.enrollment!.consents)
+      consent.permittedTools = [{ agentId: 'root', tools: ['sys__all__sys'] }];
+    const next = (await fixture.factory.resolve(fixture.identity, 'invoke'))!;
+    expect(next.mayAsk).toBe(true);
+    expect(next.asksAbout('root', key)).toBe(true);
+    // Under a grant that lists its tools a question belongs to the agents it lists.
+    const listed = await executionFixture('invoke', readTool, undefined, { ask: ['query'] });
+    expect(listed.execution.asksAbout('root', key)).toBe(true);
+    expect(listed.execution.asksAbout('later', key)).toBe(false);
+  });
+
+  it('lets a whole-agent run call a server its grant holds no consent for, while the grant stands', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, { everything: true });
+    const notes = { type: 'stdio' as const, command: 'notes', args: [] };
+    const call = (execution = fixture.execution) =>
+      execution.bind('root', 'lookup').authorize({
+        user: fixture.user,
+        serverName: 'notes',
+        serverConfig: notes as never,
+        toolName: 'lookup',
+        loadTools: async () => ({ tools: [{ ...readTool, name: 'lookup' }], complete: true }),
+      });
+    jest.mocked(fixture.storage.readScheduleMCPConsent).mockClear();
+    await expect(call()).resolves.toBeUndefined();
+    // Checked again at the call, by the same authority a server with a consent is: the grant
+    // this run started under is still the stored one, and its owner may still use it.
+    expect(fixture.loadAuthorization).toHaveBeenCalledTimes(1);
+    expect(fixture.storage.readScheduleMCPConsent).toHaveBeenCalledTimes(1);
+
+    // The owner edited the schedule: the grant was made for what it was before.
+    fixture.snapshot.configRevision = 1;
+    await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+    fixture.snapshot.configRevision = 0;
+    const stored = fixture.snapshot.enrollment!;
+    fixture.snapshot.enrollment = { ...stored, revision: 'another' };
+    await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+    fixture.snapshot.enrollment = stored;
+    await fixture.revoke();
+    await expect(call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
+    jest.mocked(fixture.storage.readScheduleMCPConsent).mockRejectedValueOnce(new Error('PRIVATE'));
+    await expect(call()).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+
+    // The owner lost the permission the schedule runs on.
+    const denied = await executionFixture('invoke', readTool, undefined, { everything: true });
+    denied.deny();
+    await expect(call(denied.execution)).rejects.toMatchObject({
+      failure: { reason: 'rbac_denied' },
+    });
+
+    // A grant that lists its tools still refuses a server it does not list.
+    const listed = await executionFixture('invoke', readTool);
+    await expect(call(listed.execution)).rejects.toMatchObject({
+      failure: { reason: 'tool_policy_denied' },
+    });
+  });
+
   it('loads none of the other tools when the owner allowed none', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, {
       tools: ['execute_code', 'web_search'],

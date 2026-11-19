@@ -28,7 +28,12 @@ export interface ScheduledMCPFailure {
 export type ScheduledMCPConsentLookupResult<
   Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
 > =
-  | { readonly state: 'found'; readonly consent: MCPGrantConsent<Identity> }
+  | {
+      readonly state: 'found';
+      readonly consent: MCPGrantConsent<Identity>;
+      /** The grant is for the whole agent: the consent's list of tools is not a limit. */
+      readonly everything?: true;
+    }
   | { readonly state: 'missing' }
   | { readonly state: 'unavailable' };
 
@@ -62,6 +67,22 @@ export type ScheduledMCPAuthorizationResult =
   | { readonly state: 'denied'; readonly failure: ScheduledMCPFailure }
   | { readonly state: 'cancelled' };
 
+/** A call under a whole-agent grant on a server the grant holds no consent for. */
+export interface ScheduledMCPStandingRequest<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+> {
+  readonly identity: Identity;
+  /** The grant the run started under. A later one is another decision. */
+  readonly revision: string;
+  readonly stage: 'activation' | 'invoke' | 'resume';
+  readonly manual?: boolean;
+}
+
+export type ScheduledMCPStandingResult =
+  | { readonly state: 'authorized' }
+  | { readonly state: 'denied'; readonly failure: ScheduledMCPFailure }
+  | { readonly state: 'cancelled' };
+
 export interface ScheduledMCPAuthority<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
   readonly lookupConsent: (
     identity: Identity,
@@ -73,6 +94,15 @@ export interface ScheduledMCPAuthority<Identity extends MCPGrantIdentity = Sched
     request: ScheduledMCPAuthorizationRequest<Identity>,
     options: { signal?: AbortSignal },
   ) => Promise<ScheduledMCPAuthorizationResult>;
+  /**
+   * The live checks of `authorize` with no server to match: the stored grant is the whole-agent
+   * one this run started under and still in force, and its owner may still use schedules, MCP
+   * servers and the agent on a deployment that still runs them.
+   */
+  readonly standing: (
+    request: ScheduledMCPStandingRequest<Identity>,
+    options: { signal?: AbortSignal },
+  ) => Promise<ScheduledMCPStandingResult>;
 }
 
 export type ScheduledMCPBearerResult =

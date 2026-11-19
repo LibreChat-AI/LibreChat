@@ -48,6 +48,7 @@ const view: ScheduleMCPConsentView = {
   changed: {},
   asking: {},
   tools: { offered: [], allowed: [] },
+  everything: false,
   approval: false,
   required: false,
   requireAfterMs: null,
@@ -304,6 +305,101 @@ it("lists each of the agent's other tools as its own item, and sends the ones th
     ),
   );
 });
+describe('a grant that can be made for the whole agent', () => {
+  const standing: ScheduleMCPConsentView = {
+    ...view,
+    tools: { offered: ['web_search'], allowed: [] },
+    offer: { ...view.offer!, everything: true },
+  };
+  const whole = () => screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_everything' });
+  const confirm = () => screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' });
+
+  it('starts on the whole agent, and confirms it with nothing chosen one by one', async () => {
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(standing);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(standing);
+    display();
+    expect(await whole()).toBeChecked();
+    expect(screen.getByText('com_ui_schedule_consent_everything_note')).toBeVisible();
+    // There is nothing to tick: no tool is listed, and none is left out.
+    expect(screen.queryByRole('checkbox', { name: 'query' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_schedule_consent_none_selected')).not.toBeInTheDocument();
+    expect(confirm()).toBeEnabled();
+    await userEvent.click(confirm());
+    await waitFor(() =>
+      expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith('schedule', {
+        offerDigest: view.offer!.digest,
+        expectedRevision: null,
+        lifetimeHours: 1,
+        allow: {},
+        everything: true,
+      }),
+    );
+  });
+
+  it('lets the owner choose tool by tool instead', async () => {
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(standing);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(standing);
+    display();
+    await userEvent.click(await whole());
+    expect(confirm()).toBeDisabled();
+    await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
+    await userEvent.click(confirm());
+    await waitFor(() =>
+      expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith('schedule', {
+        offerDigest: view.offer!.digest,
+        expectedRevision: null,
+        lifetimeHours: 1,
+        allow: { warehouse: ['query'] },
+        ask: {},
+        tools: [],
+      }),
+    );
+  });
+
+  it('says which tools it still asks about, and renews without touching them', async () => {
+    const asked = {
+      ...standing,
+      state: 'active' as const,
+      revision: 'grant',
+      everything: true,
+      asking: { warehouse: ['query'] },
+    };
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(asked);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(asked);
+    display();
+    expect(await whole()).toBeChecked();
+    expect(screen.getByText('com_ui_schedule_consent_everything_asking')).toBeVisible();
+    await userEvent.click(confirm());
+    await waitFor(() => expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalled());
+    // Left out, the server keeps what the stored grant asks about.
+    expect(jest.mocked(dataService.confirmScheduleMCPConsent).mock.calls[0][1]).not.toHaveProperty(
+      'ask',
+    );
+  });
+
+  it('starts a stored grant from what it is', async () => {
+    const listed = {
+      ...standing,
+      state: 'active' as const,
+      revision: 'grant',
+      allowed: { warehouse: ['query'] },
+    };
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(listed);
+    display();
+    expect(await whole()).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+    cleanup();
+    jest
+      .mocked(dataService.getScheduleMCPConsent)
+      .mockResolvedValue({ ...listed, everything: true });
+    display();
+    expect(await whole()).toBeChecked();
+  });
+});
+
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

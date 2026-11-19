@@ -343,7 +343,10 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       );
     const grants: ScheduleMCPExecution['grants'] | undefined = execution?.enrolled
       ? execution.grants
-      : pending && ((owner, server, tool) => pending.get(server)?.get(owner)?.has(tool) === true);
+      : pending &&
+        ((owner, server, tool) =>
+          options.grant?.everything === true ||
+          pending.get(server)?.get(owner)?.has(tool) === true);
     // A run under a grant needs the permission only for the MCP tools the grant allows, so
     // it is held to it below, once the tools the owner left out are set aside.
     if (!permitted && !grants) refuse();
@@ -382,6 +385,16 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       for (const [server, required] of selected) {
         const serverTools = toolAgentIds.get(server);
         if (!serverTools) {
+          // No tool is named there: the agents select the server as a whole. It is made
+          // ready for the agents the grant allows that for, which a grant of the whole agent
+          // does and a grant that lists its tools does not.
+          const owners = [...(serverAgentIds.get(server) ?? [])].filter((owner) =>
+            grants(owner, server, Constants.mcp_all),
+          );
+          if (owners.length > 0) {
+            serverAgentIds.set(server, new Set(owners));
+            continue;
+          }
           selected.delete(server);
           serverAgentIds.delete(server);
           continue;

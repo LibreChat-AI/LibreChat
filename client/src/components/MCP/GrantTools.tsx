@@ -1,7 +1,11 @@
 import { useId, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { Label, Button, Checkbox } from '@librechat/client';
-import type { ScheduledMCPTarget, ScheduleMCPConsentView } from 'librechat-data-provider';
+import type {
+  ScheduledMCPTarget,
+  ScheduleMCPConsentView,
+  ConfirmScheduleMCPConsent,
+} from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize } from '~/hooks';
 
@@ -87,6 +91,15 @@ export interface GrantChoice {
   canAsk: boolean;
   /** How many tools of either kind are ticked. A grant allows at least one. */
   count: number;
+  /** Whether the offer can be taken for the whole agent, not only tool by tool. */
+  standing: boolean;
+  /** The whole agent is chosen: nothing is ticked one by one, and nothing added later is left out. */
+  everything: boolean;
+  /** Something is allowed, so there is a grant to confirm. */
+  some: boolean;
+  /** What a confirmation sends for this choice. */
+  request: Pick<ConfirmScheduleMCPConsent, 'allow' | 'ask' | 'tools' | 'everything'>;
+  setEverything: (everything: boolean) => void;
   setTools: (serverName: string, tools: string[]) => void;
   setAsking: (serverName: string, tools: string[]) => void;
   setOther: (tools: string[]) => void;
@@ -129,6 +142,20 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
     data?.tools.allowed ??
     []
   ).filter((tool) => offeredOther.includes(tool));
+  /** Null until the owner ticks or unticks the whole agent, with the grant it was changed against. */
+  const [editedWhole, setEditedWhole] = useState<{
+    revision: string | null;
+    value: boolean;
+  } | null>(null);
+  const standing = data?.offer?.everything === true;
+  /**
+   * The whole agent is where a new grant starts, so a schedule runs with everything its agent
+   * has unless its owner says otherwise. A stored grant starts from what it is.
+   */
+  const everything =
+    standing &&
+    ((editedWhole?.revision === data?.revision ? editedWhole?.value : undefined) ??
+      (data?.revision == null ? true : data.everything));
   /** A grant allows something: an MCP tool, or one of the other tools. */
   const chosenCount =
     Object.values(choice).reduce((count, tools) => count + tools.length, 0) + other.length;
@@ -173,11 +200,19 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
     offeredOther,
     canAsk,
     count: chosenCount,
+    standing,
+    everything,
+    some: everything || chosenCount > 0,
+    // The whole agent names nothing. Otherwise `ask` and `tools` are always sent: left out,
+    // the server would keep what the stored grant asks about and the other tools it allows.
+    request: everything ? { allow: {}, everything: true } : { allow: choice, ask, tools: other },
+    setEverything: (value: boolean) => setEditedWhole({ revision: data?.revision ?? null, value }),
     setTools,
     setAsking,
     setOther,
     allowEverything,
     reset: () => {
+      setEditedWhole(null);
       setEdited(null);
       setEditedAsking(null);
       setEditedOther(null);
@@ -203,7 +238,11 @@ export default function GrantTools({
   const localize = useLocalize();
   const noteId = useId();
   const otherId = useId();
+  const wholeId = useId();
   const {
+    standing,
+    everything,
+    setEverything,
     choice,
     ask,
     asking,
@@ -215,6 +254,8 @@ export default function GrantTools({
     setOther,
     allowEverything,
   } = state;
+  /** What the stored grant asks about, which a whole-agent confirmation keeps. */
+  const kept = [...new Set(Object.values(data.asking).flat())].sort();
   const toolLabel = (tool: string) => {
     const key = toolKeys.get(tool);
     return key ? localize(key) : tool;
@@ -226,80 +267,116 @@ export default function GrantTools({
           {localize('com_ui_schedule_consent_ask_unavailable')}
         </p>
       )}
-      {choosing && (
+      {choosing && standing && (
+        <div className="flex items-start gap-2">
+          <Checkbox
+            id={wholeId}
+            checked={everything}
+            disabled={busy}
+            aria-labelledby={`${wholeId}-label`}
+            aria-describedby={`${wholeId}-note`}
+            onCheckedChange={(checked) => setEverything(checked === true)}
+          />
+          <div className="space-y-1">
+            <Label id={`${wholeId}-label`} htmlFor={wholeId} className="text-sm font-medium">
+              {localize('com_ui_schedule_consent_everything')}
+            </Label>
+            <p id={`${wholeId}-note`} className="text-text-secondary text-xs">
+              {localize('com_ui_schedule_consent_everything_note')}
+            </p>
+            {everything && kept.length > 0 && (
+              <p className="text-text-secondary text-xs">
+                {localize('com_ui_schedule_consent_everything_asking', {
+                  tools: kept.join(', '),
+                })}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      {choosing && !standing && (
         <Button variant="outline" disabled={busy} onClick={allowEverything}>
           {localize('com_ui_schedule_consent_allow_all')}
         </Button>
       )}
-      <ul className="space-y-2">
-        {data.targets.map((target) => (
-          <li key={target.resource.serverName}>
-            <p className="text-sm font-medium">{target.resource.serverName}</p>
-            <p className="text-text-secondary text-xs break-all">{target.resource.url}</p>
-            <p className="text-text-secondary text-xs">{target.resource.credentialMode}</p>
-            {target.resource.issuer && (
-              <p className="text-text-secondary text-xs wrap-anywhere">
-                {localize('com_ui_schedule_consent_issuer', {
-                  issuer: target.resource.issuer,
-                })}
-              </p>
-            )}
-            {target.resource.audience && (
-              <p className="text-text-secondary text-xs">
-                {localize('com_ui_schedule_consent_audience', {
-                  audience: target.resource.audience,
-                })}
-              </p>
-            )}
-            {target.resource.scopes.length > 0 && (
-              <p className="text-text-secondary text-xs">
-                {localize('com_ui_schedule_consent_scopes', {
-                  scopes: target.resource.scopes.join(', '),
-                })}
-              </p>
-            )}
-            {choosing ? (
-              <ToolChoice
-                serverName={target.resource.serverName}
-                offered={offeredTools(target)}
-                chosen={choice[target.resource.serverName] ?? []}
-                changed={data.changed[target.resource.serverName] ?? []}
-                asking={asking[target.resource.serverName] ?? []}
-                askable={
-                  canAsk ? offeredTools(target) : (data.asking[target.resource.serverName] ?? [])
-                }
-                askNoteId={canAsk ? undefined : noteId}
-                disabled={busy}
-                onChange={(tools) => setTools(target.resource.serverName, tools)}
-                onAskingChange={(tools) => setAsking(target.resource.serverName, tools)}
-              />
-            ) : (
-              <>
-                <p className="text-text-secondary text-xs">
-                  {localize('com_ui_schedule_consent_allowed', {
-                    tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
+      {!choosing && data.everything && (
+        <p className="text-text-secondary text-sm">
+          {localize('com_ui_schedule_consent_everything_allowed')}
+        </p>
+      )}
+      {!(choosing && everything) && (
+        <ul className="space-y-2">
+          {data.targets.map((target) => (
+            <li key={target.resource.serverName}>
+              <p className="text-sm font-medium">{target.resource.serverName}</p>
+              <p className="text-text-secondary text-xs break-all">{target.resource.url}</p>
+              <p className="text-text-secondary text-xs">{target.resource.credentialMode}</p>
+              {target.resource.issuer && (
+                <p className="text-text-secondary text-xs wrap-anywhere">
+                  {localize('com_ui_schedule_consent_issuer', {
+                    issuer: target.resource.issuer,
                   })}
                 </p>
-                {(data.asking[target.resource.serverName] ?? []).length > 0 && (
-                  <p className="text-text-secondary text-xs">
-                    {localize('com_ui_schedule_consent_asking', {
-                      tools: data.asking[target.resource.serverName].join(', '),
-                    })}
-                  </p>
-                )}
-                {(data.changed[target.resource.serverName] ?? []).length > 0 && (
-                  <p className="text-status-warning text-xs">
-                    {localize('com_ui_schedule_consent_changed_tools', {
-                      tools: data.changed[target.resource.serverName].join(', '),
-                    })}
-                  </p>
-                )}
-              </>
-            )}
-          </li>
-        ))}
-      </ul>
-      {choosing && offeredOther.length > 0 && (
+              )}
+              {target.resource.audience && (
+                <p className="text-text-secondary text-xs">
+                  {localize('com_ui_schedule_consent_audience', {
+                    audience: target.resource.audience,
+                  })}
+                </p>
+              )}
+              {target.resource.scopes.length > 0 && (
+                <p className="text-text-secondary text-xs">
+                  {localize('com_ui_schedule_consent_scopes', {
+                    scopes: target.resource.scopes.join(', '),
+                  })}
+                </p>
+              )}
+              {choosing ? (
+                <ToolChoice
+                  serverName={target.resource.serverName}
+                  offered={offeredTools(target)}
+                  chosen={choice[target.resource.serverName] ?? []}
+                  changed={data.changed[target.resource.serverName] ?? []}
+                  asking={asking[target.resource.serverName] ?? []}
+                  askable={
+                    canAsk ? offeredTools(target) : (data.asking[target.resource.serverName] ?? [])
+                  }
+                  askNoteId={canAsk ? undefined : noteId}
+                  disabled={busy}
+                  onChange={(tools) => setTools(target.resource.serverName, tools)}
+                  onAskingChange={(tools) => setAsking(target.resource.serverName, tools)}
+                />
+              ) : (
+                <>
+                  {!data.everything && (
+                    <p className="text-text-secondary text-xs">
+                      {localize('com_ui_schedule_consent_allowed', {
+                        tools: (data.allowed[target.resource.serverName] ?? []).join(', '),
+                      })}
+                    </p>
+                  )}
+                  {(data.asking[target.resource.serverName] ?? []).length > 0 && (
+                    <p className="text-text-secondary text-xs">
+                      {localize('com_ui_schedule_consent_asking', {
+                        tools: data.asking[target.resource.serverName].join(', '),
+                      })}
+                    </p>
+                  )}
+                  {(data.changed[target.resource.serverName] ?? []).length > 0 && (
+                    <p className="text-status-warning text-xs">
+                      {localize('com_ui_schedule_consent_changed_tools', {
+                        tools: data.changed[target.resource.serverName].join(', '),
+                      })}
+                    </p>
+                  )}
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {choosing && !everything && offeredOther.length > 0 && (
         <fieldset className="space-y-1" disabled={busy}>
           <legend className="text-sm font-medium">
             {localize('com_ui_schedule_consent_other_tools')}

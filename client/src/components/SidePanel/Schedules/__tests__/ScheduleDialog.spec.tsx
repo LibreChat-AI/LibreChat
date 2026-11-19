@@ -110,6 +110,7 @@ const offerFor = (tools: string[], other: string[] = []): ScheduleMCPConsentView
   changed: {},
   asking: {},
   tools: { offered: other, allowed: [] },
+  everything: false,
   approval: false,
   required: false,
   requireAfterMs: null,
@@ -843,6 +844,32 @@ describe('ScheduleDialog', () => {
           },
         }),
       );
+    });
+
+    it('creates for the whole agent unless the owner chooses otherwise', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      const offer = offerFor(['export', 'query'], ['web_search']);
+      jest
+        .mocked(dataService.getScheduleMCPOffer)
+        .mockResolvedValue({ ...offer, offer: { ...offer.offer!, everything: true } });
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(
+        await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_everything' }),
+      ).toBeChecked();
+      // Nothing to tick first: the schedule runs with everything its agent has.
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate.mock.calls[0][0]).toMatchObject({
+        authorization: {
+          offerDigest: 'a'.repeat(64),
+          lifetimeHours: 1,
+          allow: {},
+          everything: true,
+        },
+      });
+      expect(mockMutate.mock.calls[0][0].authorization).not.toHaveProperty('tools');
     });
 
     it('starts over when another agent is picked', async () => {
