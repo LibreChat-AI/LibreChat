@@ -67,6 +67,23 @@ describe('useSelectedSender', () => {
     expect(renderSelectedSender(hidesAuthors, plain)).toBe(getResponseSender(plain));
   });
 
+  it('names a custom endpoint from the type the endpoints config gives, not the one the conversation carries', () => {
+    const untyped = { ...conversationOn(), endpointType: undefined } as TConversation;
+    const sender = renderSelectedSender(hidesAuthors, untyped);
+    expect(sender).not.toBe('');
+    expect(sender).toBe(getResponseSender(conversationOn()));
+  });
+
+  it('leaves out the deprecated chatGptLabel, which the server never reads', () => {
+    const legacy = { ...conversationOn(), chatGptLabel: 'Legacy Name' } as TConversation;
+    expect(renderSelectedSender(hidesAuthors, legacy)).toBe(getResponseSender(conversationOn()));
+  });
+
+  it('keeps the custom name the server reads', () => {
+    const named = { ...conversationOn(), modelLabel: 'Renamed' } as TConversation;
+    expect(renderSelectedSender(hidesAuthors, named)).toBe('Renamed');
+  });
+
   it.each([
     ['authors always show', startup({ interface: { messageAuthor: 'always' } })],
     ['the setting is absent', startup({ interface: {} })],
