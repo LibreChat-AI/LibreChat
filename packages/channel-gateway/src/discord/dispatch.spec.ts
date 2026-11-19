@@ -1,5 +1,6 @@
 import { discordChannelConfigSchema } from 'librechat-data-provider';
 import type { DiscordGatewayMessage } from 'librechat-data-provider';
+import { DiscordGatewayControlClient } from './ownership';
 import { DiscordRuntimeClient } from './discovery';
 import { dispatchDiscordEvent } from './dispatch';
 import { DiscordRateCoordinator } from './rates';
@@ -68,6 +69,14 @@ function fixture(status = 200, sourceStatus = 200) {
       application,
       policy,
       runtime,
+      gateway: new DiscordGatewayControlClient(
+        {
+          LIBRECHAT_INTERNAL_URL: 'http://localhost:3080',
+          CHANNEL_SERVICE_TOKEN: 'service-token',
+          API_CALL_TIMEOUT_MS: 1000,
+        },
+        transport,
+      ),
       transport,
       rates: new DiscordRateCoordinator(policy.rateLimits),
     },
@@ -132,4 +141,102 @@ it('rejects a mismatched owner before using credentials', async () => {
     dispatchDiscordEvent(f.deps, { ...event, ownerId: 'b'.repeat(32) }, f.controller.signal),
   ).rejects.toThrow('ownership changed');
   expect(f.calls).toEqual([]);
+});
+describe('guild lifecycle dispatch', () => {
+  const target = {
+    guildId: '900',
+    installationId: 'installation',
+    installationRevision: 'guild-revision',
+  };
+  function guildFixture(membership = 404, prepared = true, commit = 204) {
+    const calls: string[] = [];
+    const bodies: object[] = [];
+    const transport: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      calls.push(url.pathname);
+      if (url.hostname === 'discord.com') {
+        expect(url.pathname).toBe('/api/v10/guilds/900');
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bot private-token');
+        return Response.json(membership === 200 ? { id: '900' } : {}, { status: membership });
+      }
+      expect(new Headers(init?.headers).has('x-tenant-id')).toBe(false);
+      bodies.push(JSON.parse(String(init?.body)));
+      if (url.pathname.endsWith('/prepareGuildRemoval'))
+        return Response.json({ target: prepared ? target : null });
+      expect(url.pathname.endsWith('/removeGuild')).toBe(true);
+      return new Response(null, { status: commit });
+    };
+    const f = fixture();
+    const connection = {
+      LIBRECHAT_INTERNAL_URL: 'http://localhost:3080',
+      CHANNEL_SERVICE_TOKEN: 'service-token',
+      API_CALL_TIMEOUT_MS: 1000,
+    };
+    return {
+      ...f,
+      calls,
+      bodies,
+      deps: {
+        ...f.deps,
+        transport,
+        gateway: new DiscordGatewayControlClient(connection, transport),
+      },
+    };
+  }
+  const guildEvent = {
+    ...owner,
+    shardId: 0,
+    sequence: 3,
+    kind: 'guild' as const,
+    guildId: '900',
+    state: 'removed' as const,
+  };
+  it.each(['available', 'unavailable'] as const)(
+    'ignores %s without disconnecting or reactivating',
+    async (state) => {
+      const f = guildFixture();
+      await dispatchDiscordEvent(f.deps, { ...guildEvent, state }, f.controller.signal);
+      expect(f.calls).toEqual([]);
+    },
+  );
+  it.each([403, 404])(
+    'prepares before fresh inspection and commits the exact tuple after HTTP %s',
+    async (status) => {
+      const f = guildFixture(status);
+      await dispatchDiscordEvent(f.deps, guildEvent, f.controller.signal);
+      expect(f.calls).toEqual([
+        '/api/channels/discord/service/gateway/prepareGuildRemoval',
+        '/api/v10/guilds/900',
+        '/api/channels/discord/service/gateway/removeGuild',
+      ]);
+      expect(f.bodies).toEqual([
+        { owner, guildId: '900' },
+        { owner, target },
+      ]);
+    },
+  );
+  it('ignores a stale replay when the bot is currently a member', async () => {
+    const f = guildFixture(200);
+    await dispatchDiscordEvent(f.deps, guildEvent, f.controller.signal);
+    expect(f.bodies).toEqual([{ owner, guildId: '900' }]);
+  });
+  it('ignores an already disconnected or absent installation without provider I/O', async () => {
+    const f = guildFixture(404, false);
+    await dispatchDiscordEvent(f.deps, guildEvent, f.controller.signal);
+    expect(f.calls).toHaveLength(1);
+  });
+  it.each([401, 429, 503])(
+    'does not commit or checkpoint when fresh inspection returns %s',
+    async (status) => {
+      const f = guildFixture(status);
+      await expect(dispatchDiscordEvent(f.deps, guildEvent, f.controller.signal)).rejects.toThrow();
+      expect(f.bodies).toHaveLength(1);
+    },
+  );
+  it.each([409, 503])('propagates a fenced or unavailable commit HTTP %s', async (status) => {
+    const f = guildFixture(404, true, status);
+    await expect(
+      dispatchDiscordEvent(f.deps, guildEvent, f.controller.signal),
+    ).rejects.toMatchObject({ status });
+  });
 });

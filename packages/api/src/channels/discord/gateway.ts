@@ -5,16 +5,25 @@ import {
   discordGatewaySessionSchema,
   discordGatewayBootstrapSchema,
   discordChannelConfigSchema,
+  discordGuildRemovalTargetSchema,
+  channelSnowflakeSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordGatewayBatch,
   DiscordGatewayBootstrap,
   DiscordGatewayOwner,
   DiscordChannelConfig,
+  DiscordGuildRemovalTarget,
+  DiscordGuildRemovalPreparation,
 } from 'librechat-data-provider';
 import type { DiscordGatewayStorage, DiscordInstallationStorage } from '@librechat/data-schemas';
 
 export interface DiscordGatewayService {
+  prepareGuildRemoval(
+    owner: DiscordGatewayOwner,
+    guildId: string,
+  ): Promise<DiscordGuildRemovalPreparation | null>;
+  removeGuild(owner: DiscordGatewayOwner, target: DiscordGuildRemovalTarget): Promise<boolean>;
   acquire(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
   renew(owner: DiscordGatewayOwner, leaseMs: number): Promise<boolean>;
   release(owner: DiscordGatewayOwner): Promise<boolean>;
@@ -56,6 +65,14 @@ export function createDiscordGatewayService(deps: {
     return next && JSON.stringify(next.gateway) === JSON.stringify(policy.gateway);
   };
   return {
+    prepareGuildRemoval: (owner, guildId) => {
+      channelSnowflakeSchema.parse(guildId);
+      return scoped(owner, null, () => deps.storage.prepareGuildRemoval(owner, guildId));
+    },
+    removeGuild: (owner, target) => {
+      const parsed = discordGuildRemovalTargetSchema.parse(target);
+      return scoped(owner, false, () => deps.storage.removeGuild(owner, parsed));
+    },
     acquire: (owner: DiscordGatewayOwner, leaseMs: number) =>
       scoped(owner, false, () => deps.storage.acquire(owner, leaseMs)),
     renew: (owner: DiscordGatewayOwner, leaseMs: number) =>

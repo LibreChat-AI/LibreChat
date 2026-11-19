@@ -108,6 +108,7 @@ export class DiscordGatewayApp {
                       policy: this.policy,
                       rates: context.rates,
                       runtime: this.runtime,
+                      gateway: this.ownership,
                       transport: this.transport,
                     },
                     event,
