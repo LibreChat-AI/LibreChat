@@ -20,7 +20,9 @@ const mockDb = {
   recordAuditEntry: jest.fn(),
 };
 
-jest.mock('~/server/middleware', () => ({ requireJwtAuth: mockRequireJwtAuth }));
+jest.mock('~/server/routes/agents/middleware', () => ({
+  requireManagementOrJwtAuth: () => mockRequireJwtAuth,
+}));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
   requireCapability: jest.fn(() => (_req, _res, next) => next()),

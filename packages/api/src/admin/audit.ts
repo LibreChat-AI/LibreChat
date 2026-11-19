@@ -39,12 +39,16 @@ export function isAuditFailClosed(env: NodeJS.ProcessEnv = process.env): boolean
   return env.AUDIT_LOG_FAIL_CLOSED !== 'false';
 }
 
-/** Resolves the authenticated caller as an audit actor; null when unauthenticated. */
+/** Resolves the authenticated caller as an audit actor; null when unauthenticated. A management
+ * client acting as its bound user is a `service` actor named by its OAuth client id. */
 export function getAuditActor(req: ServerRequest): AuditActorInput | null {
   const user = req.user;
   const userId = user?._id?.toString() ?? user?.id;
   if (!user || !userId) {
     return null;
+  }
+  if (req.managementClientId) {
+    return { type: 'service', id: userId, name: `oauth-client:${req.managementClientId}` };
   }
   return { type: 'user', id: userId, name: user.name || user.username || user.email || userId };
 }

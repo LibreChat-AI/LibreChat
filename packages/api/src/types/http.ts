@@ -65,6 +65,8 @@ export type ServerRequest = Request<unknown, unknown, RequestBody> & {
    *  Derived per request from the sealed decision and never persisted. */
   codeWorkspaceInheritance?: ReadonlyMap<string, string>;
   authStrategy?: string;
+  /** OAuth client id of the management client the request authenticated as, if any. */
+  managementClientId?: string;
   /** Trusted snapshot used to keep a request-scoped override out of saved conversation defaults. */
   reasoningOverrideBase?: {
     key: TReasoningOverride['key'];

@@ -1148,6 +1148,12 @@ endpoints:
   #           # subject: 'provider-specific-service-principal-subject'
   #           userId: '507f1f77bcf86cd799439011'
   #           tenantId: 'tenant-id'
+  #           # (optional) Admin routes this client may also call as its bound user, in its
+  #           # tenant. None by default. The user's capabilities and resource permissions still
+  #           # apply. admin:groups = /api/admin/groups, admin:roles = /api/admin/roles,
+  #           # admin:grants = /api/admin/grants, admin:shares = GET/PUT
+  #           # /api/permissions/:resourceType/:resourceId (resource shares).
+  #           # adminScopes: ['admin:groups', 'admin:shares']
 
   # (optional) Title settings under `endpoints.all` apply to every endpoint one field at a
   # time: a field set here wins over the endpoint's own value, and a field left out keeps it.

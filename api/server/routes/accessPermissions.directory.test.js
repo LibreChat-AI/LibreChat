@@ -14,8 +14,11 @@ const {
 
 let mockDirectoryConfig = {};
 
+jest.mock('~/server/routes/agents/middleware', () => ({
+  requireManagementOrJwtAuth: () => (_req, _res, next) => next(),
+}));
+
 jest.mock('~/server/middleware', () => ({
-  requireJwtAuth: (_req, _res, next) => next(),
   checkBan: (_req, _res, next) => next(),
   uaParser: (_req, _res, next) => next(),
   canAccessResource: jest.requireActual('~/server/middleware/accessResources/canAccessResource')

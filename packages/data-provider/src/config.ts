@@ -1159,6 +1159,22 @@ const remoteApiSchema = z.object({
     .optional(),
 });
 
+/**
+ * Admin route families a management client may call as its bound user, each opted into per
+ * client in `managementApi.auth.clients[].adminScopes`. The bound user's own capabilities and
+ * resource permissions still decide every request.
+ */
+export enum ManagementAdminScopes {
+  /** `/api/admin/groups` */
+  GROUPS = 'admin:groups',
+  /** `/api/admin/roles` */
+  ROLES = 'admin:roles',
+  /** `/api/admin/grants` */
+  GRANTS = 'admin:grants',
+  /** Read and update a resource's shares: `GET`/`PUT /api/permissions/:resourceType/:resourceId` */
+  SHARES = 'admin:shares',
+}
+
 const managementClientBindingSchema = z
   .object({
     clientId: z.string().trim().min(1).max(128),
@@ -1176,6 +1192,11 @@ const managementClientBindingSchema = z
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/, 'must be a valid tenant id')
       .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed'),
     enabled: z.boolean().default(true),
+    /** Admin route families this client may call as its bound user; none by default. */
+    adminScopes: z
+      .array(z.nativeEnum(ManagementAdminScopes))
+      .max(Object.keys(ManagementAdminScopes).length)
+      .optional(),
   })
   .strict();
 

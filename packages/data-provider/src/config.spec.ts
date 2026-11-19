@@ -3,6 +3,7 @@ import type { TEndpointsConfig } from './types';
 import {
   allowedAddressesSchema,
   agentsEndpointSchema,
+  ManagementAdminScopes,
   BASE_ONLY_CONFIG_PATHS,
   BASE_ONLY_CONFIG_SECTIONS,
   DEPLOYMENT_ONLY_CONFIG_PATHS,
@@ -731,6 +732,25 @@ describe('Agent Management authentication config', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0].subject).toBe(subject);
+  });
+
+  it('accepts admin scopes on a client binding and rejects unknown ones', () => {
+    const parse = (adminScopes: string[]) =>
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: { managementApi: { auth: { oidc: {}, clients: [{ ...binding, adminScopes }] } } },
+        },
+      });
+
+    const result = parse([ManagementAdminScopes.GROUPS, ManagementAdminScopes.SHARES]);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0].adminScopes).toEqual([
+      'admin:groups',
+      'admin:shares',
+    ]);
+    expect(parse(['admin:everything']).success).toBe(false);
   });
 
   it('accepts Cognito access-token validation', () => {

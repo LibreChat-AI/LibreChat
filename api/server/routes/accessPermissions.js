@@ -5,8 +5,14 @@ const {
   PrincipalType,
   ResourceType,
   PermissionBits,
+  ManagementAdminScopes,
 } = require('librechat-data-provider');
-const { createAgentAdminPermissionAccess, isAgentPermissionsAdmin } = require('@librechat/api');
+const {
+  isAgentPermissionsAdmin,
+  unlessManagementPrincipal,
+  rejectManagementPrincipal,
+  createAgentAdminPermissionAccess,
+} = require('@librechat/api');
 const {
   getUserEffectivePermissions,
   getAllEffectivePermissions,
@@ -19,13 +25,8 @@ const {
   checkShareAccess,
   checkSharePublicAccess,
 } = require('~/server/middleware/checkSharePublicAccess');
-const {
-  requireJwtAuth,
-  checkBan,
-  uaParser,
-  canAccessResource,
-  configMiddleware,
-} = require('~/server/middleware');
+const { checkBan, uaParser, canAccessResource, configMiddleware } = require('~/server/middleware');
+const { requireManagementOrJwtAuth } = require('~/server/routes/agents/middleware');
 const { checkPeoplePickerAccess } = require('~/server/middleware/checkPeoplePickerAccess');
 const db = require('~/models');
 const { findMCPServerByObjectId, getSkillById } = db;
@@ -33,9 +34,9 @@ const { findMCPServerByObjectId, getSkillById } = db;
 const router = express.Router();
 
 // Apply common middleware
-router.use(requireJwtAuth);
+router.use(requireManagementOrJwtAuth(ManagementAdminScopes.SHARES));
 router.use(checkBan);
-router.use(uaParser);
+router.use(unlessManagementPrincipal(uaParser));
 
 /**
  * Generic routes for resource permissions
@@ -46,7 +47,12 @@ router.use(uaParser);
  * GET /api/permissions/search-principals
  * Search for users and groups to grant permissions
  */
-router.get('/search-principals', checkPeoplePickerAccess, searchPrincipals);
+router.get(
+  '/search-principals',
+  rejectManagementPrincipal,
+  checkPeoplePickerAccess,
+  searchPrincipals,
+);
 
 /**
  * GET /api/permissions/{resourceType}/roles
@@ -211,12 +217,16 @@ router.put(
  * GET /api/permissions/{resourceType}/effective/all
  * Get user's effective permissions for all accessible resources of a type
  */
-router.get('/:resourceType/effective/all', getAllEffectivePermissions);
+router.get('/:resourceType/effective/all', rejectManagementPrincipal, getAllEffectivePermissions);
 
 /**
  * GET /api/permissions/{resourceType}/{resourceId}/effective
  * Get user's effective permissions for a specific resource
  */
-router.get('/:resourceType/:resourceId/effective', getUserEffectivePermissions);
+router.get(
+  '/:resourceType/:resourceId/effective',
+  rejectManagementPrincipal,
+  getUserEffectivePermissions,
+);
 
 module.exports = router;
