@@ -1089,6 +1089,32 @@ describe('a grant made again with an edit of the schedule', () => {
     });
   });
 
+  it('is refused when the grant is revoked while it is being decided', async () => {
+    const s = setup();
+    await s.enroll();
+    const view = await s.service.view(identity);
+    const choice = {
+      offerDigest: view.offer!.digest,
+      expectedRevision: view.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+    };
+    // The decision reads the grant twice. The owner revokes it, in another tab, in between.
+    const read = jest.mocked(s.storage.readScheduleMCPConsent);
+    const stored = read.getMockImplementation()!;
+    let reads = 0;
+    read.mockImplementation(async (...args) => {
+      if (++reads === 2) await s.service.revoke(identity, view.revision!);
+      return stored(...args);
+    });
+    await expect(s.service.renew(identity, choice, 1)).rejects.toMatchObject({
+      code: 'consent_changed',
+    });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    // And it stays revoked: nothing was returned for the edit to write over it.
+    expect(s.snapshot.enrollment!.revokedAtMs).not.toBeNull();
+  });
+
   it('is made for the revision of the edit when the edit moves the schedule to another agent', async () => {
     const s = setup();
     const offer = await s.service.draft(identity);

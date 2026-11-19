@@ -776,6 +776,11 @@ export function createScheduleMCPConsentService<
       throw new ScheduleMCPConsentError('consent_invalid');
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
+    // The grant the owner saw is checked on this read too. The digest does not name it, so a
+    // revocation or another confirmation landing since the view would otherwise pass here
+    // and become what the new grant is taken to replace.
+    if ((snapshot.enrollment?.revision ?? null) !== input.expectedRevision)
+      throw new ScheduleMCPConsentError('consent_changed');
     const { others: offered = [], servers = [] } = offers.get(current) ?? {};
     // Recompute the digest with the final observed row so an edit cannot reuse an old offer.
     const digest = offerDigest(
