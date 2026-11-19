@@ -69,6 +69,7 @@ const {
   createStartupReadiness,
   keyvRedisClient,
   ioredisClient,
+  createProductTrackingMiddleware,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -643,6 +644,7 @@ if (cluster.isMaster) {
     app.use('/api', readiness.gate);
 
     /** Middleware */
+    app.use(createProductTrackingMiddleware(appConfig.config?.telemetry));
     app.use(requestContextMiddleware);
     app.use(noIndex);
     app.use(express.json({ limit: '3mb' }));

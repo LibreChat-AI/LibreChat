@@ -5,6 +5,7 @@ const {
   allowBeforeTermsAcceptance,
   createAdminConfigReadHandlers,
   createAdminConfigCatalogHandlers,
+  isLangfusePromptSyncAvailable,
 } = require('@librechat/api');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const {
@@ -55,6 +56,7 @@ const handlers = createAdminConfigHandlers({
   overrideCacheTtlMs: overrideCacheTtl,
   overrideEnvAllowlist: process.env.CONFIG_OVERRIDE_ENV_ALLOWLIST,
   rederiveEndpoints,
+  isLangfusePromptSyncAvailable,
 });
 
 const readHandlers = createAdminConfigReadHandlers({
