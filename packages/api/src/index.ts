@@ -190,3 +190,5 @@ export * from './channels/discord/client';
 export * from './channels/discord/bindings';
 export * from './channels/discord/bindingHttp';
 export * from './channels/discord/routes';
+export * from './channels/discord/inbox';
+export * from './channels/discord/inboxHttp';
