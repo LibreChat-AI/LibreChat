@@ -155,6 +155,11 @@ refused once its definition changes. It names no tool, so it cannot be asked abo
 call. A grant that names tools keeps meaning those tools when the agent later selects the
 whole server.
 
+The owner chooses per server, not per agent, and one agent may select the whole server while
+another names a tool there. The dialog therefore sends each named tool along with the item
+whenever the item is ticked, and shows them ticked and locked: otherwise a tool left out
+beside a ticked whole server would be allowed for the first agent and refused for the second.
+
 ### Tools on a server the operator did not declare
 
 A server with nothing under `mcpConsent.resources` has no recipient to hold a consent for: a
