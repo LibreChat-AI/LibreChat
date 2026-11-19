@@ -244,6 +244,63 @@ describe('useFollowChat', () => {
     expect(held[1]).toEqual(['task-1:user', 'task-1:assistant']);
   });
 
+  it('says a turn to a screen reader: started, still being written, done, and what it says', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const announce = jest.fn();
+    const { transport, streams } = createTransport(running);
+    setup({ transport, beside: { announce } });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    const step = (): ChatEvent =>
+      ({
+        type: 'step',
+        data: {
+          event: StepEvents.ON_RUN_STEP,
+          data: {
+            id: 's0',
+            runId: 'task-1:assistant',
+            index: 0,
+            type: StepTypes.MESSAGE_CREATION,
+            stepDetails: {
+              type: StepTypes.MESSAGE_CREATION,
+              message_creation: { message_id: 's0' },
+            },
+            usage: null,
+          },
+        },
+      }) as ChatEvent;
+
+    act(() =>
+      streams[0].push({
+        type: 'created',
+        data: {
+          created: true,
+          message: brief,
+          turn: { responseMessageId: 'task-1:assistant' },
+        },
+      } as ChatEvent),
+    );
+    await settle();
+    expect(announce.mock.calls).toEqual([[{ message: 'start', isStatus: true }]]);
+
+    /** Soon after the start nothing more is said; later, that the reply is still being written. */
+    act(() => streams[0].push(step()));
+    await settle();
+    expect(announce).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(1_008_000);
+    act(() => streams[0].push(token('Hel')));
+    act(() => streams[0].push(token('lo')));
+    await settle();
+    expect(announce.mock.calls.slice(1)).toEqual([[{ message: 'composing', isStatus: true }]]);
+
+    act(() => streams[0].push(final('Hello')));
+    await settle();
+    expect(announce.mock.calls.slice(2)).toEqual([
+      [{ message: 'end', isStatus: true }],
+      [{ message: 'Hello' }],
+    ]);
+    clock.mockRestore();
+  });
+
   it('reads again when the generation ended between the status answer and the attach', async () => {
     const { transport } = createTransport(running);
     (transport.reconnectToStream as jest.Mock).mockResolvedValue(null);

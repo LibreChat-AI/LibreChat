@@ -13,6 +13,7 @@ import type {
 import type { Transport } from '~/hooks/Chat/contract';
 import { findConvoInAllQueries, hasServerFetchedReply, hasLocallyCommittedReply } from '~/utils';
 import { ChatTransportContext, defaultChatTransport } from '../ChatTransportContext';
+import AnnouncerContext from '../AnnouncerContext';
 
 const mockMessages = jest.fn();
 const mockAgent = jest.fn();
@@ -105,17 +106,21 @@ const setup = (
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) => {
   const harness = createTransport();
+  const announcePolite = jest.fn();
+  const announcer = { announcePolite, announceAssertive: announcePolite };
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot>
       <QueryClientProvider client={client}>
-        <ChatTransportContext.Provider value={harness.transport}>
-          {children}
-        </ChatTransportContext.Provider>
+        <AnnouncerContext.Provider value={announcer}>
+          <ChatTransportContext.Provider value={harness.transport}>
+            {children}
+          </ChatTransportContext.Provider>
+        </AnnouncerContext.Provider>
       </QueryClientProvider>
     </RecoilRoot>
   );
   const view = renderHook(() => appSideChatHost.useChat(target), { wrapper });
-  return { ...view, ...harness, client };
+  return { ...view, ...harness, client, announcePolite };
 };
 
 describe("the app's side chat host", () => {
@@ -320,6 +325,43 @@ describe("the app's side chat host", () => {
       }),
     );
     expect(hasLocallyCommittedReply(client, 'side-conversation', repliedAt)).toBe(true);
+  });
+
+  it("says a turn through the app's announcer, as main chat's is said", async () => {
+    mockStreamStatus.mockResolvedValue({
+      active: true,
+      streamId: 'side-conversation',
+      createdAt: 2000,
+      generationProtocolVersion: 2,
+    });
+    mockMessages.mockResolvedValue([asked]);
+    const { attachments, announcePolite } = setup();
+    await waitFor(() => expect(attachments).toHaveLength(1));
+    const emit = (event: ChatEvent) => act(() => attachments[0].options.onEvent(event));
+
+    emit({ type: 'open' });
+    emit({
+      type: 'created',
+      data: { created: true, message: asked, turn: { responseMessageId: 'response-1' } },
+    } as ChatEvent);
+    await waitFor(() =>
+      expect(announcePolite).toHaveBeenCalledWith({ message: 'start', isStatus: true }),
+    );
+
+    mockStreamStatus.mockResolvedValue({ active: false });
+    emit({
+      type: 'final',
+      data: {
+        final: true,
+        conversation: { conversationId: 'side-conversation' },
+        requestMessage: asked,
+        responseMessage: answered,
+      },
+    } as ChatEvent);
+    await waitFor(() =>
+      expect(announcePolite).toHaveBeenLastCalledWith({ message: 'Here it is.' }),
+    );
+    expect(announcePolite).toHaveBeenCalledWith({ message: 'end', isStatus: true });
   });
 
   it('stops a generation through the app, by its conversation and the stream it names', async () => {
