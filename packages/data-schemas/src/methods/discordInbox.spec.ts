@@ -3,11 +3,13 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { DiscordAgentChannel } from 'librechat-data-provider';
 import type { SubmitDiscordInteraction } from './discordInbox';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createChannelIdentityStorage } from './channelIdentity';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createDiscordInstallationStorage } from './discord';
 import { createDiscordInboxStorage } from './discordInbox';
 import { createDiscordRouteStorage } from './discordRoute';
 import { touchDiscordInbox } from './discordInboxScope';
+import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { createModels } from '~/models';
 
@@ -84,6 +86,10 @@ beforeEach(async () => {
       'DiscordRoute',
       'DiscordInbox',
       'ChannelScope',
+      'ChannelIdentity',
+      'ChannelRun',
+      'ChannelLane',
+      'ResponseScope',
     ])
       await db.models[name].deleteMany({});
   });
@@ -411,4 +417,82 @@ it('claims live work without first draining an expired backlog', () =>
     expect(
       await db.models.DiscordInbox.countDocuments({ state: 'failed', result: 'expired' }),
     ).toBe(1);
+  }));
+
+it('fences consent replacement and run admission against inbox lease reclamation', () =>
+  scope(async () => {
+    await storage.submit(input(), now);
+    const first = await claim();
+    const identities = createChannelIdentityStorage(db);
+    const identity = {
+      provider: 'discord' as const,
+      tenantId,
+      channelId: channel.channelId,
+      channelRevision: channel.revision,
+      agentId: channel.agentId,
+      applicationId,
+      guildId,
+      externalUserId,
+    };
+    const record = {
+      tenantId,
+      linkId: 'link',
+      ticketHash: 'a'.repeat(64),
+      revision: 'link-revision',
+      identity,
+      state: 'active' as const,
+      userId: owner,
+      ticketExpiresAtMs: now + 60000,
+      expiresAtMs: now + 60000,
+    };
+    expect(
+      await identities.saveChannelIdentity(record, null, applicationRevision, {
+        fence: first,
+        now,
+      }),
+    ).toBe(true);
+    const second = await claim(now + 30000, 'replacement');
+    expect(
+      await identities.saveChannelIdentity(
+        { ...record, revision: 'stale' },
+        record.revision,
+        applicationRevision,
+        { fence: first, now: now + 30001 },
+      ),
+    ).toBe(false);
+    const runs = createChannelRunStorage(db);
+    const enrollment = {
+      tenantId,
+      channelId: channel.channelId,
+      agentId: channel.agentId,
+      applicationRevision,
+      discordInbox: first,
+      principal: {
+        userId: owner,
+        channelRevision: channel.revision,
+        linkId: record.linkId,
+        linkRevision: record.revision,
+      },
+      admission: {
+        actor: { provider: 'discord' as const, applicationId, guildId, externalUserId },
+        eventId,
+        externalChannelId,
+        externalThreadKey: `${externalChannelId}:${eventId}`,
+        externalMessageKey: `${externalChannelId}:${eventId}`,
+        input: 'Private question',
+      },
+    };
+    await expect(runs.admit(enrollment, now + 30001)).rejects.toMatchObject({
+      code: 'stale_fence',
+    });
+    expect((await runs.admit({ ...enrollment, discordInbox: second }, now + 30001)).duplicate).toBe(
+      false,
+    );
+    expect((await runs.admit({ ...enrollment, discordInbox: second }, now + 30001)).duplicate).toBe(
+      true,
+    );
+    await storage.prepareReply(second, 'sealed-reply', now + 30001);
+    await expect(
+      runs.admit({ ...enrollment, discordInbox: second }, now + 30001),
+    ).rejects.toMatchObject({ code: 'stale_fence' });
   }));

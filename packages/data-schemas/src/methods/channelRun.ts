@@ -36,6 +36,7 @@ import { createSlackThreadRouteModel } from '~/models/slackRoute';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { channelRunActorScope } from './channelProvider';
+import { touchDiscordInbox } from './discordInboxScope';
 import { responseOwnerFilter } from './responseScope';
 import { getTenantId } from '~/config/tenantContext';
 
@@ -433,6 +434,26 @@ export function createChannelRunStorage(
       });
       await initializeChannelScope(mongoose, input.tenantId, input.channelId);
       const assertAuthority = async (session: ClientSession) => {
+        if (
+          input.discordInbox &&
+          (input.admission.actor.provider !== 'discord' ||
+            input.discordInbox.applicationId !== input.admission.actor.applicationId ||
+            input.discordInbox.eventId !== input.admission.eventId ||
+            !input.applicationRevision ||
+            !(await touchDiscordInbox(
+              mongoose,
+              {
+                tenantId: input.tenantId,
+                channelId: input.channelId,
+                externalUserId: input.admission.actor.externalUserId,
+                applicationRevision: input.applicationRevision,
+              },
+              input.discordInbox,
+              now,
+              session,
+            )))
+        )
+          throw new ChannelRunConflict('stale_fence');
         if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
         if (
           !(await touchChannelAuthority(
