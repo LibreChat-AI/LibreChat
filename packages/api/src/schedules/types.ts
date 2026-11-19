@@ -369,7 +369,7 @@ export type ScheduleMCPPreflight = (
      * handed over: readiness then covers the MCP tools it allows, as for a stored grant, and
      * the grant the edit replaces is not consulted.
      */
-    grant?: Pick<ScheduledMCPEnrollment, 'consents' | 'everything'>;
+    grant?: Pick<ScheduledMCPEnrollment, 'consents' | 'everything' | 'tools'>;
   },
 ) => Promise<ScheduleMCPOutcome[]>;
 

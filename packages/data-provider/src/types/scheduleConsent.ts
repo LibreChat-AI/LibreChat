@@ -323,7 +323,16 @@ export interface ScheduleMCPConsentView {
    * The agents' tools that are not MCP tools: every one the owner may choose from, and the
    * ones the stored grant allows.
    */
-  tools: { offered: string[]; allowed: string[] };
+  tools: {
+    offered: string[];
+    allowed: string[];
+    /**
+     * The MCP servers the agents use, by name. An MCP tool listed in `offered` comes as the
+     * key the agent has it by; these say where the tool's name ends and its server's begins,
+     * which the key alone does not when a name contains the delimiter.
+     */
+    servers?: string[];
+  };
   /** Whether the stored grant is for the whole agent, including what is added to it later. */
   everything: boolean;
   /** Whether a scheduled run can pause for the owner's approval on this deployment. */

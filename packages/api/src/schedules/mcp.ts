@@ -45,9 +45,9 @@ import {
 } from '../mcp/utils';
 import { MCPConfigInitializationCanceledError } from '../mcp/registry/MCPServersRegistry';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '../mcp/request';
+import { ScheduledMCPPolicyError, listedMCPKeys } from './authorization/policy';
 import { attachScheduledMCPBearer, ScheduledMCPBearerError } from './bearer';
 import { toScheduledTokenContext } from '~/agents/authority/context';
-import { ScheduledMCPPolicyError } from './authorization/policy';
 import { resolveScheduledMCPRequirements } from './requirements';
 import { getAppConfigOptionsFromUser } from '../app/service';
 import { createConcurrencyLimiter } from '../utils/promise';
@@ -343,12 +343,17 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
           new Map(permittedTools.map(({ agentId: owner, tools }) => [owner, new Set(tools)])),
         ]),
       );
+    /** MCP tools the pending grant lists among the other tools: on a server with no consent. */
+    const listed = new Map(
+      (options.grant?.tools ?? []).map(({ agentId: owner, tools }) => [owner, new Set(tools)]),
+    );
     const grants: ScheduleMCPExecution['grants'] | undefined = execution?.enrolled
       ? execution.grants
       : pending &&
         ((owner, server, tool) =>
           options.grant?.everything === true ||
-          pending.get(server)?.get(owner)?.has(tool) === true);
+          pending.get(server)?.get(owner)?.has(tool) === true ||
+          listedMCPKeys(server, tool).some((key) => listed.get(owner)?.has(key) === true));
     // A run under a grant needs the permission only for the MCP tools the grant allows, so
     // it is held to it below, once the tools the owner left out are set aside.
     if (!permitted && !grants) refuse();

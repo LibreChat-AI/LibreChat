@@ -19,6 +19,7 @@ import {
   isScheduledToolItem,
   ScheduledMCPPolicyError,
   getScheduledMCPToolDefinitionDigest,
+  listedMCPKeys,
 } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
@@ -255,16 +256,6 @@ export function createScheduleMCPExecution<
       if (!tools || selectionName === Constants.mcp_all) return false;
       return selectionName === Constants.mcp_server ? tools.size > 0 : tools.has(selectionName);
     };
-    /**
-     * Every key a tool on a server could be listed under among an agent's other tools: by
-     * either spelling of the server, by name or as part of a selection of the whole server.
-     * The tools of a server the operator declared nothing for are listed that way.
-     */
-    const listedKeys = (serverName: string, selectionName: string): string[] =>
-      [serverName, normalizeServerName(serverName)].flatMap((spelling) => [
-        `${selectionName}${Constants.mcp_delimiter}${spelling}`,
-        `${Constants.mcp_all}${Constants.mcp_delimiter}${spelling}`,
-      ]);
     const approved = new Set(options.approvedToolCalls ?? []);
     /** Every spelling a run may call an ask tool by, per agent. A miss is refused, not run. */
     const asking = new Map<string, Set<string>>();
@@ -296,7 +287,9 @@ export function createScheduleMCPExecution<
       (whole || others.get(agentId)?.has(toolKey) === true) && now() < liveUntil;
     /** An MCP tool the grant names for the agent among its other tools. */
     const names = (agentId: string, serverName: string, selectionName: string): boolean =>
-      listedKeys(serverName, selectionName).some((key) => others.get(agentId)?.has(key) === true);
+      listedMCPKeys(serverName, selectionName).some(
+        (key) => others.get(agentId)?.has(key) === true,
+      );
     /** The same, while the grant lasts: what a run loads and is made ready for. */
     const lists = (agentId: string, serverName: string, selectionName: string): boolean =>
       names(agentId, serverName, selectionName) && now() < liveUntil;
@@ -433,7 +426,7 @@ export function createScheduleMCPExecution<
                     stage,
                     ...(manual && { manual: true }),
                     ...(!whole && {
-                      listed: { agentId: agentId!, keys: listedKeys(serverName, selectionName) },
+                      listed: { agentId: agentId!, keys: listedMCPKeys(serverName, selectionName) },
                     }),
                   },
                   { signal },

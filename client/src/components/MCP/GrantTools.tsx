@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { Label, Button, Checkbox } from '@librechat/client';
-import { Tools, Constants, AgentCapabilities } from 'librechat-data-provider';
+import { Tools, Constants, AgentCapabilities, normalizeServerName } from 'librechat-data-provider';
 import type {
   ScheduledMCPTarget,
   ScheduleMCPConsentView,
@@ -17,6 +17,35 @@ const toolKeys = new Map<string, TranslationKeys>([
   // One item for every skill the agent can use, now or later.
   [AgentCapabilities.skills, 'com_ui_schedule_consent_tool_skills'],
 ]);
+
+/**
+ * The tool and server an MCP key names. Either name may contain the delimiter, so the key is
+ * read against the servers the agents use, longest first, by either spelling. Where none
+ * fits, a selection of a whole server is still told by its marker, and anything else falls
+ * back to the last delimiter.
+ */
+export function splitToolKey(
+  key: string,
+  servers: readonly string[],
+): { name: string; server: string } | undefined {
+  const delimiter = Constants.mcp_delimiter;
+  const known = [...servers]
+    .sort((a, b) => b.length - a.length)
+    .flatMap((server) =>
+      [server, normalizeServerName(server)].map((spelling) => ({
+        server,
+        suffix: `${delimiter}${spelling}`,
+      })),
+    )
+    .find(({ suffix }) => key.endsWith(suffix) && key.length > suffix.length);
+  if (known) return { name: key.slice(0, -known.suffix.length), server: known.server };
+  const whole = `${Constants.mcp_all}${delimiter}`;
+  if (key.startsWith(whole) && key.length > whole.length)
+    return { name: `${Constants.mcp_all}`, server: key.slice(whole.length) };
+  const at = key.lastIndexOf(delimiter);
+  if (at <= 0) return undefined;
+  return { name: key.slice(0, at), server: key.slice(at + delimiter.length) };
+}
 
 /** Every tool on offer for a server, whichever agents selected it. */
 function offeredTools(target: ScheduledMCPTarget): string[] {
@@ -287,13 +316,14 @@ export default function GrantTools({
   const toolLabel = (tool: string) => {
     const key = toolKeys.get(tool);
     if (key) return localize(key);
-    const at = tool.lastIndexOf(Constants.mcp_delimiter);
-    if (at <= 0) return tool;
-    const server = tool.slice(at + Constants.mcp_delimiter.length);
-    const name = tool.slice(0, at);
-    return name === Constants.mcp_all
-      ? localize('com_ui_schedule_consent_tools_on_server', { server })
-      : localize('com_ui_schedule_consent_tool_on_server', { tool: name, server });
+    const part = splitToolKey(tool, data.tools.servers ?? []);
+    if (!part) return tool;
+    return part.name === Constants.mcp_all
+      ? localize('com_ui_schedule_consent_tools_on_server', { server: part.server })
+      : localize('com_ui_schedule_consent_tool_on_server', {
+          tool: part.name,
+          server: part.server,
+        });
   };
   return (
     <>

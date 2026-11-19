@@ -591,7 +591,11 @@ export function createScheduleMCPConsentService<
       allowed: allowedByServer,
       changed: changedByServer,
       asking: askingByServer,
-      tools: { offered: toolNames(offeredOther), allowed: allowedOther },
+      tools: {
+        offered: toolNames(offeredOther),
+        allowed: allowedOther,
+        ...(used.length > 0 && { servers: [...used] }),
+      },
       everything: whole,
       approval,
       required,
@@ -686,9 +690,10 @@ export function createScheduleMCPConsentService<
       offer: null,
     };
     if (!limits.enabled || !deps.resolveEnrollment) return none;
-    const [servers, others] = await Promise.all([
+    const [servers, others, used] = await Promise.all([
       deps.resolveEnrollment(identity, options),
       deps.resolveTools?.(identity, options) ?? [],
+      deps.resolveServers?.(identity, options) ?? [],
     ]);
     const resolved = listable(servers);
     if (resolved.length === 0 && others.length === 0 && !standing) return none;
@@ -702,7 +707,11 @@ export function createScheduleMCPConsentService<
       ...none,
       state: 'missing',
       targets,
-      tools: { offered: toolNames(others), allowed: [] },
+      tools: {
+        offered: toolNames(others),
+        allowed: [],
+        ...(used.length > 0 && { servers: [...used] }),
+      },
       offer: {
         digest: offerDigest(subject, 0, targets, {}, others),
         maxLifetimeHours: limits.maxLifetimeHours,
