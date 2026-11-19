@@ -375,3 +375,63 @@ for (const saveDrafts of [true, false]) {
     await expect(main.getByText('comes-along.txt')).toHaveCount(1);
   });
 }
+
+test('words written while a reply runs go with the conversation to the main chat @scenario:side-chat-composer-running-draft-follows-the-conversation', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const { earlierUrl, sideChat, field } = await openBeside(page, 'running');
+
+  await field.click();
+  await page.keyboard.type(`E2E_SLOW_REPLY:${uniqueLabel('running')}`);
+  await page.keyboard.press('Enter');
+  await expect(sideChat).toContainText('chunk-005', { timeout: 30_000 });
+  await field.click();
+  await page.keyboard.type('thought of while it ran');
+
+  await sideChat.getByRole('button', { name: 'Open as the main chat' }).click();
+
+  /** Main chat attaches to the reply still running, and the words stay in its composer. */
+  await expect(page).toHaveURL(new URL(earlierUrl).pathname);
+  const composer = page
+    .locator('main form')
+    .first()
+    .getByRole('textbox', { name: 'Message input' });
+  await expect(composer).toHaveValue('thought of while it ran');
+  await expect(messagesView(page)).toContainText('chunk-159', { timeout: 90_000 });
+  await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+  await expect(composer).toHaveValue('thought of while it ran');
+});
+
+test('a side chat opened again while its reply runs still has the words written in it @scenario:side-chat-composer-running-draft-survives-reopening', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const { earlierUrl, sideChat, field } = await openBeside(page, 'reopen');
+
+  await field.click();
+  await page.keyboard.type(`E2E_SLOW_REPLY:${uniqueLabel('reopen')}`);
+  await page.keyboard.press('Enter');
+  await expect(sideChat).toContainText('chunk-005', { timeout: 30_000 });
+  await field.click();
+  await page.keyboard.type('picked up where I left it');
+  await sideChat.getByRole('button', { name: 'Close' }).click();
+  await expect(page.getByRole('region', { name: 'Side chat' })).toHaveCount(0);
+
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  const reopened = page.getByRole('region', { name: 'Side chat' });
+  const again = reopened.getByRole('textbox', { name: 'Message input' });
+
+  /** Still running, and the words are in the field; they are still there once it ends. */
+  await expect(reopened.getByRole('button', { name: 'Stop generating' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(again).toHaveValue('picked up where I left it');
+  await expect(reopened).toContainText('chunk-159', { timeout: 90_000 });
+  await expect(reopened.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+  await expect(again).toHaveValue('picked up where I left it');
+});
