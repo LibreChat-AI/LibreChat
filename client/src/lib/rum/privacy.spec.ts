@@ -314,6 +314,8 @@ it.each([
   '/api/channels/service/discord/tenant-123/channel-123',
   '/api/channels/discord/dm/codes',
   '/app/api/channels/discord/dm/codes',
+  '/api/channels/discord/service/inbox/resolve',
+  '/base/api/channels/discord/service/inbox/claim',
   '/api/agents/agent-123/channels/channel-123',
   '/app/api/auth/refresh',
   '/app/oauth/openid/callback',
