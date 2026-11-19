@@ -124,6 +124,13 @@ export type ChatSubmissionContract = {
 export type ChatAbortContract = {
   /** Aborts the in-flight generation for this pane's conversation. AI SDK: `stop`. */
   stopGenerating: () => Promise<void>;
+  /**
+   * Whether a stop is taken whenever a reply is on its way. A pane's stream session can only
+   * stop a generation once its start has named it, so its composer waits for that; a chat that
+   * stops through a core `Chat` finds the generation itself and needs no such wait. Absent for
+   * the former.
+   */
+  stopsUnnamed?: boolean;
   /** Button handler around `stopGenerating`. AI SDK: `stop`. */
   handleStopGenerating: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Whether a stop just happened and the view should hold its scroll position. */

@@ -180,14 +180,18 @@ function setup({
   services = createTurnServices(),
   canSend,
   beside,
+  id = conversationId,
+  store = createStore(),
 }: {
   stored?: TMessage[];
   services?: TurnServices;
   canSend?: () => boolean;
   beside?: FollowChatOptions['beside'];
+  /** The conversation the pane holds, and the pane's store when a spec shares one. */
+  id?: string;
+  store?: ReturnType<typeof createStore>;
 } = {}) {
   const queryClient = new QueryClient();
-  const store = createStore();
   const harness = createTransport();
   const loadMessages = jest.fn(async () => stored);
   const onWithdrawn = jest.fn();
@@ -215,7 +219,7 @@ function setup({
   const view = renderHook(
     ({ live }: { live: boolean }) => {
       const followed = useFollowChat({
-        id: conversationId,
+        id,
         transport: harness.transport,
         loadMessages,
         live,
@@ -224,7 +228,7 @@ function setup({
         beside,
       });
       const contract = useDrivenContract({
-        id: conversationId,
+        id,
         followed: canSend == null ? followed : { ...followed, canSend },
         index: SIDE_PANE,
       });
@@ -286,6 +290,8 @@ describe('useDrivenContract', () => {
     expect(store.get(isSubmittingFamily(SIDE_PANE))).toBe(false);
     expect(store.get(showStopButtonByIndex(SIDE_PANE))).toBe(false);
     expect(result.current.contract.readOnly).toBeUndefined();
+    /** A stop here needs no generation named first: the chat finds the one to stop itself. */
+    expect(result.current.contract.stopsUnnamed).toBe(true);
   });
 
   it('keeps one row for a message the server stores under an id of its own', async () => {
@@ -374,6 +380,24 @@ describe('useDrivenContract', () => {
     );
     await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
     expect(onSettled).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops the files another conversation left staged in the pane, and keeps this one's", async () => {
+    const staged = new Map([['file-1', { file_id: 'file-1', progress: 1 } as ExtendedFile]]);
+    const first = setup();
+    await first.ready();
+    act(() => first.result.current.contract.setFiles(staged));
+    expect(first.result.current.contract.files.size).toBe(1);
+
+    /** The same conversation drawn again, as when the layout moves the panel: still staged. */
+    const again = setup({ store: first.store });
+    await again.ready();
+    expect(again.result.current.contract.files.size).toBe(1);
+
+    /** Another conversation in the pane: nothing of the first one's goes out with its turns. */
+    const other = setup({ store: first.store, id: 'another-conversation' });
+    await other.ready();
+    expect(other.result.current.contract.files.size).toBe(0);
   });
 
   it('regenerates and continues a reply as main chat does', async () => {

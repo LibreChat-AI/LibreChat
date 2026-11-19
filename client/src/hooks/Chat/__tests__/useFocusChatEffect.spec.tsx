@@ -63,6 +63,16 @@ describe('useFocusChatEffect', () => {
     expect(mockLog).toHaveBeenCalled();
   });
 
+  test('leaves the request for the routed composer when it is not that one', () => {
+    requestChatFocus();
+
+    renderHook(() => useFocusChatEffect(mockTextAreaRef as any, false));
+
+    expect(mockTextAreaRef.current.focus).not.toHaveBeenCalled();
+    /** Still there for the composer the navigation meant. */
+    expect(consumeChatFocus()).toBe(true);
+  });
+
   test('does not focus when no chat focus was requested', () => {
     renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
 

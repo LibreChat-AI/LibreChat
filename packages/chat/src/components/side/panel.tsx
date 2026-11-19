@@ -295,21 +295,41 @@ export default function SideChatPanel({
   } else {
     body = (
       <DrivenThread id={conversationId} index={SIDE_CHAT_PANE} followed={followed}>
-        {(contract) => (
-          <SideChatComposer
-            contract={contract}
-            value={draft}
-            onChange={setDraft}
-            title={title}
-            ready={held && !followed.isLoading}
-            handoff={chat.text ? chat : undefined}
-            handoffKey={onDraftTaken ? chat : conversationId}
-            onHandedTextTaken={takeText}
-            onDraftTaken={takeDraft}
-            clearsFooter={clearsFooter}
-            focusWhenReady={!isSheet}
-          />
-        )}
+        {(contract, thread) =>
+          host.Surface == null ? (
+            <>
+              {thread}
+              <SideChatComposer
+                contract={contract}
+                value={draft}
+                onChange={setDraft}
+                title={title}
+                ready={held && !followed.isLoading}
+                handoff={chat.text ? chat : undefined}
+                handoffKey={onDraftTaken ? chat : conversationId}
+                onHandedTextTaken={takeText}
+                onDraftTaken={takeDraft}
+                clearsFooter={clearsFooter}
+                focusWhenReady={!isSheet}
+              />
+            </>
+          ) : (
+            <host.Surface
+              contract={contract}
+              ready={held && !followed.isLoading}
+              handedText={chat.text}
+              handoffKey={onDraftTaken ? chat : conversationId}
+              onHandedTextTaken={takeText}
+              onDraftTaken={takeDraft}
+              draft={draft}
+              onDraftChange={setDraft}
+              clearsFooter={clearsFooter}
+              focusWhenReady={!isSheet}
+            >
+              {thread}
+            </host.Surface>
+          )
+        }
       </DrivenThread>
     );
   }
@@ -322,6 +342,8 @@ export default function SideChatPanel({
       aria-modal={isSheet || undefined}
       aria-label={localize('com_ui_side_chat_panel')}
       data-side-chat={conversationId}
+      /* Its own pane to the keyboard: a shortcut pressed here acts on this conversation. */
+      data-chat-pane={SIDE_CHAT_PANE}
       className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
       {/* The subagent panel's header, which is main chat's: a bar that floats over the thread
@@ -352,8 +374,9 @@ export default function SideChatPanel({
           <X className="size-[1.0625rem]" aria-hidden="true" />
         </Button>
       </header>
-      {/* The gutter a list beside a chat needs; see `FollowedChildThread`. */}
-      <div className="flex min-h-0 flex-1 flex-col sm:px-2">{body}</div>
+      {/* The gutter a list beside a chat needs; see `FollowedChildThread`. A size container, as
+          main chat's column is: a composer caps its width against the panel, not the window. */}
+      <div className="@container flex min-h-0 flex-1 flex-col sm:px-2">{body}</div>
     </aside>
   );
 }

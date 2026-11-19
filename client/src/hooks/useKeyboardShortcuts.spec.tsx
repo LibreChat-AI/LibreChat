@@ -944,6 +944,32 @@ describe('composer submit shortcuts', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it('sends from the composer of the pane holding focus, not the first on the page', () => {
+    bindSubmitMessage('Alt+Enter');
+    renderHarness();
+    const pane = (index: number) => {
+      const element = document.createElement('div');
+      element.dataset.chatPane = String(index);
+      const onClick = jest.fn();
+      const send = document.createElement('button');
+      send.dataset.testid = 'send-button';
+      send.addEventListener('click', onClick);
+      const control = document.createElement('button');
+      element.append(send, control);
+      document.body.appendChild(element);
+      return { onClick, control };
+    };
+    const main = pane(0);
+    const beside = pane(3);
+    beside.control.focus();
+
+    const event = dispatchKey({ key: 'Enter', altKey: true }, beside.control);
+
+    expect(beside.onClick).toHaveBeenCalledTimes(1);
+    expect(main.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('runs a custom Alt+Enter submit binding outside the composer', () => {
     bindSubmitMessage('Alt+Enter');
     renderHarness();

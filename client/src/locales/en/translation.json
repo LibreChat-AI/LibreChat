@@ -3357,6 +3357,7 @@
   "com_ui_special_var_iso_datetime": "UTC ISO Datetime",
   "com_ui_special_variable_added": "{{0}} special variable added.",
   "com_ui_special_variables": "Special variables",
+  "com_ui_speech_in_use": "Dictation is already running in another message box. Stop it there first.",
   "com_ui_speech_not_supported": "Your browser does not support speech recognition",
   "com_ui_speech_not_supported_use_external": "Your browser does not support speech recognition. Try switching to External STT in Settings > Speech.",
   "com_ui_speech_while_submitting": "Can't submit speech while a response is being generated",

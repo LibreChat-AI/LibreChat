@@ -143,7 +143,7 @@ export {
 export type { SideChatBeside } from './react/side/state';
 export type { SideChat } from './react/side/state';
 export { useSideChatHost, SideChatHostProvider } from './react/side/host';
-export type { SideChatHost } from './react/side/host';
+export type { SideChatHost, SideChatSurfaceProps } from './react/side/host';
 export { useSnapshot } from './react/snapshot';
 export { ReactQueryChatState } from './react/state';
 export type { Subscribe, SnapshotOptions } from './react/snapshot';
