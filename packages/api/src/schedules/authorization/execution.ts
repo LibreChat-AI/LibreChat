@@ -60,6 +60,13 @@ export interface ScheduleMCPExecution<Identity extends MCPGrantIdentity = Schedu
    * grant in the foreground.
    */
   readonly detaches: boolean;
+  /**
+   * This is the completion turn of work a run sent to the background. The host addresses it
+   * to the agent that started the work, which may be a descendant the schedule's root handed
+   * off to: its graph need not contain the root. Each of its tools is still checked against
+   * what the grant holds for the agent that calls it.
+   */
+  readonly completion: boolean;
   /** Legacy admits only while enrollment is still absent; it never acquires a later grant. */
   /** `deadline` is when the wait gives up; by default, well inside a tool hook's timeout. */
   readonly checkEnrollment: (deadline?: number) => Promise<void>;
@@ -185,6 +192,8 @@ export interface ScheduleMCPExecutionOptions {
   legacy?: boolean;
   /** Tool calls the owner approved in the request that resumed this run. */
   approvedToolCalls?: readonly string[];
+  /** Attached for the completion turn of work a run sent to the background. */
+  completion?: boolean;
 }
 
 export interface ScheduleMCPExecutionFactory<
@@ -359,6 +368,7 @@ export function createScheduleMCPExecution<
       ...(manual && { manual: true }),
       enrolled,
       detaches: deps.detaches === true,
+      completion: options.completion === true,
       checkEnrollment,
       needsGrant: async (deadline = settleBy()) => {
         if (enrolled || deps.coversTools !== true) return false;

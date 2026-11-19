@@ -154,7 +154,10 @@ export function createScheduleMCPRuntimeHost(
             identity,
             completion !== undefined ? 'resume' : 'invoke',
             false,
-            completion !== undefined ? { approvedToolCalls: input.approvedToolCalls } : {},
+            {
+              completion: true,
+              ...(completion !== undefined && { approvedToolCalls: input.approvedToolCalls }),
+            },
           );
           if (!getScheduleMCPExecution(context))
             throw new ScheduledMCPPolicyError('binding_mismatch', '');

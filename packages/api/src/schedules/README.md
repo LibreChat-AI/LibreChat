@@ -177,6 +177,12 @@ subagent tasks, as the same agent does in chat.
   grant made, narrowed or revoked while the work ran applies; nothing is inherited from the
   run that started the work. A turn resumed after pausing for the owner carries the
   approvals they gave.
+- The host addresses that turn to the agent that started the work. Where the root handed off
+  to it, the turn's graph does not contain the root, and the run's hook does not ask for it
+  there (`execution.completion`): each tool is still checked against what the grant holds
+  for the agent that calls it.
+- The background poll (`check_background_task`) is a tool the host adds, like the SDK's own
+  controls. No owner selects it, so it is not something a grant lists, and it is not refused.
 - A schedule that is gone, being deleted, or now runs another agent has no completion turn.
 - A schedule held without a grant still starts nothing in the background.
 - A grant held by an API key keeps its runs in the foreground (`detaches` is false): a

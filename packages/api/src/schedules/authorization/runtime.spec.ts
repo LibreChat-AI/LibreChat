@@ -1381,6 +1381,8 @@ describe('a tool the owner approves call by call', () => {
       stage: 'invoke',
       // A schedule is found again by its identity, so its runs may send work off.
       detaches: true,
+      // And the turn may be rooted at the agent that started the work.
+      completion: true,
     });
     await expect(f.use(fresh, 'call-1')).rejects.toMatchObject(refused);
     // Paused for the owner and resumed: the call they approved goes through, and only that one.

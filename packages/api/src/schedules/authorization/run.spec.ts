@@ -212,6 +212,57 @@ it('lets a granted tool run in the background, and a held schedule start nothing
   expect(await exempt.hook(input('query_mcp_warehouse', true), signal)).toEqual({});
 });
 
+it('lets a run ask what became of the work it sent off, under a grant that lists its tools', async () => {
+  const f = await executionFixture();
+  const policy = createScheduledMCPRunPolicy(f.execution, [{ id: 'root' }]);
+  const poll = {
+    hook_event_name: 'PreToolUse' as const,
+    runId: 'scheduled',
+    executingAgentId: 'root',
+    toolName: 'check_background_task',
+    toolInput: { task_id: 'task-1' },
+    toolUseId: 'poll',
+  };
+  // The host adds the poll to the run. No owner selects it, so no grant could list it.
+  expect(await policy.hook(poll, new AbortController().signal)).toEqual({});
+  expect(
+    await policy.hook({ ...poll, toolName: 'web_search' }, new AbortController().signal),
+  ).toMatchObject({ decision: 'deny' });
+});
+
+it('checks a completion turn rooted at the agent that started the work by what the grant holds for it', async () => {
+  const f = await executionFixture();
+  // The root handed off to the child, which sent a tool to the background. The turn that
+  // picks its result up is the child's: its graph does not contain the schedule's root.
+  const child = {
+    id: 'child',
+    toolDefinitions: [{ name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' }],
+  };
+  const input = (toolName: string, agentId = 'child') => ({
+    hook_event_name: 'PreToolUse' as const,
+    runId: 'completion',
+    executingAgentId: agentId,
+    toolName,
+    toolInput: {},
+    toolUseId: 'call',
+  });
+  const signal = new AbortController().signal;
+  const completion = (await f.factory.resolve(f.identity, 'invoke', { completion: true }))!;
+  expect(completion).toMatchObject({ enrolled: true, completion: true });
+  const policy = createScheduledMCPRunPolicy(completion, [child]);
+  expect(await policy.hook(input('query_mcp_warehouse'), signal)).toEqual({});
+  // Still only what the grant holds for that agent, and only for agents of this turn.
+  expect(await policy.hook(input('web_search'), signal)).toMatchObject({ decision: 'deny' });
+  expect(await policy.hook(input('query_mcp_warehouse', 'stranger'), signal)).toMatchObject({
+    decision: 'deny',
+  });
+  // An ordinary run without its root is not the schedule's graph at all.
+  const ordinary = createScheduledMCPRunPolicy(f.execution, [child]);
+  expect(await ordinary.hook(input('query_mcp_warehouse'), signal)).toMatchObject({
+    decision: 'deny',
+  });
+});
+
 describe('a tool the owner left out of the grant', () => {
   const tool = (name: string) => ({
     name: `${name}_mcp_warehouse`,

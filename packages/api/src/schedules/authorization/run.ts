@@ -11,6 +11,7 @@ import type { ScheduleMCPExecution } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from '~/agents/memory';
 import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
+import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { ScheduledMCPPolicyError } from './policy';
 
 const MEMORY_TOOL_NAMES = new Set<string>([SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME]);
@@ -149,10 +150,16 @@ export function createScheduledMCPRunPolicy(
   };
   agents.forEach(registerAgent);
   registerGraph(agents, edges);
+  /**
+   * Tools the host or the SDK adds to a run, which no owner selects and no grant lists. The
+   * background poll is one: a run that may send work to the background must be able to ask
+   * what became of it.
+   */
   const controls = new Set<string>([
     Constants.SUBAGENT,
     Constants.TOOL_SEARCH,
     ASK_USER_QUESTION_TOOL_NAME,
+    CHECK_BACKGROUND_TASK_NAME,
   ]);
   /**
    * Whether the grant lists this tool of the agent's, one that is not an MCP tool. Some items
@@ -180,13 +187,17 @@ export function createScheduledMCPRunPolicy(
     )
       return true;
     return !(
-      mcpTools.has(execution.identity.agentId) &&
-      agentId != null &&
-      mcpTools.has(agentId) &&
-      (controls.has(input.toolName) ||
-        handoffs.get(agentId)?.has(input.toolName) === true ||
-        mcpTools.get(agentId)!.has(input.toolName) ||
-        allowsTool(agentId, input.toolName))
+      // An ordinary run is the schedule's graph, root included. A completion turn is addressed
+      // to the agent that started the work, which the root may only have handed off to.
+      (
+        (execution.completion || mcpTools.has(execution.identity.agentId)) &&
+        agentId != null &&
+        mcpTools.has(agentId) &&
+        (controls.has(input.toolName) ||
+          handoffs.get(agentId)?.has(input.toolName) === true ||
+          mcpTools.get(agentId)!.has(input.toolName) ||
+          allowsTool(agentId, input.toolName))
+      )
     );
   };
   const decisions = new WeakMap<object, Promise<ScheduledMCPPolicyError | undefined>>();
