@@ -7,8 +7,14 @@ import { openSidebar } from './sidebar';
 test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
 
 const SCENARIO = {
-  light: '@scenario:channel-confirmation-and-personal-withdrawal-light',
-  dark: '@scenario:channel-confirmation-and-personal-withdrawal-dark',
+  slack: {
+    light: '@scenario:channel-confirmation-and-personal-withdrawal-light',
+    dark: '@scenario:channel-confirmation-and-personal-withdrawal-dark',
+  },
+  discord: {
+    light: '@scenario:discord-confirmation-and-personal-withdrawal-light',
+    dark: '@scenario:discord-confirmation-and-personal-withdrawal-dark',
+  },
 } as const;
 
 const cases = (['slack', 'discord'] as const).flatMap((provider) =>
@@ -16,10 +22,7 @@ const cases = (['slack', 'discord'] as const).flatMap((provider) =>
 );
 
 for (const { provider, mode } of cases) {
-  const scenario =
-    provider === 'slack'
-      ? SCENARIO[mode]
-      : `@scenario:discord-confirmation-and-personal-withdrawal-${mode}`;
+  const scenario = SCENARIO[provider][mode];
   test(`channel confirmation and personal withdrawal use current state (${provider}, ${mode}) ${scenario}`, async ({
     page,
     baseURL,

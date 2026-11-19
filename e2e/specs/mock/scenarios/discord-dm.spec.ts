@@ -4,8 +4,13 @@ import { openSidebar } from './sidebar';
 
 test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
 
-for (const theme of ['light', 'dark'] as const) {
-  test(`Discord DM selection keeps codes temporary and cleanup available (${theme}) @scenario:discord-dm-selection-${theme}`, async ({
+const scenarios = [
+  ['light', '@scenario:discord-dm-selection-light'],
+  ['dark', '@scenario:discord-dm-selection-dark'],
+] as const;
+
+for (const [theme, scenario] of scenarios) {
+  test(`Discord DM selection keeps codes temporary and cleanup available (${theme}) ${scenario}`, async ({
     page,
   }) => {
     const link: ChannelLinkView = {
