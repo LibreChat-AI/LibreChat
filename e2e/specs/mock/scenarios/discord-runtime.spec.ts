@@ -1,8 +1,20 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Constants, discordRunControl } from 'librechat-data-provider';
 import type { DiscordPrivateReply } from 'librechat-data-provider';
 import { createDiscordAcceptance, acceptDiscordInBrowser } from '../discord.helpers';
 import { expect, test } from '../fixtures';
+
+/** Inline replies of the native /select command; the capacity reply also contains "unavailable". */
+const selectionReply = (content: string) => ({
+  type: 4,
+  data: { flags: 64, content, allowed_mentions: { parse: [] } },
+});
+const selectionSaved = selectionReply(
+  'Your private agent selection is saved. Manage or revoke it in LibreChat.',
+);
+const selectionRefused = selectionReply(
+  'That selection code is unavailable. Generate a new code in LibreChat.',
+);
 
 test.describe('real Discord backend runtime', () => {
   test.describe.configure({ mode: 'serial' });
@@ -184,6 +196,289 @@ test.describe('real Discord backend runtime', () => {
           .filter((run) => run.runId !== held.runId)
           .every((run) => !run.cancellationRequested),
       ).toBe(true);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  test('a browser-issued DM selection lets a signed ask run through the real Responses path and answer only in the DM @scenario:discord-dm-selection-ask-and-output', async ({
+    request,
+    baseURL,
+  }) => {
+    if (!baseURL) throw new Error('Discord acceptance requires a backend URL');
+    const fixture = await createDiscordAcceptance(request, baseURL);
+    try {
+      const [actor, outsider] = fixture.actors;
+      await fixture.link(actor);
+      expect((await fixture.dmSelections()).selections).toEqual([]);
+      // Without a selection the physical DM cannot execute anything.
+      const early = fixture.dmEvent(actor, { kind: 'ask', prompt: 'Never run before selection' });
+      expect((await fixture.send(early)).status).toBe(409);
+      expect(await fixture.runs()).toHaveLength(0);
+
+      const { code, expiresAtMs } = await fixture.issueDmCode(actor);
+      expect(/^[A-Za-z0-9_-]{43}$/.test(code)).toBe(true);
+      expect(expiresAtMs).toBeGreaterThan(Date.now());
+      expect(await fixture.hasStoredCodeHash(code)).toBe(true);
+      // The code is bound to the linked actor: another Discord user cannot consume it anywhere.
+      const stolen = await fixture.dmSelect(outsider, code, fixture.otherDmChannelId);
+      expect([stolen.status, stolen.body]).toEqual([200, selectionRefused]);
+      expect((await fixture.dmSelections()).selections).toEqual([]);
+
+      const selected = await fixture.dmSelect(actor, code);
+      expect([selected.status, selected.body]).toEqual([200, selectionSaved]);
+      const { enabled, selections } = await fixture.dmSelections();
+      expect(enabled).toBe(true);
+      expect(selections).toHaveLength(1);
+      const [selection] = selections;
+      // A new /select interaction with the consumed code in the same DM gets the same selection
+      // back (consume is idempotent on code hash, DM and actor), while no other DM can reuse it.
+      expect((await fixture.dmSelect(actor, code)).body).toEqual(selectionSaved);
+      const elsewhere = await fixture.dmSelect(actor, code, fixture.otherDmChannelId);
+      expect(elsewhere.body).toEqual(selectionRefused);
+      expect((await fixture.dmSelections()).selections).toEqual(selections);
+      expect(selection).toMatchObject({
+        agentId: fixture.agentId,
+        applicationId: fixture.applicationId,
+        dmChannelId: fixture.dmChannelId,
+        state: 'active',
+      });
+      // Browser metadata carries neither the code, its hash nor the retained guild source.
+      expect(Object.keys(selection).sort()).toEqual([
+        'agentId',
+        'applicationId',
+        'dmChannelId',
+        'expiresAtMs',
+        'linkId',
+        'revision',
+        'selectionId',
+        'state',
+      ]);
+
+      // The selection belongs to the selecting actor and to the DM it was confirmed in.
+      const wrongActor = fixture.dmEvent(outsider, { kind: 'ask', prompt: 'Wrong actor' });
+      const wrongDm = fixture.dmEvent(
+        actor,
+        { kind: 'ask', prompt: 'Wrong DM' },
+        fixture.otherDmChannelId,
+      );
+      for (const input of [wrongActor, wrongDm])
+        expect((await fixture.send(input)).status).toBe(409);
+      // A physical DM names no guild: a spoofed guild is refused by the signed boundary itself.
+      const spoofed = fixture.dmEvent(
+        actor,
+        { kind: 'ask', prompt: 'Spoofed guild' },
+        fixture.dmChannelId,
+        {
+          guild_id: fixture.guildId,
+        },
+      );
+      const refused = await fixture.send(spoofed);
+      expect([refused.status, await refused.json()]).toEqual([400, { error: 'invalid_context' }]);
+      expect(await fixture.runs()).toHaveLength(0);
+
+      const marker = `discord-dm-${randomUUID()}`;
+      const ask = await fixture.dmCommand(actor, { kind: 'ask', prompt: `E2E_REPLY:${marker}` });
+      expect(ask.reply.content).toContain('Replies are sent to this private DM');
+      await expect
+        .poll(async () => (await fixture.runs()).map((run) => run.state), { timeout: 60000 })
+        .toEqual(['delivered']);
+      const [run] = await fixture.runs();
+      expect(run.admission).toMatchObject({
+        actor: {
+          provider: 'discord',
+          scope: 'dm',
+          applicationId: fixture.applicationId,
+          externalUserId: actor,
+          selectionId: selection.selectionId,
+          selectionRevision: selection.revision,
+        },
+        discordDestination: {
+          kind: 'dm',
+          parentChannelId: fixture.externalChannelId,
+          selectionId: selection.selectionId,
+          selectionRevision: selection.revision,
+        },
+        eventId: ask.input.id,
+        externalChannelId: fixture.dmChannelId,
+        input: `E2E_REPLY:${marker}`,
+      });
+      expect(run.admission.actor).not.toHaveProperty('guildId');
+      expect(run.principal.userId).toBe(fixture.userId);
+      expect(run.execution?.apiKeyId).toBeTruthy();
+      expect(await fixture.response(run.execution!.responseId!)).toMatchObject({
+        status: 'completed',
+        sourceKeyId: run.execution?.apiKeyId,
+        requestKey: `channel:${run.runId}`,
+        userId: fixture.userId,
+      });
+      expect(run.receipts.every((receipt) => receipt.outcome === 'confirmed')).toBe(true);
+      const keys = run.receipts.flatMap((receipt) => receipt.externalMessageKey ?? []);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.every((key) => key.startsWith(`${fixture.dmChannelId}:`))).toBe(true);
+      // Every Discord write, including progress and the answer, went to the real DM channel only.
+      const answers = fixture.writes.filter(
+        (write) => write.method === 'POST' && write.content.includes(marker),
+      );
+      expect(answers).toHaveLength(1);
+      for (const write of fixture.writes) {
+        expect(write.channelId).toBe(fixture.dmChannelId);
+        expect(write.allowed_mentions).toEqual({ parse: [], replied_user: false });
+      }
+      // The worker's optional progress cleanup stays in the real DM and removes only the progress
+      // message it created there: that one message when a progress message was posted, else none.
+      const progress = fixture.writes.find(
+        (write) => write.method === 'POST' && write !== answers[0],
+      );
+      expect(fixture.deletes).toEqual(
+        progress
+          ? [{ channelId: fixture.dmChannelId, id: progress.id, createdIn: fixture.dmChannelId }]
+          : [],
+      );
+      expect(fixture.unexpected).toEqual([]);
+      // The durable inbox keeps the physical DM and the selection's source guild apart.
+      const row = await fixture.inboxRow(ask.input.id);
+      expect(row?.externalChannelId).toBe(fixture.dmChannelId);
+      expect(row).not.toHaveProperty('guildId');
+      expect(row?.dm).toMatchObject({
+        selectionId: selection.selectionId,
+        selectionRevision: selection.revision,
+        parentChannelId: fixture.externalChannelId,
+        source: { guildId: fixture.guildId, userId: fixture.userId },
+      });
+
+      const status = await fixture.dmCommand(actor, { kind: 'status' });
+      expect(status.reply.content).toContain('completed');
+      expect(status.reply.actions?.find((action) => 'url' in action)).toMatchObject({
+        url: new URL(`/c/${run.execution!.conversationId}`, baseURL).href,
+      });
+
+      // Feedback is bound to the confirmed answer in the selected DM, never to any other message.
+      const answer = answers[0];
+      const [up, down] = (['thumbsUp', 'thumbsDown'] as const).map((rating) =>
+        discordRunControl(rating, run.runId),
+      );
+      expect(
+        answer.components?.flatMap((entry) => entry.components.map((button) => button.custom_id)),
+      ).toEqual([up, down]);
+      const answerKey = `${fixture.dmChannelId}:${answer.id}`;
+      expect(run.receipts.some((receipt) => receipt.externalMessageKey === answerKey)).toBe(true);
+      const vote = (reference: string, messageId: string) =>
+        fixture.dmCommand(actor, { kind: 'control', reference, messageId });
+      const unrelated = String(BigInt(answer.id) + BigInt(1));
+      const foreign = discordRunControl('thumbsUp', `other-${run.runId}`);
+      for (const denied of [await vote(up, unrelated), await vote(foreign, answer.id)])
+        expect(denied.reply.content).toBe('Feedback is unavailable for this reply.');
+      expect(await fixture.feedback()).toEqual([]);
+      const intruder = fixture.dmEvent(outsider, {
+        kind: 'control',
+        reference: up,
+        messageId: answer.id,
+      });
+      expect((await fixture.send(intruder)).status).toBe(409);
+      expect((await vote(up, answer.id)).reply.content).toBe('Feedback received.');
+      expect((await vote(down, answer.id)).reply.content).toBe('Feedback received.');
+      const ledgers = await fixture.feedback();
+      expect(ledgers).toHaveLength(1);
+      expect(ledgers[0]).toMatchObject({
+        rating: 'thumbsDown',
+        mapping: {
+          provider: 'discord',
+          scope: 'dm',
+          applicationId: fixture.applicationId,
+          selectionId: selection.selectionId,
+          selectionRevision: selection.revision,
+          sourceGuildId: fixture.guildId,
+          parentChannelId: fixture.externalChannelId,
+          externalChannelId: fixture.dmChannelId,
+          externalUserId: actor,
+          externalMessageKey: answerKey,
+          runId: run.runId,
+          responseId: run.execution!.responseId,
+          conversationId: run.execution!.conversationId,
+          principalId: fixture.userId,
+        },
+      });
+      expect(ledgers[0].mapping).not.toHaveProperty('guildId');
+
+      // Discord redelivering the same signed ask neither runs nor writes again. Inbox rows exist
+      // before the 200, so a duplicate row would already show in the synchronous footprint.
+      const settled = await fixture.footprint();
+      expect((await fixture.send(ask.input)).status).toBe(200);
+      const redelivered = await fixture.footprint();
+      expect(redelivered).toEqual({ ...settled, keys: expect.any(Number) });
+      expect(redelivered.keys).toBeLessThanOrEqual(settled.keys);
+      // Only the canonical hash of the one-time code is retained. The scan demonstrably reads the
+      // code collection, so finding nothing means the code is absent from the retained Discord,
+      // Channel and response rows, the Discord output and the gateway log events (event codes
+      // only). The isolated API server's own output is not observable from the test.
+      expect(await fixture.leaks(createHash('sha256').update(code).digest('hex'))).toContain(
+        'DiscordDmCode',
+      );
+      expect(await fixture.leaks(code)).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  test('revoking the DM selection through the API fences every later prompt from executing or writing @scenario:discord-dm-revoke-fences-later-prompts', async ({
+    request,
+    baseURL,
+  }) => {
+    if (!baseURL) throw new Error('Discord acceptance requires a backend URL');
+    const fixture = await createDiscordAcceptance(request, baseURL);
+    try {
+      const [actor] = fixture.actors;
+      await fixture.link(actor);
+      const { code } = await fixture.issueDmCode(actor);
+      expect((await fixture.dmSelect(actor, code)).body).toEqual(selectionSaved);
+      const [selection] = (await fixture.dmSelections()).selections;
+      const marker = `discord-dm-before-revoke-${randomUUID()}`;
+      await fixture.dmCommand(actor, { kind: 'ask', prompt: `E2E_REPLY:${marker}` });
+      await expect
+        .poll(async () => (await fixture.runs()).map((run) => run.state), { timeout: 60000 })
+        .toEqual(['delivered']);
+      const [delivered] = await fixture.runs();
+      const answer = fixture.writes.find(
+        (write) => write.method === 'POST' && write.content.includes(marker),
+      );
+      if (!answer) throw new Error('Missing Discord DM answer');
+      const before = await fixture.footprint();
+
+      const revoked = await fixture.revokeDmSelection(selection);
+      expect([revoked.status, revoked.result]).toEqual([200, { ok: true, value: null }]);
+      expect((await fixture.dmSelections()).selections).toMatchObject([
+        { selectionId: selection.selectionId, state: 'revoked' },
+      ]);
+      // Revocation rotates the revision, so the same request cannot be replayed, and it drops the code.
+      expect((await fixture.revokeDmSelection(selection)).status).toBe(409);
+      expect(await fixture.hasStoredCodeHash(code)).toBe(false);
+      expect((await fixture.dmSelect(actor, code)).body).toEqual(selectionRefused);
+
+      // Later prompts and metadata requests are refused before they reach the durable inbox.
+      const later = [
+        fixture.dmEvent(actor, { kind: 'ask', prompt: `E2E_REPLY:after-revoke-${randomUUID()}` }),
+        fixture.dmEvent(actor, { kind: 'status' }),
+        fixture.dmEvent(actor, { kind: 'cancel' }),
+        fixture.dmEvent(actor, {
+          kind: 'control',
+          reference: discordRunControl('thumbsUp', delivered.runId),
+          messageId: answer.id,
+        }),
+      ];
+      for (const input of later) {
+        const refused = await fixture.send(input);
+        expect([refused.status, await refused.json()]).toEqual([
+          409,
+          { error: 'interaction_not_accepted' },
+        ]);
+      }
+      const after = await fixture.footprint();
+      expect(after).toEqual({ ...before, keys: expect.any(Number) });
+      expect(after.keys).toBeLessThanOrEqual(before.keys);
+      expect(await fixture.runs()).toHaveLength(1);
+      expect(fixture.unexpected).toEqual([]);
+      expect(await fixture.leaks(code)).toEqual([]);
     } finally {
       await fixture.close();
     }

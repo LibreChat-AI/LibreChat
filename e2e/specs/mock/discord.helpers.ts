@@ -9,12 +9,19 @@ import {
   createMethods,
   createDiscordInstallationStorage,
   createDiscordRouteStorage,
+  hashDiscordDmCode,
   encryptV3,
   tenantStorage,
 } from '@librechat/data-schemas';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { AddressInfo } from 'node:net';
-import type { DiscordPrivateReply } from 'librechat-data-provider';
+import type {
+  ChannelLinkView,
+  DiscordDmResult,
+  DiscordDmSelectionPage,
+  DiscordDmIssuedCode,
+  DiscordPrivateReply,
+} from 'librechat-data-provider';
 import type { ChannelRunRecord } from '@librechat/data-schemas';
 import { DiscordGatewayApp } from '../../../packages/channel-gateway/src/discord/app';
 import { DiscordRuntimeClient } from '../../../packages/channel-gateway/src/discord/discovery';
@@ -35,6 +42,18 @@ export interface NativeEvent {
   id: string;
   token: string;
   body: string;
+}
+/** Native BOT_DM interactions: a slash command, or a control button on an earlier DM message. */
+export type DmInput =
+  | { kind: 'select'; code: string }
+  | { kind: 'ask'; prompt: string }
+  | { kind: 'status' | 'cancel' }
+  | { kind: 'control'; reference: string; messageId: string };
+/** The inline interaction response of /select, the only DM command without a deferred reply. */
+export interface NativeAnswer {
+  type?: number;
+  data?: { flags?: number; content?: string; allowed_mentions?: { parse: string[] } };
+  error?: string;
 }
 interface DiscordWrite {
   method: string;
@@ -74,6 +93,9 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
   const guildId = snowflake();
   const botUserId = snowflake();
   const externalChannelId = snowflake();
+  // Physical DM channels are distinct from the guild channel and carry no guild.
+  const dmChannelId = snowflake();
+  const otherDmChannelId = snowflake();
   const actors = [snowflake(), snowflake()] as const;
   const channelId = `discord-e2e-${randomUUID()}`;
   const keys = generateKeyPairSync('ed25519');
@@ -86,6 +108,9 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
   const privateReplies = new Map<string, DiscordPrivateReply>();
   const writes: DiscordWrite[] = [];
   const logs: string[] = [];
+  const unexpected: string[] = [];
+  // Cleanup is kept apart from `writes`, which the guild scenarios pin field by field.
+  const deletes: { channelId: string; id: string; createdIn?: string }[] = [];
   const messages = new Map<string, DiscordWrite>();
   let agentId = '';
   let running: Promise<void> | undefined;
@@ -127,6 +152,7 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
           'DiscordThreadRoute',
           'DiscordThreadPin',
           'DiscordDmSelection',
+          'DiscordDmCode',
         ])
           if (db.models[name]) await db.models[name].deleteMany({ applicationId });
         for (const name of [
@@ -138,6 +164,8 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
           'ChannelScope',
         ])
           if (db.models[name]) await db.models[name].deleteMany({ channelId });
+        // Vote ledgers carry their channel inside the retained reply mapping.
+        await models.ChannelFeedback.deleteMany({ 'mapping.channelId': channelId });
         await models.ChannelIdentity.deleteMany({ 'identity.channelId': channelId });
         await models.AgentChannel.deleteMany({ channelId });
         await models.DiscordRoute.deleteMany({ channelId });
@@ -261,9 +289,13 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
         res.end(JSON.stringify({ id: externalChannelId, guild_id: guildId, type: 0 }));
         return;
       }
-      if (path.startsWith(`/api/v10/channels/${externalChannelId}/messages`)) {
+      // Every write records the channel it was actually sent to, so a stray DM or guild write is visible.
+      const target = path.match(/^\/api\/v10\/channels\/(\d+)\/messages(?:\/\d+)?$/)?.[1];
+      if (target && [externalChannelId, dmChannelId, otherDmChannelId].includes(target)) {
         if (req.method === 'DELETE') {
-          messages.delete(path.split('/').at(-1)!);
+          const id = path.split('/').at(-1)!;
+          deletes.push({ channelId: target, id, createdIn: messages.get(id)?.channelId });
+          messages.delete(id);
           res.writeHead(204).end();
           return;
         }
@@ -273,12 +305,13 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
         }
         const body = JSON.parse(bytes.toString());
         const id = req.method === 'PATCH' ? path.split('/').at(-1)! : snowflake();
-        const write = { ...body, id, method: req.method, channelId: externalChannelId };
+        const write = { ...body, id, method: req.method, channelId: target };
         messages.set(id, write);
         writes.push(write);
-        res.end(JSON.stringify({ id, channel_id: externalChannelId }));
+        res.end(JSON.stringify({ id, channel_id: target }));
         return;
       }
+      unexpected.push(`${req.method} ${path.replace(/\d{17,20}/g, ':id')}`);
       res.writeHead(404).end('{}');
     });
     discordServer.listen(0, '127.0.0.1');
@@ -420,17 +453,20 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       }
       return privateReplies.get(input.token)!;
     }
+    /** A deferred private acknowledgement now, the actual card through the interaction webhook later. */
+    async function acknowledged(input: NativeEvent) {
+      const ack = await send(input);
+      expect(ack.status).toBe(200);
+      expect(await ack.json()).toEqual({ type: 5, data: { flags: 64 } });
+      return { input, reply: await reply(input) };
+    }
     async function command(
       actor: string,
       action: 'ask' | 'link' | 'status' | 'cancel',
       prompt = '',
       component?: string | { reference: string; messageId: string },
     ) {
-      const input = event(actor, action, prompt, component);
-      const ack = await send(input);
-      expect(ack.status).toBe(200);
-      expect(await ack.json()).toEqual({ type: 5, data: { flags: 64 } });
-      return { input, reply: await reply(input) };
+      return acknowledged(event(actor, action, prompt, component));
     }
     async function retainedRuns(): Promise<ChannelRunRecord[]> {
       const retained = await scoped(() =>
@@ -466,22 +502,199 @@ export async function createDiscordAcceptance(request: APIRequestContext, baseUR
       const confirmed = await command(actor, 'link', '', confirmation.reference);
       expect(confirmed.reply.content).toContain('Your account is linked');
     }
+    /** BOT_DM interactions carry a user and the DM channel; a guild or member would be a spoof. */
+    function dmEvent(
+      actor: string,
+      input: DmInput,
+      channel = dmChannelId,
+      extra: Record<string, unknown> = {},
+    ): NativeEvent {
+      const id = snowflake();
+      const token = `interaction-${id}`;
+      let argument: { name: string; value: string } | undefined;
+      if (input.kind === 'select') argument = { name: 'code', value: input.code };
+      if (input.kind === 'ask') argument = { name: 'prompt', value: input.prompt };
+      return {
+        id,
+        token,
+        body: JSON.stringify({
+          type: input.kind === 'control' ? 3 : 2,
+          id,
+          application_id: applicationId,
+          token,
+          version: 1,
+          context: 1,
+          authorizing_integration_owners: { '0': '0' },
+          channel_id: channel,
+          user: { id: actor },
+          ...extra,
+          ...(input.kind === 'control'
+            ? {
+                message: { id: input.messageId, channel_id: channel },
+                data: { component_type: 2, custom_id: input.reference },
+              }
+            : {
+                data: {
+                  id: snowflake(),
+                  name: 'librechat',
+                  type: 1,
+                  options: [
+                    {
+                      name: input.kind,
+                      type: 1,
+                      ...(argument ? { options: [{ ...argument, type: 3 }] } : {}),
+                    },
+                  ],
+                },
+              }),
+        }),
+      };
+    }
+    async function dmCommand(
+      actor: string,
+      input: Exclude<DmInput, { kind: 'select' }>,
+      channel = dmChannelId,
+    ) {
+      return acknowledged(dmEvent(actor, input, channel));
+    }
+    async function dmSelect(actor: string, code: string, channel = dmChannelId) {
+      const response = await send(dmEvent(actor, { kind: 'select', code }, channel));
+      return { status: response.status, body: (await response.json()) as NativeAnswer };
+    }
+    /** The browser's own routes (JWT and same-origin). Plain fetch keeps a code out of Playwright traces. */
+    async function dmApi<T>(method: 'GET' | 'POST' | 'DELETE', path: string, data?: object) {
+      const response = await fetch(new URL(`/api/channels/discord/dm${path}`, baseURL), {
+        method,
+        headers: { ...headers, ...(data ? { 'content-type': 'application/json' } : {}) },
+        ...(data ? { body: JSON.stringify(data) } : {}),
+      });
+      let result: DiscordDmResult<T> | undefined;
+      try {
+        result = JSON.parse(await response.text());
+      } catch {
+        result = undefined;
+      }
+      return { status: response.status, result };
+    }
+    async function activeLink(actor: string): Promise<ChannelLinkView> {
+      const listed = await request.get('/api/channels/links', { headers });
+      expect(listed.status()).toBe(200);
+      const links: ChannelLinkView[] = await listed.json();
+      const link = links.find(
+        (entry) =>
+          entry.state === 'active' &&
+          entry.identity.provider === 'discord' &&
+          entry.identity.channelId === channelId &&
+          entry.identity.externalUserId === actor,
+      );
+      if (!link) throw new Error('Missing active Discord link');
+      return link;
+    }
+    async function issueDmCode(actor: string): Promise<DiscordDmIssuedCode> {
+      const link = await activeLink(actor);
+      const { status, result } = await dmApi<DiscordDmIssuedCode>('POST', '/codes', {
+        linkId: link.linkId,
+        expectedLinkRevision: link.revision,
+      });
+      if (status !== 200 || !result?.ok)
+        throw new Error(`Discord DM code was not issued: HTTP ${status}`);
+      return result.value;
+    }
+    async function dmSelections() {
+      const { status, result } = await dmApi<DiscordDmSelectionPage>('GET', '/selections');
+      expect(status).toBe(200);
+      if (!result?.ok) throw new Error('Discord DM selections were not listed');
+      const selections = result.value.selections.filter(
+        (entry) => entry.applicationId === applicationId,
+      );
+      return { ...result.value, selections };
+    }
+    function revokeDmSelection(selection: { selectionId: string; revision: string }) {
+      return dmApi<null>('DELETE', `/selections/${encodeURIComponent(selection.selectionId)}`, {
+        revision: selection.revision,
+      });
+    }
+    async function hasStoredCodeHash(code: string): Promise<boolean> {
+      const rows = await scoped(() =>
+        models.DiscordDmCode.find({ applicationId }).select('+codeHash').lean(),
+      );
+      return rows.some((row) => row.codeHash === hashDiscordDmCode(code));
+    }
+    /**
+     * Names every observable surface holding the secret verbatim, so a failure never prints it:
+     * gateway log events (the gateway logger receives event codes only), the Discord output and the
+     * retained Discord, Channel and response rows. The isolated API server's own output is not
+     * observable from the test, so it is not covered.
+     */
+    async function leaks(secret: string): Promise<string[]> {
+      const found: string[] = [];
+      if (logs.some((entry) => entry.includes(secret))) found.push('gateway log events');
+      if (
+        JSON.stringify([writes, deletes, [...privateReplies.values()], unexpected]).includes(secret)
+      )
+        found.push('discord output');
+      const retained = Object.keys(db.models).filter((key) =>
+        /^(Discord|Channel)|^StoredResponse$/.test(key),
+      );
+      for (const name of retained) {
+        const rows = await db.models[name].collection.find({}).toArray();
+        if (JSON.stringify(rows).includes(secret)) found.push(name);
+      }
+      return found;
+    }
+    async function inboxRow(eventId: string) {
+      return scoped(() => models.DiscordInbox.findOne({ applicationId, eventId }).lean());
+    }
+    async function feedback() {
+      return scoped(() => models.ChannelFeedback.find({ 'mapping.channelId': channelId }).lean());
+    }
+    /** Durable and external footprint of this fixture: a refused prompt must not grow any part of it. */
+    async function footprint() {
+      return scoped(async () => ({
+        events: (await models.DiscordInbox.find({ applicationId }).select('eventId').lean())
+          .map((row) => row.eventId)
+          .sort(),
+        votes: await models.ChannelFeedbackEvent.countDocuments({ channelId }),
+        runs: await models.ChannelRun.countDocuments({ channelId }),
+        responses: await models.StoredResponse.countDocuments({ agentId }),
+        keys: await models.AgentApiKey.countDocuments({
+          'binding.id': { $regex: `^${channelId}/` },
+        }),
+        writes: writes.length,
+        deletes: deletes.length,
+      }));
+    }
     return {
       applicationId,
       guildId,
       botUserId,
       externalChannelId,
+      dmChannelId,
+      otherDmChannelId,
       channelId,
       agentId,
       userId,
       actors,
       event,
+      dmEvent,
       send,
       reply,
       command,
+      dmCommand,
+      dmSelect,
       link,
+      issueDmCode,
+      dmSelections,
+      revokeDmSelection,
+      hasStoredCodeHash,
+      leaks,
+      footprint,
+      inboxRow,
+      feedback,
       runs: retainedRuns,
       writes,
+      deletes,
+      unexpected,
       messages,
       privateReplies,
       headers,
