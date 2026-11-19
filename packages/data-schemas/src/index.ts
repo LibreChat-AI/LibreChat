@@ -234,3 +234,13 @@ export type {
   DiscordRouteError,
 } from './methods/discordRoute';
 export type { DiscordRouteRecord } from './models/discordRoute';
+
+export { createDiscordInstallStorage } from './methods/discordInstall';
+export type {
+  DiscordInstallStorage,
+  DiscordInstallResult,
+  DiscordInstallError,
+  StartDiscordInstall,
+  ConsumeDiscordInstall,
+} from './methods/discordInstall';
+export type { DiscordInstallRecord, DiscordInstallView } from './models/discordInstall';
