@@ -591,7 +591,11 @@ export function createScheduleMCPConsentService<
       allowed: allowedByServer,
       changed: changedByServer,
       asking: askingByServer,
-      tools: { offered: toolNames(offeredOther), allowed: allowedOther },
+      tools: {
+        offered: toolNames(offeredOther),
+        allowed: allowedOther,
+        ...(used.length > 0 && { servers: [...used] }),
+      },
       everything: whole,
       approval,
       required,
@@ -686,9 +690,10 @@ export function createScheduleMCPConsentService<
       offer: null,
     };
     if (!limits.enabled || !deps.resolveEnrollment) return none;
-    const [servers, others] = await Promise.all([
+    const [servers, others, used] = await Promise.all([
       deps.resolveEnrollment(identity, options),
       deps.resolveTools?.(identity, options) ?? [],
+      deps.resolveServers?.(identity, options) ?? [],
     ]);
     const resolved = listable(servers);
     if (resolved.length === 0 && others.length === 0 && !standing) return none;
@@ -702,7 +707,11 @@ export function createScheduleMCPConsentService<
       ...none,
       state: 'missing',
       targets,
-      tools: { offered: toolNames(others), allowed: [] },
+      tools: {
+        offered: toolNames(others),
+        allowed: [],
+        ...(used.length > 0 && { servers: [...used] }),
+      },
       offer: {
         digest: offerDigest(subject, 0, targets, {}, others),
         maxLifetimeHours: limits.maxLifetimeHours,
@@ -930,8 +939,17 @@ export function createScheduleMCPConsentService<
       const lifetime = grantLifetime(enrollment);
       if (lifetime.revoked) return denial('consent_revoked');
       if (now() >= lifetime.expiresAtMs) return denial('consent_expired');
+      /** The whole agent, or the tool listed for the agent among its other tools. */
+      const covered =
+        enrollment.everything === true ||
+        (request.listed != null &&
+          enrollment.tools?.some(
+            ({ agentId, tools }) =>
+              agentId === request.listed!.agentId &&
+              request.listed!.keys.some((key) => tools.includes(key)),
+          ) === true);
+      if (!covered) return denial('tool_policy_denied');
       if (
-        enrollment.everything !== true ||
         enrollment.revision !== request.revision ||
         (!snapshot!.enabled && request.stage !== 'activation' && request.manual !== true) ||
         snapshot!.agentId !== request.identity.agentId ||

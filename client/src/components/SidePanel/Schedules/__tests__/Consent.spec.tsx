@@ -4,6 +4,7 @@ import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import type { ScheduleMCPConsentView } from 'librechat-data-provider';
+import { splitToolKey } from '~/components/MCP/GrantTools';
 import Consent from '../Consent';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
@@ -459,6 +460,59 @@ it('offers the skills of the agent as one item, by name, and sends it like any o
     ),
   );
 });
+it('lists a tool on a server the operator did not declare by its name and server, and sends its key', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [],
+    tools: {
+      offered: ['lookup_mcp_notes', 'sys__all__sys_mcp_archive', 'web_search'],
+      allowed: [],
+    },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  // One tool by name, and a selection of a whole server as one item.
+  const tool = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_tool_on_server',
+  });
+  const every = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tools_on_server' });
+  expect(screen.queryByRole('checkbox', { name: 'lookup_mcp_notes' })).not.toBeInTheDocument();
+  await userEvent.click(tool);
+  await userEvent.click(every);
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        allow: {},
+        tools: ['lookup_mcp_notes', 'sys__all__sys_mcp_archive'],
+      }),
+    ),
+  );
+});
+it('reads the tool and the server out of a key against the servers in use, not by position', () => {
+  // A server name may contain the delimiter. So may a tool's.
+  expect(splitToolKey('lookup_mcp_Finance_mcp_EU', ['Finance_mcp_EU', 'EU'])).toEqual({
+    name: 'lookup',
+    server: 'Finance_mcp_EU',
+  });
+  expect(splitToolKey('read_mcp_log_mcp_notes', ['notes'])).toEqual({
+    name: 'read_mcp_log',
+    server: 'notes',
+  });
+  // The agent may have the key under the normalized spelling of the server.
+  expect(splitToolKey('lookup_mcp_My_Notes', ['My Notes'])).toEqual({
+    name: 'lookup',
+    server: 'My Notes',
+  });
+  // A selection of a whole server is told by its marker even with no server to match.
+  expect(splitToolKey('sys__all__sys_mcp_Finance_mcp_EU', [])).toEqual({
+    name: 'sys__all__sys',
+    server: 'Finance_mcp_EU',
+  });
+  expect(splitToolKey('send_action_mail.example', ['notes'])).toBeUndefined();
+});
+
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

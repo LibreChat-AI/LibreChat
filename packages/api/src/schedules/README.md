@@ -144,6 +144,24 @@ does is done with tools that are items of their own (code execution for a skill'
   tool is registered, and manual or always-apply skills are not primed, so the model is not
   offered what it would be refused.
 
+### Tools on a server the operator did not declare
+
+A server with nothing under `mcpConsent.resources` has no recipient to hold a consent for: a
+local `stdio` server, one the owner added, or one the operator simply never declared. Its
+tools are still the owner's to allow. Each one the agents select is offered among the other
+tools, under the key the agent has it by (`lookup_mcp_notes`), and a selection of the whole
+server is one such key (`sys__all__sys_mcp_notes`), which stands for every tool there.
+
+- Allowed, the key loads for that agent, together with the key for its server alone, and
+  the server is made ready.
+- A call is let through after `authority.standing` makes the live checks a consented server
+  gets, and finds the tool listed for the calling agent. It is then made as the owner's own
+  use would make it: with their ordinary credentials for that server.
+- There is no recipient to bind and no definition pin, and such a tool cannot be asked about
+  call by call. An operator who wants those declares the server.
+- A grant that limits MCP tools only, as an API key's does, has no other tools to list them
+  among, so it does not cover them.
+
 ### A tool the owner approves call by call
 
 Beside allowing a tool, the owner can set it to "ask me first". The grant stores those tools

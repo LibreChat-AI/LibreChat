@@ -76,6 +76,13 @@ export interface ScheduledMCPStandingRequest<
   readonly revision: string;
   readonly stage: 'activation' | 'invoke' | 'resume';
   readonly manual?: boolean;
+  /**
+   * For a grant that lists its tools: the agent calling, and every key the tool being called
+   * could be listed under (either spelling of its server, and the selection of the whole
+   * server). The grant must list one of them for that agent. Left out, only a grant of the
+   * whole agent passes.
+   */
+  readonly listed?: { readonly agentId: string; readonly keys: readonly string[] };
 }
 
 export type ScheduledMCPStandingResult =
@@ -95,9 +102,10 @@ export interface ScheduledMCPAuthority<Identity extends MCPGrantIdentity = Sched
     options: { signal?: AbortSignal },
   ) => Promise<ScheduledMCPAuthorizationResult>;
   /**
-   * The live checks of `authorize` with no server to match: the stored grant is the whole-agent
-   * one this run started under and still in force, and its owner may still use schedules, MCP
-   * servers and the agent on a deployment that still runs them.
+   * The live checks of `authorize` with no server to match, for a tool on a server the grant
+   * holds no consent for: the stored grant is the one this run started under and still in
+   * force, it is for the whole agent or lists that tool, and its owner may still use
+   * schedules, MCP servers and the agent on a deployment that still runs them.
    */
   readonly standing: (
     request: ScheduledMCPStandingRequest<Identity>,

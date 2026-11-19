@@ -977,6 +977,90 @@ describe('a schedule being edited with a new grant', () => {
   });
 });
 
+describe('a grant that lists a tool on a server the operator did not declare', () => {
+  it('offers it by its key, makes only that server ready, loads it and calls it', async () => {
+    const f = await setup();
+    const archive = { type: 'streamable-http' as const, url: 'https://archive.example/mcp' };
+    f.servers.archive = archive;
+    Object.assign(f.config.mcpConfig as object, { archive });
+    f.snapshot.enrollment = null;
+    f.setCandidates(['query_mcp_warehouse', 'query_mcp_archive']);
+    const offer = await f.host.consent.service.view(f.identity);
+    // The declared server is a target with a recipient. The other has none: it is a tool key.
+    expect(offer.targets.map((target) => target.resource.serverName)).toEqual(['warehouse']);
+    expect(offer.tools.offered).toEqual(['query_mcp_archive']);
+    // With the servers in use, so the dialog can tell a tool's name from its server's.
+    expect(offer.tools.servers).toEqual(['archive', 'warehouse']);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: {},
+      tools: ['query_mcp_archive'],
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    f.connect.mockClear();
+    // Readiness is for what was allowed: the declared server was left out.
+    await expect(f.check()).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ server: 'archive', status: 'ready' })]),
+    );
+    expect(f.connect).not.toHaveBeenCalledWith(
+      expect.objectContaining({ serverName: 'warehouse' }),
+    );
+    await f.host.prepare({ req: f.req, context: f.context });
+    expect(
+      getScheduleMCPExecution(f.context)!.narrow('root', [
+        'query_mcp_warehouse',
+        'query_mcp_archive',
+      ]),
+    ).toEqual(['query_mcp_archive']);
+    const call = (serverName: string, serverConfig: object) =>
+      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+        user: f.user,
+        serverName,
+        serverConfig: serverConfig as typeof f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    await expect(call('archive', archive)).resolves.toBeUndefined();
+    await expect(call('warehouse', f.serverConfig)).rejects.toMatchObject({
+      failure: { reason: 'tool_policy_denied' },
+    });
+    // A schedule being created with such a grant has nothing stored yet: readiness is
+    // handed the grant, and still reaches the listed server, so one that is down is reported.
+    const grant = f.snapshot.enrollment!;
+    const stored = jest.mocked(f.storage.readScheduleMCPConsent).getMockImplementation()!;
+    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    const creating = () =>
+      f.preflight('root', f.user, {
+        scheduleId: 'sched_new',
+        stage: 'activation',
+        concurrency: 3,
+        grant,
+      });
+    f.connect.mockClear();
+    await expect(creating()).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ server: 'archive', status: 'ready' })]),
+    );
+    expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'archive' }));
+    expect(f.connect).not.toHaveBeenCalledWith(
+      expect.objectContaining({ serverName: 'warehouse' }),
+    );
+    f.connect.mockRejectedValueOnce(new Error('down'));
+    await expect(creating()).rejects.toMatchObject({ code: 'mcp_unavailable' });
+    jest.mocked(f.storage.readScheduleMCPConsent).mockImplementation(stored);
+    // The owner loses the right to use MCP servers: the listed tool goes with it.
+    f.getRoleByName.mockResolvedValue({
+      permissions: {
+        [PermissionTypes.SCHEDULES]: { [Permissions.USE]: true, [Permissions.CREATE]: true },
+      },
+    } as IRole);
+    await expect(call('archive', archive)).rejects.toMatchObject({
+      failure: { reason: 'rbac_denied' },
+    });
+  });
+});
+
 describe('a schedule being created with its grant', () => {
   /** Nothing is stored for it yet: the grant comes with the readiness check. */
   async function creating(
