@@ -421,6 +421,71 @@ test('a side chat whose stream drops reads the reply back and takes the next tur
   await expect(mainTurns).toHaveCount(2);
 });
 
+test('a side chat’s reply whose stream a gateway answers on opening is followed, and never shown as failed @scenario:side-chat-unopened-stream-is-followed', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const { sideChat, side, turns, mainTurns, send } = await openBeside(page, 'unopened');
+  const label = uniqueLabel('unopened');
+  const conversationId = (await sideChat.getAttribute('data-side-chat')) ?? '';
+  /** The server takes the turn; the first two requests for its stream are answered by a gateway. */
+  const asked: number[] = [];
+  await page.route(
+    (url) => url.pathname === `/api/agents/chat/stream/${conversationId}`,
+    async (route) => {
+      asked.push(Date.now());
+      if (asked.length > 2) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({ status: 502, contentType: 'text/plain', body: 'Bad Gateway' });
+    },
+  );
+  /** Whatever the panel shows on the way is kept, since a failure shown and then replaced is one. */
+  await sideChat.evaluate((region) => {
+    const shown = new Set<string>();
+    const note = () => {
+      for (const row of region.querySelectorAll('.message-render')) {
+        shown.add(row.textContent ?? '');
+      }
+    };
+    new MutationObserver(note).observe(region, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+    Object.assign(window, { shownInSideChat: shown });
+  });
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+
+  /** The run is found again where it is, and read as it is written: not only once it is over. */
+  await expect(turns.nth(3)).toContainText('chunk-040', { timeout: 60_000 });
+  await expect(side.getByRole('button', { name: 'Stop generating' })).toBeVisible();
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 90_000 });
+  await expect(turns).toHaveCount(4);
+  /**
+   * The stream was asked for again at once, as one that dropped is: a turn taken for failed is
+   * only found again by the next look at what is running, seconds later. And no row ever said
+   * the reply failed.
+   */
+  expect(asked.length).toBeGreaterThanOrEqual(3);
+  expect(asked[1] - asked[0]).toBeLessThan(3_000);
+  const failures = await page.evaluate(() =>
+    [...(window as unknown as { shownInSideChat: Set<string> }).shownInSideChat].filter((text) =>
+      /could not complete|error connecting|failed|try refreshing/i.test(text),
+    ),
+  );
+  expect(failures).toEqual([]);
+
+  /** It ended as a reply does: the conversation takes the next message. */
+  const followUp = uniqueLabel('after-unopened');
+  await send(replyPrompt(followUp));
+  await expect(turns).toHaveCount(6, { timeout: 30_000 });
+  await expect(turns.nth(5)).toContainText(replyText(followUp), { timeout: 30_000 });
+  await expect(mainTurns).toHaveCount(2);
+});
+
 test('a queue behind a reply the panel was closed on is sent when that reply is then lost and found whole @scenario:side-chat-lost-remembered-run-sends-the-queue', async ({
   page,
 }) => {
