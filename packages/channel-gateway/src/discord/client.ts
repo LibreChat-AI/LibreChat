@@ -13,11 +13,13 @@ import type {
   DiscordGuildTextActorSource,
 } from 'librechat-data-provider';
 import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
+import type { DiscordApplicationObservation } from './observe';
 import type { DiscordThreadInspection } from './thread';
 import type { DiscordWriteOutcome } from './errors';
 import type { DiscordRatePermit } from './rates';
 import { DiscordRateCoordinator, DiscordRateQueueError } from './rates';
 import { inspectDiscordThread } from './thread';
+import { safeDiscordObserver } from './observe';
 import { DiscordWriteError } from './errors';
 
 export { DiscordWriteError } from './errors';
@@ -27,6 +29,8 @@ export interface DiscordClientOptions {
   timeoutMs: number;
   maxResponseBytes: number;
   apiBase?: string;
+  /** Optional telemetry for the bot's own channel permissions. Actor and member outcomes are never reported. */
+  observe?: (observation: Extract<DiscordApplicationObservation, { type: 'permission' }>) => void;
 }
 export interface DiscordMessage {
   content: string;
@@ -45,8 +49,15 @@ export function discordNonce(operationId: string): string {
   return createHash('sha256').update(operationId).digest('hex').slice(0, 25);
 }
 
+/** The bot's own view of a channel. `outcome` is absent when nothing was learned about permissions. */
+interface BotInspection {
+  source: DiscordGuildTextSource | null;
+  outcome?: 'ok' | 'denied';
+}
+
 export class DiscordClient {
   private readonly base: string;
+  private readonly observe: NonNullable<DiscordClientOptions['observe']>;
   constructor(
     private readonly options: DiscordClientOptions,
     private readonly transport: typeof fetch = fetch,
@@ -71,6 +82,7 @@ export class DiscordClient {
     )
       throw new TypeError('Invalid Discord client policy');
     this.base = base.toString().replace(/\/$/, '');
+    this.observe = safeDiscordObserver(options.observe);
   }
   private async request(
     method: string,
@@ -201,6 +213,14 @@ export class DiscordClient {
     userId: string,
     signal?: AbortSignal,
   ): Promise<string | null> {
+    return (await this.memberPermissions(channelId, userId, signal)).permissions;
+  }
+  /** `forbidden` tells a refusal (403) from a missing channel or member (404), which says nothing about permissions. */
+  private async memberPermissions(
+    channelId: string,
+    userId: string,
+    signal?: AbortSignal,
+  ): Promise<{ permissions: string | null; forbidden: boolean }> {
     channelSnowflakeSchema.parse(channelId);
     channelSnowflakeSchema.parse(userId);
     try {
@@ -215,21 +235,31 @@ export class DiscordClient {
           ),
         );
       if (!result.success) throw new DiscordWriteError('unknown');
-      return result.data.permissions;
+      return { permissions: result.data.permissions, forbidden: false };
     } catch (error) {
-      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0)) return null;
+      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0))
+        return { permissions: null, forbidden: error.status === 403 };
       throw error;
     }
   }
+  /** Reports only what the bot itself can do: another user's access is per user and never lands here. */
   async inspectGuildTextSource(
     input: { applicationId: string; botUserId: string; guildId: string; channelId: string },
     signal?: AbortSignal,
   ): Promise<DiscordGuildTextSource | null> {
     for (const value of Object.values(input)) channelSnowflakeSchema.parse(value);
+    const { source, outcome } = await this.inspectBotSource(input, signal);
+    if (outcome) this.observe({ type: 'permission', outcome });
+    return source;
+  }
+  private async inspectBotSource(
+    input: { applicationId: string; botUserId: string; guildId: string; channelId: string },
+    signal?: AbortSignal,
+  ): Promise<BotInspection> {
     try {
-      const [rawChannel, permissions] = await Promise.all([
+      const [rawChannel, { permissions, forbidden }] = await Promise.all([
         this.request('GET', `/channels/${input.channelId}`, undefined, signal),
-        this.getChannelMemberPermissions(input.channelId, input.botUserId, signal),
+        this.memberPermissions(input.channelId, input.botUserId, signal),
       ]);
       const channel = z
         .object({
@@ -239,19 +269,20 @@ export class DiscordClient {
           flags: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
         })
         .safeParse(rawChannel);
-      if (permissions === null) return null;
+      if (permissions === null) return { source: null, outcome: forbidden ? 'denied' : undefined };
       if (!channel.success) throw new DiscordWriteError('unknown');
       if (
         channel.data.id !== input.channelId ||
         channel.data.guild_id !== input.guildId ||
         channel.data.type !== 0 ||
-        (BigInt(channel.data.flags ?? 0) & BigInt(1 << 17)) !== BigInt(0) ||
-        !discordGuildTextPermissions(permissions)
+        (BigInt(channel.data.flags ?? 0) & BigInt(1 << 17)) !== BigInt(0)
       )
-        return null;
-      return { kind: 'guild_text', ...input, permissions };
+        return { source: null };
+      if (!discordGuildTextPermissions(permissions)) return { source: null, outcome: 'denied' };
+      return { source: { kind: 'guild_text', ...input, permissions }, outcome: 'ok' };
     } catch (error) {
-      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0)) return null;
+      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0))
+        return { source: null, outcome: error.status === 403 ? 'denied' : undefined };
       throw error;
     }
   }

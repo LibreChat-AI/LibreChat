@@ -12,6 +12,7 @@ import type {
   DiscordGatewayDispatch,
   DiscordGatewayReady,
 } from './socket';
+import type { DiscordApplicationObservation } from './observe';
 import type { Logger } from '../types';
 import { DiscordGatewayFailure } from './recovery';
 import { OwnedDiscordGateway } from './gateway';
@@ -137,6 +138,7 @@ function fixture(
   botUserId = '456',
   policy: { shardCount?: number; maxQueuedEvents?: number } = {},
   ownerId?: string,
+  observe?: (observation: DiscordApplicationObservation) => void,
 ) {
   const hooks: {
     dispatch?: (event: DiscordGatewayEvent, signal: AbortSignal) => Promise<void>;
@@ -156,6 +158,7 @@ function fixture(
       ownership: store.ownership,
       checkpoints: store.checkpoints,
       log,
+      observe,
       async dispatch(event, signal) {
         if (hooks.dispatch) await hooks.dispatch(event, signal);
         seen.push(event);
@@ -544,5 +547,181 @@ describe('owned Discord Gateway sessions', () => {
     expect(f.destroy).toHaveBeenCalledTimes(1);
     expect(f.store.batches.get('123')?.checkpoints[0].session?.sequence).toBe(1);
     gate.resolve();
+  });
+});
+
+describe('owned Discord Gateway observation', () => {
+  beforeEach(() => jest.useFakeTimers({ now: 1_700_000_000_000 }));
+  afterEach(() => jest.useRealTimers());
+  const watch = (
+    policy: { shardCount?: number; maxQueuedEvents?: number } = {},
+    store = shared(),
+    observed: DiscordApplicationObservation[] = [],
+  ) => ({
+    ...fixture(store, '123', '456', policy, undefined, (observation) => observed.push(observation)),
+    observed,
+  });
+  const up = (shardId: number) => ({ type: 'session', event: 'ready', shardId });
+
+  test('reports READY, heartbeats, transient closes, RESUMED, errors and the stop', async () => {
+    const f = watch({ shardCount: 2 });
+    await expect(f.start()).resolves.toBe(true);
+    expect(f.observed).toEqual([up(0), up(1)]);
+    f.drivers[0].heartbeat?.(1, 42);
+    f.drivers[0].closed(1006, 0);
+    f.drivers[0].resumed(0);
+    f.drivers[0].error();
+    expect(f.observed.slice(2)).toEqual([
+      { type: 'heartbeat', shardId: 1, latencyMs: 42 },
+      { type: 'session', event: 'closed_transient', shardId: 0 },
+      { type: 'session', event: 'resumed', shardId: 0 },
+      { type: 'session', event: 'error' },
+    ]);
+    await f.gateway.stop();
+    await f.gateway.stop();
+    expect(f.observed.slice(6)).toEqual([{ type: 'stop', reason: 'shutdown' }]);
+  });
+
+  test('reports a gap once, at the READY that follows a live session becoming non-resumable', async () => {
+    const f = watch();
+    await f.start();
+    expect(f.observed).toEqual([up(0)]);
+    f.observed.length = 0;
+    const [driver] = f.drivers;
+    await driver.updateSessionInfo(0, null);
+    expect(f.observed).toEqual([]);
+    await driver.updateSessionInfo(0, session('123', 0, 1, 5));
+    driver.ready(ready());
+    expect(f.observed).toEqual([up(0), { type: 'session', event: 'gap', shardId: 0 }]);
+    f.observed.length = 0;
+    driver.ready(ready());
+    expect(f.observed).toEqual([up(0)]);
+    await f.gateway.stop();
+  });
+
+  test('a clean shutdown, a fatal close and a first identify never report a gap', async () => {
+    const stopped = watch();
+    await stopped.start();
+    await stopped.gateway.stop();
+    await stopped.drivers[0].updateSessionInfo(0, null);
+    stopped.drivers[0].ready(ready());
+    const fatal = watch();
+    await fatal.start();
+    fatal.drivers[0].closed(4004, 0);
+    await fatal.drivers[0].updateSessionInfo(0, null);
+    fatal.drivers[0].ready(ready());
+    await fatal.gateway.closed;
+    for (const { observed } of [stopped, fatal])
+      expect(observed.filter((item) => item.type === 'session' && item.event === 'gap')).toEqual(
+        [],
+      );
+  });
+
+  test('names a fatal close, then the stop that follows it, and ignores what comes after', async () => {
+    const credentials = watch();
+    await credentials.start();
+    credentials.observed.length = 0;
+    credentials.drivers[0].closed(4004, 0);
+    credentials.drivers[0].closed(4014, 0);
+    credentials.drivers[0].heartbeat?.(0, 10);
+    credentials.drivers[0].error();
+    await credentials.gateway.closed;
+    expect(credentials.observed).toEqual([
+      { type: 'session', event: 'closed_fatal', shardId: 0 },
+      { type: 'stop', reason: 'credentials' },
+    ]);
+    const configuration = watch();
+    await configuration.start();
+    configuration.observed.length = 0;
+    configuration.drivers[0].closed(4014, 0);
+    await configuration.gateway.closed;
+    expect(configuration.observed).toEqual([
+      { type: 'session', event: 'closed_fatal', shardId: 0 },
+      { type: 'stop', reason: 'configuration' },
+    ]);
+  });
+
+  test.each([
+    [
+      'credentials',
+      async (f: ReturnType<typeof watch>) => {
+        f.hooks.connect = async () => {
+          throw new DiscordGatewayFailure('credentials');
+        };
+        await expect(f.start()).rejects.toMatchObject({ reason: 'credentials' });
+      },
+    ],
+    [
+      'identity',
+      async (f: ReturnType<typeof watch>) => {
+        f.hooks.ready = ready('123', '999');
+        await expect(f.start()).rejects.toThrow('Discord Gateway connection unavailable');
+      },
+    ],
+    [
+      'lost',
+      async (f: ReturnType<typeof watch>) => {
+        await f.start();
+        f.store.hooks.renew = async () => false;
+        await jest.advanceTimersByTimeAsync(10_000);
+        await f.gateway.closed;
+      },
+    ],
+    [
+      'checkpoint',
+      async (f: ReturnType<typeof watch>) => {
+        f.store.hooks.save = async () => {
+          f.store.locks.set('123', { ownerId: 'replacement', expiresAt: Date.now() + 30000 });
+        };
+        await expect(f.start()).rejects.toThrow('Discord Gateway connection unavailable');
+      },
+    ],
+    [
+      'dispatch',
+      async (f: ReturnType<typeof watch>) => {
+        await f.start();
+        f.hooks.dispatch = async () => {
+          throw new Error('private failure');
+        };
+        await f.send(message(2));
+        await f.gateway.closed;
+      },
+    ],
+  ] as const)('reports one %s stop with no other detail', async (reason, cause) => {
+    const f = watch();
+    await cause(f);
+    expect(f.observed.filter((item) => item.type === 'stop')).toEqual([{ type: 'stop', reason }]);
+    expect(JSON.stringify(f.observed)).not.toMatch(/private|session-|456|revision/);
+  });
+
+  test('backpressure is named as its own stop', async () => {
+    const f = watch({ maxQueuedEvents: 1 });
+    const gate = deferred<void>();
+    f.hooks.dispatch = () => gate.promise;
+    await f.start();
+    await f.send(message(2));
+    await f.send(message(3));
+    await f.send(message(4));
+    await f.gateway.closed;
+    expect(f.observed.filter((item) => item.type === 'stop')).toEqual([
+      { type: 'stop', reason: 'backpressure' },
+    ]);
+    gate.resolve();
+  });
+
+  test('a throwing observer changes neither session, delivery nor the failure it reports', async () => {
+    const observer = jest.fn(() => {
+      throw new Error('sink unavailable');
+    });
+    const f = fixture(shared(), '123', '456', {}, undefined, observer);
+    await expect(f.start()).resolves.toBe(true);
+    await f.send(message(2));
+    expect(f.seen).toHaveLength(1);
+    f.drivers[0].heartbeat?.(0, 5);
+    f.drivers[0].closed(4014, 0);
+    await f.gateway.closed;
+    expect(f.gateway.failure).toMatchObject({ reason: 'configuration', fatal: true });
+    expect(observer).toHaveBeenCalled();
+    expect(f.destroy).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,6 @@
 import { discordChannelConfigSchema } from 'librechat-data-provider';
 import { GatewayDispatchEvents, ApplicationFlags } from 'discord-api-types/v10';
+import type { DiscordApplicationObservation } from './observe';
 import type { DiscordGatewayDriverOptions } from './socket';
 import { DiscordGatewayControlClient } from './ownership';
 import { runDiscordSession } from './session';
@@ -190,3 +191,21 @@ it.each([4004, 4010, 4011, 4012, 4013, 4014])(
     expect(f.calls.some((path) => path.endsWith('/release'))).toBe(false);
   },
 );
+
+it('hands the application observer to the owned gateway for READY and the final stop', async () => {
+  const f = fixture();
+  const observed: DiscordApplicationObservation[] = [];
+  const run = runDiscordSession(
+    { ...f, owner, policy, dispatch: async () => {}, observe: (item) => observed.push(item) },
+    f.controller.signal,
+  );
+  const options = await f.connected.promise;
+  options.heartbeat?.(0, 33);
+  f.controller.abort();
+  await run;
+  expect(observed).toEqual([
+    { type: 'session', event: 'ready', shardId: 0 },
+    { type: 'heartbeat', shardId: 0, latencyMs: 33 },
+    { type: 'stop', reason: 'shutdown' },
+  ]);
+});

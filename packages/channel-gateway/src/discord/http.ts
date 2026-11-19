@@ -14,11 +14,16 @@ import type {
   DiscordChannelConfig,
   DiscordDmConsume,
 } from 'librechat-data-provider';
+import type { DiscordIngressOutcome, DiscordObserver } from './observe';
 import type { DiscordInteraction } from './events';
 import type { WebhookReply } from '../http';
 import type { Logger } from '../types';
 import { parseDiscordInteraction, verifyDiscordSignature } from './events';
+import { safeDiscordObserver } from './observe';
 import { WebhookHTTPServer } from '../http';
+
+/** Every reply names how the request ended, so the closed vocabulary is checked at compile time. */
+type DiscordReply = WebhookReply<DiscordIngressOutcome> & { outcome: DiscordIngressOutcome };
 
 /** Command parsing is shared; BOT_DM authorization and metadata-only selection remain separate. */
 export function discordInteractionAction(event: DiscordInteraction): DiscordIngressAction | null {
@@ -70,11 +75,16 @@ export interface DiscordWebhookDependencies {
   ) => Promise<'accepted' | 'conflict' | 'capacity'>;
   log: Logger;
   now?: () => number;
+  /** Optional telemetry for ingress outcomes and acknowledgement time. It never changes a response. */
+  observe?: DiscordObserver;
 }
 
-export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookHTTPServer<string> {
+export function createDiscordWebhook(
+  deps: DiscordWebhookDependencies,
+): WebhookHTTPServer<string, DiscordIngressOutcome> {
   const policy = discordChannelConfigSchema.parse(deps.policy);
-  return new WebhookHTTPServer<string>({
+  const observe = safeDiscordObserver(deps.observe);
+  return new WebhookHTTPServer<string, DiscordIngressOutcome>({
     ready: deps.ready,
     capacity: deps.capacity,
     maxBodyBytes: policy.maxBodyBytes,
@@ -83,18 +93,22 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
     timestampHeader: 'x-signature-timestamp',
     failureEvent: 'discord_delivery_not_accepted',
     log: deps.log,
+    observe: ({ outcome, ackMs }) => {
+      observe({ type: 'ingress', outcome });
+      if (ackMs !== undefined) observe({ type: 'ack', durationMs: ackMs });
+    },
     match: (path) => {
       const match = path.match(/^\/discord\/([0-9]{1,20})\/interactions$/);
       return match && channelSnowflakeSchema.safeParse(match[1]).success ? match[1] : undefined;
     },
-    dispatch: async (body, headers, applicationId, signal): Promise<WebhookReply> => {
+    dispatch: async (body, headers, applicationId, signal): Promise<DiscordReply> => {
       if (
         typeof headers.signature !== 'string' ||
         typeof headers.timestamp !== 'string' ||
         !/^[a-f0-9]{128}$/i.test(headers.signature) ||
         !/^[0-9]{1,16}$/.test(headers.timestamp)
       )
-        return { status: 401, body: { error: 'invalid_signature' } };
+        return { status: 401, body: { error: 'invalid_signature' }, outcome: 'bad_signature' };
       const app = await deps.security(applicationId, signal);
       signal.throwIfAborted();
       if (
@@ -107,22 +121,22 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
           now: deps.now?.(),
         })
       )
-        return { status: 401, body: { error: 'invalid_signature' } };
+        return { status: 401, body: { error: 'invalid_signature' }, outcome: 'bad_signature' };
       if (
         typeof headers.contentType !== 'string' ||
         headers.contentType.split(';')[0].trim().toLowerCase() !== 'application/json'
       )
-        return { status: 400, body: { error: 'invalid_payload' } };
+        return { status: 400, body: { error: 'invalid_payload' }, outcome: 'bad_payload' };
       let event: DiscordInteraction;
       try {
         event = parseDiscordInteraction(body, policy.maxBodyBytes);
       } catch {
-        return { status: 400, body: { error: 'invalid_payload' } };
+        return { status: 400, body: { error: 'invalid_payload' }, outcome: 'bad_payload' };
       }
       if (event.type === 1)
         return event.application_id && event.application_id !== applicationId
-          ? { status: 400, body: { error: 'application_mismatch' } }
-          : { status: 200, body: { type: 1 } };
+          ? { status: 400, body: { error: 'application_mismatch' }, outcome: 'bad_context' }
+          : { status: 200, body: { type: 1 }, outcome: 'ping' };
       if (event.context === 1) {
         if (
           event.application_id !== applicationId ||
@@ -137,13 +151,18 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
           event.authorizing_integration_owners?.['0'] !== '0' ||
           event.authorizing_integration_owners?.['1'] !== undefined
         )
-          return { status: 400, body: { error: 'invalid_context' } };
+          return { status: 400, body: { error: 'invalid_context' }, outcome: 'bad_context' };
         const action =
           event.type === 3 && event.data.component_type === 2
             ? parseDiscordControl(event.data.custom_id, event.message?.id)
             : discordInteractionAction(event);
         if (action && ['ask', 'status', 'cancel', 'feedback'].includes(action.kind)) {
-          if (!deps.submitDm) return { status: 400, body: { error: 'unsupported_interaction' } };
+          if (!deps.submitDm)
+            return {
+              status: 400,
+              body: { error: 'unsupported_interaction' },
+              outcome: 'unsupported',
+            };
           const result = await deps.submitDm(
             {
               scope: 'dm',
@@ -159,14 +178,19 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
           );
           signal.throwIfAborted();
           return result === 'accepted'
-            ? { status: 200, body: { type: 5, data: { flags: 64 } } }
+            ? { status: 200, body: { type: 5, data: { flags: 64 } }, outcome: result }
             : {
                 status: result === 'capacity' ? 429 : 409,
                 body: { error: 'interaction_not_accepted' },
+                outcome: result,
               };
         }
         if (!deps.select || event.type !== 2 || event.data.name !== 'librechat')
-          return { status: 400, body: { error: 'unsupported_interaction' } };
+          return {
+            status: 400,
+            body: { error: 'unsupported_interaction' },
+            outcome: 'unsupported',
+          };
         const options = event.data.options ?? [];
         const command = options[0];
         const argument = command?.options?.[0];
@@ -181,7 +205,11 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
           argument.type !== 3 ||
           !code.success
         )
-          return { status: 400, body: { error: 'unsupported_interaction' } };
+          return {
+            status: 400,
+            body: { error: 'unsupported_interaction' },
+            outcome: 'unsupported',
+          };
         const input = discordDmConsumeSchema.safeParse({
           applicationId,
           applicationRevision: app.applicationRevision,
@@ -190,7 +218,8 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
           confirmationEventId: event.id,
           codeHash: createHash('sha256').update(code.data).digest('hex'),
         });
-        if (!input.success) return { status: 400, body: { error: 'invalid_payload' } };
+        if (!input.success)
+          return { status: 400, body: { error: 'invalid_payload' }, outcome: 'bad_payload' };
         const result = await deps.select(input.data, signal);
         signal.throwIfAborted();
         const messages = {
@@ -208,6 +237,7 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
               allowed_mentions: { parse: [] },
             },
           },
+          outcome: result,
         };
       }
       if (
@@ -220,7 +250,7 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
         event.member.user.bot ||
         event.user
       )
-        return { status: 400, body: { error: 'invalid_context' } };
+        return { status: 400, body: { error: 'invalid_context' }, outcome: 'bad_context' };
       let action: DiscordIngressAction | null;
       if (event.type === 3)
         action =
@@ -228,7 +258,8 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
             ? parseDiscordControl(event.data.custom_id, event.message?.id)
             : null;
       else action = discordInteractionAction(event);
-      if (!action) return { status: 400, body: { error: 'unsupported_interaction' } };
+      if (!action)
+        return { status: 400, body: { error: 'unsupported_interaction' }, outcome: 'unsupported' };
       signal.throwIfAborted();
       const result = await deps.submit(
         {
@@ -248,8 +279,9 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
         return {
           status: result === 'capacity' ? 429 : 409,
           body: { error: 'interaction_not_accepted' },
+          outcome: result,
         };
-      return { status: 200, body: { type: 5, data: { flags: 64 } } };
+      return { status: 200, body: { type: 5, data: { flags: 64 } }, outcome: 'accepted' };
     },
   });
 }

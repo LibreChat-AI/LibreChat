@@ -1,3 +1,4 @@
+import { discordChannelConfigSchema } from 'librechat-data-provider';
 import type { DiscordQuarantineSummary } from './health';
 import type { DiscordGatewayOwner } from './gateway';
 import { DEFAULT_DISCORD_HEALTH_POLICY, DiscordHealth, discordHealthLevels } from './health';
@@ -21,11 +22,14 @@ describe('Discord health policy', () => {
     now = 1_000_000;
   });
 
-  test('defaults to the documented staleness and observation windows', () => {
+  test('defaults to the documented windows, taken from the config schema', () => {
     expect(DEFAULT_DISCORD_HEALTH_POLICY).toEqual({
       staleAfterMs: 120_000,
       observationTtlMs: 3_600_000,
+      permissionWindow: 3,
+      taskWindow: 8,
     });
+    expect(DEFAULT_DISCORD_HEALTH_POLICY).toEqual(discordChannelConfigSchema.parse({}).health);
   });
 
   test.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
@@ -33,6 +37,8 @@ describe('Discord health policy', () => {
     (value) => {
       expect(() => new DiscordHealth({ staleAfterMs: value })).toThrow(TypeError);
       expect(() => new DiscordHealth({ observationTtlMs: value })).toThrow(TypeError);
+      expect(() => new DiscordHealth({ permissionWindow: value })).toThrow(TypeError);
+      expect(() => new DiscordHealth({ taskWindow: value })).toThrow(TypeError);
     },
   );
 
@@ -140,6 +146,27 @@ describe('Discord workers health', () => {
     for (let index = 0; index < 8; index++) health.task(false);
     expect(health.snapshot().workers).toBe('degraded');
   });
+
+  test('a configured task window decides how many recent outcomes count', () => {
+    const health = new DiscordHealth({ now: () => now, taskWindow: 2 });
+    health.discovery('applications', true);
+    health.discovery('channels', true);
+    health.task(true);
+    health.task(false);
+    expect(health.snapshot().workers).toBe('healthy');
+    health.task(false);
+    expect(health.snapshot().workers).toBe('degraded');
+    health.task(true);
+    expect(health.snapshot().workers).toBe('healthy');
+    const wide = new DiscordHealth({ now: () => now, taskWindow: 20 });
+    wide.discovery('applications', true);
+    wide.discovery('channels', true);
+    wide.task(true);
+    for (let index = 0; index < 19; index++) wide.task(false);
+    expect(wide.snapshot().workers).toBe('healthy');
+    wide.task(false);
+    expect(wide.snapshot().workers).toBe('degraded');
+  });
 });
 
 describe('Discord credentials health', () => {
@@ -211,6 +238,24 @@ describe('Discord permissions health', () => {
     expect(level(health)).toBe('degraded');
     entry.permission('ok');
     expect(level(health)).toBe('healthy');
+  });
+
+  test('a configured permission window decides how many denials in a row fail', () => {
+    const health = new DiscordHealth({ now: () => now, permissionWindow: 2 });
+    const entry = health.entry(owner(), { shards: 0 });
+    entry.permission('denied');
+    expect(level(health)).toBe('degraded');
+    entry.permission('denied');
+    expect(level(health)).toBe('failing');
+    entry.permission('ok');
+    entry.permission('ok');
+    expect(level(health)).toBe('healthy');
+    const wide = new DiscordHealth({ now: () => now, permissionWindow: 5 });
+    const tracked = wide.entry(owner('222222222222222222'), { shards: 0 });
+    for (let index = 0; index < 4; index++) tracked.permission('denied');
+    expect(level(wide)).toBe('degraded');
+    tracked.permission('denied');
+    expect(level(wide)).toBe('failing');
   });
 
   test('each outcome expires on its own after the observation window', () => {

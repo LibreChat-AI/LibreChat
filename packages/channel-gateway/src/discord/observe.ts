@@ -151,7 +151,9 @@ export const noopDiscordTelemetry: DiscordTelemetry = {
 };
 
 /** Telemetry must never change what it observes, so a throwing sink is ignored. */
-function safeDiscordObserver<T>(observer?: (observation: T) => void): (observation: T) => void {
+export function safeDiscordObserver<T>(
+  observer?: (observation: T) => void,
+): (observation: T) => void {
   return (observation) => {
     try {
       observer?.(observation);

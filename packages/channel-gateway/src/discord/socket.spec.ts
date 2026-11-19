@@ -1,5 +1,6 @@
 import * as timers from 'node:timers/promises';
 import { discordChannelConfigSchema } from 'librechat-data-provider';
+import { WebSocketManager, WebSocketShardEvents } from '@discordjs/ws';
 import type { DiscordGatewayDriverOptions } from './socket';
 import { createDiscordGatewayDriver, createOwnedIdentifyThrottler } from './socket';
 import { DiscordRateCoordinator } from './rates';
@@ -101,6 +102,31 @@ describe('published Discord SDK binding', () => {
     controller.abort();
     await expect(waiting).resolves.toMatchObject({ name: 'AbortError' });
     await timers.setTimeout(6500);
+  });
+  test('binds the acknowledged heartbeat of any shard to the optional driver hook', async () => {
+    const on = jest.spyOn(WebSocketManager.prototype, 'on');
+    try {
+      const heartbeat = jest.fn();
+      const driver = createDiscordGatewayDriver({ ...options(), heartbeat }, jest.fn());
+      const listener = on.mock.calls.find(
+        ([event]) => event === WebSocketShardEvents.HeartbeatComplete,
+      )?.[1];
+      expect(listener).toBeDefined();
+      await listener?.({ shardId: 3, latency: 41, ackAt: 2000, heartbeatAt: 1959 });
+      expect(heartbeat).toHaveBeenCalledWith(3, 41);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+      await driver.destroy();
+      const silent = createDiscordGatewayDriver(options(), jest.fn());
+      const [, second] = on.mock.calls.filter(
+        ([event]) => event === WebSocketShardEvents.HeartbeatComplete,
+      );
+      await expect(
+        Promise.resolve(second?.[1]({ shardId: 0, latency: 1, ackAt: 2, heartbeatAt: 1 })),
+      ).resolves.toBeUndefined();
+      await silent.destroy();
+    } finally {
+      on.mockRestore();
+    }
   });
   test('refuses REST discovery after ownership loss', async () => {
     const config = options();

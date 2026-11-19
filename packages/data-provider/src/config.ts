@@ -1415,6 +1415,20 @@ export const discordChannelConfigSchema = z
       })
       .strict()
       .prefault({}),
+    /** Private health classification. Retry and quarantine timing stays under `gateway.recovery`. */
+    health: z
+      .object({
+        /** Discovery and heartbeat signals older than this stop counting as live. A Discord heartbeat arrives about every 41 seconds, so a shorter window reports healthy shards as stale. */
+        staleAfterMs: z.number().int().min(60_000).max(3_600_000).default(120_000),
+        /** Credential and permission observations older than this decay to unknown. */
+        observationTtlMs: z.number().int().min(60_000).max(86_400_000).default(3_600_000),
+        /** Most recent bot side permission outcomes considered: all denied fails, some denied degrades. */
+        permissionWindow: z.number().int().min(1).max(20).default(3),
+        /** Most recent worker task outcomes considered: all failed degrades the workers. */
+        taskWindow: z.number().int().min(1).max(100).default(8),
+      })
+      .strict()
+      .prefault({}),
   })
   .strict();
 export type DiscordChannelConfig = z.infer<typeof discordChannelConfigSchema>;
