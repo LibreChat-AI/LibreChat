@@ -47,26 +47,50 @@ const shownSideChatAtom = atom<SideChat | null>(null);
  */
 export const sideChatRequestAtom: PrimitiveAtom<object | null> = atom<object | null>(null);
 
+/** Unsent words belong to their conversation, in memory rather than to the mounted panel. */
+export const sideChatDraftFamily: (conversationId: string) => PrimitiveAtom<string> = atomFamily(
+  (_conversationId: string) => atom(''),
+);
+
 /** The side chat on screen, if any. One at a time: it takes the page's side panel. */
 export const sideChatAtom: WritableAtom<SideChat | null, [SetStateAction<SideChat | null>], void> =
   atom(
     (get) => get(shownSideChatAtom),
     (get, set, next: SetStateAction<SideChat | null>) => {
       const current = get(shownSideChatAtom);
-      const value = typeof next === 'function' ? next(current) : next;
+      const refinement = typeof next === 'function';
+      let value = refinement ? next(current) : next;
       /** A change of what is shown, not a refinement of it, is the reader's newest choice. */
       if (value?.conversation.conversationId !== current?.conversation.conversationId) {
         set(sideChatRequestAtom, null);
+      }
+      const id = value?.conversation.conversationId;
+      const text = value?.text;
+      /** Seed before any panel can load. Existing words stay manual, including equal text. */
+      if (
+        value &&
+        id &&
+        text &&
+        ((!refinement && value !== current) ||
+          id !== current?.conversation.conversationId ||
+          text !== current?.text)
+      ) {
+        const draft = sideChatDraftFamily(id);
+        if (get(draft) === '') set(draft, text);
+        else value = { conversation: value.conversation };
       }
       set(shownSideChatAtom, value);
     },
   );
 
-/**
- * The words the reader has written for a side chat and not sent, by its conversation. Held
- * outside the panel, which is drawn again when the layout moves it between a column and a
- * sheet, and in memory only: an unsent draft is not written to storage.
- */
-export const sideChatDraftFamily: (conversationId: string) => PrimitiveAtom<string> = atomFamily(
-  (_conversationId: string) => atom(''),
+/** Retire only the draft captured by the accepted send or main-composer transfer. */
+export const sideChatDraftTakenAtom: WritableAtom<null, [SideChat, string], void> = atom(
+  null,
+  (get, set, expected: SideChat, text: string) => {
+    if (get(shownSideChatAtom) !== expected) return;
+    const id = expected.conversation.conversationId;
+    if (!id) return;
+    const draft = sideChatDraftFamily(id);
+    if (get(draft) === text) set(draft, '');
+  },
 );

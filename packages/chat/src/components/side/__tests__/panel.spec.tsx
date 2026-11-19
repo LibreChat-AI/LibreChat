@@ -1,8 +1,8 @@
 /**
  * @jest-environment jsdom
  */
-import { atom, useAtom, Provider, createStore } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { atom, useAtom, useAtomValue, Provider, createStore } from 'jotai';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { Constants, ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
@@ -10,6 +10,11 @@ import type { ChatStream, ChatTransport, ChatSendRequest } from '../../../core';
 import type { SideChatHost } from '../../../react/side/host';
 import type { SideChat } from '../../../react/side/state';
 import type { ChatHost } from '../../../react/chat/host';
+import {
+  sideChatAtom,
+  sideChatDraftFamily,
+  sideChatDraftTakenAtom,
+} from '../../../react/side/state';
 import { MessagesHostProvider, useMessagesHost } from '../../../react/messages/host';
 import { createTurnServices } from '../../../react/chat/__fixtures__/services';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
@@ -120,11 +125,15 @@ function setup({
   stored = [user, reply('response-1', 'It shipped.')],
   loadMessages = jest.fn(async () => stored),
   canSubmit = () => true,
+  managed = false,
+  draft,
 }: {
   chat?: SideChat;
   stored?: TMessage[];
   loadMessages?: jest.Mock<Promise<TMessage[]>>;
   canSubmit?: () => boolean;
+  managed?: boolean;
+  draft?: string;
 } = {}) {
   const streams: TestStream[] = [];
   const sendMessages = jest.fn(
@@ -170,6 +179,29 @@ function setup({
   const handOffComposerText = jest.fn();
   const queryClient = new QueryClient();
   const store = createStore();
+  if (draft != null) store.set(sideChatDraftFamily(conversationId), draft);
+  if (managed) store.set(sideChatAtom, chat);
+  function OwnedPanel() {
+    const current = useAtomValue(sideChatAtom);
+    return (
+      current && (
+        <SideChatPanel
+          chat={current}
+          onClose={() => {
+            onClose();
+            store.set(sideChatAtom, (value) => (value === current ? null : value));
+          }}
+          onHandedTextTaken={(expected) => {
+            onHandedTextTaken();
+            store.set(sideChatAtom, (value) =>
+              value === expected ? { conversation: value.conversation } : value,
+            );
+          }}
+          onDraftTaken={(expected, text) => store.set(sideChatDraftTakenAtom, expected, text)}
+        />
+      )
+    );
+  }
   const tree = (current: SideChat) => (
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
@@ -191,11 +223,15 @@ function setup({
             <SideChatHostProvider host={sideChatHost}>
               <MessagesHostProvider host={messagesHost}>
                 <MessagePartsHostProvider host={partsHost}>
-                  <SideChatPanel
-                    chat={current}
-                    onClose={onClose}
-                    onHandedTextTaken={() => onHandedTextTaken()}
-                  />
+                  {managed ? (
+                    <OwnedPanel />
+                  ) : (
+                    <SideChatPanel
+                      chat={current}
+                      onClose={onClose}
+                      onHandedTextTaken={() => onHandedTextTaken()}
+                    />
+                  )}
                 </MessagePartsHostProvider>
               </MessagesHostProvider>
             </SideChatHostProvider>
@@ -207,6 +243,9 @@ function setup({
   const view = render(tree(chat));
   return {
     ...view,
+    store,
+    open: (next: SideChat) => act(() => store.set(sideChatAtom, next)),
+    refresh: () => view.rerender(tree(chat)),
     rerenderWith: (next: SideChat) => view.rerender(tree(next)),
     /** Draws the panel again from nothing, as the layout does when it moves it. */
     remount: () => {
@@ -325,9 +364,8 @@ describe('SideChatPanel', () => {
   });
 
   it('sends the words handed over with the conversation once, as its next turn', async () => {
-    const { sendMessages, streams, onHandedTextTaken, rerenderWith } = setup({
-      chat: { conversation, text: 'Carry on from here.' },
-    });
+    const chat = { conversation, text: 'Carry on from here.' };
+    const { sendMessages, streams, onHandedTextTaken, rerenderWith } = setup({ chat });
 
     await waitFor(() => expect(streams).toHaveLength(1));
     expect(sendMessages.mock.calls[0][0].payload).toMatchObject({
@@ -343,6 +381,24 @@ describe('SideChatPanel', () => {
     expect(sendMessages).toHaveBeenCalledTimes(1);
     expect(onHandedTextTaken).toHaveBeenCalledTimes(1);
     expect(field()).toHaveValue('');
+    const asked: TMessage = {
+      ...user,
+      messageId: sendMessages.mock.calls[0][0].payload.messageId as string,
+      parentMessageId: 'response-1',
+      text: 'Carry on from here.',
+    };
+    act(() => {
+      streams[0].push({
+        type: 'created',
+        data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+      } as ChatEvent);
+      streams[0].push(final(asked, reply('response-2', 'Done.', asked.messageId)));
+    });
+    await waitFor(() => expect(rows()).toContain('reply=Done.'));
+    rerenderWith({ conversation, text: 'Carry on from here.' });
+    await settle();
+    expect(sendMessages).toHaveBeenCalledTimes(1);
+    expect(onHandedTextTaken).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a refused handoff as an editable draft without later automatic replay', async () => {
@@ -462,4 +518,89 @@ describe('SideChatPanel', () => {
     await waitFor(() => expect(rows()).toHaveLength(2));
     expect(field()).toHaveValue('Half a thought');
   });
+});
+
+describe('pending side-chat draft ownership', () => {
+  it('moves the question to the main composer before history loads, without leaving a second draft', async () => {
+    const loadMessages = jest.fn<Promise<TMessage[]>, []>(() => new Promise(() => undefined));
+    const chat = { conversation, text: 'Keep these words.' };
+    const view = setup({ chat, loadMessages, managed: true });
+    expect(view.store.get(sideChatDraftFamily(conversationId))).toBe(chat.text);
+    fireEvent.click(screen.getByRole('button', { name: 'Open as the main chat' }));
+    expect(view.handOffComposerText).toHaveBeenCalledWith(conversationId, chat.text);
+    expect(view.store.get(sideChatDraftFamily(conversationId))).toBe('');
+    loadMessages.mockResolvedValue([user, reply('response-1', 'It shipped.')]);
+    view.open({ conversation });
+    await waitFor(() => expect(field()).toHaveValue(''));
+    expect(view.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('keeps the question manual after close and ordinary reopen while history loads', async () => {
+    let finish!: (messages: TMessage[]) => void;
+    const loadMessages = jest
+      .fn<Promise<TMessage[]>, []>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue([user, reply('response-1', 'It shipped.')]);
+    const view = setup({
+      chat: { conversation, text: 'Keep these words.' },
+      loadMessages,
+      managed: true,
+    });
+    await waitFor(() => expect(loadMessages).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await act(async () => finish([user, reply('response-1', 'It shipped.')]));
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    view.open({ conversation });
+    await waitFor(() => expect(field()).toHaveValue('Keep these words.'));
+    expect(view.sendMessages).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('composer-send-button'));
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(field()).toHaveValue('');
+  });
+
+  it('isolates an old loading question from the new destination and does not replay it on return', async () => {
+    let finish!: (messages: TMessage[]) => void;
+    const loadMessages = jest
+      .fn<Promise<TMessage[]>, []>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue([user, reply('response-1', 'It shipped.')]);
+    const view = setup({
+      chat: { conversation, text: 'First question.' },
+      loadMessages,
+      managed: true,
+    });
+    await waitFor(() => expect(loadMessages).toHaveBeenCalled());
+    view.open({
+      conversation: { ...conversation, conversationId: 'other' },
+      text: 'Other question.',
+    });
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(view.sendMessages.mock.calls[0][0].payload).toMatchObject({
+      conversationId: 'other',
+      text: 'Other question.',
+    });
+    await act(async () => finish([user, reply('response-1', 'It shipped.')]));
+    view.open({ conversation });
+    await waitFor(() => expect(field()).toHaveValue('First question.'));
+    expect(view.sendMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['Same words.', 'Different draft.'])(
+    'preserves a pre-existing draft without arming a handoff: %s',
+    async (draft) => {
+      const view = setup({ chat: { conversation, text: 'Same words.' }, draft, managed: true });
+      await waitFor(() => expect(field()).toHaveValue(draft));
+      expect(view.sendMessages).not.toHaveBeenCalled();
+    },
+  );
 });
