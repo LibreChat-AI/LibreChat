@@ -11,6 +11,7 @@ import type {
   ChatTransportOptions,
 } from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
+import { findConvoInAllQueries, hasServerFetchedReply, hasLocallyCommittedReply } from '~/utils';
 import { ChatTransportContext, defaultChatTransport } from '../ChatTransportContext';
 
 const mockMessages = jest.fn();
@@ -64,6 +65,40 @@ function createTransport() {
   };
   return { transport, attachments, start, abort };
 }
+
+const answered: TMessage = {
+  messageId: 'response-1',
+  conversationId: 'side-conversation',
+  parentMessageId: 'user-1',
+  isCreatedByUser: false,
+  text: 'Here it is.',
+} as TMessage;
+
+/** The conversation as the sidebar lists it: the reply it names, which the reader has not seen. */
+const list = (client: QueryClient, lastResponseAt: string) =>
+  client.setQueryData([QueryKeys.allConversations, { isArchived: false }], {
+    pages: [
+      {
+        conversations: [
+          {
+            conversationId: 'side-conversation',
+            title: 'Chart',
+            lastResponseAt,
+            lastResponseMessageId: 'response-1',
+          },
+        ],
+        nextCursor: null,
+      },
+    ],
+    pageParams: [null],
+  });
+
+/** A client whose sidebar already lists the conversation with that reply. */
+const listed = (lastResponseAt: string) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  list(client, lastResponseAt);
+  return client;
+};
 
 const setup = (
   target = conversation,
@@ -215,6 +250,76 @@ describe("the app's side chat host", () => {
         expect.objectContaining({ file_id: 'file-1', filename: 'chart.png' }),
       ]),
     );
+  });
+
+  it('stands the history it read as proof of the reply the conversation names', async () => {
+    const repliedAt = '2026-11-18T10:00:00.000Z';
+    mockStreamStatus.mockResolvedValue({ active: false });
+    mockMessages.mockResolvedValue([asked, answered]);
+
+    const { result, client } = setup(conversation, listed(repliedAt));
+    await waitFor(() => expect(result.current.messages).toEqual([asked, answered]));
+
+    /** What reading the reply on screen needs before it can be acknowledged. */
+    expect(hasServerFetchedReply(client, 'side-conversation', repliedAt)).toBe(true);
+  });
+
+  it('does not take a history without the reply as proof of it', async () => {
+    const repliedAt = '2026-11-18T10:00:00.000Z';
+    mockStreamStatus.mockResolvedValue({ active: false });
+    mockMessages.mockResolvedValue([asked]);
+
+    const { result, client } = setup(conversation, listed(repliedAt));
+    await waitFor(() => expect(result.current.messages).toEqual([asked]));
+
+    expect(hasServerFetchedReply(client, 'side-conversation', repliedAt)).toBe(false);
+  });
+
+  it('stamps the conversation with the reply a generation ended on, paired with the list that holds it', async () => {
+    const before = '2026-11-18T10:00:00.000Z';
+    const repliedAt = '2026-11-18T10:05:00.000Z';
+    mockStreamStatus.mockResolvedValue({
+      active: true,
+      streamId: 'side-conversation',
+      createdAt: 2000,
+      generationProtocolVersion: 2,
+    });
+    mockMessages.mockResolvedValue([asked]);
+    const { result, attachments, client } = setup(conversation, listed(before));
+    await waitFor(() => expect(attachments).toHaveLength(1));
+    const emit = (event: ChatEvent) => act(() => attachments[0].options.onEvent(event));
+
+    emit({ type: 'open' });
+    emit({
+      type: 'created',
+      data: { created: true, message: asked, turn: { responseMessageId: 'response-1' } },
+    } as ChatEvent);
+    mockStreamStatus.mockResolvedValue({ active: false });
+    mockMessages.mockResolvedValue([asked, answered]);
+    emit({
+      type: 'final',
+      data: {
+        final: true,
+        conversation: {
+          conversationId: 'side-conversation',
+          lastResponseAt: repliedAt,
+          lastResponseMessageId: 'response-1',
+          updatedAt: repliedAt,
+        },
+        requestMessage: asked,
+        responseMessage: answered,
+      },
+    } as ChatEvent);
+    await waitFor(() => expect(result.current.messages).toEqual([asked, answered]));
+
+    /** The sidebar's entry carries the new reply, and the list on screen is known to hold it. */
+    await waitFor(() =>
+      expect(findConvoInAllQueries(client, 'side-conversation')).toMatchObject({
+        lastResponseAt: repliedAt,
+        lastResponseMessageId: 'response-1',
+      }),
+    );
+    expect(hasLocallyCommittedReply(client, 'side-conversation', repliedAt)).toBe(true);
   });
 
   it('stops a generation through the app, by its conversation and the stream it names', async () => {

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Page, Request } from '@playwright/test';
 import {
   replyText,
   replyPrompt,
@@ -11,6 +11,7 @@ import {
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { openChatHistory } from './sidebar';
+import { withMongo } from '../db';
 
 /**
  * A conversation opened beside the one on screen, from its row in the sidebar: the reader keeps
@@ -134,6 +135,76 @@ test('a turn in a side chat shows its message once while the reply streams @scen
   await expect(turns).toHaveCount(4);
   await expect(turns.nth(2)).not.toContainText(/\d+\s*\/\s*\d+/);
   expect(reads).toEqual([]);
+});
+
+const isSeenReport = (request: Request, conversationId: string): boolean =>
+  request.method() === 'POST' &&
+  new URL(request.url()).pathname === '/api/convos/seen' &&
+  (request.postData() ?? '').includes(conversationId);
+
+test('a reply read in a side chat is acknowledged @scenario:side-chat-reply-is-marked-seen', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const earlier = uniqueLabel('earlier-seen');
+  const followUp = uniqueLabel('read-beside');
+  const earlierUrl = await startChat(page, earlier);
+  const besideId = new URL(earlierUrl).pathname.split('/').pop() ?? '';
+  await startChat(page, uniqueLabel('current-seen'));
+
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  const sideChat = page.getByRole('region', { name: 'Side chat' });
+  await expect(sideChat).toContainText(replyText(earlier), { timeout: 30_000 });
+
+  /** The reply lands in front of the reader, so the server is told they have seen it. */
+  const composer = sideChat.getByRole('textbox', { name: 'Message input' });
+  await composer.click();
+  await page.keyboard.type(replyPrompt(followUp));
+  const [seen] = await Promise.all([
+    page.waitForRequest((request) => isSeenReport(request, besideId), { timeout: 30_000 }),
+    page.keyboard.press('Enter'),
+  ]);
+  await expect(sideChat).toContainText(replyText(followUp));
+  expect((await seen.response())?.ok()).toBeTruthy();
+  await expect(row.getByRole('button').first()).not.toHaveAccessibleName(/Unread/);
+});
+
+test('an unread conversation opened beside the chat is caught up with @scenario:side-chat-catches-up-an-unread-conversation', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const earlier = uniqueLabel('earlier-unread');
+  const earlierUrl = await startChat(page, earlier);
+  const besideId = new URL(earlierUrl).pathname.split('/').pop() ?? '';
+  await startChat(page, uniqueLabel('current-unread'));
+
+  /** As if its reply had landed while the reader was away: last seen before it. */
+  await withMongo(async (db) => {
+    const updated = await db
+      .collection('conversations')
+      .updateOne({ conversationId: besideId }, { $set: { lastSeenAt: new Date(0) } });
+    expect(updated.matchedCount).toBe(1);
+  });
+  await page.reload();
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  const link = row.getByRole('button').first();
+  await expect(link).toHaveAccessibleName(/Unread/);
+
+  /** Reading it beside the chat is reading it: the reply is acknowledged and the dot goes. */
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  const [seen] = await Promise.all([
+    page.waitForRequest((request) => isSeenReport(request, besideId), { timeout: 30_000 }),
+    page.getByRole('menuitem', { name: 'Open beside chat' }).click(),
+  ]);
+  await expect(page.getByRole('region', { name: 'Side chat' })).toContainText(replyText(earlier));
+  expect((await seen.response())?.ok()).toBeTruthy();
+  await expect(link).not.toHaveAccessibleName(/Unread/);
 });
 
 test.describe('on a small screen', () => {

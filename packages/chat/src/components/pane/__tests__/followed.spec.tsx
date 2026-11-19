@@ -10,11 +10,11 @@ import type { ReactElement } from 'react';
 import type { ChatStream, ChatTransport, ChatStreamStatus } from '../../../core';
 import type { ChatContract } from '../../../react/chat/contract';
 import type { FollowChatOptions } from '../../../react/follow';
+import { inertSeenSource, MessagesHostProvider } from '../../../react/messages/host';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { useIsMessagesViewReadOnly } from '../../../react/messages/view';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
-import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { useChatContext } from '../../../react/chat/context';
 import { initEnglish } from '../../../__fixtures__/i18n';
@@ -152,7 +152,10 @@ const partsText = (content: ReadonlyArray<object | undefined> | undefined): stri
  * A text turn draws through the messages host and a content turn through the parts host, as in
  * the app.
  */
+/** The page's read state, which a list asks for when reading it can mark a conversation seen. */
+const pageSeenSource = jest.fn(() => inertSeenSource);
 const messagesHost = createMessagesHost({
+  useSeenSource: pageSeenSource,
   renderMessageBody: ({ message }) => (
     <div data-testid="row">{`${message.messageId}=${message.text ?? ''}`}</div>
   ),
@@ -254,6 +257,16 @@ describe('FollowedThread', () => {
       conversation: { conversationId: 'thread-1' },
     });
     expect(contract?.getMessages()).toEqual(stored);
+  });
+
+  it("marks nothing seen: the thread is not a conversation of the reader's", async () => {
+    pageSeenSource.mockClear();
+    const { transport } = createTransport({ active: false });
+    const stored = [brief, answer('task-1:assistant', 'task-1:user', 'Done')];
+    mount(<Pane transport={transport} loadMessages={async () => stored} />);
+    await waitFor(() => expect(rows()).toHaveLength(2));
+
+    expect(pageSeenSource).not.toHaveBeenCalled();
   });
 
   it('tells its rows the view is read-only, so host-bound actions in them stay off', async () => {

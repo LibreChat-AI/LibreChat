@@ -30,7 +30,7 @@ export default function DrivenThread({
   const contract = useDrivenContract({ id, followed, index });
   return (
     <>
-      <ContractThread contract={contract} followed={followed} slots={slots} />
+      <ContractThread contract={contract} followed={followed} slots={slots} own />
       {children?.(contract)}
     </>
   );

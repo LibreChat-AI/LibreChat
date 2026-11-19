@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { TMessage, ChatEvent } from 'librechat-data-provider';
+import type { TMessage, ChatEvent, ChatFinalFrame } from 'librechat-data-provider';
 import type {
   ChatStatus,
   ChatTransport,
@@ -76,10 +76,21 @@ export type FollowedPage = {
   earlier?: string | null;
 };
 
-export type FollowBeside = Pick<EventApplierInit, 'usage' | 'onAttachment' | 'onTitle' | 'steers'>;
+type AppliedBeside = Pick<EventApplierInit, 'usage' | 'onAttachment' | 'onTitle' | 'steers'>;
+
+export type FollowBeside = AppliedBeside & {
+  /**
+   * The list now holds what the server stores of the conversation: its stored rows were just
+   * read, or a turn sent from here ended on its own final frame. `final` is the frame the last
+   * generation ended on, when one ended since the list was last settled. It is where main chat's
+   * stream session stamps the conversation with the reply it just committed, and where a fetch
+   * of its history proves the reply it holds, so that reading the reply can be acknowledged.
+   */
+  onSettled?: (final?: ChatFinalFrame) => void;
+};
 
 /** The same handlers, looked up when a frame arrives, so the caller's latest are the ones called. */
-const forwardBeside = (read: () => FollowBeside | undefined): Required<FollowBeside> => ({
+const forwardBeside = (read: () => FollowBeside | undefined): Required<AppliedBeside> => ({
   usage: {
     bindResponse: (submission) => read()?.usage?.bindResponse(submission),
     contextHandler: (data, submission) => read()?.usage?.contextHandler(data, submission),
@@ -293,6 +304,13 @@ export function useFollowChat({
     let reads = 0;
     /** The reader's stop in flight, which the turn it ends waits for instead of reattaching. */
     let stopping: Promise<void> | undefined;
+    /** The final frame the last generation ended on, until the caller is told the list settled. */
+    let ended: ChatFinalFrame | undefined;
+    const settled = (): void => {
+      const final = ended;
+      ended = undefined;
+      host.current.beside?.onSettled?.(final);
+    };
     const applier = createEventApplier({
       schedule: perFrame,
       onEffect: (effect) => host.current.onEffect?.(effect),
@@ -334,8 +352,13 @@ export function useFollowChat({
         if (attachment != null && event.type !== 'error') {
           attachment.received = true;
         }
-        if (attachment != null && event.type === 'final' && event.data.earlyAbort === true) {
-          attachment.withdrawn = true;
+        if (event.type === 'final' && event.data.earlyAbort === true) {
+          /** Stopped before the server kept anything of it: there is no reply it ended on. */
+          if (attachment != null) {
+            attachment.withdrawn = true;
+          }
+        } else if (event.type === 'final') {
+          ended = event.data;
         }
         host.current.onEvent?.(event);
       },
@@ -392,12 +415,14 @@ export function useFollowChat({
         const joinsAt = first == null ? -1 : held.findIndex((row) => row.messageId === first);
         if (placed && joinsAt > 0) {
           await chat.setMessages([...held.slice(0, joinsAt), ...page.messages]);
+          settled();
           return;
         }
         await chat.setMessages(page.messages);
         placed = true;
         earlier = page.earlier;
         setHistory({ id, hasEarlier: earlier != null, isLoading: false, isError: false });
+        settled();
       } finally {
         reads -= 1;
       }
@@ -616,6 +641,11 @@ export function useFollowChat({
       }
       if (!own) {
         await settle();
+        return;
+      }
+      /** The turn's own final frame is its result, and the list as it stands is what it left. */
+      if (ended != null) {
+        settled();
       }
     };
 

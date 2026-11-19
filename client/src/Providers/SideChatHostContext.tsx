@@ -8,11 +8,13 @@ import {
   isAgentsEndpoint,
   isEphemeralAgentId,
 } from 'librechat-data-provider';
+import type { Agent, TMessage, TConversation, ChatFinalFrame } from 'librechat-data-provider';
 import type { FollowedChat, SideChatHost, FollowChatOptions } from '@librechat/chat/react';
-import type { Agent, TConversation } from 'librechat-data-provider';
+import { isTemporaryConversation, proveFetchedReplyByIdentity } from '~/utils';
 import useNavigateToConvo from '~/hooks/Conversations/useNavigateToConvo';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
+import { createConversationCache } from '~/hooks/SSE/services';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
 import { retryTransientQuery } from '~/data-provider/retry';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
@@ -76,7 +78,33 @@ function useChat(
    * the app's file, memory and preview caches.
    */
   const onAttachment = useAttachmentHandler(queryClient);
-  const beside = useMemo(() => ({ onAttachment }), [onAttachment]);
+  /**
+   * What lets a reply read here be acknowledged, as main chat's is: the reply a turn just ended
+   * on is stamped on the conversation wherever it is listed, paired with the list that holds
+   * it; and the history just read stands as proof of the reply the conversation already names.
+   */
+  const onSettled = useCallback(
+    (final?: ChatFinalFrame) => {
+      if (final == null) {
+        const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, id]);
+        if (messages != null) {
+          proveFetchedReplyByIdentity(queryClient, id, messages);
+        }
+        return;
+      }
+      const settled = final.conversation as Partial<TConversation> | undefined;
+      if (settled?.lastResponseAt == null || isTemporaryConversation(settled)) {
+        return;
+      }
+      createConversationCache(queryClient).commitReply(id, {
+        lastResponseAt: settled.lastResponseAt,
+        lastResponseMessageId: settled.lastResponseMessageId,
+        updatedAt: settled.updatedAt,
+      });
+    },
+    [queryClient, id],
+  );
+  const beside = useMemo(() => ({ onAttachment, onSettled }), [onAttachment, onSettled]);
   return useFollowChat({
     id,
     transport: generation,
