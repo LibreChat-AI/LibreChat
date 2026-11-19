@@ -8,6 +8,7 @@ import type {
   ScheduledMCPResource,
   ScheduledMCPTarget,
   ScheduleMCPConsentView,
+  ScheduledMCPToolSelection,
   ConfirmScheduleMCPConsent,
 } from 'librechat-data-provider';
 import type { MCPConsentStorage } from '@librechat/data-schemas';
@@ -44,6 +45,12 @@ export type ScheduleMCPEnrollmentResolver<
   options: { signal?: AbortSignal },
 ) => Promise<readonly ScheduledMCPTarget[]>;
 
+/** The agents' tools that are not MCP tools, each of which the owner may allow or leave out. */
+export type ScheduleToolsResolver<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> = (
+  identity: Identity,
+  options: { signal?: AbortSignal },
+) => Promise<readonly ScheduledMCPToolSelection[]>;
+
 /** The grant's subject is a schedule unless said otherwise: an API key and agent is the other. */
 export interface ScheduleMCPConsentDeps<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
   storage: MCPConsentStorage<Identity>;
@@ -52,6 +59,8 @@ export interface ScheduleMCPConsentDeps<Identity extends MCPGrantIdentity = Sche
   canUse: (identity: Identity, options: { signal?: AbortSignal }) => Promise<boolean>;
   /** What the owner can be offered now: reachable agents' selected tools, per declared server. */
   resolveEnrollment?: ScheduleMCPEnrollmentResolver<Identity>;
+  /** The agents' other tools on offer. Absent, a grant covers MCP tools only. */
+  resolveTools?: ScheduleToolsResolver<Identity>;
   /** Whether a run of this subject can pause for the owner's approval here. Absent, it cannot. */
   canPause?: (identity: Identity) => Promise<boolean>;
   now?: () => number;
@@ -207,6 +216,30 @@ function coversGrant(
   });
 }
 
+/** Every tool named in a set of per-agent selections, once. */
+function toolNames(selections: readonly ScheduledMCPToolSelection[]): string[] {
+  return [...new Set(selections.flatMap((selection) => selection.tools))].sort();
+}
+
+/**
+ * Of the agents' tools that are not MCP tools, the ones the owner allows, per agent that has
+ * them. Each must be on offer. A confirmation that does not say keeps what the stored grant
+ * allows, for the tools still on offer.
+ */
+function selectTools(
+  offered: readonly ScheduledMCPToolSelection[],
+  chosen: readonly string[] | undefined,
+  stored: readonly ScheduledMCPToolSelection[] = [],
+): ScheduledMCPToolSelection[] {
+  const onOffer = new Set(toolNames(offered));
+  const names = new Set(chosen ?? toolNames(stored).filter((tool) => onOffer.has(tool)));
+  if ([...names].some((tool) => !onOffer.has(tool)))
+    throw new ScheduleMCPConsentError('consent_invalid');
+  return offered
+    .map(({ agentId, tools }) => ({ agentId, tools: tools.filter((tool) => names.has(tool)) }))
+    .filter((selection) => selection.tools.length > 0);
+}
+
 /** Allowed tools the grant asks the owner about before each use, by server. */
 function askingTools(
   consents: readonly MCPGrantConsent<MCPGrantIdentity>[],
@@ -257,6 +290,7 @@ function offerDigest(
   configRevision: number,
   targets: readonly ScheduledMCPTarget[],
   changed: Record<string, string[]>,
+  tools: readonly ScheduledMCPToolSelection[],
 ): string {
   return createHash('sha256')
     .update(
@@ -266,6 +300,8 @@ function offerDigest(
         targets,
         // Left out while nothing is marked, so an offer made before marks existed still holds.
         ...(Object.keys(changed).length > 0 && { changed }),
+        // Likewise for an offer with no other tools to choose from.
+        ...(tools.length > 0 && { tools }),
       }),
     )
     .digest('hex');
@@ -299,6 +335,9 @@ export function createScheduleMCPConsentService<
     JSON.stringify(Object.entries(identity).sort(([a], [b]) => (a < b ? -1 : Number(a > b))));
   const identityMatches = (a: Identity, b: Identity): boolean =>
     a.invocationMode === 'delegated' && fields(a) === fields(b);
+
+  /** What each view offered beyond its MCP targets, per agent, for the confirmation of it. */
+  const offers = new WeakMap<ScheduleMCPConsentView, readonly ScheduledMCPToolSelection[]>();
 
   async function view(
     identity: Identity,
@@ -335,6 +374,8 @@ export function createScheduleMCPConsentService<
     const allowedByServer = allowedTools(granted);
     const changedByServer = changedTools(enrollment?.consents ?? []);
     const askingByServer = askingTools(enrollment?.consents ?? []);
+    const allowedOther = toolNames(enrollment?.tools ?? []);
+    let offeredOther: readonly ScheduledMCPToolSelection[] = [];
     const required = !enrollment && requiresGrant(limits, snapshot, now());
     const requireAfterMs =
       !enrollment && limits.enabled && !required ? (limits.requireAfterMs ?? null) : null;
@@ -350,6 +391,7 @@ export function createScheduleMCPConsentService<
         allowed: {},
         changed: {},
         asking: {},
+        tools: { offered: [], allowed: [] },
         approval,
         required: false,
         requireAfterMs: null,
@@ -359,7 +401,10 @@ export function createScheduleMCPConsentService<
     if (allowed && limits.enabled && deps.resolveEnrollment) {
       let resolved: readonly ScheduledMCPTarget[];
       try {
-        resolved = await deps.resolveEnrollment(identity, options);
+        [resolved, offeredOther] = await Promise.all([
+          deps.resolveEnrollment(identity, options),
+          deps.resolveTools?.(identity, options) ?? [],
+        ]);
       } catch (error) {
         if (!(error instanceof ScheduleMCPConsentError) || !enrollment) throw error;
         return {
@@ -370,6 +415,7 @@ export function createScheduleMCPConsentService<
           allowed: allowedByServer,
           changed: changedByServer,
           asking: askingByServer,
+          tools: { offered: [], allowed: allowedOther },
           approval,
           required,
           requireAfterMs,
@@ -385,18 +431,25 @@ export function createScheduleMCPConsentService<
           allowed: allowedByServer,
           changed: changedByServer,
           asking: askingByServer,
+          tools: { offered: [], allowed: allowedOther },
           approval,
           required,
           requireAfterMs,
           offer: null,
         };
       targets = canonicalTargets(resolved);
-      const digest = offerDigest(identity, snapshot.configRevision, targets, changedByServer);
+      const digest = offerDigest(
+        identity,
+        snapshot.configRevision,
+        targets,
+        changedByServer,
+        offeredOther,
+      );
       offer = { digest, maxLifetimeHours: limits.maxLifetimeHours };
       if (state === 'active' && !coversGrant(targets, granted)) state = 'changed';
     } else if (!enrollment) state = 'unsupported';
     options.signal?.throwIfAborted();
-    return {
+    const result: ScheduleMCPConsentView = {
       state,
       revision: enrollment?.revision ?? null,
       expiresAtMs,
@@ -404,11 +457,14 @@ export function createScheduleMCPConsentService<
       allowed: allowedByServer,
       changed: changedByServer,
       asking: askingByServer,
+      tools: { offered: toolNames(offeredOther), allowed: allowedOther },
       approval,
       required,
       requireAfterMs,
       offer,
     };
+    offers.set(result, offeredOther);
+    return result;
   }
 
   async function confirm(
@@ -430,15 +486,18 @@ export function createScheduleMCPConsentService<
       throw new ScheduleMCPConsentError('consent_invalid');
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
+    const offered = offers.get(current) ?? [];
     // Recompute the digest with the final observed row so an edit cannot reuse an old offer.
     const digest = offerDigest(
       identity,
       snapshot.configRevision,
       current.targets,
       changedTools(snapshot.enrollment?.consents ?? []),
+      offered,
     );
     if (digest !== input.offerDigest) throw new ScheduleMCPConsentError('consent_changed');
     const chosen = selectAllowed(current.targets, input.allow);
+    const others = selectTools(offered, input.tools, snapshot.enrollment?.tools);
     const stored = askingTools(snapshot.enrollment?.consents ?? []);
     const asking = selectAsking(chosen, input.ask, stored);
     // A tool nobody can approve would only ever be refused. Say so now, not at 3 a.m. One the
@@ -476,6 +535,7 @@ export function createScheduleMCPConsentService<
           askTools: asking[target.resource.serverName],
         }),
       })),
+      ...(others.length > 0 && { tools: others }),
     };
     const committed = await deps.storage.confirmScheduleMCPConsent({
       identity,

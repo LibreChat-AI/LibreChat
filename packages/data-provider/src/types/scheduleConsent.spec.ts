@@ -242,6 +242,62 @@ it('lets the owner ask first about as many tools as they can allow', () => {
   expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
 });
 
+it("takes the owner's choice of tools that are not MCP tools, and stores it per agent", () => {
+  const confirm = (tools?: unknown) =>
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+      ...(tools !== undefined && { tools }),
+    }).success;
+  expect(confirm()).toBe(true);
+  expect(confirm([])).toBe(true);
+  expect(confirm(['execute_code', 'send_action_mail.example'])).toBe(true);
+  expect(confirm({ execute_code: true })).toBe(false);
+  expect(confirm([''])).toBe(false);
+
+  const stored = (tools?: unknown) =>
+    scheduledMCPEnrollmentSchema.safeParse({
+      version: 1,
+      revision: 'grant-1',
+      scheduleRevision: 0,
+      consents: [
+        {
+          id: 'consent-1',
+          revision: 'grant-1',
+          identity: {
+            scheduleId: 's',
+            ownerId: 'u',
+            tenantId: null,
+            agentId: 'root',
+            invocationMode: 'delegated',
+          },
+          resource: {
+            serverName: 'warehouse',
+            url: 'https://warehouse.example/mcp',
+            configurationRevision: 'v1',
+            credentialMode: 'anonymous',
+            issuer: null,
+            audience: null,
+            scopes: [],
+          },
+          permittedTools: [{ agentId: 'root', tools: ['query'] }],
+          policyRevision: 'p1',
+          grantedAtMs: 1,
+          absoluteExpiresAtMs: 2,
+          revokedAtMs: null,
+        },
+      ],
+      ...(tools !== undefined && { tools }),
+    }).success;
+  // A grant made before these tools could be chosen has none, and reads as it did.
+  expect(stored()).toBe(true);
+  expect(stored([{ agentId: 'root', tools: ['execute_code'] }])).toBe(true);
+  expect(stored([{ agentId: 'root', tools: [] }])).toBe(false);
+  expect(stored(['execute_code'])).toBe(false);
+});
+
 it('accepts a server the owner left with no tools beside one with a choice', () => {
   expect(
     confirmScheduleMCPConsentSchema.safeParse({

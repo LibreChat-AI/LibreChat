@@ -9,6 +9,7 @@ import type {
   MCPGrantIdentity,
   ScheduledMCPTarget,
   ScheduledMCPIdentity,
+  ScheduledMCPToolSelection,
   ScheduledMCPResourceBinding,
 } from 'librechat-data-provider';
 import type {
@@ -17,10 +18,10 @@ import type {
   IUser,
   AppConfig,
 } from '@librechat/data-schemas';
-import type { ScheduleMCPEnrollmentResolver } from './service';
+import type { ScheduleMCPEnrollmentResolver, ScheduleToolsResolver } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { getScheduledMCPPolicyRevision, isScheduledMCPCandidate } from './policy';
+import { getScheduledMCPPolicyRevision, isScheduledToolItem } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { resolveScheduledMCPRequirements } from '../requirements';
 import { getAppConfigOptionsFromUser } from '~/app/service';
@@ -39,6 +40,23 @@ export interface ScheduleMCPEnrollmentDeps {
   ) => Promise<Record<string, ParsedServerConfig>>;
 }
 
+interface OfferOptions {
+  /** Where the operator declared the servers this kind of grant may cover. */
+  resources?: (
+    appConfig: AppConfig | undefined,
+  ) => Record<string, ScheduledMCPResourceBinding> | undefined;
+  /**
+   * A schedule's grant covers the whole run, so the agents' other tools are offered too, each
+   * to be allowed or left out. A grant that only limits MCP use leaves them alone.
+   */
+  otherTools?: 'offer' | 'ignore';
+}
+
+interface Offer {
+  targets: ScheduledMCPTarget[];
+  tools: ScheduledMCPToolSelection[];
+}
+
 /**
  * Resolves what the owner can be offered: the MCP tools the agent graph selects, on servers
  * whose recipient the operator declared. Does not connect or mint.
@@ -47,25 +65,38 @@ export function createScheduleMCPEnrollmentResolver<
   Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
 >(
   deps: ScheduleMCPEnrollmentDeps,
-  options: {
-    /** Where the operator declared the servers this kind of grant may cover. */
-    resources?: (
-      appConfig: AppConfig | undefined,
-    ) => Record<string, ScheduledMCPResourceBinding> | undefined;
-    /**
-     * A schedule's grant covers the whole run, so an agent with any other kind of tool cannot
-     * be offered one. A grant that only limits MCP use leaves the agent's other tools alone.
-     */
-    otherTools?: 'refuse' | 'ignore';
-  } = {},
+  options: OfferOptions = {},
 ): ScheduleMCPEnrollmentResolver<Identity> {
+  return createScheduleMCPOffer<Identity>(deps, options).targets;
+}
+
+/**
+ * Both halves of an offer, read once: the MCP tools on declared servers, and the agents'
+ * other tools. Asked for together, as the consent view does, they share one walk of the
+ * agent graph.
+ */
+export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = ScheduledMCPIdentity>(
+  deps: ScheduleMCPEnrollmentDeps,
+  options: OfferOptions = {},
+): { targets: ScheduleMCPEnrollmentResolver<Identity>; tools: ScheduleToolsResolver<Identity> } {
+  const pending = new Map<string, { signal?: AbortSignal; offer: Promise<Offer> }>();
+  const resolve = (identity: Identity, signal?: AbortSignal): Promise<Offer> => {
+    const key = JSON.stringify(identity);
+    const shared = pending.get(key);
+    if (shared && shared.signal === signal) return shared.offer;
+    const offer = load(identity, signal).finally(() => {
+      if (pending.get(key)?.offer === offer) pending.delete(key);
+    });
+    pending.set(key, { signal, offer });
+    return offer;
+  };
   const declared =
     options.resources ??
     ((appConfig: AppConfig | undefined) => {
       const schedules = appConfig?.interfaceConfig?.schedules;
       return typeof schedules === 'object' ? schedules?.mcpConsent?.resources : undefined;
     });
-  return async (identity, { signal }) => {
+  const load = async (identity: Identity, signal?: AbortSignal): Promise<Offer> => {
     signal?.throwIfAborted();
     const user = await deps.findUser(identity.ownerId);
     if (!user || (user.tenantId ?? null) !== identity.tenantId)
@@ -78,7 +109,7 @@ export function createScheduleMCPEnrollmentResolver<
       failClosed: true,
     });
     const bindings = declared(appConfig);
-    if (!bindings || !Object.keys(bindings).length) return [];
+    if (!bindings || !Object.keys(bindings).length) return { targets: [], tools: [] };
     const [servers, { tools, candidates: candidateTools }] = await Promise.all([
       deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
       resolveScheduledMCPRequirements(
@@ -96,11 +127,15 @@ export function createScheduleMCPEnrollmentResolver<
     const names = Object.keys(servers);
     const aliases = buildServerNameAliases(names);
     const candidates = [...names, ...aliases.keys()];
-    if (
-      options.otherTools !== 'ignore' &&
-      candidateTools.some(({ name }) => !isScheduledMCPCandidate(name))
-    )
-      throw new ScheduleMCPConsentError('consent_unavailable');
+    const others = new Map<string, Set<string>>();
+    if (options.otherTools !== 'ignore') {
+      for (const { name, agentId } of candidateTools) {
+        if (!isScheduledToolItem(name)) continue;
+        const names_ = others.get(agentId) ?? new Set<string>();
+        names_.add(name);
+        others.set(agentId, names_);
+      }
+    }
     const selected = new Map<string, Map<string, Set<string>>>();
     for (const { name: key, agentId } of tools) {
       if (
@@ -153,6 +188,15 @@ export function createScheduleMCPEnrollmentResolver<
       target.permittedTools.sort((a, b) => a.agentId.localeCompare(b.agentId));
       target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
     }
-    return [...targets.values()];
+    return {
+      targets: [...targets.values()],
+      tools: [...others]
+        .map(([agentId, selected]) => ({ agentId, tools: [...selected].sort() }))
+        .sort((a, b) => a.agentId.localeCompare(b.agentId)),
+    };
+  };
+  return {
+    targets: async (identity, { signal }) => (await resolve(identity, signal)).targets,
+    tools: async (identity, { signal }) => (await resolve(identity, signal)).tools,
   };
 }

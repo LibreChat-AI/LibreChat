@@ -7764,6 +7764,7 @@ describe("initializeAgent: under a schedule's grant", () => {
     'export_mcp_warehouse',
     'purge_mcp_archive',
     Tools.web_search,
+    Tools.execute_code,
   ];
   async function initialize(attach: boolean) {
     const { agent, req, res, loadTools, db } = createMocks();
@@ -7772,8 +7773,11 @@ describe("initializeAgent: under a schedule's grant", () => {
     loadTools.mockResolvedValue({ toolDefinitions: [] });
     if (attach) {
       // The agents select `query` and `export` on the warehouse; the owner allowed `query`.
+      // Of the agent's other tools the owner allowed web search and left code execution out.
       const fixture = await executionFixture('invoke', readTool, undefined, {
         offered: ['export'],
+        tools: [Tools.execute_code, Tools.web_search],
+        allowTools: [Tools.web_search],
       });
       await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
     }
@@ -7792,14 +7796,52 @@ describe("initializeAgent: under a schedule's grant", () => {
     return loadTools.mock.calls.map(([call]) => call.tools as string[]);
   }
 
-  it('loads only the MCP tools the owner allowed, and nothing from a server left out', async () => {
+  it('loads only the tools the owner allowed, MCP or not, and nothing from a server left out', async () => {
     const [tools, ...retries] = await initialize(true);
     expect(retries).toEqual([]);
     expect(tools).toContain('query_mcp_warehouse');
     expect(tools).toContain(Tools.web_search);
+    expect(tools).not.toContain(Tools.execute_code);
     expect(tools).not.toContain('export_mcp_warehouse');
     // The loader is never asked about the archive server, so it is never connected to.
     expect(tools).not.toContain('purge_mcp_archive');
+  });
+
+  it('sets up code execution and memory for the model only where the owner allowed them', async () => {
+    const defined = async (allowTools: string[]) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.id = 'root';
+      agent.tools = ['query_mcp_warehouse', Tools.execute_code, Tools.memory];
+      loadTools.mockResolvedValue({ toolDefinitions: [] });
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        tools: [Tools.execute_code, Tools.memory],
+        allowTools,
+      });
+      await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+          codeEnvAvailable: true,
+          memoryAvailable: true,
+        },
+        db,
+      );
+      return (result.toolDefinitions ?? []).map((tool) => tool.name);
+    };
+    // The markers on the agent's tool list set these up, not the loader: left out, they must
+    // not be read there either, or the model is shown a tool that is then refused.
+    const all = await defined([Tools.execute_code, Tools.memory]);
+    expect(all).toEqual(expect.arrayContaining(['bash_tool', 'set_memory', 'delete_memory']));
+    const none = await defined([]);
+    expect(none).not.toContain('bash_tool');
+    expect(none).not.toContain('set_memory');
+    expect(none).not.toContain('delete_memory');
   });
 
   it('loads everything the agent selects for a request with no grant', async () => {

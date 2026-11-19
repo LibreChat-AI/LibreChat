@@ -16,9 +16,9 @@ import {
 } from './execution';
 import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { readScheduleFireContext, isScheduleFireRequest } from '../trigger';
-import { createScheduleMCPEnrollmentResolver } from './enrollment';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createScheduleLimitsResolver } from '../service';
+import { createScheduleMCPOffer } from './enrollment';
 import { createScheduleMCPConsentHost } from './host';
 import { isOwnedAbortError } from '~/utils/errors';
 import { ScheduledMCPPolicyError } from './policy';
@@ -30,7 +30,7 @@ type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
 export function createScheduleMCPRuntimeHost(
   deps: Omit<
     Parameters<typeof createScheduleMCPConsentHost>[0],
-    'resolveEnrollment' | 'getLimits'
+    'resolveEnrollment' | 'resolveTools' | 'getLimits'
   > & {
     enrollment: ScheduleMCPEnrollmentDeps;
     getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
@@ -53,12 +53,13 @@ export function createScheduleMCPRuntimeHost(
   }) => Promise<void>;
 } {
   function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
-    const resolveEnrollment = createScheduleMCPEnrollmentResolver(enrollment);
+    const offer = createScheduleMCPOffer(enrollment);
     const consent = createScheduleMCPConsentHost({
       ...deps,
       findUser: enrollment.findUser,
       getLimits: createScheduleLimitsResolver((options = {}) => enrollment.getAppConfig(options)),
-      resolveEnrollment,
+      resolveEnrollment: offer.targets,
+      resolveTools: offer.tools,
     });
     return { consent };
   }
@@ -76,6 +77,8 @@ export function createScheduleMCPRuntimeHost(
   const execution = createScheduleMCPExecution({
     storage: deps.methods,
     requiresGrant: required,
+    // A schedule's grant covers the whole run: the agents' other tools load only if listed.
+    coversTools: true,
     async loadAuthorization(identity) {
       // Private to this attempt. No resolved principal, config or allow decision survives it.
       const principal = deps.findUser(identity.ownerId).then((user) => {

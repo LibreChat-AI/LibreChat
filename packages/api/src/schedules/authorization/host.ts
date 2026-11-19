@@ -6,7 +6,11 @@ import {
 } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage, AppConfig, IUser } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity, TCheckpointerConfig } from 'librechat-data-provider';
-import type { ScheduleMCPEnrollmentResolver, ScheduleMCPConsentService } from './service';
+import type {
+  ScheduleToolsResolver,
+  ScheduleMCPConsentService,
+  ScheduleMCPEnrollmentResolver,
+} from './service';
 import type { ScheduleMCPConsentHandlers } from './handlers';
 import type { CheckAccessParams } from '~/middleware/access';
 import type { GetAppConfigOptions } from '~/app/service';
@@ -42,6 +46,7 @@ export function createScheduleMCPConsentHost(deps: {
   getRoleByName: CheckAccessParams['getRoleByName'];
   canViewAgent: (agentId: string, user: IUser) => Promise<boolean>;
   resolveEnrollment?: ScheduleMCPEnrollmentResolver;
+  resolveTools?: ScheduleToolsResolver;
   /** Whether a scheduled run of this owner can pause for approval. Absent, it cannot. */
   canPauseRuns?: (user: IUser) => Promise<boolean>;
 }): { service: ScheduleMCPConsentService; handlers: ScheduleMCPConsentHandlers } {
@@ -99,6 +104,7 @@ export function createScheduleMCPConsentHost(deps: {
       return permissions.every(Boolean) && (await deps.canViewAgent(identity.agentId, user));
     },
     resolveEnrollment: deps.resolveEnrollment,
+    resolveTools: deps.resolveTools,
     canPause: async (identity) => {
       const user = await loadPrincipal(identity);
       return user != null && (await deps.canPauseRuns?.(user)) === true;
