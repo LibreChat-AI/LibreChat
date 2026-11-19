@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { TMessage, ChatEvent, ChatFinalFrame } from 'librechat-data-provider';
 import type {
   ChatStatus,
-  ChatStream,
+  ChatGeneration,
   DetachedRun,
   ChatTransport,
   SubmittedTurn,
@@ -446,7 +446,7 @@ export function useFollowChat({
       | undefined;
     /** Whether the reader asked for that generation to be stopped. */
     let halted = false;
-    const note = (stream: ChatStream | null | undefined): void => {
+    const note = (stream: ChatGeneration | null | undefined): void => {
       if (stream?.generationCreatedAt == null) {
         return;
       }
@@ -666,7 +666,12 @@ export function useFollowChat({
           }
           let answer: Awaited<ReturnType<ChatTransport['sendMessages']>>;
           try {
-            answer = await host.current.transport.sendMessages(request);
+            /**
+             * The generation is noted when the server names it, as main chat installs it on
+             * its controls before it opens the stream: what is written meanwhile can steer it
+             * or queue behind it, and a stop names it.
+             */
+            answer = await host.current.transport.sendMessages({ ...request, onGeneration: note });
           } catch (error) {
             refused(asked, turn, error);
             throw error;

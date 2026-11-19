@@ -497,6 +497,41 @@ describe('useDrivenContract', () => {
       expect(onGeneration).toHaveBeenLastCalledWith(null);
     });
 
+    it('names the generation once the server has taken the turn, while its stream is still to open', async () => {
+      const { onGeneration, runs } = watch();
+      const harness = createTransport(2);
+      /** The server answers the start; the stream it names has not opened yet. */
+      let open: (() => void) | undefined;
+      harness.sendMessages.mockImplementationOnce(async (request: ChatSendRequest) => {
+        request.onGeneration?.({
+          streamId: conversationId,
+          generationCreatedAt: 3000,
+          generationProtocolVersion: 2,
+        });
+        await new Promise<void>((resolve) => {
+          open = resolve;
+        });
+        return { status: 'stream', stream: harness.open() };
+      });
+      const { result, streams, ready } = setup({ runs, harness });
+      await ready();
+
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(open).toBeDefined());
+
+      expect(streams).toHaveLength(0);
+      expect(onGeneration).toHaveBeenCalledTimes(1);
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 2 });
+
+      /** The stream opening names the same generation, so nothing of the turn starts over. */
+      act(() => open?.());
+      await waitFor(() => expect(streams).toHaveLength(1));
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 2 });
+      expect(onGeneration).not.toHaveBeenCalledWith(null);
+    });
+
     it('says a turn failed, and that one stopped before the server kept it was taken back', async () => {
       const { onRunEnd, runs } = watch();
       const { result, streams, ready } = setup({ runs });

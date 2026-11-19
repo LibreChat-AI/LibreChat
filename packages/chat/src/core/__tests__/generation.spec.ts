@@ -326,6 +326,44 @@ describe('sending a turn', () => {
     });
   });
 
+  it('names the generation as soon as the server has taken the turn, before its stream opens', async () => {
+    const onGeneration = jest.fn();
+    const { transport, attachments } = sender(
+      jest.fn(async () => ({ ...started, generationProtocolVersion: 2 })),
+    );
+
+    const sending = transport.sendMessages(request({ onGeneration }));
+    await flush();
+
+    /** The stream has been asked for and has said nothing yet. */
+    expect(attachments).toHaveLength(1);
+    expect(onGeneration).toHaveBeenCalledTimes(1);
+    expect(onGeneration).toHaveBeenCalledWith({
+      streamId: 'thread 1',
+      generationCreatedAt: 3000,
+      generationProtocolVersion: 2,
+    });
+
+    attachments[0].emit({ type: 'open' });
+    await sending;
+    expect(onGeneration).toHaveBeenCalledTimes(1);
+  });
+
+  it('names no generation for a turn the server did not start one for', async () => {
+    const v2 = { generationProtocolVersion: 2 };
+    for (const answer of [
+      { ...v2, status: 'settled', conversationId: 'thread 1' },
+      { ...v2, ...started, status: 'replaced' },
+    ]) {
+      const onGeneration = jest.fn();
+      const { transport } = sender(jest.fn(async () => answer));
+
+      await transport.sendMessages(request({ onGeneration }));
+
+      expect(onGeneration).not.toHaveBeenCalled();
+    }
+  });
+
   it('replays a start the server folded into a generation already running', async () => {
     const { transport, attachments } = sender(
       jest.fn(async () => ({ ...started, status: 'resumed' })),
