@@ -64,9 +64,9 @@ interface Offer {
  * whose recipient the operator declared. Does not connect or mint.
  *
  * A server that cannot be offered is left out, and the rest is still offered: one the
- * operator did not declare, one whose configuration no longer matches the declaration, or a
- * selection of every tool on a server, which names no tool to list. A grant that lists its
- * tools then does not cover it. A grant of the whole agent does, as the owner's own use would.
+ * operator did not declare, or one whose configuration no longer matches the declaration. A
+ * grant that lists its tools then does not cover it. A grant of the whole agent does, as the
+ * owner's own use would.
  */
 export function createScheduleMCPEnrollmentResolver<
   Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
@@ -155,7 +155,8 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
         key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`)
       )
         continue;
-      if (key.startsWith(`${Constants.mcp_all}${Constants.mcp_delimiter}`)) continue;
+      // A selection of every tool on a server is kept under its marker (`mcp_all`): it names
+      // no tool to tick, but the server is in use, and a whole-agent grant covers it.
       const [tool, alias] = splitMCPToolKey(key, candidates);
       if (!alias) continue;
       const name = servers[alias] ? alias : aliases.get(alias);

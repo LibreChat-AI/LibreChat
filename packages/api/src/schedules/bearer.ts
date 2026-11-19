@@ -143,7 +143,8 @@ export function createScheduledMCPBearerHost(deps: {
           signal,
         );
         // With no grant for the server, authorizing the whole selection reports why.
-        if (lookup.state !== 'found') return target.permittedTools;
+        // Nor is a whole-agent grant limited to the tools its agents had when it was made.
+        if (lookup.state !== 'found' || lookup.everything === true) return target.permittedTools;
         return lookup.consent.permittedTools
           .map(({ agentId, tools }) => {
             const current = target.permittedTools.find((item) => item.agentId === agentId);

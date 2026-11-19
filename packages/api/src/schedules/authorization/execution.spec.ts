@@ -605,9 +605,10 @@ describe('the tools a run loads under a grant', () => {
       });
     jest.mocked(fixture.storage.readScheduleMCPConsent).mockClear();
     await expect(call()).resolves.toBeUndefined();
-    // Read again at the call: the grant this run started under is still the stored one.
+    // Checked again at the call, by the same authority a server with a consent is: the grant
+    // this run started under is still the stored one, and its owner may still use it.
+    expect(fixture.loadAuthorization).toHaveBeenCalledTimes(1);
     expect(fixture.storage.readScheduleMCPConsent).toHaveBeenCalledTimes(1);
-    expect(fixture.loadAuthorization).not.toHaveBeenCalled();
 
     // The owner edited the schedule: the grant was made for what it was before.
     fixture.snapshot.configRevision = 1;
@@ -621,6 +622,13 @@ describe('the tools a run loads under a grant', () => {
     await expect(call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
     jest.mocked(fixture.storage.readScheduleMCPConsent).mockRejectedValueOnce(new Error('PRIVATE'));
     await expect(call()).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
+
+    // The owner lost the permission the schedule runs on.
+    const denied = await executionFixture('invoke', readTool, undefined, { everything: true });
+    denied.deny();
+    await expect(call(denied.execution)).rejects.toMatchObject({
+      failure: { reason: 'rbac_denied' },
+    });
 
     // A grant that lists its tools still refuses a server it does not list.
     const listed = await executionFixture('invoke', readTool);

@@ -2123,6 +2123,7 @@ describe.each(['authority', 'provider'] as const)('%s observation', (source) => 
                   },
             authority: {
               lookupConsent: async () => ({ state: 'missing' }),
+              standing: async () => ({ state: 'authorized' }),
               authorize: async () =>
                 deny && source === 'authority'
                   ? { state: 'denied', failure: observedFailure }

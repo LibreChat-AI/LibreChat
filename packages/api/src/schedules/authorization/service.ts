@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { grantLifetime, scheduledMCPTargetSchema } from 'librechat-data-provider';
+import { Constants, grantLifetime, scheduledMCPTargetSchema } from 'librechat-data-provider';
 import type {
   MCPGrantConsent,
   MCPGrantIdentity,
@@ -227,6 +227,28 @@ function coversGrant(
 }
 
 /**
+ * What can be ticked. A selection of every tool on a server names none of them, so it is not
+ * on offer tool by tool; the resolver still reports it, which tells a run under a whole-agent
+ * grant that the server is in use and who its recipient is.
+ */
+function listable(targets: readonly ScheduledMCPTarget[]): ScheduledMCPTarget[] {
+  return targets.flatMap((target) => {
+    const marked = target.permittedTools.some(({ tools }) => tools.includes(Constants.mcp_all));
+    if (!marked) return [target];
+    const permittedTools = target.permittedTools
+      .map(({ agentId, tools }) => ({
+        agentId,
+        tools: tools.filter((tool) => tool !== Constants.mcp_all),
+      }))
+      .filter((selection) => selection.tools.length > 0);
+    if (permittedTools.length === 0) return [];
+    return [
+      { ...target, permittedTools, policyRevision: getScheduledMCPPolicyRevision(permittedTools) },
+    ];
+  });
+}
+
+/**
  * For a grant of the whole agent: its servers still on offer are the ones it was made for.
  * What the agents select there may have changed since, and a server may be gone.
  */
@@ -446,7 +468,7 @@ export function createScheduleMCPConsentService<
       let resolved: readonly ScheduledMCPTarget[];
       try {
         [resolved, offeredOther] = await Promise.all([
-          deps.resolveEnrollment(identity, options),
+          deps.resolveEnrollment(identity, options).then(listable),
           deps.resolveTools?.(identity, options) ?? [],
         ]);
       } catch (error) {
@@ -603,7 +625,7 @@ export function createScheduleMCPConsentService<
     };
     if (!limits.enabled || !deps.resolveEnrollment) return none;
     const [resolved, others] = await Promise.all([
-      deps.resolveEnrollment(identity, options),
+      deps.resolveEnrollment(identity, options).then(listable),
       deps.resolveTools?.(identity, options) ?? [],
     ]);
     if (resolved.length === 0 && others.length === 0 && !standing) return none;
@@ -761,7 +783,38 @@ export function createScheduleMCPConsentService<
       const consent = row?.enrollment?.consents.find(
         (c) => c.resource.serverName === resource.serverName,
       );
-      return consent ? { state: 'found', consent } : { state: 'missing' };
+      if (!consent) return { state: 'missing' };
+      return {
+        state: 'found',
+        consent,
+        ...(row!.enrollment!.everything === true && { everything: true as const }),
+      };
+    },
+    async standing(request, options) {
+      if (options.signal?.aborted) return { state: 'cancelled' };
+      const [snapshot, allowed, mcp, limits] = await Promise.all([
+        deps.storage.readScheduleMCPConsent(request.identity),
+        deps.canUse(request.identity, options),
+        deps.canUseMCP?.(request.identity, options) ?? true,
+        deps.getLimits(request.identity),
+      ]);
+      if (options.signal?.aborted) return { state: 'cancelled' };
+      if (!limits.enabled) return denial('provider_missing');
+      if (!allowed || !mcp) return denial('rbac_denied');
+      const enrollment = snapshot?.enrollment;
+      if (!enrollment || snapshot!.compatible === false) return denial('consent_missing');
+      const lifetime = grantLifetime(enrollment);
+      if (lifetime.revoked) return denial('consent_revoked');
+      if (now() >= lifetime.expiresAtMs) return denial('consent_expired');
+      if (
+        enrollment.everything !== true ||
+        enrollment.revision !== request.revision ||
+        (!snapshot!.enabled && request.stage !== 'activation' && request.manual !== true) ||
+        snapshot!.agentId !== request.identity.agentId ||
+        enrollment.scheduleRevision !== snapshot!.configRevision
+      )
+        return denial('binding_mismatch');
+      return { state: 'authorized' };
     },
     async authorize(request, options) {
       if (options.signal?.aborted) return { state: 'cancelled' };

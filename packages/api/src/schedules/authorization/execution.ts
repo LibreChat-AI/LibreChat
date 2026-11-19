@@ -309,30 +309,6 @@ export function createScheduleMCPExecution<
         throw new ScheduledMCPPolicyError('binding_mismatch', '');
       }
     };
-    /**
-     * For a server the whole-agent grant holds no consent for: one the operator did not
-     * declare, or one the agents took up since. The call goes ahead as the owner's own would,
-     * once the stored grant is seen to be the one this run started under and still in force.
-     */
-    const checkStanding = async (): Promise<void> => {
-      const observed = await waitUntilDeadline(
-        deps.storage.readScheduleMCPConsent(capturedIdentity),
-        settleBy(),
-      );
-      if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
-      const current = observed.value?.enrollment;
-      if (
-        !current ||
-        observed.value!.compatible === false ||
-        current.everything !== true ||
-        current.revision !== snapshot.enrollment!.revision ||
-        current.scheduleRevision !== observed.value!.configRevision
-      )
-        throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      const { expiresAtMs, revoked } = grantLifetime(current);
-      if (revoked) throw new ScheduledMCPPolicyError('consent_revoked', '');
-      if (now() >= expiresAtMs) throw new ScheduledMCPPolicyError('consent_expired', '');
-    };
     return Object.freeze({
       identity: capturedIdentity,
       stage,
@@ -398,18 +374,29 @@ export function createScheduleMCPExecution<
             }
             // Only the recipient is captured. Authority re-resolves live graph/policy below.
             const resource = resources.get(serverName);
+            // The whole-agent grant holds no consent for this server: one the operator did not
+            // declare, or one the agents took up since. The call goes ahead as the owner's own
+            // would, after the same live checks a call on a server with a consent gets.
             if (!resource && whole) {
               try {
-                await checkStanding();
-              } catch (error) {
-                signal?.throwIfAborted();
-                deny(
-                  error instanceof ScheduledMCPPolicyError
-                    ? error.failure.reason
-                    : 'dependency_unavailable',
+                const { authority } = await deps.loadAuthorization(capturedIdentity);
+                const standing = await authority.standing(
+                  {
+                    identity: capturedIdentity,
+                    revision: snapshot.enrollment!.revision,
+                    stage,
+                    ...(manual && { manual: true }),
+                  },
+                  { signal },
                 );
+                signal?.throwIfAborted();
+                if (standing.state === 'denied') deny(standing.failure.reason);
+                if (standing.state === 'cancelled') deny('dependency_unavailable');
+              } catch (error) {
+                if (error instanceof ScheduledMCPPolicyError || isOwnedAbortError(error, signal))
+                  throw error;
+                deny('dependency_unavailable');
               }
-              signal?.throwIfAborted();
               return;
             }
             if (!resource) deny('tool_policy_denied');

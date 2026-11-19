@@ -165,14 +165,18 @@ it('does not offer a server whose URL changed, even if its configured name did n
   });
   expect(await resolve(identity, {})).toEqual([]);
 });
-it('does not expand a selection of every tool on a server into a list of them', async () => {
+it('reports a selection of every tool on a server under its marker, not as a list of them', async () => {
   const { deps, resolve } = setup();
   jest
     .mocked(deps.getNodes)
     .mockResolvedValue([
       { id: 'root', provider: 'test', model: 'test', tools: ['sys__all__sys_mcp_warehouse'] },
     ]);
-  expect(await resolve(identity, {})).toEqual([]);
+  const targets = await resolve(identity, {});
+  expect(targets.map((target) => target.permittedTools)).toEqual([
+    [{ agentId: 'root', tools: ['sys__all__sys'] }],
+  ]);
+  expect(targets[0].resource.audience).toBe('warehouse');
 });
 it('still offers the rest when one server the agents use cannot be offered', async () => {
   const { deps } = setup();

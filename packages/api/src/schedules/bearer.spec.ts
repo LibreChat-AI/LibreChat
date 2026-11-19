@@ -57,7 +57,8 @@ const config: ParsedServerConfig = {
   headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
 };
 
-async function bearerFixture(serverConfig = config) {
+/** `everything`: the owner allowed the whole agent, and listed no tool. */
+async function bearerFixture(serverConfig = config, everything = false) {
   let time = Date.now();
   let allowed = true;
   const target: ScheduledMCPTarget = {
@@ -109,6 +110,7 @@ async function bearerFixture(serverConfig = config) {
   const consent = createScheduleMCPConsentService({
     storage,
     resolveEnrollment,
+    ...(everything && { resolveTools: async () => [] }),
     now: () => time,
     canUse: async () => allowed,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 1 }),
@@ -118,7 +120,7 @@ async function bearerFixture(serverConfig = config) {
     expectedRevision: null,
     offerDigest: offer.offer!.digest,
     lifetimeHours: 1,
-    allow: { Files: ['echo'] },
+    ...(everything ? { allow: {}, everything: true as const } : { allow: { Files: ['echo'] } }),
   });
   const resolveBearer = jest.fn(
     async (
@@ -257,6 +259,22 @@ it('admits a connection for the tools the owner allowed when the agents select m
   f.dropTool();
   await expect(resolveScheduledMCPBearerConfig(f.input)).rejects.toMatchObject({
     failure: { reason: 'tool_policy_denied' },
+  });
+});
+
+it('admits a connection for whatever the agents select now under a grant of the whole agent', async () => {
+  const f = await bearerFixture(config, true);
+  // None of the tools the agents had when the owner confirmed is selected any more.
+  f.dropTool();
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await expect(f.call('root', ['other'])).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  f.deny();
+  await expect(f.call('root', ['other'])).rejects.toMatchObject({
+    failure: { reason: 'rbac_denied' },
   });
 });
 

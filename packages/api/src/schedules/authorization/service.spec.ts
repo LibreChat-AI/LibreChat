@@ -770,6 +770,99 @@ describe('a grant of the whole agent', () => {
     });
   });
 
+  it('checks the owner, the deployment and the grant before a call on a server it holds no consent for', async () => {
+    const s = setup();
+    await whole(s);
+    const standing = (over: Record<string, unknown> = {}) =>
+      s.service.authority.standing(
+        {
+          identity,
+          revision: s.snapshot.enrollment!.revision,
+          stage: 'invoke' as const,
+          ...over,
+        },
+        {},
+      );
+    const refused = (reason: string) => ({ state: 'denied', failure: { reason } });
+    expect(await standing()).toEqual({ state: 'authorized' });
+    // Another grant than the one the run started under, or the schedule as it was.
+    expect(await standing({ revision: 'earlier' })).toMatchObject(refused('binding_mismatch'));
+    s.snapshot.configRevision = 1;
+    expect(await standing()).toMatchObject(refused('binding_mismatch'));
+    s.snapshot.configRevision = 0;
+    // A paused schedule runs only when its owner starts it by hand.
+    s.snapshot.enabled = false;
+    expect(await standing()).toMatchObject(refused('binding_mismatch'));
+    expect(await standing({ manual: true })).toEqual({ state: 'authorized' });
+    s.snapshot.enabled = true;
+    s.setTime(1000 + 3_600_000);
+    expect(await standing()).toMatchObject(refused('consent_expired'));
+    s.setTime(1000);
+    s.deny();
+    expect(await standing()).toMatchObject(refused('rbac_denied'));
+
+    const listed = setup();
+    await listed.enroll();
+    expect(
+      await listed.service.authority.standing(
+        { identity, revision: listed.snapshot.enrollment!.revision, stage: 'invoke' },
+        {},
+      ),
+    ).toMatchObject(refused('binding_mismatch'));
+  });
+
+  it('is refused that call where the owner may no longer use MCP servers, or schedules are off', async () => {
+    const s = setup();
+    await whole(s);
+    let mcp = true;
+    let enabled = true;
+    const service = createScheduleMCPConsentService({
+      storage: s.storage,
+      canUse: async () => true,
+      canUseMCP: async () => mcp,
+      getLimits: async () => ({ enabled, maxLifetimeHours: 24 }),
+      resolveEnrollment: async () => [structuredClone(target)],
+      resolveTools: async () => [],
+      now: () => 1000,
+    });
+    const standing = () =>
+      service.authority.standing(
+        { identity, revision: s.snapshot.enrollment!.revision, stage: 'invoke' },
+        {},
+      );
+    expect(await standing()).toEqual({ state: 'authorized' });
+    mcp = false;
+    expect(await standing()).toMatchObject({ failure: { reason: 'rbac_denied' } });
+    mcp = true;
+    enabled = false;
+    expect(await standing()).toMatchObject({ failure: { reason: 'provider_missing' } });
+  });
+
+  it('keeps its servers when the agents come to select every tool on one', async () => {
+    const s = setup();
+    await whole(s);
+    // What the resolver reports for a selection of every tool: the server, under a marker.
+    const every: ScheduledMCPTarget = {
+      ...target,
+      permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }],
+      policyRevision: 'p3',
+    };
+    s.changeTarget(every);
+    expect(await s.service.authority.authorize(call('anything'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    // Nothing to tick is offered for it, and the grant is not stale.
+    expect(await s.service.view(identity)).toMatchObject({
+      state: 'active',
+      everything: true,
+      targets: [],
+    });
+    expect(await s.service.authority.lookupConsent(identity, target.resource, {})).toMatchObject({
+      state: 'found',
+      everything: true,
+    });
+  });
+
   it('is not offered, and is refused, where a grant limits MCP tools only', async () => {
     const s = setup();
     const service = createScheduleMCPConsentService({
