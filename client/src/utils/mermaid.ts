@@ -452,6 +452,7 @@ const MAX_SCALE = 10;
 const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ content }) => {
   const mermaidRef = useRef<HTMLDivElement>(null);
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
+  const renderIdRef = useRef(0);
   const [isRendered, setIsRendered] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [copied, setCopied] = useState(false);
@@ -462,6 +463,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ content }) => {
       theme: "${mermaidTheme}",
       ${themeVariables ? `themeVariables: ${JSON.stringify(themeVariables)},` : ''}
       securityLevel: "strict",
+      suppressErrorRendering: true,
       flowchart: ${JSON.stringify(artifactFlowchartConfig, null, 8)},
     });
 
@@ -469,8 +471,9 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ content }) => {
       if (!mermaidRef.current) {
         return;
       }
+      const diagramId = "mermaid-diagram-" + (++renderIdRef.current);
       try {
-        const { svg } = await mermaid.render("mermaid-diagram", content);
+        const { svg } = await mermaid.render(diagramId, content);
         mermaidRef.current.innerHTML = svg;
 
         const svgElement = mermaidRef.current.querySelector("svg");
@@ -484,6 +487,8 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ content }) => {
         if (mermaidRef.current) {
           mermaidRef.current.innerHTML = '<p class="mermaid-error">Error rendering diagram</p>';
         }
+      } finally {
+        document.getElementById("d" + diagramId)?.remove();
       }
     };
 

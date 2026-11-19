@@ -118,4 +118,43 @@ describe('useMermaid cache key', () => {
 
     await waitFor(() => expect(mermaidMock.render).toHaveBeenCalledTimes(1));
   });
+
+  it('enables suppressErrorRendering and prevents caller config override', async () => {
+    renderHook(() => useMermaid({ content: CONTENT, config: { suppressErrorRendering: false } }), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(mermaidMock.initialize).toHaveBeenCalledTimes(1));
+
+    const [config] = mermaidMock.initialize.mock.calls[0];
+    expect(config.suppressErrorRendering).toBe(true);
+    expect(mermaidMock.initialize.mock.invocationCallOrder[0]).toBeLessThan(
+      mermaidMock.parse.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('removes orphaned mermaid temp container from document.body when render rejects', async () => {
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    let leakedId = '';
+    mermaidMock.render.mockImplementation(async (diagramId: string) => {
+      leakedId = `d${diagramId}`;
+      const orphan = document.createElement('div');
+      orphan.id = leakedId;
+      document.body.appendChild(orphan);
+      throw new Error('Invalid date:m1');
+    });
+
+    try {
+      const { result } = renderHook(() => useMermaid({ content: CONTENT }), { wrapper });
+
+      await waitFor(() => expect(result.current.error).toBeDefined());
+      expect(leakedId).not.toBe('');
+      expect(document.getElementById(leakedId)).toBeNull();
+    } finally {
+      if (leakedId) {
+        document.getElementById(leakedId)?.remove();
+      }
+      consoleErrorSpy.mockRestore();
+    }
+  });
 });
