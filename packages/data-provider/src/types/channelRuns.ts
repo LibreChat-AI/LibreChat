@@ -1,4 +1,5 @@
 import type { AccountingBasis, ResponseAccounting } from './responseAccounting';
+import type { DiscordNativeDestination } from '../channelDestination';
 
 export const CHANNEL_DELIVERY_TEXT_MAX_CHARS = 40_000;
 export const CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES = 64_000;
@@ -11,6 +12,9 @@ export const CHANNEL_RUN_MAX_JSON_BYTES = 128 * 1024 * 1024;
 
 /** Verified transport identities are supplied by the gateway, never by Agent output. */
 export interface SlackChannelRunActor {
+  scope?: never;
+  selectionId?: never;
+  selectionRevision?: never;
   provider?: never;
   applicationId?: never;
   guildId?: never;
@@ -20,6 +24,9 @@ export interface SlackChannelRunActor {
 }
 
 export interface DiscordChannelRunActor {
+  scope?: never;
+  selectionId?: never;
+  selectionRevision?: never;
   provider: 'discord';
   applicationId: string;
   guildId: string;
@@ -28,7 +35,18 @@ export interface DiscordChannelRunActor {
   appId?: never;
 }
 
-export type ChannelRunActor = SlackChannelRunActor | DiscordChannelRunActor;
+export interface DiscordDmRunActor {
+  provider: 'discord';
+  scope: 'dm';
+  applicationId: string;
+  externalUserId: string;
+  selectionId: string;
+  selectionRevision: string;
+  guildId?: never;
+  teamId?: never;
+  appId?: never;
+}
+export type ChannelRunActor = SlackChannelRunActor | DiscordChannelRunActor | DiscordDmRunActor;
 
 export interface ChannelRunPrincipal {
   userId: string;
@@ -38,6 +56,7 @@ export interface ChannelRunPrincipal {
 }
 
 export interface ChannelRunAdmission {
+  discordDestination?: DiscordNativeDestination;
   eventId: string;
   externalChannelId: string;
   externalThreadKey: string;

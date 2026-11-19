@@ -100,6 +100,7 @@ function assertBinding(
     run.revision !== bundle.channel.revision ||
     !channelRunActorSchema.safeParse(actor).success ||
     actor.provider !== 'discord' ||
+    actor.scope !== undefined ||
     actor.applicationId !== bundle.channel.discord.applicationId ||
     actor.guildId !== bundle.channel.discord.guildId ||
     run.admission.externalChannelId !== bundle.channel.discord.externalChannelId
@@ -152,7 +153,8 @@ export function createDiscordWorkerProvider(deps: DiscordWorkerDependencies): Wo
     signal: AbortSignal,
   ) {
     const actor = run.admission.actor;
-    if (actor.provider !== 'discord') throw new Error('Unsupported Discord actor');
+    if (actor.provider !== 'discord' || actor.scope === 'dm')
+      throw new Error('Unsupported Discord actor');
     const current = client(bundle);
     const inspection = new AbortController();
     const inspectionSignal = AbortSignal.any([signal, inspection.signal]);

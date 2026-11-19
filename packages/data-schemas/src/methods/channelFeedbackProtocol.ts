@@ -44,8 +44,16 @@ export function channelFeedbackProviderFilter(
   actor: ChannelFeedbackActor,
   prefix = '',
 ): Record<string, string | { $exists: false }> {
+  const runScope = prefix
+    ? {
+        [`${prefix}scope`]: { $exists: false as const },
+        [`${prefix}selectionId`]: { $exists: false as const },
+        [`${prefix}selectionRevision`]: { $exists: false as const },
+      }
+    : {};
   if (actor.provider === 'discord')
     return {
+      ...runScope,
       [`${prefix}provider`]: 'discord',
       [`${prefix}applicationId`]: actor.applicationId,
       [`${prefix}guildId`]: actor.guildId,
@@ -54,6 +62,7 @@ export function channelFeedbackProviderFilter(
     };
   if (actor.provider !== undefined) throw new TypeError('Unknown channel feedback provider');
   return {
+    ...runScope,
     [`${prefix}provider`]: { $exists: false },
     [`${prefix}applicationId`]: { $exists: false },
     [`${prefix}guildId`]: { $exists: false },
