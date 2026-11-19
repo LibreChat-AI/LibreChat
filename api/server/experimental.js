@@ -61,6 +61,8 @@ const {
   startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
   createCodeApiUploadRegistry,
+  createSdkFileHost,
+  createSdkModelHost,
   cacheConfig,
   createClusteredFileSweep,
   createRequestSanitizer,
@@ -545,6 +547,8 @@ if (cluster.isMaster) {
       }),
       { priority: 50 },
     );
+    app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
+    app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
     startSkillDeletionSweep(appConfig.skillDeletion);
