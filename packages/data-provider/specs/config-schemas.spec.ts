@@ -1586,6 +1586,12 @@ describe('interfaceSchema', () => {
     expect(interfaceSchema.parse({ landingFooter: 'composer' }).landingFooter).toBe('composer');
   });
 
+  it('accepts the conversation icons setting', () => {
+    expect(interfaceSchema.parse({ conversationIcons: false }).conversationIcons).toBe(false);
+    expect(interfaceSchema.parse({})).not.toHaveProperty('conversationIcons');
+    expect(interfaceSchema.safeParse({ conversationIcons: 'false' }).success).toBe(false);
+  });
+
   it('accepts the message author setting', () => {
     expect(interfaceSchema.parse({ messageAuthor: 'whenDifferent' }).messageAuthor).toBe(
       'whenDifferent',

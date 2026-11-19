@@ -95,6 +95,7 @@ export async function loadDefaultInterface({
     landingHeading: interfaceConfig?.landingHeading ?? defaults.landingHeading,
     landingFooter: interfaceConfig?.landingFooter ?? defaults.landingFooter,
     messageAuthor: interfaceConfig?.messageAuthor ?? defaults.messageAuthor,
+    conversationIcons: interfaceConfig?.conversationIcons ?? defaults.conversationIcons,
     autoSubmitFromUrl: interfaceConfig?.autoSubmitFromUrl ?? defaults.autoSubmitFromUrl,
     colorModeFromUrl: interfaceConfig?.colorModeFromUrl ?? defaults.colorModeFromUrl,
     buildInfo: interfaceConfig?.buildInfo ?? defaults.buildInfo,

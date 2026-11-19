@@ -3498,6 +3498,10 @@ export const interfaceSchema = z
      *  than the one the header's model selector already shows (`whenDifferent`), which drops the
      *  avatar and name row from that agent's responses. */
     messageAuthor: z.enum(['always', 'whenDifferent']).optional(),
+    /** Shows the endpoint, agent or assistant icon on each row of the sidebar chat history. Set to
+     *  false for a deployment where every chat uses the same one and the icon only adds noise. A
+     *  running or unread status still shows on the row. */
+    conversationIcons: z.boolean().optional(),
     mcpServers: mcpServersSchema.optional(),
     modelSelect: z.boolean().optional(),
     /** Set to false during a rolling upgrade, until every API replica supports title ownership and old title jobs drain. */
@@ -3835,6 +3839,7 @@ export const interfaceSchema = z
     landingHeading: 'entity',
     landingFooter: true,
     messageAuthor: 'always',
+    conversationIcons: true,
     remoteAgents: {
       use: false,
       create: false,
