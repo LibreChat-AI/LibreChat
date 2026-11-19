@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { channelSnowflakeSchema } from 'librechat-data-provider';
 import type { DiscordGatewayOwner } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
+import type { DiscordMessageOccurrence } from './channelProtocol';
 import { createDiscordMessageReceiptModel } from '~/models/discordMessage';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { withRequiredTransaction } from '~/utils/transactions';
@@ -9,13 +10,8 @@ import { touchDiscordGatewayOwner } from './discordGateway';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchChannelAuthority } from './channelScope';
 import { ChannelRunConflict } from './channelProtocol';
+export type { DiscordMessageOccurrence } from './channelProtocol';
 
-export interface DiscordMessageOccurrence {
-  applicationId: string;
-  messageId: string;
-  fingerprint: string;
-  purgeAt: number;
-}
 export interface DiscordMessageRoute {
   channelId: string;
   agentId: string;
