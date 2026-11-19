@@ -837,7 +837,7 @@ describe('ScheduleDialog', () => {
           agent_id: 'agent-1',
           authorization: {
             offerDigest: 'a'.repeat(64),
-            lifetimeHours: 1,
+            lifetimeHours: 24,
             allow: { warehouse: ['query'] },
             ask: {},
             tools: ['web_search'],
@@ -864,7 +864,7 @@ describe('ScheduleDialog', () => {
       expect(mockMutate.mock.calls[0][0]).toMatchObject({
         authorization: {
           offerDigest: 'a'.repeat(64),
-          lifetimeHours: 1,
+          lifetimeHours: 24,
           allow: {},
           everything: true,
         },

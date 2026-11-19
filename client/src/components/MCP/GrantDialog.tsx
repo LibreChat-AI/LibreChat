@@ -45,6 +45,7 @@ const messageKeys = {
  */
 export default function GrantDialog({
   canConfirm = true,
+  longest = false,
   source,
   copy,
   name,
@@ -54,6 +55,11 @@ export default function GrantDialog({
   triggerRef,
 }: {
   canConfirm?: boolean;
+  /**
+   * Start the lifetime at the longest the operator allows, for a grant whose subject runs for
+   * as long as it exists, like a schedule. Otherwise it starts at one hour.
+   */
+  longest?: boolean;
   source: GrantSource;
   copy: GrantCopy;
   name: string;
@@ -73,7 +79,13 @@ export default function GrantDialog({
             <p className="text-text-primary text-sm">{name}</p>
             <p className="text-text-secondary text-sm">{localize(copy.boundary)}</p>
             {children}
-            <Grant key={subjectKey} canConfirm={canConfirm} source={source} copy={copy} />
+            <Grant
+              key={subjectKey}
+              canConfirm={canConfirm}
+              longest={longest}
+              source={source}
+              copy={copy}
+            />
           </div>
         }
       />
@@ -84,10 +96,12 @@ export default function GrantDialog({
 /** One subject's grant and the owner's choices for it. */
 function Grant({
   canConfirm,
+  longest,
   source,
   copy,
 }: {
   canConfirm: boolean;
+  longest: boolean;
   source: GrantSource;
   copy: GrantCopy;
 }) {
@@ -96,7 +110,9 @@ function Grant({
   const { query, confirm, revoke } = source;
   /** Nothing has been asked for yet: the subject is still being chosen. */
   const idle = query.fetchStatus === 'idle' && query.data == null && !query.isError;
-  const [hours, setHours] = useState(1);
+  /** Null until the owner types one. `longest` starts at the most the operator allows. */
+  const [typed, setHours] = useState<number | null>(null);
+  const hours = typed ?? (longest ? query.data?.offer?.maxLifetimeHours : undefined) ?? 1;
   const [message, setMessage] = useState<'success' | 'revoked' | 'error' | null>(null);
   const busy = confirm.isLoading || revoke.isLoading || query.isFetching;
   const data: ScheduleMCPConsentView | undefined = query.data;

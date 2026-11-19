@@ -27,8 +27,14 @@ export default function Authorize({
   const inputId = useId();
   const query = useScheduleMCPOffer(agentId);
   const state = useGrantChoice(query.data);
-  const [hours, setHours] = useState(1);
   const offer = query.data?.offer ?? null;
+  /**
+   * A schedule runs for as long as it exists, so its grant starts at the longest the operator
+   * allows: one that ran out before the next run would leave the schedule without its tools.
+   * Null until the owner types another.
+   */
+  const [typed, setHours] = useState<number | null>(null);
+  const hours = typed ?? offer?.maxLifetimeHours ?? 1;
   /** Not while the offer is being read again: its digest is the one just turned down. */
   const valid =
     offer != null &&
