@@ -343,7 +343,10 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       );
     const grants: ScheduleMCPExecution['grants'] | undefined = execution?.enrolled
       ? execution.grants
-      : pending && ((owner, server, tool) => pending.get(server)?.get(owner)?.has(tool) === true);
+      : pending &&
+        ((owner, server, tool) =>
+          options.grant?.everything === true ||
+          pending.get(server)?.get(owner)?.has(tool) === true);
     // A run under a grant needs the permission only for the MCP tools the grant allows, so
     // it is held to it below, once the tools the owner left out are set aside.
     if (!permitted && !grants) refuse();

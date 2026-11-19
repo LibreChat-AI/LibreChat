@@ -368,7 +368,7 @@ export type ScheduleMCPPreflight = (
      * The grant a schedule is being created with. Nothing is stored for it yet, so it is
      * handed over: readiness then covers the MCP tools it allows, as for a stored grant.
      */
-    grant?: Pick<ScheduledMCPEnrollment, 'consents'>;
+    grant?: Pick<ScheduledMCPEnrollment, 'consents' | 'everything'>;
   },
 ) => Promise<ScheduleMCPOutcome[]>;
 

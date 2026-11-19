@@ -51,6 +51,7 @@ const view = (tools: string[]): ScheduleMCPConsentView => ({
   changed: {},
   asking: {},
   tools: { offered: [], allowed: [] },
+  everything: false,
   approval: false,
   required: false,
   requireAfterMs: null,

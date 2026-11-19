@@ -630,6 +630,187 @@ describe('a schedule that is authorized as it is created', () => {
   });
 });
 
+describe('a grant of the whole agent', () => {
+  const wider: ScheduledMCPTarget = {
+    ...target,
+    permittedTools: [
+      { agentId: 'root', tools: ['export', 'query'] },
+      { agentId: 'child', tools: ['query'] },
+      { agentId: 'later', tools: ['query'] },
+    ],
+    policyRevision: 'p2',
+  };
+  const call = (tool: string, agentId = 'root', digest = 'a'.repeat(64)) => ({
+    ...request('invoke'),
+    selection: { agentId, tools: [tool] },
+    definitions: { [tool]: digest },
+  });
+  const whole = async (s: ReturnType<typeof setup>, ask?: Record<string, string[]>) => {
+    const view = await s.service.view(identity);
+    return s.service.confirm(identity, {
+      offerDigest: view.offer!.digest,
+      expectedRevision: view.revision,
+      lifetimeHours: 1,
+      allow: {},
+      everything: true,
+      ...(ask && { ask }),
+    });
+  };
+
+  it('is offered, stored with every server on offer, and reported as the whole agent', async () => {
+    const s = setup();
+    s.offerTools({ agentId: 'root', tools: ['web_search'] });
+    expect((await s.service.view(identity)).offer).toMatchObject({ everything: true });
+    expect(await whole(s)).toMatchObject({ state: 'active', everything: true });
+    expect(s.snapshot.enrollment).toMatchObject({
+      everything: true,
+      consents: [
+        {
+          resource: { serverName: 'warehouse' },
+          permittedTools: expect.arrayContaining(target.permittedTools),
+        },
+      ],
+      absoluteExpiresAtMs: 1000 + 3_600_000,
+    });
+    // Nothing is listed one by one: the other tools are allowed without being named.
+    expect(s.snapshot.enrollment).not.toHaveProperty('tools');
+    // A later choice of tools replaces it.
+    expect(await s.enroll({ warehouse: ['query'] })).toMatchObject({ everything: false });
+    expect(s.snapshot.enrollment).not.toHaveProperty('everything');
+  });
+
+  it('can be made for an agent with nothing to list today', async () => {
+    const s = setup();
+    s.changeTarget();
+    expect(await whole(s)).toMatchObject({ state: 'active', everything: true, targets: [] });
+    expect(s.snapshot.enrollment).toMatchObject({ everything: true, consents: [] });
+  });
+
+  it('allows a tool and an agent added after it was made, and stays active', async () => {
+    const s = setup();
+    await whole(s);
+    s.changeTarget(wider);
+    expect(await s.service.view(identity)).toMatchObject({ state: 'active', everything: true });
+    expect(await s.service.authority.authorize(call('export'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(await s.service.authority.authorize(call('query', 'later'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    // Nor one the agents have through a selection of every tool on the server, which no list names.
+    expect(await s.service.authority.authorize(call('purge'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    // The agents dropping a server does not make the grant stale either.
+    s.changeTarget();
+    expect(await s.service.view(identity)).toMatchObject({ state: 'active', everything: true });
+    s.changeTarget(wider);
+    // A grant that lists its tools still refuses what it does not list.
+    await s.enroll({ warehouse: ['query'] });
+    expect(await s.service.authority.authorize(call('export'), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'tool_policy_denied' },
+    });
+  });
+
+  it('does not hold back a tool whose definition changed, and pins nothing', async () => {
+    const s = setup();
+    await whole(s);
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    expect(
+      await s.service.authority.authorize(call('query', 'root', 'b'.repeat(64)), {}),
+    ).toMatchObject({ state: 'authorized' });
+    expect(s.storage.pinScheduleMCPToolDefinition).not.toHaveBeenCalled();
+    expect(s.storage.flagScheduleMCPToolChange).not.toHaveBeenCalled();
+    expect((await s.service.view(identity)).state).toBe('active');
+  });
+
+  it('drops the pins of the listed grant it replaces', async () => {
+    const s = setup();
+    await s.enroll();
+    await s.service.authority.authorize(call('query'), {});
+    expect(s.snapshot.enrollment!.consents[0]).toMatchObject({
+      definitions: [{ tool: 'query' }],
+    });
+    await whole(s);
+    expect(s.snapshot.enrollment!.consents[0]).not.toHaveProperty('definitions');
+    expect(
+      await s.service.authority.authorize(call('query', 'root', 'b'.repeat(64)), {}),
+    ).toMatchObject({ state: 'authorized' });
+  });
+
+  it('still ends at its deadline, on revocation, and when a server it was made for moves', async () => {
+    const s = setup();
+    await whole(s);
+    s.changeTarget({ ...target, resource: { ...target.resource, audience: 'elsewhere' } });
+    expect((await s.service.view(identity)).state).toBe('changed');
+    expect(
+      await s.service.authority.authorize(
+        { ...call('query'), resource: { ...target.resource, audience: 'elsewhere' } },
+        {},
+      ),
+    ).toMatchObject({ state: 'denied', failure: { reason: 'binding_mismatch' } });
+    s.changeTarget(target);
+    s.setTime(1000 + 3_600_000);
+    expect((await s.service.view(identity)).state).toBe('expired');
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'denied',
+      failure: { reason: 'consent_expired' },
+    });
+  });
+
+  it('keeps asking about a tool the owner wants to approve each time', async () => {
+    const s = setup();
+    await whole(s, { warehouse: ['query'] });
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+      approvalRequired: true,
+    });
+  });
+
+  it('is not offered, and is refused, where a grant limits MCP tools only', async () => {
+    const s = setup();
+    const service = createScheduleMCPConsentService({
+      storage: s.storage,
+      canUse: async () => true,
+      getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
+      resolveEnrollment: async () => [structuredClone(target)],
+      now: () => 1000,
+    });
+    const view = await service.view(identity);
+    expect(view.offer).not.toHaveProperty('everything');
+    await expect(
+      service.confirm(identity, {
+        offerDigest: view.offer!.digest,
+        expectedRevision: view.revision,
+        lifetimeHours: 1,
+        allow: {},
+        everything: true,
+      }),
+    ).rejects.toMatchObject({ code: 'consent_invalid' });
+  });
+
+  it('is built for a schedule being created, whatever the agent has', async () => {
+    const s = setup();
+    s.changeTarget();
+    const offer = await s.service.draft(identity);
+    expect(offer.offer).toMatchObject({ everything: true });
+    const grant = await s.service.grant(identity, {
+      offerDigest: offer.offer!.digest,
+      lifetimeHours: 2,
+      allow: {},
+      everything: true,
+    });
+    expect(grant).toMatchObject({
+      everything: true,
+      consents: [],
+      absoluteExpiresAtMs: 1000 + 2 * 3_600_000,
+    });
+  });
+});
+
 describe('definition pins', () => {
   const first = 'a'.repeat(64);
   const second = 'b'.repeat(64);

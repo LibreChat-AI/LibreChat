@@ -342,6 +342,36 @@ it('takes a grant for other tools only, with a lifetime of its own', () => {
   ).toEqual({ expiresAtMs: 5, revoked: false });
 });
 
+it('takes a grant for the whole agent, with nothing chosen one by one', () => {
+  const confirm = (fields: Record<string, unknown>) =>
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow: {},
+      ...fields,
+    }).success;
+  expect(confirm({ everything: true })).toBe(true);
+  expect(confirm({ everything: true, ask: { warehouse: ['export'] } })).toBe(true);
+  // Either the whole agent or a choice, never a mix that could be read both ways.
+  expect(confirm({ everything: true, allow: { warehouse: ['query'] } })).toBe(false);
+  expect(confirm({ everything: true, tools: ['web_search'] })).toBe(false);
+  expect(confirm({ everything: false })).toBe(false);
+
+  const stored = (fields: Record<string, unknown>) =>
+    scheduledMCPEnrollmentSchema.safeParse({
+      version: 1,
+      revision: 'grant-1',
+      scheduleRevision: 0,
+      consents: [],
+      ...fields,
+    }).success;
+  // An agent with no MCP server and no other tool today can still be allowed in full.
+  expect(stored({ everything: true, grantedAtMs: 1, absoluteExpiresAtMs: 2 })).toBe(true);
+  expect(stored({ everything: true })).toBe(false);
+  expect(stored({ everything: false, grantedAtMs: 1, absoluteExpiresAtMs: 2 })).toBe(false);
+});
+
 it('accepts a server the owner left with no tools beside one with a choice', () => {
   expect(
     confirmScheduleMCPConsentSchema.safeParse({

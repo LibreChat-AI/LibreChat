@@ -103,18 +103,14 @@ function Grant({
   const choosing = canConfirm && data?.offer != null;
   const state = useGrantChoice(data);
   const commit = () => {
-    if (!data?.offer || state.count === 0) return;
+    if (!data?.offer || !state.some) return;
     setMessage(null);
     confirm.mutate(
       {
         offerDigest: data.offer.digest,
         expectedRevision: data.revision,
         lifetimeHours: hours,
-        allow: state.choice,
-        // Always sent: left out, the server keeps what the stored grant asks about.
-        ask: state.ask,
-        // Likewise: left out, the server keeps the other tools the stored grant allows.
-        tools: state.other,
+        ...state.request,
       },
       {
         onSuccess: () => {
@@ -183,7 +179,7 @@ function Grant({
                 onClick={commit}
                 disabled={
                   busy ||
-                  state.count === 0 ||
+                  !state.some ||
                   !Number.isInteger(hours) ||
                   hours < 1 ||
                   hours > data.offer.maxLifetimeHours
@@ -191,7 +187,7 @@ function Grant({
               >
                 {localize('com_ui_schedule_consent_confirm')}
               </Button>
-              {state.count === 0 && (
+              {!state.some && (
                 <p className="text-text-secondary text-xs">
                   {localize('com_ui_schedule_consent_none_selected')}
                 </p>

@@ -62,6 +62,11 @@ interface Offer {
 /**
  * Resolves what the owner can be offered: the MCP tools the agent graph selects, on servers
  * whose recipient the operator declared. Does not connect or mint.
+ *
+ * A server that cannot be offered is left out, and the rest is still offered: one the
+ * operator did not declare, one whose configuration no longer matches the declaration, or a
+ * selection of every tool on a server, which names no tool to list. A grant that lists its
+ * tools then does not cover it. A grant of the whole agent does, as the owner's own use would.
  */
 export function createScheduleMCPEnrollmentResolver<
   Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
@@ -150,12 +155,11 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
         key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`)
       )
         continue;
-      if (key.startsWith(`${Constants.mcp_all}${Constants.mcp_delimiter}`))
-        throw new ScheduleMCPConsentError('consent_unavailable');
+      if (key.startsWith(`${Constants.mcp_all}${Constants.mcp_delimiter}`)) continue;
       const [tool, alias] = splitMCPToolKey(key, candidates);
-      if (!alias) throw new ScheduleMCPConsentError('consent_unavailable');
+      if (!alias) continue;
       const name = servers[alias] ? alias : aliases.get(alias);
-      if (!name || !tool) throw new ScheduleMCPConsentError('consent_unavailable');
+      if (!name || !tool) continue;
       const agents = selected.get(name) ?? new Map<string, Set<string>>();
       const names_ = agents.get(agentId) ?? new Set<string>();
       names_.add(tool);
@@ -173,14 +177,20 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
         config.url !== binding.data.url ||
         binding.data.credentialMode === 'browser_bearer'
       )
-        throw new ScheduleMCPConsentError('consent_unavailable');
+        continue;
       const metadata = binding.data;
       if (
         ['stored_oauth', 'renewable_obo', 'resource_bearer'].includes(metadata.credentialMode) &&
         (!metadata.issuer || !metadata.audience)
       )
-        throw new ScheduleMCPConsentError('consent_unavailable');
-      const configurationRevision = getScheduledMCPConfigurationRevision(config, metadata);
+        continue;
+      let configurationRevision: string;
+      try {
+        configurationRevision = getScheduledMCPConfigurationRevision(config, metadata);
+      } catch (error) {
+        if (error instanceof ScheduleMCPConsentError) continue;
+        throw error;
+      }
       targets.set(name, {
         resource: { ...metadata, serverName: name, configurationRevision },
         policyRevision: '',

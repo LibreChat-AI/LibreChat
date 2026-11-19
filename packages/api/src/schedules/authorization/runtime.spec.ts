@@ -832,6 +832,87 @@ describe('an owner whose role may not use MCP servers', () => {
   });
 });
 
+describe('a schedule authorized for the whole agent', () => {
+  /** The agents use a declared server, one the operator never declared, and another tool. */
+  async function whole() {
+    const f = await setup();
+    const archive = { type: 'streamable-http' as const, url: 'https://archive.example/mcp' };
+    f.servers.archive = archive;
+    Object.assign(f.config.mcpConfig as object, { archive });
+    f.snapshot.enrollment = null;
+    f.setCandidates(['query_mcp_warehouse', 'query_mcp_archive', 'web_search']);
+    const offer = await f.host.consent.service.view(f.identity);
+    // Only the declared server can be listed. The grant is not limited to what is listed.
+    expect(offer.targets.map((target) => target.resource.serverName)).toEqual(['warehouse']);
+    expect(offer.offer).toMatchObject({ everything: true });
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: {},
+      everything: true,
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    f.connect.mockClear();
+    return { ...f, archive };
+  }
+
+  it('is ready on every server its agents use, declared or not', async () => {
+    const f = await whole();
+    await expect(f.check()).resolves.toEqual(
+      expect.arrayContaining([
+        { server: 'warehouse', status: 'ready' },
+        { server: 'archive', status: 'ready' },
+      ]),
+    );
+    expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'archive' }));
+  });
+
+  it('is ready on both while it is being created, with nothing stored yet', async () => {
+    const f = await whole();
+    const grant = f.snapshot.enrollment!;
+    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    await expect(
+      f.preflight('root', f.user, {
+        scheduleId: 'sched_new',
+        stage: 'activation',
+        concurrency: 3,
+        grant,
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        { server: 'warehouse', status: 'ready' },
+        { server: 'archive', status: 'ready' },
+      ]),
+    );
+  });
+
+  it('runs with every tool, and calls both servers', async () => {
+    const f = await whole();
+    await f.host.prepare({ req: f.req, context: f.context });
+    const keys = ['query_mcp_warehouse', 'query_mcp_archive', 'web_search', 'execute_code'];
+    expect(getScheduleMCPExecution(f.context)!.narrow('root', keys)).toEqual(keys);
+    const call = (serverName: string, tool: string, serverConfig: object) =>
+      bindScheduledMCPInvocation(f.context, 'root', tool)!.authorize({
+        user: f.user,
+        serverName,
+        serverConfig: serverConfig as typeof f.serverConfig,
+        toolName: tool,
+        loadTools: async () => ({ tools: [{ ...readTool, name: tool }], complete: true }),
+      });
+    await expect(call('warehouse', 'query', f.serverConfig)).resolves.toBeUndefined();
+    await expect(call('archive', 'query', f.archive)).resolves.toBeUndefined();
+    // The owner takes it back: nothing is called on either.
+    await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
+    await expect(call('archive', 'query', f.archive)).rejects.toMatchObject({
+      failure: { reason: 'consent_revoked' },
+    });
+    await expect(call('warehouse', 'query', f.serverConfig)).rejects.toMatchObject({
+      failure: { reason: 'consent_revoked' },
+    });
+  });
+});
+
 describe('a schedule being created with its grant', () => {
   /** Nothing is stored for it yet: the grant comes with the readiness check. */
   async function creating(

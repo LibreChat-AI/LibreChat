@@ -46,11 +46,40 @@ re-enable existing schedules automatically or repair credentials on the user's b
 
 ## Which tools an enrolled schedule may call
 
-When `interface.schedules.mcpConsent.enabled` is on, the schedule's owner decides. The consent
-offer lists every MCP tool the agent graph selects on servers whose recipient the operator
-declared under `mcpConsent.resources`. The owner ticks servers and tools; the grant stores only
-those. At run time a tool is allowed when the grant lists it for the calling agent and that
-agent still selects it. Anything else is refused with `tool_policy_denied`.
+When `interface.schedules.mcpConsent.enabled` is on, the schedule's owner decides, in one of
+two ways.
+
+### The whole agent
+
+The grant a new authorization starts from (`everything: true`). The schedule runs with
+everything its agents have, as the owner's own chat with the agent would, for as long as the
+grant lasts: every tool, skill and MCP server, including one added to the agent after the
+grant was made. Nothing is listed and nothing is left out for not being listed.
+
+- The grant still stores a consent for each server the operator declared that the agents use
+  when it is made. A call there goes through the same authorization as any granted call
+  (recipient, credentials, lifetime, revocation, the owner's permissions), without the check
+  against a list of tools and with no definition pin.
+- A server with no consent in the grant (one the operator did not declare, a local `stdio`
+  server, a selection of every tool on a server, one the agents took up later) is called as
+  the owner's own use would call it. Before each such call the stored grant is read again and
+  must be the one the run started under, for the schedule as it is now, not revoked and not
+  expired.
+- It ends like any grant: at its deadline, when the owner revokes it, when the owner edits the
+  schedule, or when a server it holds a consent for is declared for another recipient.
+- Anyone who can edit the agent changes what the schedule runs with. That is what the owner
+  chose; an owner who does not want it lists the tools instead.
+
+A grant that limits MCP tools only, as an API key's does, cannot be made for the whole agent.
+
+### Tool by tool
+
+The consent offer lists every MCP tool the agent graph selects on servers whose recipient the
+operator declared under `mcpConsent.resources`. The owner ticks servers and tools; the grant
+stores only those. At run time a tool is allowed when the grant lists it for the calling agent
+and that agent still selects it. Anything else is refused with `tool_policy_denied`. A server
+that cannot be listed (not declared, declared for another URL, or selected as a whole) is left
+out of the offer, and the rest is still offered.
 
 - A tool the agent selects later is not allowed until the owner confirms again. It does not
   invalidate the tools already allowed.
@@ -132,9 +161,9 @@ any other tool at the run's hook. The SDK's own controls are not refused. The ru
 starts and answers without its tools. The consent view reports `required`,
 or `requireAfterMs` while the deadline is still ahead.
 
-A schedule whose agent uses an MCP server the operator has not declared under
-`mcpConsent.resources` cannot be authorized, so the deadline stops it until the server is
-declared. Declare every server scheduled agents rely on before setting the date.
+Every schedule can be authorized, whatever its agent uses: the whole-agent grant needs
+nothing declared. A server the operator has not declared under `mcpConsent.resources` cannot
+be ticked tool by tool, so a grant that lists its tools leaves it out.
 
 ### A schedule authorized as it is created
 
@@ -142,7 +171,8 @@ Where consent is on, the create form asks what the new schedule may use and the 
 created with its grant. `POST /api/schedules/mcp-consent/offer` (`{ agent_id }`) answers what a
 schedule of that agent could be allowed before it exists; its digest is bound to the owner and
 the agent, not to a schedule id. `POST /api/schedules` takes the choice as `authorization`
-(`offerDigest`, `lifetimeHours`, `allow`, `ask`, `tools`), checks it against a fresh offer
+(`offerDigest`, `lifetimeHours`, and either `everything: true` or `allow`, `ask`, `tools`),
+checks it against a fresh offer
 (`service.grant`), and writes the grant in the same insert as the schedule. A choice that no
 longer fits is refused and nothing is created.
 

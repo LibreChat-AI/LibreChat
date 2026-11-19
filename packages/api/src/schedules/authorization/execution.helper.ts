@@ -102,6 +102,7 @@ export async function executionFixture(
    * calls the owner approved in the request that resumed the run. `tools` are the agents' tools
    * that are not MCP tools, and `allowTools` the ones of those the owner picks (default: none).
    * `coversTools: false` is a grant that limits MCP tools only, as an API key's does.
+   * `everything` is a grant of the whole agent, with nothing chosen one by one.
    */
   choice: {
     offered?: string[];
@@ -111,6 +112,7 @@ export async function executionFixture(
     tools?: string[];
     allowTools?: string[];
     coversTools?: boolean;
+    everything?: boolean;
   } = {},
 ) {
   let time = 1000;
@@ -197,9 +199,10 @@ export async function executionFixture(
     offerDigest: offer.offer!.digest,
     expectedRevision: null,
     lifetimeHours: 1,
-    allow: { warehouse: choice.allow ?? [tool.name] },
+    allow: choice.everything ? {} : { warehouse: choice.allow ?? [tool.name] },
     ...(choice.ask && { ask: { warehouse: choice.ask } }),
     ...(choice.allowTools && { tools: choice.allowTools }),
+    ...(choice.everything && { everything: true as const }),
   });
   const loadAuthorization = jest.fn(async () => ({ authority: service.authority }));
   const factory = createScheduleMCPExecution({

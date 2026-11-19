@@ -224,6 +224,11 @@ export function createScheduleMCPExecution<
      * all once any part of it was revoked. An MCP call is checked against the stored grant when
      * it is made; the agents' other tools have no such call, so they are held to this.
      */
+    /**
+     * A grant of the whole agent leaves nothing out: every tool loads and is allowed while the
+     * grant lasts, whatever the agents had when it was made.
+     */
+    const whole = snapshot.enrollment?.everything === true;
     const lifetime = snapshot.enrollment ? grantLifetime(snapshot.enrollment) : undefined;
     const liveUntil = lifetime && !lifetime.revoked ? lifetime.expiresAtMs : 0;
     const now = deps.now ?? Date.now;
@@ -266,10 +271,10 @@ export function createScheduleMCPExecution<
       }
     }
     const allows = (agentId: string, toolKey: string): boolean =>
-      others.get(agentId)?.has(toolKey) === true && now() < liveUntil;
+      (whole || others.get(agentId)?.has(toolKey) === true) && now() < liveUntil;
     /** Whether a run under the grant loads this key of the agent's. */
     const loads = (agentId: string, toolKey: string): boolean => {
-      if (toolKey.includes(Constants.mcp_delimiter)) return isGrantedKey(agentId, toolKey);
+      if (toolKey.includes(Constants.mcp_delimiter)) return whole || isGrantedKey(agentId, toolKey);
       return deps.coversTools !== true || !isScheduledToolItem(toolKey) || allows(agentId, toolKey);
     };
     let fenced = false;
@@ -304,6 +309,30 @@ export function createScheduleMCPExecution<
         throw new ScheduledMCPPolicyError('binding_mismatch', '');
       }
     };
+    /**
+     * For a server the whole-agent grant holds no consent for: one the operator did not
+     * declare, or one the agents took up since. The call goes ahead as the owner's own would,
+     * once the stored grant is seen to be the one this run started under and still in force.
+     */
+    const checkStanding = async (): Promise<void> => {
+      const observed = await waitUntilDeadline(
+        deps.storage.readScheduleMCPConsent(capturedIdentity),
+        settleBy(),
+      );
+      if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
+      const current = observed.value?.enrollment;
+      if (
+        !current ||
+        observed.value!.compatible === false ||
+        current.everything !== true ||
+        current.revision !== snapshot.enrollment!.revision ||
+        current.scheduleRevision !== observed.value!.configRevision
+      )
+        throw new ScheduledMCPPolicyError('binding_mismatch', '');
+      const { expiresAtMs, revoked } = grantLifetime(current);
+      if (revoked) throw new ScheduledMCPPolicyError('consent_revoked', '');
+      if (now() >= expiresAtMs) throw new ScheduledMCPPolicyError('consent_expired', '');
+    };
     return Object.freeze({
       identity: capturedIdentity,
       stage,
@@ -317,7 +346,7 @@ export function createScheduleMCPExecution<
         return observed.value;
       },
       grants: (agentId: string, serverName: string, selectionName: string) =>
-        granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
+        whole || granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
       narrow: (agentId: string, toolKeys: readonly string[]) =>
         enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
       grantsTool: allows,
@@ -369,6 +398,20 @@ export function createScheduleMCPExecution<
             }
             // Only the recipient is captured. Authority re-resolves live graph/policy below.
             const resource = resources.get(serverName);
+            if (!resource && whole) {
+              try {
+                await checkStanding();
+              } catch (error) {
+                signal?.throwIfAborted();
+                deny(
+                  error instanceof ScheduledMCPPolicyError
+                    ? error.failure.reason
+                    : 'dependency_unavailable',
+                );
+              }
+              signal?.throwIfAborted();
+              return;
+            }
             if (!resource) deny('tool_policy_denied');
             try {
               if (
