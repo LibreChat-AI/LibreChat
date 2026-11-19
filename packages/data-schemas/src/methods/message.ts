@@ -293,7 +293,6 @@ const NO_BOUND_APPS = { 'attachments.ui_resources.serverBinding': { $exists: fal
 type IndexedAttribution = {
   insightsAgentId?: string;
   refreshInsightsAttribution?: boolean;
-  insightsConversation?: InsightsConversationContext;
 };
 
 /**
@@ -782,7 +781,6 @@ export interface MessageMethods {
       isTemporary?: boolean;
       expiredAt?: Date;
       interfaceConfig?: AppConfig['interfaceConfig'];
-      insightsConversation?: InsightsConversationContext;
     },
     params: Omit<Partial<IMessage>, 'contextMeta'> & {
       newMessageId?: string;
@@ -1177,11 +1175,7 @@ export function createMessageMethods(
       attributionIdentity.user = identity.user;
     }
     if (attributionIdentity.conversationId && attributionIdentity.user) {
-      const attributions = await resolveInsightsAttributions(
-        mongoose,
-        [attributionIdentity],
-        options.insightsConversation ? [options.insightsConversation] : [],
-      );
+      const attributions = await resolveInsightsAttributions(mongoose, [attributionIdentity]);
       options = {
         ...options,
         refreshInsightsAttribution: true,
@@ -1250,13 +1244,11 @@ export function createMessageMethods(
       isTemporary,
       expiredAt,
       interfaceConfig,
-      insightsConversation,
     }: {
       userId: string;
       isTemporary?: boolean;
       expiredAt?: Date;
       interfaceConfig?: AppConfig['interfaceConfig'];
-      insightsConversation?: InsightsConversationContext;
     },
     params: Omit<Partial<IMessage>, 'contextMeta'> & {
       newMessageId?: string;
@@ -1396,11 +1388,7 @@ export function createMessageMethods(
           user: userId,
           tenantId: tenantStorage.getStore()?.tenantId,
         };
-        const attributions = await resolveInsightsAttributions(
-          mongoose,
-          [attributionIdentity],
-          insightsConversation ? [insightsConversation] : [],
-        );
+        const attributions = await resolveInsightsAttributions(mongoose, [attributionIdentity]);
         delete update.insightsAgentId;
         const insightsAgentId = attributions.get(insightsIdentityKey(attributionIdentity));
         const existingOrInserted = await Message.findOneAndUpdate(
@@ -1425,7 +1413,6 @@ export function createMessageMethods(
         { ...update, userSubmittedPaths, userSubmittedMessageFieldPaths },
         {
           upsert: true,
-          insightsConversation,
           stampModelOutputOnInsert,
           unsetContextMeta,
           retentionOnInsert,

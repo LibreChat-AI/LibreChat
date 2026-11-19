@@ -287,6 +287,7 @@ function transactionScope(
         ...match,
       },
     },
+    // The query form also matches arrays holding such values; only plain numbers count.
     {
       $addFields: {
         insightsUsageEligible: {
@@ -299,21 +300,6 @@ function transactionScope(
       },
     },
     { $match: { insightsUsageEligible: true } },
-    {
-      $project: {
-        _id: 0,
-        conversationId: 1,
-        user: { $convert: { input: '$user', to: 'string', onError: null, onNull: null } },
-        insightsTransaction: {
-          _id: '$_id',
-          createdAt: '$createdAt',
-          model: '$model',
-          messageId: '$messageId',
-          tokenValue: '$tokenValue',
-          rawAmount: '$rawAmount',
-        },
-      },
-    },
   ];
 }
 
@@ -688,15 +674,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         ...transactionScope(agentIds, options.tenantId, { $gte: from, $lte: to }),
         {
           $group: {
-            _id: '$insightsTransaction._id',
-            createdAt: { $max: '$insightsTransaction.createdAt' },
-            tokenValue: { $min: '$insightsTransaction.tokenValue' },
-            rawAmount: { $min: '$insightsTransaction.rawAmount' },
-            model: { $max: '$insightsTransaction.model' },
-          },
-        },
-        {
-          $group: {
             _id: {
               date: {
                 $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone },
@@ -733,21 +710,14 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             messageId: { $exists: true, $nin: [null, ''] },
           },
         ),
-        {
-          $project: {
-            _id: 0,
-            conversationId: 1,
-            user: 1,
-            transactionId: '$insightsTransaction._id',
-            createdAt: '$insightsTransaction.createdAt',
-            messageId: '$insightsTransaction.messageId',
-            model: '$insightsTransaction.model',
-          },
-        },
-        { $sort: { createdAt: 1, transactionId: 1 } },
+        { $sort: { createdAt: 1, _id: 1 } },
         {
           $group: {
-            _id: { conversationId: '$conversationId', user: '$user', messageId: '$messageId' },
+            _id: {
+              conversationId: '$conversationId',
+              user: { $convert: { input: '$user', to: 'string', onError: null, onNull: null } },
+              messageId: '$messageId',
+            },
             model: { $last: '$model' },
           },
         },

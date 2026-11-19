@@ -127,49 +127,6 @@ it('fixes a legacy conversation root at migration time', async () => {
   expect(await responses('agent-b')).toBe(0);
 });
 
-it('reuses the trusted loaded conversation for message and batched usage writes', async () => {
-  const conversation = { conversationId, user: owner.toString(), initial_agent_id: 'agent-a' };
-  await mongoose.models.Conversation.collection.insertOne(conversation);
-  const find = jest.spyOn(mongoose.models.Conversation.collection, 'find');
-  await createMessageMethods(mongoose).saveMessage(
-    {
-      userId: owner.toString(),
-      insightsConversation: conversation,
-    },
-    { conversationId, messageId: 'cached', isCreatedByUser: false },
-  );
-  await createTransactionMethods(mongoose, {
-    getMultiplier: () => 1,
-    getCacheMultiplier: () => null,
-  }).bulkInsertTransactions([
-    {
-      user: owner.toString(),
-      conversationId,
-      messageId: 'cached',
-      tokenType: 'prompt',
-      tokenValue: -1,
-      insightsConversation: conversation,
-    },
-    {
-      user: owner.toString(),
-      conversationId,
-      messageId: 'cached',
-      tokenType: 'completion',
-      tokenValue: -2,
-      insightsConversation: conversation,
-    },
-  ]);
-  expect(find).not.toHaveBeenCalled();
-  const transactions = await mongoose.models.Transaction.collection
-    .find({ messageId: 'cached' })
-    .toArray();
-  expect(transactions).toHaveLength(2);
-  for (const transaction of transactions) {
-    expect(transaction.insightsAgentId).toBe('agent-a');
-    expect(transaction).not.toHaveProperty('insightsConversation');
-  }
-});
-
 it('gives records saved before their conversation the hint once the conversation is created', async () => {
   const messages = createMessageMethods(mongoose);
   const conversations = createConversationMethods(mongoose, messages);
@@ -228,7 +185,7 @@ it('gives records saved before their conversation the hint once the conversation
   expect(await hintOf('Message', 'first-prompt')).toBe('kept');
 });
 
-it('attributes chat writes made with the conversation as the app loads it', async () => {
+it('attributes replies and usage saved after the conversation exists', async () => {
   const messages = createMessageMethods(mongoose);
   const conversations = createConversationMethods(mongoose, messages);
   await conversations.saveConvo(
@@ -236,16 +193,8 @@ it('attributes chat writes made with the conversation as the app loads it', asyn
     { conversationId, endpoint: 'agents', agent_id: 'agent-a' },
     { initialAgentId: 'agent-a' },
   );
-  const loaded = await conversations.getConvo(owner.toString(), conversationId);
-  expect(loaded).not.toBeNull();
-  expect(loaded).not.toHaveProperty('initial_agent_id');
-  const insightsConversation = {
-    conversationId,
-    user: owner.toString(),
-    ...(loaded?.isTemporary === true && { isTemporary: true }),
-  };
   await messages.saveMessage(
-    { userId: owner.toString(), insightsConversation },
+    { userId: owner.toString() },
     { conversationId, messageId: 'chat-reply', isCreatedByUser: false },
   );
   await createTransactionMethods(mongoose, {
@@ -258,7 +207,6 @@ it('attributes chat writes made with the conversation as the app loads it', asyn
       messageId: 'chat-reply',
       tokenType: 'completion',
       tokenValue: -2,
-      insightsConversation,
     },
   ]);
   expect(

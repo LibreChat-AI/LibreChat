@@ -12,7 +12,6 @@ import type {
   TransactionData,
   IBalance,
 } from '~/types';
-import type { InsightsConversationContext } from './insights/attribution';
 import type { ITransaction } from '~/schema/transaction';
 import { withInsightsAttribution } from './insights/attribution';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
@@ -62,7 +61,6 @@ interface InternalTxDoc {
 
 /** Input data for creating a transaction */
 export interface TxData {
-  insightsConversation?: InsightsConversationContext;
   user: string | Types.ObjectId;
   conversationId?: string;
   model?: string;

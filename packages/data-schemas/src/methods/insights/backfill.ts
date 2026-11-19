@@ -1,10 +1,11 @@
 import { Types } from 'mongoose';
-import type { AnyBulkWriteOperation } from 'mongodb';
+import type { AnyBulkWriteOperation, Collection, Document } from 'mongodb';
 import type { InsightsRecordIdentity } from './attribution';
 import { resolveInsightsAttributions, insightsIdentityKey } from './attribution';
 import { runAsSystem } from '~/config/tenantContext';
 
 type IndexedRecord = InsightsRecordIdentity & { _id: Types.ObjectId; insightsAgentId?: string };
+type BatchResult = { processed: number; updated: number; nextAfter?: string };
 
 export type InsightsBackfillOptions = {
   /** Run `conversations` first: it gives legacy agent conversations a fixed root agent, which
@@ -19,7 +20,7 @@ export type InsightsBackfillOptions = {
 export async function backfillInsightsAttribution(
   mongoose: typeof import('mongoose'),
   options: InsightsBackfillOptions,
-): Promise<{ processed: number; updated: number; nextAfter?: string }> {
+): Promise<BatchResult> {
   if (!Number.isInteger(options.batchSize) || options.batchSize < 1) {
     throw new Error('Insights backfill batchSize must be a positive integer');
   }
@@ -61,19 +62,7 @@ export async function backfillInsightsAttribution(
       },
     });
   }
-  const result =
-    options.apply && operations.length > 0
-      ? // This explicit cross-tenant migration uses native records and identity-scoped filters.
-        // eslint-disable-next-line no-restricted-syntax
-        await collection.bulkWrite(operations, { ordered: false })
-      : undefined;
-  return {
-    processed: records.length,
-    updated: result?.modifiedCount ?? operations.length,
-    ...(records.length === options.batchSize && {
-      nextAfter: records[records.length - 1]?._id.toString(),
-    }),
-  };
+  return finishBatch(collection, records, operations, options);
 }
 
 type LegacyConversation = { _id: Types.ObjectId; agent_id?: unknown; initial_agent_id?: unknown };
@@ -82,7 +71,7 @@ type LegacyConversation = { _id: Types.ObjectId; agent_id?: unknown; initial_age
 async function backfillLegacyRootAgents(
   db: NonNullable<(typeof import('mongoose'))['connection']['db']>,
   options: InsightsBackfillOptions,
-): Promise<{ processed: number; updated: number; nextAfter?: string }> {
+): Promise<BatchResult> {
   const collection = db.collection<LegacyConversation>('conversations');
   const conversations = await collection
     .find(
@@ -106,6 +95,15 @@ async function backfillLegacyRootAgents(
       },
     });
   }
+  return finishBatch(collection, conversations, operations, options);
+}
+
+async function finishBatch<T extends Document>(
+  collection: Collection<T>,
+  documents: Array<{ _id: Types.ObjectId }>,
+  operations: AnyBulkWriteOperation<T>[],
+  options: InsightsBackfillOptions,
+): Promise<BatchResult> {
   const result =
     options.apply && operations.length > 0
       ? // This explicit cross-tenant migration uses native records and identity-scoped filters.
@@ -113,10 +111,10 @@ async function backfillLegacyRootAgents(
         await collection.bulkWrite(operations, { ordered: false })
       : undefined;
   return {
-    processed: conversations.length,
+    processed: documents.length,
     updated: result?.modifiedCount ?? operations.length,
-    ...(conversations.length === options.batchSize && {
-      nextAfter: conversations[conversations.length - 1]?._id.toString(),
+    ...(documents.length === options.batchSize && {
+      nextAfter: documents[documents.length - 1]?._id.toString(),
     }),
   };
 }
