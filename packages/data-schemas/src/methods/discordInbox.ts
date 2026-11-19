@@ -286,8 +286,14 @@ export function createDiscordInboxStorage(
               { $set: { state: 'failed', result: 'expired', leaseExpiresAt: 0 }, $unset: erase },
               { session },
             );
-          const skipped: string[] = [];
-          for (let scanned = 0; scanned < limits.scanLimit; scanned++) {
+          // A blocked actor scope is excluded whole and not charged to the scan budget, so its queue
+          // cannot hide independent work. Scopes are bounded by the application pending cap.
+          const blocked: Array<{
+            guildId: string;
+            externalChannelId: string;
+            externalUserId: string;
+          }> = [];
+          for (let scanned = 0; scanned < limits.scanLimit + blocked.length; scanned++) {
             const filter = {
               tenantId: tenant() ?? null,
               applicationId,
@@ -295,7 +301,9 @@ export function createDiscordInboxStorage(
               expiresAt: { $gt: now },
               nextAttemptAt: { $lte: now },
               leaseExpiresAt: { $lte: now },
-              eventId: { $nin: skipped },
+              ...(blocked.length
+                ? { $nor: blocked.map((scope) => ({ ...scope, state: { $ne: 'reply' } })) }
+                : {}),
             };
             // Due effects retain receive order, including recovery of unfinished processing.
             const candidate = await inbox
@@ -331,7 +339,11 @@ export function createDiscordInboxStorage(
                 })
                 .session(session))
             ) {
-              skipped.push(candidate.eventId);
+              blocked.push({
+                guildId: candidate.guildId,
+                externalChannelId: candidate.externalChannelId,
+                externalUserId: candidate.externalUserId,
+              });
               continue;
             }
             const claimed = await inbox

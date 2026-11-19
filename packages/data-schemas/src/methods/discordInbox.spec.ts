@@ -636,6 +636,22 @@ it('serializes processing effects per actor and destination while other actors p
     });
   }));
 
+it('does not let a blocked actor queue exhaust the claim scan budget', () =>
+  scope(async () => {
+    storage = createDiscordInboxStorage(db, async () => ({ scanLimit: 1 }));
+    const second = '567890123456789013';
+    const other = '567890123456789014';
+    await storage.submit(input(), now);
+    await storage.submit(input({ eventId: second }), now + 1);
+    await storage.submit(input({ eventId: other, externalUserId: '456789012345678902' }), now + 2);
+    const first = await claim(now + 2);
+    expect(first.eventId).toBe(eventId);
+    expect(await storage.defer(first, now + 1000, now + 3)).toBe(true);
+    expect(await storage.claim(applicationId, 'independent', now + 4)).toMatchObject({
+      eventId: other,
+    });
+  }));
+
 it('reclaims expired processing before starting a later event for that actor', () =>
   scope(async () => {
     await storage.submit(input(), now);
