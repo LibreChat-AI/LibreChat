@@ -38,6 +38,7 @@ export const testMessagesHost: MessagesHost = {
   useMaximizeChatSpace: () => false,
   useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
+  useSelectedSender: () => undefined,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
   renderWakeup: () => null,

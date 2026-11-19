@@ -46,6 +46,7 @@ function MessageParts(props: TMessageProps): ReactElement | null {
   const host = useMessagesHost();
   const maximizeChatSpace = host.useMaximizeChatSpace();
   const hideSelectedAuthor = host.useHideSelectedAuthor();
+  const selectedSender = host.useSelectedSender(conversation ?? null);
   const { messageId = null, isCreatedByUser } = message ?? {};
 
   const name = useMemo(() => {
@@ -104,6 +105,7 @@ function MessageParts(props: TMessageProps): ReactElement | null {
           assistant={assistant}
           hasConfiguredSender={hasConfiguredSender}
           hideSelectedAuthor={hideSelectedAuthor}
+          selectedSender={selectedSender}
           isLast={isLast}
           isLatestMessage={messageId === latestMessageId}
           isSubmitting={isSubmitting}

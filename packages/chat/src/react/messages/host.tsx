@@ -239,6 +239,10 @@ export interface MessagesHost {
   /** Whether a response by the agent the header's model selector shows drops its avatar and name
    *  (`interface.messageAuthor: whenDifferent`). */
   useHideSelectedAuthor: () => boolean;
+  /** The sender a response sent now would be written with under the conversation's selection (its
+   *  model spec's label, a configured name or the model's own), so a response from an earlier
+   *  selection of the same model keeps its author. `undefined` when the app cannot name one. */
+  useSelectedSender: (conversation: TConversation | null) => string | undefined;
   /** The agents the viewer can see by id, or `undefined` until they load. */
   useAgentsMap: () => Record<string, Agent | undefined> | undefined;
   /** Renders a row's text body when it has no content parts. */
@@ -304,6 +308,7 @@ const fallbackHost: MessagesHost = {
   useMaximizeChatSpace: () => false,
   useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
+  useSelectedSender: () => undefined,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
   renderWakeup: () => null,

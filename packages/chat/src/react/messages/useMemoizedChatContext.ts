@@ -56,6 +56,8 @@ export default function useMemoizedChatContext(
       chatCtx.conversation?.endpoint,
       chatCtx.conversation?.endpointType,
       chatCtx.conversation?.model,
+      chatCtx.conversation?.spec,
+      chatCtx.conversation?.modelLabel,
       chatCtx.conversation?.agent_id,
       chatCtx.conversation?.assistant_id,
     ],

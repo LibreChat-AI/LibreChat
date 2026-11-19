@@ -253,6 +253,7 @@ const messagesHost: MessagesHost = {
   useMaximizeChatSpace: () => false,
   useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
+  useSelectedSender: () => undefined,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
   renderWakeup: () => null,

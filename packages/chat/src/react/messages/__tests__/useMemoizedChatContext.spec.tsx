@@ -33,11 +33,15 @@ const stableHelpers = {
 
 let contract: ChatContract = createChatContract();
 
-function mockChatContext(latestMessageId: string | undefined, latestMessageDepth = -1): void {
+function mockChatContext(
+  latestMessageId: string | undefined,
+  latestMessageDepth = -1,
+  current: TConversation = conversation,
+): void {
   contract = createChatContract({
     ...stableHelpers,
     index: 0,
-    conversation,
+    conversation: current,
     latestMessageId,
     latestMessageDepth,
     isSubmitting: true,
@@ -105,5 +109,42 @@ describe('useMemoizedChatContext', () => {
     expect(chatContext.latestMessageId).toBe('assistant-3');
     expect(chatContext.latestMessageDepth).toBe(5);
     expect(chatContext.isSubmitting).toBe(true);
+  });
+
+  /** A row decides whether to draw its author from the conversation's selection, and two specs on
+   *  one model differ only in `spec` and the label it resolves. */
+  it.each([
+    ['another model spec on the same model', { spec: 'second-spec' }],
+    ['a custom name for the model', { modelLabel: 'Renamed' }],
+  ])('hands rows the new conversation when the selection moves to %s', (_case, change) => {
+    const selected = { ...conversation, spec: 'first-spec' } as TConversation;
+    mockChatContext('assistant-1', 1, selected);
+    const { result, rerender } = renderHook(() => useMemoizedChatContext(message(), false), {
+      wrapper,
+    });
+    const initial = result.current.chatContext;
+
+    mockChatContext('assistant-1', 1, { ...selected, ...change } as TConversation);
+    rerender();
+
+    expect(result.current.chatContext).not.toBe(initial);
+    expect(result.current.chatContext.conversation).toMatchObject(change);
+  });
+
+  it('keeps the conversation while its title and other metadata change', () => {
+    mockChatContext('assistant-1', 1, { ...conversation, spec: 'first-spec' } as TConversation);
+    const { result, rerender } = renderHook(() => useMemoizedChatContext(message(), false), {
+      wrapper,
+    });
+    const initial = result.current.chatContext;
+
+    mockChatContext('assistant-1', 1, {
+      ...conversation,
+      spec: 'first-spec',
+      title: 'A generated title',
+    } as TConversation);
+    rerender();
+
+    expect(result.current.chatContext).toBe(initial);
   });
 });

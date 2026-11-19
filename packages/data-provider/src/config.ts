@@ -3493,9 +3493,9 @@ export const interfaceSchema = z
      *  page (`true`), directly under the composer (`composer`), or not at all (`false`). A
      *  configured `customFooter` still renders when this is false. */
     landingFooter: z.union([z.boolean(), z.literal('composer')]).optional(),
-    /** Who a response names above its content: every author (`always`), or only an agent other
-     *  than the one the header's model selector already shows (`whenDifferent`), which drops the
-     *  avatar and name row from that agent's responses. */
+    /** Who a response names above its content: every author (`always`), or only an author other
+     *  than the agent, model spec or model the header's model selector already shows
+     *  (`whenDifferent`), which drops the avatar and name row from that author's responses. */
     messageAuthor: z.enum(['always', 'whenDifferent']).optional(),
     mcpServers: mcpServersSchema.optional(),
     modelSelect: z.boolean().optional(),

@@ -1,5 +1,6 @@
 import { getConfigDefaults } from 'librechat-data-provider';
-import type { TStartupConfig } from 'librechat-data-provider';
+import type { TConversation, TStartupConfig } from 'librechat-data-provider';
+import useGetSender from '~/hooks/Conversations/useGetSender';
 import { useGetStartupConfig } from '~/data-provider';
 
 const defaultInterface = getConfigDefaults().interface;
@@ -18,4 +19,12 @@ export function useHideSelectedAuthor(): boolean {
     startupConfig?.interface?.messageAuthor === 'whenDifferent' &&
     isModelSelectorShown(startupConfig)
   );
+}
+
+/** The sender a response sent under the conversation's selection is written with, so a response
+ *  from another spec on the same model is told apart. Resolved only while the setting hides authors. */
+export function useSelectedSender(conversation: TConversation | null): string | undefined {
+  const hideSelectedAuthor = useHideSelectedAuthor();
+  const getSender = useGetSender();
+  return hideSelectedAuthor && conversation != null ? getSender(conversation) : undefined;
 }

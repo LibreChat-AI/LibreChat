@@ -148,16 +148,23 @@ describe('ContentRow', () => {
       model: 'claude-sonnet-5',
       spec: 'ClickHouse Agent Claude',
     } as TConversation;
-    const specReply = { ...reply, endpoint: 'Claude', model: 'claude-sonnet-5' } as TMessage;
+    const specReply = {
+      ...reply,
+      endpoint: 'Claude',
+      model: 'claude-sonnet-5',
+      sender: 'ClickHouse Agent',
+    } as TMessage;
+    /** The selection as the host resolves it: the sender a turn sent now would be written with. */
+    const selection = {
+      message: specReply,
+      conversation: spec,
+      hideSelectedAuthor: true,
+      selectedSender: 'ClickHouse Agent',
+    };
     const nameIsHidden = () => screen.getByText('Research Agent').closest('.sr-only') != null;
 
     it('keeps only the assistive technology text for its own response', () => {
-      const parts = renderRow({
-        message: specReply,
-        conversation: spec,
-        hideSelectedAuthor: true,
-        authorHeader: <span>Resume header</span>,
-      });
+      const parts = renderRow({ ...selection, authorHeader: <span>Resume header</span> });
       expect(screen.getByRole('heading', { name: /Research Agent/ })).toHaveClass('sr-only');
       expect(nameIsHidden()).toBe(true);
       expect(screen.queryByTestId('icon')).not.toBeInTheDocument();
@@ -166,45 +173,53 @@ describe('ContentRow', () => {
 
     it('keeps only the assistive technology text when the server saved the ephemeral agent id', () => {
       renderRow({
-        message: specReply,
+        ...selection,
         conversation: {
           ...spec,
           agent_id: 'Claude__claude-sonnet-5___Research_Agent',
         } as TConversation,
-        hideSelectedAuthor: true,
       });
       expect(nameIsHidden()).toBe(true);
     });
 
-    it('hides the author while the response has no model yet', () => {
+    it('hides the author while the response has no model or sender yet', () => {
       renderRow({
-        message: { ...specReply, endpoint: undefined, model: undefined } as TMessage,
-        conversation: spec,
-        hideSelectedAuthor: true,
+        ...selection,
+        message: {
+          ...specReply,
+          endpoint: undefined,
+          model: undefined,
+          sender: undefined,
+        } as TMessage,
       });
+      expect(nameIsHidden()).toBe(true);
+    });
+
+    it('hides the author when the host cannot name the selected sender', () => {
+      renderRow({ ...selection, selectedSender: undefined });
       expect(nameIsHidden()).toBe(true);
     });
 
     it.each([
-      ['the deployment has not opted in', { message: specReply, conversation: spec }],
+      ['the deployment has not opted in', { ...selection, hideSelectedAuthor: false }],
       [
         'a different model wrote the turn',
-        {
-          message: { ...specReply, model: 'other-model' } as TMessage,
-          conversation: spec,
-          hideSelectedAuthor: true,
-        },
+        { ...selection, message: { ...specReply, model: 'other-model' } as TMessage },
       ],
       [
-        'the response is in an added conversation pane',
-        { message: specReply, conversation: spec, index: 1, hideSelectedAuthor: true },
+        'another spec on the same model wrote the turn',
+        { ...selection, message: { ...specReply, sender: 'Other Spec' } as TMessage },
       ],
+      [
+        'the selection moved to the plain model since the turn was written',
+        { ...selection, selectedSender: 'Claude' },
+      ],
+      ['the response is in an added conversation pane', { ...selection, index: 1 }],
       [
         'the thread is a read-only subagent thread',
         {
-          message: specReply,
+          ...selection,
           conversation: { ...spec, subagentThread: { parentConversationId: 'p' } } as TConversation,
-          hideSelectedAuthor: true,
         },
       ],
     ])('shows the author when %s', (_case, props) => {
@@ -217,7 +232,12 @@ describe('ContentRow', () => {
   it('keeps the part headers for parallel agent content in a spec conversation', () => {
     const header = <span>Resume header</span>;
     const parts = renderRow({
-      message: { ...reply, endpoint: 'Claude', model: 'claude-sonnet-5' } as TMessage,
+      message: {
+        ...reply,
+        endpoint: 'Claude',
+        model: 'claude-sonnet-5',
+        sender: 'ClickHouse Agent',
+      } as TMessage,
       conversation: {
         ...conversation,
         endpoint: 'Claude' as EModelEndpoint,
@@ -225,6 +245,7 @@ describe('ContentRow', () => {
       } as TConversation,
       hasParallelContent: true,
       hideSelectedAuthor: true,
+      selectedSender: 'ClickHouse Agent',
       authorHeader: header,
     });
     expect(parts.mock.calls[0][0].authorHeader).toBe(header);

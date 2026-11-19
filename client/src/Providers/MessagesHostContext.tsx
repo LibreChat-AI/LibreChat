@@ -25,7 +25,7 @@ import {
   getMessageClipboardSource,
   useCopyMessageToClipboard,
 } from '~/hooks';
-import { useHideSelectedAuthor } from '~/components/Chat/Menus/Endpoints/shown';
+import { useSelectedSender, useHideSelectedAuthor } from '~/components/Chat/Menus/Endpoints/shown';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useForkConvoMutation, useCachedMessages } from '~/data-provider';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
@@ -159,6 +159,7 @@ export const appMessagesHost: MessagesHost = {
   useMaximizeChatSpace: () => useRecoilValue(store.maximizeChatSpace),
   useFlatThread: () => FLAT_THREAD,
   useHideSelectedAuthor,
+  useSelectedSender,
   useAgentsMap: useAgentsMapContext,
   renderMessageBody: (props) => <MessageContent {...props} />,
   renderWakeup: (props) => <Wakeup {...props} />,

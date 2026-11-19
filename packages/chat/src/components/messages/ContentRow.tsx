@@ -35,6 +35,9 @@ export type ContentRowProps = {
   hasConfiguredSender: boolean;
   /** Drops the avatar and name from a turn by the agent the header's model selector shows. */
   hideSelectedAuthor?: boolean;
+  /** The sender a response sent under the conversation's current selection carries; one written
+   *  under another spec on the same model carries another. */
+  selectedSender?: string;
   isLast: boolean;
   isLatestMessage: boolean;
   isSubmitting: boolean;
@@ -64,19 +67,28 @@ export type ContentRowProps = {
 };
 
 /** Whether a response came from the conversation's own selection: the saved agent the selector
- *  shows, or, with no saved agent, the spec or endpoint and model it runs. A turn by another agent,
- *  a subagent's read-only thread (whose header has no selector), side-by-side agent columns and
- *  an added conversation (index > 0) all keep their author. */
+ *  shows, or, with no saved agent, the spec or endpoint and model it runs, under the sender that
+ *  selection writes. A turn by another agent, from another spec on the same model, a subagent's
+ *  read-only thread (whose header has no selector), side-by-side agent columns and an added
+ *  conversation (index > 0) all keep their author. A sender missing on either side, as on a
+ *  response still streaming, does not tell the authors apart. */
 function isSelectedAuthor({
   agent,
   index,
   message,
   assistant,
   conversation,
+  selectedSender,
   hasParallelContent,
 }: Pick<
   ContentRowProps,
-  'agent' | 'index' | 'message' | 'assistant' | 'conversation' | 'hasParallelContent'
+  | 'agent'
+  | 'index'
+  | 'message'
+  | 'assistant'
+  | 'conversation'
+  | 'selectedSender'
+  | 'hasParallelContent'
 >): boolean {
   if (message.isCreatedByUser === true || conversation == null) {
     return false;
@@ -99,7 +111,8 @@ function isSelectedAuthor({
     index === 0 &&
     !hasParallelContent &&
     (message.endpoint ?? conversation.endpoint) === conversation.endpoint &&
-    (message.model ?? conversation.model) === conversation.model
+    (message.model ?? conversation.model) === conversation.model &&
+    (!message.sender || !selectedSender || message.sender === selectedSender)
   );
 }
 
@@ -118,6 +131,7 @@ export default function ContentRow({
   assistant,
   hasConfiguredSender,
   hideSelectedAuthor = false,
+  selectedSender,
   isLast,
   isLatestMessage,
   isSubmitting,
@@ -144,7 +158,15 @@ export default function ContentRow({
   const isCreatedByUser = message.isCreatedByUser === true;
   const authorHidden =
     hideSelectedAuthor &&
-    isSelectedAuthor({ agent, index, message, assistant, conversation, hasParallelContent });
+    isSelectedAuthor({
+      agent,
+      index,
+      message,
+      assistant,
+      conversation,
+      selectedSender,
+      hasParallelContent,
+    });
 
   const author = useMemo(
     () => ({
