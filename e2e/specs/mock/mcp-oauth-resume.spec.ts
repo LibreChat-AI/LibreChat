@@ -101,7 +101,11 @@ test.describe('MCP OAuth stream resume', () => {
       const callbackUrl = new URL(authorizationUrl.searchParams.get('redirect_uri')!);
       callbackUrl.searchParams.set('state', authorizationUrl.searchParams.get('state')!);
       callbackUrl.searchParams.set('code', 'unbound-provider-code');
-      const unboundBrowser = await browser.newContext();
+      /** A manual context inherits the project's storageState, which now carries the oauth_session
+       *  cookie issued at login, so it must opt out to be a browser that never started the flow. */
+      const unboundBrowser = await browser.newContext({
+        storageState: { cookies: [], origins: [] },
+      });
       try {
         const callback = await unboundBrowser.request.get(callbackUrl.toString(), {
           maxRedirects: 0,
