@@ -949,6 +949,34 @@ describe('a schedule authorized for the whole agent', () => {
   });
 });
 
+describe('a schedule being edited with a new grant', () => {
+  it('is checked against the grant the edit carries, not the one it replaces', async () => {
+    const f = await setup();
+    f.setCandidates(['web_search', 'query_mcp_warehouse']);
+    const view = await f.host.consent.service.view(f.identity);
+    // The stored grant allows the MCP tool. The edit comes with one that allows only the other.
+    const grant = await f.host.consent.service.renew(
+      f.identity,
+      {
+        offerDigest: view.offer!.digest,
+        expectedRevision: view.revision,
+        lifetimeHours: 1,
+        allow: {},
+        tools: ['web_search'],
+      },
+      1,
+    );
+    expect(grant).toMatchObject({ scheduleRevision: 1, consents: [] });
+    f.connect.mockClear();
+    const options = { scheduleId: 'schedule', stage: 'activation' as const, concurrency: 3 };
+    await expect(f.preflight('root', f.user, { ...options, grant })).resolves.toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+    await expect(f.preflight('root', f.user, options)).resolves.toEqual([
+      { server: 'warehouse', status: 'ready' },
+    ]);
+  });
+});
+
 describe('a schedule being created with its grant', () => {
   /** Nothing is stored for it yet: the grant comes with the readiness check. */
   async function creating(

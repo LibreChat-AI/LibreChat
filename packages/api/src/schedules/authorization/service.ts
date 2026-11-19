@@ -382,10 +382,26 @@ export interface ScheduleMCPConsentService<
     identity: Identity,
     options?: { signal?: AbortSignal },
   ) => Promise<ScheduleMCPConsentView>;
-  /** The grant for a subject about to be created. Stores nothing. */
+  /**
+   * The grant for a subject about to be created, or for a stored one that an edit is moving
+   * to another agent: either way it is chosen from the offer for the agent alone. Stores
+   * nothing. `revision` is the subject's configuration generation the grant is made for:
+   * zero for a new subject, the one the edit makes for a stored one.
+   */
   grant: (
     identity: Identity,
     input: ScheduleAuthorization,
+    options?: { signal?: AbortSignal; revision?: number },
+  ) => Promise<MCPGrantEnrollment<Identity>>;
+  /**
+   * The grant an edit of a stored subject carries, chosen from the subject's own offer like
+   * a confirmation and checked the same way. Stores nothing: the caller writes it with the
+   * edit, for the configuration generation (`revision`) that edit makes.
+   */
+  renew: (
+    identity: Identity,
+    input: ConfirmScheduleMCPConsent,
+    revision: number,
     options?: { signal?: AbortSignal },
   ) => Promise<MCPGrantEnrollment<Identity>>;
   confirm: (
@@ -696,7 +712,7 @@ export function createScheduleMCPConsentService<
   async function grant(
     identity: Identity,
     input: ScheduleAuthorization,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; revision?: number } = {},
   ): Promise<MCPGrantEnrollment<Identity>> {
     const current = await draft(identity, options);
     if (!current.offer) throw new ScheduleMCPConsentError('consent_unavailable');
@@ -722,7 +738,7 @@ export function createScheduleMCPConsentService<
     options.signal?.throwIfAborted();
     return build({
       identity,
-      configRevision: 0,
+      configRevision: options.revision ?? 0,
       lifetimeHours: input.lifetimeHours,
       chosen,
       others,
@@ -731,11 +747,17 @@ export function createScheduleMCPConsentService<
     });
   }
 
-  async function confirm(
+  /** The grant a confirmation asks for, checked against the stored subject. Stores nothing. */
+  async function decide(
     identity: Identity,
     input: ConfirmScheduleMCPConsent,
     options: { signal?: AbortSignal } = {},
-  ): Promise<ScheduleMCPConsentView> {
+  ): Promise<{
+    enrollment: MCPGrantEnrollment<Identity>;
+    snapshot: NonNullable<
+      Awaited<ReturnType<MCPConsentStorage<Identity>['readScheduleMCPConsent']>>
+    >;
+  }> {
     if (!(await deps.canUse(identity, options)))
       throw new ScheduleMCPConsentError('consent_forbidden');
     const current = await view(identity, options);
@@ -787,6 +809,15 @@ export function createScheduleMCPConsentService<
       prior: snapshot.enrollment?.consents,
       everything,
     });
+    return { enrollment, snapshot };
+  }
+
+  async function confirm(
+    identity: Identity,
+    input: ConfirmScheduleMCPConsent,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ScheduleMCPConsentView> {
+    const { enrollment, snapshot } = await decide(identity, input, options);
     const committed = await deps.storage.confirmScheduleMCPConsent({
       identity,
       expectedRevision: input.expectedRevision,
@@ -797,6 +828,16 @@ export function createScheduleMCPConsentService<
     });
     if (!committed) throw new ScheduleMCPConsentError('consent_changed');
     return view(identity, options);
+  }
+
+  async function renew(
+    identity: Identity,
+    input: ConfirmScheduleMCPConsent,
+    revision: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<MCPGrantEnrollment<Identity>> {
+    const { enrollment } = await decide(identity, input, options);
+    return { ...enrollment, scheduleRevision: revision };
   }
 
   async function revoke(identity: Identity, revision: string): Promise<void> {
@@ -1039,5 +1080,14 @@ export function createScheduleMCPConsentService<
       };
     },
   };
-  return { view, draft, grant, confirm, revoke, requiresGrant: requiresGrantFor, authority };
+  return {
+    view,
+    draft,
+    grant,
+    renew,
+    confirm,
+    revoke,
+    requiresGrant: requiresGrantFor,
+    authority,
+  };
 }

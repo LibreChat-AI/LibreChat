@@ -290,6 +290,18 @@ export const scheduleAuthorizationSchema = consentChoice
   .refine(allowsSomething);
 export type ScheduleAuthorization = z.infer<typeof scheduleAuthorizationSchema>;
 
+/**
+ * The owner's choice sent with an edit of a schedule. The edit ends the grant the schedule
+ * had, so the choice is made again in the same step. With the agent unchanged it is made
+ * from the schedule's own offer and names the stored grant (`expectedRevision`); with
+ * another agent picked it is made from that agent's offer, as for a new schedule.
+ */
+export const scheduleReauthorizationSchema = consentChoice
+  .extend({ expectedRevision: identifier.nullable().optional() })
+  .strict()
+  .refine(allowsSomething);
+export type ScheduleReauthorization = z.infer<typeof scheduleReauthorizationSchema>;
+
 /** Asks what the owner could allow a schedule of this agent, before the schedule exists. */
 export const scheduleOfferRequestSchema = z.object({ agent_id: identifier }).strict();
 

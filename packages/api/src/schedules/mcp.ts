@@ -196,8 +196,10 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
     const signal = options.signal;
     let execution: ScheduleMCPExecution | undefined;
     try {
+      // A grant handed over is the one the schedule is being created or edited with: it
+      // stands in for whatever is stored, which this write replaces.
       execution =
-        options.scheduleId && deps.execution
+        options.scheduleId && deps.execution && !options.grant
           ? await deps.execution.resolve(
               {
                 scheduleId: options.scheduleId,

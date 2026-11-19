@@ -13,6 +13,7 @@ import type {
   ScheduledMCPIdentity,
   ScheduleAuthorization,
   ScheduledMCPEnrollment,
+  ConfirmScheduleMCPConsent,
 } from 'librechat-data-provider';
 import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -49,6 +50,17 @@ export interface SchedulesHandlersDeps {
   grant?: (
     identity: ScheduledMCPIdentity,
     choice: ScheduleAuthorization,
+    options: { signal?: AbortSignal; revision?: number },
+  ) => Promise<ScheduledMCPEnrollment>;
+  /**
+   * The grant an edit carries for a schedule that keeps its agent, from the owner's choice of
+   * the schedule's own offer, for the configuration generation the edit makes. Throws a
+   * `ScheduleMCPConsentError` like `grant`. Absent, an edit cannot carry an authorization.
+   */
+  renew?: (
+    identity: ScheduledMCPIdentity,
+    choice: ConfirmScheduleMCPConsent,
+    revision: number,
     options: { signal?: AbortSignal },
   ) => Promise<ScheduledMCPEnrollment>;
   /** Whether the requesting user owns this chat project. Projects are user-owned,
@@ -340,6 +352,13 @@ export function toWireSchedule(
     updatedAt: schedule.updatedAt,
     ...(inFlight.length > 0 && { inFlight: toWireInFlight(inFlight) }),
   };
+}
+
+/** The owner's choice no longer fits what can be offered, or never did. Nothing is written. */
+function refuseAuthorization(res: Response, error: ScheduleMCPConsentError): void {
+  res
+    .status(error.code === 'consent_forbidden' ? 403 : 409)
+    .json({ error: 'Schedule authorization was not accepted', code: error.code });
 }
 
 function requestUser(req: ServerRequest): { id: string; tenantId?: string; role?: string } {
@@ -764,11 +783,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         } catch (error) {
           if (mcpSignal.aborted) return;
           if (!(error instanceof ScheduleMCPConsentError)) throw error;
-          // The owner's choice no longer fits what can be offered, or never did.
-          const status = error.code === 'consent_forbidden' ? 403 : 409;
-          res
-            .status(status)
-            .json({ error: 'Schedule authorization was not accepted', code: error.code });
+          refuseAuthorization(res, error);
           return;
         }
       }
@@ -971,7 +986,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // The fence input is not a schedule field: strip it before the emptiness check
     // and the update spread below, or it would count as an edit and be written to
     // the row.
-    const { expectedConfigRevision, ...editedFields } = parsed.data;
+    // Nor is the owner's choice of what the schedule may use: it rides with an edit.
+    const { expectedConfigRevision, authorization, ...editedFields } = parsed.data;
     // A field-less PATCH is not a harmless no-op: updateScheduleById rotates the claim
     // token and bumps the config revision on every write, so an empty update would
     // fence a legitimate in-flight occurrence — its terminal bookkeeping revision-
@@ -1040,6 +1056,47 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       res.status(400).json({ error: 'Agent not found or not accessible' });
       return;
     }
+    /**
+     * An edit ends the grant the schedule had. Where the owner sent their choice with it, the
+     * grant is made again here and written in the same update, for the revision that update
+     * makes, so the schedule is never left waiting for a second step.
+     */
+    let regrant: ISchedule['mcpConsent'];
+    if (
+      limits.mcpConsent?.enabled === true &&
+      authorization != null &&
+      deps.grant != null &&
+      deps.renew != null
+    ) {
+      const agentId = parsed.data.agent_id ?? existing.agent_id;
+      const identity: ScheduledMCPIdentity = {
+        scheduleId: existing.id,
+        ownerId: user.id,
+        tenantId: user.tenantId ?? null,
+        agentId,
+        invocationMode: 'delegated',
+      };
+      const revision = (existing.configRevision ?? 0) + 1;
+      const { expectedRevision, ...choice } = authorization;
+      try {
+        // Another agent: there is no stored grant for it, so the choice is made from that
+        // agent's offer, as for a new schedule. The same agent: from the schedule's own.
+        regrant =
+          agentId === existing.agent_id
+            ? await deps.renew(
+                identity,
+                { ...choice, expectedRevision: expectedRevision ?? null },
+                revision,
+                { signal: mcpSignal },
+              )
+            : await deps.grant(identity, choice, { signal: mcpSignal, revision });
+      } catch (error) {
+        if (mcpSignal.aborted) return;
+        if (!(error instanceof ScheduleMCPConsentError)) throw error;
+        refuseAuthorization(res, error);
+        return;
+      }
+    }
     if (
       enabled &&
       !(await validateMCP(
@@ -1049,6 +1106,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         mcpSignal,
         limits,
         existing.id,
+        regrant,
       ))
     )
       return;
@@ -1101,7 +1159,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     const update: Partial<ISchedule> = { ...editedFields } as Partial<ISchedule>;
     // Editing a schedule its owner never authorized ends its exemption: from here on its
     // MCP tools need a grant. Pausing or resuming it is not an edit.
-    if (
+    if (regrant) update.mcpConsent = regrant;
+    else if (
       limits.mcpConsent?.enabled === true &&
       existing.mcpConsent === undefined &&
       existing.mcpConsentRequired !== true &&
@@ -1132,10 +1191,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       update.balanceSkipCount = 0;
     }
     const unset =
-      reEnabled || clearsProject
+      reEnabled || clearsProject || regrant
         ? {
             ...(reEnabled && { disabledReason: 1 as const }),
             ...(clearsProject && { chatProjectId: 1 as const }),
+            // Authorized again in this write: it no longer waits for its owner.
+            ...(regrant && { mcpConsentRequired: 1 as const }),
           }
         : undefined;
     // Retain the new attachments BEFORE committing the edit, so a retention failure
@@ -1182,7 +1243,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // loser simply retries against fresh state.
     const schedule = await deps.methods.updateScheduleById(existing.id, user.id, update, unset, {
       expectedConfigRevision: existing.configRevision,
-      ...(existing.mcpConsent &&
+      ...(!regrant &&
+        existing.mcpConsent &&
         existing.mcpConsent.scheduleRevision === existing.configRevision &&
         Object.keys(editedFields).every((key) => key === 'enabled') &&
         !clearsProject &&

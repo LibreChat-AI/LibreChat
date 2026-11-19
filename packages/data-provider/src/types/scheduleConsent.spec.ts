@@ -7,7 +7,12 @@ import {
   scheduledMCPIdentitySchema,
   scheduledMCPEnrollmentSchema,
 } from './scheduleConsent';
-import { scheduleMCPOutcomeSchema, readScheduleMCPOutcomes } from './schedules';
+import {
+  scheduleMCPOutcomeSchema,
+  readScheduleMCPOutcomes,
+  createSchedulePayloadSchema,
+  updateSchedulePayloadSchema,
+} from './schedules';
 import { configSchema } from '../config';
 
 it('keeps scheduled consent opt-in and bounds its absolute lifetime', () => {
@@ -370,6 +375,25 @@ it('takes a grant for the whole agent, with nothing chosen one by one', () => {
   expect(stored({ everything: true, grantedAtMs: 1, absoluteExpiresAtMs: 2 })).toBe(true);
   expect(stored({ everything: true })).toBe(false);
   expect(stored({ everything: false, grantedAtMs: 1, absoluteExpiresAtMs: 2 })).toBe(false);
+});
+
+it('takes the choice with an edit, naming the stored grant or not, and never as the only field', () => {
+  const choice = { offerDigest: 'a'.repeat(64), lifetimeHours: 1, allow: {}, everything: true };
+  const edit = (authorization: unknown) =>
+    updateSchedulePayloadSchema.safeParse({ name: 'renamed', authorization }).success;
+  // The same agent: the schedule's own offer, and the grant it replaces.
+  expect(edit({ ...choice, expectedRevision: 'grant-1' })).toBe(true);
+  expect(edit({ ...choice, expectedRevision: null })).toBe(true);
+  // Another agent: that agent's offer, as for a new schedule.
+  expect(edit(choice)).toBe(true);
+  expect(edit({ ...choice, everything: undefined })).toBe(false);
+  // A new schedule has no grant to name.
+  expect(
+    createSchedulePayloadSchema.shape.authorization.safeParse({
+      ...choice,
+      expectedRevision: 'grant-1',
+    }).success,
+  ).toBe(false);
 });
 
 it('accepts a server the owner left with no tools beside one with a choice', () => {

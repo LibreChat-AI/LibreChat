@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { scheduledMCPFailureReasonSchema, scheduleAuthorizationSchema } from './scheduleConsent';
+import {
+  scheduleAuthorizationSchema,
+  scheduledMCPFailureReasonSchema,
+  scheduleReauthorizationSchema,
+} from './scheduleConsent';
 import { partialWithoutDefaults } from '../zod';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
@@ -110,8 +114,14 @@ export type TCreateSchedule = z.infer<typeof createSchedulePayloadSchema>;
 
 /** Idempotency is a property of the CREATE attempt, not of the schedule's config. */
 export const updateSchedulePayloadSchema = partialWithoutDefaults(
-  createSchedulePayloadSchema.omit({ clientRequestId: true }),
+  createSchedulePayloadSchema.omit({ clientRequestId: true, authorization: true }),
 ).extend({
+  /**
+   * What the owner allows the schedule to use from this edit on. An edit ends the grant the
+   * schedule had; with this, the grant is made again in the same write. Read only where
+   * schedule consent is on. It is not an edit by itself.
+   */
+  authorization: scheduleReauthorizationSchema.optional(),
   /**
    * The configRevision the client's edit was computed from (captured when the
    * dialog opened). The server fences the update on it, so a concurrent edit

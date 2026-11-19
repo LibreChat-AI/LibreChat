@@ -87,6 +87,13 @@ const handlers = createSchedulesHandlers({
   // Where consent is on, a schedule is authorized in the same write that creates it.
   grant: (identity, choice, options) =>
     require('~/server/services/Schedules/consent').consent.service.grant(identity, choice, options),
+  renew: (identity, choice, revision, options) =>
+    require('~/server/services/Schedules/consent').consent.service.renew(
+      identity,
+      choice,
+      revision,
+      options,
+    ),
 });
 
 const consentHost = require('~/server/services/Schedules/consent').consent;

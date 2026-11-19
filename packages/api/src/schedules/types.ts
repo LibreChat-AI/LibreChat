@@ -365,8 +365,9 @@ export type ScheduleMCPPreflight = (
     /** Trusted fire host provenance, never a body-provided permission. */
     manual?: boolean;
     /**
-     * The grant a schedule is being created with. Nothing is stored for it yet, so it is
-     * handed over: readiness then covers the MCP tools it allows, as for a stored grant.
+     * The grant a schedule is being created or edited with. It is not stored yet, so it is
+     * handed over: readiness then covers the MCP tools it allows, as for a stored grant, and
+     * the grant the edit replaces is not consulted.
      */
     grant?: Pick<ScheduledMCPEnrollment, 'consents' | 'everything'>;
   },
