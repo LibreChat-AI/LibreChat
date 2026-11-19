@@ -14,6 +14,15 @@ export function useScheduleMCPConsent(id: string) {
   );
 }
 
+/** What a schedule of this agent could be allowed, before the schedule exists. */
+export function useScheduleMCPOffer(agentId: string) {
+  return useQuery<ScheduleMCPConsentView>(
+    [QueryKeys.scheduleMCPOffer, agentId],
+    () => dataService.getScheduleMCPOffer(agentId),
+    { enabled: agentId !== '', retry: false, refetchOnWindowFocus: false },
+  );
+}
+
 export function useScheduleMCPConsentMutations(id: string) {
   const queryClient = useQueryClient();
   const refresh = () => {

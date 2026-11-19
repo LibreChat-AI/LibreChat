@@ -2,9 +2,10 @@ import { createElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
+import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
-import type { TSchedule } from 'librechat-data-provider';
+import type { TSchedule, ScheduleMCPConsentView } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import ScheduleDialog from '../ScheduleDialog';
 
@@ -33,6 +34,7 @@ let mockLimits: {
   minIntervalMinutes: number;
   requireProject: boolean;
   projectId?: string;
+  mcpConsent?: boolean;
 } = {
   maxPerUser: 10,
   minIntervalMinutes: 0,
@@ -75,6 +77,44 @@ jest.mock('~/data-provider', () => ({
   },
   useUpdateScheduleMutation: () => ({ mutate: mockMutate, isLoading: false }),
 }));
+
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    dataService: { ...actual.dataService, getScheduleMCPOffer: jest.fn() },
+  };
+});
+
+/** What a schedule of an agent could be allowed, as the server offers it before creation. */
+const offerFor = (tools: string[], other: string[] = []): ScheduleMCPConsentView => ({
+  state: 'missing',
+  revision: null,
+  expiresAtMs: null,
+  targets: [
+    {
+      resource: {
+        serverName: 'warehouse',
+        url: 'https://warehouse.example/mcp',
+        issuer: null,
+        audience: null,
+        scopes: [],
+        credentialMode: 'anonymous',
+        configurationRevision: 'v1',
+      },
+      policyRevision: 'p1',
+      permittedTools: [{ agentId: 'root', tools }],
+    },
+  ],
+  allowed: {},
+  changed: {},
+  asking: {},
+  tools: { offered: other, allowed: [] },
+  approval: false,
+  required: false,
+  requireAfterMs: null,
+  offer: { digest: 'a'.repeat(64), maxLifetimeHours: 24 },
+});
 
 const renderDialog = (schedule?: Partial<TSchedule>, onOpenChange = jest.fn()) => {
   const queryClient = new QueryClient({
@@ -760,6 +800,102 @@ describe('ScheduleDialog', () => {
 
       expect(mockMutate).toHaveBeenCalledTimes(1);
       expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('chatProjectId');
+    });
+  });
+
+  describe('authorizing a schedule as it is created', () => {
+    const create = () => screen.getByRole('button', { name: 'com_ui_create' });
+
+    it('asks nothing and sends no authorization where consent is off', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(create());
+      expect(dataService.getScheduleMCPOffer).not.toHaveBeenCalled();
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('authorization');
+    });
+
+    it('shows what the agent could be allowed, and creates only once something is', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest
+        .mocked(dataService.getScheduleMCPOffer)
+        .mockResolvedValue(offerFor(['export', 'query'], ['web_search']));
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(await screen.findByText('com_ui_schedule_authorize_title')).toBeVisible();
+      expect(dataService.getScheduleMCPOffer).toHaveBeenCalledWith('agent-1');
+      // Something to allow and nothing allowed: the schedule would only be refused its tools.
+      await waitFor(() => expect(create()).toBeDisabled());
+      await user.click(screen.getByRole('checkbox', { name: 'query' }));
+      await user.click(screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' }));
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent_id: 'agent-1',
+          authorization: {
+            offerDigest: 'a'.repeat(64),
+            lifetimeHours: 1,
+            allow: { warehouse: ['query'] },
+            ask: {},
+            tools: ['web_search'],
+          },
+        }),
+      );
+    });
+
+    it('starts over when another agent is picked', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest
+        .mocked(dataService.getScheduleMCPOffer)
+        .mockImplementation(async (agentId) =>
+          offerFor(agentId === 'agent-1' ? ['query'] : ['deploy', 'query']),
+        );
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(await screen.findByRole('checkbox', { name: 'query' }));
+      await waitFor(() => expect(create()).toBeEnabled());
+      const dialog = screen.getByRole('dialog');
+      await user.click(within(dialog).getByRole('combobox', { name: 'com_ui_agent' }));
+      await user.click(await within(dialog).findByRole('option', { name: /Digest Agent/ }));
+      expect(await screen.findByRole('checkbox', { name: 'deploy' })).not.toBeChecked();
+      // The same tool name on the same server, for another agent: not carried over.
+      expect(screen.getByRole('checkbox', { name: 'query' })).not.toBeChecked();
+      await waitFor(() => expect(create()).toBeDisabled());
+    });
+
+    it('creates as before when the agent has nothing to be allowed', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue({
+        ...offerFor([]),
+        state: 'unsupported',
+        targets: [],
+        offer: null,
+      });
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await waitFor(() => expect(dataService.getScheduleMCPOffer).toHaveBeenCalled());
+      expect(screen.queryByText('com_ui_schedule_authorize_title')).not.toBeInTheDocument();
+      await user.click(create());
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('authorization');
+    });
+
+    it('says so when the offer cannot be loaded, lets the owner retry, and does not block creating', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest.mocked(dataService.getScheduleMCPOffer).mockRejectedValueOnce(new Error('down'));
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'com_ui_schedule_authorize_unavailable',
+      );
+      expect(create()).toBeEnabled();
+      jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue(offerFor(['query']));
+      await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      expect(await screen.findByRole('checkbox', { name: 'query' })).toBeVisible();
     });
   });
 });

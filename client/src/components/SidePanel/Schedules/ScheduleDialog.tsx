@@ -33,6 +33,7 @@ import type {
   TScheduleCadence,
   ScheduleFrequency,
 } from 'librechat-data-provider';
+import type { Authorization } from './Authorize';
 import type { TranslationKeys } from '~/hooks';
 import {
   describeCadence,
@@ -56,6 +57,7 @@ import { useChatProjectPicker } from './useScheduleProjects';
 import { VariableEditor } from '~/components/Variables';
 import ScheduleMCPRecovery from './ScheduleMCPRecovery';
 import { rotateWeekFrom } from '~/utils/clock';
+import Authorize from './Authorize';
 import { cn } from '~/utils';
 
 interface ScheduleDialogProps {
@@ -248,6 +250,9 @@ export default function ScheduleDialog({
   const pinnedProjectId = schedulesData?.limits.projectId;
   const minIntervalMinutes = schedulesData?.limits.minIntervalMinutes;
   const requireProject = schedulesData?.limits.requireProject === true;
+  /** Where consent is on, a new schedule is authorized in the same step that creates it. */
+  const authorizes = schedule == null && schedulesData?.limits.mcpConsent === true;
+  const [authorization, setAuthorization] = useState<Authorization>({ value: null, owed: false });
   const {
     items: loadedProjectItems,
     namesById: projectNames,
@@ -436,6 +441,7 @@ export default function ScheduleDialog({
       timezone: values.timezone,
       target: 'new' as const,
       enabled: true,
+      ...(authorizes && authorization.value && { authorization: authorization.value }),
     };
     // STABLE across retries of the SAME intent, which is the whole point: the server
     // commits the row and arms it in two writes, so a failure between them leaves the
@@ -524,7 +530,13 @@ export default function ScheduleDialog({
     return null;
   };
   const cadenceError = resolveCadenceError();
-  const canSubmit = cronIsValid && daysAreValid && !belowFloor && !isLoading;
+  const canSubmit =
+    cronIsValid &&
+    daysAreValid &&
+    !belowFloor &&
+    !isLoading &&
+    // Something to allow, and nothing allowed yet: the schedule would only be refused its tools.
+    !(authorizes && authorization.owed && authorization.value == null);
 
   /** The offset disambiguates two similar names, which matters now that the zone is
    *  something the user picks rather than the browser's own. Memoized because it
@@ -969,6 +981,13 @@ export default function ScheduleDialog({
                 </div>
               )}
             </div>
+            {authorizes && selectedAgentId !== '' && (
+              <Authorize
+                key={selectedAgentId}
+                agentId={selectedAgentId}
+                onChange={setAuthorization}
+              />
+            )}
           </form>
         }
         buttons={

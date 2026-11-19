@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { scheduledMCPFailureReasonSchema } from './scheduleConsent';
+import { scheduledMCPFailureReasonSchema, scheduleAuthorizationSchema } from './scheduleConsent';
 import { partialWithoutDefaults } from '../zod';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
@@ -99,6 +99,12 @@ export const createSchedulePayloadSchema = z.object({
    * that omits it, which is exactly the failure the key exists to close.
    */
   clientRequestId: z.string().trim().min(1).max(128),
+  /**
+   * What the owner allows the schedule to use while they are away, chosen from the offer for
+   * its agent. Read only where schedule consent is on. Left out there, the schedule is created
+   * needing authorization and none of its tools runs until the owner confirms.
+   */
+  authorization: scheduleAuthorizationSchema.optional(),
 });
 export type TCreateSchedule = z.infer<typeof createSchedulePayloadSchema>;
 

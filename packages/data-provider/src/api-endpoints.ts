@@ -574,6 +574,8 @@ export const getAllPromptGroups = () => `${prompts()}/all`;
 export const schedules = () => `${BASE_URL}/api/schedules`;
 export const schedule = (id: string) => `${schedules()}/${encodeURIComponent(id)}`;
 export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
+/** What a schedule of an agent could be allowed, asked before the schedule exists. */
+export const scheduleMCPOffer = () => `${schedules()}/mcp-consent/offer`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
 
 /* Skills */
