@@ -54,6 +54,22 @@ describe('superseded pasted files', () => {
     });
   });
 
+  it('rechecks ownership after cancellation callbacks before scheduling deletion', () => {
+    const { result } = setup();
+    let current = true;
+    jest.mocked(cancelUploads).mockImplementationOnce(() => {
+      current = false;
+    });
+    act(() => result.current(['temporary-paste'], () => current));
+    expect(retainFileDeletion).not.toHaveBeenCalled();
+  });
+
+  it('protects a cached row through a newer sibling temp alias absent from the request', () => {
+    const { result } = setup();
+    act(() => result.current(['stored-paste'], (id) => id !== 'temporary-paste'));
+    expect(retainFileDeletion).not.toHaveBeenCalled();
+  });
+
   it('never deletes a paste another draft or tab owns', () => {
     jest.mocked(collectForeignAttachmentClaims).mockReturnValueOnce(new Set(['temporary-paste']));
     const { result } = setup();

@@ -996,6 +996,11 @@ export class Chat {
     return this.action;
   }
 
+  /** Publish a newly free request owner only if this transition has not already notified. */
+  private notifyRequestAvailability(previous: boolean, revision: number): void {
+    if (!previous && this.canRequest && revision === this.revision) this.notify();
+  }
+
   /** Pure projection of request ownership. Expired pauses still undergo request's
    * notifying cleanup and reentrant checks before a turn is actually taken. */
   get canRequest(): boolean {
@@ -1893,6 +1898,8 @@ export class Chat {
        * An expired pause is stale: the server will refuse its resume. It also supersedes a pause
        * restored for an older generation, which no longer runs.
        */
+      const available = this.canRequest;
+      const revision = this.revision;
       const superseded =
         this.action != null &&
         (generationCreatedAt !== this.generationCreatedAt ||
@@ -1902,6 +1909,7 @@ export class Chat {
       if (this.action?.actionId === action.actionId || superseded) {
         this.clearAction();
       }
+      this.notifyRequestAvailability(available, revision);
       return;
     }
     if (this.action?.actionId !== action.actionId && this.releasedPause !== action.actionId) {
@@ -2666,12 +2674,15 @@ export class Chat {
     const generation = this.generationCreatedAt;
     this.seePause(expired, generation);
     const held = this.action;
+    const available = this.canRequest;
+    const revision = this.revision;
     const superseded = held != null && generation != null && this.isSupersededBy(held, expired);
     /** A later pause of the generation replaces the answered one, even though it already expired. */
     this.replaceAnswer(expired, generation);
     if (held?.actionId === expired.actionId || superseded) {
       this.clearAction();
     }
+    this.notifyRequestAvailability(available, revision);
   }
 
   /**
@@ -2988,7 +2999,7 @@ export class Chat {
       }
       /** A visible pause may clear before its answer claim; publish only the coherent
        * final availability if no existing transition already announced it. */
-      if (!available && this.canRequest && revision === this.revision) this.notify();
+      this.notifyRequestAvailability(available, revision);
     }
   }
 

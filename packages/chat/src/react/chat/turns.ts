@@ -32,6 +32,7 @@ import { resolveSubmittedReasoning } from './reasoning';
 import { activeUsageResponseIdFamily } from '../usage';
 import { isSubmittingFamily } from '../submission';
 import { isHistoryRevalidating } from './guards';
+import { filesFamily } from '../pane';
 
 type Attempt = 'accepted' | 'pending' | 'blocked';
 type Submit = (props: TAskProps, options?: TOptions, automatic?: boolean) => Attempt;
@@ -340,11 +341,39 @@ export function useTurns(
     conversationId = turn.conversationId;
     logger.log('message_state', initialResponse);
 
-    const capturedFiles =
-      deferred && fileEffects?.clearComposer && files ? new Map(files) : undefined;
+    const capturedFiles = deferred && fileEffects && files ? new Map(files) : undefined;
+    const ownsUpload =
+      deferred && fileEffects
+        ? services.captureFileOwnership?.(
+            [
+              ...fileEffects.submittedFileIds,
+              ...(fileEffects.canceledUploadIds ?? []),
+              ...(fileEffects.replacedFileIds ?? []),
+            ].filter((id): id is string => !!id),
+          )
+        : undefined;
+    const ownsFile = (id: string): boolean => {
+      if (!deferred) return true;
+      if (ownsUpload?.(id) === false) return false;
+      for (const [key, file] of store.get(filesFamily(index))) {
+        if (capturedFiles?.get(key) === file) continue;
+        if (
+          key === id ||
+          file.file_id === id ||
+          file.temp_file_id === id ||
+          file.replacesFileId === id
+        )
+          return false;
+      }
+      return true;
+    };
+    // Accepted server refs must remain protected from deletion even when deliberately reattached.
+    const durableIds = deferred
+      ? new Set(currentMsg.files?.map((file) => file.file_id))
+      : undefined;
     const clearFilesToDelete =
       deferred && fileEffects?.clearComposer
-        ? (services.captureFilesToDelete?.(Array.from(capturedFiles?.keys() ?? [])) ??
+        ? (services.captureFilesToDelete?.(Array.from(capturedFiles?.keys() ?? []), ownsFile) ??
           services.clearFilesToDelete)
         : services.clearFilesToDelete;
     const commitComposer = (): void => {
@@ -352,16 +381,27 @@ export function useTurns(
         services.openNewChat(turn.newChatPath);
       }
       if (fileEffects != null && setFiles) {
-        markComposerFilesTaken([
+        const takenIds = [
           ...(fileEffects.canceledUploadIds ?? []),
           ...(fileEffects.replacedFileIds ?? []),
-        ]);
-        services.releaseFiles(fileEffects.submittedFileIds);
-        if (fileEffects.canceledUploadIds?.length) {
-          services.cancelUploads?.(fileEffects.canceledUploadIds);
-        }
-        if (fileEffects.replacedFileIds?.length) {
-          services.discardFiles?.(fileEffects.replacedFileIds);
+        ];
+        markComposerFilesTaken(deferred ? takenIds.filter(ownsFile) : takenIds);
+        if (!deferred) {
+          services.releaseFiles(fileEffects.submittedFileIds);
+          if (fileEffects.canceledUploadIds?.length)
+            services.cancelUploads?.(fileEffects.canceledUploadIds);
+          if (fileEffects.replacedFileIds?.length)
+            services.discardFiles?.(fileEffects.replacedFileIds);
+        } else {
+          for (const id of new Set(fileEffects.submittedFileIds)) {
+            if (id && (durableIds?.has(id) || ownsFile(id))) services.releaseFiles([id]);
+          }
+          for (const id of fileEffects.canceledUploadIds ?? []) {
+            if (ownsFile(id)) services.cancelUploads?.([id], ownsFile);
+          }
+          for (const id of fileEffects.replacedFileIds ?? []) {
+            if (ownsFile(id)) services.discardFiles?.([id], ownsFile);
+          }
         }
         if (fileEffects.clearComposer) {
           if (!deferred) setFiles(new Map());

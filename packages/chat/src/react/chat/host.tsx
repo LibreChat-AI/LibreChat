@@ -106,13 +106,18 @@ export type TurnServices = {
   /** Marks composer files as submitted, so draft cleanup keeps them. */
   releaseFiles: (fileIds: (string | undefined)[]) => void;
   /** Cancels uploads whose exact local paste was accepted inline, without marking them submitted. */
-  cancelUploads?: (fileIds: string[]) => void;
+  cancelUploads?: (fileIds: string[], isCurrent?: (fileId: string) => boolean) => void;
   /** Discards uploaded sources superseded by an accepted inline replacement. */
-  discardFiles?: (fileIds: string[]) => void;
+  discardFiles?: (fileIds: string[], isCurrent?: (fileId: string) => boolean) => void;
   /** Forgets the files queued for deletion once the composer is cleared. */
   clearFilesToDelete: () => void;
   /** Captures app-owned file-marker cleanup before a driven publication can stage new files. */
-  captureFilesToDelete?: (keys: readonly string[]) => () => void;
+  captureFilesToDelete?: (
+    keys: readonly string[],
+    isCurrent?: (key: string) => boolean,
+  ) => () => void;
+  /** Captures opaque app upload ownership, including operations not staged in the composer yet. */
+  captureFileOwnership?: (fileIds: readonly string[]) => (fileId: string) => boolean;
 };
 
 /** The conversation a pane shows, and the setter that replaces or updates it. */

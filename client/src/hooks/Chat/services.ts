@@ -14,13 +14,13 @@ import {
   getRouteChatProjectId,
 } from '~/utils';
 import useSetFilesToDelete, { captureFilesToDelete } from '~/hooks/Files/useSetFilesToDelete';
+import { cancelUploads, captureUploadOwnership } from '~/hooks/Files/useFileHandling';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
-import { cancelUploads } from '~/hooks/Files/useFileHandling';
 import useUserKey from '~/hooks/Input/useUserKey';
 import { isTargetReady } from './ask/guards';
 
@@ -104,6 +104,7 @@ export default function useTurnServices({
       navigate(path);
     },
     cancelUploads,
+    captureFileOwnership: captureUploadOwnership,
     discardFiles,
     releaseFiles: (fileIds) => markPasteSubmitted(...fileIds),
     clearFilesToDelete: () => setFilesToDelete({}),

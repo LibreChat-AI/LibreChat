@@ -139,6 +139,93 @@ const setup = (
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe('Chat', () => {
+  it.each([
+    { generation: 200, actionId: 'next-question', createdAt: 2, free: true },
+    { generation: 100, actionId: 'next-question', createdAt: 2, free: true },
+    { generation: 99, actionId: 'next-question', createdAt: 2, free: false },
+    { generation: 100, actionId: 'question', createdAt: 1, free: false },
+    { generation: 100, actionId: 'older-question', createdAt: 0, free: false },
+  ])(
+    'publishes hidden-answer supersession only when eligible: %j',
+    async ({ generation, actionId, createdAt, free }) => {
+      let refuse!: (error: Error) => void;
+      const { chat, state } = setup(
+        {},
+        {
+          resume: () =>
+            new Promise((_, reject) => {
+              refuse = reject;
+            }),
+        },
+      );
+      const pause = {
+        actionId: 'question',
+        streamId: 'convo-1',
+        conversationId: 'convo-1',
+        createdAt: 1,
+        expiresAt: Date.now() + 60000,
+        payload: {
+          type: 'ask_user_question',
+          tool_call_id: 'question',
+          question: { question: 'Which?' },
+        },
+      } as Agents.PendingAction;
+      state.status = 'error';
+      chat.restorePendingAction(pause, 100);
+      const answered = chat
+        .addToolOutput({ toolCallId: 'question', output: 'This one.' })
+        .catch((error: Error) => error);
+      chat.restorePendingAction({ ...pause, expiresAt: Date.now() - 1 }, 100);
+      const availability: boolean[] = [];
+      const unsubscribe = chat.subscribe(() => availability.push(chat.canRequest));
+      try {
+        const rows = chat.messages;
+        chat.restorePendingAction(
+          { ...pause, actionId, createdAt, expiresAt: Date.now() - 1 },
+          generation,
+        );
+        expect(chat.canRequest).toBe(free);
+        expect(chat.messages).toBe(rows);
+        expect(chat.status).toBe('error');
+        expect(availability).toEqual(free ? [true] : []);
+        refuse(Object.assign(new Error('Old answer ended'), { status: 400 }));
+        await answered;
+        expect(availability).toEqual([true]);
+      } finally {
+        unsubscribe();
+        chat.dispose();
+        refuse(Object.assign(new Error('Cleanup'), { status: 400 }));
+        await answered;
+      }
+    },
+  );
+
+  it('does not duplicate an expired visible pause release notification', () => {
+    const { chat } = setup();
+    const pause = {
+      actionId: 'visible-question',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      expiresAt: Date.now() + 60000,
+      payload: {
+        type: 'ask_user_question',
+        tool_call_id: 'question',
+        question: { question: 'Which?' },
+      },
+    } as Agents.PendingAction;
+    chat.restorePendingAction(pause, 100);
+    const availability: boolean[] = [];
+    const unsubscribe = chat.subscribe(() => availability.push(chat.canRequest));
+    try {
+      chat.restorePendingAction({ ...pause, expiresAt: Date.now() - 1 }, 100);
+      expect(availability).toEqual([true]);
+    } finally {
+      unsubscribe();
+      chat.dispose();
+    }
+  });
+
   it('publishes availability after the hidden answer claim releases', async () => {
     let refuse!: (error: Error) => void;
     const { chat, state } = setup(

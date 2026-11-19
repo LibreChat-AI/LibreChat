@@ -56,3 +56,13 @@ it.each(['[1]', 'null', '{bad'])('leaves unsupported legacy storage alone: %s', 
   captureFilesToDelete(['owned'])();
   expect(set).not.toHaveBeenCalled();
 });
+
+it('preserves identical serialized metadata belonging to a newer live draft owner', () => {
+  write({ owned: { ...original, file: new File(['original'], 'same.txt') } });
+  let current = true;
+  const commit = captureFilesToDelete(['owned'], () => current);
+  write({ owned: { ...original, file: new File(['replacement'], 'same.txt') } });
+  current = false;
+  commit();
+  expect(read()).toHaveProperty('owned');
+});

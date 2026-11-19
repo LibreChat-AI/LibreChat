@@ -157,7 +157,12 @@ const failUploadRecovery = (fileId: string, body?: FormData): UploadRecovery | u
   return takeUploadRecovery(fileId, body);
 };
 
-export const clearUploadRecovery = (fileId: string, retainFileSearch = false) => {
+export const clearUploadRecovery = (
+  fileId: string,
+  retainFileSearch = false,
+  isCurrent?: (fileId: string) => boolean,
+) => {
+  if (isCurrent?.(fileId) === false) return;
   const recovery = uploadErrorCallbacks.get(fileId);
   const onAbort = recovery?.onAbort;
   if (retainFileSearch && recovery?.fileSearch && recovery.status !== 'canceled') {
@@ -175,17 +180,34 @@ export const clearUploadRecovery = (fileId: string, retainFileSearch = false) =>
         storePendingDiscardIds(index, [...new Set([...loadPendingDiscardIds(index), fileId])]);
       }
       recovery.controller?.abort();
-      recovery.dispose?.();
+      if (isCurrent?.(fileId) !== false) recovery.dispose?.();
     }
   }
-  if (!retainFileSearch) {
+  if (!retainFileSearch && isCurrent?.(fileId) !== false) {
     cancelFileSearchUpload(fileId);
   }
   onAbort?.(fileId);
 };
 
-export const cancelUploads = (fileIds: string[]): void => {
-  for (const fileId of fileIds) clearUploadRecovery(fileId);
+/** Capture app-owned operation identity before publication can replace an upload. */
+export const captureUploadOwnership = (
+  fileIds: readonly string[],
+): ((fileId: string) => boolean) => {
+  const captured = new Map(
+    fileIds.map((id) => {
+      const recovery = uploadErrorCallbacks.get(id);
+      return [id, { recovery, body: recovery?.body }] as const;
+    }),
+  );
+  return (id) => {
+    const current = uploadErrorCallbacks.get(id);
+    const previous = captured.get(id);
+    return current == null || (current === previous?.recovery && current.body === previous?.body);
+  };
+};
+
+export const cancelUploads = (fileIds: string[], isCurrent?: (fileId: string) => boolean): void => {
+  for (const fileId of fileIds) clearUploadRecovery(fileId, false, isCurrent);
 };
 
 export const hasInFlightUpload = (fileId: string, conversationId?: string): boolean => {

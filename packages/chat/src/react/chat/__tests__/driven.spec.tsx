@@ -24,6 +24,7 @@ import {
   pendingReasoningOverrideFamily,
 } from '../../composer';
 import { createTurnServices, createTurnCodeInputs } from '../__fixtures__/services';
+import { isComposerFileTaken, releaseComposerFile } from '../../../core';
 import { showStopButtonByIndex } from '../../generation';
 import { isSubmittingFamily } from '../../submission';
 import { useDrivenContract } from '../driven';
@@ -245,6 +246,118 @@ function setup({
 }
 
 describe('useDrivenContract', () => {
+  it.each(['same-id', 'temp-alias', 'source-alias'])(
+    'protects a newer upload through %s at actual publication',
+    async (kind) => {
+      const services = createTurnServices({ cancelUploads: jest.fn(), discardFiles: jest.fn() });
+      const view = setup({ services });
+      await view.ready();
+      const id = `captured-${kind}`;
+      const original = {
+        file_id: id,
+        temp_file_id: `${id}-temp`,
+        pastedText: 'Original paste.',
+        progress: 0.5,
+        size: 1,
+      };
+      const replacement = {
+        file_id: kind === 'same-id' ? id : `${id}-new`,
+        temp_file_id: kind === 'temp-alias' ? id : undefined,
+        replacesFileId: kind === 'source-alias' ? id : undefined,
+        progress: 0.5,
+        size: 1,
+      };
+      act(() => view.store.set(filesFamily(SIDE_PANE), new Map([[id, original]])));
+      let staged = false;
+      const unsubscribe = view.result.current.followed.chat!.subscribe(() => {
+        if (staged || view.result.current.followed.chat!.status !== 'submitted') return;
+        staged = true;
+        view.store.set(
+          filesFamily(SIDE_PANE),
+          new Map([[kind === 'same-id' ? id : `${id}-new`, replacement]]),
+        );
+      });
+      try {
+        act(() => view.result.current.contract.ask({ text: 'Send original paste.' }));
+        await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+        expect(isComposerFileTaken(id)).toBe(false);
+        expect(services.cancelUploads).not.toHaveBeenCalledWith(
+          expect.arrayContaining([id]),
+          expect.anything(),
+        );
+        expect(
+          (services.cancelUploads as jest.Mock).mock.calls.flatMap(([ids]) => ids),
+        ).not.toContain(id);
+        expect([...view.store.get(filesFamily(SIDE_PANE)).values()]).toContain(replacement);
+      } finally {
+        unsubscribe();
+        releaseComposerFile(id);
+        releaseComposerFile(`${id}-temp`);
+      }
+    },
+  );
+
+  it('keeps accepted durable refs protected while a new attachment reuses their ID', async () => {
+    const view = setup();
+    await view.ready();
+    const original = {
+      file_id: 'accepted-server-ref',
+      temp_file_id: 'old-upload',
+      progress: 1,
+      size: 1,
+    };
+    const reattached = { ...original, filename: 'reattached.txt' };
+    act(() => view.store.set(filesFamily(SIDE_PANE), new Map([['old-key', original]])));
+    let staged = false;
+    const unsubscribe = view.result.current.followed.chat!.subscribe(() => {
+      if (staged || view.result.current.followed.chat!.status !== 'submitted') return;
+      staged = true;
+      view.store.set(filesFamily(SIDE_PANE), new Map([['new-key', reattached]]));
+    });
+    act(() => view.result.current.contract.ask({ text: 'Send this reference.' }));
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect(view.services.releaseFiles).toHaveBeenCalledWith(['accepted-server-ref']);
+    expect(view.store.get(filesFamily(SIDE_PANE)).get('new-key')).toBe(reattached);
+    unsubscribe();
+  });
+
+  it('rechecks alias ownership after a reentrant host release callback', async () => {
+    const replacement = { file_id: 'pending-after-release', progress: 0.5, size: 1 };
+    const services = createTurnServices({
+      cancelUploads: jest.fn(),
+      releaseFiles: jest.fn(() => {
+        releaseComposerFile('pending-after-release');
+        view.store.set(filesFamily(SIDE_PANE), new Map([['pending-after-release', replacement]]));
+      }),
+    });
+    const view = setup({ services });
+    await view.ready();
+    const ready = { file_id: 'durable-before-release', progress: 1, size: 1 };
+    const pending = {
+      file_id: 'pending-after-release',
+      progress: 0.5,
+      size: 1,
+      pastedText: 'Inline original.',
+    };
+    act(() =>
+      view.store.set(
+        filesFamily(SIDE_PANE),
+        new Map([
+          [ready.file_id, ready],
+          [pending.file_id, pending],
+        ]),
+      ),
+    );
+    act(() => view.result.current.contract.ask({ text: 'Send both.' }));
+    await waitFor(() => expect(view.sendMessages).toHaveBeenCalledTimes(1));
+    expect((services.cancelUploads as jest.Mock).mock.calls.flatMap(([ids]) => ids)).not.toContain(
+      pending.file_id,
+    );
+    expect(view.store.get(filesFamily(SIDE_PANE)).get(pending.file_id)).toBe(replacement);
+    // A deliberate native add clears any earlier taken marker before installing its entry.
+    releaseComposerFile(pending.file_id);
+  });
+
   it('commits only captured inputs before notifying acceptance', async () => {
     const order: string[] = [];
     const cleanup = jest.fn(() => order.push('markers'));
@@ -297,7 +410,7 @@ describe('useDrivenContract', () => {
       ]),
     );
     expect(services.releaseFiles).toHaveBeenCalledWith(expect.arrayContaining(['original-file']));
-    expect(services.captureFilesToDelete).toHaveBeenCalledWith(['upload']);
+    expect(services.captureFilesToDelete).toHaveBeenCalledWith(['upload'], expect.any(Function));
     expect(services.clearFilesToDelete).not.toHaveBeenCalled();
     expect(order).toEqual(['files', 'markers', 'accepted']);
     expect(onAccepted).toHaveBeenCalledTimes(1);

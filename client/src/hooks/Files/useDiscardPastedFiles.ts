@@ -14,8 +14,9 @@ import { cancelUploads } from './useFileHandling';
 export default function useDiscardPastedFiles(index: number, conversationId?: string | null) {
   const queryClient = useQueryClient();
   return useCallback(
-    (fileIds: string[]) => {
-      cancelUploads(fileIds);
+    (fileIds: string[], isCurrent?: (fileId: string) => boolean) => {
+      if (isCurrent) cancelUploads(fileIds, isCurrent);
+      else cancelUploads(fileIds);
       const ids = new Set(fileIds);
       const foreign = collectForeignAttachmentClaims(
         [
@@ -27,6 +28,11 @@ export default function useDiscardPastedFiles(index: number, conversationId?: st
       const files = queryClient.getQueryData<TFile[]>([QueryKeys.files]);
       for (const file of files ?? []) {
         if (!ids.has(file.file_id) && (!file.temp_file_id || !ids.has(file.temp_file_id))) continue;
+        if (
+          isCurrent?.(file.file_id) === false ||
+          (file.temp_file_id != null && isCurrent?.(file.temp_file_id) === false)
+        )
+          continue;
         if (
           isPasteSubmitted(file.file_id) ||
           isPasteSubmitted(file.temp_file_id) ||

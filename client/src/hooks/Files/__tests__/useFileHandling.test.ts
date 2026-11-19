@@ -8,7 +8,7 @@ import {
   EModelEndpoint,
   getEndpointFileConfig,
 } from 'librechat-data-provider';
-import type { ExtendedFile } from '~/common';
+import type { ExtendedFile, FileSetter } from '~/common';
 import { setFileSearchChoice, clearFileSearchChoices } from '~/utils/choices';
 
 type MockUploadMutationOptions = {
@@ -2383,6 +2383,169 @@ describe('useFileHandling', () => {
 
       expect(accepted).toBe(true);
       expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves a guarded preassigned recovery while configuration is pending', async () => {
+      mockIsConfigPending = true;
+      let releaseConfig!: () => void;
+      mockWaitForConfig.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseConfig = resolve;
+          }),
+      );
+      const {
+        default: useFileHandling,
+        hasInFlightUpload,
+        cancelUploads,
+        captureUploadOwnership,
+      } = await import('../useFileHandling');
+      const owns = captureUploadOwnership(['guarded-preassigned']);
+      const { result } = renderHook(() => useFileHandling());
+      let accepted!: Promise<boolean>;
+      act(() => {
+        accepted = result.current.handleFiles([new File(['hello'], 'notes.txt')], undefined, {
+          fileId: 'guarded-preassigned',
+        });
+      });
+      try {
+        expect(hasInFlightUpload('guarded-preassigned')).toBe(true);
+        expect(mockAddFile).not.toHaveBeenCalled();
+        expect(owns('guarded-preassigned')).toBe(false);
+        act(() => cancelUploads(['guarded-preassigned'], owns));
+        expect(hasInFlightUpload('guarded-preassigned')).toBe(true);
+      } finally {
+        await act(async () => {
+          releaseConfig();
+          await accepted;
+        });
+        act(() => cancelUploads(['guarded-preassigned']));
+      }
+    });
+
+    it('rechecks captured registry ownership between cancellation callbacks', async () => {
+      mockIsConfigPending = true;
+      let releaseConfig!: () => void;
+      mockWaitForConfig.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseConfig = resolve;
+          }),
+      );
+      const {
+        default: useFileHandling,
+        hasInFlightUpload,
+        cancelUploads,
+        captureUploadOwnership,
+      } = await import('../useFileHandling');
+      const { result } = renderHook(() => useFileHandling());
+      const calls: Promise<boolean>[] = [];
+      act(() => {
+        calls.push(
+          result.current.handleFiles([new File(['first'], 'first.txt')], undefined, {
+            fileId: 'cancel-first',
+            onAbort: () => {
+              calls.push(
+                result.current.handleFiles([new File(['new second'], 'second.txt')], undefined, {
+                  fileId: 'cancel-second',
+                }),
+              );
+            },
+          }),
+        );
+        calls.push(
+          result.current.handleFiles([new File(['old second'], 'second.txt')], undefined, {
+            fileId: 'cancel-second',
+          }),
+        );
+      });
+      const owns = captureUploadOwnership(['cancel-first', 'cancel-second']);
+      try {
+        act(() => cancelUploads(['cancel-first', 'cancel-second'], owns));
+        expect(hasInFlightUpload('cancel-first')).toBe(false);
+        expect(hasInFlightUpload('cancel-second')).toBe(true);
+        expect(owns('cancel-second')).toBe(false);
+      } finally {
+        mockWaitForConfig.mockResolvedValue(undefined);
+        await act(async () => {
+          releaseConfig();
+          await Promise.all(calls);
+        });
+        act(() => cancelUploads(['cancel-first', 'cancel-second']));
+      }
+    });
+
+    it('lets a protected native upload callback update the actual composer after config release', async () => {
+      mockIsConfigPending = true;
+      let releaseConfig!: () => void;
+      mockWaitForConfig.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseConfig = resolve;
+          }),
+      );
+      const updateFiles = jest.mocked((await import('../useUpdateFiles')).default);
+      const chatContext = jest.mocked((await import('~/Providers/ChatContext')).useChatContext);
+      const previousUpdate = updateFiles.getMockImplementation()!;
+      const previousContext = chatContext.getMockImplementation()!;
+      let files = new Map<string, ExtendedFile>();
+      const setFiles: FileSetter = (next) => {
+        files = typeof next === 'function' ? next(files) : next;
+      };
+      updateFiles.mockImplementation(jest.requireActual('../useUpdateFiles').default);
+      chatContext.mockImplementation(() => ({ ...previousContext(), files, setFiles }));
+      const {
+        default: useFileHandling,
+        captureUploadOwnership,
+        cancelUploads,
+        hasInFlightUpload,
+      } = await import('../useFileHandling');
+      const owns = captureUploadOwnership(['native-protected-upload']);
+      const view = renderHook(() => useFileHandling());
+      let accepted!: Promise<boolean>;
+      try {
+        act(() => {
+          accepted = view.result.current.handleFiles(
+            [new File(['new words'], 'paste.txt', { type: 'text/plain' })],
+            undefined,
+            { fileId: 'native-protected-upload', pastedText: 'new words' },
+          );
+        });
+        expect(files.has('native-protected-upload')).toBe(true);
+        act(() => cancelUploads(['native-protected-upload'], owns));
+        expect(hasInFlightUpload('native-protected-upload')).toBe(true);
+        await act(async () => {
+          releaseConfig();
+          await accepted;
+        });
+        const body = mockMutate.mock.calls[0][0] as FormData;
+        act(() =>
+          mockUploadOptions.onSuccess?.(
+            {
+              temp_file_id: 'native-protected-upload',
+              file_id: 'native-protected-server',
+              filepath: '/uploads/native.txt',
+              filename: 'paste.txt',
+              type: 'text/plain',
+              source: 'local',
+              embedded: false,
+            },
+            body,
+          ),
+        );
+        expect([...files.values()]).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ file_id: 'native-protected-server', progress: 1 }),
+          ]),
+        );
+      } finally {
+        releaseConfig();
+        await accepted;
+        cancelUploads(['native-protected-upload']);
+        view.unmount();
+        updateFiles.mockImplementation(previousUpdate);
+        chatContext.mockImplementation(previousContext);
+      }
     });
 
     it('uses a preassigned file id and marks it in flight before the config wait', async () => {

@@ -11,7 +11,10 @@ export default function useSetFilesToDelete() {
 }
 
 /** Snapshot app-owned file markers without consuming another pane or newer upload edits. */
-export function captureFilesToDelete(keys: readonly string[]): () => void {
+export function captureFilesToDelete(
+  keys: readonly string[],
+  isCurrent?: (key: string) => boolean,
+): () => void {
   const read = (): Record<string, unknown> | undefined => {
     try {
       const raw = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
@@ -35,6 +38,7 @@ export function captureFilesToDelete(keys: readonly string[]): () => void {
     let changed = false;
     for (const [key, value] of captured) {
       if (
+        isCurrent?.(key) === false ||
         !Object.prototype.hasOwnProperty.call(current, key) ||
         JSON.stringify(current[key]) !== value
       )
