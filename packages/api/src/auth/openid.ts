@@ -53,6 +53,60 @@ export function normalizeOpenIdIssuer(issuer: string | undefined): string | unde
   return normalized.slice(0, -OPENID_DISCOVERY_PATH.length) || undefined;
 }
 
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const issuerTemplateRegexCache = new Map<string, RegExp>();
+
+/** Matches a `{tenantid}` template, as Microsoft Entra's tenant-independent metadata issuer,
+ *  against one concrete path segment. */
+function issuerMatchesTemplate(expectedIssuer: string, actualIssuer: string): boolean {
+  if (!expectedIssuer.includes('{tenantid}')) return false;
+
+  let regex = issuerTemplateRegexCache.get(expectedIssuer);
+  if (!regex) {
+    const escapedTemplate = expectedIssuer.split('{tenantid}').map(escapeRegExp).join('[^/]+');
+    regex = new RegExp(`^${escapedTemplate}$`);
+    issuerTemplateRegexCache.set(expectedIssuer, regex);
+  }
+  return regex.test(actualIssuer);
+}
+
+/** Exact match after normalization, or a `{tenantid}` template match, so a configured
+ *  tenant-independent issuer accepts the concrete issuer a token actually carries. */
+export function isOpenIdIssuerMatch(
+  expected: string | undefined,
+  actual: string | undefined,
+): boolean {
+  const normalizedExpected = normalizeOpenIdIssuer(expected);
+  const normalizedActual = normalizeOpenIdIssuer(actual);
+  if (!normalizedExpected || !normalizedActual) return false;
+
+  return (
+    normalizedActual === normalizedExpected ||
+    issuerMatchesTemplate(normalizedExpected, normalizedActual)
+  );
+}
+
+/** The issuer a provider-session reference should key on: the token's own issuer when the
+ *  configured issuer is a `{tenantid}` template it matches, otherwise the configured issuer
+ *  unchanged. Each tenant under a template is a distinct OIDC issuer, so a reference built from
+ *  the template would scope a back-channel logout's `sid` to the wrong issuer. */
+export function resolveProviderSessionIssuer(
+  configuredIssuer: string | undefined,
+  tokenIssuer: string | undefined,
+): string | undefined {
+  const normalizedConfigured = normalizeOpenIdIssuer(configuredIssuer);
+  const normalizedToken = normalizeOpenIdIssuer(tokenIssuer);
+  if (
+    normalizedConfigured &&
+    normalizedToken &&
+    issuerMatchesTemplate(normalizedConfigured, normalizedToken)
+  ) {
+    return normalizedToken;
+  }
+  return normalizedConfigured;
+}
+
 function getIssuerFromSource(source: OpenIdIssuerSource | null | undefined): string | undefined {
   if (source == null) return undefined;
 

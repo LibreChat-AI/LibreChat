@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type {
   RefreshTokenBridgeDeleteInput,
   RefreshTokenBridgeIdentity,
@@ -13,6 +14,7 @@ interface StoredRefreshTokenBridge {
   openidIssuer?: string;
   version?: string;
   createdAt: Date | string;
+  providerSession?: ProviderSessionRef;
 }
 
 interface BridgeQuery {
@@ -24,18 +26,36 @@ interface BridgeQuery {
   openidIssuer?: string;
   version?: string;
   expiresAt?: Date;
+  providerSession?: ProviderSessionRef;
+}
+
+/** A resolved recovery bridge, including the provider session it was stored under, if any. */
+export interface ResolvedRefreshTokenBridge {
+  refreshToken: string;
+  providerSession?: ProviderSessionRef;
+  /** The bridge row's version, so a caller that later deletes it by version never races a newer
+   *  bridge stored for the same old token after this read. */
+  version?: string;
 }
 
 type IdentityInput = Partial<RefreshTokenBridgeIdentity>;
 
+export interface RefreshTokenFlightKeyInput {
+  oldRefreshToken?: string;
+  userId?: string;
+  tenantId?: string;
+  openidIssuer?: string;
+}
+
 export interface RefreshTokenBridgeService {
   OPENID_REFRESH_BRIDGE_GRACE_MS: number;
-  createRefreshTokenBridgeFlightKey: (args: {
-    oldRefreshToken?: string;
-    userId?: string;
-    tenantId?: string;
-    openidIssuer?: string;
-  }) => string | null;
+  /** Key of the flight that publishes or recovers the result replacing `oldRefreshToken`. The
+   *  browser publication and bridge recovery, and the admin's bridged grant, share it. */
+  createRefreshTokenBridgeFlightKey: (args: RefreshTokenFlightKeyInput) => string | null;
+  /** Key of the flight that records an admin refresh grant made with `oldRefreshToken`. It is a
+   *  separate namespace because a browser can complete the bridge flight of a token that the IdP
+   *  has not spent yet (for example the login publication when `OPENID_REUSE_TOKENS` is on). */
+  createAdminRefreshGrantFlightKey: (args: RefreshTokenFlightKeyInput) => string | null;
   deleteAllRefreshTokenBridges: (args: {
     userId?: string;
     tenantId?: string;
@@ -47,7 +67,7 @@ export interface RefreshTokenBridgeService {
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
-  }) => Promise<string | null>;
+  }) => Promise<ResolvedRefreshTokenBridge | null>;
   __internals: {
     hashRefreshToken: (refreshToken: string) => string;
     getBridgeTtlMs: () => number;
@@ -83,22 +103,15 @@ export function createRefreshTokenBridgeService(
   const hashRefreshToken = (refreshToken: string) =>
     crypto.createHash('sha256').update(refreshToken).digest('hex');
 
-  function createRefreshTokenBridgeFlightKey({
-    oldRefreshToken,
-    userId,
-    tenantId,
-    openidIssuer,
-  }: {
-    oldRefreshToken?: string;
-    userId?: string;
-    tenantId?: string;
-    openidIssuer?: string;
-  }) {
+  function createRefreshTokenFlightKey(
+    namespace: string,
+    { oldRefreshToken, userId, tenantId, openidIssuer }: RefreshTokenFlightKeyInput,
+  ): string | null {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
     if (!oldRefreshToken || !identity) return null;
     return hashRefreshToken(
       [
-        'bridge-recovery',
+        namespace,
         identity.userId,
         identity.tenantId ?? '',
         identity.openidIssuer ?? '',
@@ -107,6 +120,11 @@ export function createRefreshTokenBridgeService(
     );
   }
 
+  const createRefreshTokenBridgeFlightKey = (input: RefreshTokenFlightKeyInput) =>
+    createRefreshTokenFlightKey('bridge-recovery', input);
+  const createAdminRefreshGrantFlightKey = (input: RefreshTokenFlightKeyInput) =>
+    createRefreshTokenFlightKey('admin-refresh-grant', input);
+
   async function storeRefreshTokenBridge({
     oldRefreshToken,
     newRefreshToken,
@@ -114,6 +132,7 @@ export function createRefreshTokenBridgeService(
     tenantId,
     openidIssuer,
     ttl,
+    providerSession,
   }: RefreshTokenBridgeInput): Promise<string | null> {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
     if (!oldRefreshToken || !newRefreshToken || !identity) {
@@ -131,6 +150,7 @@ export function createRefreshTokenBridgeService(
       openidIssuer: identity.openidIssuer,
       version,
       expiresAt: new Date(Date.now() + bridgeTtl),
+      ...(providerSession ? { providerSession } : {}),
     });
     logger.debug('[RefreshTokenBridge] Stored recovery bridge', {
       tokenHash: oldRefreshTokenHash,
@@ -150,7 +170,7 @@ export function createRefreshTokenBridgeService(
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
-  }): Promise<string | null> {
+  }): Promise<ResolvedRefreshTokenBridge | null> {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
     if (!oldRefreshToken || !identity) return null;
     const oldRefreshTokenHash = hashRefreshToken(oldRefreshToken);
@@ -176,7 +196,11 @@ export function createRefreshTokenBridgeService(
       userId: identity.userId,
       age: Date.now() - new Date(bridge.createdAt).getTime(),
     });
-    return decrypt(bridge.encryptedNewRefreshToken);
+    return {
+      refreshToken: await decrypt(bridge.encryptedNewRefreshToken),
+      providerSession: bridge.providerSession,
+      version: bridge.version,
+    };
   }
 
   async function deleteRefreshTokenBridges({
@@ -211,6 +235,7 @@ export function createRefreshTokenBridgeService(
   return {
     OPENID_REFRESH_BRIDGE_GRACE_MS,
     createRefreshTokenBridgeFlightKey,
+    createAdminRefreshGrantFlightKey,
     deleteAllRefreshTokenBridges,
     deleteRefreshTokenBridges,
     storeRefreshTokenBridge,

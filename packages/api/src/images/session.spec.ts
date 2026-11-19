@@ -51,8 +51,72 @@ describe('storeOpenIdSession', () => {
     expect(deps.deleteSession).toHaveBeenCalledWith({ refreshToken: 'old-refresh' });
   });
 
+  it('deletes both the presented and bridged-grant tokens when the grant rotated the bridged token', async () => {
+    await storeOpenIdSession(
+      {
+        userId: 'user-id',
+        refreshToken: 'c2-rotated',
+        previousRefreshToken: 'a-presented',
+        grantRefreshToken: 'c-bridged',
+      },
+      deps,
+    );
+
+    expect(deps.deleteSession).toHaveBeenCalledWith({ refreshToken: 'a-presented' });
+    expect(deps.deleteSession).toHaveBeenCalledWith({ refreshToken: 'c-bridged' });
+    expect(deps.deleteSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not delete the bridged-grant token when the IdP did not rotate it', async () => {
+    await storeOpenIdSession(
+      {
+        userId: 'user-id',
+        // The IdP didn't rotate: the token being stored IS the bridged grant token.
+        refreshToken: 'c-bridged',
+        previousRefreshToken: 'a-presented',
+        grantRefreshToken: 'c-bridged',
+      },
+      deps,
+    );
+
+    expect(deps.deleteSession).toHaveBeenCalledWith({ refreshToken: 'a-presented' });
+    expect(deps.deleteSession).toHaveBeenCalledTimes(1);
+  });
+
   it('does not create a durable session without a refresh token', async () => {
     await expect(storeOpenIdSession({ userId: 'user-id' }, deps)).resolves.toBe(false);
     expect(deps.upsertSession).not.toHaveBeenCalled();
+  });
+
+  it('persists the provider session and authMethod when supplied', async () => {
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+
+    await storeOpenIdSession(
+      {
+        userId: 'user-id',
+        refreshToken: 'new-refresh',
+        providerSession,
+        authMethod: 'openid',
+      },
+      deps,
+    );
+
+    expect(deps.upsertSession).toHaveBeenCalledWith(
+      'user-id',
+      'new-refresh',
+      expect.objectContaining({ providerSession, authMethod: 'openid' }),
+    );
+  });
+
+  it('leaves providerSession and authMethod off the upsert when omitted', async () => {
+    await storeOpenIdSession({ userId: 'user-id', refreshToken: 'new-refresh' }, deps);
+
+    const options = deps.upsertSession.mock.calls[0][2];
+    expect(options).not.toHaveProperty('providerSession');
+    expect(options).not.toHaveProperty('authMethod');
   });
 });

@@ -142,6 +142,27 @@ jest.mock('./OpenIDRefreshFlight', () => ({
     }),
   ),
 }));
+const mockAuthorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+const mockEstablishProviderSession = jest.fn().mockResolvedValue({ ok: true });
+const mockPreCheckProviderSession = jest.fn().mockResolvedValue({ ok: true });
+const mockGetModeProviderSession = jest.fn().mockResolvedValue('enforce');
+/** No client configured by default: `deriveProviderSessionFromClaims` short-circuits to `null`, so refresh proceeds without a provider-session check. */
+const mockGetProviderSessionClient = jest.fn(() => null);
+jest.mock('./ProviderSession', () => ({
+  getProviderSessionAuthorizer: jest.fn(() => ({
+    establish: mockEstablishProviderSession,
+    authorize: mockAuthorizeProviderSession,
+    preCheck: mockPreCheckProviderSession,
+    getMode: mockGetModeProviderSession,
+  })),
+  providerSessionAuthorizer: {
+    establish: mockEstablishProviderSession,
+    authorize: mockAuthorizeProviderSession,
+    preCheck: mockPreCheckProviderSession,
+    getMode: mockGetModeProviderSession,
+  },
+  getProviderSessionClient: mockGetProviderSessionClient,
+}));
 
 const jwt = require('jsonwebtoken');
 const crypto = require('node:crypto');
@@ -1266,6 +1287,7 @@ describe('OpenIDSessionRefresh', () => {
       const p1 = refreshOpenIDSession(reqA, undefined, user, 'access_token');
       const p2 = refreshOpenIDSession(reqB, undefined, user, 'access_token');
       await Promise.resolve();
+      await Promise.resolve();
 
       // Both calls land before the IdP responds
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
@@ -1314,6 +1336,7 @@ describe('OpenIDSessionRefresh', () => {
       const user = makeOpenIdUser();
       const pA = refreshOpenIDSession(reqA, undefined, user, 'access_token');
       const pB = refreshOpenIDSession(reqB, undefined, user, 'access_token');
+      await Promise.resolve();
       await Promise.resolve();
 
       // Two refreshes started, one per session
@@ -1372,6 +1395,7 @@ describe('OpenIDSessionRefresh', () => {
       const user = makeOpenIdUser();
       const oldRefresh = refreshOpenIDSession(reqOld, undefined, user, 'access_token');
       const currentRefresh = refreshOpenIDSession(reqCurrent, undefined, user, 'access_token');
+      await Promise.resolve();
       await Promise.resolve();
 
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(2);
@@ -1444,6 +1468,7 @@ describe('OpenIDSessionRefresh', () => {
 
       const leaderPromise = refreshOpenIDSession(leaderReq, undefined, user, 'access_token');
       const joinerPromise = refreshOpenIDSession(joinerReq, undefined, user, 'access_token');
+      await Promise.resolve();
       await Promise.resolve();
 
       // Only the leader hit the IdP; the joiner coalesced onto it.
@@ -1577,6 +1602,7 @@ describe('OpenIDSessionRefresh', () => {
       const leaderPromise = refreshOpenIDSession(leaderReq, leaderRes, user, 'access_token');
       const joinerPromise = refreshOpenIDSession(joinerReq, joinerRes, user, 'access_token');
       await Promise.resolve();
+      await Promise.resolve();
 
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
 
@@ -1627,6 +1653,7 @@ describe('OpenIDSessionRefresh', () => {
 
       const leaderPromise = refreshOpenIDSession(leaderReq, undefined, user, 'access_token');
       const joinerPromise = refreshOpenIDSession(joinerReq, undefined, user, 'access_token');
+      await Promise.resolve();
       await Promise.resolve();
 
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
@@ -1687,6 +1714,7 @@ describe('OpenIDSessionRefresh', () => {
       waitForOpenIDRefreshFlight.mockResolvedValueOnce(sharedTokens);
 
       const leaderPromise = refreshOpenIDSession(leaderReq, undefined, user, 'access_token');
+      await Promise.resolve();
       await Promise.resolve();
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
 
@@ -2394,6 +2422,7 @@ describe('OpenIDSessionRefresh', () => {
         tokenPreference: 'access_token',
       });
       const result = provider({ forceRefresh: true, signal: controller.signal });
+      await Promise.resolve();
       await Promise.resolve();
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
       controller.abort(new Error('stopped after admission'));

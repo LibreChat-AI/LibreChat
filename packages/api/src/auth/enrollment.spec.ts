@@ -5,9 +5,15 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { EnrollmentControllerDependencies } from './enrollment';
+import type { StoredTwoFactorAccount } from './twoFactor';
 import {
   TWO_FACTOR_TOKEN_PURPOSE,
+  generateTwoFactorLoginChallengeToken,
+  generateTwoFactorSetupToken,
+  requireTwoFactorSetupToken,
   requireTwoFactorSetupSignOutToken,
+  requireTwoFactorSetupAcknowledgementToken,
+  requireTwoFactorSetupFinalizationToken,
   verifyTwoFactorSetupAcknowledgementToken,
 } from './twoFactor';
 import { createEnrollmentControllers } from './enrollment';
@@ -547,5 +553,292 @@ describe('cancel2FASetup', () => {
       expect(res.clearCookie).not.toHaveBeenCalled();
       expect(await sessionIds()).toEqual([session.id]);
     });
+  });
+});
+
+const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
+const ORIGINAL_ENFORCE_2FA = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+
+function mockResponse() {
+  const res: { status: jest.Mock; json: jest.Mock } = {
+    status: jest.fn(),
+    json: jest.fn(),
+  };
+  res.status.mockReturnValue(res);
+  res.json.mockReturnValue(res);
+  return res as unknown as import('express').Response;
+}
+
+function makeUser(overrides: Partial<StoredTwoFactorAccount> = {}): StoredTwoFactorAccount {
+  return {
+    _id: 'user-1',
+    provider: 'local',
+    twoFactorEnabled: false,
+    ...overrides,
+  } as unknown as StoredTwoFactorAccount;
+}
+
+function makeDeps(
+  overrides: Partial<EnrollmentControllerDependencies> = {},
+): EnrollmentControllerDependencies {
+  return {
+    updateUser: jest.fn().mockResolvedValue(null),
+    awaitAuthUserDocEviction: jest.fn().mockResolvedValue(undefined),
+    getUserById: jest.fn().mockResolvedValue(null),
+    getTOTPSecret: jest.fn().mockResolvedValue(null),
+    verifyTOTP: jest.fn().mockResolvedValue(false),
+    verifyBackupCode: jest.fn().mockResolvedValue(false),
+    generateBackupCodes: jest.fn().mockResolvedValue({ plainCodes: [], codeObjects: [] }),
+    updateTwoFactorEnrollment: jest.fn().mockResolvedValue(null),
+    findSession: jest.fn().mockResolvedValue(null),
+    deleteSession: jest.fn().mockResolvedValue({}),
+    deleteAllUserSessions: jest.fn().mockResolvedValue({}),
+    clearCloudFrontCookies: jest.fn(),
+    setAuthTokens: jest.fn().mockResolvedValue('jwt-token'),
+    ...overrides,
+  };
+}
+
+describe('createEnrollmentControllers authMethod', () => {
+  beforeEach(() => {
+    process.env.JWT_SECRET = 'test-secret';
+    delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_JWT_SECRET === undefined) {
+      delete process.env.JWT_SECRET;
+    } else {
+      process.env.JWT_SECRET = ORIGINAL_JWT_SECRET;
+    }
+    if (ORIGINAL_ENFORCE_2FA === undefined) {
+      delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+    } else {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = ORIGINAL_ENFORCE_2FA;
+    }
+  });
+
+  it('marks a password + TOTP login as authMethod local, not blank', async () => {
+    const user = makeUser({ twoFactorEnabled: true, totpSecret: 'encrypted-secret' });
+    const tempToken = generateTwoFactorLoginChallengeToken('user-1', process.env.JWT_SECRET!);
+    const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
+    const deps = makeDeps({
+      getUserById: jest.fn().mockResolvedValue(user),
+      getTOTPSecret: jest.fn().mockResolvedValue('plain-secret'),
+      verifyTOTP: jest.fn().mockResolvedValue(true),
+      setAuthTokens,
+    });
+    const { verify2FAWithTempToken } = createEnrollmentControllers(deps);
+    const req = { body: { tempToken, token: '123456' } } as unknown as Parameters<
+      typeof verify2FAWithTempToken
+    >[0];
+    const res = mockResponse();
+
+    await verify2FAWithTempToken(req, res);
+
+    expect(setAuthTokens).toHaveBeenCalledWith(
+      user._id,
+      res,
+      null,
+      req,
+      expect.objectContaining({ authMethod: 'local' }),
+    );
+  });
+
+  it('marks a fresh 2FA-setup promotion as authMethod local, not blank', async () => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    const promotedUser = makeUser({ twoFactorEnabled: true });
+    const pendingUser = makeUser({
+      twoFactorEnabled: false,
+      pendingTotpSecret: 'pending-secret',
+      pendingBackupCodes: [{ codeHash: 'hash', used: false }],
+    });
+    const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
+    const deps = makeDeps({
+      getUserById: jest.fn().mockResolvedValue(pendingUser),
+      updateTwoFactorEnrollment: jest.fn().mockResolvedValue(promotedUser),
+      setAuthTokens,
+    });
+    const { finalize2FASetup } = createEnrollmentControllers(deps);
+    const req = {
+      user: { id: 'user-1' },
+      twoFactorEnrollmentNonce: 'finalization-nonce',
+    } as unknown as Parameters<typeof finalize2FASetup>[0];
+    const res = mockResponse();
+
+    await finalize2FASetup(req, res);
+
+    expect(setAuthTokens).toHaveBeenCalledWith(
+      promotedUser._id,
+      res,
+      null,
+      req,
+      expect.objectContaining({ authMethod: 'local' }),
+    );
+  });
+
+  it('records ldap as the auth method when an LDAP login completes a TOTP challenge', async () => {
+    const user = makeUser({ twoFactorEnabled: true, totpSecret: 'encrypted-secret' });
+    const tempToken = generateTwoFactorLoginChallengeToken(
+      'user-1',
+      process.env.JWT_SECRET!,
+      'ldap',
+    );
+    const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
+    const deps = makeDeps({
+      getUserById: jest.fn().mockResolvedValue(user),
+      getTOTPSecret: jest.fn().mockResolvedValue('plain-secret'),
+      verifyTOTP: jest.fn().mockResolvedValue(true),
+      setAuthTokens,
+    });
+    const { verify2FAWithTempToken } = createEnrollmentControllers(deps);
+    const req = { body: { tempToken, token: '123456' } } as unknown as Parameters<
+      typeof verify2FAWithTempToken
+    >[0];
+    const res = mockResponse();
+
+    await verify2FAWithTempToken(req, res);
+
+    expect(setAuthTokens).toHaveBeenCalledWith(
+      user._id,
+      res,
+      null,
+      req,
+      expect.objectContaining({ authMethod: 'ldap' }),
+    );
+  });
+
+  it('records passkey as the auth method when a passkey login completes a TOTP challenge', async () => {
+    const user = makeUser({ twoFactorEnabled: true, totpSecret: 'encrypted-secret' });
+    const tempToken = generateTwoFactorLoginChallengeToken(
+      'user-1',
+      process.env.JWT_SECRET!,
+      'passkey',
+    );
+    const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
+    const deps = makeDeps({
+      getUserById: jest.fn().mockResolvedValue(user),
+      getTOTPSecret: jest.fn().mockResolvedValue('plain-secret'),
+      verifyTOTP: jest.fn().mockResolvedValue(true),
+      setAuthTokens,
+    });
+    const { verify2FAWithTempToken } = createEnrollmentControllers(deps);
+    const req = { body: { tempToken, token: '123456' } } as unknown as Parameters<
+      typeof verify2FAWithTempToken
+    >[0];
+    const res = mockResponse();
+
+    await verify2FAWithTempToken(req, res);
+
+    expect(setAuthTokens).toHaveBeenCalledWith(
+      user._id,
+      res,
+      null,
+      req,
+      expect.objectContaining({ authMethod: 'passkey' }),
+    );
+  });
+
+  it('falls back to local when the login challenge carries an invalid method', async () => {
+    const user = makeUser({ twoFactorEnabled: true, totpSecret: 'encrypted-secret' });
+    const forgedToken = jwt.sign(
+      {
+        userId: 'user-1',
+        purpose: TWO_FACTOR_TOKEN_PURPOSE.LOGIN_CHALLENGE,
+        issuedAtMs: Date.now(),
+        authMethod: 'not-a-real-method',
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '5m' },
+    );
+    const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
+    const deps = makeDeps({
+      getUserById: jest.fn().mockResolvedValue(user),
+      getTOTPSecret: jest.fn().mockResolvedValue('plain-secret'),
+      verifyTOTP: jest.fn().mockResolvedValue(true),
+      setAuthTokens,
+    });
+    const { verify2FAWithTempToken } = createEnrollmentControllers(deps);
+    const req = { body: { tempToken: forgedToken, token: '123456' } } as unknown as Parameters<
+      typeof verify2FAWithTempToken
+    >[0];
+    const res = mockResponse();
+
+    await verify2FAWithTempToken(req, res);
+
+    expect(setAuthTokens).toHaveBeenCalledWith(
+      user._id,
+      res,
+      null,
+      req,
+      expect.objectContaining({ authMethod: 'local' }),
+    );
+  });
+
+  /**
+   * The login method travels through three tokens, not one: the setup token the login controller
+   * mints, the acknowledgement token `confirm2FASetupWithTempToken` mints in its place, and the
+   * finalization token `acknowledge2FASetup` mints in turn. Only the last of those reaches the
+   * session `finalize2FASetup` mints, so this exercises the real middleware alongside the
+   * controllers rather than stamping the claim directly onto a request.
+   */
+  it('preserves the login method across the required-enrollment continuation', async () => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    const pendingUser = makeUser({
+      twoFactorEnabled: false,
+      pendingTotpSecret: 'pending-secret',
+      pendingBackupCodes: [{ codeHash: 'hash', used: false }],
+    });
+    const promotedUser = makeUser({ twoFactorEnabled: true });
+    const setAuthTokens = jest.fn().mockResolvedValue('jwt-token');
+    const deps = makeDeps({
+      getUserById: jest.fn().mockResolvedValue(pendingUser),
+      getTOTPSecret: jest.fn().mockResolvedValue('plain-secret'),
+      verifyTOTP: jest.fn().mockResolvedValue(true),
+      generateBackupCodes: jest.fn().mockResolvedValue({
+        plainCodes: ['backup-code'],
+        codeObjects: [{ codeHash: 'hash', used: false }],
+      }),
+      updateTwoFactorEnrollment: jest.fn().mockResolvedValue(promotedUser),
+      setAuthTokens,
+    });
+    const { confirm2FASetupWithTempToken, acknowledge2FASetup, finalize2FASetup } =
+      createEnrollmentControllers(deps);
+
+    const setupToken = generateTwoFactorSetupToken('user-1', process.env.JWT_SECRET!, 'ldap');
+    const confirmReq = { body: { tempToken: setupToken, token: '123456' } } as unknown as Request;
+    requireTwoFactorSetupToken(confirmReq, mockResponse(), jest.fn());
+    const confirmRes = mockResponse();
+    await confirm2FASetupWithTempToken(
+      confirmReq as unknown as Parameters<typeof confirm2FASetupWithTempToken>[0],
+      confirmRes,
+    );
+    const acknowledgementToken = (confirmRes.json as jest.Mock).mock.calls[0][0]
+      .acknowledgementToken;
+
+    const ackReq = { body: { acknowledgementToken } } as unknown as Request;
+    requireTwoFactorSetupAcknowledgementToken(ackReq, mockResponse(), jest.fn());
+    const ackRes = mockResponse();
+    await acknowledge2FASetup(
+      ackReq as unknown as Parameters<typeof acknowledge2FASetup>[0],
+      ackRes,
+    );
+    const finalizationToken = (ackRes.json as jest.Mock).mock.calls[0][0].finalizationToken;
+
+    const finalizeReq = { body: { finalizationToken } } as unknown as Request;
+    requireTwoFactorSetupFinalizationToken(finalizeReq, mockResponse(), jest.fn());
+    const finalizeRes = mockResponse();
+    await finalize2FASetup(
+      finalizeReq as unknown as Parameters<typeof finalize2FASetup>[0],
+      finalizeRes,
+    );
+
+    expect(setAuthTokens).toHaveBeenCalledWith(
+      promotedUser._id,
+      finalizeRes,
+      null,
+      finalizeReq,
+      expect.objectContaining({ authMethod: 'ldap' }),
+    );
   });
 });

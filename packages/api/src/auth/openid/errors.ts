@@ -1,3 +1,4 @@
+import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
 import type { LogArgument } from './types';
 
 export const OPENID_REFRESH_OWNERSHIP_LOST = 'OPENID_REFRESH_OWNERSHIP_LOST';
@@ -77,5 +78,21 @@ export function isOpenIDRefreshOwnershipError(error: unknown): boolean {
     error !== null &&
     'code' in error &&
     error.code === OPENID_REFRESH_OWNERSHIP_LOST
+  );
+}
+
+/** A provider session was denied (ended, conflicting, or never associated under enforce). */
+export function createOpenIDSessionEndedError(
+  message = 'OpenID provider session ended',
+): Error & { code: string; status: number } {
+  return Object.assign(new Error(message), { code: OPENID_SESSION_ENDED, status: 401 });
+}
+
+export function isOpenIDSessionEndedError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === OPENID_SESSION_ENDED
   );
 }

@@ -1,11 +1,16 @@
 import jwt from 'jsonwebtoken';
 import { createHash } from 'node:crypto';
+import type { ProviderSessionRef } from 'librechat-data-provider';
+import type { ResolvedBackchannelLogoutConfig } from './providerSession/config';
 import type { TokenIssuance, TokenRetirementSignals } from '../twoFactor';
 import type { SessionOpenIDTokens } from './types';
+import { isProviderSessionRef } from './providerSession/ref';
 import { isTokenRetired } from '../twoFactor';
 
 export interface OpenIDReuseCredential extends TokenIssuance {
   userId: string;
+  /** The provider session this marker was signed with, if any. */
+  providerSession?: ProviderSessionRef;
 }
 
 /** Verify the identity cookie and, when supplied, bind it to the source refresh token. */
@@ -36,10 +41,28 @@ export function getValidOpenIDReuseCredential(
       userId: payload.id,
       issuedAt: payload.iat,
       issuedAtMs: typeof payload.issuedAtMs === 'number' ? payload.issuedAtMs : undefined,
+      providerSession: isProviderSessionRef(payload.providerSession)
+        ? payload.providerSession
+        : undefined,
     };
   } catch {
     return null;
   }
+}
+
+/** Binds the identity cookie to the refresh token in use outside mode `'off'`, so a marker signed
+ *  for a different, rotated credential cannot be reused; mode `'off'` keeps the pre-feature lookup. */
+export function getReuseCredentialForMode(
+  mode: ResolvedBackchannelLogoutConfig['mode'],
+  parsedCookies: { openid_user_id?: string },
+  jwtRefreshSecret: string | undefined,
+  refreshToken?: string,
+): OpenIDReuseCredential | null {
+  return getValidOpenIDReuseCredential(
+    parsedCookies,
+    jwtRefreshSecret,
+    mode === 'off' ? undefined : refreshToken,
+  );
 }
 
 export interface OpenIDSessionRetirementInput {
