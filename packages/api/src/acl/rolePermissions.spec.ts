@@ -33,7 +33,7 @@ const filter = {
 };
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   entries = mongoose.models.AclEntry as Model<IAclEntry>;
@@ -440,7 +440,7 @@ describe('role-only ACL writes', () => {
   test('keeps all guarded writes inside a caller-owned transaction', async () => {
     const replica = await MongoMemoryReplSet.create({
       replSet: { count: 1 },
-      instanceOpts: [{ args: ['--nounixsocket'] }],
+      instanceOpts: [{ args: process.platform === 'win32' ? [] : ['--nounixsocket'] }],
     });
     const connection = new mongoose.Mongoose();
     try {

@@ -60,7 +60,7 @@ describe('assistant avatar multipart authorization', () => {
   beforeAll(async () => {
     unlink = jest.spyOn(fs, 'unlink');
     directory = await fs.mkdtemp(`${os.tmpdir()}/assistant-avatar-`);
-    mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     mongoose.set('strictQuery', true);
     ({ Assistant, User, File } = createModels(mongoose));

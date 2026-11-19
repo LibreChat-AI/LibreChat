@@ -45,7 +45,7 @@ const read = () => File.collection.findOne({ file_id: claim.file_id, user });
 beforeAll(async () => {
   delete process.env.TENANT_ISOLATION_STRICT;
   _resetStrictCache();
-  mongoServer = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongoServer = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongoServer.getUri());
   const models = createModels(mongoose);
   modelNames = Object.keys(models);

@@ -19,7 +19,7 @@ const scoped = <T>(principal: ResponseOwner, fn: () => Promise<T>) =>
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
     replSet: { count: 1 },
-    instanceOpts: [{ args: ['--nounixsocket'] }],
+    instanceOpts: [{ args: process.platform === 'win32' ? [] : ['--nounixsocket'] }],
   });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
   storage = createResponseStorage(mongoose);

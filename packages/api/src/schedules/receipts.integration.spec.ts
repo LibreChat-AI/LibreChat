@@ -12,7 +12,7 @@ import { ScheduledMCPBearerError } from './bearer';
 it.each([false, true])(
   'releases admitted receipt cleanup across deleting=%s without losing acknowledgement',
   async (deleting) => {
-    const mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    const mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     const database = new mongoose.Mongoose();
     const store = new InMemoryJobStore({ ttlAfterComplete: 0 });
     try {

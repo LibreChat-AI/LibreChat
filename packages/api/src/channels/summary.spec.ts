@@ -222,7 +222,7 @@ describe('actor-lane summary', () => {
 });
 
 it('normalizes an actual Mongo lean ObjectId without assuming an id virtual', async () => {
-  const mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  const mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   const connection = await mongoose.createConnection(mongo.getUri()).asPromise();
   try {
     const User = connection.model(

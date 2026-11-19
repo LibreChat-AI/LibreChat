@@ -41,7 +41,7 @@ function persistence(): AgentTriggerDeliveryPersistence {
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
     replSet: { count: 1 },
-    instanceOpts: [{ args: ['--nounixsocket'] }],
+    instanceOpts: [{ args: process.platform === 'win32' ? [] : ['--nounixsocket'] }],
   });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
   createModels(mongoose);

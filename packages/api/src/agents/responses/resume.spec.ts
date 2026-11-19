@@ -27,7 +27,7 @@ const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
     replSet: { count: 1 },
-    instanceOpts: [{ args: ['--nounixsocket'] }],
+    instanceOpts: [{ args: process.platform === 'win32' ? [] : ['--nounixsocket'] }],
   });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
   storage = createResponseStorage(mongoose);

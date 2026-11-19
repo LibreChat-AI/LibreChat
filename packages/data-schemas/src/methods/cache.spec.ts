@@ -17,7 +17,7 @@ const methods = createTransactionMethods(mongoose, pricing);
 const { spendStructuredTokens } = createSpendTokensMethods(mongoose, methods);
 
 beforeAll(async () => {
-  server = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  server = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(server.getUri());
   Balance = mongoose.model('Balance', balanceSchema);
   Transaction = mongoose.model('Transaction', transactionSchema);

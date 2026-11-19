@@ -29,7 +29,7 @@ beforeAll(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), 'rag-lifecycle-'));
   uploadPath = path.join(directory, 'notes.txt');
   await writeFile(uploadPath, 'notes');
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   createModels(mongoose);
   await mongoose.connect(mongo.getUri());
   File = mongoose.models.File as mongoose.Model<IMongoFile>;

@@ -52,7 +52,7 @@ describe('durable browser setup store', () => {
   let store: BrowserSetupStore;
 
   beforeAll(async () => {
-    mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
   });
   beforeEach(async () => {

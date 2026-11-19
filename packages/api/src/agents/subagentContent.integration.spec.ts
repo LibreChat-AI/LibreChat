@@ -20,7 +20,7 @@ let methods: AllMethods;
 const stores: SubagentThreadTaskStore[] = [];
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   createModels(mongoose);
   await mongoose.connect(mongo.getUri());
   methods = createMethods(mongoose);
