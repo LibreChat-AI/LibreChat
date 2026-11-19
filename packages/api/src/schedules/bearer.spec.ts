@@ -125,7 +125,7 @@ async function bearerFixture(serverConfig = config, everything = false, tools = 
     expectedRevision: null,
     offerDigest: offer.offer!.digest,
     lifetimeHours: 1,
-    ...(everything ? { allow: {}, everything: true as const } : { allow: { Files: ['echo'] } }),
+    ...(everything ? { allow: {}, everything: true as const } : { allow: { Files: [...tools] } }),
   });
   const resolveBearer = jest.fn(
     async (
@@ -307,6 +307,35 @@ it('admits a connection to a declared server the agents took up after the whole 
   });
   await f.revoke();
   await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
+});
+
+it('admits a connection under a grant of the whole server, whatever the agents select there now', async () => {
+  // The owner ticked every tool on the server, in a grant that lists its tools.
+  const f = await bearerFixture(config, false, ['sys__all__sys']);
+  expect(f.snapshot.enrollment).not.toHaveProperty('everything');
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  // The agents go back to naming tools: all of them are within what was allowed.
+  for (const selection of f.target.permittedTools) selection.tools = ['read', 'write'];
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await expect(f.call('root', ['write'])).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+});
+
+it('admits a connection for a named tool once the agents select its server as a whole', async () => {
+  const f = await bearerFixture();
+  for (const selection of f.target.permittedTools) selection.tools = ['sys__all__sys'];
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  // Still only the tool the owner named.
+  await expect(f.call('root', ['write'])).rejects.toMatchObject({
+    failure: { reason: 'tool_policy_denied' },
+  });
 });
 
 it('renews after synthetic expiry without a session, retaining no login refresh credentials', async () => {

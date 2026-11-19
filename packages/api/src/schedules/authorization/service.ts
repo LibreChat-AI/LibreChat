@@ -201,14 +201,19 @@ function selectAsking(
   whole = false,
 ): Record<string, string[]> {
   const allowed = allowedTools(chosen);
-  const covers = (serverName: string, tool: string): boolean =>
-    whole ? allowed[serverName] != null : allowed[serverName]?.includes(tool) === true;
+  // The whole server is not something to ask about: it names no tool to pause for. A tool it
+  // covers is: allowed there by name, or through a grant of the whole server to some agent.
+  const askable = (serverName: string, tool: string): boolean => {
+    const tools = allowed[serverName];
+    if (tool === Constants.mcp_all || tools == null) return false;
+    return whole || tools.includes(tool) || tools.includes(Constants.mcp_all);
+  };
   if (ask == null)
     return Object.fromEntries(
       Object.entries(stored)
         .map(([serverName, tools]): [string, string[]] => [
           serverName,
-          tools.filter((tool) => covers(serverName, tool)),
+          tools.filter((tool) => askable(serverName, tool)),
         ])
         .filter(([, tools]) => tools.length > 0),
     );
@@ -216,7 +221,7 @@ function selectAsking(
     Object.entries(ask)
       .filter(([, tools]) => tools.length > 0)
       .map(([serverName, tools]) => {
-        if (tools.some((tool) => !covers(serverName, tool)))
+        if (tools.some((tool) => !askable(serverName, tool)))
           throw new ScheduleMCPConsentError('consent_invalid');
         return [serverName, [...new Set(tools)].sort()];
       }),
@@ -235,32 +240,25 @@ function coversGrant(
       sameResource(target.resource, grant.resource) &&
       grant.permittedTools.every(({ agentId, tools }) => {
         const current = target.permittedTools.find((selection) => selection.agentId === agentId);
-        return current != null && tools.every((tool) => current.tools.includes(tool));
+        // A grant of the whole server fits whatever the agent selects there now.
+        return (
+          current != null &&
+          tools.every((tool) => tool === Constants.mcp_all || covers(current, tool))
+        );
       })
     );
   });
 }
 
 /**
- * What can be ticked. A selection of every tool on a server names none of them, so it is not
- * on offer tool by tool; the resolver still reports it, which tells a run under a whole-agent
- * grant that the server is in use and who its recipient is.
+ * Whether a per-agent selection covers a tool: it names the tool, or it is of the whole
+ * server (`mcp_all`), which stands for every tool there, named or not, now or later.
  */
-function listable(targets: readonly ScheduledMCPTarget[]): ScheduledMCPTarget[] {
-  return targets.flatMap((target) => {
-    const marked = target.permittedTools.some(({ tools }) => tools.includes(Constants.mcp_all));
-    if (!marked) return [target];
-    const permittedTools = target.permittedTools
-      .map(({ agentId, tools }) => ({
-        agentId,
-        tools: tools.filter((tool) => tool !== Constants.mcp_all),
-      }))
-      .filter((selection) => selection.tools.length > 0);
-    if (permittedTools.length === 0) return [];
-    return [
-      { ...target, permittedTools, policyRevision: getScheduledMCPPolicyRevision(permittedTools) },
-    ];
-  });
+function covers(selection: ScheduledMCPToolSelection | undefined, tool: string): boolean {
+  return (
+    selection != null &&
+    (selection.tools.includes(tool) || selection.tools.includes(Constants.mcp_all))
+  );
 }
 
 /**
@@ -339,8 +337,12 @@ function carriedPins(
   if (!prior?.definitions || !sameResource(prior.resource, target.resource)) return {};
   const allowed = new Set(target.permittedTools.flatMap((selection) => selection.tools));
   const marked = new Set(prior.changedTools);
+  // A grant of the whole server keeps the pin of every tool used under it: the tool is not
+  // named, but it is still allowed, and its pin is what refuses it once it changes. A tool
+  // marked as changed loses its pin either way: confirming again is allowing the new one.
+  const every = allowed.has(Constants.mcp_all);
   const definitions = prior.definitions.filter(
-    (pin) => allowed.has(pin.tool) && !marked.has(pin.tool),
+    (pin) => (every || allowed.has(pin.tool)) && !marked.has(pin.tool),
   );
   return definitions.length ? { definitions } : {};
 }
@@ -525,7 +527,7 @@ export function createScheduleMCPConsentService<
           deps.resolveTools?.(identity, options) ?? [],
           deps.resolveServers?.(identity, options) ?? [],
         ]);
-        resolved = listable(servers);
+        resolved = servers;
       } catch (error) {
         if (!(error instanceof ScheduleMCPConsentError) || !enrollment) throw error;
         return {
@@ -695,7 +697,7 @@ export function createScheduleMCPConsentService<
       deps.resolveTools?.(identity, options) ?? [],
       deps.resolveServers?.(identity, options) ?? [],
     ]);
-    const resolved = listable(servers);
+    const resolved = servers;
     if (resolved.length === 0 && others.length === 0 && !standing) return none;
     const targets = canonicalTargets(resolved, { empty: true });
     const subject = {
@@ -1026,13 +1028,12 @@ export function createScheduleMCPConsentService<
         (s) => s.agentId === request.selection.agentId,
       );
       if (!request.selection.tools.length) return denial('tool_policy_denied');
+      // Granted and still selected, each by name or through a selection of the whole server.
       if (
         !whole &&
-        (!selection ||
-          !currentSelection ||
-          request.selection.tools.some(
-            (tool) => !selection.tools.includes(tool) || !currentSelection.tools.includes(tool),
-          ))
+        request.selection.tools.some(
+          (tool) => !covers(selection, tool) || !covers(currentSelection, tool),
+        )
       )
         return denial('tool_policy_denied');
       const live = Object.entries(request.definitions ?? {}).filter(([tool]) =>

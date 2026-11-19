@@ -1061,6 +1061,47 @@ describe('a grant that lists a tool on a server the operator did not declare', (
   });
 });
 
+describe('a grant that lists the whole of a declared server', () => {
+  it('offers the selection as one item, makes the server ready, loads it and calls its tools', async () => {
+    const f = await setup();
+    f.snapshot.enrollment = null;
+    f.setCandidates(['sys__all__sys_mcp_warehouse', 'web_search']);
+    const offer = await f.host.consent.service.view(f.identity);
+    expect(offer.targets).toMatchObject([
+      {
+        resource: { serverName: 'warehouse' },
+        permittedTools: expect.arrayContaining([{ agentId: 'root', tools: ['sys__all__sys'] }]),
+      },
+    ]);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['sys__all__sys'] },
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    expect(f.row.mcpConsent).not.toHaveProperty('everything');
+    f.connect.mockClear();
+    await expect(f.check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
+    expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'warehouse' }));
+    await f.host.prepare({ req: f.req, context: f.context });
+    const keys = ['sys__all__sys_mcp_warehouse', 'web_search'];
+    // The server's tools load. The other tool was not ticked.
+    expect(getScheduleMCPExecution(f.context)!.narrow('root', keys)).toEqual([
+      'sys__all__sys_mcp_warehouse',
+    ]);
+    await expect(
+      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe('a schedule being created with its grant', () => {
   /** Nothing is stored for it yet: the grant comes with the readiness check. */
   async function creating(
