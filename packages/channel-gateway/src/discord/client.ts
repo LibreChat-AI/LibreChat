@@ -5,6 +5,7 @@ import {
   discordGuildTextSourceSchema,
   discordGuildTextPermissions,
 } from 'librechat-data-provider';
+import type { APIActionRowComponent, APIButtonComponent } from 'discord-api-types/v10';
 import type { DiscordGuildTextSource } from 'librechat-data-provider';
 import type { DiscordRatePermit } from './rates';
 import { DiscordRateCoordinator, DiscordRateQueueError } from './rates';
@@ -27,7 +28,7 @@ export interface DiscordClientOptions {
 }
 export interface DiscordMessage {
   content: string;
-  components?: object[];
+  components?: APIActionRowComponent<APIButtonComponent>[];
 }
 export interface DiscordMessageReceipt {
   externalMessageKey: string;

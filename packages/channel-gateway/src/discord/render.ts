@@ -1,12 +1,46 @@
+import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import type { ChannelDeliveryPlan } from 'librechat-data-provider';
+import { discordRunControl } from 'librechat-data-provider';
+import type { ChannelDeliveryPlan, ChannelDeliveryPart } from 'librechat-data-provider';
 
-export const discordRendererVersion = 'discord-text-v1';
+export const discordLegacyRendererVersion = 'discord-text-v1';
+export const discordRendererVersion = 'discord-text-v2';
+const feedbackFormat = 'discord-feedback-v1';
+const feedbackSchema = z.object({ runId: z.string().min(1).max(80) }).strict();
+const presentationSchema = z
+  .object({ format: z.literal(feedbackFormat), payload: z.string().max(128) })
+  .strict();
 export interface DiscordRenderInput {
   runId: string;
   text: string;
 }
 export type DiscordTextPlan = ChannelDeliveryPlan;
+
+/** Fixed server-authored controls only; no model-authored component payload or URL is accepted. */
+export function discordFeedbackPresentation(
+  runId: string,
+): NonNullable<ChannelDeliveryPart['presentation']> {
+  discordRunControl('thumbsUp', runId);
+  return { format: feedbackFormat, payload: JSON.stringify({ runId }) };
+}
+
+export function readDiscordFeedbackPresentation(part: ChannelDeliveryPart): string | undefined {
+  if (part.presentation === undefined) return undefined;
+  const wrapper = presentationSchema.safeParse(part.presentation);
+  if (!wrapper.success) throw new Error('Invalid Discord feedback presentation');
+  const value = wrapper.data;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(value.payload);
+  } catch {
+    throw new Error('Invalid Discord feedback presentation');
+  }
+  const parsed = feedbackSchema.safeParse(payload);
+  if (!parsed.success || JSON.stringify(parsed.data) !== value.payload)
+    throw new Error('Invalid Discord feedback presentation');
+  discordRunControl('thumbsUp', parsed.data.runId);
+  return parsed.data.runId;
+}
 
 export function sanitizeDiscordMentions(text: string): string {
   return text
@@ -83,7 +117,7 @@ export function discordPlanRevision(
 export function renderDiscordPlan(
   input: DiscordRenderInput,
   maxParts: number,
-  options: { shorten?: boolean } = {},
+  options: { shorten?: boolean; feedback?: boolean } = {},
 ): DiscordTextPlan {
   if (!input.runId || !Number.isSafeInteger(maxParts) || maxParts < 1 || maxParts > 100)
     throw new TypeError('Invalid Discord delivery budget');
@@ -107,6 +141,8 @@ export function renderDiscordPlan(
       text,
     })),
   };
+  if (options.feedback === true)
+    plan.parts[0].presentation = discordFeedbackPresentation(input.runId);
   plan.revision = discordPlanRevision(plan);
   return plan;
 }
