@@ -1,0 +1,10 @@
+# Add after docker-compose.discord.yml to build the API and Discord gateway together.
+services:
+  api:
+    extends:
+      file: docker-compose.channels-build.yml
+      service: api
+  discord-gateway:
+    extends:
+      file: docker-compose.channels-build.yml
+      service: channel-gateway

@@ -13,6 +13,9 @@ on:
       - 'docker-compose.channels.yml'
       - 'docker-compose.slack-workspaces.yml'
       - 'docker-compose.channels-build.yml'
+      - 'docker-compose.discord.yml'
+      - 'docker-compose.discord-build.yml'
+      - '.github/scripts/test-discord-process.mjs'
       - '.github/scripts/test-channel-compose.mjs'
       - '.github/scripts/test-channel-release.mjs'
       - '.github/workflows/tag-images.yml'
@@ -37,6 +40,9 @@ on:
       - 'docker-compose.channels.yml'
       - 'docker-compose.slack-workspaces.yml'
       - 'docker-compose.channels-build.yml'
+      - 'docker-compose.discord.yml'
+      - 'docker-compose.discord-build.yml'
+      - '.github/scripts/test-discord-process.mjs'
       - '.github/scripts/test-channel-compose.mjs'
       - '.github/scripts/test-channel-release.mjs'
       - '.github/workflows/tag-images.yml'
@@ -199,3 +205,7 @@ jobs:
             }
           });
           NODE
+      - name: Smoke-test isolated Discord process
+        run: >-
+          docker run --rm -i --read-only --entrypoint node channel-gateway:ci
+          --input-type=module - /app/main.cjs < .github/scripts/test-discord-process.mjs

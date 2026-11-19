@@ -79,6 +79,7 @@ export function createDiscordManagementHandlers(deps: {
   sessionSecret: string;
   publicBaseUrl: string;
   clientBaseUrl: string;
+  interactionBaseUrl?: string;
   logError: (metadata: SafeErrorMetadata) => void;
 }): DiscordManagementHandlers {
   if (!deps.sessionSecret) throw new TypeError('Discord OAuth requires a session signing secret');
@@ -168,6 +169,7 @@ export function createDiscordManagementHandlers(deps: {
           ...result.value,
           setup: {
             oauthCallbackUrl: getOAuthCallbackUrl(deps.publicBaseUrl, DISCORD_CALLBACK_PATH),
+            ...(deps.interactionBaseUrl ? { interactionBaseUrl: deps.interactionBaseUrl } : {}),
           },
         },
       });

@@ -1,0 +1,20 @@
+# Use with docker-compose.yml and --profile channels for Discord alone.
+# Add the Slack workspace overlays too when both providers are needed.
+# Configure endpoints.agents.channels.discord.enabled/publicUrl in librechat.yaml.
+# Discord application credentials are registered in LibreChat, never in this environment.
+services:
+  api:
+    extends:
+      file: docker-compose.channels.yml
+      service: api
+  discord-gateway:
+    extends:
+      file: docker-compose.channels.yml
+      service: channel-gateway
+    ports:
+      - '127.0.0.1:${DISCORD_GATEWAY_PORT:-3082}:8080'
+    environment:
+      CHANNEL_PROVIDER: discord
+      CHANNEL_ID: ''
+      CHANNEL_TENANT_ID: '_'
+      SLACK_APP_TOKEN: ''
