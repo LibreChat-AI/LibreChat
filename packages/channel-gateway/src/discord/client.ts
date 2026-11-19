@@ -1,4 +1,11 @@
+import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import {
+  channelSnowflakeSchema,
+  discordGuildTextSourceSchema,
+  discordGuildTextPermissions,
+} from 'librechat-data-provider';
+import type { DiscordGuildTextSource } from 'librechat-data-provider';
 import type { DiscordRatePermit } from './rates';
 import { DiscordRateCoordinator, DiscordRateQueueError } from './rates';
 
@@ -7,6 +14,7 @@ export class DiscordWriteError extends Error {
   constructor(
     readonly outcome: DiscordWriteOutcome,
     readonly retryAfterMs = 0,
+    readonly status?: number,
   ) {
     super('Discord operation was not confirmed');
   }
@@ -131,7 +139,7 @@ export class DiscordClient {
       if ([400, 401, 403, 404].includes(response.status)) outcome = 'permanent';
       else if (response.status === 429)
         throw new DiscordWriteError('retryable', this.rates.retryAfter(response));
-      throw new DiscordWriteError(outcome);
+      throw new DiscordWriteError(outcome, 0, response.status);
     } finally {
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
@@ -142,6 +150,8 @@ export class DiscordClient {
     if (!response.ok)
       throw new DiscordWriteError(
         [400, 401, 403, 404].includes(response.status) ? 'permanent' : 'unknown',
+        0,
+        response.status,
       );
     return value;
   }
@@ -166,6 +176,48 @@ export class DiscordClient {
     )
       throw new DiscordWriteError('unknown');
     return { channelId, messageId: value.id, externalMessageKey: `${channelId}:${value.id}` };
+  }
+  /** Discord computes roles and overwrites: https://docs.discord.com/developers/resources/channel#get-channel-member-permissions */
+  async inspectGuildTextSource(
+    input: { applicationId: string; botUserId: string; guildId: string; channelId: string },
+    signal?: AbortSignal,
+  ): Promise<DiscordGuildTextSource | null> {
+    for (const value of Object.values(input)) channelSnowflakeSchema.parse(value);
+    try {
+      const [rawChannel, rawPermissions] = await Promise.all([
+        this.request('GET', `/channels/${input.channelId}`, undefined, signal),
+        this.request(
+          'GET',
+          `/channels/${input.channelId}/permissions/member/${input.botUserId}`,
+          undefined,
+          signal,
+        ),
+      ]);
+      const channel = z
+        .object({
+          id: channelSnowflakeSchema,
+          guild_id: channelSnowflakeSchema,
+          type: z.number().int(),
+          flags: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+        })
+        .safeParse(rawChannel);
+      const permissions = z
+        .object({ permissions: discordGuildTextSourceSchema.shape.permissions })
+        .safeParse(rawPermissions);
+      if (!channel.success || !permissions.success) throw new DiscordWriteError('unknown');
+      if (
+        channel.data.id !== input.channelId ||
+        channel.data.guild_id !== input.guildId ||
+        channel.data.type !== 0 ||
+        (BigInt(channel.data.flags ?? 0) & BigInt(1 << 17)) !== BigInt(0) ||
+        !discordGuildTextPermissions(permissions.data.permissions)
+      )
+        return null;
+      return { kind: 'guild_text', ...input, permissions: permissions.data.permissions };
+    } catch (error) {
+      if (error instanceof DiscordWriteError && [403, 404].includes(error.status ?? 0)) return null;
+      throw error;
+    }
   }
   async createMessage(
     channelId: string,

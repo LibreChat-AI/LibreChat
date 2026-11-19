@@ -59,3 +59,43 @@ it('bounds successful payload reads and keeps unexpected server messages out of 
   await expect(client.channels()).rejects.toThrow('Remote response exceeds size limit');
   expect(transport).toHaveBeenCalledTimes(2);
 });
+it('posts the owned physical event and verified source, and waits for a bounded durable admission result', async () => {
+  const owner = {
+    applicationId: '123456789012345678',
+    applicationRevision: 'revision',
+    ownerId: 'a'.repeat(32),
+  };
+  const event = {
+    ...owner,
+    kind: 'message' as const,
+    shardId: 0,
+    sequence: 1,
+    messageId: '234567890123456789',
+    channelId: '345678901234567890',
+    guildId: '456789012345678901',
+    authorId: '567890123456789012',
+    content: '<@678901234567890123> question',
+    mentionsBot: true,
+  };
+  const source = {
+    kind: 'guild_text' as const,
+    applicationId: owner.applicationId,
+    botUserId: '678901234567890123',
+    guildId: event.guildId,
+    channelId: event.channelId,
+    permissions: '68608',
+  };
+  const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
+    Response.json({ outcome: 'duplicate' }),
+  );
+  const client = new DiscordRuntimeClient(connection, transport);
+  expect(await client.message(owner, event, source)).toEqual({ outcome: 'duplicate' });
+  expect(transport).toHaveBeenCalledWith(
+    'http://internal/prefix/api/channels/discord/service/messages',
+    expect.objectContaining({ method: 'POST', body: JSON.stringify({ owner, event, source }) }),
+  );
+  transport.mockImplementation(async () =>
+    Response.json({ error: 'authority_changed' }, { status: 409 }),
+  );
+  await expect(client.message(owner, event, source)).rejects.toThrow('HTTP 409');
+});

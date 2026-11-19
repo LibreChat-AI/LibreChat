@@ -16,6 +16,7 @@ import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createDiscordReservationModel } from './discordReservation';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
+import { createDiscordMessageReceiptModel } from './discordMessage';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillUploadIntentModel } from './skillUploadIntent';
 import { createSubagentContentModel } from './subagentContent';
@@ -97,6 +98,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   DiscordInbox: ReturnType<typeof createDiscordInboxModel>;
   DiscordReservation: ReturnType<typeof createDiscordReservationModel>;
   DiscordReceipt: ReturnType<typeof createDiscordReceiptModel>;
+  DiscordMessageReceipt: ReturnType<typeof createDiscordMessageReceiptModel>;
   DiscordGatewayCheckpoint: ReturnType<typeof createDiscordGatewayCheckpointModel>;
   DiscordInstall: ReturnType<typeof createDiscordInstallModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
@@ -171,6 +173,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     DiscordInbox: createDiscordInboxModel(mongoose),
     DiscordReservation: createDiscordReservationModel(mongoose),
     DiscordReceipt: createDiscordReceiptModel(mongoose),
+    DiscordMessageReceipt: createDiscordMessageReceiptModel(mongoose),
     DiscordGatewayCheckpoint: createDiscordGatewayCheckpointModel(mongoose),
     DiscordInstall: createDiscordInstallModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),

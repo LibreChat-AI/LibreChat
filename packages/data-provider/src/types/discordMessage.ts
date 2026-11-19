@@ -1,0 +1,70 @@
+import { z } from 'zod';
+import { discordGatewayOwnerSchema } from './discordGateway';
+import { channelSnowflakeSchema } from '../channelProvider';
+
+export const discordGatewayMessageSchema = discordGatewayOwnerSchema
+  .extend({
+    kind: z.literal('message'),
+    shardId: z.number().int().min(0).max(127),
+    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    messageId: channelSnowflakeSchema,
+    channelId: channelSnowflakeSchema,
+    guildId: channelSnowflakeSchema.optional(),
+    authorId: channelSnowflakeSchema,
+    content: z.string().max(6000),
+    mentionsBot: z.boolean(),
+    replyToMessageId: channelSnowflakeSchema.optional(),
+    channelType: z.number().int().min(0).max(100).optional(),
+  })
+  .strict();
+export type DiscordGatewayMessage = z.infer<typeof discordGatewayMessageSchema>;
+export const discordGuildTextSourceSchema = z
+  .object({
+    kind: z.literal('guild_text'),
+    applicationId: channelSnowflakeSchema,
+    botUserId: channelSnowflakeSchema,
+    guildId: channelSnowflakeSchema,
+    channelId: channelSnowflakeSchema,
+    permissions: z
+      .string()
+      .regex(/^(0|[1-9]\d{0,19})$/)
+      .refine((value) => value.length < 20 || value <= '18446744073709551615'),
+  })
+  .strict();
+export type DiscordGuildTextSource = z.infer<typeof discordGuildTextSourceSchema>;
+export const discordMessageSubmissionSchema = z
+  .object({
+    owner: discordGatewayOwnerSchema,
+    event: discordGatewayMessageSchema,
+    source: discordGuildTextSourceSchema.nullable(),
+  })
+  .strict();
+export type DiscordMessageSubmission = z.infer<typeof discordMessageSubmissionSchema>;
+export const discordMessageResultSchema = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('admitted') }).strict(),
+  z.object({ outcome: z.literal('duplicate') }).strict(),
+  z
+    .object({
+      outcome: z.literal('ignored'),
+      reason: z.enum(['link_required', 'unavailable', 'unsupported', 'expired']),
+    })
+    .strict(),
+]);
+export type DiscordMessageResult = z.infer<typeof discordMessageResultSchema>;
+/** A reply's implicit mention is insufficient; require a literal token and verified mention entry. */
+export function discordMentionPrompt(
+  event: Pick<DiscordGatewayMessage, 'mentionsBot' | 'content'>,
+  botUserId: string,
+): string | null {
+  channelSnowflakeSchema.parse(botUserId);
+  const mention = new RegExp(`<@!?${botUserId}>`, 'g');
+  if (!event.mentionsBot || !mention.test(event.content)) return null;
+  return event.content.replace(mention, '').trim() || null;
+}
+export function discordGuildTextPermissions(value: string): boolean {
+  const parsed = discordGuildTextSourceSchema.shape.permissions.safeParse(value);
+  if (!parsed.success) return false;
+  const bits = BigInt(parsed.data);
+  const required = BigInt(1024 | 2048 | 65536);
+  return (bits & BigInt(8)) !== BigInt(0) || (bits & required) === required;
+}
