@@ -4,6 +4,7 @@ import { WebSocketManager, WebSocketShardEvents, SimpleIdentifyThrottler } from 
 import type { SessionInfo, ManagerShardEventsMap, IIdentifyThrottler } from '@discordjs/ws';
 import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { RESTOptions } from '@discordjs/rest';
+import { DiscordRateCoordinator } from './rates';
 import { boundedBody } from '../transport';
 
 export type DiscordGatewayPolicy = DiscordChannelConfig['gateway'];
@@ -83,6 +84,7 @@ export function createOwnedIdentifyThrottler(
 export function createDiscordGatewayDriver(
   options: DiscordGatewayDriverOptions,
   transport: typeof fetch = fetch,
+  rates: DiscordRateCoordinator = new DiscordRateCoordinator(),
 ): DiscordGatewayDriver {
   const rest = new REST({
     version: '10',
@@ -93,34 +95,52 @@ export function createDiscordGatewayDriver(
       options.assertOwned();
       if (init.method !== 'GET' || init.body != null)
         throw new Error('Unsupported Discord Gateway REST operation');
-      const response = await transport(url, {
-        method: 'GET',
-        headers: requestHeaders(init.headers),
-        redirect: 'error',
-        signal: AbortSignal.any([
-          options.signal,
-          AbortSignal.timeout(options.policy.handshakeTimeoutMs),
-          ...(init.signal ? [init.signal] : []),
-        ]),
-      });
-      const bytes = await boundedBody(response, options.maxResponseBytes);
-      const bounded = new Response(Uint8Array.from(bytes), {
-        status: response.status,
-        headers: response.headers,
-      });
-      return {
-        body: null,
-        headers: bounded.headers,
-        ok: bounded.ok,
-        status: bounded.status,
-        statusText: bounded.statusText,
-        get bodyUsed() {
-          return bounded.bodyUsed;
-        },
-        arrayBuffer: () => bounded.arrayBuffer(),
-        json: () => bounded.json(),
-        text: () => bounded.text(),
-      };
+      const signal = AbortSignal.any([
+        options.signal,
+        AbortSignal.timeout(options.policy.handshakeTimeoutMs),
+        ...(init.signal ? [init.signal] : []),
+      ]);
+      const permit = await rates.acquire(
+        { route: 'GET /gateway/bot', major: 'application' },
+        signal,
+      );
+      try {
+        options.assertOwned();
+        const response = await transport(url, {
+          method: 'GET',
+          headers: requestHeaders(init.headers),
+          redirect: 'error',
+          signal,
+        });
+        permit.observe(response);
+        const bytes = await boundedBody(response, options.maxResponseBytes);
+        if (response.status === 429) {
+          try {
+            permit.observe(response, JSON.parse(bytes.toString()));
+          } catch {
+            /* Header limits remain authoritative for a malformed response. */
+          }
+        }
+        const bounded = new Response(Uint8Array.from(bytes), {
+          status: response.status,
+          headers: response.headers,
+        });
+        return {
+          body: null,
+          headers: bounded.headers,
+          ok: bounded.ok,
+          status: bounded.status,
+          statusText: bounded.statusText,
+          get bodyUsed() {
+            return bounded.bodyUsed;
+          },
+          arrayBuffer: () => bounded.arrayBuffer(),
+          json: () => bounded.json(),
+          text: () => bounded.text(),
+        };
+      } finally {
+        permit.release();
+      }
     },
   }).setToken(options.token);
   const manager = new WebSocketManager({

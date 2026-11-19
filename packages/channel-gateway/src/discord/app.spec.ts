@@ -1,4 +1,6 @@
 import { discordChannelConfigSchema } from 'librechat-data-provider';
+import { ApplicationFlags, GatewayDispatchEvents } from 'discord-api-types/v10';
+import type { DiscordGatewayDriverOptions } from './socket';
 import { DiscordGatewayApp } from './app';
 import { loadBootstrap } from '../config';
 
@@ -114,4 +116,138 @@ it('does not claim work or send provider requests when another process owns the 
   await new DiscordGatewayApp(config, policy, log, transport).run(controller.signal);
   expect(calls.some((path) => path.includes('/inbox/') || path.includes('/webhooks/'))).toBe(false);
   expect(calls.filter((path) => path.endsWith('/gateway/acquire')).length).toBeGreaterThan(0);
+});
+
+it('runs enabled Gateway messages through the same application owner and protected admission client', async () => {
+  const enabledPolicy = { ...policy, gateway: { ...policy.gateway, enabled: true } };
+  let admitted!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    admitted = resolve;
+  });
+  let claimedOwner: object | undefined;
+  let released = false;
+  const bot = {
+    id: '456',
+    bot: true,
+    username: 'bot',
+    discriminator: '0',
+    global_name: null,
+    avatar: null,
+  };
+  const transport: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+    if (url.hostname === 'discord.com') {
+      if (url.pathname.endsWith('/permissions/member/456'))
+        return Response.json({ permissions: '68608' });
+      expect(url.pathname).toBe('/api/v10/channels/800');
+      return Response.json({ id: '800', guild_id: '900', type: 0 });
+    }
+    const path = url.pathname;
+    if (path.endsWith('/runtime/applications'))
+      return Response.json({
+        applications: [{ applicationId, applicationRevision, tenantId: '_' }],
+      });
+    if (path.endsWith('/runtime/channels')) return Response.json({ channels: [] });
+    if (path.endsWith('/gateway/acquire')) {
+      expect(claimedOwner).toBeUndefined();
+      claimedOwner = body.owner;
+      return new Response(null, { status: 204 });
+    }
+    if (path.includes('/gateway/')) {
+      expect(body.owner).toEqual(claimedOwner);
+      if (path.endsWith('/bootstrap'))
+        return Response.json({
+          applicationId,
+          applicationRevision,
+          botUserId: bot.id,
+          botToken: 'private-token',
+          policy: enabledPolicy.gateway,
+        });
+      if (path.endsWith('/load'))
+        return Response.json({
+          applicationId,
+          applicationRevision,
+          botUserId: bot.id,
+          checkpoints: [],
+        });
+      if (path.endsWith('/release')) released = true;
+      return new Response(null, { status: 204 });
+    }
+    if (path.endsWith('/inbox/claim')) return new Response(null, { status: 204 });
+    expect(path).toBe('/api/channels/discord/service/messages');
+    expect(body.owner).toEqual(claimedOwner);
+    expect(body.event).toMatchObject({
+      applicationId,
+      applicationRevision,
+      messageId: '700',
+      content: '<@456> hello',
+    });
+    expect(body.source).toMatchObject({ kind: 'guild_text', guildId: '900', channelId: '800' });
+    admitted();
+    return Response.json({ outcome: 'admitted' });
+  };
+  const destroy = jest.fn(async () => {});
+  const createDriver = (options: DiscordGatewayDriverOptions) => ({
+    destroy,
+    async connect() {
+      await options.updateSessionInfo(0, {
+        sessionId: 'session',
+        sequence: 1,
+        shardId: 0,
+        shardCount: 1,
+        resumeURL: 'wss://gateway.discord.gg',
+      });
+      options.ready({
+        shardId: 0,
+        data: {
+          v: 10,
+          user: bot,
+          application: {
+            id: applicationId,
+            flags: ApplicationFlags.GatewayMessageContentLimited,
+            flags_new: '0',
+          },
+          session_id: 'session',
+          resume_gateway_url: 'wss://gateway.discord.gg',
+          guilds: [],
+        },
+      });
+      options.dispatch({
+        shardId: 0,
+        data: {
+          op: 0,
+          s: 2,
+          t: GatewayDispatchEvents.MessageCreate,
+          d: {
+            id: '700',
+            channel_id: '800',
+            guild_id: '900',
+            author: { ...bot, id: '600', bot: false },
+            content: '<@456> hello',
+            timestamp: '2026-11-15T00:00:00Z',
+            edited_timestamp: null,
+            tts: false,
+            mention_everyone: false,
+            mentions: [bot],
+            mention_roles: [],
+            attachments: [],
+            embeds: [],
+            pinned: false,
+            type: 0,
+          },
+        },
+      });
+    },
+  });
+  const app = new DiscordGatewayApp(config, enabledPolicy, log, transport, createDriver);
+  const running = app.run(controller.signal);
+  try {
+    await finished;
+  } finally {
+    controller.abort();
+    await running;
+  }
+  expect(released).toBe(true);
+  expect(destroy).toHaveBeenCalledTimes(1);
 });

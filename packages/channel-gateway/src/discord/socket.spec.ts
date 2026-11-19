@@ -2,6 +2,7 @@ import * as timers from 'node:timers/promises';
 import { discordChannelConfigSchema } from 'librechat-data-provider';
 import type { DiscordGatewayDriverOptions } from './socket';
 import { createDiscordGatewayDriver, createOwnedIdentifyThrottler } from './socket';
+import { DiscordRateCoordinator } from './rates';
 
 function options(): DiscordGatewayDriverOptions {
   return {
@@ -35,6 +36,31 @@ describe('published Discord SDK binding', () => {
     expect(init?.redirect).toBe('error');
     expect(new Headers(init?.headers).get('authorization')).toBe('Bot private-token');
     expect(config.assertOwned).toHaveBeenCalled();
+    await driver.destroy();
+  });
+  test('shares global bot limits with channel delivery and aborts queued discovery', async () => {
+    const config = options();
+    const controller = new AbortController();
+    config.signal = controller.signal;
+    const rates = new DiscordRateCoordinator();
+    const permit = await rates.acquire({
+      route: 'POST /channels/:id/messages',
+      major: 'channels:123',
+    });
+    permit.observe(
+      new Response(null, {
+        status: 429,
+        headers: { 'retry-after': '10', 'x-ratelimit-global': 'true' },
+      }),
+    );
+    permit.release();
+    const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>();
+    const driver = createDiscordGatewayDriver(config, transport, rates);
+    const connecting = driver.connect().catch((error: unknown) => error);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(transport).not.toHaveBeenCalled();
+    controller.abort();
+    await expect(connecting).resolves.toMatchObject({ code: 'aborted' });
     await driver.destroy();
   });
   test('rejects oversized gateway metadata before opening a WebSocket', async () => {

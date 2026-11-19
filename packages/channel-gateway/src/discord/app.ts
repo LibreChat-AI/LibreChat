@@ -1,17 +1,20 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { DiscordGatewayOwner } from './gateway';
+import type { DiscordGatewayOwner, DiscordGatewayDependencies } from './gateway';
 import type { SharedGatewayConfig } from '../config';
 import type { Logger } from '../types';
 import { DiscordReplyClient, deliverDiscordReply } from './reply';
 import { DiscordGatewayControlClient } from './ownership';
 import { createDiscordWorkerProvider } from './worker';
 import { withDiscordApplicationLease } from './lease';
+import { createDiscordGatewayDriver } from './socket';
 import { DiscordRuntimeClient } from './discovery';
+import { dispatchDiscordEvent } from './dispatch';
 import { DiscordRateCoordinator } from './rates';
 import { DiscordControlClient } from './control';
 import { runDiscordApplications } from './pool';
+import { runDiscordSession } from './session';
 import { createDiscordWebhook } from './http';
 import { ChannelWorker } from '../worker';
 import { ChannelClient } from '../client';
@@ -45,6 +48,7 @@ export class DiscordGatewayApp {
     private readonly policy: DiscordChannelConfig,
     private readonly log: Logger,
     private readonly transport: typeof fetch = fetch,
+    private readonly createDriver?: DiscordGatewayDependencies['createDriver'],
   ) {
     this.control = new DiscordControlClient(config, transport);
     this.runtime = new DiscordRuntimeClient(config, transport);
@@ -86,7 +90,33 @@ export class DiscordGatewayApp {
         };
         this.active.set(owner.applicationId, context);
         try {
-          await untilAbort(ownedSignal);
+          if (this.policy.gateway.enabled) {
+            await runDiscordSession(
+              {
+                owner,
+                policy: this.policy,
+                ownership: this.ownership,
+                createDriver:
+                  this.createDriver ??
+                  ((options) => createDiscordGatewayDriver(options, this.transport, context.rates)),
+                log: this.log,
+                dispatch: (application, event, dispatchSignal) =>
+                  dispatchDiscordEvent(
+                    {
+                      owner,
+                      application,
+                      policy: this.policy,
+                      rates: context.rates,
+                      runtime: this.runtime,
+                      transport: this.transport,
+                    },
+                    event,
+                    dispatchSignal,
+                  ),
+              },
+              ownedSignal,
+            );
+          } else await untilAbort(ownedSignal);
         } finally {
           this.active.delete(owner.applicationId);
           await Promise.allSettled([...context.tasks]);
