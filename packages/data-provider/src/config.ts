@@ -1327,6 +1327,7 @@ export const discordChannelConfigSchema = z
     gateway: sharedSlackGatewayPolicySchema
       .extend({
         enabled: z.boolean().default(false),
+        maxApplications: z.number().int().min(1).max(1000).default(32),
         shardCount: z.number().int().min(1).max(128).default(1),
         messageContent: z.boolean().default(false),
         ownershipLeaseMs: z.number().int().min(5000).max(120_000).default(30_000),

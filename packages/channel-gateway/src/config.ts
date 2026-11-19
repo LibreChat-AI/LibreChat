@@ -45,7 +45,8 @@ export type SharedGatewayConfig = Omit<
 >;
 export type GatewayBootstrap =
   | { mode: 'single'; config: GatewayConfig }
-  | { mode: 'shared'; config: SharedGatewayConfig };
+  | { mode: 'shared'; config: SharedGatewayConfig }
+  | { mode: 'discord'; config: SharedGatewayConfig };
 
 function validateServiceURLs(
   config: Pick<GatewayConfig, 'LIBRECHAT_INTERNAL_URL' | 'SLACK_API_BASE_URL'>,
@@ -89,6 +90,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
 
 /** A bound gateway supplies both IDs; otherwise the server must authorize shared app bootstrap. */
 export function loadBootstrap(env: NodeJS.ProcessEnv): GatewayBootstrap {
+  const provider = z.enum(['slack', 'discord']).safeParse(env.CHANNEL_PROVIDER ?? 'slack');
+  if (!provider.success) throw new Error('Invalid gateway configuration: CHANNEL_PROVIDER');
+  if (provider.data === 'discord' && env.CHANNEL_ID?.trim())
+    throw new Error('Discord gateways discover organization applications; omit CHANNEL_ID');
   if (env.CHANNEL_ID?.trim()) return { mode: 'single', config: loadConfig(env) };
   if (env.CHANNEL_TENANT_ID?.trim() && env.CHANNEL_TENANT_ID !== '_')
     throw new Error('CHANNEL_ID is required for a tenant-bound gateway');
@@ -103,7 +108,7 @@ export function loadBootstrap(env: NodeJS.ProcessEnv): GatewayBootstrap {
       ].join(', ')}`,
     );
   validateServiceURLs(parsed.data);
-  return { mode: 'shared', config: parsed.data };
+  return { mode: provider.data === 'discord' ? 'discord' : 'shared', config: parsed.data };
 }
 
 /** Bootstrap settings cannot override the server's current installation/ingress policy. */

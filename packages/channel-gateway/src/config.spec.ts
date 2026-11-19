@@ -1,5 +1,5 @@
 import { DEFAULT_CHANNEL_GATEWAY_POLICY, channelConfigSchema } from 'librechat-data-provider';
-import { loadConfig, resolveGatewayConfig } from './config';
+import { loadConfig, loadBootstrap, resolveGatewayConfig } from './config';
 
 const required = {
   CHANNEL_SERVICE_TOKEN: 'private-service-token',
@@ -158,3 +158,27 @@ describe('gateway configuration', () => {
     },
   );
 });
+
+it('selects Discord shared application discovery independently of both existing Slack modes', () => {
+  const shared = { CHANNEL_SERVICE_TOKEN: required.CHANNEL_SERVICE_TOKEN };
+  expect(loadBootstrap(shared).mode).toBe('shared');
+  expect(loadBootstrap(required).mode).toBe('single');
+  const discord = loadBootstrap({ ...shared, CHANNEL_PROVIDER: 'discord' });
+  expect(discord.mode).toBe('discord');
+  expect(discord.config).not.toHaveProperty('CHANNEL_ID');
+  expect(discord.config).not.toHaveProperty('CHANNEL_TENANT_ID');
+  expect(() => loadBootstrap({ ...required, CHANNEL_PROVIDER: 'discord' })).toThrow(
+    'omit CHANNEL_ID',
+  );
+  expect(() =>
+    loadBootstrap({ ...shared, CHANNEL_PROVIDER: 'discord', CHANNEL_TENANT_ID: 'tenant' }),
+  ).toThrow('CHANNEL_ID');
+});
+it.each(['', 'private-provider-value'])(
+  'rejects unsupported provider selection without disclosure',
+  (CHANNEL_PROVIDER) => {
+    expect(() =>
+      loadBootstrap({ CHANNEL_SERVICE_TOKEN: required.CHANNEL_SERVICE_TOKEN, CHANNEL_PROVIDER }),
+    ).toThrow('Invalid gateway configuration: CHANNEL_PROVIDER');
+  },
+);
