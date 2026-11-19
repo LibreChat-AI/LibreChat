@@ -3795,6 +3795,33 @@ describe('subagentConfigs', () => {
     expect(configs[0]).toMatchObject({ self: true, type: 'self' });
   });
 
+  it('lets self-spawn reuse the parent agent subagents', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      name: 'Researcher',
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+
+    const configs = agents[0].subagentConfigs as Array<{
+      self?: boolean;
+      allowNested?: boolean;
+      agentInputs?: { subagentConfigs?: Array<{ type?: string }> };
+    }>;
+    const selfConfig = configs.find((config) => config.self);
+
+    expect(selfConfig?.allowNested).toBe(true);
+    expect(selfConfig?.agentInputs?.subagentConfigs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'agent_child' })]),
+    );
+  });
+
   it('omits self-spawn when allowSelf is false', async () => {
     const agents = await callAndCapture({
       agents: [makeAgent({ subagents: { enabled: true, allowSelf: false } })],
