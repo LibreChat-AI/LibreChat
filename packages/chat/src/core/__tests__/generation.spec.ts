@@ -376,8 +376,12 @@ describe('sending a turn', () => {
   });
 
   it('reports a generation whose stream will not open as one that dropped, by name', async () => {
-    /** Over already, replaced by a newer one, or a wire that closed: none says how it ended. */
-    for (const failure of [404, 409, 'closed'] as const) {
+    /**
+     * Over already, replaced by a newer one, answered by a gateway instead of the server,
+     * refused by something in between, unreachable, or a wire that closed: none says how the
+     * turn ended, and none takes back the server's answer that it started.
+     */
+    for (const failure of [404, 409, 502, 429, 0, 'closed'] as const) {
       const wire = createWire(failure === 'closed');
       const { transport, attachments } = sender(
         jest.fn(async () => ({ ...started, generationProtocolVersion: 2 })),
@@ -526,7 +530,7 @@ describe('a Chat following a generation through the transport', () => {
       onFinish: ({ isDisconnect, isSettled, isError }) =>
         finished.push({ isDisconnect, isSettled, isError }),
     });
-    return { chat, abort, finished, attachments: wire.attachments };
+    return { chat, state, abort, finished, attachments: wire.attachments };
   };
 
   it('finds what became of a turn that was over before its stream opened', async () => {
@@ -545,6 +549,32 @@ describe('a Chat following a generation through the transport', () => {
     expect(finished[1]).toEqual({ isDisconnect: false, isSettled: true, isError: false });
     expect(chat.status).toBe('ready');
     expect(attachments).toHaveLength(1);
+    chat.dispose();
+  });
+
+  it('follows a turn the server started whose stream a gateway answered instead', async () => {
+    const { chat, state, finished, attachments } = drive({ ...running, createdAt: 3000 });
+
+    const sending = chat.sendMessage({ parts: [{ type: 'text', text: 'Go' }] });
+    await flush();
+    attachments[0].emit({ type: 'error', status: 502, data: 'Bad Gateway' });
+    await sending;
+
+    /** The turn is running: what ended is its stream, which dropped. */
+    expect(finished).toEqual([{ isDisconnect: true, isSettled: false, isError: true }]);
+
+    /** Attached to again, it is read to its end like any other. */
+    const resuming = chat.resumeStream();
+    await flush();
+    expect(attachments).toHaveLength(2);
+    expect(attachments[1].request.url).toContain('generationCreatedAt=3000');
+    attachments[1].emit({ type: 'open' });
+    attachments[1].emit(final);
+    await resuming;
+
+    expect(finished[1]).toEqual({ isDisconnect: false, isSettled: false, isError: false });
+    expect(chat.status).toBe('ready');
+    expect(state.messages.map((message) => message.text)).toContain('Done');
     chat.dispose();
   });
 

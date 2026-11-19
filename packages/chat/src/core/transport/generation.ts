@@ -227,9 +227,11 @@ async function requestStart(
 
 /**
  * A generation the server started whose stream did not open: it was over already, a newer one
- * took its place, the wire closed, or the caller cancelled. None of those says how the turn
- * ended, so it is reported as what it is, a stream that dropped before its first frame. It
- * names its generation, which is what a caller needs to stop it or to ask what became of it.
+ * took its place, the wire closed, the caller cancelled, or the request for it failed (a
+ * gateway that answered in the server's place, a connection that dropped). None of those says
+ * how the turn ended, so it is reported as what it is, a stream that dropped before its first
+ * frame. It names its generation, which is what a caller needs to stop it or to ask what
+ * became of it.
  */
 const unopened = (target: {
   streamId: string;
@@ -310,7 +312,12 @@ async function startTurn(
     /** A start the server folded into a generation already running is replayed from its start. */
     resume: isResumedStartResponse(data),
   };
-  const stream = await openStream(wire(), { ...target, signal: abortSignal });
+  /**
+   * The server has taken the turn, so nothing its stream does on opening is a refusal of it:
+   * reported as one, a running turn would be shown as failed, and put back in a queue it was
+   * sent from to be sent twice.
+   */
+  const stream = await openStream(wire(), { ...target, signal: abortSignal }).catch(() => null);
   return { status: 'stream', stream: stream ?? unopened(target) };
 }
 
