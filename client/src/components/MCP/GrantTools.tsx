@@ -254,6 +254,8 @@ export default function GrantTools({
     setOther,
     allowEverything,
   } = state;
+  /** What the stored grant asks about, which a whole-agent confirmation keeps. */
+  const kept = [...new Set(Object.values(data.asking).flat())].sort();
   const toolLabel = (tool: string) => {
     const key = toolKeys.get(tool);
     return key ? localize(key) : tool;
@@ -282,6 +284,13 @@ export default function GrantTools({
             <p id={`${wholeId}-note`} className="text-text-secondary text-xs">
               {localize('com_ui_schedule_consent_everything_note')}
             </p>
+            {everything && kept.length > 0 && (
+              <p className="text-text-secondary text-xs">
+                {localize('com_ui_schedule_consent_everything_asking', {
+                  tools: kept.join(', '),
+                })}
+              </p>
+            )}
           </div>
         </div>
       )}

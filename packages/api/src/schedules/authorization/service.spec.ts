@@ -949,6 +949,49 @@ describe('a grant of the whole agent', () => {
     );
   });
 
+  it('keeps a question about a tool through a renewal after the agents select its server as a whole', async () => {
+    const s = setup();
+    // The owner approves each use of `query`.
+    await s.enroll({ warehouse: ['query'] }, { warehouse: ['query'] });
+    // The agents now select the whole server: no tool is named there any more.
+    s.changeTarget({
+      ...target,
+      permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }],
+      policyRevision: 'p3',
+    });
+    // Renewed for the whole agent, as the dialog does: nothing said about asking.
+    expect(await whole(s)).toMatchObject({
+      state: 'active',
+      everything: true,
+      asking: { warehouse: ['query'] },
+    });
+    expect(s.snapshot.enrollment!.consents[0].askTools).toEqual(['query']);
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+      approvalRequired: true,
+    });
+    expect(await s.service.authority.authorize(call('export'), {})).not.toHaveProperty(
+      'approvalRequired',
+    );
+    // Only an explicit choice makes it run unattended, and a question may be added there too.
+    await whole(s, {});
+    expect(s.snapshot.enrollment!.consents[0]).not.toHaveProperty('askTools');
+    await whole(s, { warehouse: ['export'] });
+    expect(s.snapshot.enrollment!.consents[0].askTools).toEqual(['export']);
+    // A question about a server the grant does not hold is not one it can keep.
+    const view = await s.service.view(identity);
+    await expect(
+      s.service.confirm(identity, {
+        offerDigest: view.offer!.digest,
+        expectedRevision: view.revision,
+        lifetimeHours: 1,
+        allow: {},
+        everything: true,
+        ask: { elsewhere: ['query'] },
+      }),
+    ).rejects.toMatchObject({ code: 'consent_invalid' });
+  });
+
   it('is not offered, and is refused, where a grant limits MCP tools only', async () => {
     const s = setup();
     const service = createScheduleMCPConsentService({

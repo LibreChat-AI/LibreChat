@@ -592,6 +592,30 @@ describe('the tools a run loads under a grant', () => {
     expect(await decide('skill')).toMatchObject({ decision: 'deny' });
   });
 
+  it('pauses a whole-agent run for a tool the owner approves each time, whoever calls it and however it is selected', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      everything: true,
+      ask: ['query'],
+    });
+    const key = 'query_mcp_warehouse';
+    expect(fixture.execution.mayAsk).toBe(true);
+    expect(fixture.execution.asksAbout('root', key)).toBe(true);
+    // An agent added since the grant was made is asked about it too.
+    expect(fixture.execution.asksAbout('later', key)).toBe(true);
+    expect(fixture.execution.asksAboutAny([key])).toBe(true);
+    expect(fixture.execution.asksAbout('root', 'export_mcp_warehouse')).toBe(false);
+    // The agents come to select the whole server: the consent names no tool, the question stays.
+    for (const consent of fixture.snapshot.enrollment!.consents)
+      consent.permittedTools = [{ agentId: 'root', tools: ['sys__all__sys'] }];
+    const next = (await fixture.factory.resolve(fixture.identity, 'invoke'))!;
+    expect(next.mayAsk).toBe(true);
+    expect(next.asksAbout('root', key)).toBe(true);
+    // Under a grant that lists its tools a question belongs to the agents it lists.
+    const listed = await executionFixture('invoke', readTool, undefined, { ask: ['query'] });
+    expect(listed.execution.asksAbout('root', key)).toBe(true);
+    expect(listed.execution.asksAbout('later', key)).toBe(false);
+  });
+
   it('lets a whole-agent run call a server its grant holds no consent for, while the grant stands', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, { everything: true });
     const notes = { type: 'stdio' as const, command: 'notes', args: [] };

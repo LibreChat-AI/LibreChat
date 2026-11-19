@@ -258,14 +258,26 @@ export function createScheduleMCPExecution<
     const approved = new Set(options.approvedToolCalls ?? []);
     /** Every spelling a run may call an ask tool by, per agent. A miss is refused, not run. */
     const asking = new Map<string, Set<string>>();
+    /**
+     * Under a grant of the whole agent a question holds for any agent, and for a tool the
+     * consent does not name: one an agent has through a selection of the whole server, or an
+     * agent added since. Nothing there is listed per agent, so these are asked whoever calls.
+     */
+    const askingAny = new Set<string>();
     for (const consent of snapshot.enrollment?.consents ?? []) {
       const { serverName } = consent.resource;
+      const spellings = (tool: string): string[] => [
+        `${tool}${Constants.mcp_delimiter}${serverName}`,
+        `${tool}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`,
+      ];
+      if (whole)
+        for (const tool of consent.askTools ?? [])
+          spellings(tool).forEach((key) => askingAny.add(key));
       for (const { agentId, tools } of consent.permittedTools) {
         const keys = asking.get(agentId) ?? new Set<string>();
         for (const tool of tools) {
           if (!consent.askTools?.includes(tool)) continue;
-          keys.add(`${tool}${Constants.mcp_delimiter}${serverName}`);
-          keys.add(`${tool}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`);
+          for (const key of spellings(tool)) keys.add(key);
         }
         if (keys.size > 0) asking.set(agentId, keys);
       }
@@ -326,10 +338,13 @@ export function createScheduleMCPExecution<
       narrow: (agentId: string, toolKeys: readonly string[]) =>
         enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
       grantsTool: allows,
-      mayAsk: asking.size > 0,
-      asksAbout: (agentId: string, toolKey: string) => asking.get(agentId)?.has(toolKey) === true,
+      mayAsk: asking.size > 0 || askingAny.size > 0,
+      asksAbout: (agentId: string, toolKey: string) =>
+        asking.get(agentId)?.has(toolKey) === true || askingAny.has(toolKey),
       asksAboutAny: (toolKeys: readonly string[]) =>
-        toolKeys.some((key) => [...asking.values()].some((keys) => keys.has(key))),
+        toolKeys.some(
+          (key) => askingAny.has(key) || [...asking.values()].some((keys) => keys.has(key)),
+        ),
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation<Identity> {
         return Object.freeze({
           identity: capturedIdentity,

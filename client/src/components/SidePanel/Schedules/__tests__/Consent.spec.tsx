@@ -359,6 +359,27 @@ describe('a grant that can be made for the whole agent', () => {
     );
   });
 
+  it('says which tools it still asks about, and renews without touching them', async () => {
+    const asked = {
+      ...standing,
+      state: 'active' as const,
+      revision: 'grant',
+      everything: true,
+      asking: { warehouse: ['query'] },
+    };
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(asked);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(asked);
+    display();
+    expect(await whole()).toBeChecked();
+    expect(screen.getByText('com_ui_schedule_consent_everything_asking')).toBeVisible();
+    await userEvent.click(confirm());
+    await waitFor(() => expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalled());
+    // Left out, the server keeps what the stored grant asks about.
+    expect(jest.mocked(dataService.confirmScheduleMCPConsent).mock.calls[0][1]).not.toHaveProperty(
+      'ask',
+    );
+  });
+
   it('starts a stored grant from what it is', async () => {
     const listed = {
       ...standing,

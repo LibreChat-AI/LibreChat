@@ -181,19 +181,26 @@ function selectAllowed(
  * server that made it into the grant. A confirmation that says nothing about asking keeps
  * what the stored grant asks about, for the tools still allowed: only an explicit choice
  * turns a tool the owner approves each time into one that runs unattended.
+ *
+ * A grant of the whole agent (`whole`) allows every tool on its servers, named there or not,
+ * so a question about any tool on one of them holds: the agents may have come to select the
+ * server as a whole, which names none.
  */
 function selectAsking(
   chosen: readonly ScheduledMCPTarget[],
   ask: ConfirmScheduleMCPConsent['ask'],
   stored: Record<string, string[]>,
+  whole = false,
 ): Record<string, string[]> {
   const allowed = allowedTools(chosen);
+  const covers = (serverName: string, tool: string): boolean =>
+    whole ? allowed[serverName] != null : allowed[serverName]?.includes(tool) === true;
   if (ask == null)
     return Object.fromEntries(
       Object.entries(stored)
         .map(([serverName, tools]): [string, string[]] => [
           serverName,
-          tools.filter((tool) => allowed[serverName]?.includes(tool)),
+          tools.filter((tool) => covers(serverName, tool)),
         ])
         .filter(([, tools]) => tools.length > 0),
     );
@@ -201,7 +208,7 @@ function selectAsking(
     Object.entries(ask)
       .filter(([, tools]) => tools.length > 0)
       .map(([serverName, tools]) => {
-        if (tools.some((tool) => !allowed[serverName]?.includes(tool)))
+        if (tools.some((tool) => !covers(serverName, tool)))
           throw new ScheduleMCPConsentError('consent_invalid');
         return [serverName, [...new Set(tools)].sort()];
       }),
@@ -691,7 +698,7 @@ export function createScheduleMCPConsentService<
       ? (offered?.servers ?? [])
       : selectAllowed(current.targets, input.allow);
     const others = everything ? [] : selectTools(offered?.others ?? [], input.tools ?? []);
-    const asking = selectAsking(chosen, input.ask ?? {}, {});
+    const asking = selectAsking(chosen, input.ask ?? {}, {}, everything);
     // Something must be allowed, and a tool nobody can approve would only ever be refused.
     if (
       (!everything && chosen.length === 0 && others.length === 0) ||
@@ -744,7 +751,7 @@ export function createScheduleMCPConsentService<
     if (!everything && chosen.length === 0 && others.length === 0)
       throw new ScheduleMCPConsentError('consent_invalid');
     const stored = askingTools(snapshot.enrollment?.consents ?? []);
-    const asking = selectAsking(chosen, input.ask, stored);
+    const asking = selectAsking(chosen, input.ask, stored, everything);
     // A tool nobody can approve would only ever be refused. Say so now, not at 3 a.m. One the
     // grant already asks about may stay: it is refused until pausing works again, and making
     // it run unattended instead is for the owner to choose.

@@ -71,6 +71,9 @@ grant was made. Nothing is listed and nothing is left out for not being listed.
 - A selection of every tool on a declared server names no tool, so nothing is offered to tick
   for it. The resolver reports it under its marker (`sys__all__sys`), which keeps the server
   matched to its consent when the agents switch to such a selection.
+- A tool the owner approves call by call stays one through a renewal for the whole agent,
+  whether or not the agents still name it: only an explicit `ask` changes that. A run pauses
+  for it whichever agent calls it.
 - It ends like any grant: at its deadline, when the owner revokes it, when the owner edits the
   schedule, or when a server it holds a consent for is declared for another recipient.
 - Anyone who can edit the agent changes what the schedule runs with. That is what the owner

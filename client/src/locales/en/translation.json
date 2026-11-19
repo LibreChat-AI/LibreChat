@@ -3941,6 +3941,7 @@
   "com_ui_schedule_consent_everything": "Run the whole agent",
   "com_ui_schedule_consent_everything_note": "Everything this agent can use, including tools, skills and servers added to it later. Untick to choose tool by tool.",
   "com_ui_schedule_consent_everything_allowed": "Allowed: the whole agent, including what is added to it later.",
+  "com_ui_schedule_consent_everything_asking": "You are still asked before each use of: {{tools}}",
   "com_ui_schedule_authorize_title": "What this schedule may use",
   "com_ui_schedule_authorize_changed": "What this schedule may use has changed. Review your choices and create it again.",
   "com_ui_schedule_authorize_unavailable": "What this schedule may use could not be loaded. You can create it and authorize it afterwards; until then none of its tools will run.",
