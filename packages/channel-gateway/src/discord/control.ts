@@ -5,6 +5,7 @@ import {
   discordInboxResolutionSchema,
   discordInboxDeliverySchema,
   discordInboxSubmissionSchema,
+  discordDmInboxSubmissionSchema,
   discordInboxFenceSchema,
   discordDmConsumeSchema,
   discordDmAcknowledgementSchema,
@@ -12,6 +13,7 @@ import {
 import type {
   DiscordApplicationSecurity,
   DiscordInboxSubmission,
+  DiscordDmInboxSubmission,
   DiscordInboxClaim,
   DiscordInboxResolution,
   DiscordInboxDelivery,
@@ -76,6 +78,21 @@ export class DiscordControlClient extends ServiceClient {
     const result = admissionSchema.parse(await this.decode(response));
     if (![200, 201].includes(response.status) || result.value.eventId !== parsed.eventId)
       throw new Error('Discord admission was not confirmed');
+    return 'accepted';
+  }
+  async submitDm(
+    input: DiscordDmInboxSubmission,
+    signal?: AbortSignal,
+  ): Promise<'accepted' | 'conflict' | 'capacity'> {
+    const parsed = discordDmInboxSubmissionSchema.parse(input);
+    const response = await this.raw(`${this.root}/inbox/dm`, parsed, signal);
+    if ([409, 429].includes(response.status)) {
+      await boundedBody(response, 65536);
+      return response.status === 429 ? 'capacity' : 'conflict';
+    }
+    const result = admissionSchema.parse(await this.decode(response));
+    if (![200, 201].includes(response.status) || result.value.eventId !== parsed.eventId)
+      throw new Error('Discord DM admission was not confirmed');
     return 'accepted';
   }
   async select(

@@ -1,5 +1,9 @@
 import { discordInboxFenceSchema } from 'librechat-data-provider';
-import type { DiscordInboxFence } from 'librechat-data-provider';
+import type {
+  DiscordInboxFence,
+  DiscordDmInboxReference,
+  ChannelRunAdmission,
+} from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 
@@ -14,6 +18,8 @@ export async function touchDiscordInbox(
     externalUserId: string;
     applicationRevision: string;
     externalChannelId?: string;
+    dm?: DiscordDmInboxReference;
+    admission?: ChannelRunAdmission;
   },
   fence: DiscordInboxFence,
   now: number,
@@ -22,6 +28,11 @@ export async function touchDiscordInbox(
   assertChannelTenant(scope.tenantId);
   discordInboxFenceSchema.parse(fence);
   if (!Number.isSafeInteger(now) || now < 0) throw new TypeError('Invalid Discord inbox clock');
+  const actor = scope.admission?.actor;
+  const dm = actor?.provider === 'discord' && actor.scope === 'dm' ? actor : scope.dm;
+  const destination = scope.admission?.discordDestination;
+  if (actor?.provider === 'discord' && actor.scope === 'dm' && destination?.kind !== 'dm')
+    return false;
   const result = await createDiscordInboxModel(mongoose).updateOne(
     {
       tenantId: !scope.tenantId || scope.tenantId === '_' ? null : scope.tenantId,
@@ -30,6 +41,28 @@ export async function touchDiscordInbox(
       ...(scope.externalChannelId !== undefined
         ? { externalChannelId: scope.externalChannelId }
         : {}),
+      ...(dm
+        ? {
+            guildId: { $exists: false },
+            thread: { $exists: false },
+            'dm.selectionId': dm.selectionId,
+            'dm.selectionRevision': dm.selectionRevision,
+            ...(destination?.kind === 'dm'
+              ? { 'dm.parentChannelId': destination.parentChannelId }
+              : {}),
+            ...(scope.admission
+              ? {
+                  eventId: scope.admission.eventId,
+                  $expr: {
+                    $eq: [
+                      { $concat: ['$externalChannelId', ':', '$dm.confirmationEventId'] },
+                      scope.admission.externalThreadKey,
+                    ],
+                  },
+                }
+              : {}),
+          }
+        : { dm: { $exists: false } }),
       applicationRevision: scope.applicationRevision,
       applicationId: fence.applicationId,
       eventId: fence.eventId,

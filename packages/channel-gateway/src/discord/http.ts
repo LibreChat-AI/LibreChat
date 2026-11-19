@@ -9,6 +9,7 @@ import {
 import type {
   DiscordApplicationSecurity,
   DiscordInboxSubmission,
+  DiscordDmInboxSubmission,
   DiscordIngressAction,
   DiscordChannelConfig,
   DiscordDmConsume,
@@ -19,7 +20,7 @@ import type { Logger } from '../types';
 import { parseDiscordInteraction, verifyDiscordSignature } from './events';
 import { WebhookHTTPServer } from '../http';
 
-/** Guild commands remain separate from the metadata-only BOT_DM selection path. */
+/** Command parsing is shared; BOT_DM authorization and metadata-only selection remain separate. */
 export function discordInteractionAction(event: DiscordInteraction): DiscordIngressAction | null {
   if (event.type !== 2 || event.data.name !== 'librechat') return null;
   const options = event.data.options ?? [];
@@ -56,6 +57,11 @@ export interface DiscordWebhookDependencies {
   ) => Promise<DiscordApplicationSecurity | null>;
   submit: (
     input: DiscordInboxSubmission,
+    signal: AbortSignal,
+  ) => Promise<'accepted' | 'conflict' | 'capacity'>;
+  /** Staged separately until DM controls and feedback composition are complete. */
+  submitDm?: (
+    input: DiscordDmInboxSubmission,
     signal: AbortSignal,
   ) => Promise<'accepted' | 'conflict' | 'capacity'>;
   select?: (
@@ -119,8 +125,6 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
           : { status: 200, body: { type: 1 } };
       if (event.context === 1) {
         if (
-          !deps.select ||
-          event.type !== 2 ||
           event.application_id !== applicationId ||
           event.guild_id ||
           event.guild ||
@@ -131,10 +135,38 @@ export function createDiscordWebhook(deps: DiscordWebhookDependencies): WebhookH
           (event.channel?.id !== undefined && event.channel.id !== event.channel_id) ||
           (event.channel?.type !== undefined && event.channel.type !== 1) ||
           event.authorizing_integration_owners?.['0'] !== '0' ||
-          event.authorizing_integration_owners?.['1'] !== undefined ||
-          event.data.name !== 'librechat'
+          event.authorizing_integration_owners?.['1'] !== undefined
         )
           return { status: 400, body: { error: 'invalid_context' } };
+        const action =
+          event.type === 3 && event.data.component_type === 2
+            ? parseDiscordControl(event.data.custom_id, event.message?.id)
+            : discordInteractionAction(event);
+        if (action && ['ask', 'status', 'cancel', 'feedback'].includes(action.kind)) {
+          if (!deps.submitDm) return { status: 400, body: { error: 'unsupported_interaction' } };
+          const result = await deps.submitDm(
+            {
+              scope: 'dm',
+              applicationId,
+              expectedApplicationRevision: app.applicationRevision,
+              externalUserId: event.user.id,
+              externalChannelId: event.channel_id,
+              eventId: event.id,
+              token: event.token,
+              action,
+            },
+            signal,
+          );
+          signal.throwIfAborted();
+          return result === 'accepted'
+            ? { status: 200, body: { type: 5, data: { flags: 64 } } }
+            : {
+                status: result === 'capacity' ? 429 : 409,
+                body: { error: 'interaction_not_accepted' },
+              };
+        }
+        if (!deps.select || event.type !== 2 || event.data.name !== 'librechat')
+          return { status: 400, body: { error: 'unsupported_interaction' } };
         const options = event.data.options ?? [];
         const command = options[0];
         const argument = command?.options?.[0];
