@@ -61,10 +61,14 @@ grant was made. Nothing is listed and nothing is left out for not being listed.
   (recipient, credentials, lifetime, revocation, the owner's permissions), without the check
   against a list of tools and with no definition pin.
 - A server with no consent in the grant (one the operator did not declare, a local `stdio`
-  server, a selection of every tool on a server, one the agents took up later) is called as
-  the owner's own use would call it. Before each such call the stored grant is read again and
-  must be the one the run started under, for the schedule as it is now, not revoked and not
-  expired.
+  server, one the agents took up later) is called as the owner's own use would call it. Before
+  each such call `authority.standing` makes the live checks a consented server gets, with no
+  server to match: schedules and consent are still on, the owner may still use schedules, MCP
+  servers and the agent, and the stored grant is the whole-agent one the run started under,
+  for the schedule as it is now, not revoked and not expired.
+- A selection of every tool on a declared server names no tool, so nothing is offered to tick
+  for it. The resolver reports it under its marker (`sys__all__sys`), which keeps the server
+  matched to its consent when the agents switch to such a selection.
 - It ends like any grant: at its deadline, when the owner revokes it, when the owner edits the
   schedule, or when a server it holds a consent for is declared for another recipient.
 - Anyone who can edit the agent changes what the schedule runs with. That is what the owner
@@ -79,7 +83,7 @@ operator declared under `mcpConsent.resources`. The owner ticks servers and tool
 stores only those. At run time a tool is allowed when the grant lists it for the calling agent
 and that agent still selects it. Anything else is refused with `tool_policy_denied`. A server
 that cannot be listed (not declared, declared for another URL, or selected as a whole) is left
-out of the offer, and the rest is still offered.
+out of what the owner is offered, and the rest is still offered.
 
 - A tool the agent selects later is not allowed until the owner confirms again. It does not
   invalidate the tools already allowed.
