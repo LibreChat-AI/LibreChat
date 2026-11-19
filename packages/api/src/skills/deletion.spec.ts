@@ -81,6 +81,7 @@ it('keeps the file row when provider deletion fails and succeeds on retry', asyn
   expect(h.deps.finalizeSkillDeletion).not.toHaveBeenCalled();
   await expect(runSkillDeletion(skillId.toString(), h.deps)).resolves.toMatchObject({
     cleanupComplete: true,
+    removed: true,
   });
   expect(h.files).toHaveLength(0);
   expect(h.deps.completeSkillDeletion).toHaveBeenCalledTimes(1);
@@ -117,6 +118,7 @@ it('preserves idempotent absence and per-call deletion semantics', async () => {
   await expect(runSkillDeletion(skillId.toString(), h.deps)).resolves.toMatchObject({
     found: true,
     deleted: false,
+    removed: false,
     skillAbsent: true,
     cleanupComplete: true,
   });
