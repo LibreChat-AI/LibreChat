@@ -11,6 +11,10 @@ import {
   discordDmFenceSchema,
   discordDmIssueSchema,
   discordDmCodeSchema,
+  channelRunAdmissionSchema,
+  channelSnowflakeSchema,
+  discordGuildTextActorUsable,
+  discordRunEffectAuthoritySchema,
 } from 'librechat-data-provider';
 import type {
   DiscordDmSelection,
@@ -23,6 +27,9 @@ import type {
   DiscordDmFence,
   DiscordDmIssue,
   DiscordChannelConfig,
+  ChannelRunAdmission,
+  ChannelRunPrincipal,
+  DiscordNativeAuthority,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { DiscordDmSelectionRecord } from '~/models/discordDm';
@@ -31,6 +38,7 @@ import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { touchChannelOwnerAdmission } from './channelOwner';
+import { touchDiscordGatewayOwner } from './discordGateway';
 import { createAgentChannelModel } from '~/models/channel';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchChannelAuthority } from './channelScope';
@@ -103,6 +111,7 @@ async function sourceAuthority(
   applicationRevision: string | undefined,
   now: number,
   session: ClientSession,
+  promptEventAtMs?: number,
 ): Promise<number | null> {
   if (!discordDmSourceSchema.safeParse(source).success) return null;
   const tenantId = tenant();
@@ -144,6 +153,7 @@ async function sourceAuthority(
           linkRevision: source.linkRevision,
         },
         now,
+        promptEventAtMs,
       },
       session,
     ))
@@ -206,6 +216,146 @@ export async function touchDiscordDmSelection(
     .lean();
   if (!record || !view(record)) return false;
   return touchLoadedSelection(mongoose, record, parsed.applicationRevision, now, session);
+}
+
+export interface DiscordDmDestinationScope {
+  tenantId?: string;
+  channelId: string;
+  agentId: string;
+  principal: ChannelRunPrincipal;
+  admission: ChannelRunAdmission;
+  applicationRevision: string;
+  now: number;
+  /** Supplied only for a new prompt, decoded from its original physical event ID. */
+  promptEventAtMs?: number;
+}
+
+/** Canonical metadata join for continuation and projections, never a fresh permission grant. */
+export async function touchDiscordDmDestination(
+  mongoose: typeof import('mongoose'),
+  scope: DiscordDmDestinationScope,
+  session: ClientSession,
+): Promise<boolean> {
+  const tenantId = scope.tenantId === '_' ? undefined : scope.tenantId || undefined;
+  if (tenantId !== tenant()) throw new TypeError('Discord DM destination tenant mismatch');
+  clock(scope.now);
+  const admission = channelRunAdmissionSchema.safeParse(scope.admission);
+  if (!admission.success) return false;
+  const { actor, discordDestination: destination } = admission.data;
+  if (
+    !('provider' in actor) ||
+    actor.provider !== 'discord' ||
+    !('scope' in actor) ||
+    actor.scope !== 'dm' ||
+    destination?.kind !== 'dm'
+  )
+    return false;
+  const fence = discordDmFenceSchema.safeParse({
+    applicationId: actor.applicationId,
+    applicationRevision: scope.applicationRevision,
+    externalUserId: actor.externalUserId,
+    dmChannelId: admission.data.externalChannelId,
+    selectionId: actor.selectionId,
+    revision: actor.selectionRevision,
+  });
+  if (!fence.success || !channelSnowflakeSchema.safeParse(admission.data.eventId).success)
+    return false;
+  const filter = {
+    ...slot(fence.data),
+    selectionId: fence.data.selectionId,
+    revision: fence.data.revision,
+    state: 'active',
+    expiresAtMs: { $gt: scope.now },
+  };
+  const selections = createDiscordDmSelectionModel(mongoose);
+  const record = await selections.findOne(filter).session(session).lean();
+  const selected = record && view(record);
+  if (!selected) return false;
+  const source = selected.source;
+  if (!scope.principal) return false;
+  if (
+    source.channelId !== scope.channelId ||
+    source.agentId !== scope.agentId ||
+    source.userId !== scope.principal.userId ||
+    source.channelRevision !== scope.principal.channelRevision ||
+    source.linkId !== scope.principal.linkId ||
+    source.linkRevision !== scope.principal.linkRevision ||
+    source.externalChannelId !== destination.parentChannelId ||
+    admission.data.externalThreadKey !==
+      `${selected.dmChannelId}:${selected.confirmationEventId}` ||
+    admission.data.externalMessageKey !== `${selected.dmChannelId}:${admission.data.eventId}`
+  )
+    return false;
+  if (scope.promptEventAtMs !== undefined) {
+    const event = BigInt(admission.data.eventId);
+    const eventAtMs = Number(event >> BigInt(22)) + 1420070400000;
+    if (scope.promptEventAtMs !== eventAtMs || event <= BigInt(selected.confirmationEventId))
+      return false;
+  }
+  if (
+    !(await sourceAuthority(
+      mongoose,
+      source,
+      scope.applicationRevision,
+      scope.now,
+      session,
+      scope.promptEventAtMs,
+    ))
+  )
+    return false;
+  const touched = await selections.updateOne(filter, { $inc: { authorityWrites: 1 } }, { session });
+  return touched.matchedCount === 1;
+}
+
+/** Provider effects also require a current owned Gateway and fresh real-source actor observation. */
+export async function authorizeDiscordDmDestination(
+  mongoose: typeof import('mongoose'),
+  scope: DiscordDmDestinationScope,
+  native: Extract<DiscordNativeAuthority, { kind: 'dm' }>,
+  session: ClientSession,
+): Promise<boolean> {
+  const parsed = discordRunEffectAuthoritySchema.safeParse({
+    applicationRevision: scope.applicationRevision,
+    native,
+  });
+  const admission = channelRunAdmissionSchema.safeParse(scope.admission);
+  if (!admission.success || !scope.principal) return false;
+  const actor = admission.data.actor;
+  const destination = admission.data.discordDestination;
+  if (
+    !parsed.success ||
+    native.kind !== 'dm' ||
+    !('provider' in actor) ||
+    actor.provider !== 'discord' ||
+    !('scope' in actor) ||
+    actor.scope !== 'dm' ||
+    destination?.kind !== 'dm' ||
+    native.owner.applicationId !== actor.applicationId ||
+    native.source.authorId !== actor.externalUserId ||
+    native.source.channelId !== destination.parentChannelId ||
+    !discordGuildTextActorUsable(native.source)
+  )
+    return false;
+  const tenantId = scope.tenantId === '_' ? undefined : scope.tenantId || undefined;
+  if (tenantId !== tenant()) throw new TypeError('Discord DM destination tenant mismatch');
+  const parent = await createAgentChannelModel(mongoose)
+    .exists({
+      tenantId: tenantId || { $in: [null, ''] },
+      channelId: scope.channelId,
+      agentId: scope.agentId,
+      revision: scope.principal.channelRevision,
+      type: 'discord',
+      'discord.applicationId': native.source.applicationId,
+      'discord.guildId': native.source.guildId,
+      'discord.botUserId': native.source.botUserId,
+      'discord.externalChannelId': native.source.channelId,
+    })
+    .session(session);
+  return Boolean(
+    parent &&
+      (await touchDiscordGatewayOwner(mongoose, { tenantId, ...native.owner }, session)) &&
+      (await touchDiscordDmDestination(mongoose, scope, session)),
+  );
 }
 /** Inactive until the authenticated browser and signed BOT_DM adapters are composed. */
 export function createDiscordDmStorage(

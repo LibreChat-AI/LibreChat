@@ -287,8 +287,10 @@ export {
   createDiscordDmStorage,
   touchDiscordDmSelection,
   hashDiscordDmCode,
+  touchDiscordDmDestination,
+  authorizeDiscordDmDestination,
 } from './methods/discordDm';
-export type { DiscordDmStorage } from './methods/discordDm';
+export type { DiscordDmStorage, DiscordDmDestinationScope } from './methods/discordDm';
 export type {
   DiscordMessageStorage,
   DiscordMessageOccurrence,
