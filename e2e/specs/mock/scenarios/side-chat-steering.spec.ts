@@ -354,6 +354,153 @@ test('a message queued in a side chat is sent when the panel is opened again aft
   expect(starts).toEqual([`E2E_SLOW_REPLY:${label}`, followUp]);
 });
 
+/**
+ * Cuts a stream of the conversation off, once `armed` says to: the whole response is taken from
+ * the server and handed to the page without its ending, from the frame that holds `before` on
+ * (its last frame, unless told otherwise). To the page that is a connection that dropped, after
+ * the run has in fact finished.
+ */
+async function cutStream(
+  page: Page,
+  conversationId: string,
+  armed: () => boolean,
+  before = '"final":true',
+) {
+  let cut = false;
+  await page.route(
+    (url) => url.pathname === `/api/agents/chat/stream/${conversationId}`,
+    async (route) => {
+      if (cut || !armed()) {
+        await route.continue();
+        return;
+      }
+      cut = true;
+      const upstream = await route.fetch({ timeout: 90_000 });
+      const body = await upstream.text();
+      const ending = body.indexOf(before);
+      expect(ending).toBeGreaterThan(0);
+      /** Back to the start of the frame that carries it, which is dropped whole with all after it. */
+      const frame = body.lastIndexOf('\n\n', ending);
+      await route.fulfill({ response: upstream, body: body.slice(0, frame + 2) });
+    },
+  );
+  return () => cut;
+}
+
+test('a side chat whose stream drops reads the reply back and takes the next turn @scenario:side-chat-dropped-stream-is-read-back', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const { sideChat, side, turns, mainTurns, send } = await openBeside(page, 'dropped');
+  const label = uniqueLabel('dropped');
+  const conversationId = (await sideChat.getAttribute('data-side-chat')) ?? '';
+  /** Cut half way through, so the second half of the reply can only come from what is stored. */
+  const wasCut = await cutStream(page, conversationId, () => true, 'chunk-080');
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+
+  /**
+   * The stream ends half way, with no last frame. The side chat looks for the run again, finds
+   * it over, and reads what the server stored: the whole reply, once, under the message sent.
+   */
+  await expect(turns.nth(3)).toContainText('chunk-079', { timeout: 120_000 });
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 60_000 });
+  expect(wasCut()).toBe(true);
+  await expect(side.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+    timeout: 30_000,
+  });
+  await expect(turns).toHaveCount(4);
+  await expect(turns.nth(2)).toContainText(`E2E_SLOW_REPLY:${label}`);
+  await expect(turns.nth(3)).not.toContainText(/\d+\s*\/\s*\d+/);
+
+  /** Nothing is left running in its name: the conversation takes the next message. */
+  const followUp = uniqueLabel('after-drop');
+  await send(replyPrompt(followUp));
+  await expect(turns).toHaveCount(6, { timeout: 30_000 });
+  await expect(turns.nth(5)).toContainText(replyText(followUp), { timeout: 30_000 });
+  await expect(mainTurns).toHaveCount(2);
+});
+
+test('a queue behind a reply the panel was closed on is sent when that reply is then lost and found whole @scenario:side-chat-lost-remembered-run-sends-the-queue', async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const { earlierUrl, sideChat, turns, queued, send, write } = await openBeside(page, 'lost');
+  const label = uniqueLabel('lost');
+  const followUp = `Queued, closed, then lost ${label}`;
+  const conversationId = (await sideChat.getAttribute('data-side-chat')) ?? '';
+  let armed = false;
+  const wasCut = await cutStream(page, conversationId, () => armed);
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect(sideChat).toContainText('chunk-010', { timeout: 30_000 });
+  await write(followUp);
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(queued.filter({ hasText: followUp })).toHaveCount(1);
+
+  /** Closed while it is being written, and opened again while it still is: the stream it then follows is the one cut. */
+  await sideChat.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Side chat' })).toHaveCount(0);
+  armed = true;
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  await expect(page.getByRole('region', { name: 'Side chat' })).toBeVisible();
+
+  /**
+   * Its end was never heard. But the run had been remembered when the panel closed, so its end
+   * is read from the reply the server stored, and the queued message goes out behind it.
+   */
+  await expect(turns).toHaveCount(6, { timeout: 150_000 });
+  expect(wasCut()).toBe(true);
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK);
+  await expect(turns.nth(4)).toContainText(followUp);
+  await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+  await expect(queued).toHaveCount(0);
+});
+
+test('a reply started in another tab is followed in the side chat that has its conversation open @scenario:side-chat-follows-a-run-from-another-tab', async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(180_000);
+  const { earlierUrl, sideChat, turns, side } = await openBeside(page, 'elsewhere');
+  const label = uniqueLabel('elsewhere');
+  await expect(turns).toHaveCount(2);
+
+  /** The same reader, in another tab, has the conversation open as its main chat and sends a turn. */
+  const other = await context.newPage();
+  await other.goto(earlierUrl, { timeout: 30_000 });
+  const elsewhere = other.getByRole('textbox', { name: 'Message input' });
+  await expect(messagesView(other).locator('.message-render')).toHaveCount(2, { timeout: 30_000 });
+  await elsewhere.click();
+  await other.keyboard.type(`E2E_SLOW_REPLY:${label}`);
+  await other.keyboard.press('Enter');
+  await expect(messagesView(other)).toContainText('chunk-005', { timeout: 30_000 });
+
+  /** Back in the first tab, the list of running generations names the conversation. */
+  await page.bringToFront();
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+
+  /** The side chat follows a run it did not start: its message, the reply as it is written, and its end. */
+  await expect(turns).toHaveCount(4, { timeout: 60_000 });
+  await expect(turns.nth(2)).toContainText(`E2E_SLOW_REPLY:${label}`);
+  await expect(side.getByRole('button', { name: 'Stop generating' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 120_000 });
+  await expect(side.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+    timeout: 30_000,
+  });
+  await expect(sideChat.locator('.message-render')).toHaveCount(4);
+  await other.close();
+});
+
 test('a message queued behind a saved agent’s reply in a side chat is started by the server and followed there @scenario:side-chat-server-queued-turn-is-followed', async ({
   page,
 }) => {
