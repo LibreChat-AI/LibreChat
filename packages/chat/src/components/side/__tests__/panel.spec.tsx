@@ -119,10 +119,12 @@ function setup({
   chat = { conversation },
   stored = [user, reply('response-1', 'It shipped.')],
   loadMessages = jest.fn(async () => stored),
+  canSubmit = () => true,
 }: {
   chat?: SideChat;
   stored?: TMessage[];
   loadMessages?: jest.Mock<Promise<TMessage[]>>;
+  canSubmit?: () => boolean;
 } = {}) {
   const streams: TestStream[] = [];
   const sendMessages = jest.fn(
@@ -155,7 +157,7 @@ function setup({
       return { conversation: held, setConversation };
     },
     useNewConversation: () => () => undefined,
-    useTurnServices: () => createTurnServices(),
+    useTurnServices: () => createTurnServices({ canSubmit }),
     useAbortStream: () => () => Promise.reject(new Error('unused')),
     useMessageCache: () => {
       throw new Error('A side chat reads its own messages');
@@ -341,6 +343,29 @@ describe('SideChatPanel', () => {
     expect(sendMessages).toHaveBeenCalledTimes(1);
     expect(onHandedTextTaken).toHaveBeenCalledTimes(1);
     expect(field()).toHaveValue('');
+  });
+
+  it('keeps a refused handoff as an editable draft without later automatic replay', async () => {
+    let allowed = false;
+    const { sendMessages, onHandedTextTaken, rerenderWith } = setup({
+      chat: { conversation, text: 'Carry on from here.' },
+      canSubmit: () => allowed,
+    });
+    await waitFor(() => expect(field()).toHaveValue('Carry on from here.'));
+    expect(rows()).toContain('reply=It shipped.');
+    expect(sendMessages).not.toHaveBeenCalled();
+    expect(onHandedTextTaken).toHaveBeenCalledTimes(1);
+    fireEvent.change(field(), { target: { value: 'An edited question.' } });
+    allowed = true;
+    rerenderWith({ conversation, text: 'Carry on from here.' });
+    await settle();
+    expect(field()).toHaveValue('An edited question.');
+    expect(sendMessages).not.toHaveBeenCalled();
+    fireEvent.change(field(), { target: { value: '' } });
+    rerenderWith({ conversation, text: 'Carry on from here.' });
+    await settle();
+    expect(field()).toHaveValue('');
+    expect(sendMessages).not.toHaveBeenCalled();
   });
 
   it('says when the conversation could not be loaded, and tries again', async () => {

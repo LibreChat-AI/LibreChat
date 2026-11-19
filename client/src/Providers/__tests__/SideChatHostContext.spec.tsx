@@ -14,6 +14,7 @@ import type { Transport } from '~/hooks/Chat/contract';
 import { ChatTransportContext, defaultChatTransport } from '../ChatTransportContext';
 
 const mockMessages = jest.fn();
+const mockAgent = jest.fn();
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
@@ -21,6 +22,7 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       getMessagesByConvoId: (...args: unknown[]) => mockMessages(...args),
+      getAgentById: (...args: unknown[]) => mockAgent(...args),
     },
   };
 });
@@ -63,8 +65,10 @@ function createTransport() {
   return { transport, attachments, start, abort };
 }
 
-const setup = () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const setup = (
+  target = conversation,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) => {
   const harness = createTransport();
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot>
@@ -75,14 +79,93 @@ const setup = () => {
       </QueryClientProvider>
     </RecoilRoot>
   );
-  const view = renderHook(() => appSideChatHost.useChat(conversation), { wrapper });
+  const view = renderHook(() => appSideChatHost.useChat(target), { wrapper });
   return { ...view, ...harness, client };
 };
 
 describe("the app's side chat host", () => {
   beforeEach(() => {
     mockMessages.mockReset();
+    mockAgent.mockReset();
     mockStreamStatus.mockReset();
+  });
+
+  it('waits for the authoritative saved-agent query alongside history before becoming ready', async () => {
+    let finish!: (agent: { id: string }) => void;
+    const target = { ...conversation, agent_id: 'agent_side_target' };
+    mockStreamStatus.mockResolvedValue({ active: false });
+    mockMessages.mockResolvedValue([asked]);
+    mockAgent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const { result, client } = setup(target);
+    await waitFor(() => expect(mockMessages).toHaveBeenCalled());
+    expect(result.current.isLoading).toBe(true);
+    await waitFor(() => expect(mockAgent).toHaveBeenCalledTimes(1));
+    await act(async () => finish({ id: target.agent_id }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.messages).toEqual([asked]);
+    expect(client.getQueryData([QueryKeys.agent, target.agent_id])).toEqual({
+      id: target.agent_id,
+    });
+    act(() => result.current.retry());
+    await waitFor(() => expect(mockMessages).toHaveBeenCalledTimes(2));
+    expect(mockAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([403, 404])(
+    'retains readable history when target metadata fails with %s',
+    async (status) => {
+      const target = { ...conversation, agent_id: 'agent_side_target' };
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+        logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      });
+      mockStreamStatus.mockResolvedValue({ active: false });
+      mockMessages.mockResolvedValue([asked]);
+      mockAgent.mockRejectedValue({ status });
+      const { result } = setup(target, client);
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      expect(result.current.isLoadError).toBe(false);
+      expect(result.current.messages).toEqual([asked]);
+      expect(client.getQueryState([QueryKeys.agent, target.agent_id])?.status).toBe('error');
+    },
+  );
+
+  it('reuses matching cached target metadata without another request', async () => {
+    const target = { ...conversation, agent_id: 'agent_side_target' };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData([QueryKeys.agent, target.agent_id], { id: target.agent_id });
+    mockStreamStatus.mockResolvedValue({ active: false });
+    mockMessages.mockResolvedValue([asked]);
+    const { result } = setup(target, client);
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(mockAgent).not.toHaveBeenCalled();
+  });
+
+  it('shares an in-flight target read with existing agent consumers', async () => {
+    let finish!: (agent: { id: string }) => void;
+    const target = { ...conversation, agent_id: 'agent_side_target' };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockAgent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const existing = client.fetchQuery([QueryKeys.agent, target.agent_id], () => mockAgent());
+    mockStreamStatus.mockResolvedValue({ active: false });
+    mockMessages.mockResolvedValue([asked]);
+    const { result } = setup(target, client);
+    await waitFor(() => expect(mockMessages).toHaveBeenCalled());
+    expect(result.current.isLoading).toBe(true);
+    await act(async () => finish({ id: target.agent_id }));
+    await existing;
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(mockAgent).toHaveBeenCalledTimes(1);
   });
 
   it('reads the conversation through the ordinary messages route, as a list', async () => {
