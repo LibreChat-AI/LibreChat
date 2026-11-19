@@ -8,6 +8,7 @@ import { createDiscordInstallModel } from '~/models/discordInstall';
 import { createSlackInstallModel } from '~/models/slackWorkspace';
 import { createSlackThreadRouteModel } from '~/models/slackRoute';
 import { eraseDiscordPersistenceForUser } from './discordErasure';
+import { eraseDiscordDmPersistence } from './discordDmErasure';
 import { createAgentApiKeyModel } from '~/models/agentApiKey';
 import { createAgentChannelModel } from '~/models/channel';
 import { createIndexesWithRetry } from '~/utils/retry';
@@ -28,6 +29,7 @@ export async function eraseChannelPersistenceForUser(
 ): Promise<void> {
   resolveChannelErasureConfig(options);
   await eraseDiscordPersistenceForUser(mongoose, owner, options);
+  await eraseDiscordDmPersistence(mongoose, owner);
   const tenantId = owner.tenantId || '_';
   await createAgentApiKeyModel(mongoose).deleteMany({
     userId: owner.userId,

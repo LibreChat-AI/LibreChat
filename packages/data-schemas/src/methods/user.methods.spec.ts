@@ -9,8 +9,10 @@ import {
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
+import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { runAsSystem } from '~/config/tenantContext';
+import { responseScopeKeys } from './responseScope';
 import { createResponseStorage } from './response';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
@@ -2661,5 +2663,121 @@ describe('private response cleanup before account deletion', () => {
       expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(0);
       expect(await model.countDocuments({ userId, tenantId: null })).toBe(1);
     });
+  });
+});
+
+describe('account deletion by the id createUser returns', () => {
+  /**
+   * `registerUser` hands `createUser(..., true)._id` to `deleteUserById`. That is the driver's
+   * ObjectId, not the string the parameter declares, and the Discord erasure guards accept only
+   * strings, so the cascade has to key on the persisted account's canonical string id.
+   */
+  async function register(email: string) {
+    const created = (await methods.createUser(
+      { email, provider: 'local' },
+      undefined,
+      true,
+      true,
+    )) as Partial<t.IUser>;
+    expect(created._id).toBeInstanceOf(mongoose.Types.ObjectId);
+    const objectId = created._id as mongoose.Types.ObjectId;
+    return { objectId, userId: objectId.toString() };
+  }
+
+  /** The untyped CJS caller passes the ObjectId through the string-typed parameter. */
+  const asCaller = (id: mongoose.Types.ObjectId) => id as unknown as string;
+  const accountScopeClosed = async (owner: { userId: string; tenantId?: string }) =>
+    (await createResponseScopeModel(mongoose).exists({
+      _id: responseScopeKeys(owner, '')[0],
+      closed: true,
+    })) != null;
+  const grant = (user: string) => ({
+    user,
+    agentId: 'agent',
+    toolName: 'query_mcp_db',
+    conversationId: 'chat',
+    binding: 'personal-consent',
+  });
+
+  test.each<[string, (id: mongoose.Types.ObjectId) => string]>([
+    ['the ObjectId', asCaller],
+    ['its string form', (id) => id.toString()],
+    ['an uppercase spelling of its string form', (id) => id.toString().toUpperCase()],
+  ])('deletes the account and closes its admission scope when given %s', async (_label, spell) => {
+    const { objectId, userId } = await register('register-cleanup@example.com');
+    await mongoose.models.ToolApprovalGrant.create([grant(userId), grant('another-user')]);
+
+    await expect(methods.deleteUserById(spell(objectId))).resolves.toEqual({
+      deletedCount: 1,
+      message: 'User was deleted successfully.',
+    });
+
+    expect(await User.exists({ _id: objectId })).toBeNull();
+    expect(await accountScopeClosed({ userId })).toBe(true);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: userId })).toBe(0);
+    expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: 'another-user' })).toBe(
+      1,
+    );
+  });
+
+  test('reports a missing account for an ObjectId without closing a scope', async () => {
+    const missing = new mongoose.Types.ObjectId();
+
+    await expect(methods.deleteUserById(asCaller(missing))).resolves.toEqual({
+      deletedCount: 0,
+      message: 'No user found with that ID.',
+    });
+
+    expect(await accountScopeClosed({ userId: missing.toString() })).toBe(false);
+  });
+
+  test('commits the deletion fence for the ObjectId and rejects a stale attempt', async () => {
+    const { objectId, userId } = await register('fenced-register@example.com');
+    const attemptId = randomUUID();
+    const startedAt = new Date();
+    await methods.beginAgentTriggerUserDeletion(userId, startedAt, attemptId);
+
+    await expect(
+      methods.deleteUserById(asCaller(objectId), { startedAt, attemptId: randomUUID() }),
+    ).resolves.toMatchObject({ deletedCount: 0 });
+    expect(await User.exists({ _id: objectId })).not.toBeNull();
+    await expect(
+      methods.deleteUserById(asCaller(objectId), { startedAt, attemptId }),
+    ).resolves.toMatchObject({ deletedCount: 1 });
+    expect(await User.exists({ _id: objectId })).toBeNull();
+  });
+
+  test('closes the account tenant scope, not the tenantless one, under system authority', async () => {
+    const { objectId, userId } = await register('tenant-register@example.com');
+    await User.updateOne({ _id: objectId }, { $set: { tenantId: 'another-tenant' } });
+
+    await runAsSystem(async () => {
+      await expect(methods.deleteUserById(asCaller(objectId))).resolves.toMatchObject({
+        deletedCount: 1,
+      });
+    });
+
+    expect(await accountScopeClosed({ userId, tenantId: 'another-tenant' })).toBe(true);
+    expect(await accountScopeClosed({ userId })).toBe(false);
+  });
+
+  test('evicts the cached auth documents under the canonical id', async () => {
+    enableAuthUserDocCache();
+    const { objectId, userId } = await register('cached-register@example.com');
+    const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+    const cache = {
+      set: jest.fn().mockResolvedValue(true),
+      get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
+      delete: jest.fn().mockResolvedValue(true),
+    };
+    const methodsWithCache = createUserMethods(mongoose, {
+      getCache: jest.fn().mockReturnValue(cache),
+    });
+
+    await methodsWithCache.deleteUserById(asCaller(objectId));
+
+    expect(cache.get).toHaveBeenCalledWith(indexKey);
+    expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+    expect(cache.delete).toHaveBeenCalledWith(indexKey);
   });
 });
