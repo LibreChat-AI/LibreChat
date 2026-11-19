@@ -1,7 +1,8 @@
 import { useCallback, useMemo } from 'react';
-import { useFollowChat } from '@librechat/chat/react';
+import { useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { createGenerationTransport } from '@librechat/chat';
+import { filesFamily, useFollowChat, SIDE_CHAT_PANE } from '@librechat/chat/react';
 import {
   dataService,
   QueryKeys,
@@ -11,11 +12,13 @@ import {
 import type { Agent, TMessage, TConversation, ChatFinalFrame } from 'librechat-data-provider';
 import type { FollowedChat, SideChatHost, FollowChatOptions } from '@librechat/chat/react';
 import { isTemporaryConversation, proveFetchedReplyByIdentity } from '~/utils';
+import { stagedForHandoff, handedComposerFilesFamily } from '~/store/handoff';
 import useNavigateToConvo from '~/hooks/Conversations/useNavigateToConvo';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { createConversationCache } from '~/hooks/SSE/services';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
+import SideChatSurface from '~/components/Chat/Side/Surface';
 import { retryTransientQuery } from '~/data-provider/retry';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useChatTransport } from './ChatTransportContext';
@@ -122,9 +125,25 @@ function useChat(
   });
 }
 
+/**
+ * Opens the side conversation as the page's main chat. What its composer has staged and
+ * finished uploading goes with it: taken from the side pane before the navigation clears every
+ * pane's files, and left for main chat's composer to pick up once it holds the conversation.
+ */
 function useOpenConversation(): (conversation: TConversation) => void {
   const { navigateToConvo } = useNavigateToConvo();
-  return useCallback((conversation) => navigateToConvo(conversation), [navigateToConvo]);
+  const store = useStore();
+  return useCallback(
+    (conversation) => {
+      const staged = stagedForHandoff(store.get(filesFamily(SIDE_CHAT_PANE)));
+      const { conversationId } = conversation;
+      if (staged.size > 0 && conversationId != null && conversationId !== '') {
+        store.set(handedComposerFilesFamily(conversationId), staged);
+      }
+      navigateToConvo(conversation);
+    },
+    [navigateToConvo, store],
+  );
 }
 
 /** What a side chat reads from the app. */
@@ -133,4 +152,5 @@ export const appSideChatHost: SideChatHost = {
   useOpenConversation,
   useSheetLayout: () => useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH),
   useClearsFooter: useConfiguredFooter,
+  Surface: SideChatSurface,
 };

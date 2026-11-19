@@ -807,8 +807,10 @@ export function useShortcutActions(): ShortcutAction[] {
     return true;
   }, [conversation?.conversationId, conversation?.title, routeConvoId, setDeleteTarget]);
 
+  /** The composer of the pane holding focus, as stop and upload resolve theirs. */
   const handleSubmitMessage = useCallback(() => {
-    const btn = document.querySelector<HTMLButtonElement>('[data-testid="send-button"]');
+    const scope: ParentNode = getFocusedChatPane() ?? document;
+    const btn = scope.querySelector<HTMLButtonElement>('[data-testid="send-button"]');
     return clickTarget(btn);
   }, []);
 

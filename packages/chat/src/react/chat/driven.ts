@@ -1,12 +1,12 @@
-import { useRef, useMemo, useState, useEffect, useCallback } from 'react';
-import { useAtom, useSetAtom } from 'jotai';
+import { useRef, useMemo, useState, useEffect, useCallback, useLayoutEffect } from 'react';
+import { useAtom, useStore, useSetAtom } from 'jotai';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { MouseEvent, SetStateAction } from 'react';
 import type { ChatTurnsParams, TurnServices } from './host';
 import type { ChatContract } from './contract';
 import type { FollowedChat } from '../follow';
+import { presetFamily, filesFamily, filesOwnerFamily, optionSettingsFamily } from '../pane';
 import { useBranchTailId, useBranchTailGetter, useBranchTailSelect } from '../latest';
-import { presetFamily, filesFamily, optionSettingsFamily } from '../pane';
 import { abortScrollFamily, showStopButtonByIndex } from '../generation';
 import { siblingIdxFamily, siblingKey } from '../thread';
 import { useLiveAttachments } from '../stream/atoms';
@@ -47,6 +47,24 @@ export function useDrivenContract({ id, followed, index }: DrivenContractOptions
   const host = useChatHost();
   const { chat, status, isLoading, isFollowing, canSend, send, stop } = followed;
   const [files, setFiles] = useAtom(filesFamily(index));
+  /**
+   * The pane's staged files are the conversation's that staged them. The pane outlives the
+   * conversation it shows, so when it takes another one the files left in it are dropped: they
+   * would otherwise go out with that conversation's next turn. The same conversation drawn
+   * again keeps them. In a layout effect, ahead of the composer's own effects, which may put
+   * this conversation's saved attachments back.
+   */
+  const store = useStore();
+  useLayoutEffect(() => {
+    const owner = filesOwnerFamily(index);
+    if (store.get(owner) === id) {
+      return;
+    }
+    store.set(owner, id);
+    if (store.get(filesFamily(index)).size > 0) {
+      store.set(filesFamily(index), new Map());
+    }
+  }, [id, index, store]);
   const [filesLoading, setFilesLoading] = useState(false);
   const newConversation = host.useNewConversation(index);
   const { conversation, setConversation } = host.usePaneConversation(index);
@@ -178,6 +196,7 @@ export function useDrivenContract({ id, followed, index }: DrivenContractOptions
       handleRegenerate,
       handleContinue,
       stopGenerating,
+      stopsUnnamed: true,
       handleStopGenerating,
       abortScroll,
       setAbortScroll,

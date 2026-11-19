@@ -1,17 +1,23 @@
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
-import { mainTextareaId } from '../../core/composer';
+import { isComposerTextarea } from '../../core/composer';
 import { isRectVisible } from '../../core/viewport';
+import { getChatPane } from '../../core/pane';
 
-/** Focus is nowhere, or in the empty composer that just sent the turn. */
-export function isFocusIdle(): boolean {
+/**
+ * Focus is nowhere, or in the empty composer that just sent the turn `arriving` belongs to:
+ * the composer of the same pane. An empty composer in another pane is the reader at work on
+ * another conversation, and is not taken from them.
+ */
+export function isFocusIdle(arriving: Element | null): boolean {
   const active = document.activeElement;
+  if (active == null || active === document.body) {
+    return true;
+  }
   return (
-    active == null ||
-    active === document.body ||
-    (active instanceof HTMLTextAreaElement &&
-      active.id === mainTextareaId &&
-      active.value.trim().length === 0)
+    isComposerTextarea(active) &&
+    active.value.trim().length === 0 &&
+    getChatPane(active) === getChatPane(arriving)
   );
 }
 

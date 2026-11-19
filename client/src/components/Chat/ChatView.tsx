@@ -17,6 +17,7 @@ import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
 import { AgentsMapContext, useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { ComposerPreferencesContext } from '~/Providers/ComposerPreferencesContext';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
@@ -109,6 +110,10 @@ function ChatViewPane({
   const methods = useForm<ChatFormValues>({
     defaultValues: { text: '' },
   });
+  const composerPreferences = useMemo(
+    () => ({ enterToSend, autoSendText, speechSettingsInitialized }),
+    [enterToSend, autoSendText, speechSettingsInitialized],
+  );
 
   const fileMap = useFileMapContext();
   const chat = useChatContext();
@@ -157,69 +162,76 @@ function ChatViewPane({
                 <QueuedTurnPortalProvider>
                   <AddedChatContext.Provider value={addedChatHelpers}>
                     <ApprovalProvider pendingAction={pendingAction}>
-                      <Presentation routePending={routePending}>
-                        <TraceSurface conversationId={conversationId}>
-                          <ChatScreen
-                            index={index}
-                            conversationId={conversationId}
-                            messages={messages}
-                            fileMap={fileMap}
-                            isLoading={isLoading}
-                            project={project}
-                            landingFooter={landingFooter}
-                            configuredFooter={configuredFooter}
-                            renderHeader={({ parentConversationId, readOnly }) => (
-                              <Header
-                                parentConversationId={parentConversationId}
-                                readOnly={readOnly}
-                              />
-                            )}
-                            renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
-                            renderMessages={renderMessages}
-                            landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                            renderColumn={(column, { isLanding }) => (
-                              <OwnerTextProvider
-                                messages={messages}
-                                conversationId={conversationId}
-                                isSubmitting={chat.isSubmitting}
-                              >
-                                {/* The welcome screen only, behind its column: a theme's
+                      <ComposerPreferencesContext.Provider value={composerPreferences}>
+                        <Presentation routePending={routePending}>
+                          <TraceSurface conversationId={conversationId}>
+                            <ChatScreen
+                              index={index}
+                              conversationId={conversationId}
+                              messages={messages}
+                              fileMap={fileMap}
+                              isLoading={isLoading}
+                              project={project}
+                              landingFooter={landingFooter}
+                              configuredFooter={configuredFooter}
+                              renderHeader={({ parentConversationId, readOnly }) => (
+                                <Header
+                                  parentConversationId={parentConversationId}
+                                  readOnly={readOnly}
+                                />
+                              )}
+                              renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
+                              renderMessages={renderMessages}
+                              landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
+                              renderColumn={(column, { isLanding }) => (
+                                <OwnerTextProvider
+                                  messages={messages}
+                                  conversationId={conversationId}
+                                  isSubmitting={chat.isSubmitting}
+                                >
+                                  {/* The welcome screen only, behind its column: a theme's
                                 backdrop covers the greeting and the composer together and
                                 goes with them on the first message. It paints nothing unless
                                 the theme asks and the build registers one. */}
-                                {isLanding && <WelcomeBackdrop />}
-                                {column}
-                              </OwnerTextProvider>
-                            )}
-                            starters={<ConversationStarters />}
-                            renderComposer={({ isLanding, footerBelow, project, placeholder }) => (
-                              /* Typing a first message is the cue that the list is next. */
-                              <div className="contents" onFocusCapture={warmMessages}>
-                                <ChatForm
-                                  index={index}
-                                  routePending={routePending}
-                                  placeholder={placeholder}
-                                  project={project}
-                                  isLandingPage={isLanding}
-                                  enterToSend={enterToSend}
-                                  autoSendText={autoSendText}
-                                  speechSettingsInitialized={speechSettingsInitialized}
-                                  footerBelow={footerBelow}
-                                  centerFormOnLanding={centerFormOnLanding}
+                                  {isLanding && <WelcomeBackdrop />}
+                                  {column}
+                                </OwnerTextProvider>
+                              )}
+                              starters={<ConversationStarters />}
+                              renderComposer={({
+                                isLanding,
+                                footerBelow,
+                                project,
+                                placeholder,
+                              }) => (
+                                /* Typing a first message is the cue that the list is next. */
+                                <div className="contents" onFocusCapture={warmMessages}>
+                                  <ChatForm
+                                    index={index}
+                                    routePending={routePending}
+                                    placeholder={placeholder}
+                                    project={project}
+                                    isLandingPage={isLanding}
+                                    enterToSend={enterToSend}
+                                    autoSendText={autoSendText}
+                                    speechSettingsInitialized={speechSettingsInitialized}
+                                    footerBelow={footerBelow}
+                                    centerFormOnLanding={centerFormOnLanding}
+                                  />
+                                </div>
+                              )}
+                              renderFooter={renderFooter}
+                              renderMascot={(bandRef, landing) => (
+                                <Lia
+                                  bandRef={bandRef}
+                                  landing={landing}
+                                  submission={rootSubmission}
                                 />
-                              </div>
-                            )}
-                            renderFooter={renderFooter}
-                            renderMascot={(bandRef, landing) => (
-                              <Lia
-                                bandRef={bandRef}
-                                landing={landing}
-                                submission={rootSubmission}
-                              />
-                            )}
-                          />
-                        </TraceSurface>
-                      </Presentation>
+                              )}
+                            />
+                          </TraceSurface>
+                        </Presentation>
+                      </ComposerPreferencesContext.Provider>
                     </ApprovalProvider>
                   </AddedChatContext.Provider>
                 </QueuedTurnPortalProvider>
