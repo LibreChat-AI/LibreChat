@@ -14,6 +14,7 @@ import type {
   DiscordGuildThreadSource,
   DiscordThreadBinding,
   DiscordThreadRoute,
+  DiscordThreadReference,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { DiscordThreadRouteRecord } from '~/models/discordThread';
@@ -112,7 +113,7 @@ type Parent = Pick<
 >;
 async function currentParent(
   mongoose: typeof import('mongoose'),
-  owner: DiscordGatewayOwner,
+  owner: Pick<DiscordGatewayOwner, 'applicationId' | 'applicationRevision'>,
   source: Parent,
   binding: DiscordThreadBinding,
   session: ClientSession,
@@ -173,7 +174,7 @@ async function currentParent(
 }
 async function currentMapping(
   mongoose: typeof import('mongoose'),
-  owner: DiscordGatewayOwner,
+  owner: Pick<DiscordGatewayOwner, 'applicationId' | 'applicationRevision'>,
   row: DiscordThreadRouteRecord,
   session: ClientSession,
 ): Promise<boolean> {
@@ -247,6 +248,46 @@ async function authorize(
     { session },
   );
   return touched.matchedCount === 1 ? row : null;
+}
+/** Canonical mapping fence for inbox lease/reply recovery only, never an actor permission grant. */
+export async function touchDiscordThreadBinding(
+  mongoose: typeof import('mongoose'),
+  scope: {
+    tenantId?: string;
+    applicationId: string;
+    applicationRevision: string;
+    channelId: string;
+    channelRevision: string;
+    externalChannelId: string;
+    thread: DiscordThreadReference;
+  },
+  session: ClientSession,
+): Promise<boolean> {
+  tenant(scope.tenantId);
+  const row = await createDiscordThreadRouteModel(mongoose)
+    .findOne({
+      tenantId: tenant() ?? null,
+      applicationId: scope.applicationId,
+      channelId: scope.channelId,
+      channelRevision: scope.channelRevision,
+      threadChannelId: scope.externalChannelId,
+      parentChannelId: scope.thread.parentChannelId,
+      mappingRevision: scope.thread.mappingRevision,
+    })
+    .session(session)
+    .lean();
+  if (!row || !(await currentMapping(mongoose, scope, row, session))) return false;
+  const result = await createDiscordThreadRouteModel(mongoose).updateOne(
+    {
+      tenantId: tenant() ?? null,
+      applicationId: row.applicationId,
+      threadChannelId: row.threadChannelId,
+      mappingRevision: row.mappingRevision,
+    },
+    { $inc: { authorityWrites: 1 } },
+    { session },
+  );
+  return result.matchedCount === 1;
 }
 /** Join future admission/effect transactions to the actual thread and fresh actor-specific source. */
 export async function touchDiscordThreadRoute(

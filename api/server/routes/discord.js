@@ -27,6 +27,7 @@ router.post('/service/gateway/prepareGuildRemoval', channels.gateway.prepareGuil
 router.post('/service/gateway/removeGuild', channels.gateway.removeGuild);
 router.post('/service/inbox/submit', channels.inbox.submit);
 router.post('/service/inbox/claim', channels.inbox.claim);
+router.post('/service/inbox/resolve', channels.inbox.resolve);
 router.post('/service/inbox/finish', channels.inbox.finish);
 router.post('/service/inbox/defer', channels.inbox.defer);
 router.get('/agents/:agentId/binding', requireJwtAuth, channels.bindings.status);

@@ -134,3 +134,28 @@ it('propagates deadline cancellation to the external control-plane call', async 
   });
   await expect(client.security(applicationId, controller.signal)).rejects.toThrow();
 });
+
+it('resolves only the exact immutable claimed lease through the protected owner endpoint', async () => {
+  const input = {
+    fence,
+    owner: { applicationId, applicationRevision: 'revision', ownerId: 'a'.repeat(32) },
+    source: null,
+  };
+  const delivery = {
+    fence,
+    token,
+    applicationRevision: 'revision',
+    expiresAt: Date.now() + 60000,
+    reply: { content: 'Unavailable.' },
+  };
+  response = Response.json(delivery);
+  expect(await client.resolve(input)).toEqual(delivery);
+  const [url, options] = transport.mock.calls[0];
+  expect(url).toContain('/service/inbox/resolve');
+  expect(JSON.parse(options.body)).toEqual(input);
+  expect(options.headers).not.toHaveProperty('X-Tenant-Id');
+  response = Response.json({ ...delivery, fence: { ...fence, eventId: applicationId } });
+  await expect(client.resolve(input)).rejects.toThrow('resolution mismatch');
+  response = new Response(null, { status: 409 });
+  expect(await client.resolve(input)).toBeNull();
+});

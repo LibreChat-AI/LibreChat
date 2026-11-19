@@ -1,5 +1,5 @@
 import { Schema } from 'mongoose';
-import type { DiscordIngressAction } from 'librechat-data-provider';
+import type { DiscordIngressAction, DiscordThreadReference } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
@@ -31,12 +31,14 @@ interface DiscordInboxPayload {
   leaseEpoch: number;
   leaseExpiresAt: number;
   authorityWrites: number;
+  inspectionEpoch?: number;
   result?: 'completed' | 'expired' | 'authority_changed' | 'unavailable';
 }
 
 /** Only resolved records may reach the command executor. Legacy records are resolved by default. */
 export interface DiscordInboxRecord extends DiscordInboxPayload {
   routing?: 'bound';
+  thread?: DiscordThreadReference;
   channelId: string;
   channelRevision: string;
   agentId: string;
@@ -68,6 +70,8 @@ export function createDiscordInboxModel(
       applicationRevision: { type: String, required: true },
       guildId: { type: String, required: true },
       routing: { type: String, enum: ['bound', 'inspection'] },
+      thread: Schema.Types.Mixed,
+      inspectionEpoch: Number,
       channelId: { type: String, required: bound },
       channelRevision: { type: String, required: bound },
       agentId: { type: String, required: bound },
