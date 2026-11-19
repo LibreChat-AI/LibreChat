@@ -161,6 +161,8 @@ import {
   type ParentSubagentThreadRecord,
 } from './conversation';
 import { createChatProjectMethods, type ChatProjectMethods } from './chatProject';
+import { createConversationMetadataMethods } from './conversationMetadata';
+import type { ConversationMetadataMethods } from './conversationMetadata';
 export type {
   AssignConversationToProjectResult,
   ChatProjectSortBy,
@@ -356,6 +358,7 @@ export type AllMethods = PermissionPrincipalStorage &
   ConversationImportMethods &
   MessageMethods &
   ConversationMethods &
+  ConversationMetadataMethods &
   ChatProjectMethods &
   TxMethods &
   TransactionMethods &
@@ -612,6 +615,7 @@ export function createMethods(
     ...createConversationImportMethods(mongoose),
     ...messageMethods,
     ...conversationMethods,
+    ...createConversationMetadataMethods(mongoose),
     ...createChatProjectMethods(mongoose),
     /* Tier 3 */
     ...txMethods,
