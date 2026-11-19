@@ -26,8 +26,7 @@ import {
   resolveAgentSkillsScope,
 } from 'librechat-data-provider';
 import type { TSkillSummary, TToolFavoriteType } from 'librechat-data-provider';
-import type { ItemStatus } from '~/components/SidePanel/Agents/Tools/items/types';
-import type { TranslationKeys } from '~/hooks/useLocalize';
+import type { PaletteEntryView } from '@librechat/chat/react';
 import {
   useHasAccess,
   useAuthContext,
@@ -35,7 +34,7 @@ import {
   useAgentCapabilities,
   useSkillActiveState,
 } from '~/hooks';
-import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtils';
+import { getStatusColor, getMCPStatusLabelKey } from '~/components/MCP/mcpServerUtils';
 import { filterSkillsForPopover } from '~/components/Chat/Input/SkillsCommand';
 import { useAgentsMapContext, useBadgeRowContext } from '~/Providers';
 import { useSkillsInfiniteQuery } from '~/data-provider';
@@ -88,7 +87,7 @@ export interface PaletteEntry {
    *  "Show all" dialog's "Made by you" view. */
   ownedByUser?: boolean;
   /** Connection state of an MCP server, drawn on the row and its card. */
-  status?: ItemStatus;
+  status?: PaletteEntryView['status'];
 }
 
 /** Accumulates skill pages so client-side search covers the full catalog. */
@@ -493,24 +492,16 @@ export default function usePaletteEntries({
     } = mcpServerManager ?? {};
     /* The same vocabulary as the MCP menu this palette replaced. Its
        "connecting" string takes the server name, which the row already shows. */
-    const getServerStatus = (serverName: string): ItemStatus => {
-      const key = getStatusTextKey(
-        serverName,
-        connectionStatus,
-        isInitializing,
-        connectionViews?.[serverName],
+    const getServerStatus = (serverName: string): NonNullable<PaletteEntryView['status']> => {
+      const view = connectionViews?.[serverName];
+      const key = getMCPStatusLabelKey(
+        connectionStatus?.[serverName],
+        isInitializing?.(serverName),
+        view,
       );
       return {
-        label:
-          key === 'com_nav_mcp_status_connecting'
-            ? localize('com_ui_connecting')
-            : localize(key as TranslationKeys),
-        tone: getStatusColor(
-          serverName,
-          connectionStatus,
-          isInitializing,
-          connectionViews?.[serverName],
-        ),
+        label: key && localize(key === 'com_nav_mcp_status_connecting' ? 'com_ui_connecting' : key),
+        tone: getStatusColor(serverName, connectionStatus, isInitializing, view),
       };
     };
     if (toolsEnabled && canUseMcp && selectableServers) {

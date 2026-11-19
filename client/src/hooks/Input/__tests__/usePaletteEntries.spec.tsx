@@ -560,6 +560,9 @@ describe('usePaletteEntries', () => {
         }));
         mockContext = context;
         const row = entries().result.current.find((item) => item.key === 'mcp:github');
+        if (state === 'succeeded') {
+          expect(row?.status).toEqual({ label: undefined, tone: 'bg-status-neutral' });
+        }
         act(() => row?.onSelect());
         expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
         expect(context.mcpServerManager.initializeServer).not.toHaveBeenCalled();

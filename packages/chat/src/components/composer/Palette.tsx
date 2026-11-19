@@ -1108,8 +1108,8 @@ function Palette({
               </span>
               <span className="flex min-w-0 flex-1 flex-col justify-center">
                 <span className={cn('truncate', checked && 'font-medium')}>{label}</span>
-                {/* The dot is color only, so the status is still said aloud. */}
-                {status != null && <span className="sr-only">{status.label}</span>}
+                {/* Announce the status when a label is available. */}
+                {status?.label && <span className="sr-only">{status.label}</span>}
                 {description != null && description !== '' && (
                   <span className="text-text-secondary truncate text-xs">{description}</span>
                 )}

@@ -7,6 +7,7 @@ import {
   getMCPControlState,
   getMCPDisplayStatus,
   getMCPStatusColor,
+  getMCPStatusLabelKey,
 } from '~/components/MCP/mcpServerUtils';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import { useMCPServerManager, useLocalize } from '~/hooks';
@@ -99,22 +100,10 @@ export default function MCPServerCard({
     setDialogOpen(true);
   };
 
-  // Determine status text for accessibility
-  const getStatusText = () => {
-    if (isInitializing) return localize('com_nav_mcp_status_initializing');
-    if (!displayStatus) return localize('com_nav_mcp_status_unknown');
-    const { connectionState, requiresOAuth } = displayStatus;
-    if (connectionState === 'connecting') return localize('com_nav_mcp_status_connecting');
-    if (displayStatus.requestScoped) return localize('com_nav_mcp_status_on_demand');
-    if (connectionState === 'connected') return localize('com_nav_mcp_status_connected');
-    if (connectionState === 'error') return localize('com_nav_mcp_status_error');
-    if (connectionState === 'disconnected') {
-      return requiresOAuth
-        ? localize('com_nav_mcp_status_needs_auth')
-        : localize('com_nav_mcp_status_disconnected');
-    }
-    return localize('com_nav_mcp_status_unknown');
-  };
+  const statusLabelKey = getMCPStatusLabelKey(serverStatus, isInitializing, view);
+  const accessibleLabel = statusLabelKey
+    ? `${displayName} - ${localize(statusLabelKey, { 0: server.serverName })}`
+    : displayName;
 
   return (
     <>
@@ -124,7 +113,7 @@ export default function MCPServerCard({
           /** Flat row, not a card: the hover fill is the only affordance a list needs. */
           'hover:bg-surface-active-alt bg-transparent',
         )}
-        aria-label={`${displayName} - ${getStatusText()}`}
+        aria-label={accessibleLabel}
       >
         {/* Server Icon with Status Dot */}
         <div className="text-text-primary relative shrink-0">

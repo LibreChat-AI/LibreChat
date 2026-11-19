@@ -318,6 +318,10 @@ describe('McpSection', () => {
     });
     rerender(<McpSection item={item} />);
 
+    expect(screen.queryByText('com_nav_mcp_status_unknown')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_nav_mcp_connect_server' }),
+    ).not.toBeInTheDocument();
     await waitFor(() =>
       expect(mockSetValue).toHaveBeenCalledWith(
         'tools',

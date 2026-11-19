@@ -160,44 +160,23 @@ export function getMCPStatusColor(status?: MCPServerStatus, isInitializing?: boo
   return 'bg-status-neutral';
 }
 
-export function getStatusTextKey(
-  serverName: string,
-  connectionStatus?: ConnectionStatusMap,
-  isInitializing?: (serverName: string) => boolean,
+export function getMCPStatusLabelKey(
+  status?: MCPServerStatus,
+  isInitializing?: boolean,
   view?: MCPConnectionView,
-): string {
-  if (isInitializing?.(serverName)) {
-    return 'com_nav_mcp_status_initializing';
+) {
+  if (isInitializing) return 'com_nav_mcp_status_initializing';
+  const displayStatus = getMCPDisplayStatus(status, view);
+  if (!displayStatus) return;
+
+  const { connectionState, requiresOAuth, requestScoped } = displayStatus;
+  if (connectionState === 'connecting') return 'com_nav_mcp_status_connecting';
+  if (requestScoped) return 'com_nav_mcp_status_on_demand';
+  if (connectionState === 'connected') return 'com_nav_mcp_status_connected';
+  if (connectionState === 'error') return 'com_nav_mcp_status_error';
+  if (connectionState === 'disconnected') {
+    return requiresOAuth ? 'com_nav_mcp_status_needs_auth' : 'com_nav_mcp_status_disconnected';
   }
-
-  const status = getMCPDisplayStatus(connectionStatus?.[serverName], view);
-  if (!status) {
-    return 'com_nav_mcp_status_unknown';
-  }
-
-  const { connectionState, requiresOAuth, requestScoped } = status;
-
-  if (connectionState === 'connecting') {
-    return 'com_nav_mcp_status_connecting';
-  }
-
-  if (requestScoped) {
-    return 'com_nav_mcp_status_on_demand';
-  }
-
-  // Special case: disconnected but needs OAuth shows different text
-  if (connectionState === 'disconnected' && requiresOAuth) {
-    return 'com_nav_mcp_status_needs_auth';
-  }
-
-  const keyMap: Record<string, string> = {
-    connected: 'com_nav_mcp_status_connected',
-    connecting: 'com_nav_mcp_status_connecting',
-    disconnected: 'com_nav_mcp_status_disconnected',
-    error: 'com_nav_mcp_status_error',
-  };
-
-  return keyMap[connectionState] || 'com_nav_mcp_status_unknown';
 }
 
 /**

@@ -37,7 +37,7 @@ test('Connect survives cold-replica status; tools survive the connecting replica
   try {
     await page.request.post(control, { data: { mode: 'success' } });
     await page.getByRole('button', { name: 'MCP Settings', exact: true }).click();
-    const card = page.locator('[aria-label^="E2E Connection State -"]');
+    const card = page.getByLabel(/^E2E Connection State(?: - |$)/);
     await expect(card).toBeVisible();
     const response = page.waitForResponse((r) =>
       r.url().endsWith('/api/mcp/e2e-status/reinitialize'),
@@ -46,6 +46,9 @@ test('Connect survives cold-replica status; tools survive the connecting replica
     await card.getByRole('button', { name: 'Connect', exact: true }).click();
     expect(await (await response).json()).toMatchObject({ success: true });
     await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Connected');
+    await expect(
+      page.getByText("MCP server 'e2e-status' initialized successfully", { exact: true }),
+    ).toBeVisible();
     evidence.push({ stage: 'connect-on-A', fixture: await state() });
     const agentName = uniqueAgentName('Replica MCP');
     if (process.env.E2E_EVIDENCE_BEFORE !== 'true') {
@@ -79,7 +82,7 @@ test('Connect survives cold-replica status; tools survive the connecting replica
       connectionStateSource: 'unobserved',
     });
     evidence.push({ stage: 'cold-B-status', status: coldStatus, fixture: await state() });
-    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Unknown');
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State');
     await card.hover();
     await expect(card.getByRole('button', { name: 'Reconnect', exact: true })).toBeVisible();
     await expect(card.getByRole('status')).toHaveCount(0);
@@ -91,7 +94,7 @@ test('Connect survives cold-replica status; tools survive the connecting replica
     const settings = page.getByRole('button', { name: 'MCP Settings', exact: true });
     await expect(settings).toBeVisible();
     if ((await settings.getAttribute('aria-pressed')) !== 'true') await settings.click();
-    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Unknown');
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State');
     await card.hover();
     await expect(card.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
     expect((await state()).initializations).toBe(1);

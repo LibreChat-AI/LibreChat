@@ -3,7 +3,7 @@ import {
   getMCPControlState,
   getMCPServerAction,
   getStatusColor,
-  getStatusTextKey,
+  getMCPStatusLabelKey,
   isMCPServerReadyForAgent,
   shouldShowActionButton,
 } from './mcpServerUtils';
@@ -111,13 +111,13 @@ it('preserves connected readiness from older replicas without configurationState
   ).toBe(true);
 });
 
-it('presents an unavailable lookup as unknown and keeps retry actionable', () => {
+it('omits an unobserved status label and keeps retry actionable', () => {
   const serverStatus: MCPServerStatus = {
     connectionState: 'error',
     connectionStateSource: 'unavailable',
     requiresOAuth: true,
   };
-  expect(getStatusTextKey('server', { server: serverStatus })).toBe('com_nav_mcp_status_unknown');
+  expect(getMCPStatusLabelKey(serverStatus)).toBeUndefined();
   expect(getStatusColor('server', { server: serverStatus })).toBe('bg-status-neutral');
   expect(isMCPServerReadyForAgent(serverStatus, false)).toBe(false);
   expect(isMCPServerReadyForAgent({ ...serverStatus, requestScoped: true }, true, true)).toBe(
@@ -166,7 +166,15 @@ it('keeps the existing secondary-replica display neutral while preserving reconn
   };
   const view = { state: 'succeeded', canUse: true, observation: raw } as const;
 
-  expect(getStatusTextKey('mcp', { mcp: raw }, undefined, view)).toBe('com_nav_mcp_status_unknown');
+  expect(getMCPStatusLabelKey(raw, false, view)).toBeUndefined();
+  expect(getMCPStatusLabelKey(raw, false, { state: 'unknown', canUse: false })).toBeUndefined();
+  expect(
+    getMCPStatusLabelKey(
+      { ...raw, connectionState: 'connected', connectionStateSource: 'authorization' },
+      false,
+      { state: 'authorized', canUse: true },
+    ),
+  ).toBeUndefined();
   expect(getStatusColor('mcp', { mcp: raw }, undefined, view)).toBe('bg-status-neutral');
   expect(getMCPControlState(raw, view)).toBe('connected');
   expect(getMCPControlState(raw, { state: 'unknown', canUse: false })).toBe('disconnected');
@@ -176,7 +184,7 @@ it('uses the existing error and retry presentation for a failed reconnect over o
   const raw = status('connected', 'not_required');
   const view = { state: 'failed', canUse: false, observation: raw } as const;
 
-  expect(getStatusTextKey('mcp', { mcp: raw }, undefined, view)).toBe('com_nav_mcp_status_error');
+  expect(getMCPStatusLabelKey(raw, false, view)).toBe('com_nav_mcp_status_error');
   expect(getStatusColor('mcp', { mcp: raw }, undefined, view)).toBe('bg-status-error');
   expect(getMCPControlState(raw, view)).toBe('error');
 });
