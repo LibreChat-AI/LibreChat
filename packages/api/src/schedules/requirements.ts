@@ -1,4 +1,5 @@
 import {
+  SkillsScope,
   AgentCapabilities,
   EModelEndpoint,
   MAX_SUBAGENT_DEPTH,
@@ -6,6 +7,7 @@ import {
   MAX_SUBAGENT_RUN_CONFIGS,
   isActionTool,
   resolveModelCatalogKey,
+  resolveAgentSkillsScope,
 } from 'librechat-data-provider';
 import type {
   AgentMethods,
@@ -335,10 +337,21 @@ export async function resolveScheduledMCPRequirements(
     [...attempted].filter((id) => id !== agentId && !accessibleById.has(id)),
   );
   const { reachable } = resolveReachableGraph(explicitSeeds, expanded, graphEdges, skippedAgentIds);
+  const skillsAvailable = (
+    (await loadAppConfig())?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? []
+  ).includes(AgentCapabilities.skills);
   for (const id of reachable) {
     const agent = accessibleById.get(id);
     if (!agent || !expanded.has(id)) continue;
     candidates.push(...(agent.tools ?? []).map((name) => ({ name, agentId: agent.id })));
+    // Skills are not a tool an agent lists: they come with the agent's own setting. One item
+    // stands for all of them, whichever the agent can use now or is given later.
+    if (
+      skillsAvailable &&
+      resolveAgentSkillsScope(agent.skills, agent.skills_enabled, agent.skills_scope) !==
+        SkillsScope.none
+    )
+      candidates.push({ name: AgentCapabilities.skills, agentId: agent.id });
     tools.push(
       ...(agent.tools ?? [])
         .filter((tool) => !isActionTool(tool))

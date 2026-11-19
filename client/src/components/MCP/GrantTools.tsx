@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
-import { Tools } from 'librechat-data-provider';
 import { Label, Button, Checkbox } from '@librechat/client';
+import { Tools, AgentCapabilities } from 'librechat-data-provider';
 import type {
   ScheduledMCPTarget,
   ScheduleMCPConsentView,
@@ -14,6 +14,8 @@ const toolKeys = new Map<string, TranslationKeys>([
   [Tools.execute_code, 'com_ui_schedule_consent_tool_code'],
   [Tools.web_search, 'com_ui_schedule_consent_tool_web'],
   [Tools.file_search, 'com_ui_schedule_consent_tool_files'],
+  // One item for every skill the agent can use, now or later.
+  [AgentCapabilities.skills, 'com_ui_schedule_consent_tool_skills'],
 ]);
 
 /** Every tool on offer for a server, whichever agents selected it. */

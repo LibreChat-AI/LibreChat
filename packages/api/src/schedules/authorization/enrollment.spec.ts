@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { Permissions, PermissionTypes } from 'librechat-data-provider';
+import { SkillsScope, Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from '@librechat/data-schemas';
 import type { IUser, AppConfig, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
@@ -135,6 +135,41 @@ it("offers the agents' other tools beside their MCP tools, from one walk of the 
   // A grant that limits MCP tools only, as an API key's does, offers none of them.
   const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
   expect(await limited.tools(identity, {})).toEqual([]);
+});
+it('offers the skills of an agent as one item, where it uses any and the deployment has skills on', async () => {
+  const { deps } = setup();
+  const config = await deps.getAppConfig({});
+  const withSkills = (capabilities: string[]) =>
+    jest.mocked(deps.getAppConfig).mockResolvedValue({
+      ...config,
+      endpoints: { agents: { capabilities } },
+    } as unknown as AppConfig);
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools: ['web_search'],
+      agent_ids: id === 'root' ? ['all', 'picked', 'off', 'none'] : [],
+      // Every skill the owner can use, two picked ones, switched off, and on with none picked.
+      ...(id === 'root' && { skills_enabled: true }),
+      ...(id === 'all' && { skills_enabled: true, skills_scope: SkillsScope.all }),
+      ...(id === 'picked' && { skills_enabled: true, skills: ['a', 'b'] }),
+      ...(id === 'off' && { skills_enabled: false, skills: ['a'] }),
+      ...(id === 'none' && { skills_enabled: true, skills_scope: SkillsScope.none }),
+    })),
+  );
+  withSkills(['skills']);
+  const using = (tools: { agentId: string; tools: string[] }[]) =>
+    tools.filter((selection) => selection.tools.includes('skills')).map(({ agentId }) => agentId);
+  expect(using([...(await createScheduleMCPOffer(deps).tools(identity, {}))])).toEqual([
+    'all',
+    'picked',
+    'root',
+  ]);
+  // With the capability off no agent runs a skill, so there is nothing to allow.
+  withSkills([]);
+  expect(using([...(await createScheduleMCPOffer(deps).tools(identity, {}))])).toEqual([]);
 });
 it("offers the agents' other tools where the operator declared no MCP server at all", async () => {
   const { deps } = setup();

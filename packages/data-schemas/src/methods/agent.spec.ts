@@ -717,6 +717,30 @@ describe('Agent Methods', () => {
       expect(nodes[0]).not.toHaveProperty('_id');
     });
 
+    test('getAgentGraphNodes says whether each agent uses skills', async () => {
+      const authorId = new mongoose.Types.ObjectId();
+      const base = { provider: 'test', model: 'test-model', author: authorId };
+      const all = await createAgent({
+        ...base,
+        id: `agent_${uuidv4()}`,
+        skills_enabled: true,
+        skills_scope: SkillsScope.all,
+      });
+      const off = await createAgent({ ...base, id: `agent_${uuidv4()}`, skills_enabled: false });
+      const plain = await createAgent({ ...base, id: `agent_${uuidv4()}` });
+      const nodes = await methods.getAgentGraphNodes([all.id, off.id, plain.id]);
+      const byId = new Map(nodes.map((node) => [node.id, node]));
+      // As stored: the reader adds no reading of its own.
+      expect(byId.get(all.id)).toMatchObject({
+        skills_enabled: all.skills_enabled,
+        skills_scope: all.skills_scope,
+      });
+      expect(all).toMatchObject({ skills_enabled: true, skills_scope: SkillsScope.all });
+      expect(byId.get(off.id)).toMatchObject({ skills_enabled: false });
+      expect(byId.get(plain.id)).not.toHaveProperty('skills');
+      expect(byId.get(plain.id)).not.toHaveProperty('skills_scope');
+    });
+
     test('getAgentModelSummaries loads only the models list fields', async () => {
       const { agentId, authorId } = createTestIds();
       const agent = await createAgent({

@@ -661,6 +661,30 @@ describe('the tools a run loads under a grant', () => {
     });
   });
 
+  it('treats the skills of an agent as one item: allowed, the tools that run them pass the hook', async () => {
+    const decide = async (allowTools: string[], toolName: string) => {
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        tools: ['skills', 'web_search'],
+        allowTools,
+      });
+      expect(fixture.execution.narrow('root', ['skills'])).toEqual(
+        allowTools.includes('skills') ? ['skills'] : [],
+      );
+      return createScheduledMCPRunPolicy(fixture.execution, [{ id: 'root' }]).hook(
+        { toolName, toolInput: {}, executingAgentId: 'root' } as Parameters<
+          HookCallback<'PreToolUse'>
+        >[0],
+        new AbortController().signal,
+      );
+    };
+    // The catalog registers a tool to run a skill and one to read its files.
+    expect(await decide(['skills'], 'skill')).toEqual({});
+    expect(await decide(['skills'], 'read_file')).toEqual({});
+    // Another item does not stand for them, and skills stand for nothing else.
+    expect(await decide(['web_search'], 'skill')).toMatchObject({ decision: 'deny' });
+    expect(await decide(['skills'], 'execute_code')).toMatchObject({ decision: 'deny' });
+  });
+
   it('loads none of the other tools when the owner allowed none', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, {
       tools: ['execute_code', 'web_search'],

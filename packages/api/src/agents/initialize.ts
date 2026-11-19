@@ -1253,6 +1253,14 @@ export async function initializeAgent(
     shouldUseChatProjectContext || grantedTools !== inputAgent.tools
       ? { ...inputAgent, tools: grantedTools }
       : inputAgent;
+  /**
+   * Skills are one item of a schedule's grant. Left out, the agent runs without them: none
+   * is resolved, no catalog is injected and the skill tool is not registered, so the model
+   * is not offered what it would only be refused.
+   */
+  const skillsGranted =
+    narrowScheduledMCPTools(params.req, inputAgent.id, [AgentCapabilities.skills]).length > 0;
+  const accessibleSkillIds = skillsGranted ? params.accessibleSkillIds : [];
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
   const requestFileOwnerScope: FileOwnerScope | undefined = requestFileOwnerId
@@ -1442,8 +1450,8 @@ export async function initializeAgent(
    * those exact model-bound skill bodies before file usage/resource priming or
    * tool loading, then reuse the results below when expanding allowed tools.
    */
-  const hasSkillAccess = (params.accessibleSkillIds?.length ?? 0) > 0;
-  const skillAuthoringAvailable = params.skillAuthoringAvailable === true;
+  const hasSkillAccess = (accessibleSkillIds?.length ?? 0) > 0;
+  const skillAuthoringAvailable = skillsGranted && params.skillAuthoringAvailable === true;
   let manualSkillPrimes: ResolvedManualSkill[] | undefined;
   let alwaysApplySkillPrimes: ResolvedAlwaysApplySkill[] | undefined;
   let extraAllowedToolNames: string[] = [];
@@ -1455,7 +1463,7 @@ export async function initializeAgent(
         ? resolveManualSkills({
             names: params.manualSkills,
             getSkillByName: db.getSkillByName,
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             userId: user?.id,
             skillStates: params.skillStates,
             defaultActiveOnShare: params.defaultActiveOnShare,
@@ -1464,7 +1472,7 @@ export async function initializeAgent(
       db.listAlwaysApplySkills
         ? resolveAlwaysApplySkills({
             listAlwaysApplySkills: db.listAlwaysApplySkills,
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             userId: user?.id,
             skillStates: params.skillStates,
             defaultActiveOnShare: params.defaultActiveOnShare,
@@ -1472,7 +1480,7 @@ export async function initializeAgent(
         : Promise.resolve<ResolvedAlwaysApplySkill[] | undefined>(undefined),
       hasActivePiiFields(appConfig?.filters?.skills?.pii, ['name', 'description'])
         ? resolveSkillCatalog({
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             listSkillsByAccess: db.listSkillsByAccess,
             userId: user?.id,
             skillStates: params.skillStates,
@@ -2706,9 +2714,8 @@ export async function initializeAgent(
    * Ensures `getSkillByName` cannot resolve a deactivated skill even if the
    * LLM (or a direct-invocation path) names one.
    */
-  let executableSkillIds = params.accessibleSkillIds;
+  let executableSkillIds = accessibleSkillIds;
   let activeSkillNames: Set<string> | undefined;
-  const { accessibleSkillIds } = params;
   /**
    * Authoring runs go through catalog injection even with nothing accessible:
    * `injectSkillCatalog` owns the `skill` tool registration, and a model that

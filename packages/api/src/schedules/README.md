@@ -131,6 +131,19 @@ declared, can be granted for its other tools alone. Such a grant has no consent,
 carries its own lifetime (`grantedAtMs`, `absoluteExpiresAtMs`, `revokedAtMs`); one made before
 that is read from its consents (`grantLifetime`). An API key's grant limits MCP tools only.
 
+### Skills
+
+An agent's skills are one item, `skills`, offered for every agent that has skills turned on
+where the deployment has the skills capability. It stands for all of them, whichever the
+agent can use now or is given later: a skill is content the agent reads, and what a skill
+does is done with tools that are items of their own (code execution for a skill's scripts).
+
+- Allowed, the agent's skills are resolved as in chat, and the run's hook lets through the
+  two tools the catalog registers (`skill`, `read_file`).
+- Left out, `initializeAgent` resolves none for that agent: no catalog is injected, no skill
+  tool is registered, and manual or always-apply skills are not primed, so the model is not
+  offered what it would be refused.
+
 ### A tool the owner approves call by call
 
 Beside allowing a tool, the owner can set it to "ask me first". The grant stores those tools

@@ -737,6 +737,10 @@ export interface AgentGraphNode {
   agent_ids?: string[];
   edges?: IAgent['edges'];
   subagents?: IAgent['subagents'];
+  /** Whether the agent uses skills, and which: read to tell if it has any to run with. */
+  skills?: IAgent['skills'];
+  skills_enabled?: IAgent['skills_enabled'];
+  skills_scope?: IAgent['skills_scope'];
 }
 
 export interface AgentGraphAccess {
@@ -1447,6 +1451,9 @@ export function createAgentMethods(
         agent_ids: 1,
         edges: 1,
         subagents: 1,
+        skills: 1,
+        skills_enabled: 1,
+        skills_scope: 1,
       },
     ).lean<
       Array<
@@ -1461,6 +1468,9 @@ export function createAgentMethods(
           | 'agent_ids'
           | 'edges'
           | 'subagents'
+          | 'skills'
+          | 'skills_enabled'
+          | 'skills_scope'
         >
       >
     >();
@@ -1480,7 +1490,7 @@ export function createAgentMethods(
       visible = agents.filter((agent) => allowed.has(String(agent._id)));
     }
     return visible.map(
-      ({ id, provider, model, tools, mcpServerNames, agent_ids, edges, subagents }) => ({
+      ({
         id,
         provider,
         model,
@@ -1489,6 +1499,21 @@ export function createAgentMethods(
         agent_ids,
         edges,
         subagents,
+        skills,
+        skills_enabled,
+        skills_scope,
+      }) => ({
+        id,
+        provider,
+        model,
+        tools,
+        mcpServerNames,
+        agent_ids,
+        edges,
+        subagents,
+        ...(skills_enabled != null && { skills_enabled }),
+        ...(skills_scope != null && { skills_scope }),
+        ...(skills != null && skills.length > 0 && { skills }),
       }),
     );
   }
