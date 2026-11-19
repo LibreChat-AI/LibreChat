@@ -65,6 +65,8 @@ export interface OAuthTestServerOptions {
   rotateRefreshTokens?: boolean;
   /** When true, /token validates client_id against the registered client that initiated /authorize */
   enforceClientId?: boolean;
+  /** Allow only public dynamic registrations while advertising confidential token endpoint methods. */
+  publicRegistrationOnly?: boolean;
   /** Scopes attached to newly issued tokens unless the authorization request asks for a scope. */
   tokenScopes?: string[];
   /** Scopes required by the protected MCP resource. Missing scopes produce a 403 insufficient_scope challenge. */
@@ -107,7 +109,7 @@ export interface OAuthTestServer {
   tokenTTL: number;
   tokenIssueTimes: Map<string, number>;
   issuedRefreshTokens: Map<string, string>;
-  registeredClients: Map<string, { client_id: string; client_secret: string }>;
+  registeredClients: Map<string, { client_id: string; client_secret?: string }>;
   tokenRequests: OAuthTokenRequestRecord[];
   getAuthCode: () => Promise<string>;
   notifyToolsChanged: () => Promise<void>;
@@ -152,6 +154,7 @@ export async function createOAuthMCPServer(
     refreshTokenTTLMs = 365 * 24 * 60 * 60 * 1000,
     rotateRefreshTokens = false,
     enforceClientId = false,
+    publicRegistrationOnly = false,
     tokenScopes = [],
     requiredScopes = [],
     scopesSupported = [...new Set([...tokenScopes, ...requiredScopes])],
@@ -182,7 +185,7 @@ export async function createOAuthMCPServer(
       scope?: string;
     }
   >();
-  const registeredClients = new Map<string, { client_id: string; client_secret: string }>();
+  const registeredClients: OAuthTestServer['registeredClients'] = new Map();
   let rejectedRefreshTokensRemaining = rejectRefreshTokens;
 
   let port = 0;
@@ -267,7 +270,11 @@ export async function createOAuthMCPServer(
           grant_types_supported: issueRefreshTokens
             ? ['authorization_code', 'refresh_token']
             : ['authorization_code'],
-          token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+          token_endpoint_auth_methods_supported: [
+            ...(publicRegistrationOnly ? ['none'] : []),
+            'client_secret_basic',
+            'client_secret_post',
+          ],
           code_challenge_methods_supported: ['S256'],
         }),
       );
@@ -289,15 +296,23 @@ export async function createOAuthMCPServer(
 
     if (url.pathname === '/register' && req.method === 'POST') {
       const body = await readRequestBody(req);
-      const data = JSON.parse(body) as { redirect_uris?: string[] };
+      const data = JSON.parse(body) as {
+        redirect_uris?: string[];
+        token_endpoint_auth_method?: string;
+      };
+      if (publicRegistrationOnly && data.token_endpoint_auth_method !== 'none') {
+        writeJson(res, 400, { error: 'invalid_client_metadata' });
+        return;
+      }
       const clientId = `client-${randomUUID().slice(0, 8)}`;
-      const clientSecret = `secret-${randomUUID()}`;
-      registeredClients.set(clientId, { client_id: clientId, client_secret: clientSecret });
+      const client = publicRegistrationOnly
+        ? { client_id: clientId, token_endpoint_auth_method: 'none' }
+        : { client_id: clientId, client_secret: `secret-${randomUUID()}` };
+      registeredClients.set(clientId, client);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
-          client_id: clientId,
-          client_secret: clientSecret,
+          ...client,
           redirect_uris: data.redirect_uris ?? [],
         }),
       );
@@ -334,6 +349,10 @@ export async function createOAuthMCPServer(
       if (!params) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid_request' }));
+        return;
+      }
+      if (publicRegistrationOnly && (req.headers.authorization || params.has('client_secret'))) {
+        writeJson(res, 401, { error: 'invalid_client' });
         return;
       }
 

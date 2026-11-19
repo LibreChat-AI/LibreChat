@@ -754,6 +754,10 @@ actions:
 #     type: streamable-http
 #     url: https://mcp.example.com/mcp
 #     requiresOAuth: true
+#     # Optional. For servers whose dynamic registration only accepts public clients.
+#     # The registered client determines subsequent token authentication.
+#     # oauth:
+#     #   registration_token_endpoint_auth_method: none
 #     # Stage rollout with coordination disabled (the default). Once EVERY replica is upgraded,
 #     # pause MCP traffic and drain active refreshes/callbacks on EVERY replica before changing
 #     # this flag. Apply the same value everywhere while paused, then resume. For rollback, drain,

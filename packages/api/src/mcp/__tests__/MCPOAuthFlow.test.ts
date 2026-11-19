@@ -7,7 +7,7 @@
 
 import { Keyv } from 'keyv';
 import { createHash } from 'crypto';
-import { TokenExchangeMethodEnum } from 'librechat-data-provider';
+import { MCPOptionsSchema, TokenExchangeMethodEnum } from 'librechat-data-provider';
 import type { OAuthTestServer } from './helpers/oauthTestServer';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { createOAuthMCPServer, MockKeyv, InMemoryTokenStore } from './helpers/oauthTestServer';
@@ -38,6 +38,56 @@ jest.mock('~/auth', () => ({
 describe('MCP OAuth Flow — Real HTTP Server', () => {
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('registers and exchanges a code with a public-only registration endpoint', async () => {
+    const server = await createOAuthMCPServer({
+      publicRegistrationOnly: true,
+      enforceClientId: true,
+      issueRefreshTokens: true,
+    });
+    const flowManager = new FlowStateManager<MCPOAuthTokens>(
+      new MockKeyv<MCPOAuthTokens | null>() as unknown as Keyv,
+      {
+        ttl: 30000,
+        ci: true,
+      },
+    );
+    try {
+      const initiate = (oauth?: ReturnType<typeof MCPOptionsSchema.parse>['oauth']) =>
+        MCPOAuthHandler.initiateOAuthFlow(
+          'test-server',
+          server.resourceUrl,
+          'test-user',
+          {},
+          oauth,
+        );
+      await expect(initiate()).rejects.toThrow();
+      expect(server.registeredClients.size).toBe(0);
+
+      const { oauth } = MCPOptionsSchema.parse({
+        type: 'streamable-http',
+        url: server.resourceUrl,
+        oauth: { registration_token_endpoint_auth_method: 'none' },
+      });
+      const { authorizationUrl, flowId, flowMetadata } = await initiate(oauth);
+      expect(flowMetadata.metadata?.token_endpoint_auth_methods_supported).toContain(
+        'client_secret_basic',
+      );
+      expect(flowMetadata.clientInfo?.token_endpoint_auth_method).toBe('none');
+      expect(flowMetadata.clientInfo?.client_secret).toBeUndefined();
+      expect(server.registeredClients.size).toBe(1);
+
+      const response = await fetch(authorizationUrl, { redirect: 'manual' });
+      expect(response.status).toBe(302);
+      const code = new URL(response.headers.get('location')!).searchParams.get('code')!;
+      await flowManager.initFlow(flowId, 'mcp_oauth', flowMetadata);
+      const tokens = await MCPOAuthHandler.completeOAuthFlow(flowId, code, flowManager, {});
+      expect(server.issuedTokens.has(tokens.access_token)).toBe(true);
+      expect(tokens.refresh_token).toBeDefined();
+    } finally {
+      await server.close();
+    }
   });
 
   describe('Token refresh with real server', () => {
