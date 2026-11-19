@@ -12,6 +12,8 @@ const {
   createDiscordGatewayStorage,
   createDiscordRuntimeStorage,
   createDiscordMessageStorage,
+  createDiscordDmStorage,
+  createChannelIdentityStorage,
   logger,
 } = require('@librechat/data-schemas');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
@@ -32,6 +34,8 @@ module.exports = createDiscordChannelRuntime({
   gateway: createDiscordGatewayStorage(mongoose, policy.ownership),
   discovery: createDiscordRuntimeStorage(mongoose),
   messages: createDiscordMessageStorage(mongoose),
+  dm: createDiscordDmStorage(mongoose, policy.dm),
+  identities: createChannelIdentityStorage(mongoose),
   application,
   access: { getAgent: db.getAgent, getEffectivePermissions },
   policy,

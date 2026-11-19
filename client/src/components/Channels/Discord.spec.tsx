@@ -86,7 +86,7 @@ beforeEach(() => {
     applicationId: app.applicationId,
     commandId: '623456789012345678',
     providerVersion: '723456789012345678',
-    manifestVersion: '1',
+    manifestVersion: '2',
   });
   jest.spyOn(dataService, 'connectDiscordGuild').mockResolvedValue(connectResponse);
   jest.spyOn(dataService, 'cancelDiscordInstall').mockResolvedValue(true);
@@ -362,7 +362,7 @@ test('registers commands only after explicit action using current revision and m
     applicationId: string;
     commandId: string;
     providerVersion: string;
-    manifestVersion: '1';
+    manifestVersion: '2';
   }>();
   jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
   const { user, client } = await page();
@@ -377,7 +377,7 @@ test('registers commands only after explicit action using current revision and m
   const input = {
     applicationId: app.applicationId,
     expectedRevision: app.revision,
-    manifestVersion: '1',
+    manifestVersion: '2',
   };
   expect(dataService.registerDiscordCommands).toHaveBeenCalledWith(input);
   expect(
@@ -391,7 +391,7 @@ test('registers commands only after explicit action using current revision and m
       applicationId: app.applicationId,
       commandId: '623456789012345678',
       providerVersion: '723456789012345678',
-      manifestVersion: '1',
+      manifestVersion: '2',
     }),
   );
   expect(await screen.findByText('com_ui_discord_commands_success')).toBeVisible();
@@ -434,7 +434,7 @@ test.each(['application_changed', 'rate_limited', 'provider_refused'])(
       expect(jest.mocked(dataService.registerDiscordCommands).mock.calls[1][0]).toEqual({
         applicationId: app.applicationId,
         expectedRevision: 'app-r2',
-        manifestVersion: '1',
+        manifestVersion: '2',
       }),
     );
   },
@@ -462,7 +462,7 @@ test('clears old registration success when credentials rotate and uses the refre
     expect(jest.mocked(dataService.registerDiscordCommands).mock.calls[1][0]).toEqual({
       applicationId: app.applicationId,
       expectedRevision: 'app-r2',
-      manifestVersion: '1',
+      manifestVersion: '2',
     }),
   );
 });
@@ -472,7 +472,7 @@ test('does not attach a previous account registration result to the next account
     applicationId: string;
     commandId: string;
     providerVersion: string;
-    manifestVersion: '1';
+    manifestVersion: '2';
   }>();
   jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
   const { user, client, rerender } = await page();
@@ -487,7 +487,7 @@ test('does not attach a previous account registration result to the next account
       applicationId: app.applicationId,
       commandId: '623456789012345678',
       providerVersion: '723456789012345678',
-      manifestVersion: '1',
+      manifestVersion: '2',
     }),
   );
   expect(screen.queryByText('com_ui_discord_commands_success')).toBeNull();
@@ -515,7 +515,7 @@ test('rejects a mismatched registration acknowledgement without claiming success
     applicationId: '823456789012345678',
     commandId: '623456789012345678',
     providerVersion: '723456789012345678',
-    manifestVersion: '1',
+    manifestVersion: '2',
   });
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));

@@ -1,4 +1,5 @@
 export enum QueryKeys {
+  discordDmSelections = 'discordDmSelections',
   discordBindings = 'discordBindings',
   discordApps = 'discordApps',
   discordGuilds = 'discordGuilds',
@@ -150,6 +151,7 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  discordDmSelections = 'discordDmSelections',
   discordBindings = 'discordBindings',
   discordSetup = 'discordSetup',
   slackApps = 'slackApps',

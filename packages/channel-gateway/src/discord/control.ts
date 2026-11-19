@@ -4,12 +4,15 @@ import {
   discordInboxClaimSchema,
   discordInboxSubmissionSchema,
   discordInboxFenceSchema,
+  discordDmConsumeSchema,
+  discordDmAcknowledgementSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordApplicationSecurity,
   DiscordInboxSubmission,
   DiscordInboxClaim,
   DiscordInboxFence,
+  DiscordDmConsume,
 } from 'librechat-data-provider';
 import type { ServiceConnection } from '../transport';
 import { ServiceClient, ServiceError, boundedBody } from '../transport';
@@ -69,6 +72,30 @@ export class DiscordControlClient extends ServiceClient {
     const result = admissionSchema.parse(await this.decode(response));
     if (![200, 201].includes(response.status) || result.value.eventId !== parsed.eventId)
       throw new Error('Discord admission was not confirmed');
+    return 'accepted';
+  }
+  async select(
+    input: DiscordDmConsume,
+    signal?: AbortSignal,
+  ): Promise<'accepted' | 'conflict' | 'capacity'> {
+    const parsed = discordDmConsumeSchema.parse(input);
+    const response = await this.raw(`${this.root}/dm/select`, parsed, signal);
+    if ([404, 409, 429].includes(response.status)) {
+      await boundedBody(response, 65536);
+      return response.status === 429 ? 'capacity' : 'conflict';
+    }
+    const decoded = await this.decode(response);
+    const result = z
+      .object({ ok: z.literal(true), value: discordDmAcknowledgementSchema })
+      .strict()
+      .parse(decoded).value;
+    if (
+      response.status !== 200 ||
+      result.applicationId !== parsed.applicationId ||
+      result.externalUserId !== parsed.externalUserId ||
+      result.dmChannelId !== parsed.dmChannelId
+    )
+      throw new Error('Discord DM selection was not confirmed');
     return 'accepted';
   }
   async claim(

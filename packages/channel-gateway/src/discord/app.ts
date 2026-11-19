@@ -59,6 +59,7 @@ export class DiscordGatewayApp {
       ready: () => this.ready && this.ownersHealthy && this.workersHealthy,
       security: (id, signal) => this.control.security(id, signal),
       submit: (input, signal) => this.control.submit(input, signal),
+      select: (input, signal) => this.control.select(input, signal),
       log,
     });
   }

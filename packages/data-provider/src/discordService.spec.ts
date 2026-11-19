@@ -4,6 +4,35 @@ import request from './request';
 
 const root = '/api/channels/discord';
 afterEach(() => jest.restoreAllMocks());
+test('keeps private DM codes out of mutation inputs and encodes owner list/revoke paths', async () => {
+  const get = jest
+    .spyOn(request, 'get')
+    .mockResolvedValue({ ok: true, value: { selections: [], enabled: false } });
+  const post = jest
+    .spyOn(request, 'post')
+    .mockResolvedValue({ ok: true, value: { code: 'private-code', expiresAtMs: 123 } });
+  const remove = jest
+    .spyOn(request, 'deleteWithOptions')
+    .mockResolvedValue({ ok: true, value: null });
+  expect(await service.listDiscordDmSelections('cursor/?')).toEqual({
+    selections: [],
+    enabled: false,
+  });
+  expect(get).toHaveBeenCalledWith(`${root}/dm/selections?cursor=cursor%2F%3F`);
+  expect(
+    await service.issueDiscordDmCode({ linkId: 'link', expectedLinkRevision: 'current' }),
+  ).toEqual({ code: 'private-code', expiresAtMs: 123 });
+  expect(post).toHaveBeenCalledWith(`${root}/dm/codes`, {
+    linkId: 'link',
+    expectedLinkRevision: 'current',
+  });
+  expect(
+    await service.revokeDiscordDmSelection({ selectionId: 'id/?', revision: 'current' }),
+  ).toBeNull();
+  expect(remove).toHaveBeenCalledWith(`${root}/dm/selections/id%2F%3F`, {
+    data: { revision: 'current' },
+  });
+});
 
 test('encodes opaque cursors and resource IDs', async () => {
   const get = jest.spyOn(request, 'get').mockResolvedValue({});

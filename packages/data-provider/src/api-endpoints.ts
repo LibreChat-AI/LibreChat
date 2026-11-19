@@ -30,6 +30,9 @@ export const slackWorkspaces = (workspaceId?: string): string =>
   `${apiBaseUrl()}/api/channels/workspaces${workspaceId ? `/${encodeURIComponent(workspaceId)}` : ''}`;
 
 export const discordManagement = (): string => `${apiBaseUrl()}/api/channels/discord`;
+export const discordDmSelections = (selectionId?: string): string =>
+  `${discordManagement()}/dm/selections${selectionId ? `/${encodeURIComponent(selectionId)}` : ''}`;
+export const discordDmCodes = (): string => `${discordManagement()}/dm/codes`;
 export const discordCommands = (applicationId: string): string =>
   `${discordManagement()}/apps/${encodeURIComponent(applicationId)}/commands`;
 export const discordBinding = (agentId: string): string =>

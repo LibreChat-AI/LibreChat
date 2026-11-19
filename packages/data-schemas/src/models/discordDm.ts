@@ -119,7 +119,7 @@ export function createDiscordDmSelectionModel(
   );
   schema.index({ tenantId: 1, selectionId: 1 }, { unique: true });
   schema.index({ tenantId: 1, applicationId: 1, state: 1, expiresAtMs: 1 });
-  schema.index({ tenantId: 1, 'source.userId': 1 });
+  schema.index({ tenantId: 1, 'source.userId': 1, selectionId: 1 });
   schema.index({ tenantId: 1, 'source.channelId': 1 });
   schema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
   applyTenantIsolation(schema);
