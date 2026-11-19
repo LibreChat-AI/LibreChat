@@ -1189,6 +1189,7 @@ const managementClientBindingSchema = z
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/, 'must be a valid tenant id')
       .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed'),
     enabled: z.boolean().default(true),
+    conversationRead: z.boolean().optional(),
   })
   .strict();
 
@@ -3079,6 +3080,8 @@ export const outboundTimeoutsSchema = z.object({
   moderationMs: outboundTimeoutMs,
   /** Reading a stored image, by URL or from blob storage, to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
+  /** Reading a stored document, audio or video file from storage to encode it for a provider. */
+  fileFetchMs: outboundTimeoutMs,
   /** Each call a built-in tool makes to its API (weather, Wolfram, web search). */
   toolsMs: outboundTimeoutMs,
   /** Each text-to-speech or speech-to-text provider request. */

@@ -660,6 +660,28 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(4.5));
     });
 
+    it('reads a document under timeouts.fileFetchMs', async () => {
+      const req = { config: { timeouts: { fileFetchMs: 1_234 } } } as unknown as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][4]).toMatchObject({
+        timeout: 1_234,
+        timeoutErrorMessage: expect.stringContaining('timeouts.fileFetchMs (1234 ms)'),
+      });
+    });
+
     it('leaves reads for other providers unbounded', async () => {
       const req = createMockRequest() as ServerRequest;
       const file = createMockFile(3);

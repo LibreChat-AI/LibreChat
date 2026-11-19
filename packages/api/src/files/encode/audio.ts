@@ -11,6 +11,7 @@ import {
   skipMissingAttachment,
   isConfiguredProviderMediaType,
 } from './utils';
+import { configuredRequestBudget } from '~/utils/timeouts';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { validateAudio } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
@@ -42,7 +43,13 @@ export async function encodeAndFormatAudios(
   const results = await Promise.allSettled(
     files.map((file) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+        ),
       ),
     ),
   );

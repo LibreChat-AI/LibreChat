@@ -64,7 +64,11 @@ describe.each(encoders)('$kind storage failure logging', ({ kind, encode, mime, 
       encode(req, [file], { provider: Providers.GOOGLE, onMissingFile }, strategies),
     ).resolves.toEqual(empty);
 
-    expect(download).toHaveBeenCalledWith(req, url);
+    expect(download).toHaveBeenCalledWith(
+      req,
+      url,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(onMissingFile).not.toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledWith(

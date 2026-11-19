@@ -97,6 +97,7 @@ jest.mock('~/server/routes/agents/v1', () => ({
 jest.mock('~/server/routes/agents/openai', () => require('express').Router());
 jest.mock('~/server/routes/agents/responses', () => require('express').Router());
 jest.mock('~/server/routes/agents/skills', () => require('express').Router());
+jest.mock('~/server/routes/agents/conversations', () => require('express').Router());
 jest.mock('~/server/routes/agents/management', () => {
   const router = require('express').Router();
   router.use((_req, res) => res.status(200).json({ surface: 'management' }));

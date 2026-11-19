@@ -216,3 +216,10 @@ export * from './postgres/mongo';
 export { migrateMCPReservationIndex } from './migrations/mcpReservations';
 
 export { repairAuthorizationDuplicates } from './migrations/authorization';
+
+export type {
+  ConversationMetadata,
+  ConversationMetadataBoundary,
+  ConversationMetadataMethods,
+  ConversationMetadataScope,
+} from './methods/conversationMetadata';

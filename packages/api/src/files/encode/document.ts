@@ -30,6 +30,7 @@ import {
   getConfiguredFileSizeLimit,
 } from './utils';
 import { validatePdf, validateBedrockDocument, getBedrockDocumentLimit } from '~/files/validation';
+import { configuredRequestBudget } from '~/utils/timeouts';
 import { someReachableAgent } from '~/agents/traversal';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { runGuardedEncode } from './memoryGuard';
@@ -383,7 +384,7 @@ export async function encodeAndFormatDocuments(
           file,
           encodingMethods,
           getStrategyFunctions,
-          undefined,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
           readLimits[index],
         ),
       ),
