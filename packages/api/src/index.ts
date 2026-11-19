@@ -196,3 +196,5 @@ export * from './channels/discord/inboxHttp';
 export * from './channels/discord/commands';
 export * from './channels/discord/gateway';
 export * from './channels/discord/gatewayHttp';
+export * from './channels/discord/discovery';
+export * from './channels/discord/discoveryHttp';
