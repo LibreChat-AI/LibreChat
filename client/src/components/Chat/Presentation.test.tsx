@@ -129,7 +129,7 @@ jest.mock('~/components/Chat/Input/Files/DragDropWrapper', () => ({
 
 jest.mock('~/components/SidePanel', () => ({
   SidePanelGroup: ({ panel, children }: { panel: React.ReactNode; children: React.ReactNode }) => (
-    <div>
+    <div data-testid="side-panel-group">
       {children}
       {panel}
     </div>
@@ -287,6 +287,26 @@ describe('Presentation Artifact loading', () => {
     expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
     expect(testGlobal.presentationArtifactModuleEvaluations).toBe(1);
     expect(mockUseParentSubagentsQuery).toHaveBeenCalledWith('', { enabled: false }, false);
+  });
+
+  it('gives the session rail a column of its own, past the side panel', () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <div />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    const slot = screen.getByTestId('session-rail-slot');
+    const group = screen.getByTestId('side-panel-group');
+    expect(group.nextElementSibling).toBe(slot);
+    expect(group).not.toContainElement(slot);
+    /** Empty, the column takes no room: it is not a box until a rail is drawn in it. */
+    expect(slot).toHaveClass('contents');
+    expect(slot).toBeEmptyDOMElement();
   });
 
   it('loads the parent child index only for Agent conversations', () => {

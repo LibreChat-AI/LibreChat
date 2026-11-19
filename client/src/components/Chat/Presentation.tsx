@@ -21,6 +21,7 @@ import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { appSideChatHost } from '~/Providers/SideChatHostContext';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
+import { SessionRailSlot } from '~/components/Chat/Session';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
 import { useGetStartupConfig } from '~/data-provider';
@@ -269,6 +270,9 @@ export default function Presentation({
                 </MessageSurfaceContext.Provider>
               </main>
             </SidePanelGroup>
+            {/* The session rail's own column, past the side panel: the header's control draws
+                the rail here, so the list of what is running stays put while a panel opens. */}
+            <SessionRailSlot />
           </ParentSubagentsProvider>
           {isUndocked && artifactsElement != null && (
             <UndockedArtifacts hidden={routePending}>{artifactsElement}</UndockedArtifacts>

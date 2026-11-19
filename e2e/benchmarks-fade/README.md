@@ -29,6 +29,16 @@ transcript, from a Chromium trace of the built client:
   the slide; each direction is traced on its own. `ms/frame` and the longest task say whether
   the slide can hold a frame rate. `FADE_PERF_PROFILE=1` adds the script's self time and
   `FADE_PERF_WHY=1` the components that render for each toggle.
+- **`rail.perf.spec.ts`**: the cost of opening and closing the session rail beside the thread,
+  with the sidebar's toggle traced in the same run as the yardstick. The rail does not slide, so
+  the thread changes width once. `FADE_PERF_WHY=1` counts what renders for each toggle, beside an
+  idle second and the sidebar's: no message row should, at any thread length.
+  A second test grows the last reply for three seconds with the rail closed and then open and
+  listing running work, and prints the page's compositor layer count beside each: a row that
+  animates is a layer, and every frame of the thread pays for the layers on the page. For the
+  cost per kind of stream event, run the replay with `FADE_PERF_RAIL=closed` and then `open`:
+  the conversation becomes an agent's with running tools, finished tools and subagents staged
+  for the rail (`rail.ts`), and the two runs differ only in whether the rail is showing.
 - **`scroll.perf.spec.ts`**: the cost of reading back through the thread, a page at a time
   from the latest turn towards the first and back. Rows far from the viewport are skipped by
   the browser and laid out again as a scroll brings them near, so this is where that work
@@ -74,6 +84,7 @@ by side.
 | `FADE_PERF_GAP_MS`       | Pause after each replayed frame; 150 by default.                     |
 | `FADE_PERF_ANIMATIONS`   | `1` lists what is animating during the replay, and which properties. |
 | `FADE_PERF_WHY`          | `1` counts component renders across the replay, with their causes.   |
+| `FADE_PERF_RAIL`         | `closed` or `open`: stages background work for the session rail.     |
 | `FADE_PERF_WHY_LIMIT`    | How many components that count lists; 80 by default.                 |
 
 ## Reading the output

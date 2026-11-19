@@ -3,12 +3,7 @@ import { useSetAtom } from 'jotai';
 import { Button, cn } from '@librechat/client';
 import { ChevronRight, Users } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
-import type {
-  TMessage,
-  PartMetadata,
-  TAttachment,
-  TMessageContentParts,
-} from 'librechat-data-provider';
+import type { PartMetadata, TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { Agent } from 'librechat-data-provider';
 import type { MessagePartMessage, MessagePartsHost, ToolCallChrome } from '../../react/host';
@@ -21,6 +16,7 @@ import {
 import { isLiveSubagentStatus, subagentStatusLabelKey } from '../../react/subagents/status';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
 import { isSelfSpawn as isSelfSpawnType } from '../../react/subagents/author';
+import { pickTailIndex, pickTailPart } from '../../react/subagents/tail';
 import { parseSubagentBackgroundHandle } from '../../core/parts/handle';
 import { lastVisibleContentIdx } from '../../core/parts/activityLabels';
 import { resolveSubagentAgentId } from '../../react/subagents/identity';
@@ -554,21 +550,6 @@ function useDetachedStatus(threadId: string, taskId: string) {
     (child?.latestTaskId === taskId ? child.status : undefined)
   );
 }
-
-/**
- * Where a reply's newest row is: its last part that draws something. A batch of tool calls ends
- * with an empty label reservation, which draws nothing until its label arrives.
- */
-const pickTailIndex = (tail: TMessage | null): number | null => {
-  if (tail == null || tail.isCreatedByUser) return null;
-  const index = lastVisibleContentIdx(tail.content);
-  return index < 0 ? null : index;
-};
-
-const pickTailPart = (tail: TMessage | null): TMessageContentParts | null => {
-  const index = pickTailIndex(tail);
-  return index == null ? null : (tail?.content?.[index] ?? null);
-};
 
 /**
  * A detached child's row, read from its thread's messages wherever something is following that

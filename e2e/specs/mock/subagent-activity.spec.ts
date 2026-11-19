@@ -242,6 +242,97 @@ test.describe('detached subagent activity', () => {
       }
     }
   });
+  test('lists detached children in the session rail and opens one beside it @scenario:session-rail-lists-and-opens-children', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = `rail-${Date.now().toString(36)}`;
+    const childNames = [uniqueAgentName('E2E Rail Child A'), uniqueAgentName('E2E Rail Child B')];
+    const parentName = uniqueAgentName('E2E Rail Parent');
+    const createdAgentIds: string[] = [];
+
+    try {
+      await page.goto('/c/new');
+      /** The control is offered before the chat has anything to list, and says so. */
+      const toggle = page.getByTestId('header-background-tasks-button');
+      const rail = page.getByRole('complementary', { name: 'Session' });
+      await expect(toggle).toHaveAccessibleName('Session');
+      await toggle.click();
+      await expect(rail).toContainText('will show up here');
+      await rail.getByRole('button', { name: 'Close session' }).click();
+      await expect(rail).toHaveCount(0);
+      await expect(toggle).toBeFocused();
+
+      const token = await getAccessToken(page);
+      const children: AgentDetail[] = [];
+      for (const childName of childNames) {
+        const child = await createAgent(page, token, childName);
+        children.push(child);
+        createdAgentIds.push(child.id);
+      }
+      const parent = await createAgent(page, token, parentName, {
+        enabled: true,
+        allowSelf: false,
+        agent_ids: children.map((child) => child.id),
+      });
+      createdAgentIds.push(parent.id);
+
+      await selectAgent(page, parentName);
+      const response = await sendMessageAndWaitForCompletion(
+        page,
+        `${DETACHED_ACTIVITY_MARKER}${children.map((child) => child.id).join(',')}:${label}`,
+      );
+      expect(response.ok()).toBeTruthy();
+
+      /** The children outlive the parent's turn, and the control counts them from the header. */
+      await expect(toggle).toHaveAccessibleName(/^Session, 2 running/, { timeout: 30_000 });
+      await toggle.click();
+      const rows = rail.getByTestId('session-row');
+      await expect(rows).toHaveCount(2);
+      for (const childName of childNames) {
+        await expect(rail).toContainText(childName);
+      }
+      await expect(rail.getByRole('button', { name: /^Stop task/ })).toHaveCount(2);
+      /** Each running child's row says what it is on now, from the thread the page follows. */
+      await expect(rail.getByTestId('session-row-now')).toHaveCount(2, { timeout: 30_000 });
+      await expect(rail.getByTestId('session-row-now').first()).toContainText(/child-\d-phase-\d+/);
+
+      /** A child opens in the side panel, and the rail keeps its own column beside it. */
+      const open = rows.first().getByRole('button', { name: /^Open subagent/ });
+      await open.click();
+      const panel = childActivityPanel(page);
+      await expect(panel).toBeVisible();
+      await expect(rail).toBeVisible();
+      await expect(open).toHaveAttribute('aria-current', 'true');
+      const [panelBox, railBox] = [await panel.boundingBox(), await rail.boundingBox()];
+      expect(panelBox).not.toBeNull();
+      expect(railBox).not.toBeNull();
+      expect((panelBox?.x ?? 0) + (panelBox?.width ?? 0)).toBeLessThanOrEqual(
+        (railBox?.x ?? 0) + 1,
+      );
+      expect((railBox?.x ?? 0) + (railBox?.width ?? 0)).toBeCloseTo(
+        page.viewportSize()?.width ?? 0,
+        0,
+      );
+
+      await expect(rows.filter({ hasText: 'Completed' })).toHaveCount(2, { timeout: 30_000 });
+      await expect(toggle).toHaveAccessibleName('Session');
+      await expect(rail.getByRole('button', { name: /^Stop/ })).toHaveCount(0);
+      await expect(rail.getByTestId('session-row-now')).toHaveCount(0);
+
+      /** The docked rail is a layout choice: it is still there after a reload. */
+      await panel.getByRole('button', { name: 'Close' }).click();
+      await page.reload();
+      await expect(rail).toBeVisible();
+      await expect(rows).toHaveCount(2);
+      await rail.getByRole('button', { name: 'Close session' }).click();
+    } finally {
+      for (const agentId of createdAgentIds.reverse()) {
+        await cleanupAgent(page, agentId);
+      }
+    }
+  });
+
   test('reads a long child thread a page at a time, and the rest on request @scenario:subagent-panel-pages-child-history', async ({
     page,
   }) => {

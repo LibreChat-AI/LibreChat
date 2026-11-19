@@ -3563,6 +3563,10 @@ export const interfaceSchema = z
      *  subagent's thread opens the new chat in the side panel instead of leaving
      *  the conversation. Enabled by default; false restores the navigation. */
     sideChat: z.boolean().optional(),
+    /** The session rail: a column beside the conversation listing its subagents and
+     *  background tasks, opened from the chat header. Enabled by default; false restores
+     *  the header button that lists them in a popover and appears only once there are any. */
+    sessionRail: z.boolean().optional(),
     /** Asks each viewer for consent before Google Tag Manager (`ANALYTICS_GTM_ID`)
      *  loads. A deployment that settles consent itself, such as an internal one
      *  covered by its own policy, can set false to load the container without the
@@ -3807,6 +3811,7 @@ export const interfaceSchema = z
     contextCost: false,
     artifactUndocking: true,
     sideChat: true,
+    sessionRail: true,
     feedback: true,
     peoplePicker: {
       users: true,

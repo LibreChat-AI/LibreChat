@@ -5,6 +5,7 @@ import {
   countAwaitingDelivery,
   countFailedDelivery,
   buildTaskRows,
+  nextTaskExpiry,
   findToolCallArgs,
   subagentTaskKey,
 } from '../rows';
@@ -117,6 +118,72 @@ describe('buildTaskRows', () => {
     expect(rows[0].subagent).toEqual({ threadId: 'running-child', taskId: 'task' });
     expect(rows[3].subagent).toBeUndefined();
     expect(rows[3].taskId).toBe('task');
+  });
+
+  it('carries who a subagent runs as, for a surface that names the agent', () => {
+    const [row] = buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      tools: [],
+      subagents: [child({ agentId: 'agent-1', subagentType: 'agent-1', subagentKind: 'agent' })],
+    });
+
+    expect(row).toMatchObject({
+      agentId: 'agent-1',
+      subagentType: 'agent-1',
+      subagentKind: 'agent',
+    });
+  });
+});
+
+describe('nextTaskExpiry', () => {
+  const rows = (settled: Parameters<typeof buildTaskRows>[0]['tools']) =>
+    buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      tools: settled,
+      subagents: [],
+    });
+  const tool = { toolName: 'bash_tool', toolCallId: 'call', cancellationRequested: false };
+
+  it('is the moment the earliest delivered, settled row leaves the list', () => {
+    const settledAt = iso(10_000);
+    expect(
+      nextTaskExpiry(
+        rows([
+          {
+            ...tool,
+            taskId: 'later',
+            status: 'completed',
+            startedAt: iso(9_000),
+            settledAt: iso(5_000),
+          },
+          { ...tool, taskId: 'earlier', status: 'completed', startedAt: iso(20_000), settledAt },
+        ]),
+      ),
+    ).toBe(Date.parse(settledAt) + RECENT_SUBAGENT_WINDOW_MS + 1);
+  });
+
+  it('never schedules for running work or for a result still owed to the agent', () => {
+    expect(
+      nextTaskExpiry(
+        rows([
+          { ...tool, taskId: 'running', status: 'running', startedAt: iso(9_000) },
+          {
+            ...tool,
+            taskId: 'owed',
+            status: 'completed',
+            startedAt: iso(9_000),
+            settledAt: iso(5_000),
+            delivery: 'pending',
+          },
+        ]),
+      ),
+    ).toBe(Infinity);
   });
 });
 
