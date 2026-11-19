@@ -26,10 +26,10 @@ import {
   channelFeedbackProviderFilter,
   isLaterChannelFeedbackEvent,
 } from './channelFeedbackProtocol';
+import { touchDiscordCommandAuthority } from './discordCommands';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchDiscordInbox } from './discordInboxScope';
-import { touchChannelAuthority } from './channelScope';
 import { digest } from './channelProtocol';
 
 const failure = (
@@ -77,11 +77,7 @@ export function createDiscordFeedbackRecorder(
       return await withChannelFeedbackAuthority(mongoose, mapping, async (session, expiredAt) => {
         if (
           !(await touchDiscordInbox(mongoose, record, fence, now, session)) ||
-          !(await touchChannelAuthority(
-            mongoose,
-            { ...record, principal, provider: 'discord', now },
-            session,
-          ))
+          !(await touchDiscordCommandAuthority(mongoose, scope, now, session))
         )
           throw new ChannelFeedbackAuthorityError();
         // Read the canonical private action; caller-provided copies never choose a vote or run.

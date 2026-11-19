@@ -9,17 +9,16 @@ name: Integration Tests
 # suffix, not folder, so a suite added anywhere under src is picked up.
 on:
   pull_request:
-    branches:
-      - main
-      - dev
-      - dev-staging
-      - release/*
+    # Include stacked PR bases: these suites must pass before each dependency merges.
     # The suites build and consume data-provider and data-schemas and import
     # across packages/api (the build-cache keys below hash all three src trees),
     # so they must re-run on any of them.
     paths:
       - 'packages/api/src/**'
       - 'packages/api/package.json'
+      - 'packages/api/jest*.mjs'
+      - 'packages/channel-gateway/src/**'
+      - 'packages/channel-gateway/jest.config.mjs'
       - 'packages/data-provider/src/**'
       - 'packages/data-provider/package.json'
       - 'packages/data-schemas/src/**'
@@ -129,6 +128,12 @@ jobs:
           NODE_ENV: test
           REDIS_URI: redis://127.0.0.1:6379
         run: npm run test:integration
+
+      - name: Run Discord native integration tests
+        working-directory: packages/api
+        env:
+          NODE_ENV: test
+        run: npm run test:discord-integration
 
       - name: Checkout merged browser enrollment compatibility fixture
         uses: actions/checkout@v5

@@ -11,6 +11,7 @@ import type {
   DiscordInstallationStorage,
   DiscordRouteStorage,
   DiscordInboxStorage,
+  DiscordThreadStorage,
   DiscordInboxResolutionStorage,
   DiscordGatewayStorage,
   DiscordRuntimeStorage,
@@ -53,6 +54,7 @@ export interface DiscordPolicyReader {
   read(): Promise<DiscordChannelConfig>;
   inbox(): Promise<DiscordChannelConfig['inbox']>;
   dm(): Promise<DiscordChannelConfig['dm']>;
+  threads(): Promise<{ maxThreadRoutes: number } | null>;
   ownership(): Promise<DiscordGatewayStoragePolicy | null>;
 }
 export interface DiscordChannelRuntime {
@@ -82,6 +84,10 @@ export function createDiscordPolicyReader(
       const policy = await read();
       return { ...policy.dm, enabled: policy.enabled && policy.dm.enabled };
     },
+    threads: async () => {
+      const policy = await read();
+      return policy.enabled ? { maxThreadRoutes: policy.gateway.maxThreadRoutes } : null;
+    },
     ownership: async () => {
       const policy = await read();
       return policy.enabled
@@ -102,6 +108,7 @@ export function createDiscordChannelRuntime(
     routes: DiscordRouteStorage;
     inbox: DiscordInboxStorage;
     inboxResolution: DiscordInboxResolutionStorage;
+    threads: DiscordThreadStorage;
     gateway: DiscordGatewayStorage;
     discovery: DiscordRuntimeStorage;
     messages: DiscordMessageStorage;
@@ -175,7 +182,7 @@ export function createDiscordChannelRuntime(
   });
   const inbox = createDiscordInboxService({
     storage: deps.inbox,
-    inspection: { storage: deps.inboxResolution, execute },
+    inspection: { storage: deps.inboxResolution, threads: deps.threads, execute },
     resolver,
     execute,
     encrypt: encryptCredential,

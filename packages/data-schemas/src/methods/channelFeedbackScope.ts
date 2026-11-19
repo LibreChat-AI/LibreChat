@@ -4,6 +4,7 @@ import { initializeResponseScopes, responseScopeKeys } from './responseScope';
 import { assertChannelTenant, touchChannelAuthority } from './channelScope';
 import { discordFeedbackDeliveryFilter } from './channelFeedbackSource';
 import { startRequiredTransactionSession } from '~/utils/transactions';
+import { touchChannelDestinationBinding } from './channelDestination';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createChannelRunModel } from '~/models/channelRun';
@@ -187,37 +188,23 @@ export async function withChannelFeedbackAuthority<T>(
       );
       if (
         admitted.matchedCount !== keys.length ||
-        !(await touchChannelAuthority(
-          mongoose,
-          {
-            tenantId: mapping.tenantId,
-            channelId: mapping.channelId,
-            agentId: mapping.agentId,
-            channelRevision: mapping.channelRevision,
-            ...(mapping.provider === 'discord'
-              ? {
-                  provider: 'discord',
-                  applicationId: mapping.applicationId,
-                  guildId: mapping.guildId,
-                  externalChannelId: mapping.externalChannelId,
-                  externalUserId: mapping.externalUserId,
-                  now: Date.now(),
-                  principal: {
-                    userId: mapping.principalId,
-                    linkId: mapping.linkId,
-                    linkRevision: mapping.linkRevision,
-                  },
-                }
-              : { teamId: mapping.teamId }),
-          },
-          session,
-        ))
+        (mapping.provider !== 'discord' &&
+          !(await touchChannelAuthority(
+            mongoose,
+            {
+              tenantId: mapping.tenantId,
+              channelId: mapping.channelId,
+              agentId: mapping.agentId,
+              channelRevision: mapping.channelRevision,
+              teamId: mapping.teamId,
+            },
+            session,
+          )))
       )
         throw new ChannelFeedbackAuthorityError();
-      if (
-        mapping.provider === 'discord' &&
-        !(await createChannelRunModel(mongoose)
-          .exists({
+      if (mapping.provider === 'discord') {
+        const run = await createChannelRunModel(mongoose)
+          .findOne({
             tenantId: mapping.tenantId,
             channelId: mapping.channelId,
             runId: mapping.runId,
@@ -243,9 +230,25 @@ export async function withChannelFeedbackAuthority<T>(
               $elemMatch: { outcome: 'confirmed', externalMessageKey: mapping.externalMessageKey },
             },
           })
-          .session(session))
-      )
-        throw new ChannelFeedbackAuthorityError();
+          .session(session)
+          .lean();
+        if (
+          !run ||
+          !(await touchChannelDestinationBinding(
+            mongoose,
+            {
+              tenantId: run.tenantId,
+              channelId: run.channelId,
+              agentId: run.agentId,
+              principal: run.principal,
+              admission: run.admission,
+            },
+            Date.now(),
+            session,
+          ))
+        )
+          throw new ChannelFeedbackAuthorityError();
+      }
       const state = await readChannelFeedbackSourceState(mongoose, mapping, session);
       const { expiredAt } = state;
       if (expiredAt && expiredAt.getTime() <= Date.now()) throw new ChannelFeedbackAuthorityError();

@@ -9,6 +9,13 @@ import type { DiscordApplicationSecurity, DiscordResolvedRoute } from 'librechat
 
 export interface DiscordRouteResolver {
   security(applicationId: string): Promise<DiscordApplicationSecurity | null>;
+  inspect?(input: {
+    applicationId: string;
+    guildId: string;
+    expectedApplicationRevision: string;
+  }): Promise<
+    (DiscordApplicationSecurity & { installationId: string; installationRevision: string }) | null
+  >;
   resolve(input: {
     applicationId: string;
     guildId: string;
@@ -42,6 +49,20 @@ export function createDiscordRouteResolver(deps: {
   }
   return {
     security,
+    async inspect(input) {
+      if (!channelSnowflakeSchema.safeParse(input.guildId).success) return null;
+      const app = await security(input.applicationId);
+      if (!app || app.applicationRevision !== input.expectedApplicationRevision) return null;
+      return tenantStorage.run(
+        { tenantId: app.tenantId === '_' ? undefined : app.tenantId },
+        async () => {
+          const guild = await deps.installations.resolveGuild(app.applicationId, input.guildId);
+          return guild && (await deps.enabled())
+            ? { ...app, installationId: guild.installationId, installationRevision: guild.revision }
+            : null;
+        },
+      );
+    },
     async resolve(input: {
       applicationId: string;
       guildId: string;
