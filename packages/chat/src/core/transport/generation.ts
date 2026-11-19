@@ -357,13 +357,13 @@ export function createGenerationTransport(init: GenerationTransportInit): ChatTr
       ) {
         return null;
       }
-      return openStream(init.wire(), {
+      const target = {
         streamId: request.streamId ?? status.streamId ?? request.chatId,
         generationCreatedAt: request.generationCreatedAt ?? status.createdAt,
         generationProtocolVersion: status.generationProtocolVersion,
-        signal: request.abortSignal,
-        resume: true,
-      });
+      };
+      request.onGeneration?.(target);
+      return openStream(init.wire(), { ...target, signal: request.abortSignal, resume: true });
     },
     abort(request) {
       if (init.abort == null) {
