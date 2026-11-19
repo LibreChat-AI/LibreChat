@@ -1122,7 +1122,7 @@ describe('a turn whose shape the server states', () => {
 
 describe('state beside the message list', () => {
   /** Main chat's handlers for that state, recording what they are called with and in what order. */
-  const record = () => {
+  const record = (protocol?: 1 | 2) => {
     const calls: Array<[string, ...unknown[]]> = [];
     const log =
       (name: string, result?: unknown) =>
@@ -1149,7 +1149,12 @@ describe('state beside the message list', () => {
         update: log('update'),
         seed: log('seed'),
         settleApplied: log('settle'),
+        appliedIds: log('appliedIds', ['steer-taken']),
+        adoptPromoted: log('adopt', ['steer-promoted']),
+        convertToQueued: log('toQueued'),
+        convertLocalToQueued: log('sweep'),
       },
+      protocol: () => protocol,
     } as unknown as Parameters<typeof createEventApplier>[0];
     return { calls, init, names: () => calls.map(([name]) => name) };
   };
@@ -1199,6 +1204,11 @@ describe('state beside the message list', () => {
       'attachment',
       'title',
       'update',
+      'appliedIds',
+      'settle',
+      'adopt',
+      'toQueued',
+      'sweep',
       'finalize',
     ]);
     const turn = expect.objectContaining({
@@ -1211,7 +1221,156 @@ describe('state beside the message list', () => {
       { data: (attachment as { data: unknown }).data, submission: turn },
     ]);
     expect(calls[5]).toEqual(['title', (title as { data: unknown }).data]);
-    expect(calls[7]).toEqual(['finalize', (final('Hi') as { data: unknown }).data, turn]);
+    expect(calls[12]).toEqual(['finalize', (final('Hi') as { data: unknown }).data, turn]);
+  });
+
+  it('turns the steers a run never took into queued turns at its final frame, before its usage settles', () => {
+    const { calls, init } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+    const left = { steerId: 'steer-left', text: 'Still waiting' };
+    const ending = final('Hi') as Extract<ChatEvent, { type: 'final' }>;
+    const frame = {
+      ...ending,
+      data: {
+        ...ending.data,
+        generationProtocolVersion: 2,
+        promotedSteers: [{ steerId: 'steer-promoted' }],
+        pendingSteers: [
+          left,
+          { steerId: 'steer-taken', text: 'In the reply' },
+          { steerId: 'server-id', clientSteerId: 'steer-promoted', text: 'Queued by the server' },
+        ],
+      },
+    } as ChatEvent;
+
+    applyEvent(created, ctx);
+    applyEvent(opened('s0', 0), ctx);
+    applyEvent(frame, ctx);
+
+    const reply = (frame as { data: { responseMessage: unknown } }).data.responseMessage;
+    const named = calls.filter(([name]) =>
+      ['appliedIds', 'settle', 'adopt', 'toQueued', 'sweep', 'finalize'].includes(name),
+    );
+    expect(named.map(([name]) => name)).toEqual([
+      'appliedIds',
+      'settle',
+      'adopt',
+      'toQueued',
+      'sweep',
+      'finalize',
+    ]);
+    expect(named[1]).toEqual(['settle', 'thread-1', [reply]]);
+    expect(named[2]).toEqual(['adopt', 'thread-1', [{ steerId: 'steer-promoted' }]]);
+    /** Only the one neither in the reply nor already a turn of the server's. */
+    expect(named[3]).toEqual([
+      'toQueued',
+      'thread-1',
+      [left],
+      { claimParked: true, generationProtocolVersion: undefined },
+    ]);
+    expect(named[4]).toEqual(['sweep', 'thread-1']);
+  });
+
+  it('settles no steers on a frame that only says the run is over, which whoever reads the stored rows does', () => {
+    const { calls, init } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+
+    applyEvent(created, ctx);
+    applyEvent(
+      {
+        type: 'final',
+        data: {
+          final: true,
+          reconcile: true,
+          reconcileReason: 'terminal_payload_missing',
+          terminalStatus: 'complete',
+          generationProtocolVersion: 2,
+          conversation: { conversationId: 'thread-1' },
+          pendingSteers: [{ steerId: 'steer-left', text: 'Waiting' }],
+        },
+      } as ChatEvent,
+      ctx,
+    );
+
+    const settling = ['appliedIds', 'settle', 'adopt', 'toQueued', 'sweep'];
+    expect(calls.filter(([name]) => settling.includes(name))).toEqual([]);
+  });
+
+  it('queues none of a final frame’s steers when neither it nor the generation speaks their protocol', () => {
+    const { calls, init } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+    const ending = final('Hi') as Extract<ChatEvent, { type: 'final' }>;
+
+    applyEvent(created, ctx);
+    applyEvent(
+      {
+        ...ending,
+        data: { ...ending.data, pendingSteers: [{ steerId: 'steer-left', text: 'Waiting' }] },
+      } as ChatEvent,
+      ctx,
+    );
+    expect(calls.find(([name]) => name === 'toQueued')?.[2]).toEqual([]);
+
+    /** A generation known to be on the first protocol carries them without the frame's echo. */
+    const legacy = record(1);
+    const second = createEventApplier(legacy.init);
+    const list = createList();
+    second.applyEvent(created, list.context);
+    second.applyEvent(
+      {
+        ...ending,
+        data: { ...ending.data, pendingSteers: [{ steerId: 'steer-left', text: 'Waiting' }] },
+      } as ChatEvent,
+      list.context,
+    );
+    expect(legacy.calls.find(([name]) => name === 'toQueued')?.slice(2)).toEqual([
+      [{ steerId: 'steer-left', text: 'Waiting' }],
+      { claimParked: true, generationProtocolVersion: 1 },
+    ]);
+  });
+
+  it('claims the steers an error the server wrote left behind, and moves none for a dropped stream', () => {
+    const { calls, init } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+    const sweeps = () => calls.filter(([name]) => name === 'sweep');
+
+    applyEvent(created, ctx);
+    /** A connection that dropped ends nothing: the run goes on, and so do its steers. */
+    applyEvent({ type: 'error', status: 0 }, ctx);
+    applyEvent({ type: 'error', status: 404, data: { message: 'gone' } }, ctx);
+    expect(sweeps()).toEqual([]);
+
+    /** An error from a server that does not speak the protocol parks nothing to claim. */
+    applyEvent({ type: 'error', data: { message: 'failed' } }, ctx);
+    expect(sweeps()).toEqual([]);
+
+    applyEvent(
+      { type: 'error', data: { message: 'failed', generationProtocolVersion: 2 } } as ChatEvent,
+      ctx,
+    );
+    expect(sweeps()).toEqual([
+      ['sweep', 'thread-1', { claimParked: true, generationProtocolVersion: undefined }],
+    ]);
+  });
+
+  it('moves only the steers the server refused when the reader closes the stream', () => {
+    const { calls, init } = record();
+    const { applyEvent } = createEventApplier(init);
+    const { context: ctx } = createList();
+
+    /** No turn is named yet, so there is no conversation whose steers to move. */
+    applyEvent({ type: 'abort' }, ctx);
+    expect(calls.filter(([name]) => name === 'sweep')).toEqual([]);
+
+    applyEvent(created, ctx);
+    applyEvent({ type: 'abort' }, ctx);
+    expect(calls.filter(([name]) => name === 'sweep')).toEqual([
+      ['sweep', 'thread-1', { statuses: ['failed'] }],
+    ]);
   });
 
   it('rebuilds what a late joiner missed from the snapshot, then applies what it carries', () => {

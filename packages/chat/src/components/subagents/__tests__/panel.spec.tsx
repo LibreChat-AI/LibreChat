@@ -4768,6 +4768,7 @@ describe('SubagentThreadPanel', () => {
       canSend: () => false,
       send: () => false,
       stop: () => Promise.resolve(),
+      attach: () => undefined,
       ...overrides,
     });
 

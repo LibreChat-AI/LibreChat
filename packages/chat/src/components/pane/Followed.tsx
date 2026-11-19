@@ -31,7 +31,7 @@ export type FollowedThreadProps = {
 const none = (): null => null;
 
 /**
- * A conversation beside the main one has no queued turn of the reader's waiting on it and no
+ * A conversation the reader only follows has no queued turn of theirs waiting on it and no
  * steers of theirs, and a surface narrow enough to sit beside a chat has no room for the
  * navigation rail.
  */
@@ -40,6 +40,12 @@ const followedSlots: ChatScreenMessagesSlots = {
   renderPendingSteers: none,
   renderNav: none,
 };
+
+/**
+ * One of their own, which they drive, has both: the steers a run has not taken yet and the
+ * queued turn about to be sent are drawn at the end of its list, as main chat draws them.
+ */
+const ownSlots: ChatScreenMessagesSlots = { renderNav: none };
 
 /** The chat's own list, where the page's host would hand a row main chat's. */
 const useFollowedMessages: MessagesHost['useGetMessages'] = () => useChatContext().getMessages;
@@ -50,9 +56,9 @@ const useNoAddedConversation: MessagesHost['useGetAddedConvo'] = () => noAddedCo
 
 /**
  * The page's messages host with the members that act on main chat pointed at this one: a row
- * reads this chat's list, the reader has no queued turn here, and a rerun here does not take
- * the model main chat is being compared with. Reading it marks a conversation seen only when it
- * is one of the reader's own (`own`); a thread that is not has no read state of theirs to mark.
+ * reads this chat's list, and a rerun here does not take the model main chat is being compared
+ * with. Only a conversation of the reader's own (`own`) has a queued turn of theirs to wait on,
+ * and read state of theirs to mark when it is read.
  */
 function useFollowedMessagesHost(own: boolean): MessagesHost {
   const host = useMessagesHost();
@@ -60,9 +66,8 @@ function useFollowedMessagesHost(own: boolean): MessagesHost {
     () => ({
       ...host,
       useGetMessages: useFollowedMessages,
-      useHasPendingTurn: useNoPendingTurn,
       useGetAddedConvo: useNoAddedConversation,
-      ...(!own && { useSeenSource: useNoSeenSource }),
+      ...(!own && { useHasPendingTurn: useNoPendingTurn, useSeenSource: useNoSeenSource }),
     }),
     [host, own],
   );
@@ -94,7 +99,7 @@ export function ContractThread({
   /** The rows are the package's own, under whatever of the conversation is still to be read. */
   const listSlots = useMemo<ChatScreenMessagesSlots>(
     () => ({
-      ...followedSlots,
+      ...(own ? ownSlots : followedSlots),
       renderThread: (props) => (
         <>
           <EarlierMessages
@@ -105,7 +110,7 @@ export function ContractThread({
       ),
       ...slots,
     }),
-    [slots, hasEarlier, isLoadingEarlier, isEarlierError, loadEarlier],
+    [own, slots, hasEarlier, isLoadingEarlier, isEarlierError, loadEarlier],
   );
   const messagesHost = useFollowedMessagesHost(own);
   return (

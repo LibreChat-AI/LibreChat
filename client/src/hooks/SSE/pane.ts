@@ -2,7 +2,7 @@ import { useMemo, useCallback } from 'react';
 import { v4 } from 'uuid';
 import { useStore, useSetAtom } from 'jotai';
 import { Constants } from 'librechat-data-provider';
-import { isStoppedRun, resolveDetachedRunEnd } from '@librechat/chat';
+import { isStoppedRun, resolveDetachedRunEnd, clearMatchingDrainAfterAbort } from '@librechat/chat';
 import {
   abortScrollFamily,
   showStopButtonByIndex,
@@ -14,33 +14,10 @@ import {
   stopRequestedByConvoId,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
-import type {
-  ResumableRun,
-  ResumablePane,
-  ResumableQueue,
-  DrainAfterAbort,
-  RunEnd,
-} from '@librechat/chat';
+import type { ResumableRun, ResumablePane, ResumableQueue, RunEnd } from '@librechat/chat';
 import type { EventHandlerParams } from '@librechat/chat/react';
 import { clearComposerDrafts, resolveRunEndTarget } from '~/utils';
 import { activeRunFamily } from './atoms';
-
-/**
- * Reconciliation often crosses async query boundaries. By the time an old
- * generation settles, this pane may have armed "interrupt & send" for a new
- * conversation/generation. Recoil applies functional setters against the
- * latest value, so only consume the exact intent owned by this terminal path.
- */
-const clearMatchingDrainAfterAbort = (
-  armed: DrainAfterAbort | false,
-  conversationId: string,
-  generationCreatedAt: number,
-): DrainAfterAbort | false =>
-  armed !== false &&
-  armed.conversationId === conversationId &&
-  armed.generationCreatedAt === generationCreatedAt
-    ? false
-    : armed;
 
 const replaceNewConversationUrl = (conversationId: string) => {
   if (window.location.pathname !== `/c/${Constants.NEW_CONVO}`) {
@@ -110,6 +87,12 @@ export default function useResumablePane({
       if (generationCreatedAt == null) {
         return;
       }
+      /**
+       * Reconciliation often crosses async query boundaries. By the time an old generation
+       * settles, this pane may have armed "interrupt & send" for a new conversation or
+       * generation. A functional setter applies against the latest value, so only the exact
+       * intent owned by this terminal path is consumed.
+       */
       setDrainAfterAbort((armed) =>
         clearMatchingDrainAfterAbort(armed, conversationId, generationCreatedAt),
       );

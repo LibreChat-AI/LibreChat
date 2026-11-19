@@ -130,6 +130,7 @@ const opening: FollowedChat = {
   canSend: () => false,
   send: () => false,
   stop: () => Promise.resolve(),
+  attach: () => undefined,
 };
 
 const ThreadFollowsContext: Context<ThreadFollows | undefined> = createContext<

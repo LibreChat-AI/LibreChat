@@ -1,0 +1,352 @@
+import { expect, test } from '@playwright/test';
+import type { Page, Response } from '@playwright/test';
+import type { AgentDetail } from '../agents.helpers';
+import {
+  replyText,
+  replyPrompt,
+  requestJson,
+  messagesView,
+  NEW_CHAT_PATH,
+  MOCK_ENDPOINTS,
+  getAccessToken,
+  MOCK_REPLY_TEXT,
+  conversationRow,
+  selectMockEndpoint,
+  sendMessageAndWaitForCompletion,
+} from '../helpers';
+import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpers';
+import { openChatHistory } from './sidebar';
+
+/**
+ * What the reader does to a reply in flight in a conversation open beside the chat is what they
+ * do in main chat: a message queued behind it goes out when it ends, a steer joins it where the
+ * run takes one and becomes the next message where it does not, an interrupt continues it, and
+ * a Stop leaves the queue for them to send. All of it is that conversation's: the chat on screen
+ * gains nothing.
+ */
+test.use({ viewport: { width: 1440, height: 900 }, isMobile: false, hasTouch: false });
+
+/** The endpoint whose runs call a tool, which is where a run takes a steer. */
+const PROVIDER_C = { label: 'Mock Provider C', model: 'mock-model-c' };
+const MCP_SERVER_TITLE = 'E2E Memory';
+const SLOW_REPLY_LAST_CHUNK = 'chunk-159';
+
+const uniqueLabel = (prefix: string) =>
+  `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const isSteer = (response: Response): boolean =>
+  response.request().method() === 'POST' &&
+  new URL(response.url()).pathname === '/api/agents/chat/steer';
+
+async function startChat(
+  page: Page,
+  label: string,
+  {
+    provider = MOCK_ENDPOINTS[0],
+    tools = false,
+    agent,
+  }: { provider?: (typeof MOCK_ENDPOINTS)[number]; tools?: boolean; agent?: string } = {},
+): Promise<string> {
+  if (agent == null) {
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, provider);
+  } else {
+    /** A saved agent's conversation: its queued turns are the server's to start. */
+    const form = await openAgentBuilder(page);
+    await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
+    await page.getByRole('option', { name: agent }).click();
+    await expect(form.getByLabel('Agent name')).toHaveValue(agent);
+    await form.getByRole('button', { name: 'Select Agent' }).click();
+  }
+  if (tools) {
+    await page.getByRole('button', { name: 'Attach and tools' }).click();
+    const server = page
+      .getByRole('dialog', { name: 'Attach and tools' })
+      .getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) });
+    await server.click();
+    await expect(server).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Escape');
+  }
+  const response = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
+  expect(response.ok()).toBeTruthy();
+  await expect(messagesView(page).getByText(replyText(label))).toBeVisible();
+  return page.url();
+}
+
+/** Two conversations: the first open beside the second, which stays on screen. */
+async function openBeside(
+  page: Page,
+  prefix: string,
+  earlierChat?: Parameters<typeof startChat>[2],
+) {
+  const earlier = uniqueLabel(`${prefix}-earlier`);
+  const earlierUrl = await startChat(page, earlier, earlierChat);
+  await startChat(page, uniqueLabel(`${prefix}-current`));
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  const sideChat = page.getByRole('region', { name: 'Side chat' });
+  await expect(sideChat).toContainText(replyText(earlier), { timeout: 30_000 });
+  const side = sideChat.locator('form');
+  const field = sideChat.getByRole('textbox', { name: 'Message input' });
+  return {
+    sideChat,
+    side,
+    field,
+    turns: sideChat.locator('.message-render'),
+    mainTurns: messagesView(page).locator('.message-render'),
+    queued: sideChat.getByTestId('queued-message-row'),
+    waiting: sideChat.getByTestId('pending-steers').getByRole('listitem'),
+    taken: sideChat.locator('[data-testid="steer-part"]:not([data-testid="pending-steers"] *)'),
+    /** Starts a turn from the side composer. */
+    send: async (text: string) => {
+      await field.click();
+      await page.keyboard.type(text);
+      await page.keyboard.press('Enter');
+    },
+    /** Writes in the side composer while its reply is being written. */
+    write: async (text: string) => {
+      await field.click();
+      await page.keyboard.type(text);
+      await expect(side.getByTestId('during-run-send-button')).toBeVisible({ timeout: 5_000 });
+    },
+  };
+}
+
+/** Enter steers in these scenarios, as in main chat's; Ctrl/Cmd+Enter then queues. */
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('duringRunDefaultAction', JSON.stringify('steer'));
+  });
+});
+
+test('a message queued behind a side chat’s reply is sent when the reply ends @scenario:side-chat-queued-message-follows-the-reply', async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  const { sideChat, turns, mainTurns, queued, waiting, send, write } = await openBeside(
+    page,
+    'queue',
+  );
+  const label = uniqueLabel('queued');
+  const followUp = `Queued behind the reply ${label}`;
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect(sideChat).toContainText('chunk-010', { timeout: 30_000 });
+  await write(followUp);
+  await page.keyboard.press('ControlOrMeta+Enter');
+
+  /** It waits in the side composer's queue, not in the reply and not in main chat's composer. */
+  await expect(queued.filter({ hasText: followUp })).toHaveCount(1);
+  await expect(page.getByTestId('queued-message-row')).toHaveCount(1);
+  await expect(waiting).toHaveCount(0);
+
+  /** The reply runs to its end, and the queued message is the conversation's next turn. */
+  await expect(queued).toHaveCount(0, { timeout: 90_000 });
+  await expect(turns).toHaveCount(6, { timeout: 30_000 });
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK);
+  await expect(turns.nth(4)).toContainText(followUp);
+  await expect(turns.nth(4).locator('.user-turn')).toBeVisible();
+  await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+  await expect(mainTurns).toHaveCount(2);
+});
+
+test('a steer sent from a side chat joins its reply where the run takes it @scenario:side-chat-steer-joins-the-reply', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const { sideChat, side, turns, mainTurns, queued, waiting, taken, send, write } =
+    await openBeside(page, 'steer', { provider: PROVIDER_C, tools: true });
+  const label = uniqueLabel('steered');
+  const steer = `Steer into the reply ${label}`;
+
+  /** A preamble, a tool call (where a steer is taken), then the rest of the reply. */
+  await send(`E2E_STEER_TOOL_REPLY:${label}`);
+  await write(steer);
+  await expect(side.getByTestId('during-run-send-button')).toHaveAttribute(
+    'data-during-run-action',
+    'steer',
+  );
+  const [accepted] = await Promise.all([
+    page.waitForResponse(isSteer, { timeout: 15_000 }),
+    page.keyboard.press('Enter'),
+  ]);
+  expect(accepted.status()).toBe(202);
+
+  /** Shown waiting at the end of the side chat's list until the run takes it. */
+  await expect(waiting.filter({ hasText: steer })).toHaveCount(1, { timeout: 10_000 });
+  await expect(taken).toHaveCount(0);
+
+  await expect(taken.filter({ hasText: steer })).toHaveCount(1, { timeout: 60_000 });
+  await expect(waiting).toHaveCount(0);
+  await expect(sideChat.getByText(`E2E steer tool reply done ${label}`)).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(sideChat.getByText(`[steers-seen=1] ${steer}`)).toBeVisible({ timeout: 30_000 });
+
+  /** It stays inside the reply: no turn of its own, nothing left queued, main chat untouched. */
+  await expect(turns).toHaveCount(4);
+  await expect(taken.filter({ hasText: steer })).toHaveCount(1);
+  await expect(queued).toHaveCount(0);
+  await expect(mainTurns).toHaveCount(2);
+});
+
+test('a steer a side chat’s reply never took is sent as its next message @scenario:side-chat-steer-not-taken-follows-the-reply', async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  const { sideChat, turns, mainTurns, queued, waiting, taken, send, write } = await openBeside(
+    page,
+    'late',
+  );
+  const label = uniqueLabel('late');
+  const steer = `Steer with nowhere to land ${label}`;
+
+  /** A reply with no tool call has no point at which a run takes a steer. */
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect(sideChat).toContainText('chunk-010', { timeout: 30_000 });
+  await write(steer);
+  const [accepted] = await Promise.all([
+    page.waitForResponse(isSteer, { timeout: 15_000 }),
+    page.keyboard.press('Enter'),
+  ]);
+  expect(accepted.status()).toBe(202);
+  await expect(waiting.filter({ hasText: steer })).toHaveCount(1, { timeout: 10_000 });
+
+  /** The reply ends without it, and the words go out as the conversation's next turn. */
+  await expect(turns).toHaveCount(6, { timeout: 90_000 });
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK);
+  await expect(turns.nth(4)).toContainText(steer);
+  await expect(turns.nth(4).locator('.user-turn')).toBeVisible();
+  await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+  await expect(waiting).toHaveCount(0);
+  await expect(taken).toHaveCount(0);
+  await expect(queued).toHaveCount(0);
+  await expect(mainTurns).toHaveCount(2);
+});
+
+test('an interrupt from a side chat keeps what was written and continues the reply @scenario:side-chat-interrupt-continues-the-reply', async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  const { sideChat, turns, mainTurns, queued, taken, send, write } = await openBeside(
+    page,
+    'interrupt',
+  );
+  const label = uniqueLabel('interrupted');
+  const words = `Interrupt with this ${label}`;
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect(sideChat).toContainText('chunk-010', { timeout: 30_000 });
+  await write(words);
+  await page.keyboard.press('Alt+Enter');
+
+  await expect(taken.filter({ hasText: words })).toHaveCount(1, { timeout: 30_000 });
+  await expect(sideChat.getByText(`[steers-seen=1] ${words}`)).toBeVisible({ timeout: 30_000 });
+  await expect(sideChat.getByText(`E2E slow reply continued ${label}`)).toBeVisible({
+    timeout: 30_000,
+  });
+
+  /** One reply, cut where the interrupt landed and carried on: no turn of its own. */
+  await expect(turns).toHaveCount(4);
+  await expect(sideChat).toContainText('chunk-010');
+  await expect(sideChat.getByText(SLOW_REPLY_LAST_CHUNK)).toHaveCount(0);
+  await expect(queued).toHaveCount(0);
+  await expect(mainTurns).toHaveCount(2);
+});
+
+test('stopping a side chat’s reply leaves what was queued behind it for the reader to send @scenario:side-chat-stop-keeps-the-queue', async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  const { sideChat, side, turns, queued, send, write } = await openBeside(page, 'stopped');
+  const label = uniqueLabel('stopped');
+  const followUp = `Queued behind a stop ${label}`;
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect(sideChat).toContainText('chunk-010', { timeout: 30_000 });
+  await write(followUp);
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(queued.filter({ hasText: followUp })).toHaveCount(1);
+
+  await side.getByRole('button', { name: 'Stop generating' }).click();
+  await expect(side.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
+    timeout: 30_000,
+  });
+
+  /** A stop is not an end the queue goes out on: the row waits, with its own Send. */
+  await expect(sideChat.getByText(SLOW_REPLY_LAST_CHUNK)).toHaveCount(0);
+  await expect(queued.filter({ hasText: followUp })).toHaveCount(1);
+  await expect(turns).toHaveCount(4);
+
+  await queued.getByRole('button', { name: 'Send now' }).click();
+  await expect(queued).toHaveCount(0, { timeout: 30_000 });
+  await expect(turns).toHaveCount(6, { timeout: 30_000 });
+  await expect(turns.nth(4)).toContainText(followUp);
+  await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+});
+
+test('a message queued behind a saved agent’s reply in a side chat is started by the server and followed there @scenario:side-chat-server-queued-turn-is-followed', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  let agentId: string | undefined;
+  try {
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    const agent = await requestJson<AgentDetail>(page, {
+      path: '/api/agents',
+      token: await getAccessToken(page),
+      method: 'POST',
+      body: {
+        name: uniqueAgentName('E2E Side Queue Agent'),
+        description: 'Playwright verification of a queued turn in a side chat.',
+        instructions: 'Follow the deterministic end-to-end request exactly.',
+        provider: MOCK_ENDPOINTS[0].label,
+        model: MOCK_ENDPOINTS[0].model,
+      },
+    });
+    agentId = agent.id;
+    const { sideChat, side, turns, mainTurns, queued, send, write } = await openBeside(
+      page,
+      'agent-queue',
+      { agent: agent.name },
+    );
+    const label = uniqueLabel('agent-queued');
+    const followUp = `Queued for the server ${label}`;
+
+    await send(`E2E_SLOW_REPLY:${label}`);
+    await expect(sideChat).toContainText('chunk-010', { timeout: 30_000 });
+    await write(followUp);
+    /** The queue of an agent's conversation is kept by the server, which starts the turn. */
+    const [enqueued] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          new URL(response.url()).pathname === '/api/agents/chat/queued-turns',
+        { timeout: 10_000 },
+      ),
+      page.keyboard.press('ControlOrMeta+Enter'),
+    ]);
+    expect(enqueued.ok()).toBeTruthy();
+    await expect(queued.filter({ hasText: followUp })).toHaveCount(1);
+
+    /**
+     * The reply ends, the server starts the queued turn, and the side chat follows a run it did
+     * not start: the turn and its reply arrive, with one copy of the words and nothing waiting.
+     */
+    await expect(turns).toHaveCount(6, { timeout: 120_000 });
+    await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK);
+    await expect(turns.nth(4)).toContainText(followUp);
+    await expect(turns.nth(4).locator('.user-turn')).toBeVisible();
+    await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+    await expect(turns.filter({ hasText: followUp })).toHaveCount(1);
+    await expect(sideChat.getByTestId('pending-turn')).toHaveCount(0);
+    await expect(queued).toHaveCount(0);
+    await expect(side.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+    await expect(mainTurns).toHaveCount(2);
+  } finally {
+    await cleanupAgent(page, agentId);
+  }
+});

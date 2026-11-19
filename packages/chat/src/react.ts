@@ -127,7 +127,12 @@ export {
 } from './react/steering/useQueuedTurnReveal';
 export { useCoreChat } from './react/core';
 export { useFollowChat } from './react/follow';
-export type { FollowChatOptions, FollowedChat } from './react/follow';
+export type {
+  FollowedChat,
+  FollowedRunEnd,
+  FollowChatOptions,
+  FollowedGeneration,
+} from './react/follow';
 export { useFollowedContract } from './react/chat/followed';
 export type { FollowedContractOptions } from './react/chat/followed';
 export { useDrivenContract } from './react/chat/driven';
@@ -143,7 +148,7 @@ export {
 export type { SideChatBeside } from './react/side/state';
 export type { SideChat } from './react/side/state';
 export { useSideChatHost, SideChatHostProvider } from './react/side/host';
-export type { SideChatHost, SideChatSurfaceProps } from './react/side/host';
+export type { SideChatHost, SideChatOptions, SideChatSurfaceProps } from './react/side/host';
 export { useSnapshot } from './react/snapshot';
 export { ReactQueryChatState } from './react/state';
 export type { Subscribe, SnapshotOptions } from './react/snapshot';

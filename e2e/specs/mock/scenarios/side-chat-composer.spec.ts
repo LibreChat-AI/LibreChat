@@ -426,13 +426,15 @@ test('a side chat opened again while its reply runs still has the words written 
   const reopened = page.getByRole('region', { name: 'Side chat' });
   const again = reopened.getByRole('textbox', { name: 'Message input' });
 
-  /** Still running, and the words are in the field; they are still there once it ends. */
-  await expect(reopened.getByRole('button', { name: 'Stop generating' })).toBeVisible({
-    timeout: 30_000,
-  });
+  /**
+   * Still running, and the words are in the field: with something written, the send control
+   * is the one that acts on the reply in flight. They are still there once it ends.
+   */
+  const duringRun = reopened.getByTestId('during-run-send-button');
+  await expect(duringRun).toBeVisible({ timeout: 30_000 });
   await expect(again).toHaveValue('picked up where I left it');
   await expect(reopened).toContainText('chunk-159', { timeout: 90_000 });
-  await expect(reopened.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+  await expect(duringRun).toHaveCount(0);
   await expect(again).toHaveValue('picked up where I left it');
 });
 

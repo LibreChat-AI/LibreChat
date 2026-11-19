@@ -1,17 +1,26 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
-import { contextSnapshotFamily } from '@librechat/chat/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  ChatHostProvider,
+  SteerHostProvider,
+  StreamHostProvider,
+  contextSnapshotFamily,
+  pendingSteersByConvoId,
+  queuedMessagesByConvoId,
+} from '@librechat/chat/react';
 import type {
   TFile,
   TMessage,
   ChatEvent,
   ChatStreamRequest,
   ChatTransportOptions,
+  TAgentQueuedTurnReceipt,
 } from 'librechat-data-provider';
+import type { ChatHost, SteerHost, StreamHost, SideChatOptions } from '@librechat/chat/react';
 import type { Transport } from '~/hooks/Chat/contract';
 import { findConvoInAllQueries, hasServerFetchedReply, hasLocallyCommittedReply } from '~/utils';
 import { ChatTransportContext, defaultChatTransport } from '../ChatTransportContext';
@@ -103,9 +112,36 @@ const listed = (lastResponseAt: string) => {
   return client;
 };
 
+/**
+ * What tells a chat of runs it did not start, as the app's stream host reads them: the receipts
+ * of the reader's queued turns and the list of running generations, both from the query cache,
+ * where a spec puts them.
+ */
+const RECEIPTS = 'receipts-under-test';
+const streamHost = {
+  useQueuedTurnReceipts: (conversationId: string) =>
+    useQuery<TAgentQueuedTurnReceipt[]>({
+      queryKey: [RECEIPTS, conversationId],
+      enabled: false,
+    }),
+  useActiveJobs: () =>
+    useQuery<{ activeJobIds: string[] }>({ queryKey: [QueryKeys.activeJobs], enabled: false }),
+  extendActiveJobsGrace: () => undefined,
+} as unknown as StreamHost;
+const chatHost = {
+  useMessageCache: () => ({ readQueuedTurns: () => [], invalidateMessages: () => undefined }),
+} as unknown as ChatHost;
+
+/** What the steer state reads of its host: the reader's files, and a run's status. */
+const steerHost = {
+  useFileMap: () => undefined,
+  useFetchStreamStatus: () => mockStreamStatus,
+} as unknown as SteerHost;
+
 const setup = (
   target = conversation,
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  options?: SideChatOptions,
 ) => {
   const harness = createTransport();
   const announcePolite = jest.fn();
@@ -115,13 +151,17 @@ const setup = (
       <QueryClientProvider client={client}>
         <AnnouncerContext.Provider value={announcer}>
           <ChatTransportContext.Provider value={harness.transport}>
-            {children}
+            <StreamHostProvider host={streamHost}>
+              <ChatHostProvider host={chatHost}>
+                <SteerHostProvider host={steerHost}>{children}</SteerHostProvider>
+              </ChatHostProvider>
+            </StreamHostProvider>
           </ChatTransportContext.Provider>
         </AnnouncerContext.Provider>
       </QueryClientProvider>
     </RecoilRoot>
   );
-  const view = renderHook(() => appSideChatHost.useChat(target), { wrapper });
+  const view = renderHook(() => appSideChatHost.useChat(target, options), { wrapper });
   return { ...view, ...harness, client, announcePolite };
 };
 
@@ -327,6 +367,190 @@ describe("the app's side chat host", () => {
       }),
     );
     expect(hasLocallyCommittedReply(client, 'side-conversation', repliedAt)).toBe(true);
+  });
+
+  it('turns a steer the reply never took into the conversation’s next queued message, then says the run ended', async () => {
+    const store = getDefaultStore();
+    const steer = { steerId: 'steer-1', text: 'Also check staging.' };
+    store.set(pendingSteersByConvoId('side-conversation'), [
+      { ...steer, status: 'pending', createdAt: 1 },
+    ]);
+    store.set(queuedMessagesByConvoId('side-conversation'), []);
+    mockStreamStatus.mockResolvedValue({
+      active: true,
+      streamId: 'side-conversation',
+      createdAt: 2000,
+      generationProtocolVersion: 2,
+    });
+    mockMessages.mockResolvedValue([asked]);
+    /** What the queue held when the caller was told the run had ended. */
+    const queuedAtEnd: string[][] = [];
+    const onRunEnd = jest.fn(() =>
+      queuedAtEnd.push(
+        store.get(queuedMessagesByConvoId('side-conversation')).map((item) => item.text),
+      ),
+    );
+    const onGeneration = jest.fn();
+    const { attachments } = setup(conversation, undefined, { onRunEnd, onGeneration });
+    await waitFor(() => expect(attachments).toHaveLength(1));
+    const emit = (event: ChatEvent) => act(() => attachments[0].options.onEvent(event));
+
+    emit({ type: 'open' });
+    emit({
+      type: 'created',
+      data: { created: true, message: asked, turn: { responseMessageId: 'response-1' } },
+    } as ChatEvent);
+    await waitFor(() =>
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 2000, protocolVersion: 2 }),
+    );
+    mockStreamStatus.mockResolvedValue({ active: false, generationProtocolVersion: 2 });
+    mockMessages.mockResolvedValue([asked, answered]);
+    emit({
+      type: 'final',
+      data: {
+        final: true,
+        generationProtocolVersion: 2,
+        conversation: { conversationId: 'side-conversation' },
+        requestMessage: asked,
+        responseMessage: answered,
+        pendingSteers: [steer],
+      },
+    } as ChatEvent);
+
+    await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+    expect(onRunEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'completed', generationCreatedAt: 2000 }),
+    );
+    /** Queued before the run is said to have ended, so the drain that follows sends it. */
+    expect(queuedAtEnd).toEqual([['Also check staging.']]);
+    expect(store.get(pendingSteersByConvoId('side-conversation'))).toEqual([]);
+  });
+
+  describe('a run it did not start', () => {
+    const jobs = (client: QueryClient) =>
+      client.getQueryData<{ activeJobIds: string[] }>([QueryKeys.activeJobs])?.activeJobIds;
+    const finalFrame = {
+      type: 'final',
+      data: {
+        final: true,
+        conversation: { conversationId: 'side-conversation' },
+        requestMessage: asked,
+        responseMessage: answered,
+      },
+    } as ChatEvent;
+    /** Opens on a running generation and follows it to its end. */
+    const followToEnd = async () => {
+      mockStreamStatus.mockResolvedValue({
+        active: true,
+        streamId: 'side-conversation',
+        createdAt: 2000,
+        generationProtocolVersion: 2,
+      });
+      mockMessages.mockResolvedValue([asked]);
+      const view = setup();
+      await waitFor(() => expect(view.attachments).toHaveLength(1));
+      act(() => view.attachments[0].options.onEvent({ type: 'open' }));
+      /** Listed as running while it is followed, so it is not announced as unattended. */
+      await waitFor(() => expect(jobs(view.client)).toEqual(['side-conversation']));
+      mockStreamStatus.mockResolvedValue({ active: false });
+      mockMessages.mockResolvedValue([asked, answered]);
+      act(() => view.attachments[0].options.onEvent(finalFrame));
+      await waitFor(() => expect(view.result.current.isFollowing).toBe(false));
+      /** Off the list as it ends, before the poll would have said so. */
+      expect(jobs(view.client)).toEqual([]);
+      return view;
+    };
+    const settle = () =>
+      act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      });
+
+    it('is not looked for when a reply ends with nothing owed', async () => {
+      const { attachments } = await followToEnd();
+      const reads = mockMessages.mock.calls.length;
+      await settle();
+      expect(attachments).toHaveLength(1);
+      expect(mockMessages).toHaveBeenCalledTimes(reads);
+    });
+
+    it('is followed when the server takes a turn from the reader’s queue', async () => {
+      const { attachments, client, result } = await followToEnd();
+      /** The server has the turn, and has not started it: nothing to follow yet. */
+      mockStreamStatus.mockClear();
+      mockStreamStatus.mockResolvedValue({ active: false });
+      act(() =>
+        client.setQueryData<Partial<TAgentQueuedTurnReceipt>[]>(
+          [RECEIPTS, 'side-conversation'],
+          [{ queuedTurnId: 'turn-1', status: 'queued', expectedPredecessorCreatedAt: 2000 }],
+        ),
+      );
+      await settle();
+      await settle();
+      /** Looked for once when the turn became the server's, and not again while it waits. */
+      expect(mockStreamStatus).toHaveBeenCalledTimes(1);
+      expect(attachments).toHaveLength(1);
+
+      /** It starts the turn: the receipt changes, and the generation is there to follow. */
+      mockStreamStatus.mockResolvedValue({
+        active: true,
+        streamId: 'side-conversation',
+        createdAt: 3000,
+        generationProtocolVersion: 2,
+      });
+      act(() =>
+        client.setQueryData<Partial<TAgentQueuedTurnReceipt>[]>(
+          [RECEIPTS, 'side-conversation'],
+          [{ queuedTurnId: 'turn-1', status: 'admitted', effectivePredecessorCreatedAt: 2000 }],
+        ),
+      );
+      await waitFor(() => expect(attachments).toHaveLength(2));
+      act(() => attachments[1].options.onEvent({ type: 'open' }));
+      await waitFor(() => expect(result.current.isFollowing).toBe(true));
+      expect(jobs(client)).toEqual(['side-conversation']);
+
+      /** Following it is the delivery: the same receipt does not send it looking again. */
+      mockStreamStatus.mockResolvedValue({ active: false });
+      act(() => attachments[1].options.onEvent(finalFrame));
+      await waitFor(() => expect(result.current.isFollowing).toBe(false));
+      await settle();
+      expect(attachments).toHaveLength(2);
+    });
+
+    it('is followed when the list of running generations names the conversation', async () => {
+      const { attachments, client } = await followToEnd();
+      mockStreamStatus.mockResolvedValue({
+        active: true,
+        streamId: 'side-conversation',
+        createdAt: 4000,
+        generationProtocolVersion: 2,
+      });
+      act(() =>
+        client.setQueryData([QueryKeys.activeJobs], { activeJobIds: ['side-conversation'] }),
+      );
+      await waitFor(() => expect(attachments).toHaveLength(2));
+    });
+
+    it('is looked for once for each time the list names it, not again when a look finds nothing', async () => {
+      const { attachments, client } = await followToEnd();
+      /** The list still names a run that has already ended: one look finds nothing to follow. */
+      mockStreamStatus.mockClear();
+      mockStreamStatus.mockResolvedValue({ active: false });
+      act(() =>
+        client.setQueryData([QueryKeys.activeJobs], { activeJobIds: ['side-conversation'] }),
+      );
+      await settle();
+      await settle();
+      expect(mockStreamStatus).toHaveBeenCalledTimes(1);
+      expect(attachments).toHaveLength(1);
+
+      /** Listed again at the next fetch: looked for again, once. */
+      act(() =>
+        client.setQueryData([QueryKeys.activeJobs], { activeJobIds: ['side-conversation'] }),
+      );
+      await settle();
+      await settle();
+      expect(mockStreamStatus).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("says a turn through the app's announcer, as main chat's is said", async () => {

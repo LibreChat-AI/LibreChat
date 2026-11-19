@@ -131,6 +131,12 @@ export type ChatAbortContract = {
    * the former.
    */
   stopsUnnamed?: boolean;
+  /**
+   * Whether the chat runs what the composer does to a run in flight: it publishes the generation
+   * a steer addresses and each run's end, and sends what was queued behind it. Main chat's pane
+   * does by being the pane with the stream session; another chat says so here.
+   */
+  steers?: boolean;
   /** Button handler around `stopGenerating`. AI SDK: `stop`. */
   handleStopGenerating: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Whether a stop just happened and the view should hold its scroll position. */

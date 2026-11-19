@@ -6,8 +6,8 @@ import { atom, useAtom, useAtomValue, Provider, createStore } from 'jotai';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { Constants, ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
+import type { ChatStream, ChatTransport, QueuedMessage, ChatSendRequest } from '../../../core';
 import type { SideChatHost, SideChatSurfaceProps } from '../../../react/side/host';
-import type { ChatStream, ChatTransport, ChatSendRequest } from '../../../core';
 import type { SideChat } from '../../../react/side/state';
 import type { ChatHost } from '../../../react/chat/host';
 import {
@@ -20,13 +20,18 @@ import {
   inertSeenSource,
   MessagesHostProvider,
 } from '../../../react/messages/host';
+import { drainAfterAbortByIndex, queuedMessagesByConvoId } from '../../../react/steer/queue';
+import { activeGenerationCreatedAtByConvoId } from '../../../react/steer/atoms';
 import { createTurnServices } from '../../../react/chat/__fixtures__/services';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { createSteerHost } from '../../../__fixtures__/steerHost';
 import { SideChatHostProvider } from '../../../react/side/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { SteerHostProvider } from '../../../react/steer/host';
 import { ChatHostProvider } from '../../../react/chat/host';
+import { SIDE_CHAT_PANE } from '../../../react/side/state';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import { useFollowChat } from '../../../react/follow';
 import SideChatPanel from '../panel';
@@ -112,6 +117,8 @@ function UserRow({ text }: { text: string }) {
   return <div data-testid="row" data-added={added?.conversationId ?? 'none'}>{`user=${text}`}</div>;
 }
 
+const steerHost = createSteerHost();
+
 /** The page's read state, which a list asks for when reading it can mark a conversation seen. */
 const pageSeenSource = jest.fn(() => inertSeenSource);
 const messagesHost = createMessagesHost({
@@ -168,6 +175,7 @@ function setup({
   managed = false,
   draft,
   Surface,
+  steers = false,
 }: {
   chat?: SideChat;
   stored?: TMessage[];
@@ -176,6 +184,8 @@ function setup({
   managed?: boolean;
   draft?: string;
   Surface?: SideChatHost['Surface'];
+  /** Whether the app around the panel hosts the steer hooks, and so keeps a queue. */
+  steers?: boolean;
 } = {}) {
   const streams: TestStream[] = [];
   const sendMessages = jest.fn(
@@ -245,6 +255,8 @@ function setup({
       )
     );
   }
+  const within = (panel: React.ReactElement) =>
+    steers ? <SteerHostProvider host={steerHost}>{panel}</SteerHostProvider> : panel;
   const tree = (current: SideChat) => (
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
@@ -266,14 +278,16 @@ function setup({
             <SideChatHostProvider host={sideChatHost}>
               <MessagesHostProvider host={messagesHost}>
                 <MessagePartsHostProvider host={partsHost}>
-                  {managed ? (
-                    <OwnedPanel />
-                  ) : (
-                    <SideChatPanel
-                      chat={current}
-                      onClose={onClose}
-                      onHandedTextTaken={() => onHandedTextTaken()}
-                    />
+                  {within(
+                    managed ? (
+                      <OwnedPanel />
+                    ) : (
+                      <SideChatPanel
+                        chat={current}
+                        onClose={onClose}
+                        onHandedTextTaken={() => onHandedTextTaken()}
+                      />
+                    ),
                   )}
                 </MessagePartsHostProvider>
               </MessagesHostProvider>
@@ -378,6 +392,159 @@ describe('SideChatPanel', () => {
     expect(abort.mock.calls[0]).toMatchObject([
       { endpoint: EModelEndpoint.agents, streamId: conversationId, generationCreatedAt: 3000 },
     ]);
+  });
+
+  describe('with a queue of the reader’s behind a run', () => {
+    const queued: QueuedMessage = { id: 'queued-1', text: 'And then?', createdAt: 1 };
+    /** Sends a turn from the field and returns the message the server would store for it. */
+    const start = async ({
+      sendMessages,
+      streams,
+    }: ReturnType<typeof setup>): Promise<TMessage> => {
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      fireEvent.change(field(), { target: { value: 'What changed?' } });
+      fireEvent.click(screen.getByTestId('composer-send-button'));
+      await waitFor(() => expect(streams).toHaveLength(1));
+      return {
+        ...user,
+        messageId: sendMessages.mock.calls[0][0].payload.messageId as string,
+        parentMessageId: 'response-1',
+        text: 'What changed?',
+      };
+    };
+
+    it('names the running generation for the composer’s controls, and sends the next queued message when it ends', async () => {
+      const view = setup({ steers: true });
+      const { store, streams, sendMessages } = view;
+      const asked = await start(view);
+
+      /** What a steer, a queued turn and an interrupt address while the reply is written. */
+      expect(store.get(activeGenerationCreatedAtByConvoId(conversationId))).toBe(3000);
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+
+      act(() => {
+        streams[0].push({
+          type: 'created',
+          data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+        streams[0].push(final(asked, reply('response-2', 'Two fixes.', asked.messageId)));
+      });
+
+      await waitFor(() => expect(sendMessages).toHaveBeenCalledTimes(2));
+      expect(sendMessages.mock.calls[1][0].payload).toMatchObject({
+        conversationId,
+        text: 'And then?',
+        parentMessageId: 'response-2',
+      });
+      expect(store.get(queuedMessagesByConvoId(conversationId))).toEqual([]);
+    });
+
+    it('keeps the queue for the reader to send when they stopped the run', async () => {
+      const view = setup({ steers: true });
+      const { store, streams, sendMessages, abort } = view;
+      const asked = await start(view);
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop generating' }));
+      await waitFor(() => expect(abort).toHaveBeenCalledTimes(1));
+      act(() => {
+        streams[0].push({
+          type: 'final',
+          data: {
+            final: true,
+            aborted: true,
+            conversation: { conversationId },
+            requestMessage: asked,
+            responseMessage: {
+              ...reply('response-2', 'Two', asked.messageId),
+              unfinished: true,
+            },
+          },
+        } as ChatEvent);
+      });
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Stop generating' })).not.toBeInTheDocument(),
+      );
+      await settle();
+
+      expect(store.get(activeGenerationCreatedAtByConvoId(conversationId))).toBeNull();
+      expect(sendMessages).toHaveBeenCalledTimes(1);
+      expect(store.get(queuedMessagesByConvoId(conversationId))).toEqual([queued]);
+    });
+
+    it('keeps the queue when the run ends on a reply marked unfinished, with no word of an abort', async () => {
+      const view = setup({ steers: true });
+      const { store, streams, sendMessages } = view;
+      const asked = await start(view);
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+
+      act(() =>
+        streams[0].push(
+          final(asked, { ...reply('response-2', 'Two', asked.messageId), unfinished: true }),
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Stop generating' })).not.toBeInTheDocument(),
+      );
+      await settle();
+
+      expect(sendMessages).toHaveBeenCalledTimes(1);
+      expect(store.get(queuedMessagesByConvoId(conversationId))).toEqual([queued]);
+    });
+
+    it('takes back the leave to send on a stopped run when the stop could not be saved', async () => {
+      const view = setup({ steers: true });
+      const { store, streams, sendMessages } = view;
+      const asked = await start(view);
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+      /** Interrupt and send: the queue may go even though the run is stopped. */
+      act(() =>
+        store.set(drainAfterAbortByIndex(SIDE_CHAT_PANE), {
+          conversationId,
+          generationCreatedAt: 3000,
+        }),
+      );
+
+      act(() => {
+        streams[0].push({
+          type: 'created',
+          data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+        streams[0].push({
+          type: 'final',
+          data: {
+            final: true,
+            reconcile: true,
+            reconcileReason: 'abort_persistence_failed',
+            terminalStatus: 'aborted',
+            generationProtocolVersion: 2,
+            conversation: { conversationId },
+          },
+        } as ChatEvent);
+      });
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Stop generating' })).not.toBeInTheDocument(),
+      );
+      await settle();
+
+      expect(store.get(drainAfterAbortByIndex(SIDE_CHAT_PANE))).toBe(false);
+      expect(sendMessages).toHaveBeenCalledTimes(1);
+      expect(store.get(queuedMessagesByConvoId(conversationId))).toEqual([queued]);
+    });
+
+    it('sends nothing of a queue where the app hosts no steer hooks', async () => {
+      const view = setup();
+      const { store, streams, sendMessages } = view;
+      const asked = await start(view);
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+
+      act(() => streams[0].push(final(asked, reply('response-2', 'Two fixes.', asked.messageId))));
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Stop generating' })).not.toBeInTheDocument(),
+      );
+      await settle();
+      expect(sendMessages).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('settles the reply and takes the next message', async () => {

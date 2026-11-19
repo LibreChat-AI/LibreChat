@@ -62,12 +62,13 @@ const conversation: TConversation = {
 
 type TestStream = ChatStream & { push(event: ChatEvent): void; closed: boolean };
 
-const createStream = (): TestStream => {
+const createStream = (generationProtocolVersion?: number): TestStream => {
   const queued: ChatEvent[] = [];
   let wake: (() => void) | undefined;
   const stream: TestStream = {
     streamId: conversationId,
     generationCreatedAt: 3000,
+    generationProtocolVersion,
     closed: false,
     push(event) {
       queued.push(event);
@@ -95,11 +96,11 @@ const createStream = (): TestStream => {
 };
 
 /** A transport that can start a generation: every send and every attachment opens a stream. */
-const createTransport = () => {
+const createTransport = (generationProtocolVersion?: number) => {
   const streams: TestStream[] = [];
   let status: ChatStreamStatus = { active: false };
   const open = (): TestStream => {
-    const stream = createStream();
+    const stream = createStream(generationProtocolVersion);
     streams.push(stream);
     return stream;
   };
@@ -185,6 +186,8 @@ function setup({
   beside,
   id = conversationId,
   store = createStore(),
+  runs,
+  harness = createTransport(),
 }: {
   stored?: TMessage[];
   services?: TurnServices;
@@ -193,9 +196,12 @@ function setup({
   /** The conversation the pane holds, and the pane's store when a spec shares one. */
   id?: string;
   store?: ReturnType<typeof createStore>;
+  /** What the caller is told of the conversation's generations. */
+  runs?: Pick<FollowChatOptions, 'onGeneration' | 'onRunEnd'>;
+  /** The transport, when a spec sets the server's state before the conversation opens. */
+  harness?: ReturnType<typeof createTransport>;
 } = {}) {
   const queryClient = new QueryClient();
-  const harness = createTransport();
   const loadMessages = jest.fn(async () => stored);
   const onWithdrawn = jest.fn();
   const host: ChatHost = {
@@ -229,6 +235,7 @@ function setup({
         endpoint: conversation.endpoint,
         onWithdrawn,
         beside,
+        ...runs,
       });
       const contract = useDrivenContract({
         id,
@@ -436,6 +443,561 @@ describe('useDrivenContract', () => {
     await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
     await settle();
     expect(resetLive).not.toHaveBeenCalled();
+  });
+
+  describe('what it says of the generations it follows', () => {
+    const watch = () => {
+      const onGeneration = jest.fn();
+      const onRunEnd = jest.fn();
+      return { onGeneration, onRunEnd, runs: { onGeneration, onRunEnd } };
+    };
+
+    it('names the generation a turn runs under, and how it ended once another turn can be taken', async () => {
+      const { onGeneration, onRunEnd, runs } = watch();
+      const { result, streams, ready } = setup({ runs });
+      await ready();
+      /** Whether the chat would take a turn at the moment it says the run ended. */
+      const free: boolean[] = [];
+      onRunEnd.mockImplementation(() => free.push(result.current.followed.canSend()));
+      expect(onGeneration).not.toHaveBeenCalled();
+
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 1 });
+      expect(onRunEnd).not.toHaveBeenCalled();
+
+      const sent = (result.current.contract.getMessages() ?? [])[2];
+      act(() => {
+        streams[0].push(created(sent, 'response-2'));
+        streams[0].push(final(sent, reply('response-2', 'Answer', sent.messageId)));
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+
+      expect(onRunEnd).toHaveBeenCalledWith({
+        outcome: 'completed',
+        generationCreatedAt: 3000,
+        responseMessageId: 'response-2',
+      });
+      expect(free).toEqual([true]);
+      /** No generation is named once it has ended. */
+      expect(onGeneration).toHaveBeenLastCalledWith(null);
+    });
+
+    it('says a turn failed, and that one stopped before the server kept it was taken back', async () => {
+      const { onRunEnd, runs } = watch();
+      const { result, streams, ready } = setup({ runs });
+      await ready();
+
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      act(() => streams[0].push({ type: 'error', data: { message: 'failed' } }));
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(onRunEnd).toHaveBeenLastCalledWith(
+        expect.objectContaining({ outcome: 'error', generationCreatedAt: 3000 }),
+      );
+
+      act(() => {
+        result.current.contract.ask({ text: 'Never mind' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(2));
+      act(() =>
+        streams[1].push({
+          type: 'final',
+          data: { final: true, earlyAbort: true, conversation: { conversationId } },
+        } as ChatEvent),
+      );
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(2));
+      expect(onRunEnd).toHaveBeenLastCalledWith(
+        expect.objectContaining({ outcome: 'aborted', generationCreatedAt: 3000 }),
+      );
+    });
+
+    it('says a turn was stopped when its final frame only marks the reply unfinished', async () => {
+      const { onRunEnd, runs } = watch();
+      const { result, streams, ready } = setup({ runs });
+      await ready();
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      const sent = (result.current.contract.getMessages() ?? [])[2];
+
+      /** What the server sends for a stop that lands just before completion: no `aborted`. */
+      act(() => {
+        streams[0].push(created(sent, 'response-2'));
+        streams[0].push(
+          final(sent, { ...reply('response-2', 'Part of an', sent.messageId), unfinished: true }),
+        );
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(onRunEnd).toHaveBeenCalledWith({
+        outcome: 'aborted',
+        generationCreatedAt: 3000,
+        responseMessageId: 'response-2',
+      });
+    });
+
+    it('says nothing ended while a dropped stream is attached to again, then says it once', async () => {
+      const { onGeneration, onRunEnd, runs } = watch();
+      const { result, streams, setStatus, loadMessages, ready } = setup({ runs });
+      await ready();
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      const sent = (result.current.contract.getMessages() ?? [])[2];
+
+      setStatus({ active: true, streamId: conversationId, createdAt: 3000 });
+      act(() => {
+        streams[0].push(created(sent, 'response-2'));
+        streams[0].push({ type: 'error', status: 0 });
+      });
+      await waitFor(() => expect(streams).toHaveLength(2));
+      expect(onRunEnd).not.toHaveBeenCalled();
+      /** The same generation, still named: its controls stay addressed to it. */
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 1 });
+
+      loadMessages.mockResolvedValue([
+        user,
+        reply('response-1', 'Hi'),
+        sent,
+        reply('response-2', 'Whole', sent.messageId),
+      ]);
+      setStatus({ active: false });
+      act(() => streams[1].push(final(sent, reply('response-2', 'Whole', sent.messageId))));
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(onRunEnd).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'completed', responseMessageId: 'response-2' }),
+      );
+      await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
+      expect(onGeneration).toHaveBeenLastCalledWith(null);
+    });
+
+    it('leaves a generation named when the chat is let go of while it runs', async () => {
+      const { onGeneration, onRunEnd, runs } = watch();
+      const { streams, setStatus, rerender, unmount, ready } = setup({ runs });
+      await ready();
+      setStatus({ active: true, streamId: conversationId, createdAt: 2000 });
+      rerender({ live: true });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      await waitFor(() => expect(onGeneration).toHaveBeenCalledTimes(1));
+
+      /**
+       * Its stream drops, and the panel closes (or the conversation moves to the main chat)
+       * while this chat waits to attach again. The run goes on, and whoever shows the
+       * conversation next addresses it by the same name.
+       */
+      act(() => streams[0].push({ type: 'error', status: 0 }));
+      await settle();
+      unmount();
+      await settle();
+
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 1 });
+      expect(onGeneration).not.toHaveBeenCalledWith(null);
+      expect(onRunEnd).not.toHaveBeenCalled();
+    });
+
+    it('says a generation it did not start ended, once its stored rows are read', async () => {
+      const { onGeneration, onRunEnd, runs } = watch();
+      const { streams, setStatus, loadMessages, rerender, ready } = setup({ runs });
+      await ready();
+
+      setStatus({ active: true, streamId: conversationId, createdAt: 2000 });
+      rerender({ live: true });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      await waitFor(() =>
+        expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 1 }),
+      );
+
+      const reads = loadMessages.mock.calls.length;
+      setStatus({ active: false });
+      act(() => streams[0].push(final(user, reply('response-1', 'Hi'))));
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(loadMessages.mock.calls.length).toBeGreaterThan(reads);
+      expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'completed' }));
+    });
+  });
+
+  describe('the reader’s steers and queue when a run ends without its reply', () => {
+    /** Main chat's steer bookkeeping, recording what it is called with and in what order. */
+    const record = (held = new Set<string>()) => {
+      const calls: Array<[string, ...unknown[]]> = [];
+      const log =
+        (name: string, result?: unknown) =>
+        (...args: unknown[]): unknown => {
+          calls.push([name, ...args]);
+          return result;
+        };
+      const steers = {
+        resolve: log('resolve', []),
+        markLiveApplied: log('markLive'),
+        update: log('update'),
+        seed: log('seed'),
+        settleApplied: log('settle'),
+        appliedIds: log('appliedIds', ['steer-taken']),
+        adoptPromoted: log('adopt', ['steer-promoted']),
+        convertToQueued: log('toQueued'),
+        convertLocalToQueued: log('sweep'),
+        restoreQueued: log('restore'),
+        blockRecovery: log('block'),
+        isRecoveryHeld: (...args: unknown[]) => {
+          calls.push(['held?', ...args]);
+          return held.has(args[1] as string);
+        },
+      } as unknown as NonNullable<NonNullable<FollowChatOptions['beside']>['steers']>;
+      return { calls, steers, named: (name: string) => calls.filter(([call]) => call === name) };
+    };
+    const watch = () => {
+      const onGeneration = jest.fn();
+      const onRunEnd = jest.fn();
+      return { onGeneration, onRunEnd, runs: { onGeneration, onRunEnd } };
+    };
+    /** A frame that only says the run is over: none of its messages, and why. */
+    const control = (data: Record<string, unknown>): ChatEvent =>
+      ({
+        type: 'final',
+        data: {
+          final: true,
+          reconcile: true,
+          generationProtocolVersion: 2,
+          conversation: { conversationId },
+          ...data,
+        },
+      }) as ChatEvent;
+    const refusal = (status: number, data: Record<string, unknown>) =>
+      Object.assign(new Error(`Request failed with status code ${status}`), {
+        response: { status, data, headers: {} },
+      });
+
+    it('settles steers against the rows it reads, not against a frame that carries none', async () => {
+      const { calls, steers, named } = record();
+      const { onRunEnd, runs } = watch();
+      const { result, streams, loadMessages, ready } = setup({ beside: { steers }, runs });
+      await ready();
+      calls.length = 0;
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      const sent = (result.current.contract.getMessages() ?? [])[2];
+      const stored = [
+        user,
+        reply('response-1', 'Hi'),
+        sent,
+        reply('response-2', 'Whole', sent.messageId),
+      ];
+      loadMessages.mockResolvedValue(stored);
+
+      act(() => {
+        streams[0].push(created(sent, 'response-2'));
+        streams[0].push(
+          control({
+            reconcileReason: 'terminal_payload_missing',
+            terminalStatus: 'complete',
+            promotedSteers: [{ steerId: 'steer-promoted' }],
+          }),
+        );
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+
+      /** Nothing was swept on the frame's word; the stored rows decided, once read. */
+      expect(loadMessages).toHaveBeenCalledTimes(2);
+      expect(named('toQueued')).toEqual([]);
+      expect(calls.map(([name]) => name)).toEqual(['appliedIds', 'settle', 'adopt', 'sweep']);
+      expect(calls[0][1]).toEqual(stored);
+      expect(calls[1]).toEqual(['settle', conversationId, stored]);
+      expect(calls[2]).toEqual(['adopt', conversationId, [{ steerId: 'steer-promoted' }]]);
+      expect(calls[3]).toEqual([
+        'sweep',
+        conversationId,
+        {
+          excludeSteerIds: new Set(['steer-taken', 'steer-promoted']),
+          generationProtocolVersion: 1,
+        },
+      ]);
+      /** The server says it completed, and the reply the rows hold is the one it left. */
+      expect(onRunEnd).toHaveBeenCalledWith({
+        outcome: 'completed',
+        generationCreatedAt: 3000,
+        responseMessageId: 'response-2',
+        reconcileReason: 'terminal_payload_missing',
+      });
+    });
+
+    it('sweeps nothing after such a frame while another generation is already running', async () => {
+      const { calls, steers } = record();
+      const { onRunEnd, runs } = watch();
+      const { result, streams, setStatus, ready } = setup({ beside: { steers }, runs });
+      await ready();
+      calls.length = 0;
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      const sent = (result.current.contract.getMessages() ?? [])[2];
+
+      /** The server has started the next turn itself: its frames settle the steers. */
+      setStatus({ active: true, streamId: conversationId, createdAt: 6000 });
+      act(() => {
+        streams[0].push(created(sent, 'response-2'));
+        streams[0].push(
+          control({ reconcileReason: 'terminal_payload_missing', terminalStatus: 'complete' }),
+        );
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+
+      expect(calls).toEqual([]);
+    });
+
+    it('says a run whose stop could not be saved was stopped, and why', async () => {
+      const { steers } = record();
+      const { onRunEnd, runs } = watch();
+      const { result, streams, ready } = setup({ beside: { steers }, runs });
+      await ready();
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      const sent = (result.current.contract.getMessages() ?? [])[2];
+
+      act(() => {
+        streams[0].push(created(sent, 'response-2'));
+        streams[0].push(
+          control({ reconcileReason: 'abort_persistence_failed', terminalStatus: 'aborted' }),
+        );
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(onRunEnd).toHaveBeenCalledWith({
+        outcome: 'aborted',
+        generationCreatedAt: 3000,
+        responseMessageId: undefined,
+        reconcileReason: 'abort_persistence_failed',
+      });
+    });
+
+    it('says a start the server answered as already settled was not a completed run', async () => {
+      const { onRunEnd, runs } = watch();
+      const { result, sendMessages, ready } = setup({ runs });
+      await ready();
+      sendMessages.mockResolvedValueOnce({
+        status: 'settled',
+        conversationId,
+        generationProtocolVersion: 2,
+      });
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+    });
+
+    it('puts a turn back in the queue when the server refuses its start, and not when it may have started', async () => {
+      const { calls, steers, named } = record();
+      const { onRunEnd, runs } = watch();
+      const { result, sendMessages, ready } = setup({ beside: { steers }, runs });
+      await ready();
+      calls.length = 0;
+
+      sendMessages.mockRejectedValueOnce(refusal(403, { message: 'Not allowed' }));
+      act(() => {
+        result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(named('restore')).toHaveLength(1);
+      expect(named('restore')[0][1]).toMatchObject({ userMessage: { text: 'Next question' } });
+      expect(named('block')).toEqual([]);
+      /** The refusal is the turn's reply, and nothing queued behind it is sent on its account. */
+      expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'error' }));
+
+      /** A failure that may have started the turn puts nothing back: it could be sent twice. */
+      sendMessages.mockRejectedValueOnce(refusal(502, { message: 'Bad gateway' }));
+      act(() => {
+        result.current.contract.ask({ text: 'Again' });
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(2));
+      expect(named('restore')).toHaveLength(1);
+    });
+
+    it('leaves nothing of a turn another generation got ahead of, and follows that generation', async () => {
+      const { calls, steers, named } = record();
+      const { onRunEnd, runs } = watch();
+      const { result, sendMessages, streams, setStatus, onWithdrawn, ready } = setup({
+        beside: { steers },
+        runs,
+      });
+      await ready();
+      calls.length = 0;
+
+      /** The place this turn was queued for was taken by a generation started elsewhere. */
+      setStatus({ active: true, streamId: conversationId, createdAt: 5000 });
+      sendMessages.mockRejectedValueOnce(
+        refusal(409, {
+          status: 'predecessor_mismatch',
+          code: 'GENERATION_PREDECESSOR_MISMATCH',
+          streamId: conversationId,
+          conversationId,
+          generationCreatedAt: 5000,
+          active: true,
+        }),
+      );
+      act(() => {
+        result.current.contract.ask({ text: 'Queued follow-up' });
+      });
+
+      /** Back in the queue behind the winner, which is the generation now followed. */
+      await waitFor(() => expect(streams).toHaveLength(1));
+      expect(named('restore')).toHaveLength(1);
+      expect(named('restore')[0].slice(1)).toEqual([
+        expect.objectContaining({
+          userMessage: expect.objectContaining({ text: 'Queued follow-up' }),
+        }),
+        5000,
+      ]);
+      /** Neither its message nor a failure stays in the list, and no run is said to have ended. */
+      expect(ids(result.current.contract.getMessages())).toEqual(['user-1', 'response-1']);
+      expect(result.current.followed.error).toBeUndefined();
+      expect(onRunEnd).not.toHaveBeenCalled();
+      /** The words are in the queue, so they are not also handed back to the composer. */
+      expect(onWithdrawn).not.toHaveBeenCalled();
+    });
+
+    describe('for a turn that replays a steer the server had parked', () => {
+      /** A turn from the reader's queue that is the recovery of the parked steer `steer-parked`. */
+      const replay = (result: { current: { contract: ReturnType<typeof useDrivenContract> } }) =>
+        act(() => {
+          result.current.contract.ask(
+            { text: 'Parked by the server' },
+            { overrideRecoverySteerId: 'steer-parked' },
+          );
+        });
+      const source = [{ steerId: 'steer-parked', text: 'Parked by the server' }];
+      const letGo = {
+        active: false,
+        generationProtocolVersion: 2,
+        unrecoveredSteers: source,
+      } as ChatStreamStatus;
+
+      it('sends nothing when the reader has already dealt with that steer', async () => {
+        const { steers, named } = record(new Set(['steer-parked']));
+        const { onRunEnd, runs } = watch();
+        const { result, sendMessages, ready } = setup({ beside: { steers }, runs });
+        await ready();
+
+        replay(result);
+        await waitFor(() => expect(named('restore')).toHaveLength(1));
+        await settle();
+
+        expect(named('held?')).toEqual([['held?', conversationId, 'steer-parked']]);
+        expect(sendMessages).not.toHaveBeenCalled();
+        expect(ids(result.current.contract.getMessages())).toEqual(['user-1', 'response-1']);
+        expect(result.current.followed.error).toBeUndefined();
+        expect(onRunEnd).not.toHaveBeenCalled();
+      });
+
+      it('puts the steer back when a start that may have run turns out not to have kept it', async () => {
+        const { steers, named } = record();
+        const { onRunEnd, runs } = watch();
+        const { result, sendMessages, setStatus, ready } = setup({ beside: { steers }, runs });
+        await ready();
+        setStatus(letGo);
+        sendMessages.mockRejectedValueOnce(refusal(502, { message: 'Bad gateway' }));
+
+        replay(result);
+        await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+
+        /** Not as a refused start, which it was not, but on the server's word after the end. */
+        expect(named('restore')).toEqual([]);
+        expect(named('toQueued')).toEqual([
+          [
+            'toQueued',
+            conversationId,
+            source,
+            { generationProtocolVersion: 2, allowPreviouslyConvertedIds: ['steer-parked'] },
+          ],
+        ]);
+      });
+
+      it('puts the steer back when its stream reports the failure, and not for a turn that replays none', async () => {
+        const { calls, steers, named } = record();
+        const { onRunEnd, runs } = watch();
+        const harness = createTransport(2);
+        const { result, streams, ready } = setup({ beside: { steers }, runs, harness });
+        await ready();
+        harness.setStatus(letGo);
+        const failure = {
+          type: 'error',
+          data: { message: 'failed', generationProtocolVersion: 2 },
+        } as ChatEvent;
+
+        replay(result);
+        await waitFor(() => expect(streams).toHaveLength(1));
+        act(() => streams[0].push(failure));
+        await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+        expect(named('toQueued')).toHaveLength(1);
+        expect(named('toQueued')[0][2]).toEqual(source);
+
+        calls.length = 0;
+        act(() => {
+          result.current.contract.ask({ text: 'An ordinary turn' });
+        });
+        await waitFor(() => expect(streams).toHaveLength(2));
+        act(() => streams[1].push(failure));
+        await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(2));
+        expect(named('toQueued')).toEqual([]);
+      });
+    });
+
+    it('settles steers left waiting by a run that ended while the conversation was not open', async () => {
+      const { calls, steers } = record();
+      const harness = createTransport();
+      const parked = [{ steerId: 'steer-parked', text: 'Parked by the server' }];
+      harness.setStatus({ active: false, unrecoveredSteers: parked } as ChatStreamStatus);
+      const { ready } = setup({ beside: { steers }, harness });
+      await ready();
+      await settle();
+
+      const stored = [user, reply('response-1', 'Hi')];
+      expect(calls.map(([name]) => name)).toEqual([
+        'appliedIds',
+        'settle',
+        'adopt',
+        'toQueued',
+        'sweep',
+      ]);
+      expect(calls[1]).toEqual(['settle', conversationId, stored]);
+      expect(calls[3]).toEqual(['toQueued', conversationId, parked, {}]);
+      expect(calls[4]).toEqual([
+        'sweep',
+        conversationId,
+        {
+          excludeSteerIds: new Set(['steer-taken', 'steer-promoted', 'steer-parked']),
+          generationProtocolVersion: undefined,
+        },
+      ]);
+    });
+
+    it('settles nothing from stored rows while a generation is running, or after one that ended on its reply', async () => {
+      const running = record();
+      const harness = createTransport();
+      harness.setStatus({ active: true, streamId: conversationId, createdAt: 2000 });
+      const attached = setup({ beside: { steers: running.steers }, harness });
+      await attached.ready();
+      await waitFor(() => expect(attached.streams).toHaveLength(1));
+      await settle();
+      /** Its own frames settle them: nothing is swept on the strength of rows mid-run. */
+      expect(running.named('sweep')).toEqual([]);
+
+      /** It ends on a final frame with the reply in it, which settles them as it is applied. */
+      harness.setStatus({ active: false });
+      act(() => attached.streams[0].push(final(user, reply('response-1', 'Hi'))));
+      await waitFor(() => expect(attached.result.current.followed.isFollowing).toBe(false));
+      await settle();
+      expect(running.named('sweep')).toEqual([['sweep', conversationId]]);
+    });
   });
 
   it("drops the files another conversation left staged in the pane, and keeps this one's", async () => {
