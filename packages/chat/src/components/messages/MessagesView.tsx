@@ -6,6 +6,7 @@ import type { TMessage } from 'librechat-data-provider';
 import type { MessagesScrollButtonProps } from './ScrollButton';
 import type { MessagesThreadProps } from './thread/Thread';
 import {
+  createRowGates,
   RowMountProvider,
   useProgressiveRowMount,
 } from '../../react/messages/useProgressiveRowMount';
@@ -209,12 +210,14 @@ export default function MessagesView({
     [handleNearBottomChange, reportNearBottom],
   );
 
+  const [gates] = useState(createRowGates);
   const mountWindow = useProgressiveRowMount({
     tailDepth: latestMessageDepth,
     anchorBottom: autoScroll || isSubmitting,
     isSubmitting,
     conversationId: treeConversationId,
     scrollableRef,
+    gates,
   });
   useEffect(() => {
     const isNearBottom = measureNearBottom();
@@ -259,7 +262,7 @@ export default function MessagesView({
                   data-conversation-id={treeConversationId}
                   data-testid={primary ? 'screenshot-target' : undefined}
                 >
-                  <RowMountProvider mountWindow={mountWindow}>
+                  <RowMountProvider mountWindow={mountWindow} gates={gates}>
                     <OffscreenRowsProvider observe={observeRow}>
                       {renderThread({
                         messagesTree,

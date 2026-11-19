@@ -326,7 +326,6 @@ export type {
 } from './react/palette';
 export {
   RowMountProvider,
-  useRowMountWindow,
   useProgressiveRowMount,
   completeProgressiveRowMounts,
 } from './react/messages/useProgressiveRowMount';
