@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, MutationKeys, dataService } from 'librechat-data-provider';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from 'librechat-data-provider';
@@ -21,6 +22,17 @@ export function useScheduleMCPOffer(agentId: string) {
     () => dataService.getScheduleMCPOffer(agentId),
     { enabled: agentId !== '', retry: false, refetchOnWindowFocus: false },
   );
+}
+
+/**
+ * Reads the offer again. A choice is made from one offer and the server checks it against
+ * its own: once it turns a choice down, the offer in hand can only be turned down again.
+ */
+export function useScheduleMCPOfferRefresh(): () => void {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    void queryClient.invalidateQueries([QueryKeys.scheduleMCPOffer]);
+  }, [queryClient]);
 }
 
 export function useScheduleMCPConsentMutations(id: string) {

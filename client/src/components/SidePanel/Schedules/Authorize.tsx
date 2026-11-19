@@ -29,8 +29,10 @@ export default function Authorize({
   const state = useGrantChoice(query.data);
   const [hours, setHours] = useState(1);
   const offer = query.data?.offer ?? null;
+  /** Not while the offer is being read again: its digest is the one just turned down. */
   const valid =
     offer != null &&
+    !query.isFetching &&
     state.count > 0 &&
     Number.isInteger(hours) &&
     hours >= 1 &&

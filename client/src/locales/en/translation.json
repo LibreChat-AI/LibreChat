@@ -3939,6 +3939,7 @@
   "com_ui_schedule_consent_none_selected": "Choose at least one tool to confirm.",
   "com_ui_schedule_consent_allow_all": "Allow everything",
   "com_ui_schedule_authorize_title": "What this schedule may use",
+  "com_ui_schedule_authorize_changed": "What this schedule may use has changed. Review your choices and create it again.",
   "com_ui_schedule_authorize_unavailable": "What this schedule may use could not be loaded. You can create it and authorize it afterwards; until then none of its tools will run.",
   "com_ui_schedule_consent_other_tools": "Other tools",
   "com_ui_schedule_consent_other_allowed": "Other tools allowed: {{tools}}",

@@ -866,6 +866,50 @@ describe('ScheduleDialog', () => {
       await waitFor(() => expect(create()).toBeDisabled());
     });
 
+    it('reads the offer again when the server turns the authorization down, and sends the new one', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue(offerFor(['export', 'query']));
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(await screen.findByRole('checkbox', { name: 'query' }));
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+
+      const failed = (status: number, code?: string) =>
+        Object.assign(new Error('rejected'), { response: { status, data: { code } } });
+      // Any other failure leaves the offer alone.
+      act(() => createMutationOptions!.onError(failed(500)));
+      expect(dataService.getScheduleMCPOffer).toHaveBeenCalledTimes(1);
+
+      // The agent dropped a tool after the form read the offer.
+      let answer!: (offer: ScheduleMCPConsentView) => void;
+      jest.mocked(dataService.getScheduleMCPOffer).mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+      act(() => createMutationOptions!.onError(failed(409, 'consent_changed')));
+      // The offer in hand is the one just turned down: nothing is sent until the new one is read.
+      await waitFor(() => expect(create()).toBeDisabled());
+      await act(async () =>
+        answer({ ...offerFor(['query']), offer: { digest: 'b'.repeat(64), maxLifetimeHours: 24 } }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole('checkbox', { name: 'export' })).not.toBeInTheDocument(),
+      );
+      expect(dataService.getScheduleMCPOffer).toHaveBeenCalledTimes(2);
+      // The tick that still applies is kept, and the next create carries the offer just read.
+      expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate).toHaveBeenCalledTimes(2);
+      expect(mockMutate.mock.calls[1][0]).toMatchObject({
+        authorization: { offerDigest: 'b'.repeat(64), allow: { warehouse: ['query'] } },
+      });
+    });
+
     it('creates as before when the agent has nothing to be allowed', async () => {
       mockLimits = { ...mockLimits, mcpConsent: true };
       jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue({

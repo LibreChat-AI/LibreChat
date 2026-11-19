@@ -51,7 +51,12 @@ import {
   useCreateScheduleMutation,
   useUpdateScheduleMutation,
 } from '~/data-provider';
-import { scheduleMCPErrorMessage, scheduleMCPErrorOutcomes } from './errors';
+import {
+  scheduleMCPErrorMessage,
+  scheduleMCPErrorOutcomes,
+  scheduleAuthorizationRejected,
+} from './errors';
+import { useScheduleMCPOfferRefresh } from '~/data-provider/Schedules/consent';
 import { useLocalize, useClockFormat, useWeekStart } from '~/hooks';
 import { useChatProjectPicker } from './useScheduleProjects';
 import { VariableEditor } from '~/components/Variables';
@@ -332,6 +337,7 @@ export default function ScheduleDialog({
   /** Fingerprint of the payload the current key was last attempted with. */
   const lastAttemptedPayload = useRef<string | null>(null);
 
+  const refreshOffer = useScheduleMCPOfferRefresh();
   const createSchedule = useCreateScheduleMutation({
     onSuccess: () => {
       setMCPRecoveryOutcomes([]);
@@ -342,8 +348,14 @@ export default function ScheduleDialog({
     },
     onError: (error) => {
       setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
+      // What could be allowed changed under the owner's choice. The form stays open on the
+      // new offer, with the ticks that still apply, so the next create is not turned down too.
+      const rejected = scheduleAuthorizationRejected(error);
+      if (rejected) refreshOffer();
       showToast({
-        message: scheduleMCPErrorMessage(error, localize) ?? localize('com_ui_error'),
+        message:
+          scheduleMCPErrorMessage(error, localize) ??
+          localize(rejected ? 'com_ui_schedule_authorize_changed' : 'com_ui_error'),
         status: 'error',
       });
     },
