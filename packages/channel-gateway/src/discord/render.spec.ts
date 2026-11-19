@@ -56,7 +56,8 @@ describe('Discord answer rendering', () => {
   });
   describe('shortening under a reduced budget', () => {
     const notice = 'Reply shortened to fit this channel’s delivery limit.';
-    const fences = (text: string) => text.split('\n').filter((line) => line.startsWith('```')).length;
+    const fences = (text: string) =>
+      text.split('\n').filter((line) => line.startsWith('```')).length;
     test.each([1, 2, 3])('keeps notice, closed fence and 2000 units with %i parts', (maxParts) => {
       const source = '```ts\n' + `${'y'.repeat(99)}\n`.repeat(200) + '```';
       const plan = renderDiscordPlan({ runId: 'run', text: source }, maxParts, { shorten: true });
