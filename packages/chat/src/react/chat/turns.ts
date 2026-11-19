@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { Constants, EModelEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, ChatSubmissionKind } from 'librechat-data-provider';
 import type { TAskFunction, TRegenerateFunction } from '../../core';
 import type { ChatTurnsParams, TurnServices } from './host';
 import {
@@ -120,6 +120,7 @@ export function useTurns(
       editedContent = null,
       editedMessageId = null,
       isRegenerate = false,
+      isRetry = false,
       isContinued = false,
       isEdited = false,
       compact = false,
@@ -367,6 +368,29 @@ export function useTurns(
     askInFlightRef.current = true;
     setSubmissionStart(Date.now());
     store.set(launchedConversationFamily(index), submission.conversation);
+    /** Automatic queue recovery and compaction are not new user submissions. */
+    if (
+      !compact &&
+      overrideQueuedMessageOrigin == null &&
+      overrideRecoverySteerId == null &&
+      services.onProductSubmission
+    ) {
+      let kind: ChatSubmissionKind = 'send';
+      if (isRetry) kind = 'retry';
+      else if (isContinued) kind = 'continue';
+      else if (isEdited) kind = 'edit';
+      else if (isRegenerate) kind = 'regenerate';
+      try {
+        const context = services.onProductSubmission(submission, kind);
+        if (context && 'then' in context) {
+          void context.catch(() => {});
+        } else {
+          submission.productTrackingContext = context;
+        }
+      } catch {
+        // Analytics must not prevent a chat submission.
+      }
+    }
     setSubmission(submission);
     logger.dir('message_stream', {
       conversationId,

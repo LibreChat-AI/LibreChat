@@ -68,7 +68,10 @@ export async function startGeneration(
     }
     requestAttempts += 1;
     try {
-      const data = await host.start({ server: url, payload }, { signal });
+      const data = await host.start(
+        { server: url, payload, productTrackingContext: currentSubmission.productTrackingContext },
+        { signal },
+      );
       if (signal?.aborted) {
         return null;
       }
@@ -198,7 +201,8 @@ export async function startGeneration(
   // The server rejected admission before exposing a generation. Restore
   // the exact queue row/position; ambiguous transport/5xx outcomes must
   // first reconcile durable state instead of risking a duplicate start.
-  if (!restoreRefusedStart(host.steers, currentSubmission, startError)) {
+  const refused = restoreRefusedStart(host.steers, currentSubmission, startError);
+  if (!refused) {
     const recoverySteerId = getRecoverySteerId(currentSubmission);
     const recoveryConvoId = currentSubmission.conversation?.conversationId;
     if (recoverySteerId != null && recoveryConvoId) {
@@ -228,7 +232,7 @@ export async function startGeneration(
   if (signal?.aborted) {
     return null;
   }
-  host.events.showStartFailure(currentSubmission, errorData);
+  host.events.showStartFailure(currentSubmission, errorData, refused ? 'rejected' : 'unconfirmed');
   host.pane.setShowStopButton(false);
   host.pane.setIsSubmitting(false);
   host.pane.setSubmission(null);

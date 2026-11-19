@@ -1,5 +1,5 @@
 import { SSE } from 'sse.js';
-import { request } from 'librechat-data-provider';
+import { request, getProductTrackingHeaders } from 'librechat-data-provider';
 import type {
   ChatFrame,
   ChatEvent,
@@ -88,14 +88,14 @@ function parseErrorBody(body: unknown, status?: number): ChatErrorData | undefin
  */
 export function createSSETransport({ token }: { token?: string }): ChatTransport {
   return {
-    send({ server, payload }, { signal, onEvent }) {
+    send({ server, payload, productTrackingContext }, { signal, onEvent }) {
       if (signal.aborted) {
         return;
       }
 
       const sse = new SSE(server, {
         payload: JSON.stringify(payload),
-        headers: jsonHeaders(token),
+        headers: { ...jsonHeaders(token), ...getProductTrackingHeaders(productTrackingContext) },
       });
 
       sse.addEventListener('open', () => {
@@ -129,7 +129,10 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
             return;
           }
           if (refreshedToken) {
-            sse.headers = jsonHeaders(refreshedToken);
+            sse.headers = {
+              ...jsonHeaders(refreshedToken),
+              ...getProductTrackingHeaders(productTrackingContext),
+            };
             request.dispatchTokenUpdatedEvent(refreshedToken);
             sse.stream();
             return;
@@ -143,7 +146,7 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
           console.error(error);
           console.log(e);
         }
-        onEvent({ type: 'error', data });
+        onEvent({ type: 'error', data, status: e.responseCode });
       });
 
       sse.addEventListener('cancel', () => {

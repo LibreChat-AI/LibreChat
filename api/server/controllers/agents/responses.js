@@ -1212,6 +1212,7 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const run = await createRun({
           sdkModelHost: req?.app?.locals?.sdkModelHost,
+          productTrackingRequest: req,
           ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
           messages: responseRuntime.graphMessages(formattedMessages),
@@ -1449,6 +1450,7 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const run = await createRun({
           sdkModelHost: req?.app?.locals?.sdkModelHost,
+          productTrackingRequest: req,
           ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
           messages: responseRuntime.graphMessages(formattedMessages),

@@ -160,6 +160,7 @@ function RecoveryActions({
     ask(
       { text: parent.text, parentMessageId: parent.parentMessageId, conversationId },
       {
+        isRetry: true,
         overrideFiles: [],
         overrideManualSkills: parent.manualSkills,
         overrideQuotes: parent.quotes,
