@@ -293,7 +293,8 @@ dnsConfig: {}
 updateStrategy:
   type: RollingUpdate
 
-# Optional Slack gateway. Enable channel/background policy separately in librechat.yaml.
+# Optional Slack gateway and independent Discord gateway workload.
+# Enable channel/background/provider policy separately in librechat.yaml.
 # Requires transaction-capable MongoDB; this does not change database topology.
 channelGateway:
   enabled: false
@@ -331,6 +332,23 @@ channelGateway:
     annotations: {}
     host: ""
     tls: []
+  # Discord always runs its own shared-mode process, Service and optional Ingress.
+  # Common image, appTitle, internalUrl and service-token Secret settings above apply.
+  # This does not enable Discord in LibreChat or register any provider credentials.
+  # Configure endpoints.agents.channels.discord.enabled and optional HTTPS publicUrl
+  # in librechat.configYamlContent or existingConfigYaml. Public URLs with a path
+  # prefix require an external proxy that strips it; this Ingress routes /discord/.
+  discord:
+    enabled: false
+    replicaCount: 1
+    resources: {}
+    podAnnotations: {}
+    ingress:
+      enabled: false
+      className: ""
+      annotations: {}
+      host: ""
+      tls: []
   # Pod identity, DNS, networking and scheduling use the chart's shared settings.
   # Global security contexts are honored; gateway defaults also enable seccomp,
   # a read-only root filesystem and disable privilege escalation/API token mounting.

@@ -1,4 +1,5 @@
 {{- $sharedSlack := and .Values.channelGateway.enabled (eq .Values.channelGateway.mode "shared") -}}
+{{- $sharedGateway := or $sharedSlack (get (default dict .Values.channelGateway.discord) "enabled") -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -87,12 +88,12 @@ spec:
               optional: false
           {{- end }}
           {{- include "librechat.validateBundledPasswords" . }}
-          {{- if or (include "librechat.bundledMongoAuth" .) (include "librechat.bundledRedisAuth" .) .Values.global.librechat.env $sharedSlack }}
+          {{- if or (include "librechat.bundledMongoAuth" .) (include "librechat.bundledRedisAuth" .) .Values.global.librechat.env $sharedGateway }}
           env:
           {{- with .Values.global.librechat.env }}
           {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if $sharedSlack }}
+          {{- if $sharedGateway }}
           {{- $configEnv := default dict .Values.librechat.configEnv }}
           {{- $key := "CHANNEL_SERVICE_TOKEN" }}
           {{- if not (or (include "librechat.userEnvHas" (dict "root" $ "name" $key)) (hasKey $configEnv $key)) }}
@@ -100,7 +101,7 @@ spec:
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "Shared Slack setup requires a service token Secret or explicit API environment" $secret | quote }}
+                  name: {{ required "Shared gateway setup requires a service token Secret or explicit API environment" $secret | quote }}
                   key: {{ $key }}
           {{- end }}
           {{- end }}
