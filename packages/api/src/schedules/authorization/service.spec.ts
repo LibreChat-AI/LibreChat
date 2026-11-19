@@ -880,6 +880,11 @@ describe('a grant of the whole agent', () => {
     expect(await s.service.authority.authorize(call('anything'), {})).toMatchObject({
       state: 'authorized',
     });
+    // It is not listed, and the view still notices when its recipient moves.
+    s.changeTarget({ ...every, resource: { ...every.resource, audience: 'elsewhere' } });
+    expect((await s.service.view(identity)).state).toBe('changed');
+    s.changeTarget(every);
+    expect((await s.service.view(identity)).state).toBe('active');
     // The same for a schedule that is being created.
     const offer = await s.service.draft(identity);
     expect(offer.targets).toEqual([]);

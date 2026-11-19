@@ -530,7 +530,11 @@ export function createScheduleMCPConsentService<
         maxLifetimeHours: limits.maxLifetimeHours,
         ...(standing && { everything: true as const }),
       };
-      const covered = whole ? keepsResources(targets, granted) : coversGrant(targets, granted);
+      // A whole-agent grant holds consents for servers that are not listed to tick, so its
+      // recipients are compared with every server in use, not only the listed ones.
+      const covered = whole
+        ? keepsResources(canonicalTargets(servers, { empty: true }), granted)
+        : coversGrant(targets, granted);
       if (state === 'active' && !covered) state = 'changed';
     } else if (!enrollment) state = 'unsupported';
     options.signal?.throwIfAborted();

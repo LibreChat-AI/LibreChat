@@ -385,6 +385,16 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       for (const [server, required] of selected) {
         const serverTools = toolAgentIds.get(server);
         if (!serverTools) {
+          // No tool is named there: the agents select the server as a whole. It is made
+          // ready for the agents the grant allows that for, which a grant of the whole agent
+          // does and a grant that lists its tools does not.
+          const owners = [...(serverAgentIds.get(server) ?? [])].filter((owner) =>
+            grants(owner, server, Constants.mcp_all),
+          );
+          if (owners.length > 0) {
+            serverAgentIds.set(server, new Set(owners));
+            continue;
+          }
           selected.delete(server);
           serverAgentIds.delete(server);
           continue;

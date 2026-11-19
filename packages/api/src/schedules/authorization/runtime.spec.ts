@@ -887,6 +887,34 @@ describe('a schedule authorized for the whole agent', () => {
     );
   });
 
+  it('makes ready a server its agents select as a whole, which a listed grant leaves out', async () => {
+    const f = await setup();
+    f.snapshot.enrollment = null;
+    f.setCandidates(['sys__all__sys_mcp_warehouse', 'web_search']);
+    const confirm = async (choice: object) => {
+      const offer = await f.host.consent.service.view(f.identity);
+      await f.host.consent.service.confirm(f.identity, {
+        offerDigest: offer.offer!.digest,
+        expectedRevision: offer.revision,
+        lifetimeHours: 1,
+        allow: {},
+        ...choice,
+      });
+      f.row.mcpConsent = f.snapshot.enrollment!;
+      f.connect.mockClear();
+    };
+    await confirm({ everything: true });
+    await expect(f.check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
+    expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'warehouse' }));
+    // A server that is not there is reported, not passed over.
+    f.connect.mockRejectedValueOnce(new Error('down'));
+    await expect(f.check()).rejects.toMatchObject({ code: 'mcp_unavailable' });
+    // A grant that lists its tools names none on that server: nothing to make ready.
+    await confirm({ tools: ['web_search'] });
+    await expect(f.check()).resolves.toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+  });
+
   it('runs with every tool, and calls both servers', async () => {
     const f = await whole();
     await f.host.prepare({ req: f.req, context: f.context });
