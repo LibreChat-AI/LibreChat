@@ -179,6 +179,9 @@ function useChat(
     onWithdrawn: options?.onWithdrawn,
     onGeneration,
     onRunEnd,
+    onStopped: options?.onStopped,
+    onDetached: options?.onDetached,
+    onIdle: options?.onIdle,
   });
   useAnnouncedRun(id, attached, followed);
   return followed;

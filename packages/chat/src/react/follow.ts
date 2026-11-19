@@ -4,6 +4,7 @@ import type { TMessage, ChatEvent, ChatFinalFrame } from 'librechat-data-provide
 import type {
   ChatStatus,
   ChatStream,
+  DetachedRun,
   ChatTransport,
   SubmittedTurn,
   ChatConnection,
@@ -93,6 +94,20 @@ export type FollowChatOptions = {
    * with a sent turn's own final frame in. Not for a stream that only dropped.
    */
   onRunEnd?: (end: FollowedRunEnd) => void;
+  /** The reader asked for the generation in flight to be stopped. */
+  onStopped?: (generation: FollowedGeneration) => void;
+  /**
+   * This chat is being let go of while a generation it follows is still running. The server
+   * keeps going with no one listening, so nothing will say how it ended: `run` names it, so
+   * that its end can be read from the stored rows when the conversation is next shown. Not for
+   * a rerun, a run the reader stopped, or one whose turn the server has not named yet.
+   */
+  onDetached?: (run: DetachedRun) => void;
+  /**
+   * The conversation was opened with nothing running under it. `messages` are its stored rows
+   * as just read, which hold whatever an earlier run left.
+   */
+  onIdle?: (messages: TMessage[]) => void;
 };
 
 /** A generation as a stream names it. */
@@ -332,6 +347,9 @@ export function useFollowChat({
   onWithdrawn,
   onGeneration,
   onRunEnd,
+  onStopped,
+  onDetached,
+  onIdle,
 }: FollowChatOptions): FollowedChat {
   const queryClient = useQueryClient();
   const host = useRef({
@@ -346,6 +364,9 @@ export function useFollowChat({
     onWithdrawn,
     onGeneration,
     onRunEnd,
+    onStopped,
+    onDetached,
+    onIdle,
   });
   host.current = {
     transport,
@@ -359,6 +380,9 @@ export function useFollowChat({
     onWithdrawn,
     onGeneration,
     onRunEnd,
+    onStopped,
+    onDetached,
+    onIdle,
   };
   const [attempt, setAttempt] = useState(0);
   const [entry, setEntry] = useState<Entry>();
@@ -399,9 +423,23 @@ export function useFollowChat({
     let stopping: Promise<void> | undefined;
     /** The generation the stream in hand names, until it ends or is lost. */
     let generation: FollowedGeneration | undefined;
+    /**
+     * The turn that generation answers, once the server has named it: its message, the reply
+     * it is writing, and whether it reruns an earlier turn.
+     */
+    let answering:
+      | { userMessageId: string; responseMessageId?: string; rerun: boolean }
+      | undefined;
+    /** Whether the reader asked for that generation to be stopped. */
+    let halted = false;
     const note = (stream: ChatStream | null | undefined): void => {
       if (stream?.generationCreatedAt == null) {
         return;
+      }
+      /** Another generation is another turn; the same one attached to again is the same turn. */
+      if (generation?.createdAt !== stream.generationCreatedAt) {
+        answering = undefined;
+        halted = false;
       }
       generation = {
         createdAt: stream.generationCreatedAt,
@@ -419,6 +457,8 @@ export function useFollowChat({
     const forget = (): FollowedGeneration | undefined => {
       const known = generation;
       generation = undefined;
+      answering = undefined;
+      halted = false;
       if (known != null && !stale) {
         host.current.onGeneration?.(null);
       }
@@ -655,6 +695,17 @@ export function useFollowChat({
         } else if (attachment != null && event.type === 'error' && event.status == null) {
           attachment.failure = { negotiated: supportsGenerationProtocolV2(event.data) };
         }
+        if (event.type === 'sync') {
+          const resumed = event.data.resumeState;
+          const named = resumed?.userMessage?.messageId;
+          if (named != null) {
+            answering = {
+              userMessageId: named,
+              responseMessageId: resumed?.responseMessageId,
+              rerun: false,
+            };
+          }
+        }
         if (event.type === 'final' && event.data.earlyAbort === true) {
           /** Stopped before the server kept anything of it: there is no reply it ended on. */
           if (attachment != null) {
@@ -665,6 +716,16 @@ export function useFollowChat({
           announce({ message: 'end', isStatus: true });
           announce({ message: getAllContentText(event.data.responseMessage as TMessage | null) });
         } else if (event.type === 'created') {
+          const own = attachment?.foreign === true ? undefined : sent?.submission;
+          const named = event.data.message?.messageId;
+          if (named != null) {
+            answering = {
+              userMessageId: named,
+              responseMessageId:
+                event.data.turn?.responseMessageId ?? own?.initialResponse?.messageId,
+              rerun: own?.isRegenerate === true,
+            };
+          }
           announced = Date.now();
           announce({ message: 'start', isStatus: true });
         } else if (event.type === 'step' && Date.now() - announced > MESSAGE_UPDATE_INTERVAL) {
@@ -897,6 +958,9 @@ export function useFollowChat({
         if (status != null && steers != null) {
           settleFinishedSteers(steers, id, status, chat.messages);
         }
+        if (status != null) {
+          host.current.onIdle?.(chat.messages);
+        }
       } catch {
         if (!stale) {
           setLoad({ id, attempt, state: 'error' });
@@ -1030,6 +1094,10 @@ export function useFollowChat({
      * appears afterwards, by the generation the status route then names.
      */
     const stop = (): Promise<void> => {
+      if (generation != null) {
+        halted = true;
+        host.current.onStopped?.(generation);
+      }
       const asked = (async (): Promise<void> => {
         const result = await chat.stop();
         const endpoint = host.current.endpoint;
@@ -1098,6 +1166,13 @@ export function useFollowChat({
 
     return () => {
       stale = true;
+      if (generation != null && answering != null && !answering.rerun && !halted) {
+        host.current.onDetached?.({
+          userMessageId: answering.userMessageId,
+          responseMessageId: answering.responseMessageId,
+          generationCreatedAt: generation.createdAt,
+        });
+      }
       wake?.();
       applier.reset();
       chat.dispose();

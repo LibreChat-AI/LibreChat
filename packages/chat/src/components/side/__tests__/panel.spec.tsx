@@ -11,6 +11,12 @@ import type { SideChatHost, SideChatSurfaceProps } from '../../../react/side/hos
 import type { SideChat } from '../../../react/side/state';
 import type { ChatHost } from '../../../react/chat/host';
 import {
+  detachedRunByConvoId,
+  drainAfterAbortByIndex,
+  stopRequestedByConvoId,
+  queuedMessagesByConvoId,
+} from '../../../react/steer/queue';
+import {
   sideChatAtom,
   sideChatDraftFamily,
   sideChatDraftTakenAtom,
@@ -20,7 +26,6 @@ import {
   inertSeenSource,
   MessagesHostProvider,
 } from '../../../react/messages/host';
-import { drainAfterAbortByIndex, queuedMessagesByConvoId } from '../../../react/steer/queue';
 import { activeGenerationCreatedAtByConvoId } from '../../../react/steer/atoms';
 import { createTurnServices } from '../../../react/chat/__fixtures__/services';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
@@ -196,11 +201,20 @@ function setup({
     },
   );
   const abort = jest.fn(async () => ({ success: true }));
+  /** What the server says is running under the conversation; a spec may say a run is still on. */
+  let running: { active: boolean; streamId?: string; createdAt?: number } = { active: false };
   const transport: ChatTransport = {
     sendMessages,
     abort,
-    reconnectToStream: async () => null,
-    getStatus: async () => ({ active: false }),
+    reconnectToStream: async () => {
+      if (!running.active) {
+        return null;
+      }
+      const stream = createStream();
+      streams.push(stream);
+      return stream;
+    },
+    getStatus: async () => running,
   };
   const openConversation = jest.fn();
   const sideChatHost: SideChatHost = {
@@ -308,6 +322,9 @@ function setup({
     remount: () => {
       view.unmount();
       return render(tree(chat));
+    },
+    setRunning: (next: typeof running) => {
+      running = next;
     },
     streams,
     sendMessages,
@@ -530,6 +547,157 @@ describe('SideChatPanel', () => {
       expect(store.get(drainAfterAbortByIndex(SIDE_CHAT_PANE))).toBe(false);
       expect(sendMessages).toHaveBeenCalledTimes(1);
       expect(store.get(queuedMessagesByConvoId(conversationId))).toEqual([queued]);
+    });
+
+    it('sends the queue when it is opened again after the reply ended with the panel closed', async () => {
+      const view = setup({ steers: true });
+      const { store, streams, sendMessages, loadMessages } = view;
+      const asked = await start(view);
+      act(() => {
+        streams[0].push({
+          type: 'created',
+          data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+      });
+      await settle();
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+
+      /** Closed while the reply is still being written: the run is remembered by its turn. */
+      view.unmount();
+      expect(store.get(detachedRunByConvoId(conversationId))).toEqual({
+        userMessageId: asked.messageId,
+        responseMessageId: 'response-2',
+        generationCreatedAt: 3000,
+      });
+      expect(sendMessages).toHaveBeenCalledTimes(1);
+
+      /** It finishes on the server meanwhile. Opened again, nothing is running and its reply is stored. */
+      loadMessages.mockResolvedValue([
+        user,
+        reply('response-1', 'It shipped.'),
+        asked,
+        {
+          ...reply('response-2', 'Two fixes.', asked.messageId),
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+      view.remount();
+
+      await waitFor(() => expect(sendMessages).toHaveBeenCalledTimes(2));
+      expect(sendMessages.mock.calls[1][0].payload).toMatchObject({
+        conversationId,
+        text: 'And then?',
+        parentMessageId: 'response-2',
+      });
+      expect(store.get(detachedRunByConvoId(conversationId))).toBeNull();
+      expect(store.get(queuedMessagesByConvoId(conversationId))).toEqual([]);
+    });
+
+    it('sends the queue once when it is opened again while the reply is still being written', async () => {
+      const view = setup({ steers: true });
+      const { store, streams, sendMessages, setRunning } = view;
+      const asked = await start(view);
+      act(() => {
+        streams[0].push({
+          type: 'created',
+          data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+      });
+      await settle();
+      act(() => store.set(queuedMessagesByConvoId(conversationId), [queued]));
+      view.unmount();
+      const remembered = store.get(detachedRunByConvoId(conversationId));
+      expect(remembered).not.toBeNull();
+
+      /** Still running when the panel opens again: the same generation is followed, and its end is still owed. */
+      setRunning({ active: true, streamId: conversationId, createdAt: 3000 });
+      view.remount();
+      await waitFor(() => expect(streams).toHaveLength(2));
+      await settle();
+      expect(store.get(detachedRunByConvoId(conversationId))).toBe(remembered);
+      expect(sendMessages).toHaveBeenCalledTimes(1);
+
+      /** It ends while followed: that end sends the queue, and the marker is not left to send it again. */
+      setRunning({ active: false });
+      view.loadMessages.mockResolvedValue([
+        user,
+        reply('response-1', 'It shipped.'),
+        asked,
+        reply('response-2', 'Two fixes.', asked.messageId),
+      ]);
+      act(() => streams[1].push(final(asked, reply('response-2', 'Two fixes.', asked.messageId))));
+      await waitFor(() => expect(sendMessages).toHaveBeenCalledTimes(2));
+      expect(store.get(detachedRunByConvoId(conversationId))).toBeNull();
+      await settle();
+      expect(sendMessages).toHaveBeenCalledTimes(2);
+    });
+
+    it('lets go of an earlier run’s markers when another generation is followed', async () => {
+      const view = setup({ steers: true });
+      const { store } = view;
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      store.set(detachedRunByConvoId(conversationId), {
+        userMessageId: 'user-old',
+        generationCreatedAt: 1000,
+      });
+      store.set(stopRequestedByConvoId(conversationId), { generationCreatedAt: 1000 });
+
+      await start(view);
+
+      expect(store.get(detachedRunByConvoId(conversationId))).toBeNull();
+      expect(store.get(stopRequestedByConvoId(conversationId))).toBeNull();
+    });
+
+    it('keeps the queue when the reply it was closed on turns out to have been stopped', async () => {
+      /** Stopped from another tab: the stored reply says so. */
+      const elsewhere = setup({ steers: true });
+      const asked = await start(elsewhere);
+      act(() => {
+        elsewhere.streams[0].push({
+          type: 'created',
+          data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+      });
+      await settle();
+      act(() => elsewhere.store.set(queuedMessagesByConvoId(conversationId), [queued]));
+      elsewhere.unmount();
+      elsewhere.loadMessages.mockResolvedValue([
+        user,
+        reply('response-1', 'It shipped.'),
+        asked,
+        {
+          ...reply('response-2', 'Two', asked.messageId),
+          createdAt: new Date().toISOString(),
+          unfinished: true,
+        },
+      ]);
+      elsewhere.remount();
+      await waitFor(() => expect(rows().length).toBeGreaterThanOrEqual(4));
+      await settle();
+      expect(elsewhere.sendMessages).toHaveBeenCalledTimes(1);
+      expect(elsewhere.store.get(queuedMessagesByConvoId(conversationId))).toEqual([queued]);
+      /** Read once: the marker is retired, so a later visit does not go over it again. */
+      expect(elsewhere.store.get(detachedRunByConvoId(conversationId))).toBeNull();
+    });
+
+    it('does not remember a reply the reader stopped before closing the panel', async () => {
+      const here = setup({ steers: true });
+      const again = await start(here);
+      act(() => {
+        here.streams[0].push({
+          type: 'created',
+          data: { created: true, message: again, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+      });
+      await settle();
+      act(() => here.store.set(queuedMessagesByConvoId(conversationId), [queued]));
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop generating' }));
+      await waitFor(() => expect(here.abort).toHaveBeenCalledTimes(1));
+      expect(here.store.get(stopRequestedByConvoId(conversationId))).toEqual({
+        generationCreatedAt: 3000,
+      });
+      here.unmount();
+      expect(here.store.get(detachedRunByConvoId(conversationId))).toBeNull();
     });
 
     it('sends nothing of a queue where the app hosts no steer hooks', async () => {
