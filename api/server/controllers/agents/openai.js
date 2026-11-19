@@ -2,9 +2,6 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
-  createOpenAIToolCallStream: createAcceptedToolCallStream,
-} = require('@librechat/agents/openai');
-const {
   EModelEndpoint,
   ResourceType,
   PermissionBits,
@@ -17,6 +14,7 @@ const {
   createRemoteExecutionContext,
   getRemoteRunKeyId,
   createChunk,
+  createChatCompletionToolProjection,
   applyContextToAgent,
   buildRunToolSet,
   buildInitialToolSessions,
@@ -1033,17 +1031,19 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         }
       };
 
-      const toolCallStream = createAcceptedToolCallStream({
+      const projection = createChatCompletionToolProjection({
+        streaming: isStreaming,
         signal: execution.signal,
-        toolCalls: isStreaming ? tracker.toolCalls : aggregator.toolCalls,
-        ...(isStreaming && {
-          emit: (delta) => writeSSE(res, createChunk(context, delta)),
-        }),
+        tracker,
+        aggregator,
+        writer: res,
+        context,
+        include: request.include,
       });
 
       // Event handlers for OpenAI-compatible streaming
       const handlers = {
-        ...toolCallStream.handlers,
+        ...projection.handlers,
         // Text content streaming
         on_message_delta: createHandler((data) => {
           const content = data?.delta?.content;
@@ -1145,6 +1145,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const initialSessions = buildInitialToolSessions({ agents: runAgents });
 
       const run = await createRun({
+        ...projection.runOptions,
         sdkModelHost: req?.app?.locals?.sdkModelHost,
         agents: runAgents,
         messages: formattedMessages,
@@ -1191,7 +1192,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         version: 'v2',
       };
 
-      await completeOpenAIToolCalls(toolCallStream, async () => {
+      await completeOpenAIToolCalls(projection, async () => {
         await run.processStream({ messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
@@ -1277,6 +1278,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           aggregator.toolCalls,
           usage,
           true,
+          projection.response(),
         );
         res.json(response);
         logger.debug(

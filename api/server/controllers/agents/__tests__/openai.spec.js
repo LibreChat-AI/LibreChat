@@ -180,6 +180,8 @@ jest.mock('~/server/services/ApiKeys/grants', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createChatCompletionToolProjection: (...args) =>
+    jest.requireActual('@librechat/api').createChatCompletionToolProjection(...args),
   getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
   createApiModelCallbacks: (...args) =>
     jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
@@ -635,7 +637,10 @@ describe('OpenAIChatCompletionController', () => {
       req.body.stream = streaming;
       api.validateRequest.mockReturnValueOnce({ request: req.body });
       mockProcessStream.mockImplementationOnce(async () => {
-        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
         expect(handlers.on_run_step).toBeUndefined();
         expect(handlers.on_run_step_delta).toBeUndefined();
         expect(handlers.on_run_step_completed).toBeUndefined();
@@ -680,6 +685,91 @@ describe('OpenAIChatCompletionController', () => {
   );
 
   it.each([true, false])(
+    'includes completed server results without advertising execution requests (stream=%s)',
+    async (streaming) => {
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      const names = [
+        'createChunk',
+        'writeSSE',
+        'sendFinalChunk',
+        'buildNonStreamingResponse',
+        'createOpenAIStreamTracker',
+        'createOpenAIContentAggregator',
+      ];
+      const originals = names.map((name) => [name, api[name].getMockImplementation()]);
+      for (const name of names) api[name].mockImplementation(actual[name]);
+      req.body.stream = streaming;
+      req.body.include = ['server_tool_results'];
+      let completion;
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+      mockProcessStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-server',
+          agentId: 'agent-123',
+          toolCalls: [{ id: 'lookup-1', name: 'lookup', args: { city: 'Madrid' } }],
+          toolCallDispositions: ['sdk'],
+          invalidToolCalls: [],
+        });
+        completion = handlers.on_run_step_completed;
+        await completion?.handle(
+          'on_run_step_completed',
+          {
+            result: {
+              id: 'step-1',
+              type: 'tool_call',
+              tool_call: {
+                id: 'lookup-1',
+                name: 'lookup',
+                args: '{"city":"Madrid"}',
+                output: 'Sunny',
+              },
+            },
+          },
+          { agentId: 'agent-123' },
+        );
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'It is sunny.' }] },
+        });
+      });
+      try {
+        await OpenAIChatCompletionController(req, res);
+        expect(completion).toBeDefined();
+        const expected = {
+          call_id: 'lookup-1',
+          name: 'lookup',
+          arguments: '{"city":"Madrid"}',
+          output: 'Sunny',
+        };
+        if (streaming) {
+          const frames = res.write.mock.calls
+            .map(([frame]) => frame)
+            .filter((frame) => frame !== 'data: [DONE]\n\n')
+            .map((frame) => JSON.parse(frame.slice(6)));
+          expect(frames.flatMap((frame) => frame.choices[0].delta.tool_results ?? [])).toEqual([
+            { index: 0, ...expected },
+          ]);
+          expect(frames.flatMap((frame) => frame.choices[0].delta.tool_calls ?? [])).toEqual([]);
+          expect(frames.at(-1).choices[0].finish_reason).toBe('stop');
+        } else {
+          const choice = res.json.mock.calls[0][0].choices[0];
+          expect(choice.message.tool_results).toEqual([expected]);
+          expect(choice.message.tool_calls).toBeUndefined();
+          expect(choice.finish_reason).toBe('stop');
+        }
+      } finally {
+        for (const [name, implementation] of originals)
+          api[name].mockImplementation(implementation);
+      }
+    },
+  );
+
+  it.each([true, false])(
     'publishes accepted client calls after text and a model claim (stream=%s)',
     async (streaming) => {
       const api = require('@librechat/api');
@@ -697,7 +787,10 @@ describe('OpenAIChatCompletionController', () => {
       req.body.stream = streaming;
       api.validateRequest.mockReturnValueOnce({ request: req.body });
       mockProcessStream.mockImplementationOnce(async () => {
-        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
         await handlers.on_model_response.handle('on_model_response', {
           type: 'model_response',
           id: 'discarded',
@@ -1030,6 +1123,7 @@ describe('OpenAIChatCompletionController', () => {
       expect.anything(),
       mockCompletionUsage,
       true,
+      undefined,
     );
   });
 
