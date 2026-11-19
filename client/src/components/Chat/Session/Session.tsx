@@ -4,10 +4,10 @@ import { createPortal } from 'react-dom';
 import { useAtom, useAtomValue } from 'jotai';
 import { TooltipAnchor } from '@librechat/client';
 import { SESSION_RAIL_ID, SESSION_TOGGLE_ID, sessionRailOpen, sessionRailSlot } from './state';
-import { useTaskExpiry, useTaskTick } from '../BackgroundTasks/clock';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useBackgroundTasks from '../BackgroundTasks/useTasks';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
+import { useTaskExpiry } from '../BackgroundTasks/clock';
 import { useLocalize } from '~/hooks';
 import SessionRail from './Rail';
 import { cn } from '~/utils';
@@ -37,7 +37,6 @@ function Session({
   const view = useBackgroundTasks({ conversationId, isSubmitting, now, details: open });
   const { activeCount, awaitingCount, failedCount, incomplete } = view;
   useTaskExpiry(view.rows, setNow);
-  useTaskTick(open && activeCount > 0, setNow);
 
   const setOpen = useCallback(
     (next: boolean) => (sheet ? setSheetOpen(next) : setDocked(next)),
@@ -99,7 +98,6 @@ function Session({
         createPortal(
           <SessionRail
             view={view}
-            now={now}
             conversationId={conversationId}
             agentId={agentId}
             sheet={sheet}

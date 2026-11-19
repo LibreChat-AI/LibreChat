@@ -1,8 +1,7 @@
 import { memo, useId, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
-import { Shimmer, Spinner, IconButton, TooltipAnchor } from '@librechat/client';
+import { Spinner, IconButton, TooltipAnchor } from '@librechat/client';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { TaskRow } from '../BackgroundTasks/rows';
 import {
@@ -13,20 +12,23 @@ import {
 } from '../BackgroundTasks/labels';
 import ToolIcon, { getToolIconType } from '~/components/Chat/Messages/Content/ToolOutput/ToolIcon';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { getRunStepDurationLabels, cn } from '~/utils';
+import Elapsed, { Duration } from './Elapsed';
 import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 import SessionNow from './Now';
+import { cn } from '~/utils';
 
 const agentMessage = { endpoint: EModelEndpoint.agents, isCreatedByUser: false } as TMessage;
 
 /**
- * One subagent or background tool in the session rail. A subagent's row opens its thread; a
+ * One subagent or background tool in the session rail. A running row is marked by its dot and
+ * its counting duration alone: the rail stays open beside a streaming thread, and a sweeping
+ * title is three compositor layers a row that every frame of the thread then pays for.
+ * A subagent's row opens its thread; a
  * tool's row unfolds what it ran and has its own way back to the call in the conversation.
  */
 function SessionRow({
   row,
-  now,
   title,
   source,
   agent,
@@ -37,8 +39,6 @@ function SessionRow({
   onOpen,
 }: {
   row: TaskRow;
-  /** The clock a running row's duration is read against; a settled row has its own end. */
-  now?: number;
   title: string;
   /** Who or what ran it: the agent's name, or the tool's label. */
   source: string;
@@ -52,25 +52,18 @@ function SessionRow({
   onOpen: (row: TaskRow) => boolean;
 }) {
   const localize = useLocalize();
-  const { i18n } = useTranslation();
   const detailId = useId();
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const isSubagent = row.kind === 'subagent';
   const active = row.status === 'running' || row.status === 'stopping';
-  const end = active ? now : row.settledAt;
-  const duration =
-    row.startedAt != null && end != null
-      ? getRunStepDurationLabels(Math.max(0, end - row.startedAt), i18n.language)
-      : undefined;
   const expandable = !isSubagent && row.detail != null;
   const stopLabel = localize('com_ui_background_tasks_stop');
   const jumpLabel = localize('com_ui_background_tasks_go_to_tool');
   const visit = () => setUnavailable(!onOpen(row));
-  const heading = <Shimmer active={active}>{title}</Shimmer>;
 
-  let lead = <p className="text-text-primary line-clamp-2 text-sm break-words">{heading}</p>;
+  let lead = <p className="text-text-primary line-clamp-2 text-sm break-words">{title}</p>;
   if (isSubagent) {
     lead = (
       <button
@@ -80,7 +73,7 @@ function SessionRow({
         onClick={visit}
         className="text-text-primary focus-visible:after:ring-focus-control block max-w-full text-start text-sm after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none focus-visible:after:ring-2"
       >
-        <span className="line-clamp-2 break-words">{heading}</span>
+        <span className="line-clamp-2 break-words">{title}</span>
       </button>
     );
   } else if (expandable) {
@@ -95,7 +88,7 @@ function SessionRow({
         }}
         className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-start text-sm focus-visible:ring-2 focus-visible:outline-none"
       >
-        <span className="line-clamp-2 break-words">{heading}</span>
+        <span className="line-clamp-2 break-words">{title}</span>
         <ChevronDown
           aria-hidden="true"
           className={cn(
@@ -146,13 +139,9 @@ function SessionRow({
             <span className={STATUS_CLASSES[row.status]}>{localize(STATUS_KEYS[row.status])}</span>
           )}
           {row.status === 'stopping' && <span>{localize(STATUS_KEYS.stopping)}</span>}
-          {duration != null && (
-            <span
-              className="tabular-nums"
-              aria-label={localize(duration.announcedKey, duration.announcedValues)}
-            >
-              {localize(duration.key, duration.values)}
-            </span>
+          {active && row.startedAt != null && <Elapsed startedAt={row.startedAt} />}
+          {!active && row.startedAt != null && row.settledAt != null && (
+            <Duration ms={row.settledAt - row.startedAt} />
           )}
         </p>
         {isSubagent && row.status === 'running' && row.threadId != null && (
@@ -229,4 +218,26 @@ function SessionRow({
   );
 }
 
-export default memo(SessionRow);
+/**
+ * A task's row object is rebuilt whenever the list is, which a poll or another task settling
+ * causes; a row renders only when what it shows has changed.
+ */
+const sameRow = (a: TaskRow, b: TaskRow): boolean => {
+  if (a === b) return true;
+  const { subagent: before, ...was } = a;
+  const { subagent: after, ...now } = b;
+  const keys = Object.keys(now) as Array<keyof typeof now>;
+  return (
+    before?.threadId === after?.threadId &&
+    before?.taskId === after?.taskId &&
+    keys.length === Object.keys(was).length &&
+    keys.every((key) => was[key] === now[key])
+  );
+};
+
+export default memo(SessionRow, (before, after) => {
+  const { row: was, ...rest } = before;
+  const { row: now, ...next } = after;
+  const keys = Object.keys(next) as Array<keyof typeof next>;
+  return sameRow(was, now) && keys.every((key) => rest[key] === next[key]);
+});

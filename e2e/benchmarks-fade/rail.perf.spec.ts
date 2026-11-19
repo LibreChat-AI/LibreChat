@@ -1,6 +1,7 @@
 import { test } from '@playwright/test';
 import { CONVOS, chatName, openChat, removeChats, seedChat } from './chats';
 import { formatFrameCost, traceFrames } from './trace';
+import { setRail, stageBackgroundWork } from './rail';
 import { installRenderProbe } from './why';
 
 /**
@@ -83,6 +84,68 @@ test.describe('session rail toggle beside a long thread', () => {
           await count(
             `sidebar ${testId.startsWith('close') ? 'collapse' : 'expand'}`,
             click(testId),
+          );
+        }
+      }
+    });
+  }
+});
+
+/**
+ * What an open rail adds to each frame of a thread that is streaming.
+ *
+ * The rail's rows do nothing while the thread streams, but anything in them that animates is a
+ * compositor layer, and a frame's style, layerize and commit steps grow with the layers on the
+ * page. The last reply is grown by a few words every 50 ms for three seconds, with the rail
+ * closed and then open and listing running work; the layer count says where a difference is from.
+ */
+test.describe('session rail beside a streaming thread', () => {
+  test.skip(CONVOS.length === 0, 'FADE_PERF_CHATS names no exported conversation');
+  test.afterAll(removeChats);
+
+  for (const convo of CONVOS) {
+    test(`grow the last reply of ${chatName(convo)} beside the rail`, async ({ page, browser }) => {
+      const messages = await seedChat(convo);
+      await stageBackgroundWork(page, convo, messages);
+      const size = await openChat(page, convo);
+      console.log(`\n${chatName(convo)}: ${size.rows} rows, ${size.nodes} elements`);
+      const session = await page.context().newCDPSession(page);
+      await session.send('LayerTree.enable');
+      let layers = 0;
+      session.on('LayerTree.layerTreeDidChange', (event) => {
+        layers = event.layers?.length ?? layers;
+      });
+
+      const grow = () =>
+        page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              const rows = document.querySelectorAll('.message-render');
+              const target = rows[rows.length - 1].querySelector('p');
+              const node = document.createTextNode('');
+              target?.appendChild(node);
+              let count = 0;
+              const timer = setInterval(() => {
+                node.data += ' streaming words here';
+                count += 1;
+                if (count === 60) {
+                  clearInterval(timer);
+                  node.remove();
+                  resolve();
+                }
+              }, 50);
+            }),
+        );
+
+      for (let round = 1; round <= 3; round += 1) {
+        for (const open of [false, true]) {
+          const listed = await setRail(page, open);
+          const cost = await traceFrames(browser, page, grow);
+          console.log(
+            formatFrameCost(
+              `rail ${open ? `open, ${listed} rows` : 'closed'} (round ${round}), ${layers} layers`,
+              cost,
+            ),
           );
         }
       }

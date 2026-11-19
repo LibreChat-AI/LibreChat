@@ -31,14 +31,12 @@ const isActive = (row: TaskRow) => row.status === 'running' || row.status === 's
  */
 export default function SessionRail({
   view,
-  now,
   conversationId,
   agentId,
   sheet,
   onClose,
 }: {
   view: BackgroundTasksView;
-  now: number;
   conversationId: string;
   /** The conversation's own agent, which a self-spawned subagent runs as. */
   agentId?: string | null;
@@ -155,7 +153,6 @@ export default function SessionRail({
       <SessionRow
         key={row.id}
         row={row}
-        now={isActive(row) ? now : undefined}
         title={readableSubagentTitle(row.name, row.agentId, row.subagentKind) ?? source}
         source={source}
         agent={agent}
@@ -174,7 +171,6 @@ export default function SessionRail({
       <SessionRow
         key={row.id}
         row={row}
-        now={isActive(row) ? now : undefined}
         title={row.title ?? source}
         source={source}
         canStop={canStop(row)}
