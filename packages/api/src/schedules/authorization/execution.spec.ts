@@ -685,6 +685,57 @@ describe('the tools a run loads under a grant', () => {
     expect(await decide(['skills'], 'execute_code')).toMatchObject({ decision: 'deny' });
   });
 
+  it('loads and calls a tool on a server the operator did not declare, once the owner listed it', async () => {
+    const notes = { type: 'stdio' as const, command: 'notes', args: [] };
+    const offered = ['lookup_mcp_notes', 'purge_mcp_notes', 'web_search'];
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      tools: offered,
+      allowTools: ['lookup_mcp_notes'],
+    });
+    const call = (tool: string, execution = fixture.execution) =>
+      execution.bind('root', tool).authorize({
+        user: fixture.user,
+        serverName: 'notes',
+        serverConfig: notes as never,
+        toolName: tool,
+        loadTools: async () => ({ tools: [{ ...readTool, name: tool }], complete: true }),
+      });
+    // It loads under the key the agent has it by, and so does the key for its server alone.
+    expect(
+      fixture.execution.narrow('root', [...offered, 'sys__server__sys_mcp_notes', 'x_mcp_other']),
+    ).toEqual(['lookup_mcp_notes', 'sys__server__sys_mcp_notes']);
+    expect(fixture.execution.grants('root', 'notes', 'lookup')).toBe(true);
+    expect(fixture.execution.grants('root', 'notes', 'purge')).toBe(false);
+    expect(fixture.execution.grants('stranger', 'notes', 'lookup')).toBe(false);
+    await expect(call('lookup')).resolves.toBeUndefined();
+    expect(fixture.loadAuthorization).toHaveBeenCalledTimes(1);
+    await expect(call('purge')).rejects.toMatchObject({
+      failure: { reason: 'tool_policy_denied' },
+    });
+    // Once the grant has run out it is not loaded, and a call says why.
+    fixture.expire();
+    expect(fixture.execution.narrow('root', offered)).toEqual([]);
+    await expect(call('lookup')).rejects.toMatchObject({ failure: { reason: 'consent_expired' } });
+
+    // A selection of the whole server is one key, and stands for every tool there.
+    const every = await executionFixture('invoke', readTool, undefined, {
+      tools: ['sys__all__sys_mcp_notes'],
+      allowTools: ['sys__all__sys_mcp_notes'],
+    });
+    expect(every.execution.narrow('root', ['sys__all__sys_mcp_notes'])).toEqual([
+      'sys__all__sys_mcp_notes',
+    ]);
+    expect(every.execution.grants('root', 'notes', 'anything')).toBe(true);
+    await expect(call('anything', every.execution)).resolves.toBeUndefined();
+    // A grant that limits MCP tools only has no other tools: nothing is listed there.
+    const limited = await executionFixture('invoke', readTool, undefined, {
+      tools: offered,
+      allowTools: ['lookup_mcp_notes'],
+      coversTools: false,
+    });
+    expect(limited.execution.grants('root', 'notes', 'lookup')).toBe(false);
+  });
+
   it('loads none of the other tools when the owner allowed none', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, {
       tools: ['execute_code', 'web_search'],

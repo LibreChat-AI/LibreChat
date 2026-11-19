@@ -822,7 +822,48 @@ describe('a grant of the whole agent', () => {
         { identity, revision: listed.snapshot.enrollment!.revision, stage: 'invoke' },
         {},
       ),
-    ).toMatchObject(refused('binding_mismatch'));
+    ).toMatchObject(refused('tool_policy_denied'));
+  });
+
+  it('passes that call under a grant that lists the tool for the agent, and no other', async () => {
+    const s = setup();
+    s.offerTools(
+      { agentId: 'root', tools: ['lookup_mcp_notes', 'web_search'] },
+      { agentId: 'child', tools: ['web_search'] },
+    );
+    await s.enroll({}, undefined, ['lookup_mcp_notes', 'web_search']);
+    const standing = (agentId: string, keys: string[], over: Record<string, unknown> = {}) =>
+      s.service.authority.standing(
+        {
+          identity,
+          revision: s.snapshot.enrollment!.revision,
+          stage: 'invoke' as const,
+          listed: { agentId, keys },
+          ...over,
+        },
+        {},
+      );
+    const refused = (reason: string) => ({ state: 'denied', failure: { reason } });
+    // Any of the keys the tool could be listed under.
+    expect(await standing('root', ['lookup_mcp_Notes', 'lookup_mcp_notes'])).toEqual({
+      state: 'authorized',
+    });
+    expect(await standing('root', ['purge_mcp_notes'])).toMatchObject(
+      refused('tool_policy_denied'),
+    );
+    // Listed for one agent is not listed for another.
+    expect(await standing('child', ['lookup_mcp_notes'])).toMatchObject(
+      refused('tool_policy_denied'),
+    );
+    // The same live checks as for the whole agent.
+    expect(await standing('root', ['lookup_mcp_notes'], { revision: 'earlier' })).toMatchObject(
+      refused('binding_mismatch'),
+    );
+    s.setTime(1000 + 3_600_000);
+    expect(await standing('root', ['lookup_mcp_notes'])).toMatchObject(refused('consent_expired'));
+    s.setTime(1000);
+    s.deny();
+    expect(await standing('root', ['lookup_mcp_notes'])).toMatchObject(refused('rbac_denied'));
   });
 
   it('is refused that call where the owner may no longer use MCP servers, or schedules are off', async () => {

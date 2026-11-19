@@ -930,8 +930,17 @@ export function createScheduleMCPConsentService<
       const lifetime = grantLifetime(enrollment);
       if (lifetime.revoked) return denial('consent_revoked');
       if (now() >= lifetime.expiresAtMs) return denial('consent_expired');
+      /** The whole agent, or the tool listed for the agent among its other tools. */
+      const covered =
+        enrollment.everything === true ||
+        (request.listed != null &&
+          enrollment.tools?.some(
+            ({ agentId, tools }) =>
+              agentId === request.listed!.agentId &&
+              request.listed!.keys.some((key) => tools.includes(key)),
+          ) === true);
+      if (!covered) return denial('tool_policy_denied');
       if (
-        enrollment.everything !== true ||
         enrollment.revision !== request.revision ||
         (!snapshot!.enabled && request.stage !== 'activation' && request.manual !== true) ||
         snapshot!.agentId !== request.identity.agentId ||

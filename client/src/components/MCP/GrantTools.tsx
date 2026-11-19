@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { Label, Button, Checkbox } from '@librechat/client';
-import { Tools, AgentCapabilities } from 'librechat-data-provider';
+import { Tools, Constants, AgentCapabilities } from 'librechat-data-provider';
 import type {
   ScheduledMCPTarget,
   ScheduleMCPConsentView,
@@ -280,9 +280,20 @@ export default function GrantTools({
   } = state;
   /** What the stored grant asks about, which a whole-agent confirmation keeps. */
   const kept = [...new Set(Object.values(data.asking).flat())].sort();
+  /**
+   * An MCP tool listed among the other tools is on a server the operator declared nothing
+   * for, and comes as the key the agent has it by: its name and server, or every tool there.
+   */
   const toolLabel = (tool: string) => {
     const key = toolKeys.get(tool);
-    return key ? localize(key) : tool;
+    if (key) return localize(key);
+    const at = tool.lastIndexOf(Constants.mcp_delimiter);
+    if (at <= 0) return tool;
+    const server = tool.slice(at + Constants.mcp_delimiter.length);
+    const name = tool.slice(0, at);
+    return name === Constants.mcp_all
+      ? localize('com_ui_schedule_consent_tools_on_server', { server })
+      : localize('com_ui_schedule_consent_tool_on_server', { tool: name, server });
   };
   return (
     <>

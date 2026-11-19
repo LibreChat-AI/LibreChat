@@ -459,6 +459,36 @@ it('offers the skills of the agent as one item, by name, and sends it like any o
     ),
   );
 });
+it('lists a tool on a server the operator did not declare by its name and server, and sends its key', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [],
+    tools: {
+      offered: ['lookup_mcp_notes', 'sys__all__sys_mcp_archive', 'web_search'],
+      allowed: [],
+    },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  // One tool by name, and a selection of a whole server as one item.
+  const tool = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_tool_on_server',
+  });
+  const every = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tools_on_server' });
+  expect(screen.queryByRole('checkbox', { name: 'lookup_mcp_notes' })).not.toBeInTheDocument();
+  await userEvent.click(tool);
+  await userEvent.click(every);
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        allow: {},
+        tools: ['lookup_mcp_notes', 'sys__all__sys_mcp_archive'],
+      }),
+    ),
+  );
+});
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

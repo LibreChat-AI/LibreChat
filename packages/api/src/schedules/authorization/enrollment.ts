@@ -69,10 +69,13 @@ interface Offer {
  * Resolves what the owner can be offered: the MCP tools the agent graph selects, on servers
  * whose recipient the operator declared. Does not connect or mint.
  *
- * A server that cannot be offered is left out, and the rest is still offered: one the
- * operator did not declare, or one whose configuration no longer matches the declaration. A
- * grant that lists its tools then does not cover it. A grant of the whole agent does, as the
- * owner's own use would.
+ * A server whose configuration no longer matches the operator's declaration is left out, and
+ * the rest is still offered. A grant that lists its tools then does not cover it; a grant of
+ * the whole agent does, as the owner's own use would.
+ *
+ * A server the operator declared nothing for is not a target either: there is no recipient
+ * to bind. Its tools are offered among the agents' other tools (see `createScheduleMCPOffer`),
+ * where the grant covers those.
  */
 export function createScheduleMCPEnrollmentResolver<
   Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
@@ -179,7 +182,19 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       const name = servers[alias] ? alias : aliases.get(alias);
       if (!name || !tool) continue;
       used.add(name);
-      if (undeclared) continue;
+      if (!mcp) continue;
+      // A server the operator declared nothing for has no recipient to hold a consent for.
+      // Where the grant covers the agents' other tools, each tool the agents select there is
+      // offered among them, under the key the agent has it by: allowed, it is called as the
+      // owner's own use would call it. A selection of the whole server is one such key.
+      if (bindings[name] === undefined) {
+        if (options.otherTools !== 'ignore') {
+          const keys = others.get(agentId) ?? new Set<string>();
+          keys.add(key);
+          others.set(agentId, keys);
+        }
+        continue;
+      }
       const agents = selected.get(name) ?? new Map<string, Set<string>>();
       const names_ = agents.get(agentId) ?? new Set<string>();
       names_.add(tool);

@@ -255,6 +255,16 @@ export function createScheduleMCPExecution<
       if (!tools || selectionName === Constants.mcp_all) return false;
       return selectionName === Constants.mcp_server ? tools.size > 0 : tools.has(selectionName);
     };
+    /**
+     * Every key a tool on a server could be listed under among an agent's other tools: by
+     * either spelling of the server, by name or as part of a selection of the whole server.
+     * The tools of a server the operator declared nothing for are listed that way.
+     */
+    const listedKeys = (serverName: string, selectionName: string): string[] =>
+      [serverName, normalizeServerName(serverName)].flatMap((spelling) => [
+        `${selectionName}${Constants.mcp_delimiter}${spelling}`,
+        `${Constants.mcp_all}${Constants.mcp_delimiter}${spelling}`,
+      ]);
     const approved = new Set(options.approvedToolCalls ?? []);
     /** Every spelling a run may call an ask tool by, per agent. A miss is refused, not run. */
     const asking = new Map<string, Set<string>>();
@@ -284,10 +294,27 @@ export function createScheduleMCPExecution<
     }
     const allows = (agentId: string, toolKey: string): boolean =>
       (whole || others.get(agentId)?.has(toolKey) === true) && now() < liveUntil;
-    /** Whether a run under the grant loads this key of the agent's. */
+    /** An MCP tool the grant names for the agent among its other tools. */
+    const names = (agentId: string, serverName: string, selectionName: string): boolean =>
+      listedKeys(serverName, selectionName).some((key) => others.get(agentId)?.has(key) === true);
+    /** The same, while the grant lasts: what a run loads and is made ready for. */
+    const lists = (agentId: string, serverName: string, selectionName: string): boolean =>
+      names(agentId, serverName, selectionName) && now() < liveUntil;
+    /**
+     * Whether a run under the grant loads this key of the agent's. An MCP key loads when a
+     * consent grants it, or when it is itself listed among the other tools. A key for a server
+     * alone loads where anything on that server is listed.
+     */
     const loads = (agentId: string, toolKey: string): boolean => {
-      if (toolKey.includes(Constants.mcp_delimiter)) return whole || isGrantedKey(agentId, toolKey);
-      return deps.coversTools !== true || !isScheduledToolItem(toolKey) || allows(agentId, toolKey);
+      if (!toolKey.includes(Constants.mcp_delimiter))
+        return (
+          deps.coversTools !== true || !isScheduledToolItem(toolKey) || allows(agentId, toolKey)
+        );
+      if (whole || isGrantedKey(agentId, toolKey) || allows(agentId, toolKey)) return true;
+      const marker = `${Constants.mcp_server}${Constants.mcp_delimiter}`;
+      if (!toolKey.startsWith(marker) || now() >= liveUntil) return false;
+      const suffix = `${Constants.mcp_delimiter}${toolKey.slice(marker.length)}`;
+      return [...(others.get(agentId) ?? [])].some((key) => key.endsWith(suffix));
     };
     let fenced = false;
     /** Asked at the first MCP call, so a run that uses none pays nothing. Kept for the run. */
@@ -334,7 +361,9 @@ export function createScheduleMCPExecution<
         return observed.value;
       },
       grants: (agentId: string, serverName: string, selectionName: string) =>
-        whole || granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
+        whole ||
+        granted.get(serverName)?.get(agentId)?.has(selectionName) === true ||
+        lists(agentId, serverName, selectionName),
       narrow: (agentId: string, toolKeys: readonly string[]) =>
         enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
       grantsTool: allows,
@@ -389,10 +418,12 @@ export function createScheduleMCPExecution<
             }
             // Only the recipient is captured. Authority re-resolves live graph/policy below.
             const resource = resources.get(serverName);
-            // The whole-agent grant holds no consent for this server: one the operator did not
-            // declare, or one the agents took up since. The call goes ahead as the owner's own
-            // would, after the same live checks a call on a server with a consent gets.
-            if (!resource && whole) {
+            // The grant holds no consent for this server: one the operator did not declare, or,
+            // under a grant of the whole agent, one the agents took up since. Where the grant
+            // is for the whole agent or lists this tool for the agent, the call goes ahead as
+            // the owner's own would, after the same live checks a consented server gets.
+            // Whether it is still in force is for those checks to say, with the reason.
+            if (!resource && (whole || names(agentId!, serverName, selectionName))) {
               try {
                 const { authority } = await deps.loadAuthorization(capturedIdentity);
                 const standing = await authority.standing(
@@ -401,6 +432,9 @@ export function createScheduleMCPExecution<
                     revision: snapshot.enrollment!.revision,
                     stage,
                     ...(manual && { manual: true }),
+                    ...(!whole && {
+                      listed: { agentId: agentId!, keys: listedKeys(serverName, selectionName) },
+                    }),
                   },
                   { signal },
                 );

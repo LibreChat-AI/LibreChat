@@ -239,7 +239,18 @@ it('still offers the rest when one server the agents use cannot be offered', asy
   const targets = await offer.targets(identity, {});
   expect(targets.map((target) => target.resource.serverName)).toEqual(['warehouse']);
   expect(targets[0].permittedTools).toEqual([{ agentId: 'root', tools: ['query'] }]);
-  expect(await offer.tools(identity, {})).toEqual([{ agentId: 'root', tools: ['web_search'] }]);
+  // A server the operator declared nothing for has no recipient to bind: its tools are
+  // offered among the other tools, under the key the agent has them by. A key that names no
+  // server the owner can reach is not offered at all.
+  expect(await offer.tools(identity, {})).toEqual([
+    { agentId: 'root', tools: ['lookup_mcp_notes', 'purge_mcp_archive', 'web_search'] },
+  ]);
+  // A grant that limits MCP tools only has no such list to put them in.
+  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  expect(await limited.tools(identity, {})).toEqual([]);
+  expect((await limited.targets(identity, {})).map((t) => t.resource.serverName)).toEqual([
+    'warehouse',
+  ]);
   // Every server in use is reported by name, offered or not, so a grant can tell a server
   // that lost its declaration from one the agents dropped.
   expect(await offer.servers(identity, {})).toEqual(['archive', 'notes', 'warehouse']);
