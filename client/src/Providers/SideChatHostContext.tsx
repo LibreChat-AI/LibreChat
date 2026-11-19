@@ -176,6 +176,8 @@ function useChat(
     endpoint,
     enabled: id !== '',
     beside,
+    /** The reader drives this conversation: a run it loses is settled as main chat settles its own. */
+    settlesLost: true,
     onWithdrawn: options?.onWithdrawn,
     onGeneration,
     onRunEnd,
