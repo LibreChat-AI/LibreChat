@@ -1553,6 +1553,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
       const Message = mongoose.models.Message as SchemaWithMeiliMethods;
+      const Conversation = mongoose.models.Conversation as SchemaWithMeiliMethods;
       const share = (await SharedLink.findOne({ shareId, user })
         .select('-_id -__v -user')
         .lean()) as t.ISharedLink | null;
@@ -1561,10 +1562,15 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         throw new ShareServiceError('Share not found', 'SHARE_NOT_FOUND');
       }
 
-      const updatedMessages = await Message.find({ conversationId: share.conversationId, user })
-        .select('+privateTextTokens')
-        .sort({ createdAt: 1 })
-        .lean();
+      const [updatedMessages, conversation] = await Promise.all([
+        Message.find({ conversationId: share.conversationId, user })
+          .select('+privateTextTokens')
+          .sort({ createdAt: 1 })
+          .lean(),
+        Conversation.findOne({ conversationId: share.conversationId, user })
+          .select('spec -_id')
+          .lean() as Promise<{ spec?: string } | null>,
+      ]);
 
       if (updatedMessages.length === 0) {
         throw new ShareServiceError('No messages to share', 'NO_MESSAGES');
@@ -1607,12 +1613,14 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const unset = {
         ...(expiredAt === null ? { expiredAt: 1 } : {}),
         ...(snapshotFiles ? {} : { fileSnapshots: 1 }),
+        ...(conversation && !conversation.spec ? { spec: 1 } : {}),
       };
       const update = {
         $set: {
           messages: updatedMessages,
           user,
           snapshotFiles,
+          ...(conversation?.spec && { spec: conversation.spec }),
           ...(resolvedTargetMessageId && { targetMessageId: resolvedTargetMessageId }),
           ...(hasNewExpiration && { expiredAt }),
           ...(snapshotFiles && { fileSnapshots }),

@@ -472,12 +472,12 @@ async function forkSharedConversation({
     // deployments that don't expose it.
     const { endpoint, model } = await resolveImportDefaultEndpoint({ requestUserId, userRole });
     const specs = appConfig?.modelSpecs?.list ?? [];
-    const requestedSpec =
-      share.spec != null && specs.some((spec) => spec.name === share.spec)
-        ? share.spec
-        : appConfig?.modelSpecs?.enforce
-          ? specs[0]?.name
-          : undefined;
+    let requestedSpec;
+    if (share.spec != null && specs.some((spec) => spec.name === share.spec)) {
+      requestedSpec = share.spec;
+    } else if (appConfig?.modelSpecs?.enforce) {
+      requestedSpec = specs[0]?.name;
+    }
     const importBatchBuilder =
       appConfig?.messageFilter?.pii == null
         ? builderFactory(requestUserId, appConfig?.interfaceConfig, appConfig?.filters)
