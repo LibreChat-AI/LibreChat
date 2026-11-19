@@ -63,6 +63,12 @@ export interface DiscordInstallationStorage {
   /** Server-only lookup establishes tenant ownership before verifying application ingress. */
   lookupApplication(applicationId: string): Promise<DiscordApplication | null>;
   readApplicationCredentials(applicationId: string): Promise<DiscordApplicationRecord | null>;
+  /** Server-only credentials joined to current actor, application revision and owner admission. */
+  authorizeApplication(input: {
+    actorId: string;
+    applicationId: string;
+    expectedRevision: string;
+  }): Promise<DiscordStorageResult<DiscordApplicationRecord>>;
   listApplications(
     cursor?: string,
     limit?: number,
@@ -307,6 +313,32 @@ export function createDiscordInstallationStorage(
           return failure('application_in_use');
         throw error;
       }
+    },
+    async authorizeApplication(input) {
+      channelSnowflakeSchema.parse(input.applicationId);
+      if (
+        typeof input.expectedRevision !== 'string' ||
+        !/^[\w-]{1,128}$/.test(input.expectedRevision)
+      )
+        throw new TypeError('Invalid Discord application revision');
+      return mutate(input.actorId, async (session, tenantId) => {
+        const application = await applications
+          .findOneAndUpdate(
+            {
+              tenantId: tenantId || { $in: [null, ''] },
+              applicationId: input.applicationId,
+              revision: input.expectedRevision,
+            },
+            { $inc: { authorityWrites: 1 } },
+            { new: true, session },
+          )
+          .select('+encryptedBotToken +encryptedClientSecret')
+          .lean();
+        if (!application) return failure('application_changed');
+        if (!(await activeOwner(mongoose, application.createdBy, tenantId, session)))
+          return failure('principal_unavailable');
+        return { ok: true, value: application };
+      });
     },
     async readApplication(applicationId) {
       const record = await applications

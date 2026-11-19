@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { channelSnowflakeSchema, discordPublicKeySchema } from 'librechat-data-provider';
+import {
+  channelSnowflakeSchema,
+  discordPublicKeySchema,
+  DISCORD_COMMAND_MANIFEST_VERSION,
+} from 'librechat-data-provider';
+import type { DiscordCommandRegistration } from 'librechat-data-provider';
+import { discordCommandManifest, registeredDiscordCommandSchema } from './registration';
 
 const api = 'https://discord.com/api/v10';
 const scopes = ['bot', 'applications.commands', 'guilds'] as const;
@@ -105,6 +111,10 @@ export interface ExchangeDiscordGuild {
 }
 
 export interface DiscordProviderClient {
+  registerCommands(input: {
+    application: VerifiedDiscordApplication;
+    botToken: string;
+  }): Promise<DiscordProviderResult<DiscordCommandRegistration>>;
   verifyApplication(
     input: VerifyDiscordApplication,
   ): Promise<DiscordProviderResult<VerifiedDiscordApplication>>;
@@ -275,6 +285,36 @@ export function createDiscordProviderClient(deps: {
   }
 
   return {
+    async registerCommands(input) {
+      try {
+        const application = await verifiedApplication({
+          applicationId: input.application.applicationId,
+          botToken: input.botToken,
+          expectedBotUserId: input.application.botUserId,
+          expectedPublicKey: input.application.publicKey,
+        });
+        const command = parse(
+          registeredDiscordCommandSchema,
+          await request(`/applications/${application.applicationId}/commands`, {
+            method: 'POST',
+            headers: { Authorization: `Bot ${input.botToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(discordCommandManifest),
+          }),
+        );
+        if (command.application_id !== application.applicationId) failure('application_changed');
+        return {
+          ok: true,
+          value: {
+            applicationId: application.applicationId,
+            commandId: command.id,
+            providerVersion: command.version,
+            manifestVersion: DISCORD_COMMAND_MANIFEST_VERSION,
+          },
+        };
+      } catch (error) {
+        return resultError(error);
+      }
+    },
     async inspectChannel(input) {
       try {
         snowflake(input.guildId);

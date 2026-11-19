@@ -100,3 +100,23 @@ export interface DiscordResolvedRoute extends DiscordApplicationSecurity {
   channelRevision: string;
   agentId: string;
 }
+
+export const DISCORD_COMMAND_MANIFEST_VERSION = '1' as const;
+export const registerDiscordCommandsSchema = z
+  .object({
+    applicationId: channelSnowflakeSchema,
+    expectedRevision: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[\w-]+$/),
+    manifestVersion: z.literal(DISCORD_COMMAND_MANIFEST_VERSION),
+  })
+  .strict();
+export type RegisterDiscordCommands = z.infer<typeof registerDiscordCommandsSchema>;
+export interface DiscordCommandRegistration {
+  applicationId: string;
+  commandId: string;
+  providerVersion: string;
+  manifestVersion: typeof DISCORD_COMMAND_MANIFEST_VERSION;
+}

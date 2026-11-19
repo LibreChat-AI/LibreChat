@@ -12,6 +12,7 @@ import type { DiscordManagementService, DiscordManagementResult } from './servic
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceAdminGuard } from '../workspaceRuntime';
 import { createDiscordManagementService } from './service';
+import { discordCommandManifest } from './registration';
 import { createDiscordProviderClient } from './client';
 
 const db = new mongoose.Mongoose();
@@ -385,5 +386,113 @@ it('rejects invalid management inputs before provider work', async () =>
       ok: false,
       error: { code: 'invalid_input' },
     });
+    expect(fetchProvider).not.toHaveBeenCalled();
+  }));
+
+it('registers commands explicitly with server-only credentials and returns safe version metadata', () =>
+  scope(async () => {
+    const app = value(await register());
+    expect(fetchProvider.mock.calls.some(([url]) => url.endsWith('/commands'))).toBe(false);
+    payloads[`/applications/${applicationId}/commands`] = {
+      ...discordCommandManifest,
+      id: '234567890123456789',
+      application_id: applicationId,
+      version: '345678901234567890',
+    };
+    const result = await service.register(principal, {
+      applicationId,
+      expectedRevision: app.revision,
+      manifestVersion: '1',
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        applicationId,
+        commandId: '234567890123456789',
+        providerVersion: '345678901234567890',
+        manifestVersion: '1',
+      },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/private|encrypted/);
+    expect((await installations.readApplication(applicationId))?.revision).toBe(app.revision);
+  }));
+
+it.each(['role', 'deleted', 'disabled', 'revision', 'owner_fence'] as const)(
+  'rejects command registration after %s changes during provider I/O',
+  (change) =>
+    scope(async () => {
+      const app = value(await register());
+      payloads[`/applications/${applicationId}/commands`] = {
+        ...discordCommandManifest,
+        id: '234567890123456789',
+        application_id: applicationId,
+        version: '345678901234567890',
+      };
+      onRequest = async (path) => {
+        if (!path.endsWith('/commands')) return;
+        onRequest = undefined;
+        if (change === 'role')
+          await models.User.updateOne({ _id: principal.id }, { $set: { role: 'USER' } });
+        if (change === 'deleted') await models.User.deleteOne({ _id: principal.id });
+        if (change === 'disabled') enabled = false;
+        if (change === 'owner_fence')
+          await db.models.ResponseScope.updateMany({}, { $set: { closed: true } });
+        if (change === 'revision') {
+          const rotated = await installations.configureApplication({
+            actorId: principal.id,
+            applicationId,
+            botUserId: applicationId,
+            publicKey: 'b'.repeat(64),
+            expectedRevision: app.revision,
+          });
+          expect(rotated.ok).toBe(true);
+        }
+      };
+      const result = await service.register(principal, {
+        applicationId,
+        expectedRevision: app.revision,
+        manifestVersion: '1',
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: {
+            role: 'forbidden',
+            deleted: 'forbidden',
+            disabled: 'not_configured',
+            revision: 'application_changed',
+            owner_fence: 'principal_unavailable',
+          }[change],
+        },
+      });
+      expect(JSON.stringify(result)).not.toMatch(/private|encrypted/);
+    }),
+);
+
+it('rejects stale, foreign and closed account authority before registration HTTP', () =>
+  scope(async () => {
+    const app = value(await register());
+    fetchProvider.mockClear();
+    expect(
+      await service.register(principal, {
+        applicationId,
+        expectedRevision: 'old',
+        manifestVersion: '1',
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'application_changed' } });
+    expect(
+      await service.register(
+        { ...principal, tenantId: 'foreign' },
+        { applicationId, expectedRevision: app.revision, manifestVersion: '1' },
+      ),
+    ).toMatchObject({ ok: false, error: { code: 'forbidden' } });
+    await db.models.ResponseScope.updateMany({}, { $set: { closed: true } });
+    expect(
+      await service.register(principal, {
+        applicationId,
+        expectedRevision: app.revision,
+        manifestVersion: '1',
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'principal_unavailable' } });
     expect(fetchProvider).not.toHaveBeenCalled();
   }));
