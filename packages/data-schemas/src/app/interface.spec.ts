@@ -254,6 +254,24 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.sideChat).toBe(true);
   });
 
+  it('carries a disabled session rail flag to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { sessionRail: false } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRail).toBe(false);
+  });
+
+  it('uses the schema default for the session rail when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRail).toBe(true);
+  });
+
   it('carries a disabled analytics consent prompt to the clients', async () => {
     const interfaceConfig = await loadDefaultInterface({
       config: { interface: { analyticsConsent: false } },

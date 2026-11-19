@@ -28,6 +28,10 @@ export type TaskRow = {
   stepId?: string;
   threadId?: string;
   eventOrigin?: boolean;
+  /** Who a subagent row runs as, for a surface that names and draws the agent. */
+  agentId?: string;
+  subagentType?: string;
+  subagentKind?: ParentSubagentSummary['subagentKind'];
   status: TaskRowStatus;
   startedAt?: number;
   settledAt?: number;
@@ -136,6 +140,9 @@ const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>
     toolCallId: child.parentToolCallId,
     threadId: child.threadId,
     eventOrigin: child.origin === 'event',
+    agentId: child.agentId,
+    subagentType: child.subagentType,
+    subagentKind: child.subagentKind,
     status: running && stopping.has(subagentTaskKey(child.threadId, taskId)) ? 'stopping' : status,
     startedAt: time(child.tasks.find((task) => task.taskId === taskId)?.createdAt),
     settledAt: running ? undefined : time(child.updatedAt),
@@ -199,6 +206,16 @@ export function buildTaskRows({
 }
 
 export const countActive = (rows: readonly TaskRow[]) => rows.filter(isActive).length;
+
+/** When the next settled row ages out of the list, or `Infinity` when none will. */
+export const nextTaskExpiry = (rows: readonly TaskRow[]): number =>
+  rows.reduce(
+    (next, row) =>
+      row.settledAt != null && row.delivery == null && !isActive(row)
+        ? Math.min(next, row.settledAt + RECENT_SUBAGENT_WINDOW_MS + 1)
+        : next,
+    Infinity,
+  );
 
 export const countAwaitingDelivery = (rows: readonly TaskRow[]) =>
   rows.filter(isAwaitingDelivery).length;
