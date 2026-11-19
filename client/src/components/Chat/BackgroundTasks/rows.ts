@@ -73,6 +73,9 @@ export function findToolCallArgs(
   const wanted = new Set(
     tasks.map((task) => toolCallKey(task.messageId, task.toolCallId, task.stepId)),
   );
+  /** A call can only answer a task that names its id. Every other call is passed over before
+   *  its keys are built: this pass runs on each update of a streaming thread. */
+  const wantedIds = new Set(tasks.map((task) => task.toolCallId));
   const ambiguous = new Set<string>();
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -81,7 +84,7 @@ export function findToolCallArgs(
       const call = part[ContentTypes.TOOL_CALL] as
         | { id?: string; stepId?: string; args?: ToolCallArgs }
         | undefined;
-      if (call?.id == null) continue;
+      if (call?.id == null || !wantedIds.has(call.id)) continue;
       const keys = new Set([
         toolCallKey(message.messageId, call.id, call.stepId),
         toolCallKey(message.messageId, call.id),

@@ -301,7 +301,7 @@ export type {
   AttachmentDownloadTarget,
 } from './react/files';
 export { default as useReducedMotion } from './react/motion';
-export { default as useElementSize } from './react/size';
+export { default as useElementSize, useElementSizeSelect } from './react/size';
 export { default as useAudioLevels, frameLevel } from './react/levels';
 export { default as useInitPopoverInput } from './react/popover';
 export { useComposerHost, ComposerHostProvider } from './react/input';
