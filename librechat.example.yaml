@@ -203,8 +203,8 @@ projects:
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
-  # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
-  # user's name, for deployments where the header selector already names the agent.
+  # 'entity' shows its name and icon; 'greeting' shows the time-of-day greeting (or customWelcome) with
+  # the user's name and no icon, for deployments where the header selector already shows the agent.
   # landingHeading: entity
   # Show the generic disclaimer and policy links on the welcome screen (default: true).
   # true places them at the bottom of the page, 'composer' directly under the composer, and false
