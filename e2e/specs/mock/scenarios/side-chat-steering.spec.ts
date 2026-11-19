@@ -619,6 +619,74 @@ test('a reply started in another tab is followed in the side chat that has its c
   await other.close();
 });
 
+test('a reply started in another tab takes a queued message in the side chat before its stream opens there @scenario:side-chat-queues-behind-a-run-found-running', async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(200_000);
+  const { earlierUrl, sideChat, side, turns, field, queued } = await openBeside(page, 'found');
+  const conversationId = (await sideChat.getAttribute('data-side-chat')) ?? '';
+  const label = uniqueLabel('found');
+  const followUp = `Queued behind a run found running ${label}`;
+  /** In this tab the stream of the conversation is slow to open, once. */
+  let release: (() => void) | undefined;
+  let asked = 0;
+  await page.route(
+    (url) => url.pathname === `/api/agents/chat/stream/${conversationId}`,
+    async (route) => {
+      asked += 1;
+      if (asked === 1) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      await route.continue();
+    },
+  );
+
+  /** The same reader starts a reply in the conversation from another tab. */
+  const other = await context.newPage();
+  await other.goto(earlierUrl, { timeout: 30_000 });
+  await expect(messagesView(other).locator('.message-render')).toHaveCount(2, { timeout: 30_000 });
+  await other.getByRole('textbox', { name: 'Message input' }).click();
+  await other.keyboard.type(`E2E_SLOW_REPLY:${label}`);
+  await other.keyboard.press('Enter');
+  await expect(messagesView(other)).toContainText('chunk-005', { timeout: 30_000 });
+
+  /** Back here the side chat finds it running, and asks for its stream. */
+  await page.bringToFront();
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(() => asked, { timeout: 30_000 }).toBe(1);
+
+  /**
+   * Nothing of the reply has arrived, and the run is already the conversation's: what is
+   * written is offered the run's own actions, and Ctrl/Cmd+Enter queues it behind the reply.
+   */
+  await expect(turns).toHaveCount(2);
+  await field.click();
+  await page.keyboard.type(followUp);
+  await expect(side.getByTestId('during-run-send-button')).toHaveAttribute(
+    'data-during-run-action',
+    'steer',
+    { timeout: 5_000 },
+  );
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(queued).toHaveCount(1);
+  await expect(queued).toContainText(followUp);
+  await expect(field).toHaveValue('');
+
+  /** Once the stream opens the reply is read to its end, and the queued message follows it. */
+  release?.();
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 90_000 });
+  await expect(turns).toHaveCount(6, { timeout: 60_000 });
+  await expect(turns.nth(4)).toContainText(followUp);
+  await expect(queued).toHaveCount(0);
+  await other.close();
+});
+
 test('a message queued behind a saved agent’s reply in a side chat is started by the server and followed there @scenario:side-chat-server-queued-turn-is-followed', async ({
   page,
 }) => {

@@ -13,7 +13,13 @@ import {
   EModelEndpoint,
 } from 'librechat-data-provider';
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
-import type { ChatStream, ChatTransport, ChatSendRequest, ChatStreamStatus } from '../../../core';
+import type {
+  ChatStream,
+  ChatTransport,
+  ChatSendRequest,
+  ChatStreamStatus,
+  ChatReconnectRequest,
+} from '../../../core';
 import type { ChatHost, TurnServices } from '../host';
 import type { FollowChatOptions } from '../../follow';
 import type { ExtendedFile } from '../../../core';
@@ -118,7 +124,20 @@ const createTransport = (generationProtocolVersion?: number) => {
     }),
   );
   const abort = jest.fn(async () => ({ success: true }));
-  const reconnectToStream = jest.fn(async () => (status.active ? open() : null));
+  /** As the generation transport does: a generation found running is named before its stream is had. */
+  const reconnectToStream = jest.fn(
+    async (request?: ChatReconnectRequest): Promise<ChatStream | null> => {
+      if (!status.active) {
+        return null;
+      }
+      request?.onGeneration?.({
+        streamId: conversationId,
+        generationCreatedAt: 3000,
+        generationProtocolVersion,
+      });
+      return open();
+    },
+  );
   const transport: ChatTransport = {
     sendMessages,
     abort,
@@ -862,6 +881,69 @@ describe('useDrivenContract', () => {
       sent,
       reply('response-2', 'Whole', sent.messageId),
     ];
+
+    describe('for a chat opened on a reply already running', () => {
+      const running = {
+        active: true,
+        streamId: conversationId,
+        createdAt: 3000,
+        generationProtocolVersion: 2,
+      };
+      const named = {
+        streamId: conversationId,
+        generationCreatedAt: 3000,
+        generationProtocolVersion: 2,
+      };
+      const opened = () => {
+        const onGeneration = jest.fn();
+        const onRunEnd = jest.fn();
+        const harness = createTransport(2);
+        harness.setStatus(running);
+        return { harness, onGeneration, onRunEnd, runs: { onGeneration, onRunEnd } };
+      };
+
+      it('is looked for again when its stream is gone while the server still says it runs', async () => {
+        const { harness, onGeneration, onRunEnd, runs } = opened();
+        /** The stream's record is briefly lost: the generation is named, and nothing opens. */
+        harness.reconnectToStream.mockImplementationOnce(async (request) => {
+          request?.onGeneration?.(named);
+          return null;
+        });
+        const view = setup({ runs, harness });
+        await view.ready();
+
+        await waitFor(() => expect(view.streams).toHaveLength(1));
+        expect(harness.reconnectToStream).toHaveBeenCalledTimes(2);
+        expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 2 });
+        expect(onGeneration).not.toHaveBeenCalledWith(null);
+        expect(onRunEnd).not.toHaveBeenCalled();
+        expect(view.result.current.followed.isUnattached).toBe(false);
+      });
+
+      it('is settled by the server’s word when its stream could never be had', async () => {
+        const { harness, onGeneration, onRunEnd, runs } = opened();
+        harness.reconnectToStream.mockImplementation(async (request) => {
+          request?.onGeneration?.(named);
+          /** Over by the time the last retry has failed. */
+          if (harness.reconnectToStream.mock.calls.length > MAX_RETRIES) {
+            harness.setStatus({ ...running, active: false, status: 'complete' });
+          }
+          throw Object.assign(new Error('The generation stream could not be opened'), {
+            code: 'ERR_BAD_RESPONSE',
+            response: { status: 502 },
+          });
+        });
+        const view = setup({ runs, harness });
+        await view.ready();
+
+        await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1), { timeout: 4000 });
+        expect(harness.reconnectToStream).toHaveBeenCalledTimes(MAX_RETRIES + 1);
+        expect(onRunEnd).toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'completed', generationCreatedAt: 3000 }),
+        );
+        expect(onGeneration).toHaveBeenLastCalledWith(null);
+      });
+    });
 
     it('is taken as stopped when nothing is running by the time it is looked for again', async () => {
       const { calls, steers } = record();

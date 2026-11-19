@@ -117,6 +117,36 @@ describe('createGenerationTransport', () => {
     });
   });
 
+  it('names the generation found running before its stream opens, and none it does not attach to', async () => {
+    const onGeneration = jest.fn();
+    const { transport, attachments } = setup();
+    const opening = transport.reconnectToStream({ chatId: 'thread 1', onGeneration });
+    await flush();
+
+    /** The stream has been asked for and has said nothing yet. */
+    expect(attachments).toHaveLength(1);
+    expect(onGeneration).toHaveBeenCalledTimes(1);
+    expect(onGeneration).toHaveBeenCalledWith({
+      streamId: 'thread 1',
+      generationCreatedAt: 2000,
+      generationProtocolVersion: 2,
+    });
+    attachments[0].emit({ type: 'open' });
+    await opening;
+
+    const idle = jest.fn();
+    await setup({ active: false }).transport.reconnectToStream({
+      chatId: 'thread 1',
+      onGeneration: idle,
+    });
+    await setup().transport.reconnectToStream({
+      chatId: 'thread 1',
+      generationCreatedAt: 1000,
+      onGeneration: idle,
+    });
+    expect(idle).not.toHaveBeenCalled();
+  });
+
   it('yields the frames in wire order and ends with the final one', async () => {
     const { transport, attachments } = setup();
     const opening = transport.reconnectToStream({ chatId: 'thread 1' });

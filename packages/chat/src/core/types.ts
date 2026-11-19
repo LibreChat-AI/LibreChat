@@ -119,6 +119,11 @@ export type ChatReconnectRequest = ChatRequestOptions & {
   /** The {@link ChatStream.generationCreatedAt} to reattach to, so a newer run is not attached instead. */
   generationCreatedAt?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Told the generation found running, before its stream opens: one the server says is running
+   * is there to be stopped, steered and looked for again even when its stream cannot be had.
+   */
+  onGeneration?: (generation: ChatGeneration) => void;
 };
 
 export type ChatAbortRequest = {

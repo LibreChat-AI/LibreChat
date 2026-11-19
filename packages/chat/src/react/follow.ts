@@ -465,6 +465,24 @@ export function useFollowChat({
       host.current.onGeneration?.(generation);
     };
     /**
+     * One request's generation, which the transport names ahead of its stream: noted then, and
+     * not a second time when the stream of that same generation arrives.
+     */
+    const naming = () => {
+      let named: number | undefined;
+      return {
+        ahead: (told: ChatGeneration): void => {
+          named = told.generationCreatedAt;
+          note(told);
+        },
+        arrived: (stream: ChatGeneration | null | undefined): void => {
+          if (stream?.generationCreatedAt !== named) {
+            note(stream);
+          }
+        },
+      };
+    };
+    /**
      * Not said once this chat is let go of: the generation may be running on, and whoever shows
      * the conversation next addresses it by the same name.
      */
@@ -665,13 +683,17 @@ export function useFollowChat({
             throw new Error('The steer this turn would replay is no longer the reader’s to send');
           }
           let answer: Awaited<ReturnType<ChatTransport['sendMessages']>>;
+          const told = naming();
           try {
             /**
              * The generation is noted when the server names it, as main chat installs it on
              * its controls before it opens the stream: what is written meanwhile can steer it
              * or queue behind it, and a stop names it.
              */
-            answer = await host.current.transport.sendMessages({ ...request, onGeneration: note });
+            answer = await host.current.transport.sendMessages({
+              ...request,
+              onGeneration: told.ahead,
+            });
           } catch (error) {
             refused(asked, turn, error);
             throw error;
@@ -682,13 +704,22 @@ export function useFollowChat({
               (answer.status === 'stream' && answer.stream.resumed === true);
           }
           if (answer.status === 'stream') {
-            note(answer.stream);
+            told.arrived(answer.stream);
           }
           return answer;
         },
         reconnectToStream: async (request) => {
-          const stream = await host.current.transport.reconnectToStream(request);
-          note(stream);
+          /**
+           * A generation the server says is running is noted before its stream is had, as a
+           * turn sent from here is. One whose stream then cannot be had is not nothing: it is
+           * kept and looked for again, and its end is said when the server says it is over.
+           */
+          const told = naming();
+          const stream = await host.current.transport.reconnectToStream({
+            ...request,
+            onGeneration: told.ahead,
+          });
+          told.arrived(stream);
           return stream;
         },
         abort: (request) => host.current.transport.abort(request),
