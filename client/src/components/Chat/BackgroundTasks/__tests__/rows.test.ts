@@ -120,6 +120,109 @@ describe('buildTaskRows', () => {
     expect(rows[3].taskId).toBe('task');
   });
 
+  /**
+   * A child task's summary carries the time of its newest record: its dispatch while it runs,
+   * its end once it has replied. Read as the start, that made every finished task take 0s.
+   */
+  it('times a finished subagent from its dispatch to its reply', () => {
+    const [row] = buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      tools: [],
+      subagents: [
+        child({
+          status: 'completed',
+          /** The thread was touched again after the task ended; that is not when it ended. */
+          updatedAt: iso(1_000),
+          tasks: [
+            {
+              taskId: 'task',
+              status: 'completed',
+              startedAt: iso(300_000),
+              createdAt: iso(60_000),
+            },
+          ],
+        }),
+      ],
+    });
+
+    expect(row.startedAt).toBe(now - 300_000);
+    expect(row.settledAt).toBe(now - 60_000);
+  });
+
+  it('shows no duration for a finished subagent whose dispatch time is unknown', () => {
+    const [row] = buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      tools: [],
+      subagents: [
+        child({
+          status: 'completed',
+          updatedAt: iso(50_000),
+          tasks: [{ taskId: 'task', status: 'completed', createdAt: iso(60_000) }],
+        }),
+      ],
+    });
+
+    expect(row.startedAt).toBeUndefined();
+    expect(row.settledAt).toBe(now - 50_000);
+  });
+
+  it('times a running subagent from its dispatch, with or without a named start', () => {
+    const rows = buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      tools: [],
+      subagents: [
+        child({
+          threadId: 'named',
+          status: 'running',
+          tasks: [
+            { taskId: 'task', status: 'running', startedAt: iso(90_000), createdAt: iso(90_000) },
+          ],
+        }),
+        child({
+          threadId: 'older-server',
+          status: 'running',
+          tasks: [{ taskId: 'task', status: 'running', createdAt: iso(120_000) }],
+        }),
+      ],
+    });
+
+    expect(rows.map((row) => [row.threadId, row.startedAt, row.settledAt])).toEqual([
+      ['named', now - 90_000, undefined],
+      ['older-server', now - 120_000, undefined],
+    ]);
+  });
+
+  it('times a subagent that ended without a reply by its thread, not as an instant', () => {
+    const [row] = buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      tools: [],
+      subagents: [
+        child({
+          status: 'cancelled',
+          updatedAt: iso(20_000),
+          tasks: [
+            { taskId: 'task', status: 'cancelled', startedAt: iso(80_000), createdAt: iso(80_000) },
+          ],
+        }),
+      ],
+    });
+
+    expect(row.startedAt).toBe(now - 80_000);
+    expect(row.settledAt).toBe(now - 20_000);
+  });
+
   it('carries who a subagent runs as, for a surface that names the agent', () => {
     const [row] = buildTaskRows({
       now,

@@ -130,6 +130,30 @@ const toolRow = (
   };
 };
 
+/**
+ * When a child's task began and ended. Its summary's `createdAt` is the time of its newest
+ * record, which is its dispatch while it runs and its end once it has replied, so the start of
+ * a finished task is known only from `startedAt`. Without one, a server that predates it or a
+ * dispatch record the index did not read, a finished task has no duration to show: taking
+ * `createdAt` for the start reads every finished task as having taken no time at all.
+ */
+const subagentTimes = (
+  child: ParentSubagentSummary,
+  taskId: string | undefined,
+  running: boolean,
+): Pick<TaskRow, 'startedAt' | 'settledAt'> => {
+  const task = child.tasks.find((candidate) => candidate.taskId === taskId);
+  const created = time(task?.createdAt);
+  const started = time(task?.startedAt);
+  if (running) {
+    return { startedAt: started ?? created };
+  }
+  /** A task that ended without a reply has only its dispatch record; the thread's own
+   *  timestamp is then the nearest thing to when it ended. */
+  const ended = started != null && created != null && created > started ? created : undefined;
+  return { startedAt: started, settledAt: ended ?? time(child.updatedAt) };
+};
+
 const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>): TaskRow => {
   const status = subagentStatus(child.status);
   const running = status === 'running';
@@ -147,8 +171,7 @@ const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>
     subagentType: child.subagentType,
     subagentKind: child.subagentKind,
     status: running && stopping.has(subagentTaskKey(child.threadId, taskId)) ? 'stopping' : status,
-    startedAt: time(child.tasks.find((task) => task.taskId === taskId)?.createdAt),
-    settledAt: running ? undefined : time(child.updatedAt),
+    ...subagentTimes(child, taskId, running),
     ...(running && taskId != null ? { subagent: { threadId: child.threadId, taskId } } : {}),
   };
 };
@@ -204,7 +227,9 @@ export function buildTaskRows({
     )
     .sort((left, right) => {
       const ranked = rank(right) - rank(left);
-      return ranked !== 0 ? ranked : (right.startedAt ?? 0) - (left.startedAt ?? 0);
+      return ranked !== 0
+        ? ranked
+        : (right.startedAt ?? right.settledAt ?? 0) - (left.startedAt ?? left.settledAt ?? 0);
     });
 }
 

@@ -3963,6 +3963,76 @@ describe('Message Operations', () => {
       ]);
     });
 
+    /**
+     * A task is two rows: its brief, written when it is dispatched, and its reply, written when
+     * it ends. Once the reply exists it is the task's newest row, so its time alone says when the
+     * task finished and nothing of how long it ran.
+     */
+    it('reports when each task was dispatched beside when its newest row was written', async () => {
+      const conversationId = uuidv4();
+      await Message.create([
+        {
+          user: 'user123',
+          messageId: 'task-done:user',
+          conversationId,
+          isCreatedByUser: true,
+          createdAt: new Date('2026-08-21T10:00:00.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-done:assistant',
+          conversationId,
+          isCreatedByUser: false,
+          createdAt: new Date('2026-08-21T10:04:30.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-live:user',
+          conversationId,
+          isCreatedByUser: true,
+          createdAt: new Date('2026-08-21T10:05:00.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-briefless:assistant',
+          conversationId,
+          isCreatedByUser: false,
+          createdAt: new Date('2026-08-21T09:00:00.000Z'),
+        },
+      ]);
+
+      const times = (record: {
+        tasks: Array<{ messageId: string; createdAt?: Date; startedAt?: Date | null }>;
+      }) =>
+        record.tasks.map((task) => [
+          task.messageId,
+          task.createdAt?.toISOString(),
+          task.startedAt?.toISOString(),
+        ]);
+
+      const [record] = await listSubagentTasksForThreads({
+        user: 'user123',
+        conversationIds: [conversationId],
+        limitPerThread: 5,
+      });
+      expect(times(record)).toEqual([
+        ['task-live:user', '2026-08-21T10:05:00.000Z', '2026-08-21T10:05:00.000Z'],
+        ['task-done:assistant', '2026-08-21T10:04:30.000Z', '2026-08-21T10:00:00.000Z'],
+        /** A reply whose brief is not among the rows read has no start to report. */
+        ['task-briefless:assistant', '2026-08-21T09:00:00.000Z', undefined],
+      ]);
+
+      /** The one newest task per child comes from its own read, and carries its start too. */
+      const [newest] = await listSubagentTasksForThreads({
+        user: 'user123',
+        conversationIds: [conversationId],
+        limitPerThread: 1,
+      });
+      expect(times(newest)).toEqual([
+        ['task-live:user', '2026-08-21T10:05:00.000Z', '2026-08-21T10:05:00.000Z'],
+      ]);
+    });
+
     it('batches threads, deduplicates task rows, and bounds each newest task list', async () => {
       const firstThread = uuidv4();
       const secondThread = uuidv4();
