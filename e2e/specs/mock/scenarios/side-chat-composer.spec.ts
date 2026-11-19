@@ -435,3 +435,37 @@ test('a side chat opened again while its reply runs still has the words written 
   await expect(reopened.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
   await expect(again).toHaveValue('picked up where I left it');
 });
+
+/** The gauge's used-token count, read from its accessible name. */
+const usedTokens = (label: string | null): number => {
+  const match = /Context window: ([\d.,]+)(K?) of/.exec(label ?? '');
+  if (match == null) {
+    throw new Error(`The gauge does not say how much is used: ${label}`);
+  }
+  return Number(match[1].replace(/,/g, '')) * (match[2] === 'K' ? 1000 : 1);
+};
+
+test('the gauge beside the chat counts a reply as it is written @scenario:side-chat-composer-gauge-follows-the-reply', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const { sideChat, side, field } = await openBeside(page, 'gauge');
+  const gauge = side.getByTestId('token-usage');
+
+  await field.click();
+  await page.keyboard.type(`E2E_SLOW_REPLY:${uniqueLabel('measured')}`);
+  await page.keyboard.press('Enter');
+
+  /**
+   * Two readings while the reply is still running, as main chat's gauge gives them: the count
+   * the server sends as the reply starts, plus what has arrived since. No waiting between that
+   * could run past the end of the reply, where the count settles whatever it did meanwhile.
+   */
+  const stop = side.getByRole('button', { name: 'Stop generating' });
+  await expect(sideChat).toContainText('chunk-020', { timeout: 30_000 });
+  const early = usedTokens(await gauge.getAttribute('aria-label'));
+  await expect(sideChat).toContainText('chunk-100', { timeout: 60_000 });
+  const late = usedTokens(await gauge.getAttribute('aria-label'));
+  await expect(stop).toBeVisible();
+  expect(late).toBeGreaterThan(early);
+});

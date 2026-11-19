@@ -1,5 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { getDefaultStore } from 'jotai';
+import { contextSnapshotFamily } from '@librechat/chat/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -362,6 +364,49 @@ describe("the app's side chat host", () => {
       expect(announcePolite).toHaveBeenLastCalledWith({ message: 'Here it is.' }),
     );
     expect(announcePolite).toHaveBeenCalledWith({ message: 'end', isStatus: true });
+  });
+
+  it("keeps the conversation's usage as main chat keeps it, for the composer's gauge", async () => {
+    mockStreamStatus.mockResolvedValue({
+      active: true,
+      streamId: 'side-conversation',
+      createdAt: 2000,
+      generationProtocolVersion: 2,
+    });
+    mockMessages.mockResolvedValue([asked]);
+    const { attachments } = setup();
+    await waitFor(() => expect(attachments).toHaveLength(1));
+    const emit = (event: ChatEvent) => act(() => attachments[0].options.onEvent(event));
+    const usage = getDefaultStore();
+    expect(usage.get(contextSnapshotFamily('side-conversation'))).toBeNull();
+
+    emit({ type: 'open' });
+    emit({
+      type: 'created',
+      data: { created: true, message: asked, turn: { responseMessageId: 'response-1' } },
+    } as ChatEvent);
+    /** What the server reads the context at as the reply starts. */
+    emit({
+      type: 'context_usage',
+      data: {
+        breakdown: {
+          maxContextTokens: 8000,
+          instructionTokens: 120,
+          systemMessageTokens: 100,
+          dynamicInstructionTokens: 0,
+          toolSchemaTokens: 20,
+          summaryTokens: 0,
+          toolCount: 1,
+          messageCount: 1,
+          messageTokens: 340,
+          availableForMessages: 7880,
+        },
+      },
+    } as ChatEvent);
+
+    await waitFor(() =>
+      expect(usage.get(contextSnapshotFamily('side-conversation'))).not.toBeNull(),
+    );
   });
 
   it('stops a generation through the app, by its conversation and the stream it names', async () => {
