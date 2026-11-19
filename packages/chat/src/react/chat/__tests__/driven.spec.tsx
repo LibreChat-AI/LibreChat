@@ -25,8 +25,15 @@ import { toResumableUsage } from '../../stream/usage';
 import { isSubmittingFamily } from '../../submission';
 import { useDrivenContract } from '../driven';
 import { useFollowChat } from '../../follow';
+import { MAX_RETRIES } from '../../../core';
 import { ChatHostProvider } from '../host';
 import { filesFamily } from '../../pane';
+
+/** Attaching again waits between tries on main chat's schedule, which a spec has no use for. */
+jest.mock('../../../core/resumable/start', () => ({
+  ...jest.requireActual('../../../core/resumable/start'),
+  getReconnectDelay: () => 5,
+}));
 
 const conversationId = 'conversation-1';
 const SIDE_PANE = 7;
@@ -121,6 +128,7 @@ const createTransport = (generationProtocolVersion?: number) => {
   return {
     transport,
     streams,
+    open,
     sendMessages,
     abort,
     reconnectToStream,
@@ -197,7 +205,10 @@ function setup({
   id?: string;
   store?: ReturnType<typeof createStore>;
   /** What the caller is told of the conversation's generations. */
-  runs?: Pick<FollowChatOptions, 'onGeneration' | 'onRunEnd'>;
+  runs?: Pick<
+    FollowChatOptions,
+    'onGeneration' | 'onRunEnd' | 'onStopped' | 'onDetached' | 'onIdle'
+  >;
   /** The transport, when a spec sets the server's state before the conversation opens. */
   harness?: ReturnType<typeof createTransport>;
 } = {}) {
@@ -235,6 +246,7 @@ function setup({
         endpoint: conversation.endpoint,
         onWithdrawn,
         beside,
+        settlesLost: true,
         ...runs,
       });
       const contract = useDrivenContract({
@@ -619,6 +631,391 @@ describe('useDrivenContract', () => {
       await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
       expect(loadMessages.mock.calls.length).toBeGreaterThan(reads);
       expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'completed' }));
+    });
+  });
+
+  describe('a run it is let go of, or finds already over', () => {
+    const watch = () => {
+      const onStopped = jest.fn();
+      const onDetached = jest.fn();
+      const onIdle = jest.fn();
+      const onRunEnd = jest.fn();
+      return {
+        onStopped,
+        onDetached,
+        onIdle,
+        onRunEnd,
+        runs: { onStopped, onDetached, onIdle, onRunEnd },
+      };
+    };
+    const start = async ({ result, streams }: ReturnType<typeof setup>, text = 'Next question') => {
+      act(() => {
+        result.current.contract.ask({ text });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      return (result.current.contract.getMessages() ?? [])[2];
+    };
+
+    it('names a run still being written when it is let go of, by the turn the server named', async () => {
+      const { onDetached, runs } = watch();
+      const view = setup({ runs });
+      await view.ready();
+      const sent = await start(view);
+      /** The server stores the message under an id of its own, which is the one that names the turn. */
+      act(() => view.streams[0].push(created({ ...sent, messageId: 'user-stored' }, 'response-2')));
+      await settle();
+
+      view.unmount();
+
+      expect(onDetached).toHaveBeenCalledTimes(1);
+      expect(onDetached).toHaveBeenCalledWith({
+        userMessageId: 'user-stored',
+        responseMessageId: 'response-2',
+        generationCreatedAt: 3000,
+      });
+    });
+
+    it('names a run it only found running, from the snapshot it joined on', async () => {
+      const { onDetached, runs } = watch();
+      const harness = createTransport();
+      harness.setStatus({ active: true, streamId: conversationId, createdAt: 2000 });
+      const view = setup({ runs, harness });
+      await view.ready();
+      await waitFor(() => expect(view.streams).toHaveLength(1));
+      act(() =>
+        view.streams[0].push({
+          type: 'sync',
+          data: {
+            sync: true,
+            resumeState: {
+              conversationId,
+              responseMessageId: 'response-9',
+              userMessage: { ...user, messageId: 'user-9', parentMessageId: 'response-1' },
+              runSteps: [],
+              aggregatedContent: [],
+            },
+          },
+        } as ChatEvent),
+      );
+      await settle();
+
+      view.unmount();
+
+      expect(onDetached).toHaveBeenCalledWith({
+        userMessageId: 'user-9',
+        responseMessageId: 'response-9',
+        generationCreatedAt: 3000,
+      });
+    });
+
+    it('names no run that is over, that the server has not named, that reruns a turn, or that was stopped', async () => {
+      /** Over: its end was said, so there is nothing left to read later. */
+      const over = watch();
+      const ended = setup({ runs: over.runs });
+      await ended.ready();
+      const asked = await start(ended);
+      act(() => {
+        ended.streams[0].push(created(asked, 'response-2'));
+        ended.streams[0].push(final(asked, reply('response-2', 'Answer', asked.messageId)));
+      });
+      await waitFor(() => expect(over.onRunEnd).toHaveBeenCalledTimes(1));
+      ended.unmount();
+      expect(over.onDetached).not.toHaveBeenCalled();
+
+      /** Not named yet: no stored reply could be matched to it. */
+      const unnamed = watch();
+      const early = setup({ runs: unnamed.runs });
+      await early.ready();
+      await start(early);
+      early.unmount();
+      expect(unnamed.onDetached).not.toHaveBeenCalled();
+
+      /** A rerun: the list it leaves is not one a queued turn should follow unseen. */
+      const again = watch();
+      const rerun = setup({ runs: again.runs });
+      await rerun.ready();
+      act(() => {
+        rerun.result.current.contract.regenerate({ parentMessageId: 'user-1' });
+      });
+      await waitFor(() => expect(rerun.streams).toHaveLength(1));
+      act(() => rerun.streams[0].push(created(user, 'response-1b')));
+      await settle();
+      rerun.unmount();
+      expect(again.onDetached).not.toHaveBeenCalled();
+
+      /** Stopped: said so when asked, and what is queued behind it is the reader's to send. */
+      const halted = watch();
+      const stopped = setup({ runs: halted.runs });
+      await stopped.ready();
+      const sent = await start(stopped);
+      act(() => stopped.streams[0].push(created(sent, 'response-2')));
+      await settle();
+      await act(async () => {
+        void stopped.result.current.contract.stopGenerating();
+        await Promise.resolve();
+      });
+      expect(halted.onStopped).toHaveBeenCalledWith({ createdAt: 3000, protocolVersion: 1 });
+      stopped.unmount();
+      expect(halted.onDetached).not.toHaveBeenCalled();
+    });
+
+    it('says when it opens with nothing running, with the rows it read, and not when a run is on', async () => {
+      const idle = watch();
+      const quiet = setup({ runs: idle.runs });
+      await quiet.ready();
+      await settle();
+      expect(idle.onIdle).toHaveBeenCalledTimes(1);
+      expect(idle.onIdle).toHaveBeenCalledWith([user, reply('response-1', 'Hi')]);
+
+      const busy = watch();
+      const harness = createTransport();
+      harness.setStatus({ active: true, streamId: conversationId, createdAt: 2000 });
+      const running = setup({ runs: busy.runs, harness });
+      await running.ready();
+      await waitFor(() => expect(running.streams).toHaveLength(1));
+      await settle();
+      expect(busy.onIdle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a run whose stream is lost', () => {
+    const record = () => {
+      const calls: Array<[string, ...unknown[]]> = [];
+      const log =
+        (name: string, result?: unknown) =>
+        (...args: unknown[]): unknown => {
+          calls.push([name, ...args]);
+          return result;
+        };
+      const steers = {
+        resolve: log('resolve', []),
+        markLiveApplied: log('markLive'),
+        update: log('update'),
+        seed: log('seed'),
+        settleApplied: log('settle'),
+        appliedIds: log('appliedIds', ['steer-taken']),
+        adoptPromoted: log('adopt', []),
+        convertToQueued: log('toQueued'),
+        convertLocalToQueued: log('sweep'),
+        restoreQueued: log('restore'),
+        blockRecovery: log('block'),
+        isRecoveryHeld: () => false,
+      } as unknown as NonNullable<NonNullable<FollowChatOptions['beside']>['steers']>;
+      return { calls, steers };
+    };
+    /** Sends a turn and lets the server name it. */
+    const begin = async (view: ReturnType<typeof setup>) => {
+      act(() => {
+        view.result.current.contract.ask({ text: 'Next question' });
+      });
+      await waitFor(() => expect(view.streams).toHaveLength(1));
+      const sent = (view.result.current.contract.getMessages() ?? [])[2];
+      act(() => view.streams[0].push(created(sent, 'response-2')));
+      await settle();
+      return sent;
+    };
+    /** Drops the stream in hand, and each one opened to attach again, `times` in all. */
+    const dropping = async (view: ReturnType<typeof setup>, times: number) => {
+      for (let dropped = 0; dropped < times; dropped++) {
+        await waitFor(() => expect(view.streams.length).toBeGreaterThan(dropped));
+        act(() => view.streams[dropped].push({ type: 'error', status: 0 }));
+      }
+    };
+    const whole = (sent: TMessage) => [
+      user,
+      reply('response-1', 'Hi'),
+      sent,
+      reply('response-2', 'Whole', sent.messageId),
+    ];
+
+    it('is taken as stopped when nothing is running by the time it is looked for again', async () => {
+      const { calls, steers } = record();
+      const onRunEnd = jest.fn();
+      const onIdle = jest.fn();
+      const view = setup({ beside: { steers }, runs: { onRunEnd, onIdle } });
+      await view.ready();
+      const sent = await begin(view);
+      calls.length = 0;
+      onIdle.mockClear();
+      view.loadMessages.mockResolvedValue(whole(sent));
+      /** Even when the server still says it completed: main chat's rule for a stream that is gone. */
+      view.setStatus({ active: false, status: 'complete', createdAt: 3000 });
+
+      await dropping(view, 1);
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+
+      expect(calls.map(([name]) => name)).toEqual(['appliedIds', 'settle', 'adopt', 'sweep']);
+      expect(calls[1]).toEqual(['settle', conversationId, whole(sent)]);
+      expect(onRunEnd).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'aborted', generationCreatedAt: 3000 }),
+      );
+      /**
+       * Before that, the caller is handed the rows the run left, with nothing running: one that
+       * had remembered this run when it stopped watching it can read its end from them.
+       */
+      expect(onIdle).toHaveBeenCalledTimes(1);
+      expect(ids(onIdle.mock.calls[0][0])).toEqual(ids(whole(sent)));
+      expect(onIdle.mock.invocationCallOrder[0]).toBeLessThan(onRunEnd.mock.invocationCallOrder[0]);
+    });
+
+    it('follows the generation that is running instead, when one is by the time it is looked for', async () => {
+      const onRunEnd = jest.fn();
+      const onIdle = jest.fn();
+      const onGeneration = jest.fn();
+      const view = setup({ runs: { onRunEnd, onIdle, onGeneration } });
+      await view.ready();
+      await begin(view);
+      onIdle.mockClear();
+      /** Nothing to attach to when it is looked for; a newer run by the time its rows are read. */
+      const reads = view.loadMessages.mock.calls.length;
+      const newer = { active: true, streamId: conversationId, createdAt: 9000 };
+      view.transport.getStatus = async () =>
+        view.loadMessages.mock.calls.length > reads ? newer : { active: false };
+      view.reconnectToStream.mockImplementation(async () =>
+        view.loadMessages.mock.calls.length > reads ? view.open() : null,
+      );
+
+      await dropping(view, 1);
+
+      /** No rows are handed over as the lost run's, and nothing is said to have ended. */
+      await waitFor(() => expect(view.streams).toHaveLength(2));
+      expect(onIdle).not.toHaveBeenCalled();
+      expect(onRunEnd).not.toHaveBeenCalled();
+      expect(onGeneration).not.toHaveBeenLastCalledWith(null);
+    });
+
+    it('sweeps no waiting steers when nothing proved the run over to a client of its protocol', async () => {
+      const { calls, steers } = record();
+      const onRunEnd = jest.fn();
+      const harness = createTransport(2);
+      const view = setup({ beside: { steers }, runs: { onRunEnd }, harness });
+      await view.ready();
+      const sent = await begin(view);
+      calls.length = 0;
+      view.loadMessages.mockResolvedValue(whole(sent));
+      /** Gone when it is looked for, and its status cannot be read once its rows are in. */
+      const reads = view.loadMessages.mock.calls.length;
+      view.transport.getStatus = async () => {
+        if (view.loadMessages.mock.calls.length > reads) {
+          throw new Error('The status route is down');
+        }
+        return { active: false };
+      };
+
+      await dropping(view, 1);
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+
+      /** What the stored rows hold is settled; a chip still waiting may yet be taken, and stays. */
+      expect(calls.map(([name]) => name)).toEqual(['appliedIds', 'settle', 'adopt']);
+      expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+    });
+
+    it('settles nothing on the word of a server that does not speak the generation’s protocol', async () => {
+      const { calls, steers } = record();
+      const onRunEnd = jest.fn();
+      const onGeneration = jest.fn();
+      const harness = createTransport(2);
+      const view = setup({ beside: { steers }, runs: { onRunEnd, onGeneration }, harness });
+      await view.ready();
+      const sent = await begin(view);
+      calls.length = 0;
+      view.setStatus({ active: true, streamId: conversationId, createdAt: 3000 });
+      await dropping(view, MAX_RETRIES + 1);
+      await waitFor(() => expect(view.streams.length).toBe(MAX_RETRIES + 2));
+
+      /** Past the last retry, an older responder says nothing is running: it cannot say that of this run. */
+      view.loadMessages.mockResolvedValue(whole(sent));
+      view.setStatus({ active: false, status: 'complete', createdAt: 3000 });
+      act(() => view.streams[MAX_RETRIES + 1].push({ type: 'error', status: 0 }));
+      await settle();
+      await settle();
+      expect(onRunEnd).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 2 });
+
+      /** A responder that speaks it says the same, and now it is settled. */
+      view.setStatus({
+        active: false,
+        status: 'complete',
+        createdAt: 3000,
+        generationProtocolVersion: 2,
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(calls.map(([name]) => name)).toEqual(['appliedIds', 'settle', 'adopt', 'sweep']);
+      expect(onGeneration).toHaveBeenLastCalledWith(null);
+    });
+
+    it('keeps the generation while it is looked for again, so a later round can still settle it', async () => {
+      const onRunEnd = jest.fn();
+      const view = setup({ runs: { onRunEnd } });
+      await view.ready();
+      const sent = await begin(view);
+      view.setStatus({ active: true, streamId: conversationId, createdAt: 3000 });
+      await dropping(view, MAX_RETRIES + 2);
+      const opened = view.reconnectToStream.mock.calls.length;
+
+      /** The next round never opens a stream at all, and by its end the run has finished. */
+      view.reconnectToStream.mockRejectedValue(new Error('The stream route is down'));
+      await waitFor(() =>
+        expect(view.reconnectToStream.mock.calls.length).toBeGreaterThan(opened + 1),
+      );
+      view.loadMessages.mockResolvedValue(whole(sent));
+      view.setStatus({ active: false, status: 'complete', createdAt: 3000 });
+
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1), { timeout: 4000 });
+      expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ generationCreatedAt: 3000 }));
+    });
+
+    it('is settled by the server’s word once reconnecting has failed past its last retry', async () => {
+      const { calls, steers } = record();
+      const onRunEnd = jest.fn();
+      const onGeneration = jest.fn();
+      const view = setup({ beside: { steers }, runs: { onRunEnd, onGeneration } });
+      await view.ready();
+      const sent = await begin(view);
+      calls.length = 0;
+      /** Still running as far as the server says, and every attachment drops. */
+      view.setStatus({ active: true, streamId: conversationId, createdAt: 3000 });
+      await dropping(view, MAX_RETRIES + 1);
+      expect(onRunEnd).not.toHaveBeenCalled();
+
+      /** By the last failure it has finished, and the server says how. */
+      await waitFor(() => expect(view.streams.length).toBe(MAX_RETRIES + 2));
+      view.loadMessages.mockResolvedValue(whole(sent));
+      view.setStatus({ active: false, status: 'complete', createdAt: 3000 });
+      act(() => view.streams[MAX_RETRIES + 1].push({ type: 'error', status: 0 }));
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+
+      expect(ids(view.result.current.contract.getMessages())).toEqual(ids(whole(sent)));
+      expect(calls.map(([name]) => name)).toEqual(['appliedIds', 'settle', 'adopt', 'sweep']);
+      expect(calls[1]).toEqual(['settle', conversationId, whole(sent)]);
+      expect(onRunEnd).toHaveBeenCalledWith({
+        outcome: 'completed',
+        generationCreatedAt: 3000,
+        responseMessageId: 'response-2',
+      });
+      /** It is over: nothing is addressed as running, and the next turn can be taken. */
+      expect(onGeneration).toHaveBeenLastCalledWith(null);
+      await waitFor(() => expect(view.result.current.contract.isSubmitting).toBe(false));
+      expect(view.result.current.followed.isUnattached).toBe(false);
+      expect(view.result.current.followed.canSend()).toBe(true);
+    });
+
+    it('is looked for again, and nothing is said of it, while the server says it is still running', async () => {
+      const { calls, steers } = record();
+      const onRunEnd = jest.fn();
+      const view = setup({ beside: { steers }, runs: { onRunEnd } });
+      await view.ready();
+      await begin(view);
+      calls.length = 0;
+      view.setStatus({ active: true, streamId: conversationId, createdAt: 3000 });
+
+      await dropping(view, MAX_RETRIES + 2);
+
+      /** Past the last retry, and still asked for: the connection gave up, not the generation. */
+      await waitFor(() => expect(view.streams.length).toBeGreaterThan(MAX_RETRIES + 2));
+      expect(onRunEnd).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
     });
   });
 

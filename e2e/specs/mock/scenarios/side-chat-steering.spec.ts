@@ -92,6 +92,7 @@ async function openBeside(
   const side = sideChat.locator('form');
   const field = sideChat.getByRole('textbox', { name: 'Message input' });
   return {
+    earlierUrl,
     sideChat,
     side,
     field,
@@ -286,6 +287,71 @@ test('stopping a side chat’s reply leaves what was queued behind it for the re
   await expect(turns).toHaveCount(6, { timeout: 30_000 });
   await expect(turns.nth(4)).toContainText(followUp);
   await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+});
+
+test('a message queued in a side chat is sent when the panel is opened again after its reply ended unseen @scenario:side-chat-queue-survives-a-closed-panel', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const { earlierUrl, sideChat, turns, queued, send, write } = await openBeside(page, 'closed');
+  const label = uniqueLabel('unseen');
+  const followUp = `Queued, then the panel closed ${label}`;
+  const conversationId = (await sideChat.getAttribute('data-side-chat')) ?? '';
+  /** Every generation the page starts for the side conversation. */
+  const starts: string[] = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (request.method() !== 'POST' || !/\/api\/agents\/chat\/[^/]+$/.test(pathname)) {
+      return;
+    }
+    const body = request.postDataJSON() as { conversationId?: string; text?: string } | null;
+    if (!pathname.endsWith('/abort') && body?.conversationId === conversationId) {
+      starts.push(body.text ?? '');
+    }
+  });
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect(sideChat).toContainText('chunk-010', { timeout: 30_000 });
+  await write(followUp);
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(queued.filter({ hasText: followUp })).toHaveCount(1);
+
+  /** Closed while the reply is still being written: no one is left to hear it end. */
+  await sideChat.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Side chat' })).toHaveCount(0);
+
+  /** It runs to its end on the server, and nothing is sent meanwhile. */
+  const token = await getAccessToken(page);
+  await expect
+    .poll(
+      async () =>
+        (
+          await requestJson<{ active?: boolean }>(page, {
+            path: `/api/agents/chat/status/${conversationId}`,
+            token,
+          })
+        ).active,
+      { timeout: 90_000, intervals: [1_000] },
+    )
+    .toBe(false);
+  expect(starts).toHaveLength(1);
+
+  /** Opened again: its reply is read from what the server stored, and the queue goes out. */
+  await openChatHistory(page);
+  const row = conversationRow(page, earlierUrl);
+  await row.hover();
+  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  await page.getByRole('menuitem', { name: 'Open beside chat' }).click();
+  const reopened = page.getByRole('region', { name: 'Side chat' });
+  await expect(reopened).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 30_000 });
+
+  await expect(turns).toHaveCount(6, { timeout: 60_000 });
+  await expect(turns.nth(4)).toContainText(followUp);
+  await expect(turns.nth(4).locator('.user-turn')).toBeVisible();
+  await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+  await expect(queued).toHaveCount(0);
+  /** Sent once: the reply it waited on, then the queued message. */
+  expect(starts).toEqual([`E2E_SLOW_REPLY:${label}`, followUp]);
 });
 
 test('a message queued behind a saved agent’s reply in a side chat is started by the server and followed there @scenario:side-chat-server-queued-turn-is-followed', async ({

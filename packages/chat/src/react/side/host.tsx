@@ -5,7 +5,10 @@ import type { FollowedChat, FollowChatOptions } from '../follow';
 import type { ChatContract } from '../chat/contract';
 
 /** What the panel asks to be told about the conversation's generations. */
-export type SideChatOptions = Pick<FollowChatOptions, 'onWithdrawn' | 'onGeneration' | 'onRunEnd'>;
+export type SideChatOptions = Pick<
+  FollowChatOptions,
+  'onWithdrawn' | 'onGeneration' | 'onRunEnd' | 'onStopped' | 'onDetached' | 'onIdle'
+>;
 
 /** What a host's composer for a side chat is given. */
 export type SideChatSurfaceProps = {

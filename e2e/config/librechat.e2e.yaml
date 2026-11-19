@@ -187,6 +187,8 @@ endpoints:
   agents:
     remoteApi:
       integrations:
+        # The API-key grant e2e needs an offer to accept; `owner`, the default, has none.
+        mode: delegated
         resources:
           e2e-http:
             url: *e2e-http-url
