@@ -53,6 +53,13 @@ export interface ScheduleMCPExecution<Identity extends MCPGrantIdentity = Schedu
   /** Trusted admission provenance retained through credential/session preparation. */
   readonly manual?: boolean;
   readonly enrolled: boolean;
+  /**
+   * Whether work this run sends to the background can be finished under the same grant: the
+   * turn that picks it up resolves the subject's grant again. True for a schedule. False for
+   * a subject whose completion turn has no way to find its grant, which keeps a run under a
+   * grant in the foreground.
+   */
+  readonly detaches: boolean;
   /** Legacy admits only while enrollment is still absent; it never acquires a later grant. */
   /** `deadline` is when the wait gives up; by default, well inside a tool hook's timeout. */
   readonly checkEnrollment: (deadline?: number) => Promise<void>;
@@ -165,6 +172,11 @@ export interface ScheduleMCPExecutionDeps<
    * it does not list is left out. Absent, a grant limits MCP tools only.
    */
   coversTools?: boolean;
+  /**
+   * Whether a completion turn for work a run sent to the background resolves this subject's
+   * grant again. Absent, it does not, and a run under a grant starts nothing there.
+   */
+  detaches?: boolean;
   now?: () => number;
 }
 
@@ -346,6 +358,7 @@ export function createScheduleMCPExecution<
       stage,
       ...(manual && { manual: true }),
       enrolled,
+      detaches: deps.detaches === true,
       checkEnrollment,
       needsGrant: async (deadline = settleBy()) => {
         if (enrolled || deps.coversTools !== true) return false;

@@ -83,6 +83,8 @@ export function createScheduleMCPRuntimeHost(
     requiresGrant: required,
     // A schedule's grant covers the whole run: the agents' other tools load only if listed.
     coversTools: true,
+    // A background task's completion turn finds the schedule again by its captured identity.
+    detaches: true,
     async loadAuthorization(identity) {
       // Private to this attempt. No resolved principal, config or allow decision survives it.
       const principal = deps.findUser(identity.ownerId).then((user) => {
@@ -145,12 +147,14 @@ export function createScheduleMCPRuntimeHost(
           if (!identity) return;
           if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
             throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          // Resolved afresh: the turn runs under the grant the schedule holds now, if any.
+          // A resumed turn carries the approvals its owner gave while it was paused.
           await execution.attach(
             context,
             identity,
             completion !== undefined ? 'resume' : 'invoke',
             false,
-            { legacy: true },
+            completion !== undefined ? { approvedToolCalls: input.approvedToolCalls } : {},
           );
           if (!getScheduleMCPExecution(context))
             throw new ScheduledMCPPolicyError('binding_mismatch', '');

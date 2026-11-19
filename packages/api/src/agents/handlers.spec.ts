@@ -111,7 +111,9 @@ function invokeHandlerWithConfig(
  * badge / persisted `skills_enabled` + ACL). Tests that mock
  * `getSkillByName` directly need this so they reach the lookup.
  */
-it('keeps enrolled MCP work foreground even when runnable metadata requests detached execution', async () => {
+it('keeps MCP work foreground under a grant its completion turn could not find again', async () => {
+  // A grant that is not a schedule's: the turn that would pick the result up has no way
+  // to resolve it, so the call runs here whatever the runnable metadata asks for.
   const configs: Record<string, unknown>[] = [];
   const args: unknown[] = [];
   const name = 'query_mcp_warehouse';
@@ -147,9 +149,15 @@ it('keeps enrolled MCP work foreground even when runnable metadata requests deta
   expect(configs).toHaveLength(1);
 });
 
-it.each([true, false])(
-  'captures background completion origin only from its host execution (scheduled=%s)',
-  async (scheduled) => {
+/**
+ * A schedule's run sends work to the background like any other, with or without a grant: the
+ * tool call itself is authorized where it is made, and its completion turn resolves the
+ * schedule's grant again. `kind` is the run: under a grant, a schedule with none, or a chat.
+ */
+it.each(['granted', 'unauthorized', 'chat'] as const)(
+  'sends background work off with its origin taken only from its host execution (%s)',
+  async (kind) => {
+    const scheduled = kind !== 'chat';
     const identity = {
       scheduleId: 'original-schedule',
       ownerId: 'origin-owner',
@@ -160,7 +168,9 @@ it.each([true, false])(
     const preregister = jest.fn(async () => false as const);
     const name = 'query_mcp_warehouse';
     const handler = createToolExecuteHandler({
-      ...(scheduled && { scheduledMCPExecution: { enrolled: false, identity } }),
+      ...(scheduled && {
+        scheduledMCPExecution: { enrolled: kind === 'granted', detaches: true, identity },
+      }),
       loadTools: async () => ({ loadedTools: [createMockTool(name, [])] as never[] }),
       backgroundToolCompletion: {
         preregister,
@@ -177,7 +187,7 @@ it.each([true, false])(
         agentId: 'child',
         toolCalls: [
           {
-            id: `origin-${scheduled}`,
+            id: `origin-${kind}`,
             stepId: 'origin-step',
             name,
             args: { run_in_background: true, scheduleId: 'forged' },
@@ -190,12 +200,12 @@ it.each([true, false])(
           scheduledMCPExecution: { identity: { ...identity, scheduleId: 'forged' } },
           req: { user: { id: identity.ownerId }, body: { conversationId: 'origin-conversation' } },
         },
-        metadata: { run_id: `origin-response-${scheduled}`, thread_id: 'origin-conversation' },
+        metadata: { run_id: `origin-response-${kind}`, thread_id: 'origin-conversation' },
       });
     });
     expect(preregister).toHaveBeenCalledWith(
       expect.objectContaining({
-        parentMessageId: `origin-response-${scheduled}`,
+        parentMessageId: `origin-response-${kind}`,
         conversationId: 'origin-conversation',
         scheduleMCPIdentity: scheduled ? identity : null,
       }),

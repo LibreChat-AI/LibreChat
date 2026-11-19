@@ -2552,9 +2552,12 @@ export async function createRun({
   }
   // Detached child threads resume in a new host request without this run's
   // input snapshot or publication routing. Shared children stay foreground.
-  // Detached completion turns cannot yet restore enrolled schedule authority.
-  const activeSubagentTasks =
-    runFilesActive || scheduledMCPExecution?.enrolled === true ? undefined : subagentTasks;
+  // A schedule's grant does not keep them foreground: a detached child runs with this run's
+  // hooks and narrowed tools, and its completion turn resolves the schedule's grant afresh.
+  // A grant whose completion turn could not find it again (`detaches` false) still does.
+  const foregroundOnly =
+    scheduledMCPExecution?.enrolled === true && scheduledMCPExecution.detaches !== true;
+  const activeSubagentTasks = runFilesActive || foregroundOnly ? undefined : subagentTasks;
   /**
    * Only extract discovered tools if:
    * 1. We have message history to parse

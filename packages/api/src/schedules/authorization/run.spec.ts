@@ -11,6 +11,7 @@ import {
 import type { GraphEdge } from '@librechat/agents';
 import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
 import { executionFixture, readTool } from './execution.helper';
+import { createScheduleMCPExecution } from './execution';
 
 async function setup(edges: GraphEdge[]) {
   const fixture = await executionFixture();
@@ -152,37 +153,63 @@ it('denies safely when an unenrolled run cannot recheck enrollment', async () =>
   expect(record).toHaveBeenCalledTimes(1);
 });
 
-it('denies only host-marked ordinary background MCP work, while retaining foreground reads', async () => {
-  const f = await executionFixture();
-  const policy = createScheduledMCPRunPolicy(f.execution, [
-    {
-      id: 'root',
-      backgroundToolNames: ['query_mcp_warehouse'],
-      toolRegistry: new Map([
-        [
-          'query_mcp_warehouse',
-          { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
-        ],
-      ]),
-    },
-  ]);
-  const input = {
+it('lets a granted tool run in the background, and a held schedule start nothing there', async () => {
+  const agent = {
+    id: 'root',
+    backgroundToolNames: ['query_mcp_warehouse'],
+    toolRegistry: new Map([
+      [
+        'query_mcp_warehouse',
+        { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+      ],
+    ]),
+  };
+  const input = (toolName: string, background: boolean) => ({
     hook_event_name: 'PreToolUse' as const,
     runId: 'scheduled',
     executingAgentId: 'root',
-    toolName: 'query_mcp_warehouse',
-    toolInput: { run_in_background: true },
+    toolName,
+    toolInput: { run_in_background: background },
     toolUseId: 'read',
-  };
-  expect(await policy.hook(input, new AbortController().signal)).toMatchObject({
+  });
+  const signal = new AbortController().signal;
+  // Under a grant: whatever the tool finishes with is picked up in a turn that resolves the
+  // grant again, so the background is no different from the foreground.
+  const f = await executionFixture();
+  const granted = createScheduledMCPRunPolicy(f.execution, [agent]);
+  for (const background of [true, false]) {
+    expect(await granted.hook(input('query_mcp_warehouse', background), signal)).toEqual({});
+    expect(await granted.hook(input(Constants.SUBAGENT, background), signal)).toEqual({});
+  }
+  // A tool the owner did not allow is refused there as anywhere.
+  expect(await granted.hook(input('web_search', true), signal)).toMatchObject({
     decision: 'deny',
   });
-  expect(
-    await policy.hook(
-      { ...input, toolInput: { run_in_background: false } },
-      new AbortController().signal,
-    ),
-  ).toEqual({});
+
+  // A grant the completion turn could not find again keeps its run in the foreground.
+  const bound = await executionFixture('invoke', readTool, undefined, { detaches: false });
+  const foreground = createScheduledMCPRunPolicy(bound.execution, [agent]);
+  expect(await foreground.hook(input('query_mcp_warehouse', true), signal)).toMatchObject({
+    decision: 'deny',
+  });
+  expect(await foreground.hook(input('query_mcp_warehouse', false), signal)).toEqual({});
+
+  // No grant where one is required: nothing may be started in the background.
+  const unenrolled = (required: boolean) => {
+    f.snapshot.enrollment = null;
+    return createScheduleMCPExecution({
+      storage: f.storage,
+      loadAuthorization: f.loadAuthorization,
+      requiresGrant: async () => required,
+      coversTools: true,
+    }).resolve(f.identity, 'invoke');
+  };
+  const held = createScheduledMCPRunPolicy((await unenrolled(true))!, [agent]);
+  for (const name of ['query_mcp_warehouse', Constants.SUBAGENT])
+    expect(await held.hook(input(name, true), signal)).toMatchObject({ decision: 'deny' });
+  // A schedule nobody has to authorize runs as it always did.
+  const exempt = createScheduledMCPRunPolicy((await unenrolled(false))!, [agent]);
+  expect(await exempt.hook(input('query_mcp_warehouse', true), signal)).toEqual({});
 });
 
 describe('a tool the owner left out of the grant', () => {
