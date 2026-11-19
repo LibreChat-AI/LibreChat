@@ -60,4 +60,12 @@ describe('clearLocalStorage', () => {
     expect(localStorage.getItem(`${LocalStorageKeys.FILES_DRAFT}new:0`)).toBeNull();
     expect(localStorage.getItem(`${LocalStorageKeys.TEXT_DRAFT}new:0`)).toBeNull();
   });
+
+  it('drops the product session record, whose key carries the account IDs', () => {
+    localStorage.setItem('lc-product-session:["user-1","tenant-1"]', '{}');
+
+    clearLocalStorage();
+
+    expect(localStorage.getItem('lc-product-session:["user-1","tenant-1"]')).toBeNull();
+  });
 });

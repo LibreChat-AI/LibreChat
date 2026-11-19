@@ -135,6 +135,7 @@ function syncListBody(
 
 function mockReq(overrides = {}) {
   return {
+    productTracking: { enabled: true },
     user: { id: 'u1', role: 'ADMIN', tenantId: 't1' },
     params: {},
     body: {},
@@ -593,6 +594,62 @@ describe('createAdminLangfuseHandlers', () => {
   });
 
   describe('updateConnection', () => {
+    it('records only confirmed connection writes and excludes credentials', async () => {
+      const { handlers, deps } = createHandlers();
+      const productTracker = jest.fn();
+      const req = mockReq({
+        productTracker,
+        body: {
+          enabled: true,
+          destination: 'eu',
+          publicKey: 'pk-private',
+          secretKey: 'sk-private',
+        },
+      });
+      const res = mockRes();
+      await handlers.updateConnection(req, res);
+      expect(res.statusCode).toBe(200);
+      expect(productTracker.mock.calls).toEqual([
+        [
+          {
+            name: 'librechat.langfuse.connection.updated',
+            enabled: true,
+            configured: true,
+          },
+        ],
+      ]);
+      productTracker.mockClear();
+      deps.patchConfigFields.mockResolvedValueOnce(null);
+      await handlers.updateConnection(req, mockRes());
+      expect(productTracker).not.toHaveBeenCalled();
+      deps.patchConfigFields.mockRejectedValueOnce(new Error('write failed'));
+      await handlers.updateConnection(req, mockRes());
+      expect(productTracker).not.toHaveBeenCalled();
+      await handlers.updateConnection(mockReq({ productTracker, body: {} }), mockRes());
+      expect(productTracker).not.toHaveBeenCalled();
+    });
+
+    it('preserves a confirmed connection response when the tracker throws', async () => {
+      const { handlers } = createHandlers();
+      const res = mockRes();
+      await handlers.updateConnection(
+        mockReq({
+          productTracker: () => {
+            throw new Error('offline');
+          },
+          body: {
+            enabled: true,
+            destination: 'eu',
+            publicKey: 'pk-private',
+            secretKey: 'sk-private',
+          },
+        }),
+        res,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.body?.enabled).toBe(true);
+    });
+
     it('requires destination', async () => {
       const { handlers } = createHandlers();
       const res = mockRes();
@@ -965,6 +1022,54 @@ describe('createAdminLangfuseHandlers', () => {
       expect(deps.patchConfigFields.mock.calls[0][4]).toBeUndefined();
       expect(deps.toggleConfigActive).toHaveBeenCalledWith('role', '__base__', true);
       expect(res.body).toMatchObject({ configured: true, enabled: true });
+    });
+
+    it('records the prompt-sync switch that a reactivating connection save restores', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const inactiveExisting = { ...baseConfigDoc(withPromptSync(true)), isActive: false };
+      const inactiveUpdated = {
+        ...baseConfigDoc({ ...withPromptSync(true), enabled: true }),
+        isActive: false,
+      };
+      const { handlers } = createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(inactiveExisting),
+        patchConfigFields: jest.fn().mockResolvedValue(inactiveUpdated),
+        toggleConfigActive: jest.fn().mockResolvedValue({ ...inactiveUpdated, isActive: true }),
+      });
+      const productTracker = jest.fn();
+      const res = mockRes();
+      await handlers.updateConnection(
+        mockReq({
+          productTracker,
+          body: { enabled: true, destination: 'eu', publicKey: 'pk-lf-1' },
+        }),
+        res,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toMatchObject({ enabled: true, promptSync: { enabled: true } });
+      expect(productTracker.mock.calls).toEqual([
+        [{ name: 'librechat.langfuse.connection.updated', configured: true, enabled: true }],
+        [{ name: 'librechat.langfuse.promptSync.changed', enabled: true }],
+      ]);
+    });
+
+    it('records nothing when a connection save keeps the effective state', async () => {
+      const stored = { ...tenantLangfuseConnection(), enabled: true };
+      const { handlers } = createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(baseConfigDoc(stored)),
+        patchConfigFields: jest.fn().mockResolvedValue(baseConfigDoc(stored)),
+      });
+      const productTracker = jest.fn();
+      const res = mockRes();
+      await handlers.updateConnection(
+        mockReq({
+          productTracker,
+          body: { enabled: true, destination: 'eu', publicKey: 'pk-lf-1' },
+        }),
+        res,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(productTracker).not.toHaveBeenCalled();
     });
   });
 
@@ -1403,6 +1508,71 @@ describe('createAdminLangfuseHandlers', () => {
 
   describe('updatePromptSync', () => {
     it.each([true, false])(
+      'records the effective prompt-sync switch after a confirmed save (%s)',
+      async (enabled) => {
+        process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+        const { handlers, deps } = createHandlers({
+          findConfigByPrincipal: jest
+            .fn()
+            .mockResolvedValue(baseConfigDoc({ promptSync: { enabled: !enabled } })),
+          patchConfigFields: jest
+            .fn()
+            .mockResolvedValue(baseConfigDoc({ promptSync: { enabled } })),
+        });
+        const productTracker = jest.fn();
+        const req = mockReq({ productTracker, body: { enabled } });
+        await handlers.updatePromptSync(req, mockRes());
+        expect(deps.findConfigByPrincipal).toHaveBeenCalledWith('role', '__base__', {
+          includeInactive: true,
+        });
+        expect(productTracker.mock.calls).toEqual([
+          [
+            {
+              name: 'librechat.langfuse.promptSync.changed',
+              enabled,
+            },
+          ],
+        ]);
+        productTracker.mockClear();
+        deps.patchConfigFields.mockResolvedValueOnce(null);
+        await handlers.updatePromptSync(req, mockRes());
+        expect(productTracker).not.toHaveBeenCalled();
+        deps.patchConfigFields.mockRejectedValueOnce(new Error('write failed'));
+        await handlers.updatePromptSync(req, mockRes());
+        expect(productTracker).not.toHaveBeenCalled();
+        await handlers.updatePromptSync(mockReq({ productTracker, body: {} }), mockRes());
+        expect(productTracker).not.toHaveBeenCalled();
+      },
+    );
+
+    it('records nothing when the saved prompt-sync switch is unchanged or unread', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const doc = baseConfigDoc({ promptSync: { enabled: true } });
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(doc),
+        patchConfigFields: jest.fn().mockResolvedValue(doc),
+      });
+      const productTracker = jest.fn();
+      const req = mockReq({ productTracker, body: { enabled: true } });
+      await handlers.updatePromptSync(req, mockRes());
+      deps.findConfigByPrincipal.mockRejectedValueOnce(new Error('read failed'));
+      const res = mockRes();
+      await handlers.updatePromptSync(req, res);
+      expect(res.statusCode).toBe(200);
+      expect(productTracker).not.toHaveBeenCalled();
+    });
+
+    it('does not read Base for product facts when tracking is off', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createHandlers();
+      await handlers.updatePromptSync(
+        mockReq({ productTracking: { enabled: false }, body: { enabled: true } }),
+        mockRes(),
+      );
+      expect(deps.findConfigByPrincipal).not.toHaveBeenCalled();
+    });
+
+    it.each([true, false])(
       'audits the saved prompt switch value %s after cache invalidation',
       async (enabled) => {
         process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
@@ -1528,10 +1698,14 @@ describe('createAdminLangfuseHandlers', () => {
         patchConfigFields: jest.fn().mockResolvedValue(inactiveUpdated),
       });
       const res = mockRes();
+      const productTracker = jest.fn();
 
-      await handlers.updatePromptSync(mockReq({ body: { enabled: true } }), res);
+      await handlers.updatePromptSync(mockReq({ productTracker, body: { enabled: true } }), res);
 
-      expect(deps.findConfigByPrincipal).not.toHaveBeenCalled();
+      /** The only read is the product fact comparison; the patch sends no priority. */
+      expect(deps.findConfigByPrincipal.mock.calls).toEqual([
+        ['role', '__base__', { includeInactive: true }],
+      ]);
       expect(deps.patchConfigFields.mock.calls[0][4]).toBeUndefined();
       expect(deps.toggleConfigActive).not.toHaveBeenCalled();
       expect(res.statusCode).toBe(200);
@@ -1543,6 +1717,8 @@ describe('createAdminLangfuseHandlers', () => {
       await getConnectionHandlers.getConnection(mockReq(), getConnectionRes);
 
       expect(res.body).toEqual(getConnectionRes.body);
+      /** An inactive Base has no effective prompt sync before or after the save. */
+      expect(productTracker).not.toHaveBeenCalled();
     });
 
     it('returns the fresh connection status shape, same as GET /connection', async () => {

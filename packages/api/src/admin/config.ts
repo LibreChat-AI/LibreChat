@@ -177,6 +177,7 @@ import {
 import { getConfigPartition, getActivePartition, runInPartition } from './partition';
 import { buildAdminConfigMeta, getCatalogModelsTtlMs } from './meta';
 import { createAdminAuditEmitter, configTarget } from './audit';
+import { trackLangfuseTransition } from '~/langfuse/tracking';
 import { DEFAULT_OVERRIDE_CACHE_TTL } from '~/app/service';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { mergeOverrideLayers } from '~/app/overrides';
@@ -886,6 +887,8 @@ interface ConfigLifecycleOptions extends ConfigWriteOptions {
 }
 
 export interface AdminConfigDeps {
+  /** Whether prompt sync is available when a Base change is tracked. Defaults to false. */
+  isLangfusePromptSyncAvailable?: () => boolean;
   listAllConfigs: (filter?: { isActive?: boolean }, session?: NoSession) => Promise<ConfigRecord[]>;
   findConfigByPrincipal: (
     principalType: PrincipalType,
@@ -2608,6 +2611,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
     overrideCacheTtlMs = DEFAULT_OVERRIDE_CACHE_TTL,
     overrideEnvAllowlist,
     rederiveEndpoints = false,
+    isLangfusePromptSyncAvailable = () => false,
   } = deps;
 
   const envAllowlist = parseEnvAllowlist(overrideEnvAllowlist);
@@ -4853,6 +4857,9 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         severity: 'warning',
         target: configTarget(principalType, principalId),
       });
+      if (isBaseConfigPrincipal({ principalType, principalId })) {
+        trackLangfuseTransition(req, config, null, isLangfusePromptSyncAvailable());
+      }
       return res.status(200).json({ success: true });
     } catch (error) {
       logger.error('[adminConfig] deleteConfigOverrides error:', getSafeErrorMetadata(error));
@@ -5078,6 +5085,14 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
           target: configTarget(principalType, principalId),
           metadata: { isActive },
         });
+        if (isBaseConfigPrincipal({ principalType, principalId })) {
+          trackLangfuseTransition(
+            req,
+            { ...config, isActive: !isActive },
+            config,
+            isLangfusePromptSyncAvailable(),
+          );
+        }
       }
       return sendWrittenConfig(
         res,

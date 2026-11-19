@@ -1,6 +1,7 @@
 import { LocalStorageKeys } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import { FILE_SEARCH_CHOICE_PREFIX, clearFileSearchChoices } from './choices';
+import { PRODUCT_SESSION_KEY_PREFIX } from './productSession';
 
 export const FILE_SEARCH_UPLOAD_PREFIX = 'file-search-upload:';
 
@@ -64,6 +65,7 @@ export function clearLocalStorage(skipFirst?: boolean) {
       key.startsWith(LocalStorageKeys.ASST_ID_PREFIX) ||
       key.startsWith(LocalStorageKeys.AGENT_ID_PREFIX) ||
       key.startsWith(LocalStorageKeys.LAST_CONVO_SETUP) ||
+      key.startsWith(PRODUCT_SESSION_KEY_PREFIX) ||
       key === LocalStorageKeys.LAST_SPEC ||
       key === LocalStorageKeys.LAST_TOOLS ||
       key === LocalStorageKeys.LAST_MODEL ||

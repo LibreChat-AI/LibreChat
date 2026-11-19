@@ -54,6 +54,7 @@ import {
 import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
+import { trackLangfuseTransition } from '~/langfuse/tracking';
 import { resolveLangfuseSession } from '~/langfuse/session';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAdminAuditEmitter } from './audit';
@@ -652,6 +653,10 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
       if (activationError) {
         throw activationError;
       }
+      if (updated) {
+        /** Reactivating Base also restores its stored prompt-sync switch. */
+        trackLangfuseTransition(req, existing, updated, isLangfusePromptSyncAvailable());
+      }
       return res.status(200).json(status);
     } catch (error) {
       if (isConfigRevisionConflict(error)) {
@@ -748,6 +753,10 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     }
 
     try {
+      /** Read only to compare product facts. A failed read records no fact. */
+      const previous = req.productTracking?.enabled
+        ? await findBaseConfig({ includeInactive: true }).catch(() => undefined)
+        : undefined;
       // Omitting priority preserves the stored value. The patch also keeps
       // an inactive base config inactive.
       const updated = await patchConfigFields(
@@ -769,9 +778,12 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
       });
 
       // An inactive config is invisible to `getConnection` (which reads
-      // without `includeInactive`), so report the same empty status here
-      // rather than echoing back fields nobody else can see.
-      return res.status(200).json(buildStatus(updated?.isActive === false ? null : updated));
+      // without `includeInactive`), so report the same empty status here.
+      const status = buildStatus(updated?.isActive === false ? null : updated);
+      if (updated && previous !== undefined) {
+        trackLangfuseTransition(req, previous, updated, isLangfusePromptSyncAvailable());
+      }
+      return res.status(200).json(status);
     } catch (error) {
       logger.error('[adminLangfuse] updatePromptSync error:', error);
       return res.status(500).json({ error: 'Failed to update Langfuse prompt sync setting' });
