@@ -3,16 +3,8 @@ import type { useStore } from 'jotai';
 import type { StreamStatusResponse, GenerationProtocolVersion } from '../../../core';
 import type useSteerConvert from '../../steering/useSteerConvert';
 import type { ChatMessageCache } from '../../chat/host';
-import {
-  resolveDetachedRunEnd,
-  settleFinishedSteers,
-  isQueuedTurnSuccessorOwed,
-} from '../../../core';
-import {
-  isDetachedRunManual,
-  detachedRunByConvoId,
-  pendingRunEndByConvoId,
-} from '../../steer/queue';
+import { parkDetachedRunEnd, isDetachedRunManual, detachedRunByConvoId } from '../../steer/queue';
+import { settleFinishedSteers, isQueuedTurnSuccessorOwed } from '../../../core';
 import { revealedQueuedTurnFamily } from '../../steer/atoms';
 
 /** The steer chips a finished run settles. */
@@ -92,19 +84,9 @@ export function settleFinishedRun({
   const detachedFamily = detachedRunByConvoId(conversationId);
   const detachedRun = jotaiStore.get(detachedFamily);
   const parkDetachedEnd = () => {
-    if (detachedRun == null || jotaiStore.get(detachedFamily) !== detachedRun) {
-      return;
+    if (detachedRun != null) {
+      parkDetachedRunEnd(jotaiStore, conversationId, detachedRun, getMessages());
     }
-    if (isDetachedRunManual(jotaiStore.get, conversationId, detachedRun)) {
-      jotaiStore.set(detachedFamily, null);
-      return;
-    }
-    const end = resolveDetachedRunEnd(conversationId, detachedRun, getMessages());
-    if (end == null) {
-      return;
-    }
-    jotaiStore.set(detachedFamily, null);
-    jotaiStore.set(pendingRunEndByConvoId(conversationId), end);
   };
   /** A run left for a manual send is retired without a read instead of refetching on every
    *  visit; the check repeats after the read, since a receipt can settle meanwhile. */

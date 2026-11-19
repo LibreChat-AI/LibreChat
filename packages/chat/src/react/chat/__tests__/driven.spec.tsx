@@ -197,7 +197,10 @@ function setup({
   id?: string;
   store?: ReturnType<typeof createStore>;
   /** What the caller is told of the conversation's generations. */
-  runs?: Pick<FollowChatOptions, 'onGeneration' | 'onRunEnd'>;
+  runs?: Pick<
+    FollowChatOptions,
+    'onGeneration' | 'onRunEnd' | 'onStopped' | 'onDetached' | 'onIdle'
+  >;
   /** The transport, when a spec sets the server's state before the conversation opens. */
   harness?: ReturnType<typeof createTransport>;
 } = {}) {
@@ -619,6 +622,150 @@ describe('useDrivenContract', () => {
       await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
       expect(loadMessages.mock.calls.length).toBeGreaterThan(reads);
       expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'completed' }));
+    });
+  });
+
+  describe('a run it is let go of, or finds already over', () => {
+    const watch = () => {
+      const onStopped = jest.fn();
+      const onDetached = jest.fn();
+      const onIdle = jest.fn();
+      const onRunEnd = jest.fn();
+      return {
+        onStopped,
+        onDetached,
+        onIdle,
+        onRunEnd,
+        runs: { onStopped, onDetached, onIdle, onRunEnd },
+      };
+    };
+    const start = async ({ result, streams }: ReturnType<typeof setup>, text = 'Next question') => {
+      act(() => {
+        result.current.contract.ask({ text });
+      });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      return (result.current.contract.getMessages() ?? [])[2];
+    };
+
+    it('names a run still being written when it is let go of, by the turn the server named', async () => {
+      const { onDetached, runs } = watch();
+      const view = setup({ runs });
+      await view.ready();
+      const sent = await start(view);
+      /** The server stores the message under an id of its own, which is the one that names the turn. */
+      act(() => view.streams[0].push(created({ ...sent, messageId: 'user-stored' }, 'response-2')));
+      await settle();
+
+      view.unmount();
+
+      expect(onDetached).toHaveBeenCalledTimes(1);
+      expect(onDetached).toHaveBeenCalledWith({
+        userMessageId: 'user-stored',
+        responseMessageId: 'response-2',
+        generationCreatedAt: 3000,
+      });
+    });
+
+    it('names a run it only found running, from the snapshot it joined on', async () => {
+      const { onDetached, runs } = watch();
+      const harness = createTransport();
+      harness.setStatus({ active: true, streamId: conversationId, createdAt: 2000 });
+      const view = setup({ runs, harness });
+      await view.ready();
+      await waitFor(() => expect(view.streams).toHaveLength(1));
+      act(() =>
+        view.streams[0].push({
+          type: 'sync',
+          data: {
+            sync: true,
+            resumeState: {
+              conversationId,
+              responseMessageId: 'response-9',
+              userMessage: { ...user, messageId: 'user-9', parentMessageId: 'response-1' },
+              runSteps: [],
+              aggregatedContent: [],
+            },
+          },
+        } as ChatEvent),
+      );
+      await settle();
+
+      view.unmount();
+
+      expect(onDetached).toHaveBeenCalledWith({
+        userMessageId: 'user-9',
+        responseMessageId: 'response-9',
+        generationCreatedAt: 3000,
+      });
+    });
+
+    it('names no run that is over, that the server has not named, that reruns a turn, or that was stopped', async () => {
+      /** Over: its end was said, so there is nothing left to read later. */
+      const over = watch();
+      const ended = setup({ runs: over.runs });
+      await ended.ready();
+      const asked = await start(ended);
+      act(() => {
+        ended.streams[0].push(created(asked, 'response-2'));
+        ended.streams[0].push(final(asked, reply('response-2', 'Answer', asked.messageId)));
+      });
+      await waitFor(() => expect(over.onRunEnd).toHaveBeenCalledTimes(1));
+      ended.unmount();
+      expect(over.onDetached).not.toHaveBeenCalled();
+
+      /** Not named yet: no stored reply could be matched to it. */
+      const unnamed = watch();
+      const early = setup({ runs: unnamed.runs });
+      await early.ready();
+      await start(early);
+      early.unmount();
+      expect(unnamed.onDetached).not.toHaveBeenCalled();
+
+      /** A rerun: the list it leaves is not one a queued turn should follow unseen. */
+      const again = watch();
+      const rerun = setup({ runs: again.runs });
+      await rerun.ready();
+      act(() => {
+        rerun.result.current.contract.regenerate({ parentMessageId: 'user-1' });
+      });
+      await waitFor(() => expect(rerun.streams).toHaveLength(1));
+      act(() => rerun.streams[0].push(created(user, 'response-1b')));
+      await settle();
+      rerun.unmount();
+      expect(again.onDetached).not.toHaveBeenCalled();
+
+      /** Stopped: said so when asked, and what is queued behind it is the reader's to send. */
+      const halted = watch();
+      const stopped = setup({ runs: halted.runs });
+      await stopped.ready();
+      const sent = await start(stopped);
+      act(() => stopped.streams[0].push(created(sent, 'response-2')));
+      await settle();
+      await act(async () => {
+        void stopped.result.current.contract.stopGenerating();
+        await Promise.resolve();
+      });
+      expect(halted.onStopped).toHaveBeenCalledWith({ createdAt: 3000, protocolVersion: 1 });
+      stopped.unmount();
+      expect(halted.onDetached).not.toHaveBeenCalled();
+    });
+
+    it('says when it opens with nothing running, with the rows it read, and not when a run is on', async () => {
+      const idle = watch();
+      const quiet = setup({ runs: idle.runs });
+      await quiet.ready();
+      await settle();
+      expect(idle.onIdle).toHaveBeenCalledTimes(1);
+      expect(idle.onIdle).toHaveBeenCalledWith([user, reply('response-1', 'Hi')]);
+
+      const busy = watch();
+      const harness = createTransport();
+      harness.setStatus({ active: true, streamId: conversationId, createdAt: 2000 });
+      const running = setup({ runs: busy.runs, harness });
+      await running.ready();
+      await waitFor(() => expect(running.streams).toHaveLength(1));
+      await settle();
+      expect(busy.onIdle).not.toHaveBeenCalled();
     });
   });
 

@@ -4,15 +4,24 @@ import { ArrowUpRight, X } from 'lucide-react';
 import { cn, Button, Composer, useLocalize, useFocusTrap } from '@librechat/client';
 import type { ComposerStopProps, ComposerKeyVerdict } from '@librechat/client';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+import type { TMessage } from 'librechat-data-provider';
 import type { FollowedGeneration, FollowedRunEnd } from '../../react/follow';
 import type { ChatContract } from '../../react/chat/contract';
+import type { DetachedRun, SubmittedTurn } from '../../core';
 import type { SideChat } from '../../react/side/state';
-import type { SubmittedTurn } from '../../core';
+import {
+  runEndByIndex,
+  settleDetachedRun,
+  parkDetachedRunEnd,
+  detachedRunByConvoId,
+  drainAfterAbortByIndex,
+  stopRequestedByConvoId,
+  clearSupersededRunMarkers,
+} from '../../react/steer/queue';
 import {
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
 } from '../../react/steer/atoms';
-import { runEndByIndex, drainAfterAbortByIndex } from '../../react/steer/queue';
 import { SIDE_CHAT_PANE, sideChatDraftFamily } from '../../react/side/state';
 import { clearMatchingDrainAfterAbort } from '../../core/steer/drain';
 import { useChatSurface } from '../../react/subagents/surface';
@@ -232,6 +241,14 @@ export default function SideChatPanel({
   const store = useStore();
   const noteGeneration = useCallback(
     (generation: FollowedGeneration | null) => {
+      if (generation != null) {
+        /** A different run owns the conversation's end now: an earlier one left behind, or stopped, is superseded. */
+        clearSupersededRunMarkers(
+          store,
+          conversationId,
+          (createdAt) => createdAt === generation.createdAt,
+        );
+      }
       store.set(activeGenerationCreatedAtByConvoId(conversationId), generation?.createdAt ?? null);
       store.set(
         activeGenerationProtocolVersionByConvoId(conversationId),
@@ -253,7 +270,36 @@ export default function SideChatPanel({
           clearMatchingDrainAfterAbort(armed, conversationId, generationCreatedAt),
         );
       }
+      /** Its end reaches the queue here, so a marker left for the same run is not read again. */
+      settleDetachedRun(store, { conversationId, generationCreatedAt: end.generationCreatedAt });
       store.set(runEndByIndex(SIDE_CHAT_PANE), { ...end, conversationId, endedAt: Date.now() });
+    },
+    [conversationId, store],
+  );
+  /**
+   * A reply still being written when the panel goes away has no one left to hear it end, and
+   * what the reader queued behind it would wait for good. So the run is remembered, as main
+   * chat remembers one it navigates away from, and when the conversation is next opened with
+   * nothing running its end is read from the stored rows: a reply that completed lets the
+   * queue go, and one the reader stopped leaves it for them to send.
+   */
+  const noteStop = useCallback(
+    (generation: FollowedGeneration) =>
+      store.set(stopRequestedByConvoId(conversationId), {
+        generationCreatedAt: generation.createdAt,
+      }),
+    [conversationId, store],
+  );
+  const noteDetached = useCallback(
+    (run: DetachedRun) => store.set(detachedRunByConvoId(conversationId), run),
+    [conversationId, store],
+  );
+  const noteIdle = useCallback(
+    (messages: TMessage[]) => {
+      const detached = store.get(detachedRunByConvoId(conversationId));
+      if (detached != null) {
+        parkDetachedRunEnd(store, conversationId, detached, messages);
+      }
     },
     [conversationId, store],
   );
@@ -261,6 +307,9 @@ export default function SideChatPanel({
     onWithdrawn: takeBack,
     onGeneration: noteGeneration,
     onRunEnd: noteRunEnd,
+    onStopped: noteStop,
+    onDetached: noteDetached,
+    onIdle: noteIdle,
   });
   const panelRef = useRef<HTMLDivElement>(null);
 
