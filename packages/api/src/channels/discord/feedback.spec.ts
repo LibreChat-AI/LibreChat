@@ -1,6 +1,13 @@
+import express from 'express';
 import mongoose from 'mongoose';
+import request from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { channelConfigSchema } from 'librechat-data-provider';
+import {
+  channelConfigSchema,
+  Permissions,
+  PermissionTypes,
+  PermissionBits,
+} from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -9,17 +16,20 @@ import {
   createDiscordInboxStorage,
   createChannelIdentityStorage,
   createChannelFeedbackStorage,
+  createChannelRunStorage,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
+import type { AppConfig, DiscordCommandScope, ChannelRunRecord } from '@librechat/data-schemas';
 import type { DiscordAgentChannel, ChannelRating } from 'librechat-data-provider';
-import type { AppConfig, DiscordCommandScope } from '@librechat/data-schemas';
+import { createDiscordFeedbackHandler, createDiscordFeedbackProjection } from './feedback';
 import { createChannelApplicationPolicy } from '../applicationPolicy';
 import { getLangfuseDestinationId } from '~/langfuse/destinations';
 import { createChannelFeedbackRuntime } from '../feedbackRuntime';
 import { createChannelFeedbackHost } from '../feedbackHost';
-import { createDiscordFeedbackHandler } from './feedback';
 import { sendFeedbackScore } from '~/langfuse/feedback';
+import { createChannelAuthority } from '../authority';
+import { createChannelRunHandlers } from '../runs';
 import { createChannelHandlers } from '../service';
 
 const db = new mongoose.Mongoose();
@@ -44,6 +54,8 @@ let methods: ReturnType<typeof createMethods>;
 let channel: DiscordAgentChannel;
 let applicationRevision: string;
 let config: AppConfig;
+let creatorPolicy: AppConfig | undefined;
+let onProjectionRead: () => Promise<void> = async () => {};
 let now: number;
 let fetched: jest.SpiedFunction<typeof fetch>;
 let runtime: ReturnType<typeof createChannelFeedbackRuntime> | undefined;
@@ -51,7 +63,8 @@ let feedback: ReturnType<typeof createChannelFeedbackHost>;
 const storage = createChannelFeedbackStorage(db);
 const inbox = createDiscordInboxStorage(db);
 const policy = createChannelApplicationPolicy({
-  readAppConfig: async () => config,
+  readAppConfig: async (options) =>
+    options?.userId === '000000000000000000000002' ? (creatorPolicy ?? config) : config,
   findUser: (query) => methods.findUser(query),
   isPrincipalActive: async (id) =>
     Boolean(
@@ -122,6 +135,8 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   now = Date.now();
+  creatorPolicy = undefined;
+  onProjectionRead = async () => {};
   for (const key of Object.keys(process.env))
     if (key.startsWith('LANGFUSE_')) delete process.env[key];
   Object.assign(process.env, {
@@ -435,4 +450,237 @@ it('shares runtime lifecycle and wake-up with the existing export worker', () =>
     await runtime.stop();
     expect(await runtime.recordDiscordFeedback(work)).toMatchObject({ ok: false });
     expect(fetched).toHaveBeenCalledTimes(1);
+  }));
+
+const project = createDiscordFeedbackProjection({
+  storage,
+  getPolicy: async (subject) => {
+    const snapshot = await policy.feedbackPolicy(subject);
+    await onProjectionRead();
+    return snapshot;
+  },
+});
+async function currentRun(): Promise<ChannelRunRecord> {
+  const run = await db.models.ChannelRun.findOne({ runId }).lean<ChannelRunRecord>();
+  if (!run) throw new Error('Missing canonical run');
+  return run;
+}
+it('projects eligibility before delivery without admitting feedback on an unconfirmed answer', () =>
+  scope(async () => {
+    await db.models.ChannelRun.updateOne(
+      { runId },
+      { $set: { state: 'delivering', receipts: [] } },
+    );
+    expect(await project(await currentRun())).toBe(true);
+    expect(await feedback.recordDiscordFeedback(await job())).toMatchObject({ ok: false });
+    expect(await db.models.ChannelFeedback.countDocuments()).toBe(0);
+    expect(fetched).not.toHaveBeenCalled();
+  }));
+it.each([
+  'feedback',
+  'channels',
+  'discord',
+  'sampled',
+  'destination',
+  'central',
+  'temporary',
+  'unknown_temporary',
+  'expired',
+  'closed',
+  'deleted',
+  'authorship',
+  'response',
+  'conversation',
+  'principal',
+  'link',
+  'executing',
+  'failed',
+  'cancelled',
+  'slack',
+])('omits native controls for ineligible retained run variant %s', (change) =>
+  scope(async () => {
+    if (change === 'feedback') config.interfaceConfig!.feedback = false;
+    if (change === 'channels') config.endpoints!.agents!.channels!.enabled = false;
+    if (change === 'discord') config.endpoints!.agents!.channels!.discord!.enabled = false;
+    if (change === 'sampled')
+      await db.models.Message.updateOne(
+        { messageId: 'response' },
+        { $set: { langfuseSampled: false } },
+      );
+    if (change === 'destination')
+      await db.models.Message.updateOne(
+        { messageId: 'response' },
+        { $set: { langfuseDestinationIds: ['other'] } },
+      );
+    if (change === 'central')
+      await db.models.Message.updateOne(
+        { messageId: 'response' },
+        { $set: { langfuseCentralTraceExportEnabled: false } },
+      );
+    if (change === 'temporary')
+      await db.models.Message.updateOne({ messageId: 'response' }, { $set: { isTemporary: true } });
+    if (change === 'unknown_temporary')
+      await db.models.Message.updateOne({ messageId: 'response' }, { $unset: { isTemporary: '' } });
+    if (change === 'expired')
+      await db.models.Message.updateOne(
+        { messageId: 'response' },
+        { $set: { expiredAt: new Date(now - 1) } },
+      );
+    if (change === 'closed') {
+      unwrap(await feedback.recordDiscordFeedback(await job()));
+      await db.models.ResponseScope.updateMany({}, { $set: { closed: true } });
+    }
+    if (change === 'deleted') await db.models.Message.deleteOne({ messageId: 'response' });
+    if (change === 'authorship')
+      await db.models.Message.updateOne(
+        { messageId: 'response' },
+        { $set: { isCreatedByUser: true } },
+      );
+    if (change === 'response')
+      await db.models.ChannelRun.updateOne({ runId }, { $set: { 'snapshot.responseId': 'wrong' } });
+    if (change === 'conversation')
+      await db.models.ChannelRun.updateOne(
+        { runId },
+        { $set: { 'execution.conversationId': 'wrong' } },
+      );
+    if (change === 'principal') {
+      await db.models.User.create({
+        _id: '000000000000000000000002',
+        tenantId,
+        email: 'other@example.test',
+        provider: 'local',
+      });
+      await db.models.ChannelRun.updateOne(
+        { runId },
+        { $set: { 'principal.userId': '000000000000000000000002' } },
+      );
+    }
+    if (change === 'link')
+      await db.models.ChannelRun.updateOne({ runId }, { $unset: { 'principal.linkRevision': '' } });
+    if (change === 'executing')
+      await db.models.ChannelRun.updateOne({ runId }, { $set: { state: 'executing' } });
+    if (change === 'failed')
+      await db.models.ChannelRun.updateOne({ runId }, { $set: { 'snapshot.status': 'failed' } });
+    if (change === 'cancelled')
+      await db.models.ChannelRun.updateOne({ runId }, { $set: { cancellationRequested: true } });
+    const run = await currentRun();
+    if (change === 'slack') run.admission.actor = { teamId: 'T1', appId: 'A1', externalUserId };
+    expect(await project(run)).toBe(false);
+    expect(fetched).not.toHaveBeenCalled();
+  }),
+);
+
+async function runApp() {
+  await db.models.Role.updateOne(
+    { name: 'USER' },
+    {
+      $set: {
+        permissions: {
+          [PermissionTypes.REMOTE_AGENTS]: { [Permissions.USE]: true },
+          [PermissionTypes.AGENTS]: { [Permissions.USE]: true },
+        },
+      },
+    },
+    { upsert: true },
+  );
+  const authority = createChannelAuthority({
+    channels: methods,
+    identityStorage: createChannelIdentityStorage(db),
+    getConfig: async (user) =>
+      channelConfigSchema.parse(
+        (await policy.appConfig(tenantId, String(user._id))).endpoints?.agents?.channels,
+      ),
+    findUser: (id) => methods.findUser({ _id: id }),
+    getRole: (name) => methods.getRoleByName(name),
+    isPrincipalActive: async (id) =>
+      Boolean(
+        await db.models.User.exists({ _id: id, agentTriggerDeletionStartedAt: { $exists: false } }),
+      ),
+    getAgentPermissions: async () => PermissionBits.VIEW,
+  });
+  await db.models.ChannelRun.updateOne({ runId }, { $set: { state: 'delivering', receipts: [] } });
+  await db.models.ChannelLane.create({
+    tenantId,
+    userId,
+    channelId: channel.channelId,
+    laneId: 'lane',
+    nextSequence: 2,
+    activeRunId: runId,
+  });
+  const handlers = createChannelHandlers({
+    db: methods,
+    serviceToken: () => 'private-service-token-for-feedback',
+    config: policy.requestConfig,
+    getAgent: async () => ({ id: 'agent' }),
+    verifySlackToken: async () => null,
+    logError: () => {},
+  });
+  const runs = createChannelRunHandlers({
+    storage: createChannelRunStorage(db),
+    guard: handlers.service,
+    resolvePrincipal: authority.resolvePrincipal,
+    feedbackEnabled: project,
+    advance: async () => {
+      throw new Error('Unexpected execution');
+    },
+    retireForAuthorityLoss: async () => 'stopped',
+  });
+  const app = express();
+  app.use(express.json());
+  app.post('/service/:channelId/claim', runs.claim);
+  return app;
+}
+async function claimView(app: express.Express) {
+  return request(app)
+    .post('/service/channel/claim')
+    .auth('private-service-token-for-feedback', { type: 'bearer' })
+    .set('x-tenant-id', tenantId)
+    .send({ owner: 'worker' });
+}
+it('decorates the real service run view using the linked principal instead of the channel creator', () =>
+  scope(async () => {
+    const creatorId = '000000000000000000000002';
+    await db.models.User.create({
+      _id: creatorId,
+      tenantId,
+      email: 'creator@example.test',
+      provider: 'local',
+    });
+    await db.models.AgentChannel.updateOne(
+      { channelId: channel.channelId },
+      { $set: { createdBy: creatorId } },
+    );
+    creatorPolicy = { ...config, interfaceConfig: { ...config.interfaceConfig, feedback: false } };
+    const response = await claimView(await runApp());
+    expect(response.status).toBe(200);
+    expect(response.body.run.feedbackEnabled).toBe(true);
+    expect(JSON.stringify(response.body)).not.toMatch(
+      /fixture-secret|fixture-public|langfuse.invalid|destinationIds|principalId|sealed/,
+    );
+    expect(
+      await db.models.ChannelRun.exists({ runId, feedbackEnabled: { $exists: true } }),
+    ).toBeNull();
+  }));
+it('rechecks live link authority after run projection policy work', () =>
+  scope(async () => {
+    const app = await runApp();
+    onProjectionRead = async () => {
+      await db.models.ChannelIdentity.updateOne({ linkId: 'link' }, { $set: { state: 'revoked' } });
+    };
+    const response = await claimView(app);
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'channel_authority_changed' });
+  }));
+
+it('hides controls on optional projection failure without exposing private diagnostics or losing the answer', () =>
+  scope(async () => {
+    const app = await runApp();
+    onProjectionRead = async () => {
+      throw new Error('private provider credential');
+    };
+    const response = await claimView(app);
+    expect(response.status).toBe(200);
+    expect(response.body.run.feedbackEnabled).toBe(false);
+    expect(response.body.run.snapshot.text).toBe('answer');
+    expect(JSON.stringify(response.body)).not.toContain('private provider credential');
   }));

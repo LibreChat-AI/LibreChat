@@ -11,9 +11,11 @@ import type { ChannelFeedbackReplySource } from './channelFeedbackSource';
 import type { ChannelFeedbackSourceState } from './channelFeedbackScope';
 import type { FeedbackCheckpoint } from './channelFeedbackCheckpoint';
 import type { DiscordCommandScope } from './discordCommands';
+import type { ChannelRunRecord } from '~/models/channelRun';
 import {
   withChannelFeedbackAuthority,
   sameFeedbackSource,
+  readChannelFeedbackSourceState,
   ChannelFeedbackAuthorityError,
 } from './channelFeedbackScope';
 import {
@@ -38,6 +40,8 @@ export {
   isLaterChannelFeedbackEvent,
 } from './channelFeedbackProtocol';
 export interface DiscordFeedbackStorage {
+  /** Metadata only, before delivery; the service checks current channel/link authority on both sides. */
+  readDiscordFeedbackRunSource(run: ChannelRunRecord): Promise<ChannelFeedbackSourceState | null>;
   /** The canonical inbox action chooses the rating and referenced run. Vote and receipt commit atomically. */
   recordDiscordFeedback(
     scope: DiscordCommandScope,
@@ -151,6 +155,62 @@ export function createChannelFeedbackStorage(
     }
     const storage: ChannelFeedbackStorage & DiscordFeedbackStorage = {
       recordDiscordFeedback,
+      async readDiscordFeedbackRunSource(run) {
+        const actor = run.admission.actor;
+        if (
+          actor.provider !== 'discord' ||
+          !run.principal.linkId ||
+          !run.principal.linkRevision ||
+          run.snapshot?.status !== 'completed' ||
+          !run.snapshot.responseId ||
+          run.execution?.protocol !== 'responses' ||
+          run.execution.responseId !== run.snapshot.responseId ||
+          !['delivering', 'delivered'].includes(run.state)
+        )
+          return null;
+        assertChannelTenant(run.tenantId);
+        const current = await mongoose.model('ChannelRun').exists({
+          tenantId: run.tenantId,
+          channelId: run.channelId,
+          agentId: run.agentId,
+          runId: run.runId,
+          state: { $in: ['delivering', 'delivered'] },
+          'principal.userId': run.principal.userId,
+          'principal.channelRevision': run.principal.channelRevision,
+          'principal.linkId': run.principal.linkId,
+          'principal.linkRevision': run.principal.linkRevision,
+          ...channelFeedbackProviderFilter(
+            {
+              ...actor,
+              tenantId: run.tenantId,
+              channelId: run.channelId,
+              channelRevision: run.principal.channelRevision,
+              agentId: run.agentId,
+            },
+            'admission.actor.',
+          ),
+          'admission.actor.externalUserId': actor.externalUserId,
+          'admission.externalChannelId': run.admission.externalChannelId,
+          'snapshot.status': 'completed',
+          'snapshot.responseId': run.snapshot.responseId,
+          'execution.protocol': 'responses',
+          'execution.responseId': run.snapshot.responseId,
+          'execution.conversationId': run.execution.conversationId,
+        });
+        if (!current) return null;
+        try {
+          const source = await readChannelFeedbackSourceState(mongoose, {
+            tenantId: run.tenantId,
+            principalId: run.principal.userId,
+            conversationId: run.execution.conversationId,
+            messageId: run.snapshot.responseId,
+          });
+          return source.expiredAt && source.expiredAt.getTime() <= Date.now() ? null : source;
+        } catch (error) {
+          if (error instanceof ChannelFeedbackAuthorityError) return null;
+          throw error;
+        }
+      },
       async deferChannelFeedbackEvent(record, retryAtMs) {
         assertChannelTenant(record.tenantId);
         if (!Number.isSafeInteger(retryAtMs) || retryAtMs < 0)
