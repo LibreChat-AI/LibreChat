@@ -16,6 +16,7 @@ const {
   createRegionalRoleCache,
   reportRoleCacheError,
   shouldSweepMemoryCaches,
+  selectExpiringMemoryStores,
 } = require('@librechat/api');
 
 /** No-op store for cache namespaces that are deliberately disabled. */
@@ -97,14 +98,8 @@ const namespaces = {
  * Gets all cache stores that have TTL configured
  * @returns {Keyv[]}
  */
-function getTTLStores() {
-  return [...Object.values(namespaces), roleCacheBase].filter(
-    (store) =>
-      store instanceof Keyv &&
-      parseInt(store.opts?.ttl ?? '0') > 0 &&
-      !store.opts?.store?.constructor?.name?.includes('Redis'), // Only include non-Redis stores
-  );
-}
+const getTTLStores = () =>
+  selectExpiringMemoryStores([...Object.values(namespaces), roleCacheBase]);
 
 /**
  * Clears entries older than the cache's TTL
