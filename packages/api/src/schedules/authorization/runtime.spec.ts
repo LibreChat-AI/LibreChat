@@ -206,13 +206,12 @@ it('does not refuse a run because its agent also has tools that are not MCP tool
 });
 
 it.each([[], ['execute_code']].map((tools) => ({ tools })))(
-  'refuses a protected run that selects no MCP tool before connecting: %s',
+  'has nothing to make ready, and connects to nothing, for a run that selects no MCP tool: %s',
   async ({ tools }) => {
     const f = await setup();
     f.setCandidates(tools);
-    await expect(f.check()).rejects.toMatchObject({
-      outcomes: [expect.objectContaining({ automaticReplay: false })],
-    });
+    // A grant may allow the agents' other tools and no MCP tool at all.
+    await expect(f.check()).resolves.toEqual([]);
     expect(f.connect).not.toHaveBeenCalled();
   },
 );

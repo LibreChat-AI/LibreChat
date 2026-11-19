@@ -108,8 +108,10 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       ...getAppConfigOptionsFromUser(user),
       failClosed: true,
     });
-    const bindings = declared(appConfig);
-    if (!bindings || !Object.keys(bindings).length) return { targets: [], tools: [] };
+    const bindings = declared(appConfig) ?? {};
+    /** No MCP server can be offered. The agents' other tools still can, where the grant covers them. */
+    const undeclared = Object.keys(bindings).length === 0;
+    if (undeclared && options.otherTools === 'ignore') return { targets: [], tools: [] };
     const [servers, { tools, candidates: candidateTools }] = await Promise.all([
       deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
       resolveScheduledMCPRequirements(
@@ -137,7 +139,7 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       }
     }
     const selected = new Map<string, Map<string, Set<string>>>();
-    for (const { name: key, agentId } of tools) {
+    for (const { name: key, agentId } of undeclared ? [] : tools) {
       if (
         !key.includes(Constants.mcp_delimiter) ||
         key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`)

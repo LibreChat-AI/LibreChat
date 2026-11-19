@@ -88,8 +88,10 @@ every server and tool at once. The grant stores them per agent (`tools`). Under 
   deadline, and a grant that was already revoked allows none. A revocation made while a run is
   under way stops its MCP calls at once and its other tools from the next run.
 
-A grant still needs at least one MCP tool: a schedule whose agents use no MCP server has
-nothing to authorize and runs as before. An API key's grant limits MCP tools only.
+A grant needs no MCP tool: a schedule whose agents use no MCP server, or none the operator
+declared, can be granted for its other tools alone. Such a grant has no consent, so every grant
+carries its own lifetime (`grantedAtMs`, `absoluteExpiresAtMs`, `revokedAtMs`); one made before
+that is read from its consents (`grantLifetime`). An API key's grant limits MCP tools only.
 
 ### A tool the owner approves call by call
 
@@ -124,9 +126,10 @@ existed. That exemption ends in two ways, and only while `mcpConsent.enabled` is
 - **The operator's deadline passes.** `interface.schedules.mcpConsent.requireAfter` is an ISO
   8601 instant with an offset, for example `2027-01-01T00:00:00Z`. Unset, there is no deadline.
 
-From then on each MCP call of that schedule is refused with `consent_missing`, at the readiness
-check and in a run, until the owner confirms in the authorization dialog. The run itself still
-starts, so a schedule that uses no MCP tools is unaffected. The consent view reports `required`,
+From then on each tool call of that schedule is refused with `consent_missing` until the owner
+confirms in the authorization dialog: an MCP call at the readiness check and where it is made,
+any other tool at the run's hook. The SDK's own controls are not refused. The run itself still
+starts and answers without its tools. The consent view reports `required`,
 or `requireAfterMs` while the deadline is still ahead.
 
 A schedule whose agent uses an MCP server the operator has not declared under

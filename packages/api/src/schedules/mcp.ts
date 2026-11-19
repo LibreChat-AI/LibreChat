@@ -242,12 +242,8 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         name.includes(Constants.mcp_delimiter) &&
         !name.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`),
     );
-    // An agent's other tools do not stop the run: the ones the grant leaves out are not loaded.
-    if (execution?.enrolled && selectedTools.length === 0) {
-      throw new ScheduleMCPError(
-        new ScheduledMCPPolicyError('binding_mismatch', '', agentId).outcomes,
-      );
-    }
+    // Nothing to make ready. A grant may allow the agents' other tools and no MCP tool at all,
+    // and the ones a grant leaves out are not loaded.
     if (selectedTools.length === 0) return [];
 
     const effectiveConfig = await loadAppConfig();

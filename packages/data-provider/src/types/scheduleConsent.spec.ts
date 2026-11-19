@@ -1,4 +1,5 @@
 import {
+  grantLifetime,
   MAX_SCHEDULED_MCP_SERVER_TOOLS,
   agentKeyMCPIdentitySchema,
   confirmScheduleMCPConsentSchema,
@@ -296,6 +297,49 @@ it("takes the owner's choice of tools that are not MCP tools, and stores it per 
   expect(stored([{ agentId: 'root', tools: ['execute_code'] }])).toBe(true);
   expect(stored([{ agentId: 'root', tools: [] }])).toBe(false);
   expect(stored(['execute_code'])).toBe(false);
+});
+
+it('takes a grant for other tools only, with a lifetime of its own', () => {
+  const confirm = (allow: Record<string, string[]>, tools?: string[]) =>
+    confirmScheduleMCPConsentSchema.safeParse({
+      offerDigest: 'a'.repeat(64),
+      expectedRevision: null,
+      lifetimeHours: 1,
+      allow,
+      ...(tools && { tools }),
+    }).success;
+  // Something must be allowed, of either kind.
+  expect(confirm({}, ['web_search'])).toBe(true);
+  expect(confirm({ warehouse: [] }, ['web_search'])).toBe(true);
+  expect(confirm({})).toBe(false);
+  expect(confirm({ warehouse: [] }, [])).toBe(false);
+
+  const stored = (fields: Record<string, unknown>) =>
+    scheduledMCPEnrollmentSchema.safeParse({
+      version: 1,
+      revision: 'grant-1',
+      scheduleRevision: 0,
+      consents: [],
+      ...fields,
+    }).success;
+  const tools = [{ agentId: 'root', tools: ['web_search'] }];
+  expect(stored({ tools, grantedAtMs: 1, absoluteExpiresAtMs: 2, revokedAtMs: null })).toBe(true);
+  // Neither an MCP server nor a tool, or no deadline anywhere: not a grant.
+  expect(stored({ grantedAtMs: 1, absoluteExpiresAtMs: 2 })).toBe(false);
+  expect(stored({ tools })).toBe(false);
+  expect(grantLifetime({ consents: [], absoluteExpiresAtMs: 2, revokedAtMs: 1 })).toEqual({
+    expiresAtMs: 2,
+    revoked: true,
+  });
+  // A grant made before the lifetime was stored on it is read from its consents.
+  expect(
+    grantLifetime({
+      consents: [
+        { absoluteExpiresAtMs: 9, revokedAtMs: null },
+        { absoluteExpiresAtMs: 5, revokedAtMs: null },
+      ],
+    }),
+  ).toEqual({ expiresAtMs: 5, revoked: false });
 });
 
 it('accepts a server the owner left with no tools beside one with a choice', () => {

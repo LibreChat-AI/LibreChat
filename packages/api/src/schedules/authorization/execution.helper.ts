@@ -164,6 +164,7 @@ export async function executionFixture(
       return true;
     }),
     revokeScheduleMCPConsent: jest.fn(async () => {
+      if (snapshot.enrollment) snapshot.enrollment.revokedAtMs = time;
       for (const consent of snapshot.enrollment?.consents ?? []) consent.revokedAtMs = time;
       return true;
     }),

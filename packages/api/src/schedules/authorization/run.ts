@@ -196,8 +196,21 @@ export function createScheduledMCPRunPolicy(
           input.executingAgentId,
         );
       }
-      if (!execution.enrolled || !denied(input)) return;
-      return new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId);
+      if (execution.enrolled)
+        return denied(input)
+          ? new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId)
+          : undefined;
+      // No grant. Once one is required the run may use none of its tools: an MCP call is
+      // refused where it is made, and any other tool here, with the same reason.
+      let held: boolean;
+      try {
+        held = denied(input) && (await execution.needsGrant());
+      } catch {
+        return new ScheduledMCPPolicyError('dependency_unavailable', '', input.executingAgentId);
+      }
+      return held
+        ? new ScheduledMCPPolicyError('consent_missing', '', input.executingAgentId)
+        : undefined;
     })();
     decisions.set(input, evaluated);
     return evaluated;

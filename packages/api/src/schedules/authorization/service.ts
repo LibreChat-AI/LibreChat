@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { scheduledMCPTargetSchema } from 'librechat-data-provider';
+import { grantLifetime, scheduledMCPTargetSchema } from 'librechat-data-provider';
 import type {
   MCPGrantConsent,
   MCPGrantIdentity,
@@ -162,8 +162,8 @@ function selectAllowed(
       policyRevision: getScheduledMCPPolicyRevision(permittedTools),
     });
   }
-  if (chosen.length === 0) throw new ScheduleMCPConsentError('consent_invalid');
-  return canonicalTargets(chosen);
+  // No MCP tool chosen: the grant may still allow the agents' other tools.
+  return chosen.length > 0 ? canonicalTargets(chosen) : [];
 }
 
 /**
@@ -353,12 +353,11 @@ export function createScheduleMCPConsentService<
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
     if (snapshot.agentId !== identity.agentId) throw new ScheduleMCPConsentError('consent_changed');
     const enrollment = snapshot.enrollment;
-    const expiresAtMs = enrollment
-      ? Math.min(...enrollment.consents.map((c) => c.absoluteExpiresAtMs))
-      : null;
+    const lifetime = enrollment ? grantLifetime(enrollment) : null;
+    const expiresAtMs = lifetime ? lifetime.expiresAtMs : null;
     let state: ScheduleMCPConsentView['state'] = 'active';
     if (!enrollment) state = 'missing';
-    else if (enrollment.consents.some((c) => c.revokedAtMs != null)) state = 'revoked';
+    else if (lifetime!.revoked) state = 'revoked';
     else if (expiresAtMs! <= now()) state = 'expired';
     else if (
       enrollment.scheduleRevision !== snapshot.configRevision ||
@@ -422,7 +421,8 @@ export function createScheduleMCPConsentService<
           offer: null,
         };
       }
-      if (resolved.length === 0)
+      // Nothing the owner could allow: no MCP tool on a declared server, and no other tool.
+      if (resolved.length === 0 && offeredOther.length === 0)
         return {
           state: enrollment ? 'changed' : 'unsupported',
           revision: enrollment?.revision ?? null,
@@ -437,7 +437,7 @@ export function createScheduleMCPConsentService<
           requireAfterMs,
           offer: null,
         };
-      targets = canonicalTargets(resolved);
+      targets = resolved.length > 0 ? canonicalTargets(resolved) : [];
       const digest = offerDigest(
         identity,
         snapshot.configRevision,
@@ -498,6 +498,9 @@ export function createScheduleMCPConsentService<
     if (digest !== input.offerDigest) throw new ScheduleMCPConsentError('consent_changed');
     const chosen = selectAllowed(current.targets, input.allow);
     const others = selectTools(offered, input.tools, snapshot.enrollment?.tools);
+    // A grant allows something: an MCP tool, or one of the agents' other tools.
+    if (chosen.length === 0 && others.length === 0)
+      throw new ScheduleMCPConsentError('consent_invalid');
     const stored = askingTools(snapshot.enrollment?.consents ?? []);
     const asking = selectAsking(chosen, input.ask, stored);
     // A tool nobody can approve would only ever be refused. Say so now, not at 3 a.m. One the
@@ -536,6 +539,10 @@ export function createScheduleMCPConsentService<
         }),
       })),
       ...(others.length > 0 && { tools: others }),
+      // The grant's own lifetime: one that allows no MCP server has no consent to carry it.
+      grantedAtMs,
+      absoluteExpiresAtMs: grantedAtMs + input.lifetimeHours * 3_600_000,
+      revokedAtMs: null,
     };
     const committed = await deps.storage.confirmScheduleMCPConsent({
       identity,

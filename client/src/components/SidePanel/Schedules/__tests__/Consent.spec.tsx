@@ -304,6 +304,26 @@ it("lists each of the agent's other tools as its own item, and sends the ones th
     ),
   );
 });
+it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [],
+    tools: { offered: ['execute_code', 'web_search'], allowed: [] },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  const confirm = await screen.findByRole('button', { name: 'com_ui_schedule_consent_confirm' });
+  expect(confirm).toBeDisabled();
+  await userEvent.click(screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' }));
+  expect(confirm).toBeEnabled();
+  await userEvent.click(confirm);
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ allow: {}, tools: ['web_search'] }),
+    ),
+  );
+});
 it('allows every server, tool and other tool in one click', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,
