@@ -1,10 +1,24 @@
+import { renderHook } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
-import type { TPreset, TModelSpec } from 'librechat-data-provider';
+import type { TPreset, TModelSpec, TConversation, TEndpointsConfig } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
-import { mentionEndpoint } from '../useSelectMention';
+import useSelectMention, { mentionEndpoint } from '../useSelectMention';
 
-jest.mock('~/hooks', () => ({ useDefaultConvo: jest.fn() }));
-jest.mock('~/store', () => ({ __esModule: true, default: {} }));
+let mockStoredModularChat = true;
+jest.mock('recoil', () => ({
+  useRecoilValue: (key: string) => (key === 'modularChat' ? mockStoredModularChat : []),
+}));
+jest.mock('react-router-dom', () => ({ useSearchParams: () => [new URLSearchParams()] }));
+jest.mock('~/hooks', () => ({
+  useDefaultConvo:
+    () =>
+    ({ conversation }: { conversation: Partial<TConversation> }) =>
+      conversation,
+}));
+jest.mock('~/store', () => ({
+  __esModule: true,
+  default: { modularChat: 'modularChat', availableTools: 'availableTools' },
+}));
 
 const option = (type: string, value: string): MentionOption =>
   ({ type, value, label: value }) as MentionOption;
@@ -35,5 +49,45 @@ describe('mentionEndpoint', () => {
   it('reads an agent and an assistant from the endpoint the option is listed under', () => {
     expect(from(EModelEndpoint.agents, 'agent_1')).toBe(EModelEndpoint.agents);
     expect(from(EModelEndpoint.assistants, 'asst_1')).toBe(EModelEndpoint.assistants);
+  });
+});
+
+describe('useSelectMention', () => {
+  const open = { conversationId: 'c-1', endpoint: EModelEndpoint.openAI } as TConversation;
+  const endpointsConfig = {
+    [EModelEndpoint.openAI]: { order: 0 },
+    [EModelEndpoint.google]: { order: 1 },
+  } as TEndpointsConfig;
+  /** Picks another endpoint, and says which conversation the pick was handed to. */
+  const pick = (modularChat?: boolean): string | null | undefined => {
+    const newConversation = jest.fn();
+    const { result } = renderHook(() =>
+      useSelectMention({
+        modularChat,
+        modelSpecs: [],
+        endpointsConfig,
+        newConversation,
+        getConversation: () => open,
+      }),
+    );
+    result.current.onSelectMention?.(option('endpoint', EModelEndpoint.google));
+    return newConversation.mock.calls[0][0].template.conversationId;
+  };
+  afterEach(() => {
+    mockStoredModularChat = true;
+  });
+
+  it('follows the preference it is handed over the one the app has stored', () => {
+    mockStoredModularChat = true;
+    expect(pick(false)).toBe('new');
+    mockStoredModularChat = false;
+    expect(pick(true)).toBe('c-1');
+  });
+
+  it('reads the app’s own preference when it is handed none', () => {
+    mockStoredModularChat = true;
+    expect(pick()).toBe('c-1');
+    mockStoredModularChat = false;
+    expect(pick()).toBe('new');
   });
 });

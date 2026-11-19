@@ -82,6 +82,7 @@ function ChatViewPane({
   const { saveDrafts } = useChatSettings();
   const enterToSend = useRecoilValue(store.enterToSend);
   const autoSendText = useRecoilValue(store.autoSendText);
+  const modularChat = useRecoilValue(store.modularChat);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const pendingAction = useAtomValue(
@@ -111,8 +112,8 @@ function ChatViewPane({
     defaultValues: { text: '' },
   });
   const composerPreferences = useMemo(
-    () => ({ enterToSend, autoSendText, speechSettingsInitialized }),
-    [enterToSend, autoSendText, speechSettingsInitialized],
+    () => ({ enterToSend, autoSendText, speechSettingsInitialized, modularChat }),
+    [enterToSend, autoSendText, speechSettingsInitialized, modularChat],
   );
 
   const fileMap = useFileMapContext();

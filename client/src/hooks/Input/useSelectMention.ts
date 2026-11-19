@@ -44,6 +44,7 @@ export function mentionEndpoint(
 export default function useSelectMention({
   presets,
   modelSpecs,
+  modularChat: given,
   assistantsMap,
   returnHandlers,
   endpointsConfig,
@@ -52,6 +53,11 @@ export default function useSelectMention({
 }: {
   presets?: TPreset[];
   modelSpecs: TModelSpec[];
+  /**
+   * The reader's Modular Chat preference, from a caller that was handed it. A caller that was
+   * not leaves it out, and the app's own setting is read.
+   */
+  modularChat?: boolean;
   returnHandlers?: boolean;
   assistantsMap?: TAssistantsMap;
   newConversation: ConvoGenerator;
@@ -59,7 +65,8 @@ export default function useSelectMention({
   getConversation: () => TConversation | null;
 }) {
   const getDefaultConversation = useDefaultConvo();
-  const modularChat = useRecoilValue(store.modularChat);
+  const stored = useRecoilValue(store.modularChat);
+  const modularChat = given ?? stored;
   const availableTools = useRecoilValue(store.availableTools);
   const [searchParams] = useSearchParams();
   /**

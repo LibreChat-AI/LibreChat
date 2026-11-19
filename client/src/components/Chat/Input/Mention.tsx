@@ -4,11 +4,11 @@ import { MentionPopover } from '@librechat/chat/components';
 import type { RecoilState } from 'recoil';
 import type { ConvoGenerator } from '~/common';
 import useSelectMention, { mentionEndpoint } from '~/hooks/Input/useSelectMention';
+import { useComposerPreferences } from '~/Providers/ComposerPreferencesContext';
 import { useGetConversation, useLocalize, TranslationKeys } from '~/hooks';
 import { getConvoSwitchLogic, switchesInPlace } from '~/utils';
 import { useAssistantsMapContext } from '~/Providers';
 import useMentions from '~/hooks/Input/useMentions';
-import store from '~/store';
 
 type MentionProps = {
   index: number;
@@ -37,7 +37,8 @@ function MentionContent({
 }: MentionProps) {
   const localize = useLocalize();
   const getConversation = useGetConversation(index);
-  const modularChat = useRecoilValue(store.modularChat);
+  /** The reader's preference as the chat view handed it down, for the list and the pick alike. */
+  const { modularChat } = useComposerPreferences();
   const assistantsMap = useAssistantsMapContext();
   const setShowPopover = useSetRecoilState(popoverAtom);
   const {
@@ -54,6 +55,7 @@ function MentionContent({
     presets,
     modelSpecs,
     assistantsMap,
+    modularChat,
     endpointsConfig,
     getConversation,
     newConversation,
