@@ -1118,6 +1118,29 @@ describe('a selection of every tool on a declared server, in a grant that lists 
     );
   });
 
+  it('keeps the pins of the tools used under it through a renewal, until their change is acknowledged', async () => {
+    const s = setup();
+    s.changeTarget(every);
+    await s.enroll({ warehouse: [marker] });
+    await s.service.authority.authorize(call('query'), {});
+    const pinned = () => s.snapshot.enrollment!.consents[0];
+    expect(pinned().definitions).toEqual([{ tool: 'query', digest: 'a'.repeat(64) }]);
+    // Renewed as it is: the tool is not named in the grant, and its pin is still kept.
+    await s.enroll({ warehouse: [marker] });
+    expect(pinned().definitions).toEqual([{ tool: 'query', digest: 'a'.repeat(64) }]);
+    const changed = call('query', 'root', 'b'.repeat(64));
+    expect(await s.service.authority.authorize(changed, {})).toMatchObject(
+      refused('binding_mismatch'),
+    );
+    expect((await s.service.view(identity)).changed).toEqual({ warehouse: ['query'] });
+    // Confirming again with the change in view is allowing the new definition.
+    await s.enroll({ warehouse: [marker] });
+    expect(pinned()).not.toHaveProperty('definitions');
+    expect(await s.service.authority.authorize(changed, {})).toMatchObject({
+      state: 'authorized',
+    });
+  });
+
   it('cannot be asked about: it names no tool to pause for', async () => {
     const s = setup();
     s.changeTarget(every);

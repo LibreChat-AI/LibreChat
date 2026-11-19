@@ -334,8 +334,12 @@ function carriedPins(
   if (!prior?.definitions || !sameResource(prior.resource, target.resource)) return {};
   const allowed = new Set(target.permittedTools.flatMap((selection) => selection.tools));
   const marked = new Set(prior.changedTools);
+  // A grant of the whole server keeps the pin of every tool used under it: the tool is not
+  // named, but it is still allowed, and its pin is what refuses it once it changes. A tool
+  // marked as changed loses its pin either way: confirming again is allowing the new one.
+  const every = allowed.has(Constants.mcp_all);
   const definitions = prior.definitions.filter(
-    (pin) => allowed.has(pin.tool) && !marked.has(pin.tool),
+    (pin) => (every || allowed.has(pin.tool)) && !marked.has(pin.tool),
   );
   return definitions.length ? { definitions } : {};
 }

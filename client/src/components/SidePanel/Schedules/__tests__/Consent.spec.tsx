@@ -557,6 +557,41 @@ it('offers a selection of a whole server as its own item, apart from ticking eac
   );
 });
 
+it('unticks the whole-server item and names the tools that changed under it', async () => {
+  const stored: ScheduleMCPConsentView = {
+    ...view,
+    state: 'changed',
+    revision: 'grant',
+    targets: [
+      {
+        ...view.targets[0],
+        permittedTools: [{ agentId: 'root', tools: ['query', 'sys__all__sys'] }],
+      },
+    ],
+    // `export` was used under the whole server and has changed. It is not listed by name.
+    allowed: { warehouse: ['query', 'sys__all__sys'] },
+    changed: { warehouse: ['export'] },
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(stored);
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(stored);
+  display();
+  const every = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_server_every',
+  });
+  // Allowing the new definition is a decision, made with the warning in view.
+  expect(every).not.toBeChecked();
+  expect(every).toHaveAccessibleDescription('com_ui_schedule_consent_server_changed');
+  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  await userEvent.click(every);
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ allow: { warehouse: ['query', 'sys__all__sys'] } }),
+    ),
+  );
+});
+
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

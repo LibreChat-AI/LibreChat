@@ -298,10 +298,12 @@ export function createScheduleMCPExecution<
           spellings(tool).forEach((key) => askingAny.add(key));
       for (const { agentId, tools } of consent.permittedTools) {
         const keys = asking.get(agentId) ?? new Set<string>();
-        for (const tool of tools) {
-          if (!consent.askTools?.includes(tool)) continue;
-          for (const key of spellings(tool)) keys.add(key);
-        }
+        // An agent granted the whole server has every tool there, so every tool the consent
+        // asks about is asked about for it too, named for it or not.
+        const asked = tools.includes(Constants.mcp_all)
+          ? (consent.askTools ?? [])
+          : tools.filter((tool) => consent.askTools?.includes(tool));
+        for (const tool of asked) for (const key of spellings(tool)) keys.add(key);
         if (keys.size > 0) asking.set(agentId, keys);
       }
     }

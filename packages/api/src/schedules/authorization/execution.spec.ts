@@ -764,6 +764,27 @@ describe('the tools a run loads under a grant', () => {
     expect(named.execution.grants('root', 'warehouse', 'export')).toBe(false);
   });
 
+  it('pauses an agent granted the whole server for a tool the owner approves each time', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['sys__all__sys'],
+      allow: ['query', 'sys__all__sys'],
+      ask: ['query'],
+    });
+    // The root has the whole server and names no tool. The child names the tool asked about.
+    for (const consent of fixture.snapshot.enrollment!.consents)
+      consent.permittedTools = [
+        { agentId: 'child', tools: ['query'] },
+        { agentId: 'root', tools: ['sys__all__sys'] },
+      ];
+    const execution = (await fixture.factory.resolve(fixture.identity, 'invoke'))!;
+    expect(execution.asksAbout('child', 'query_mcp_warehouse')).toBe(true);
+    // The root can call it through the whole server, so it is asked about for the root too.
+    expect(execution.asksAbout('root', 'query_mcp_warehouse')).toBe(true);
+    expect(execution.asksAbout('root', 'export_mcp_warehouse')).toBe(false);
+    // An agent the grant holds nothing for is not asked: it cannot call it at all.
+    expect(execution.asksAbout('stranger', 'query_mcp_warehouse')).toBe(false);
+  });
+
   it('loads none of the other tools when the owner allowed none', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, {
       tools: ['execute_code', 'web_search'],

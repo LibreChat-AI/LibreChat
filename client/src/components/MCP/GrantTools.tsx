@@ -53,6 +53,27 @@ function offeredTools(target: ScheduledMCPTarget): string[] {
 }
 
 /**
+ * Changed tools the offer does not list by name: used under a grant of the whole server,
+ * which is the only item that covers them. Their change is the whole-server item's to
+ * acknowledge.
+ */
+function unlisted(offered: readonly string[], changed: readonly string[]): string[] {
+  return changed.filter((tool) => !offered.includes(tool));
+}
+
+/** Whether a ticked item survives the marks: its own, or for the whole server, any it covers. */
+function unmarked(
+  tool: string,
+  offered: readonly string[],
+  marked: readonly string[],
+  seen: readonly string[] = [],
+): boolean {
+  const every: string = Constants.mcp_all;
+  if (tool !== every) return !marked.includes(tool) || seen.includes(tool);
+  return unlisted(offered, marked).every((name) => seen.includes(name));
+}
+
+/**
  * The owner's starting point: what the stored grant already allows and is still on offer.
  * A tool whose definition changed starts unticked, so allowing the new one is a decision.
  */
@@ -64,7 +85,7 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
       const changed = data.changed[target.resource.serverName] ?? [];
       return [
         target.resource.serverName,
-        offered.filter((tool) => allowed.includes(tool) && !changed.includes(tool)),
+        offered.filter((tool) => allowed.includes(tool) && unmarked(tool, offered, changed)),
       ];
     }),
   );
@@ -102,7 +123,7 @@ function currentChoice(
       return [
         serverName,
         (edited.choice[serverName] ?? initial[serverName]).filter(
-          (tool) => offered.includes(tool) && (!marked.includes(tool) || seen.includes(tool)),
+          (tool) => offered.includes(tool) && unmarked(tool, offered, marked, seen),
         ),
       ];
     }),
@@ -544,6 +565,10 @@ function ToolChoice({
   const named = offered.filter((tool) => tool !== every);
   const items = [...offered.filter((tool) => tool === every), ...named];
   const kept = chosen.filter((tool) => tool === every);
+  /** Changed tools only the whole-server item covers: named beside it, as its warning. */
+  const covered = unlisted(offered, changed);
+  const warns = (tool: string): boolean =>
+    tool === every ? covered.length > 0 : changed.includes(tool);
   /** Checked only when every tool is: the shared box has no partly-selected appearance. */
   const all = named.length > 0 && named.every((tool) => chosen.includes(tool));
   return (
@@ -571,7 +596,7 @@ function ToolChoice({
                 checked={chosen.includes(tool)}
                 disabled={disabled}
                 aria-labelledby={`${groupId}-${tool}-label`}
-                aria-describedby={changed.includes(tool) ? `${groupId}-${tool}-changed` : undefined}
+                aria-describedby={warns(tool) ? `${groupId}-${tool}-changed` : undefined}
                 onCheckedChange={(checked) =>
                   onChange(
                     checked === true
@@ -611,9 +636,13 @@ function ToolChoice({
                 </span>
               )}
             </div>
-            {changed.includes(tool) && (
+            {warns(tool) && (
               <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
-                {localize('com_ui_schedule_consent_tool_changed')}
+                {tool === every
+                  ? localize('com_ui_schedule_consent_server_changed', {
+                      tools: covered.join(', '),
+                    })
+                  : localize('com_ui_schedule_consent_tool_changed')}
               </p>
             )}
           </li>
