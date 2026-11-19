@@ -316,6 +316,48 @@ describe('getAttachmentOwnership', () => {
   });
 });
 
+describe('product tool privacy at dispatch', () => {
+  it.each([
+    ['lookup_mcp_private_server', true, 'mcp'],
+    ['lookup_action_private_server', false, 'action'],
+    ['lookup_private_server', false, 'custom'],
+    ['web_search', true, 'mcp'],
+    ['file_search', false, 'builtin'],
+  ] as const)(
+    'classifies the loaded %s tool without exporting custom names',
+    async (name, mcp, category) => {
+      const productTracker = jest.fn();
+      const loaded = Object.assign(
+        tool(async () => 'private result', {
+          name,
+          description: 'Private description',
+          schema: { type: 'object', properties: {} },
+        }),
+        { mcp },
+      );
+      const handler = createToolExecuteHandler({
+        loadTools: async () => ({ loadedTools: [loaded] }),
+      });
+      const results = await invokeHandlerWithConfig(handler, [{ id: 'call', name, args: {} }], {
+        req: { user: { id: 'user' }, body: {}, productTracking: { enabled: true }, productTracker },
+      });
+      expect(results[0].content).toContain('private result');
+      expect(productTracker).toHaveBeenCalledTimes(2);
+      expect(productTracker.mock.calls[0][0]).toMatchObject({
+        toolCategory: category,
+        toolCallId: 'call',
+        mode: 'foreground',
+      });
+      if (category === 'builtin') {
+        expect(productTracker.mock.calls[0][0]).toHaveProperty('toolName', 'file_search');
+      } else {
+        expect(productTracker.mock.calls[0][0]).not.toHaveProperty('toolName');
+      }
+      expect(JSON.stringify(productTracker.mock.calls)).not.toContain('private');
+    },
+  );
+});
+
 describe('createToolExecuteHandler', () => {
   describe('code execution session context passthrough', () => {
     it('passes session_id and _injected_files from codeSessionContext to toolCallConfig', async () => {

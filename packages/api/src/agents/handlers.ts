@@ -150,6 +150,7 @@ import {
   INTENT_ARG,
 } from './intent';
 import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
+import { getProductToolIdentity, getProductBuiltinToolIdentity } from '~/tracking/tools';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
 import { SteerToolInterrupt, interruptedToolResult } from './steering/tools';
@@ -159,9 +160,9 @@ import { toolValidationFeedback } from './validationFeedback';
 import { explainWorkspacePathRejection } from '~/code/paths';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
-import { observeToolExecution } from '~/telemetry/tools';
 import { applyHostTextEdits } from './files/processing';
 import { deleteSkillWithRetry } from '~/skills/cleanup';
+import { createProductToolObserver } from './product';
 import { resolveDownloadPath } from '~/storage/path';
 import { parseFrontmatter } from '../skills/import';
 import { HostEditError } from './files/matching';
@@ -5892,6 +5893,13 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
             }
             if (mergedConfigurable != null) mergedConfigurable.executionContext = executionContext;
             const telemetryReq = mergedConfigurable?.req as ServerRequest | undefined;
+            const observeToolExecution = createProductToolObserver(telemetryReq, (name) =>
+              getProductToolIdentity(toolMap.get(name)),
+            );
+            const observeBuiltinToolExecution = createProductToolObserver(
+              telemetryReq,
+              getProductBuiltinToolIdentity,
+            );
             const telemetryAncestry =
               executionContext?.ancestry[executionContext.ancestry.length - 1];
             const telemetryConversationId = metadata?.thread_id ?? mergedConfigurable?.thread_id;
@@ -7094,7 +7102,7 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                     return reportResult(interruptedToolResult(tc.id));
                   }
                   onResultAdmissionStart?.(tc.id);
-                  const pollContent = await observeToolExecution(
+                  const pollContent = await observeBuiltinToolExecution(
                     toolTelemetryIdentity(tc, 'foreground'),
                     () =>
                       runCheckBackgroundTask({
@@ -7398,7 +7406,7 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                     }
                     let handlerResult: ToolExecuteResult;
                     try {
-                      handlerResult = await observeToolExecution(
+                      handlerResult = await observeBuiltinToolExecution(
                         toolTelemetryIdentity(tc, 'foreground'),
                         async () => {
                           if (tc.name === Constants.SKILL_TOOL) {
@@ -7725,6 +7733,9 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                           toolMap: eligiblePtcToolMap,
                           toolCallId: tc.id,
                           telemetry: toolTelemetryIdentity(tc, 'programmatic'),
+                          observe: createProductToolObserver(ptcReq, (name) =>
+                            getProductToolIdentity(eligiblePtcToolMap.get(name)),
+                          ),
                           signal: runSignal,
                           runId: (metadata as Record<string, unknown>)?.run_id as
                             | string

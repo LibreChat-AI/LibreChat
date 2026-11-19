@@ -94,7 +94,7 @@ describe('chat fact privacy', () => {
     },
   );
 
-  it('applies the same normalization to browser submissions', () => {
+  it('applies the same normalization to browser submissions and agent lifecycle facts', () => {
     const privateContext = {
       agentId: 'private__model___Sender',
       model: 'private-model',
@@ -108,5 +108,48 @@ describe('chat fact privacy', () => {
       ...privateContext,
     });
     expect(parsed).toMatchObject({ model: 'custom', provider: 'custom', agentId: undefined });
+    const invoked = server.parse({
+      name: 'librechat.chat.agent.invoked',
+      feature: 'chat',
+      runId: 'run',
+      agentInvocationId: 'invocation',
+      ...privateContext,
+    });
+    expect(invoked).toMatchObject({ agentId: undefined, agentInvocationId: 'invocation' });
+  });
+
+  it('retains tool call correlation but rejects custom names and payloads', () => {
+    const fact = {
+      name: 'librechat.chat.tool.finished',
+      feature: 'chat',
+      toolCallId: 'outer:0',
+      parentToolCallId: 'outer',
+      mode: 'programmatic',
+      outcome: 'completed',
+      durationMs: 5,
+    };
+    for (const toolCategory of ['mcp', 'action', 'custom']) {
+      expect(server.parse({ ...fact, toolCategory })).toMatchObject({
+        toolCallId: 'outer:0',
+        parentToolCallId: 'outer',
+        toolCategory,
+      });
+      expect(server.safeParse({ ...fact, toolCategory, toolName: 'read_file' }).success).toBe(
+        false,
+      );
+    }
+    expect(server.parse({ ...fact, toolCategory: 'builtin', toolName: 'read_file' })).toMatchObject(
+      { toolName: 'read_file' },
+    );
+    expect(
+      server.safeParse({ ...fact, toolCategory: 'builtin', toolName: 'private-tool' }).success,
+    ).toBe(false);
+    expect(server.safeParse({ ...fact, toolCategory: 'builtin' }).success).toBe(false);
+    expect(
+      server.safeParse({ ...fact, toolCategory: 'custom', arguments: { secret: true } }).success,
+    ).toBe(false);
+    expect(server.safeParse({ ...fact, toolCategory: 'custom', result: 'private' }).success).toBe(
+      false,
+    );
   });
 });
