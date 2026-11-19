@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { isDocumentSupportedProvider, isOpenAILikeProvider } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, AudioResult } from '~/types';
@@ -11,6 +12,7 @@ import {
   isConfiguredProviderMediaType,
 } from './utils';
 import { configuredRequestBudget } from '~/utils/timeouts';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { validateAudio } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
 
@@ -57,7 +59,7 @@ export async function encodeAndFormatAudios(
       if (skipMissingAttachment(settledResult.reason, files[index], onMissingFile)) {
         continue;
       }
-      console.error('Audio processing failed:', settledResult.reason);
+      logger.error('Audio processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 

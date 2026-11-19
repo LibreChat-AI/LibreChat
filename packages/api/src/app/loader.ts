@@ -38,7 +38,8 @@ export interface CustomConfigLoaderOptions {
   defaultConfigPath: string;
   loadLocal: (configPath: string) => unknown;
   fetchRemote?: (configPath: string) => Promise<unknown>;
-  redactConfig: (config: TCustomConfig) => TCustomConfig;
+  /** @deprecated Configuration values are no longer logged. */
+  redactConfig?: (config: TCustomConfig) => TCustomConfig;
   /** Runs after each successful load, at startup and on reload, before the config is returned. */
   onLoad?: (loaded: LoadedCustomConfig) => void;
 }
@@ -221,7 +222,6 @@ function isFetchTimeout(error: unknown): boolean {
 export function createCustomConfigLoader({
   defaultConfigPath,
   loadLocal,
-  redactConfig,
   onLoad,
   fetchRemote = async (configPath: string): Promise<unknown> =>
     (await axios.get(configPath, serviceRequestBudget())).data,
@@ -418,10 +418,7 @@ export function createCustomConfigLoader({
       }
 
       if (printConfig) {
-        const loggableConfig = redactConfig(customConfig);
-        logger.info('Custom config file loaded:');
-        logger.info(JSON.stringify(loggableConfig, null, 2));
-        logger.debug('Custom config:', loggableConfig);
+        logger.info(`Custom config file loaded (digest: ${digest})`);
       }
 
       onLoad?.({ config: customConfig, digest });

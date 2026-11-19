@@ -438,6 +438,97 @@ describe('createCustomConfigLoader onLoad', () => {
   });
 });
 
+describe('createCustomConfigLoader safe success logging', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+  const secret = 'opaque-config-credential-canary';
+  const text = `
+version: 1.3.19
+endpoints:
+  custom:
+    - name: Gateway
+      apiKey: ${secret}-provider
+      baseURL: https://provider.example/v1
+      headers:
+        X-Custom-Credential: ${secret}-header
+      models:
+        default: [permitted]
+        fetch: false
+mcpServers:
+  local:
+    command: node
+    args: [server.js, --api-token, ${secret}-argument]
+    env:
+      CUSTOM_CREDENTIAL: ${secret}-environment
+`;
+
+  beforeEach(() => {
+    process.env.CONFIG_PATH = '/virtual/librechat.yaml';
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+    jest.spyOn(logger, 'debug').mockImplementation(() => logger);
+    jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) delete process.env.CONFIG_PATH;
+    else process.env.CONFIG_PATH = originalConfigPath;
+  });
+
+  it.each(['startup', 'reload'] as const)(
+    'logs only the digest on %s without changing runtime secrets',
+    async (mode) => {
+      const onLoad = jest.fn();
+      const redactConfig = jest.fn((value: TCustomConfig) => value);
+      const load = createCustomConfigLoader({
+        defaultConfigPath: '/virtual/librechat.yaml',
+        loadLocal: () => text,
+        redactConfig,
+        onLoad,
+      });
+
+      const config = await load(true, { mode });
+
+      expect(config?.endpoints?.custom?.[0]).toMatchObject({
+        apiKey: `${secret}-provider`,
+        headers: { 'X-Custom-Credential': `${secret}-header` },
+      });
+      expect(config?.mcpServers?.local).toMatchObject({
+        args: ['server.js', '--api-token', `${secret}-argument`],
+        env: { CUSTOM_CREDENTIAL: `${secret}-environment` },
+      });
+      expect(onLoad).toHaveBeenCalledWith({
+        config,
+        digest: expect.stringMatching(/^[a-f0-9]{12}$/),
+      });
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(
+        `Custom config file loaded (digest: ${onLoad.mock.calls[0][0].digest})`,
+      );
+      expect(logger.debug).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(redactConfig).not.toHaveBeenCalled();
+      const logs = [logger.info, logger.debug, logger.warn, logger.error].map(
+        (log) => jest.mocked(log).mock.calls,
+      );
+      expect(JSON.stringify(logs)).not.toContain(secret);
+    },
+  );
+
+  it('keeps explicit quiet loading silent', async () => {
+    const load = createCustomConfigLoader({
+      defaultConfigPath: '/virtual/librechat.yaml',
+      loadLocal: () => text,
+    });
+
+    await load(false);
+
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.debug).not.toHaveBeenCalled();
+  });
+});
+
 describe('hashCustomConfig', () => {
   it('ignores key order and keeps array order', () => {
     expect(hashCustomConfig({ a: 1, b: { c: 2, d: [1, 2] } })).toBe(

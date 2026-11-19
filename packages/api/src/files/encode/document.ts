@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import {
   isOpenAILikeProvider,
   isBedrockDocumentType,
@@ -31,6 +32,7 @@ import {
 import { validatePdf, validateBedrockDocument, getBedrockDocumentLimit } from '~/files/validation';
 import { configuredRequestBudget } from '~/utils/timeouts';
 import { someReachableAgent } from '~/agents/traversal';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
@@ -397,7 +399,7 @@ export async function encodeAndFormatDocuments(
       if (skipMissingAttachment(settledResult.reason, processableFiles[index], onMissingFile)) {
         continue;
       }
-      console.error('Document processing failed:', settledResult.reason);
+      logger.error('Document processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 
