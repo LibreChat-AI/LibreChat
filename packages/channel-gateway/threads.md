@@ -9,3 +9,21 @@ Public and private threads require `VIEW_CHANNEL`, `READ_MESSAGE_HISTORY` and `S
 `channels.discord.gateway.maxThreadRoutes` bounds retained mappings per application, including retired opaque pins. The default is 10,000 and the maximum is 100,000. Private mapping data is erased before its parent disappears. The remaining pin retains only the application ID, thread ID and a fingerprint, preventing cleanup from silently selecting a different agent later. Increase the configured cap when necessary; deleting private rows does not remove a thread's original pin.
 
 Official permission and membership contracts: [Threads](https://docs.discord.com/developers/topics/threads#permissions) and [Get Thread Member](https://docs.discord.com/developers/resources/channel#get-thread-member).
+
+## Interaction preflight protocol
+
+An interaction's partial channel object does not guarantee the parent channel ID. An
+unresolved inbox record therefore retains only the signed physical source and the
+current application and guild installation revisions. It has `routing: inspection`
+and no internal channel, agent, or fabricated parent destination.
+
+Inspection claims return the inbox fence, expiration, application revision, and real
+guild/channel/actor IDs. They do not expose the interaction token or prompt. The same
+inbox lease, capacity bounds, expiration and opaque erasure receipts apply. Unresolved
+records cannot authorize command effects or prepare a reply.
+
+The submission fallback and inspection resolver are intentionally not enabled in this
+protocol slice. A worker without the owned inspection adapter terminates such a claim
+as unavailable. Thread routing will be enabled only with owner-fenced source inspection
+and atomic canonical mapping resolution. Existing guild text submissions and prepared
+reply delivery retain their current wire format.

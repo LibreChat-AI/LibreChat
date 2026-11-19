@@ -64,7 +64,7 @@ export async function eraseDiscordPersistenceForUser(
   // Revoke before the watermark, retaining the owner reference until every private row is erased.
   const links = identities
     .find({ tenantId: tenantId || '_', userId: owner.userId, 'identity.provider': 'discord' })
-    .select('identity.channelId identity.externalUserId')
+    .select('identity')
     .read('primary')
     .lean()
     .cursor();
@@ -85,6 +85,9 @@ export async function eraseDiscordPersistenceForUser(
           tenantId,
           channelId: link.identity.channelId,
           externalUserId: link.identity.externalUserId,
+          ...(link.identity.provider === 'discord'
+            ? { applicationId: link.identity.applicationId, guildId: link.identity.guildId }
+            : {}),
         },
         options.erasureBatchSize,
       );

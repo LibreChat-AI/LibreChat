@@ -275,8 +275,10 @@ it('replays a prepared reply after lease loss without executing the command twic
   expect(first).not.toBeNull();
   now += 30000;
   const second = await service.claim(applicationId, 'replacement');
-  expect(second?.reply).toEqual(first?.reply);
-  expect(second?.token).toBe(token);
+  if (!first || !second || 'inspection' in first || 'inspection' in second)
+    throw new Error('Expected prepared replies');
+  expect(second.reply).toEqual(first.reply);
+  expect(second.token).toBe(token);
   expect(executions).toBe(1);
   expect(await service.finish(first!.fence, 'completed')).toBe(false);
   expect(await service.finish(second!.fence, 'completed')).toBe(true);
@@ -382,4 +384,44 @@ it('erases expired credentials when command execution fails after expiry', async
     expect(record).toMatchObject({ state: 'failed', result: 'expired' });
     expect(record).not.toHaveProperty('encryptedToken');
   });
+});
+
+it('returns a nonsecret inspection lease without decrypting or executing an unresolved command', async () => {
+  await scope(async () => {
+    const guild = await installations.resolveGuild(applicationId, guildId);
+    if (!guild) throw new Error('Missing guild');
+    unwrap(
+      await storage.submit(
+        {
+          routing: 'inspection',
+          applicationId,
+          applicationRevision,
+          guildId,
+          installationId: guild.installationId,
+          installationRevision: guild.revision,
+          externalChannelId: '678901234567890123',
+          externalUserId,
+          eventId,
+          action: { kind: 'ask', prompt: 'Never expose this prompt' },
+          encryptedToken: 'deliberately-not-decryptable',
+          tokenHash: 'a'.repeat(64),
+          expiresAt: now + 60000,
+        },
+        now,
+      ),
+    );
+  });
+  const response = await request(app)
+    .post('/claim')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({ applicationId, owner: 'worker' });
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({
+    fence: { applicationId, eventId, owner: 'worker', epoch: 1 },
+    applicationRevision,
+    expiresAt: now + 60000,
+    inspection: { guildId, externalChannelId: '678901234567890123', externalUserId },
+  });
+  expect(executions).toBe(0);
+  expect(JSON.stringify(response.body)).not.toMatch(/token|prompt|agentId|channelRevision/);
 });

@@ -11,13 +11,14 @@ import type {
   DiscordIngressAction,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
-import type { DiscordInboxRecord } from '~/models/discordInbox';
+import type { DiscordInboxRecord, DiscordInboxLeaseRecord } from '~/models/discordInbox';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createDiscordReceiptModel } from '~/models/discordReceipt';
 import { createDiscordInboxModel } from '~/models/discordInbox';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
 import { touchChannelAuthority } from './channelScope';
+import { touchDiscordInstallation } from './discord';
 import { digest } from './channelProtocol';
 
 const id = z
@@ -25,14 +26,11 @@ const id = z
   .min(1)
   .max(128)
   .regex(/^[\w-]+$/);
-export interface SubmitDiscordInteraction {
+interface DiscordInteractionPayload {
   eventId: string;
   applicationId: string;
   applicationRevision: string;
   guildId: string;
-  channelId: string;
-  channelRevision: string;
-  agentId: string;
   externalChannelId: string;
   externalUserId: string;
   action: DiscordIngressAction;
@@ -40,15 +38,23 @@ export interface SubmitDiscordInteraction {
   tokenHash: string;
   expiresAt: number;
 }
-const submission: z.ZodType<SubmitDiscordInteraction> = z
+export interface SubmitDiscordInteraction extends DiscordInteractionPayload {
+  routing?: 'bound';
+  channelId: string;
+  channelRevision: string;
+  agentId: string;
+}
+export interface SubmitDiscordInspection extends DiscordInteractionPayload {
+  routing: 'inspection';
+  installationId: string;
+  installationRevision: string;
+}
+const payload = z
   .object({
     eventId: channelSnowflakeSchema,
     applicationId: channelSnowflakeSchema,
     applicationRevision: id,
     guildId: channelSnowflakeSchema,
-    channelId: id,
-    channelRevision: id,
-    agentId: id,
     externalChannelId: channelSnowflakeSchema,
     externalUserId: channelSnowflakeSchema,
     action: discordIngressActionSchema,
@@ -57,6 +63,19 @@ const submission: z.ZodType<SubmitDiscordInteraction> = z
     expiresAt: z.number().int().positive(),
   })
   .strict();
+const submission: z.ZodType<SubmitDiscordInteraction | SubmitDiscordInspection> = z.union([
+  payload.extend({
+    routing: z.literal('bound').optional(),
+    channelId: id,
+    channelRevision: id,
+    agentId: id,
+  }),
+  payload.extend({
+    routing: z.literal('inspection'),
+    installationId: id,
+    installationRevision: id,
+  }),
+]);
 export type DiscordInboxError =
   | 'authority_changed'
   | 'capacity'
@@ -68,15 +87,15 @@ export type DiscordInboxResult<T> =
   | { ok: false; error: { code: DiscordInboxError } };
 export interface DiscordInboxAdmission {
   eventId: string;
-  state: DiscordInboxRecord['state'];
+  state: DiscordInboxLeaseRecord['state'];
   duplicate: boolean;
 }
 export interface DiscordInboxStorage {
   submit(
-    input: SubmitDiscordInteraction,
+    input: SubmitDiscordInteraction | SubmitDiscordInspection,
     now: number,
   ): Promise<DiscordInboxResult<DiscordInboxAdmission>>;
-  claim(applicationId: string, owner: string, now: number): Promise<DiscordInboxRecord | null>;
+  claim(applicationId: string, owner: string, now: number): Promise<DiscordInboxLeaseRecord | null>;
   renew(fence: DiscordInboxFence, now: number): Promise<boolean>;
   prepareReply(
     fence: DiscordInboxFence,
@@ -136,24 +155,28 @@ export function createDiscordInboxStorage(
     };
   }
   async function current(
-    record: Pick<
-      DiscordInboxRecord,
-      | 'tenantId'
-      | 'channelId'
-      | 'channelRevision'
-      | 'agentId'
-      | 'applicationId'
-      | 'applicationRevision'
-      | 'guildId'
-      | 'externalUserId'
-      | 'externalChannelId'
-    >,
+    record:
+      | DiscordInboxLeaseRecord
+      | ((SubmitDiscordInteraction | SubmitDiscordInspection) & { tenantId?: string }),
     session: ClientSession,
   ): Promise<boolean> {
+    if (record.routing === 'inspection')
+      return touchDiscordInstallation(
+        mongoose,
+        {
+          tenantId: record.tenantId,
+          applicationId: record.applicationId,
+          expectedApplicationRevision: record.applicationRevision,
+          guildId: record.guildId,
+          installationId: record.installationId,
+          expectedRevision: record.installationRevision,
+        },
+        session,
+      );
     return touchChannelAuthority(mongoose, { ...record, provider: 'discord' }, session);
   }
   async function expire(
-    record: DiscordInboxRecord,
+    record: DiscordInboxLeaseRecord,
     result: 'expired' | 'authority_changed',
     session: ClientSession,
   ) {
@@ -402,6 +425,7 @@ export function createDiscordInboxStorage(
             .session(session)
             .lean();
           if (!record) return failure('stale_fence');
+          if (record.routing === 'inspection') return failure('authority_changed');
           if (!(await current(record, session))) return failure('authority_changed');
           if (record.state === 'reply') return { ok: true, value: record };
           const updated = await inbox
@@ -412,7 +436,8 @@ export function createDiscordInboxStorage(
             )
             .select(privateFields)
             .lean();
-          if (!updated) throw new Error('Discord inbox reply did not persist');
+          if (!updated || updated.routing === 'inspection')
+            throw new Error('Discord inbox reply did not persist');
           return { ok: true, value: updated };
         },
         ensureIndexes,

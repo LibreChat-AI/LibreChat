@@ -80,7 +80,8 @@ async function claim(action: DiscordIngressAction, actor = externalUserId) {
     ),
   );
   const record = await inbox.claim(applicationId, 'worker', now);
-  if (!record || record.eventId !== id) throw new Error('Missing command claim');
+  if (!record || record.routing === 'inspection' || record.eventId !== id)
+    throw new Error('Missing command claim');
   return {
     record,
     fence: { applicationId, eventId: id, owner: 'worker', epoch: record.leaseEpoch },
