@@ -33,5 +33,6 @@ export function toResumableUsage(handlers: UsageHandlers): ResumableUsage {
     backfillUsage: handlers.backfillUsage,
     seedLiveFromContent: (content, submission) =>
       handlers.seedLive(countTrailingOutputChars(content), submission),
+    resetLive: handlers.resetLive,
   };
 }

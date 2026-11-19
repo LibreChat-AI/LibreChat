@@ -111,6 +111,7 @@ const forwardBeside = (read: () => FollowBeside | undefined): Required<AppliedBe
     backfillUsage: (entries, submission) => read()?.usage?.backfillUsage(entries, submission),
     seedLiveFromContent: (content, submission) =>
       read()?.usage?.seedLiveFromContent(content, submission),
+    resetLive: (submission) => read()?.usage?.resetLive?.(submission),
   },
   onAttachment: (params) => read()?.onAttachment?.(params),
   onTitle: (frame) => read()?.onTitle?.(frame),
@@ -672,7 +673,14 @@ export function useFollowChat({
       /** The turn's own final frame is its result, and the list as it stands is what it left. */
       if (ended != null) {
         settled();
+        return;
       }
+      /**
+       * It ended with no final frame: it failed, or was stopped before the server kept anything
+       * of it. Nothing settles what was counted for its reply, so that count is dropped here, as
+       * main chat drops it, instead of being added to the conversation's next reply.
+       */
+      host.current.beside?.usage?.resetLive?.(turn.submission);
     };
 
     /**

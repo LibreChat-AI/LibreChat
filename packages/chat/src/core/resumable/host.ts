@@ -313,6 +313,11 @@ export interface ResumableUsage {
   backfillUsage: (entries: TTokenUsageEvent[], submission: TSubmission) => void;
   /** Seeds the live estimate with the output a resume snapshot already holds. */
   seedLiveFromContent: (content: unknown[] | undefined, submission: TSubmission) => void;
+  /**
+   * Forgets what was counted for a reply that ended with no final frame to settle it. Called by
+   * what follows a core `Chat`; main chat's session does the same through its events.
+   */
+  resetLive?: (submission: TSubmission) => void;
 }
 
 /** The pane's message list. */

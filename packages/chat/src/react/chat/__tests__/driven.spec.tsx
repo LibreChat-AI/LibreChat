@@ -17,8 +17,11 @@ import type { ChatStream, ChatTransport, ChatSendRequest, ChatStreamStatus } fro
 import type { ChatHost, TurnServices } from '../host';
 import type { FollowChatOptions } from '../../follow';
 import type { ExtendedFile } from '../../../core';
+import { createUsageHandlers, createUsageCounters } from '../../stream/usage/handlers';
+import { activeUsageResponseIdFamily, pendingUsageFamily } from '../../usage';
 import { createTurnServices } from '../__fixtures__/services';
 import { showStopButtonByIndex } from '../../generation';
+import { toResumableUsage } from '../../stream/usage';
 import { isSubmittingFamily } from '../../submission';
 import { useDrivenContract } from '../driven';
 import { useFollowChat } from '../../follow';
@@ -380,6 +383,59 @@ describe('useDrivenContract', () => {
     );
     await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
     expect(onSettled).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops what was counted for a reply that fails, and keeps it for one that ends', async () => {
+    const store = createStore();
+    const usage = toResumableUsage(createUsageHandlers(store, createUsageCounters()));
+    const { result, streams, ready } = setup({ store, beside: { usage } });
+    await ready();
+    const spent = (output_tokens: number, seq: number): ChatEvent =>
+      ({
+        type: 'token_usage',
+        data: { input_tokens: 10, output_tokens, runId: 'run-2', seq },
+      }) as ChatEvent;
+
+    act(() => {
+      result.current.contract.ask({ text: 'Next question' });
+    });
+    await waitFor(() => expect(streams).toHaveLength(1));
+    const sent = (result.current.contract.getMessages() ?? [])[2];
+    act(() => {
+      streams[0].push(created(sent, 'response-2'));
+      streams[0].push(spent(40, 0));
+    });
+    await waitFor(() => expect(store.get(pendingUsageFamily(conversationId)).output).toBe(40));
+    expect(store.get(activeUsageResponseIdFamily(conversationId))).not.toBeNull();
+
+    act(() => streams[0].push({ type: 'error', status: 500, data: { message: 'failed' } }));
+    await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
+    await settle();
+
+    /** Nothing of the failed reply is left to be added to the conversation's next one. */
+    expect(store.get(pendingUsageFamily(conversationId))).toMatchObject({
+      output: 0,
+      eventCount: 0,
+    });
+    expect(store.get(activeUsageResponseIdFamily(conversationId))).toBeNull();
+
+    /** A reply that ends on its final frame is settled by that frame instead. */
+    const resetLive = jest.spyOn(usage, 'resetLive');
+    act(() => {
+      result.current.contract.ask({ text: 'Again' });
+    });
+    await waitFor(() => expect(streams).toHaveLength(2));
+    const again = (result.current.contract.getMessages() ?? []).find(
+      (message) => message.text === 'Again',
+    ) as TMessage;
+    act(() => {
+      streams[1].push(created(again, 'response-3'));
+      streams[1].push(spent(25, 1));
+      streams[1].push(final(again, reply('response-3', 'Answer', again.messageId)));
+    });
+    await waitFor(() => expect(result.current.contract.isSubmitting).toBe(false));
+    await settle();
+    expect(resetLive).not.toHaveBeenCalled();
   });
 
   it("drops the files another conversation left staged in the pane, and keeps this one's", async () => {
