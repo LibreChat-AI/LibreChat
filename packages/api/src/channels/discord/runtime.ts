@@ -71,8 +71,6 @@ export function createDiscordManagementRuntime(
 ): DiscordManagementHandlers {
   const publicBaseUrl = deps.publicBaseUrl || 'http://localhost:3080';
   const clientBaseUrl = deps.clientBaseUrl || publicBaseUrl;
-  slackPublicURL(publicBaseUrl);
-  slackPublicURL(clientBaseUrl);
   const canManage = createSlackWorkspaceAdminGuard(deps);
   const handle =
     (method: keyof DiscordManagementHandlers): RequestHandler =>
@@ -89,6 +87,8 @@ export function createDiscordManagementRuntime(
           } else res.sendStatus(404);
           return;
         }
+        slackPublicURL(publicBaseUrl);
+        slackPublicURL(clientBaseUrl);
         const provider = createDiscordProviderClient({
           fetch: deps.fetch,
           config: {

@@ -410,6 +410,32 @@ it('reads only the enabled operator policy through the injected config boundary'
   expect(DISCORD_CALLBACK_PATH).toBe('/api/channels/discord/oauth/callback');
 });
 
+it('constructs the runtime for a LAN HTTP host and rejects it only once Discord is enabled', async () => {
+  const lan = 'http://chat.lan:3080';
+  const make = (enabled: boolean) =>
+    createDiscordManagementRuntime({
+      installations: createDiscordInstallationStorage(db),
+      states: createDiscordInstallStorage(db),
+      browserSessions: createDiscordBrowserSessionStorage(db),
+      readSettings: async () => (enabled ? settings : undefined),
+      sessionSecret: secret,
+      publicBaseUrl: lan,
+      clientBaseUrl: lan,
+      findUser: async () => null,
+      isPrincipalActive: async () => true,
+      hasCapability: async () => true,
+      fetch: providerFetch,
+      logError: () => {},
+    });
+  const handlers = make(false);
+  const disabled = express();
+  disabled.get('/apps', handlers.applications);
+  expect((await request(disabled).get('/apps')).status).toBe(404);
+  const failing = express();
+  failing.get('/apps', make(true).applications);
+  expect((await request(failing).get('/apps')).status).toBe(503);
+});
+
 it.each(['local', 'openid'])(
   'rejects account switching through canonical %s auth cookies with the old session still active',
   async (kind) => {
