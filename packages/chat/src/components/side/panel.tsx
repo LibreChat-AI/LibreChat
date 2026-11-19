@@ -19,13 +19,15 @@ type SideChatComposerProps = {
   /** The reader's unsent words, which the panel holds so they outlive the composer. */
   value: string;
   onChange: (value: string) => void;
-  conversationId: string;
   title: string;
   /** Whether the conversation is in and the pane holds it, so a turn can be built for it. */
   ready: boolean;
   /** Words written for this conversation before it opened; see {@link SideChat.text}. */
-  handedText?: string;
+  handoff?: SideChat;
+  /** Managed intent identity, or the legacy standalone conversation-level one-shot key. */
+  handoffKey: SideChat | string;
   onHandedTextTaken: () => void;
+  onDraftTaken: (text: string) => void;
   clearsFooter: boolean;
   /**
    * Whether the field takes focus once the conversation is in. A side chat is opened to be
@@ -43,11 +45,12 @@ function SideChatComposer({
   contract,
   value,
   onChange: setValue,
-  conversationId,
   title,
   ready,
-  handedText,
+  handoff,
+  handoffKey,
   onHandedTextTaken,
+  onDraftTaken,
   clearsFooter,
   focusWhenReady,
 }: SideChatComposerProps): ReactNode {
@@ -72,25 +75,55 @@ function SideChatComposer({
    * Words the reader wrote before this conversation opened are its next turn. They are sent
    * once, when the conversation can take them; if it cannot, they are left in the field.
    */
-  const handed = useRef<string>();
+  const handed = useRef<SideChat | string>();
+  const handedText = handoff?.text;
   useEffect(() => {
-    if (!ready || handedText == null || handedText === '' || handed.current === conversationId) {
+    if (!ready || !handoff || !handedText || handed.current === handoffKey) {
       return;
     }
-    handed.current = conversationId;
-    if (ask({ text: handedText }) === false) {
-      setValue(handedText);
+    handed.current = handoffKey;
+    if (value !== '' && value !== handedText) {
+      onHandedTextTaken();
+      return;
     }
+    if (ask({ text: handedText }) === false) {
+      if (value === '') setValue(handedText);
+    } else onDraftTaken(handedText);
     onHandedTextTaken();
-  }, [ask, conversationId, handedText, onHandedTextTaken, ready, setValue]);
+  }, [
+    ask,
+    handoff,
+    handoffKey,
+    handedText,
+    onDraftTaken,
+    onHandedTextTaken,
+    ready,
+    setValue,
+    value,
+  ]);
+
+  const change = useCallback(
+    (text: string) => {
+      if (handoff && handed.current !== handoffKey) {
+        handed.current = handoffKey;
+        onHandedTextTaken();
+      }
+      setValue(text);
+    },
+    [handoff, handoffKey, onHandedTextTaken, setValue],
+  );
 
   const submit = useCallback(() => {
     const text = value.trim();
     if (text === '' || ask({ text }) === false) {
       return;
     }
-    setValue('');
-  }, [ask, setValue, value]);
+    onDraftTaken(value);
+    if (handoff) {
+      handed.current = handoffKey;
+      onHandedTextTaken();
+    }
+  }, [ask, handoff, handoffKey, onDraftTaken, onHandedTextTaken, value]);
 
   /** The main chat form's own Enter decision table, so a rebound submit shortcut holds here. */
   const resolveKeyVerdict = useCallback(
@@ -122,7 +155,7 @@ function SideChatComposer({
       <Composer
         ref={field}
         value={value}
-        onChange={setValue}
+        onChange={change}
         onSubmit={submit}
         canSubmit={ready && !isSubmitting && value.trim() !== ''}
         submitLabel={localize('com_nav_send_message')}
@@ -145,11 +178,14 @@ export default function SideChatPanel({
   chat,
   onClose,
   onHandedTextTaken,
+  onDraftTaken,
 }: {
   chat: SideChat;
   onClose: () => void;
   /** The words handed over with the conversation were sent, or put in the field. */
-  onHandedTextTaken: () => void;
+  onHandedTextTaken: (expected: SideChat) => void;
+  /** Retire captured words only after the existing send or main-composer transfer accepts them. */
+  onDraftTaken?: (expected: SideChat, text: string) => void;
 }): ReactNode {
   const localize = useLocalize();
   const host = useSideChatHost();
@@ -159,6 +195,14 @@ export default function SideChatPanel({
   const { handOffComposerText } = useChatSurface();
   const conversationId = chat.conversation.conversationId ?? '';
   const [draft, setDraft] = useAtom(sideChatDraftFamily(conversationId));
+  const takeText = useCallback(() => onHandedTextTaken(chat), [chat, onHandedTextTaken]);
+  const takeDraft = useCallback(
+    (text: string) => {
+      if (onDraftTaken) onDraftTaken(chat, text);
+      else setDraft((current) => (current === text ? '' : current));
+    },
+    [chat, onDraftTaken, setDraft],
+  );
   /**
    * A turn stopped before the server kept it is gone from the list. Its words go back in the
    * field, as main chat keeps them as a draft, unless the reader has written something since.
@@ -210,6 +254,7 @@ export default function SideChatPanel({
     /** Words not sent yet go with the conversation, to the composer it opens under. */
     if (draft.trim() !== '') {
       handOffComposerText(conversationId, draft);
+      takeDraft(draft);
     }
     openConversation(pane.conversation ?? opened);
     onClose();
@@ -221,6 +266,7 @@ export default function SideChatPanel({
     openConversation,
     opened,
     pane.conversation,
+    takeDraft,
   ]);
 
   let body: ReactNode;
@@ -254,11 +300,12 @@ export default function SideChatPanel({
             contract={contract}
             value={draft}
             onChange={setDraft}
-            conversationId={conversationId}
             title={title}
             ready={held && !followed.isLoading}
-            handedText={chat.text}
-            onHandedTextTaken={onHandedTextTaken}
+            handoff={chat.text ? chat : undefined}
+            handoffKey={onDraftTaken ? chat : conversationId}
+            onHandedTextTaken={takeText}
+            onDraftTaken={takeDraft}
             clearsFooter={clearsFooter}
             focusWhenReady={!isSheet}
           />

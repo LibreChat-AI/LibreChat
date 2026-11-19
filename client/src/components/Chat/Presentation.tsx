@@ -4,6 +4,7 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import { useRecoilValue, useSetRecoilState, useResetRecoilState } from 'recoil';
 import {
   sideChatAtom,
+  sideChatDraftTakenAtom,
   SIDE_CHAT_PANE,
   sideChatBesideAtom,
   sideChatRequestAtom,
@@ -12,6 +13,7 @@ import {
   SideChatHostProvider,
   ParentSubagentsProvider,
 } from '@librechat/chat/react';
+import type { SideChat } from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
@@ -70,9 +72,16 @@ export default function Presentation({
   const sideChat = useAtomValue(sideChatAtom);
   const isSideChatSubmitting = useIsSubmitting(SIDE_CHAT_PANE);
   const setSideChat = useSetAtom(sideChatAtom);
-  const closeSideChat = useCallback(() => setSideChat(null), [setSideChat]);
+  const takeSideChatDraft = useSetAtom(sideChatDraftTakenAtom);
+  const closeSideChat = useCallback(
+    () => setSideChat((current) => (current === sideChat ? null : current)),
+    [setSideChat, sideChat],
+  );
   const takeSideChatText = useCallback(
-    () => setSideChat((current) => current && { conversation: current.conversation }),
+    (expected: SideChat) =>
+      setSideChat((current) =>
+        current === expected ? { conversation: current.conversation } : current,
+      ),
     [setSideChat],
   );
   const previousConversationIdRef = useRef<string | null>(null);
@@ -187,9 +196,9 @@ export default function Presentation({
   useEffect(() => {
     if (artifactShown) {
       withdrawSideChatRequest(null);
-      closeSideChat();
+      setSideChat(null);
     }
-  }, [artifactShown, currentArtifactId, closeSideChat, withdrawSideChatRequest]);
+  }, [artifactShown, currentArtifactId, setSideChat, withdrawSideChatRequest]);
 
   const subagentElement = useMemo(() => {
     if (
@@ -227,12 +236,13 @@ export default function Presentation({
               chat={sideChat}
               onClose={closeSideChat}
               onHandedTextTaken={takeSideChatText}
+              onDraftTaken={takeSideChatDraft}
             />
           </Suspense>
         </ParentSubagentsProvider>
       </SideChatHostProvider>
     );
-  }, [closeSideChat, isSideChatSubmitting, sideChat, takeSideChatText]);
+  }, [closeSideChat, isSideChatSubmitting, sideChat, takeSideChatDraft, takeSideChatText]);
 
   /* Undocked, the pane renders into its own window: the side panel gives its
    * width back to the conversation instead of holding an empty column. */
