@@ -86,6 +86,23 @@ it('renders loading, then the resource, each tool on offer unchecked, and a boun
   expect(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' })).toBeDisabled();
   expect(screen.getByText('com_ui_schedule_consent_none_selected')).toBeVisible();
   expect(screen.getByRole('spinbutton')).toHaveAttribute('max', '24');
+  // A schedule runs for as long as it exists: its grant starts at the longest allowed.
+  expect(screen.getByRole('spinbutton')).toHaveValue(24);
+});
+it('confirms for a shorter lifetime when the owner types one', async () => {
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  await userEvent.click(await screen.findByRole('checkbox', { name: 'query' }));
+  const hours = screen.getByRole('spinbutton');
+  await userEvent.clear(hours);
+  await userEvent.type(hours, '2');
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ lifetimeHours: 2 }),
+    ),
+  );
 });
 it('confirms the offer reference, lifetime and only the tools the owner ticked, then rereads persisted state', async () => {
   const active = {
@@ -105,7 +122,7 @@ it('confirms the offer reference, lifetime and only the tools the owner ticked, 
     expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith('schedule', {
       offerDigest: view.offer!.digest,
       expectedRevision: null,
-      lifetimeHours: 1,
+      lifetimeHours: 24,
       allow: { warehouse: ['query'] },
       ask: {},
       tools: [],
@@ -332,7 +349,7 @@ describe('a grant that can be made for the whole agent', () => {
       expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith('schedule', {
         offerDigest: view.offer!.digest,
         expectedRevision: null,
-        lifetimeHours: 1,
+        lifetimeHours: 24,
         allow: {},
         everything: true,
       }),
@@ -351,7 +368,7 @@ describe('a grant that can be made for the whole agent', () => {
       expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith('schedule', {
         offerDigest: view.offer!.digest,
         expectedRevision: null,
-        lifetimeHours: 1,
+        lifetimeHours: 24,
         allow: { warehouse: ['query'] },
         ask: {},
         tools: [],

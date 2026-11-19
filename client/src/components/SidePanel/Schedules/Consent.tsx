@@ -30,6 +30,7 @@ export default function Consent({
   return (
     <GrantDialog
       canConfirm={canConfirm}
+      longest
       source={{ query, confirm, revoke }}
       copy={copy}
       name={name}

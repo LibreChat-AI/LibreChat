@@ -162,6 +162,14 @@ it('shows and confirms the grant of this key for the picked agent', async () => 
   expect(await screen.findByText('com_ui_api_key_grant_confirmed')).toBeVisible();
 });
 
+it('starts a key grant at one hour, whatever the longest the operator allows', async () => {
+  display();
+  await pick('Analyst');
+  await screen.findByRole('checkbox', { name: 'query' });
+  expect(screen.getByRole('spinbutton')).toHaveValue(1);
+  expect(screen.getByRole('spinbutton')).toHaveAttribute('max', '24');
+});
+
 it('starts over when another agent is picked', async () => {
   display();
   await pick('Analyst');
