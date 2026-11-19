@@ -95,11 +95,17 @@ export interface GrantChoice {
   standing: boolean;
   /** The whole agent is chosen: nothing is ticked one by one, and nothing added later is left out. */
   everything: boolean;
+  /**
+   * Under the whole agent: the tools the stored grant asks about stay asked about. Unticked,
+   * the confirmation says so, and they run unattended.
+   */
+  keepsAsking: boolean;
   /** Something is allowed, so there is a grant to confirm. */
   some: boolean;
   /** What a confirmation sends for this choice. */
   request: Pick<ConfirmScheduleMCPConsent, 'allow' | 'ask' | 'tools' | 'everything'>;
   setEverything: (everything: boolean) => void;
+  setKeepsAsking: (keeps: boolean) => void;
   setTools: (serverName: string, tools: string[]) => void;
   setAsking: (serverName: string, tools: string[]) => void;
   setOther: (tools: string[]) => void;
@@ -156,6 +162,13 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
     standing &&
     ((editedWhole?.revision === data?.revision ? editedWhole?.value : undefined) ??
       (data?.revision == null ? true : data.everything));
+  /** Null until the owner changes it, with the grant it was changed against. */
+  const [editedKeeps, setEditedKeeps] = useState<{
+    revision: string | null;
+    value: boolean;
+  } | null>(null);
+  const keepsAsking =
+    (editedKeeps?.revision === data?.revision ? editedKeeps?.value : undefined) ?? true;
   /** A grant allows something: an MCP tool, or one of the other tools. */
   const chosenCount =
     Object.values(choice).reduce((count, tools) => count + tools.length, 0) + other.length;
@@ -202,17 +215,23 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
     count: chosenCount,
     standing,
     everything,
+    keepsAsking,
     some: everything || chosenCount > 0,
-    // The whole agent names nothing. Otherwise `ask` and `tools` are always sent: left out,
-    // the server would keep what the stored grant asks about and the other tools it allows.
-    request: everything ? { allow: {}, everything: true } : { allow: choice, ask, tools: other },
+    // The whole agent names nothing, and says nothing about asking unless the owner stops it:
+    // left out, the server keeps what the stored grant asks about. Otherwise `ask` and `tools`
+    // are always sent, since left out the server would keep the stored grant's choice of both.
+    request: everything
+      ? { allow: {}, everything: true, ...(!keepsAsking && { ask: {} }) }
+      : { allow: choice, ask, tools: other },
     setEverything: (value: boolean) => setEditedWhole({ revision: data?.revision ?? null, value }),
+    setKeepsAsking: (value: boolean) => setEditedKeeps({ revision: data?.revision ?? null, value }),
     setTools,
     setAsking,
     setOther,
     allowEverything,
     reset: () => {
       setEditedWhole(null);
+      setEditedKeeps(null);
       setEdited(null);
       setEditedAsking(null);
       setEditedOther(null);
@@ -239,10 +258,13 @@ export default function GrantTools({
   const noteId = useId();
   const otherId = useId();
   const wholeId = useId();
+  const keepId = useId();
   const {
     standing,
     everything,
     setEverything,
+    keepsAsking,
+    setKeepsAsking,
     choice,
     ask,
     asking,
@@ -285,11 +307,20 @@ export default function GrantTools({
               {localize('com_ui_schedule_consent_everything_note')}
             </p>
             {everything && kept.length > 0 && (
-              <p className="text-text-secondary text-xs">
-                {localize('com_ui_schedule_consent_everything_asking', {
-                  tools: kept.join(', '),
-                })}
-              </p>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={keepId}
+                  checked={keepsAsking}
+                  disabled={busy}
+                  aria-labelledby={`${keepId}-label`}
+                  onCheckedChange={(checked) => setKeepsAsking(checked === true)}
+                />
+                <Label id={`${keepId}-label`} htmlFor={keepId} className="text-xs break-all">
+                  {localize('com_ui_schedule_consent_everything_asking', {
+                    tools: kept.join(', '),
+                  })}
+                </Label>
+              </div>
             )}
           </div>
         </div>

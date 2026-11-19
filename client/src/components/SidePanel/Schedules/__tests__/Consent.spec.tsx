@@ -371,13 +371,34 @@ describe('a grant that can be made for the whole agent', () => {
     jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(asked);
     display();
     expect(await whole()).toBeChecked();
-    expect(screen.getByText('com_ui_schedule_consent_everything_asking')).toBeVisible();
+    const keep = screen.getByRole('checkbox', {
+      name: 'com_ui_schedule_consent_everything_asking',
+    });
+    expect(keep).toBeChecked();
     await userEvent.click(confirm());
     await waitFor(() => expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalled());
     // Left out, the server keeps what the stored grant asks about.
     expect(jest.mocked(dataService.confirmScheduleMCPConsent).mock.calls[0][1]).not.toHaveProperty(
       'ask',
     );
+    // The owner stops it, here, with the whole agent still ticked.
+    await userEvent.click(keep);
+    await userEvent.click(confirm());
+    await waitFor(() => expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledTimes(2));
+    expect(jest.mocked(dataService.confirmScheduleMCPConsent).mock.calls[1][1]).toMatchObject({
+      allow: {},
+      everything: true,
+      ask: {},
+    });
+  });
+
+  it('offers nothing to keep asking about where the grant asks about nothing', async () => {
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(standing);
+    display();
+    expect(await whole()).toBeChecked();
+    expect(
+      screen.queryByRole('checkbox', { name: 'com_ui_schedule_consent_everything_asking' }),
+    ).not.toBeInTheDocument();
   });
 
   it('starts a stored grant from what it is', async () => {
