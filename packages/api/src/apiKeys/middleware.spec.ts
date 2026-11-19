@@ -43,7 +43,7 @@ describe('createCheckRemoteAgentAccess with resolveRemoteModel', () => {
 
   function appWith(
     deps: Partial<Parameters<typeof createCheckRemoteAgentAccess>[0]>,
-    apiKey = true,
+    apiKey: boolean | 'bound' = true,
   ) {
     const checkAccess = createCheckRemoteAgentAccess({
       getAgent: jest.fn(async () => null),
@@ -56,6 +56,7 @@ describe('createCheckRemoteAgentAccess with resolveRemoteModel', () => {
       Object.assign(req, {
         user: { id: userId, role: 'USER' },
         apiKeyId: apiKey ? 'key-1' : undefined,
+        ...(apiKey === 'bound' && { apiKeyBound: true }),
       });
       next();
     });
@@ -159,6 +160,16 @@ describe('createCheckRemoteAgentAccess with resolveRemoteModel', () => {
     expect(resolveRemoteModel).not.toHaveBeenCalled();
   });
 
+  it('keeps keys issued to an integration agent-only', async () => {
+    const resolveRemoteModel = jest.fn(async () => ({ id: 'gpt-spec' }));
+    const app = appWith({ resolveRemoteModel } as never, 'bound');
+
+    const response = await request(app).post('/chat').send({ model: 'gpt-spec' });
+
+    expect(response.status).toBe(404);
+    expect(resolveRemoteModel).not.toHaveBeenCalled();
+  });
+
   it('does not consult a resolver on routes that were not given one', async () => {
     const app = appWith({});
 
@@ -235,7 +246,11 @@ describe('rejectBackgroundForRemoteModel', () => {
 });
 
 describe('createRemoteModelBalanceGate', () => {
-  function appWith(balanceConfig: object | undefined, findBalanceByUser: jest.Mock) {
+  function appWith(
+    balanceConfig: object | undefined,
+    findBalanceByUser: jest.Mock,
+    reserveBalance?: jest.Mock,
+  ) {
     const app = express();
     app.post(
       '/chat',
@@ -243,7 +258,7 @@ describe('createRemoteModelBalanceGate', () => {
         Object.assign(req, { user: { id: 'u1' }, config: { balance: balanceConfig } });
         next();
       },
-      createRemoteModelBalanceGate({ findBalanceByUser }),
+      createRemoteModelBalanceGate({ findBalanceByUser, reserveBalance }),
       (_req, res) => {
         res.status(204).send();
       },
@@ -272,6 +287,33 @@ describe('createRemoteModelBalanceGate', () => {
       code: 'insufficient_quota',
       type: 'insufficient_quota',
     });
+  });
+
+  it('applies a due auto-refill through admission before refusing an empty balance', async () => {
+    const empty = jest.fn(async () => ({ tokenCredits: 0 }));
+    const refilled = jest.fn(async () => ({ reserved: true, balance: 500 }));
+    expect((await request(appWith({ enabled: true }, empty, refilled)).post('/chat')).status).toBe(
+      204,
+    );
+    expect(refilled).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'u1', amount: 0, reservationId: '' }),
+    );
+
+    const stillEmpty = jest.fn(async () => ({ reserved: true, balance: 0 }));
+    expect(
+      (await request(appWith({ enabled: true }, empty, stillEmpty)).post('/chat')).status,
+    ).toBe(429);
+
+    const withCredits = jest.fn(async () => ({ tokenCredits: 5 }));
+    const unused = jest.fn();
+    await request(appWith({ enabled: true }, withCredits, unused)).post('/chat');
+    expect(unused).not.toHaveBeenCalled();
+  });
+
+  it('does not count credits other in-flight requests hold', async () => {
+    const held = jest.fn(async () => ({ tokenCredits: 100, reservedCredits: 100 }));
+    expect((await request(appWith({ enabled: true }, held)).post('/chat')).status).toBe(429);
+    expect(held).toHaveBeenCalledWith('u1', { includeReservedCredits: true });
   });
 
   it('counts the configured start balance when the owner has no record yet', async () => {

@@ -637,8 +637,11 @@ const mockBulkInsertTransactions = jest.fn().mockResolvedValue(undefined);
 
 const mockBuildRemoteAgent = jest.fn();
 const mockListRemoteModels = jest.fn().mockResolvedValue([]);
+const mockApplySpecSkills = jest.fn().mockResolvedValue(undefined);
 jest.mock('~/server/services/Agents/remoteModels', () => ({
   buildAgent: (...args) => mockBuildRemoteAgent(...args),
+  applySpecSkills: (...args) => mockApplySpecSkills(...args),
+  grantAgentId: () => 'model_grant',
   list: (...args) => mockListRemoteModels(...args),
 }));
 

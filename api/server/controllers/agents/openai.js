@@ -560,10 +560,13 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
 
       // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
       // the MCP servers and tools its owner granted that key for this agent.
+      // A model run binds to a path-safe id no grant can match (`remoteModelGrantAgentId`).
       await require('~/server/services/ApiKeys/grants').prepare({
         req,
         res,
-        executionContext,
+        executionContext: req.remoteModel
+          ? { ...executionContext, agentId: remoteModels().grantAgentId(req.remoteModel) }
+          : executionContext,
         signal: execution.signal,
       });
 
@@ -659,6 +662,15 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         getUserById: db.getUserById,
         accessibleSkillIds,
       });
+
+      if (req.remoteModel) {
+        /** A spec's named skills resolve against the owner's skills, as in the chat. */
+        await remoteModels().applySpecSkills(agent, req.remoteModel, {
+          accessibleSkillIds,
+          getSkillByName: getSkillDbMethods().getSkillByName,
+          appConfig,
+        });
+      }
 
       const primaryScopedSkillIds = resolveAgentScopedSkillIds({
         agent,

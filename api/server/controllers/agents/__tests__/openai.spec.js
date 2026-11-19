@@ -481,8 +481,11 @@ const mockBulkInsertTransactions = jest.fn().mockResolvedValue(undefined);
 const mockBuildRemoteAgent = jest.fn();
 const mockListRemoteModels = jest.fn().mockResolvedValue([]);
 const mockDescribeRemoteModel = jest.fn().mockResolvedValue(null);
+const mockApplySpecSkills = jest.fn().mockResolvedValue(undefined);
 jest.mock('~/server/services/Agents/remoteModels', () => ({
   buildAgent: (...args) => mockBuildRemoteAgent(...args),
+  applySpecSkills: (...args) => mockApplySpecSkills(...args),
+  grantAgentId: () => 'model_grant',
   list: (...args) => mockListRemoteModels(...args),
   describe: (...args) => mockDescribeRemoteModel(...args),
 }));
@@ -2672,6 +2675,12 @@ describe('remote models (model specs and endpoint/model)', () => {
 
     expect(mockBuildRemoteAgent).toHaveBeenCalledWith(req, remoteTarget);
     expect(db.getAgent).not.toHaveBeenCalledWith({ id: 'gpt-concise' });
+    expect(mockApplySpecSkills).toHaveBeenCalledWith(
+      ephemeralAgent,
+      remoteTarget,
+      expect.objectContaining({ accessibleSkillIds: expect.any(Array) }),
+    );
+    expect(mockPrepareKeyGrant.mock.calls.at(-1)[0].executionContext.agentId).toBe('model_grant');
   });
 
   it('answers model_not_found when the model cannot be built', async () => {

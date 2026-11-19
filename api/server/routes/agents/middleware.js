@@ -85,7 +85,10 @@ const preResolveModelGuards = [
 /** After `model` resolved to a model: the owner must have credits (with balances on),
  *  and an enforced spec takes no caller system instructions. */
 const remoteModelGuards = [
-  createRemoteModelBalanceGate({ findBalanceByUser: (userId) => db.findBalanceByUser(userId) }),
+  createRemoteModelBalanceGate({
+    findBalanceByUser: (userId, options) => db.findBalanceByUser(userId, options),
+    reserveBalance: (request) => db.reserveBalance(request),
+  }),
   rejectCallerSystemPromptForEnforcedSpec,
 ].map(onlyForRemoteModel);
 

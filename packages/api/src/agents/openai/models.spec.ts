@@ -1,7 +1,8 @@
+import { Types } from 'mongoose';
 import { EModelEndpoint, Tools } from 'librechat-data-provider';
 import type { TEndpointsConfig, TModelsConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import type { RemoteModelContext } from './models';
+import type { RemoteModelContext, RemoteModelTarget } from './models';
 import type { LoadAgentDeps } from '../load';
 import {
   toOpenAIModel,
@@ -15,6 +16,8 @@ import {
   resolveRemoteModel,
   buildRemoteModelAgent,
   isRemoteModelAccessEnabled,
+  applyRemoteModelSpecSkills,
+  remoteModelGrantAgentId,
 } from './models';
 
 const endpointsConfig = {
@@ -138,6 +141,21 @@ describe('listRemoteModels', () => {
       endpointsConfig: { openrouter: { order: 2, type: EModelEndpoint.custom } } as never,
     }).map((t) => t.id);
     expect(ids).toEqual(['openrouter/anthropic/claude-sonnet-4']);
+  });
+});
+
+describe('listRemoteModels reserved ids', () => {
+  it('does not list a spec named like a saved agent, which a request could never run', () => {
+    const ctx = context();
+    const specList = (ctx.appConfig as unknown as { modelSpecs: { list: object[] } }).modelSpecs;
+    specList.list = [
+      ...specList.list,
+      { name: 'agent_lookalike', label: 'L', preset: { endpoint: 'openAI', model: 'gpt-4o' } },
+    ];
+    const ids = listRemoteModels(ctx).map((t) => t.id);
+    expect(ids).toContain('gpt-concise');
+    expect(ids).not.toContain('agent_lookalike');
+    expect(ids.some((id) => id.startsWith('openAI/'))).toBe(true);
   });
 });
 
@@ -417,7 +435,25 @@ describe('createRemoteModelService', () => {
     };
     return { deps, svc: createRemoteModelService(deps) };
   }
-  const req = (overrides = {}) => ({ user: { id: 'u1' }, config: context(overrides).appConfig });
+  const req = (overrides = {}) => ({
+    user: { id: 'u1' },
+    config: context(overrides).appConfig,
+    apiKeyId: 'key-1',
+  });
+
+  it('offers nothing to OIDC callers or integration keys: no list, description or run', async () => {
+    const { deps, svc } = service();
+    for (const caller of [
+      { ...req(), apiKeyId: undefined },
+      { ...req(), apiKeyBound: true },
+    ]) {
+      expect(await svc.list(caller)).toEqual([]);
+      expect(await svc.describe(caller, 'gpt-concise')).toBeNull();
+      expect(await svc.resolve(caller, 'gpt-concise')).toBeNull();
+    }
+    expect(deps.getEndpointsConfig).not.toHaveBeenCalled();
+    expect(await svc.resolve(req(), 'gpt-concise')).toMatchObject({ kind: 'model_spec' });
+  });
 
   it("loads only the named model's endpoint, once per request", async () => {
     const { deps, svc } = service();
@@ -473,6 +509,73 @@ describe('createRemoteModelService', () => {
     const { deps, svc } = service();
     deps.getEndpointModels.mockRejectedValueOnce(new Error('models unavailable'));
     await expect(svc.resolve(req(), 'gpt-concise')).rejects.toThrow('models unavailable');
+  });
+});
+
+describe('applyRemoteModelSpecSkills', () => {
+  const research = new Types.ObjectId();
+  const other = new Types.ObjectId();
+  const specTarget = (skills: unknown) =>
+    ({
+      kind: 'model_spec',
+      id: 'researcher',
+      endpoint: EModelEndpoint.openAI,
+      spec: { name: 'researcher', label: 'R', skills, preset: { endpoint: 'openAI' } },
+    }) as unknown as RemoteModelTarget;
+  const getSkillByName = jest.fn(async (name: string) =>
+    name === 'research' ? ({ _id: research, name, body: '' } as never) : null,
+  );
+
+  it("resolves a spec's named skills against the owner's skills, as the chat does", async () => {
+    const agent = { skills_enabled: true, skills: [] as string[] };
+    await applyRemoteModelSpecSkills(agent, specTarget(['research', 'missing']), {
+      accessibleSkillIds: [research, other],
+      getSkillByName,
+    });
+    expect(agent.skills).toEqual([research.toString()]);
+  });
+
+  it('leaves disabled skills, boolean skill settings and non-spec targets alone', async () => {
+    const off = { skills_enabled: false, skills: [] as string[] };
+    await applyRemoteModelSpecSkills(off, specTarget(['research']), {
+      accessibleSkillIds: [research],
+      getSkillByName,
+    });
+    expect(off.skills).toEqual([]);
+
+    const all = { skills_enabled: true } as { skills_enabled: boolean; skills?: string[] };
+    await applyRemoteModelSpecSkills(all, specTarget(true), {
+      accessibleSkillIds: [research],
+      getSkillByName,
+    });
+    expect(all.skills).toBeUndefined();
+
+    const pair = { skills_enabled: true, skills: [] as string[] };
+    await applyRemoteModelSpecSkills(
+      pair,
+      resolveRemoteModel('openrouter/anthropic/claude-sonnet-4', context()),
+      { accessibleSkillIds: [research], getSkillByName },
+    );
+    expect(pair.skills).toEqual([]);
+  });
+});
+
+describe('remoteModelGrantAgentId', () => {
+  it('gives every model target a stable, path-safe grant id distinct from agent ids', () => {
+    const ids = ['gpt-5.1 (concise)', 'openrouter/anthropic/claude-sonnet-4'].map((id) =>
+      remoteModelGrantAgentId({ kind: 'model_spec', id }),
+    );
+    for (const id of ids) {
+      expect(id).toMatch(/^model_[a-f0-9]{40}$/);
+      expect(id).toMatch(/^[A-Za-z0-9_-]{1,256}$/);
+    }
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(remoteModelGrantAgentId({ kind: 'model_spec', id: 'x' })).toBe(
+      remoteModelGrantAgentId({ kind: 'model_spec', id: 'x' }),
+    );
+    expect(remoteModelGrantAgentId({ kind: 'model_spec', id: 'x' })).not.toBe(
+      remoteModelGrantAgentId({ kind: 'endpoint_model', id: 'x' }),
+    );
   });
 });
 

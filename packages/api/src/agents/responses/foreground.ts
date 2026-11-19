@@ -631,8 +631,18 @@ export function createResponsePersistence(
         deps.saveConvo(context, conversationFields(), {
           context: 'Responses API - save conversation',
           initialAgentId: agent.id === agentId ? agentId : null,
-          /** A conversation can switch between an agent and a model; drop the other kind's fields. */
-          unsetFields: conversationTarget ? { agent_id: 1 } : { spec: 1, endpointType: 1 },
+          /**
+           * A conversation can switch between agents, specs and models; drop every target
+           * field the new target does not set, so a stale `spec` cannot restore the wrong
+           * selection or satisfy the enforced-spec continuation check.
+           */
+          unsetFields: conversationTarget
+            ? {
+                agent_id: 1,
+                ...(conversationTarget.spec == null && { spec: 1 }),
+                ...(conversationTarget.endpointType == null && { endpointType: 1 }),
+              }
+            : { spec: 1, endpointType: 1 },
         }),
         { conversationId },
       );

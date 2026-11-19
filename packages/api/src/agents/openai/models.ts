@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   EModelEndpoint,
   isAgentsEndpoint,
@@ -15,8 +16,10 @@ import type {
   TEndpointsConfig,
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { ResolveModelSpecSkillIdsParams } from '../skills';
 import type { LoadAgentDeps, LoadAgentParams } from '../load';
 import { applyModelSpecPreset, excludeHiddenModelSpecs } from '~/modelSpecs';
+import { resolveModelSpecSkillIds } from '../skills';
 import { loadEphemeralAgent } from '../load';
 
 /**
@@ -235,7 +238,8 @@ export function listRemoteModels(ctx: RemoteModelContext): RemoteModelTarget[] {
       }
     }
   }
-  return targets;
+  /** List only what a request can run: `agent_` ids are reserved for saved agents. */
+  return targets.filter((target) => isModelId(target.id) && !target.id.startsWith('agent_'));
 }
 
 /**
@@ -303,6 +307,18 @@ export function isRemoteModelContinuationAllowed(
     return true;
   }
   return conversation.spec === target.spec.name;
+}
+
+/**
+ * The id a model run is bound to for `remoteApi.integrations.mode: delegated` grants.
+ * Grants are stored under the agent id as a field path, so it must be path-safe, while
+ * `endpoint/model` ids contain `/` and spec names may hold `.` or spaces. Owners can only
+ * grant saved agents today, so no grant matches this id: a model run under delegated mode
+ * proceeds and its MCP tools are refused, instead of the run failing outright.
+ */
+export function remoteModelGrantAgentId(target: Pick<RemoteModelTarget, 'kind' | 'id'>): string {
+  const digest = createHash('sha256').update(`${target.kind}:${target.id}`).digest('hex');
+  return `model_${digest.slice(0, 40)}`;
 }
 
 /** Whether `/v1/models` lists the target (hidden specs resolve by name but are not advertised). */
@@ -384,6 +400,28 @@ export async function buildRemoteModelAgent(
   );
 }
 
+/**
+ * A spec that names its skills (`skills: ['research']`) leaves the ephemeral agent with
+ * `skills: []` for the caller to resolve, as the chat initializer does before scoping.
+ * Resolves those names against the owner's accessible skills, in place, so a remote run
+ * gets the same skills the chat would; any other target or skills setting is left as is.
+ */
+export async function applyRemoteModelSpecSkills(
+  agent: Pick<Agent, 'skills' | 'skills_enabled'>,
+  target: RemoteModelTarget | null | undefined,
+  params: Omit<ResolveModelSpecSkillIdsParams, 'names'>,
+): Promise<void> {
+  if (
+    target?.kind !== 'model_spec' ||
+    agent.skills_enabled !== true ||
+    !Array.isArray(target.spec.skills)
+  ) {
+    return;
+  }
+  const ids = await resolveModelSpecSkillIds({ ...params, names: target.spec.skills });
+  agent.skills = ids.map((id) => id.toString());
+}
+
 export interface RemoteOpenAIModel {
   id: string;
   object: 'model';
@@ -421,6 +459,18 @@ export function toOpenAIModel(target: RemoteModelTarget): RemoteOpenAIModel {
 export interface RemoteModelRequest {
   user?: LoadAgentParams['req']['user'];
   config?: AppConfig;
+  /** Set when the caller authenticated with an API key (not OIDC). */
+  apiKeyId?: string;
+  /** Set for a key issued to an integration rather than the owner's personal key. */
+  apiKeyBound?: boolean;
+}
+
+/**
+ * Model access belongs to the owner's personal API keys. OIDC-authenticated callers and
+ * keys issued to an integration stay agent-only, for listing as well as for runs.
+ */
+export function isPersonalApiKeyRequest(req: RemoteModelRequest): boolean {
+  return req.apiKeyId != null && req.apiKeyBound !== true;
 }
 
 export interface RemoteModelServiceDeps extends LoadAgentDeps {
@@ -444,6 +494,10 @@ export interface RemoteModelService {
   list: (req: RemoteModelRequest) => Promise<RemoteOpenAIModel[]>;
   /** The ephemeral agent that runs `target` for the requester. */
   buildAgent: (req: RemoteModelRequest, target: RemoteModelTarget) => Promise<Agent | null>;
+  /** Resolves a spec's named skills on the built agent (see `applyRemoteModelSpecSkills`). */
+  applySpecSkills: typeof applyRemoteModelSpecSkills;
+  /** The id a model run is bound to for delegated grants (see `remoteModelGrantAgentId`). */
+  grantAgentId: typeof remoteModelGrantAgentId;
 }
 
 interface RequestCache {
@@ -498,7 +552,7 @@ export function createRemoteModelService(deps: RemoteModelServiceDeps): RemoteMo
     req: RemoteModelRequest,
     model: unknown,
   ): Promise<RemoteModelContext | null> => {
-    if (!isRemoteModelAccessEnabled(req.config)) {
+    if (!isPersonalApiKeyRequest(req) || !isRemoteModelAccessEnabled(req.config)) {
       return null;
     }
     const base: RemoteModelContext = {
@@ -538,5 +592,7 @@ export function createRemoteModelService(deps: RemoteModelServiceDeps): RemoteMo
         deps,
       );
     },
+    applySpecSkills: applyRemoteModelSpecSkills,
+    grantAgentId: remoteModelGrantAgentId,
   };
 }

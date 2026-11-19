@@ -629,6 +629,13 @@ describe('createResponsePersistence conversation target', () => {
     });
   });
 
+  it('drops a previous spec and endpoint type the new model target does not carry', async () => {
+    const { store, saveConvo } = persistence({ endpoint: 'openAI', model: 'gpt-4o' });
+    await store.saveConversation();
+    const options = (saveConvo.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+    expect(options.unsetFields).toEqual({ agent_id: 1, spec: 1, endpointType: 1 });
+  });
+
   it('labels stored input from a model run with its endpoint and model', async () => {
     const { store, saveMessage } = persistence({
       endpoint: 'mock',

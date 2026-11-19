@@ -213,10 +213,17 @@ function createAgentAccessMiddleware(
     try {
       const agent = await deps.getAgent({ id: agentId });
 
-      /** Model access belongs to personal API keys; OIDC integrations stay agent-only. */
+      /** Model access belongs to personal API keys; OIDC callers and integration keys stay
+       *  agent-only (the resolver refuses them too, see `isPersonalApiKeyRequest`). */
       /** `agent_` ids are saved agents only: they skip the pre-resolution guards
        *  (`onlyForModelNames`), so they must never resolve to a model either. */
-      if (!agent && deps.resolveRemoteModel && req.apiKeyId && !isSavedAgentId(agentId)) {
+      if (
+        !agent &&
+        deps.resolveRemoteModel &&
+        req.apiKeyId &&
+        !req.apiKeyBound &&
+        !isSavedAgentId(agentId)
+      ) {
         const remoteModel = await deps.resolveRemoteModel(req, agentId);
         if (remoteModel) {
           req.remoteModel = remoteModel;
@@ -308,7 +315,20 @@ export const rejectBackgroundForRemoteModel: RequestHandler = (req, res, next) =
 };
 
 export interface RemoteModelBalanceGateDeps {
-  findBalanceByUser: (userId: string) => Promise<{ tokenCredits?: number | null } | null>;
+  findBalanceByUser: (
+    userId: string,
+    options: { includeReservedCredits: true },
+  ) => Promise<{ tokenCredits?: number | null; reservedCredits?: number | null } | null>;
+  /**
+   * The chat's admission path. An additive auto-refill is applied only there, so an
+   * exhausted balance is re-checked through it (holding nothing) before refusing.
+   */
+  reserveBalance?: (request: {
+    user: string;
+    reservationId: string;
+    amount: number;
+    expiresAt: Date;
+  }) => Promise<{ balance: number } | null>;
 }
 
 /**
@@ -328,8 +348,20 @@ export function createRemoteModelBalanceGate(deps: RemoteModelBalanceGateDeps): 
       return;
     }
     try {
-      const balance = await deps.findBalanceByUser(req.user.id);
-      const credits = balance ? (balance.tokenCredits ?? 0) : (balanceConfig.startBalance ?? 0);
+      /** Credits other in-flight requests hold are not available, as at chat admission. */
+      const balance = await deps.findBalanceByUser(req.user.id, { includeReservedCredits: true });
+      let credits = balance
+        ? (balance.tokenCredits ?? 0) - (balance.reservedCredits ?? 0)
+        : (balanceConfig.startBalance ?? 0);
+      if (credits <= 0 && balance && deps.reserveBalance) {
+        const admitted = await deps.reserveBalance({
+          user: req.user.id,
+          reservationId: '',
+          amount: 0,
+          expiresAt: new Date(),
+        });
+        credits = admitted?.balance ?? credits;
+      }
       if (credits > 0) {
         next();
         return;
