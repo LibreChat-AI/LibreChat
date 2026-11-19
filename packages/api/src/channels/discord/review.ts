@@ -219,11 +219,13 @@ export function createDiscordReviewHandler(deps: {
       responseId,
     );
     if (!(await authorized())) return unavailable;
+    const viewExpiry = view?.pendingAction?.expiresAt;
     if (
       !view ||
+      viewExpiry == null ||
       view.pendingAction?.actionId !== run.snapshot.pendingAction.actionId ||
-      view.pendingAction.expiresAt !== run.snapshot.pendingAction.expiresAt ||
-      view.pendingAction.expiresAt <= now()
+      Math.floor(viewExpiry / 1000) !== Math.floor(run.snapshot.pendingAction.expiresAt / 1000) ||
+      viewExpiry <= now()
     )
       return browser;
     const projection = projectDiscordReview(view);

@@ -155,7 +155,7 @@ async function fixture(payload: Agents.HumanInterruptPayload = tool) {
           pendingAction: {
             actionId: action.actionId,
             kind: payload.type,
-            expiresAt: action.expiresAt,
+            expiresAt: Math.floor(action.expiresAt! / 1000) * 1000,
           },
         },
         progress: {
