@@ -546,25 +546,30 @@ describe('usePaletteEntries', () => {
       expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
     });
 
-    it('selects an operation-ready cold server without another Connect and keeps Configure', () => {
-      const context = fullContext();
-      const onConfigClick = jest.fn();
-      context.mcpServerManager.initializeServer = jest.fn();
-      context.mcpServerManager.connectionStatus = { github: { connectionState: 'disconnected' } };
-      context.mcpServerManager.connectionViews = { github: { state: 'succeeded', canUse: true } };
-      context.mcpServerManager.getServerStatusIconProps = jest.fn(() => ({
-        hasCustomUserVars: true,
-        onConfigClick,
-      }));
-      mockContext = context;
-      const row = entries().result.current.find((item) => item.key === 'mcp:github');
-      act(() => row?.onSelect());
-      expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
-      expect(context.mcpServerManager.initializeServer).not.toHaveBeenCalled();
-      act(() => row?.modes?.find((mode) => mode.id === 'configure')?.onSelect());
-      expect(onConfigClick).toHaveBeenCalledTimes(1);
-      expect(context.mcpServerManager.connectionStatus.github.connectionState).toBe('disconnected');
-    });
+    it.each(['succeeded', 'on_demand'] as const)(
+      'selects a ready %s server without another Connect and keeps Configure',
+      (state) => {
+        const context = fullContext();
+        const onConfigClick = jest.fn();
+        context.mcpServerManager.initializeServer = jest.fn();
+        context.mcpServerManager.connectionStatus = { github: { connectionState: 'disconnected' } };
+        context.mcpServerManager.connectionViews = { github: { state, canUse: true } };
+        context.mcpServerManager.getServerStatusIconProps = jest.fn(() => ({
+          hasCustomUserVars: true,
+          onConfigClick,
+        }));
+        mockContext = context;
+        const row = entries().result.current.find((item) => item.key === 'mcp:github');
+        act(() => row?.onSelect());
+        expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
+        expect(context.mcpServerManager.initializeServer).not.toHaveBeenCalled();
+        act(() => row?.modes?.find((mode) => mode.id === 'configure')?.onSelect());
+        expect(onConfigClick).toHaveBeenCalledTimes(1);
+        expect(context.mcpServerManager.connectionStatus.github.connectionState).toBe(
+          'disconnected',
+        );
+      },
+    );
 
     it('initializes rather than toggles a server whose connection status is still unknown', () => {
       const context = fullContext();

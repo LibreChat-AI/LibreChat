@@ -522,7 +522,10 @@ export default function usePaletteEntries({
       for (const server of selectableServers) {
         const title = server.config?.title || server.serverName;
         const statusProps = getServerStatusIconProps?.(server.serverName);
-        /* A row for a server that is not connected routes through the manager
+        const canUse =
+          connectionViews?.[server.serverName]?.canUse ??
+          connectionStatus?.[server.serverName]?.connectionState === 'connected';
+        /* A row for a server that is not ready routes through the manager
            instead of blindly selecting: credentials first when the server wants
            custom variables, otherwise a reinitialize, which runs the OAuth
            flow when needed and selects the server itself once it is ready.
@@ -534,15 +537,7 @@ export default function usePaletteEntries({
             toggleServerSelection?.(server.serverName);
             return;
           }
-          /* An unknown status means the server has not reported a connection
-             yet, which is not the same as being connected: treat it like a
-             disconnected server so it initializes before it can be selected. */
-          if (
-            !(
-              connectionViews?.[server.serverName]?.canUse ??
-              connectionStatus?.[server.serverName]?.connectionState === 'connected'
-            )
-          ) {
+          if (!canUse) {
             if (statusProps?.isInitializing) {
               return;
             }
@@ -555,7 +550,7 @@ export default function usePaletteEntries({
           }
           toggleServerSelection?.(server.serverName);
         };
-        /* A connected server keeps its per-user variables editable: the
+        /* A ready server keeps its per-user variables editable: the
            palette row carries the Configure action the replaced menu had. */
         const getServerModes = (): PaletteMode[] | undefined => {
           if (statusProps?.isInitializing === true && statusProps.canCancel === true) {
@@ -569,11 +564,7 @@ export default function usePaletteEntries({
               },
             ];
           }
-          if (
-            statusProps?.hasCustomUserVars === true &&
-            (connectionViews?.[server.serverName]?.canUse ??
-              connectionStatus?.[server.serverName]?.connectionState === 'connected')
-          ) {
+          if (statusProps?.hasCustomUserVars === true && canUse) {
             return [
               {
                 id: 'configure',

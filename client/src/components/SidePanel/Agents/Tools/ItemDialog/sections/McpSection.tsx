@@ -395,7 +395,7 @@ export default function McpSection({ item }: Props) {
       }
       return;
     }
-    if (!isConnected || !hasTools) {
+    if (!isReadyForAgent || !hasTools) {
       return;
     }
     setAutoSelectPending(false);
@@ -405,7 +405,6 @@ export default function McpSection({ item }: Props) {
     initConnectionDeferred,
     toolsLoading,
     isReadyForAgent,
-    isConnected,
     hasTools,
     tools,
     updateFormTools,

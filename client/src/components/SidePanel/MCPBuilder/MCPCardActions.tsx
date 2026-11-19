@@ -3,8 +3,8 @@ import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import { KeyRound, Pencil, PlugZap, RefreshCw, Unlink, X } from 'lucide-react';
 import type { MCPServerStatus } from 'librechat-data-provider';
 import type { MCPConnectionView } from '~/hooks/MCP/connection';
+import { getMCPControlState } from '~/components/MCP/mcpServerUtils';
 import { cn, rowActionClasses, rowActionSlotClasses } from '~/utils';
-import { getMCPConnectionView } from '~/hooks/MCP/connection';
 import { useLocalize } from '~/hooks';
 
 interface MCPCardActionsProps {
@@ -57,16 +57,12 @@ export default function MCPCardActions({
 }: MCPCardActionsProps) {
   const localize = useLocalize();
 
+  const connectionState = getMCPControlState(serverStatus, view);
   const requestScoped = view?.requestScoped ?? serverStatus?.requestScoped;
-  const state = (view ?? getMCPConnectionView(serverStatus)).state;
-  const canReconnect = state === 'connected' || state === 'succeeded' || state === 'authorized';
-  const isConnecting = state === 'connecting';
-  const isDisconnected =
-    state === 'disconnected' ||
-    state === 'unknown' ||
-    state === 'needs_authorization' ||
-    state === 'needs_configuration';
-  const isError = state === 'error' || state === 'failed';
+  const isConnected = connectionState === 'connected';
+  const isConnecting = connectionState === 'connecting';
+  const isDisconnected = connectionState === 'disconnected';
+  const isError = connectionState === 'error';
 
   /** A run in flight is a state of the row, not an action waiting to be found:
    *  the spinner and the cancel that replaces it stay put without a hover. */
@@ -151,14 +147,14 @@ export default function MCPCardActions({
 
       {/* On-demand servers stay idle between requests, so their user variables
           must remain configurable without a live transport connection. */}
-      {(canReconnect || requestScoped) && hasCustomUserVars && (
+      {(isConnected || requestScoped) && hasCustomUserVars && (
         <RowAction label={localize('com_ui_configure')} onClick={onConfigClick}>
           <KeyRound className="size-4" aria-hidden="true" />
         </RowAction>
       )}
 
       {/* Refresh button - for connected servers (allows reconnection) */}
-      {canReconnect && !requestScoped && (
+      {isConnected && !requestScoped && (
         <RowAction label={localize('com_nav_mcp_reconnect')} onClick={() => onInitialize()}>
           <RefreshCw className="size-4" aria-hidden="true" />
         </RowAction>

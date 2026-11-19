@@ -79,10 +79,10 @@ test('Connect survives cold-replica status; tools survive the connecting replica
       connectionStateSource: 'unobserved',
     });
     evidence.push({ stage: 'cold-B-status', status: coldStatus, fixture: await state() });
-    await expect(card).toHaveAttribute(
-      'aria-label',
-      'E2E Connection State - Last connection succeeded',
-    );
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Unknown');
+    await card.hover();
+    await expect(card.getByRole('button', { name: 'Reconnect', exact: true })).toBeVisible();
+    await expect(card.getByRole('status')).toHaveCount(0);
     await page.screenshot({ path: info.outputPath('connect-A-poll-B.png') });
     if (process.env.E2E_EVIDENCE_ONLY === 'true') return;
 
@@ -92,6 +92,8 @@ test('Connect survives cold-replica status; tools survive the connecting replica
     await expect(settings).toBeVisible();
     if ((await settings.getAttribute('aria-pressed')) !== 'true') await settings.click();
     await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Unknown');
+    await card.hover();
+    await expect(card.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
     expect((await state()).initializations).toBe(1);
     evidence.push({ stage: 'reload-on-still-cold-B', fixture: await state() });
 
@@ -119,10 +121,7 @@ test('Connect survives cold-replica status; tools survive the connecting replica
     await card.hover();
     await card.getByRole('button', { name: 'Reconnect', exact: true }).click();
     expect(await (await failed).json()).toMatchObject({ success: false });
-    await expect(card).toHaveAttribute(
-      'aria-label',
-      /^E2E Connection State - (Last connection failed|Error)$/,
-    );
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Error');
     await expect(card.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
     await page.screenshot({ path: info.outputPath('failed-reconnect-retry.png') });
     evidence.push({ stage: 'failed-reconnect', fixture: await state() });

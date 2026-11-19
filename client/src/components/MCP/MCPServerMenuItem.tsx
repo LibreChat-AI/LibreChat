@@ -33,18 +33,8 @@ export default function MCPServerMenuItem({
 }: MCPServerMenuItemProps) {
   const localize = useLocalize();
   const displayName = server.config?.title || server.serverName;
-  const statusColor = getStatusColor(
-    server.serverName,
-    connectionStatus,
-    isInitializing,
-    statusIconProps?.view,
-  );
-  const statusTextKey = getStatusTextKey(
-    server.serverName,
-    connectionStatus,
-    isInitializing,
-    statusIconProps?.view,
-  );
+  const statusColor = getStatusColor(server.serverName, connectionStatus, isInitializing);
+  const statusTextKey = getStatusTextKey(server.serverName, connectionStatus, isInitializing);
   const statusText = localize(statusTextKey as Parameters<typeof localize>[0]);
   const showActionButton = shouldShowActionButton(statusIconProps);
 

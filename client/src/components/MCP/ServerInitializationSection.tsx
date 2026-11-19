@@ -3,6 +3,7 @@ import { RefreshCw, Trash2 } from 'lucide-react';
 import { Button, Spinner } from '@librechat/client';
 import { useLocalize, useMCPServerManager } from '~/hooks';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
+import { getMCPControlState } from './mcpServerUtils';
 import { openInNewTab } from '~/utils';
 
 interface ServerInitializationSectionProps {
@@ -45,7 +46,7 @@ export default function ServerInitializationSection({
 
   const serverStatus = connectionStatus?.[serverName];
   const view = connectionViews?.[serverName];
-  const isConnected = view?.canUse ?? serverStatus?.connectionState === 'connected';
+  const isConnected = getMCPControlState(serverStatus, view) === 'connected';
   const hasPendingOAuth =
     requiresOAuth &&
     serverStatus?.requiresOAuth === true &&
@@ -57,10 +58,7 @@ export default function ServerInitializationSection({
   const requestScoped =
     serverStatus?.requestScoped === true ||
     availableMCPServersMap?.[serverName]?.requestScoped === true;
-  const shouldShowReinit =
-    isConnected &&
-    !requestScoped &&
-    (view?.state === 'succeeded' || requiresOAuth || hasCustomUserVars);
+  const shouldShowReinit = isConnected && !requestScoped && (requiresOAuth || hasCustomUserVars);
   /** Saving custom variables makes an on-demand server ready, but it still
    * needs one explicit initialization attempt so callers waiting to attach the
    * runtime wildcard observe `connectionDeferred`. */

@@ -1,5 +1,7 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
 import {
+  getMCPControlState,
+  getMCPServerAction,
   getStatusColor,
   getStatusTextKey,
   isMCPServerReadyForAgent,
@@ -58,6 +60,29 @@ describe('isMCPServerReadyForAgent', () => {
 });
 
 describe('shouldShowActionButton', () => {
+  it('keeps the menu action slot in sync with the current Connect result', () => {
+    const props = {
+      serverName: 'server',
+      serverStatus: status('connected', 'not_required'),
+      isInitializing: false,
+      canCancel: false,
+      onCancel: jest.fn(),
+      onConfigClick: jest.fn(),
+      view: { state: 'failed', canUse: false } as const,
+    };
+
+    expect(getMCPServerAction(props)).toBe('connect');
+    expect(shouldShowActionButton(props)).toBe(true);
+
+    const succeeded = {
+      ...props,
+      serverStatus: status('disconnected', 'not_required'),
+      view: { state: 'succeeded', canUse: true } as const,
+    };
+    expect(getMCPServerAction(succeeded)).toBeUndefined();
+    expect(shouldShowActionButton(succeeded)).toBe(false);
+  });
+
   it('keeps configuration actionable for an idle request-scoped server', () => {
     const serverStatus: MCPServerStatus = {
       connectionState: 'disconnected',
@@ -131,4 +156,27 @@ it('uses explicit operation readiness for agent attachment without changing tran
     }),
   ).toBe(false);
   expect(raw.connectionState).toBe('disconnected');
+});
+
+it('keeps the existing secondary-replica display neutral while preserving reconnect', () => {
+  const raw: MCPServerStatus = {
+    requiresOAuth: false,
+    connectionState: 'disconnected',
+    connectionStateSource: 'unobserved',
+  };
+  const view = { state: 'succeeded', canUse: true, observation: raw } as const;
+
+  expect(getStatusTextKey('mcp', { mcp: raw }, undefined, view)).toBe('com_nav_mcp_status_unknown');
+  expect(getStatusColor('mcp', { mcp: raw }, undefined, view)).toBe('bg-status-neutral');
+  expect(getMCPControlState(raw, view)).toBe('connected');
+  expect(getMCPControlState(raw, { state: 'unknown', canUse: false })).toBe('disconnected');
+});
+
+it('uses the existing error and retry presentation for a failed reconnect over old status', () => {
+  const raw = status('connected', 'not_required');
+  const view = { state: 'failed', canUse: false, observation: raw } as const;
+
+  expect(getStatusTextKey('mcp', { mcp: raw }, undefined, view)).toBe('com_nav_mcp_status_error');
+  expect(getStatusColor('mcp', { mcp: raw }, undefined, view)).toBe('bg-status-error');
+  expect(getMCPControlState(raw, view)).toBe('error');
 });

@@ -1,51 +1,112 @@
 import React from 'react';
 import '@testing-library/jest-dom/extend-expect';
-import { fireEvent, render, screen } from '@testing-library/react';
-import type { MCPConnectionState } from '~/hooks/MCP/connection';
+import { render, screen } from '@testing-library/react';
+import type { MCPServerStatus } from 'librechat-data-provider';
 import MCPCardActions from './MCPCardActions';
 
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
-jest.mock('~/utils', () => ({
-  cn: () => '',
-  rowActionClasses: () => '',
-  rowActionSlotClasses: () => '',
-}));
-jest.mock('@librechat/client', () => ({
-  Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button {...props}>{children}</button>
-  ),
-  TooltipAnchor: ({ render: button }: { render: React.ReactNode }) => button,
-  Spinner: () => <span />,
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => key,
 }));
 
-it.each<[MCPConnectionState, string]>([
-  ['succeeded', 'com_nav_mcp_reconnect'],
-  ['failed', 'com_nav_mcp_connect'],
-  ['unknown', 'com_nav_mcp_connect'],
-  ['authorized', 'com_nav_mcp_reconnect'],
-])('offers the truthful %s connection action', (state, label) => {
-  const initialize = jest.fn();
-  const raw = {
-    requiresOAuth: false,
-    connectionState: 'disconnected' as const,
-    connectionStateSource: 'unobserved' as const,
-  };
-  render(
-    <MCPCardActions
-      serverName="example"
-      serverStatus={raw}
-      view={{ state, canUse: state === 'succeeded' || state === 'authorized', observation: raw }}
-      isInitializing={false}
-      canCancel={false}
-      hasCustomUserVars={false}
-      canEdit={false}
-      onEditClick={jest.fn()}
-      onConfigClick={jest.fn()}
-      onInitialize={initialize}
-      onCancel={jest.fn()}
-    />,
+jest.mock('@librechat/client', () => ({
+  Button: jest.requireActual('@librechat/client').Button,
+  buttonVariants: jest.requireActual('@librechat/client').buttonVariants,
+  Spinner: (props: React.ComponentProps<'span'>) => <span {...props} />,
+  TooltipAnchor: ({
+    children,
+    render,
+    description: _description,
+    side: _side,
+    ...props
+  }: React.ComponentProps<'div'> & {
+    description: string;
+    side?: string;
+    render?: React.ReactElement;
+  }) => render ?? <div {...props}>{children}</div>,
+}));
+
+const connectedOAuthStatus = {
+  connectionState: 'connected',
+  requiresOAuth: true,
+} as MCPServerStatus;
+
+describe('MCPCardActions', () => {
+  test('revoke icon keeps its destructive color while hovered', () => {
+    render(
+      <MCPCardActions
+        serverName="server"
+        serverStatus={connectedOAuthStatus}
+        isInitializing={false}
+        canCancel={false}
+        hasCustomUserVars={false}
+        canEdit={false}
+        onEditClick={jest.fn()}
+        onConfigClick={jest.fn()}
+        onInitialize={jest.fn()}
+        onCancel={jest.fn()}
+        onRevoke={jest.fn()}
+      />,
+    );
+
+    const revokeButton = screen.getByRole('button', { name: 'com_ui_revoke' });
+    /** The control takes the shared row-action appearance, and the icon states its
+     *  own colour, so hovering the row cannot repaint a destructive action. */
+    expect(revokeButton).toHaveClass('hover:bg-surface-hover-alt', 'rounded-md');
+    expect(revokeButton.querySelector('svg')).toHaveClass('text-text-destructive');
+  });
+
+  test.each([
+    ['disconnected', 'com_nav_mcp_connect'],
+    ['error', 'com_nav_mcp_connect'],
+    ['connected', 'com_nav_mcp_reconnect'],
+  ] as const)(
+    'does not render a manual connection action when %s and on-demand',
+    (state, label) => {
+      render(
+        <MCPCardActions
+          serverName="server"
+          serverStatus={{
+            connectionState: state,
+            requiresOAuth: false,
+            requestScoped: true,
+          }}
+          isInitializing={false}
+          canCancel={false}
+          hasCustomUserVars={false}
+          canEdit={false}
+          onEditClick={jest.fn()}
+          onConfigClick={jest.fn()}
+          onInitialize={jest.fn()}
+          onCancel={jest.fn()}
+        />,
+      );
+
+      expect(screen.queryByRole('button', { name: label })).not.toBeInTheDocument();
+    },
   );
-  fireEvent.click(screen.getByRole('button', { name: label }));
-  expect(initialize).toHaveBeenCalledTimes(1);
-  expect(raw.connectionState).toBe('disconnected');
+
+  test('keeps custom-variable configuration available while an on-demand server is idle', () => {
+    render(
+      <MCPCardActions
+        serverName="server"
+        serverStatus={{
+          connectionState: 'disconnected',
+          requiresOAuth: false,
+          requestScoped: true,
+          configurationState: 'needs_configuration',
+        }}
+        isInitializing={false}
+        canCancel={false}
+        hasCustomUserVars={true}
+        canEdit={false}
+        onEditClick={jest.fn()}
+        onConfigClick={jest.fn()}
+        onInitialize={jest.fn()}
+        onCancel={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'com_ui_configure' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_nav_mcp_connect' })).not.toBeInTheDocument();
+  });
 });
