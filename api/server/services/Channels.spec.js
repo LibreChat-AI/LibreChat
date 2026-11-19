@@ -75,10 +75,10 @@ function channel(tenantId) {
   const value = {
     tenantId,
     channelId: 'channel',
+    type: 'slack',
     agentId: 'agent',
     createdBy: 'owner',
     status: 'active',
-    type: 'slack',
     revision: 'v1',
     slack: { teamId: 'T1' },
   };

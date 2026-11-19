@@ -140,6 +140,33 @@ function buildScorePayload({
   };
 }
 
+type FeedbackScoreScope = Pick<
+  SendFeedbackScoreParams,
+  | 'traceId'
+  | 'appConfig'
+  | 'sampled'
+  | 'destinationIds'
+  | 'centralTraceExportEnabled'
+  | 'isTemporary'
+>;
+
+async function feedbackScoreDestinations(
+  input: FeedbackScoreScope,
+): Promise<LangfuseScoreDestination[]> {
+  if (!input.traceId || !isLangfuseTraceAllowed(input.appConfig, input.isTemporary)) return [];
+  const ids = input.destinationIds == null ? undefined : new Set(input.destinationIds);
+  return (
+    await getScoreDestinations(input.appConfig, input.traceId, input.sampled, {
+      centralTraceExportEnabled: input.centralTraceExportEnabled,
+    })
+  ).filter(({ id }) => ids == null || (id != null && ids.has(id)));
+}
+
+/** The same retained-source routing and privacy policy used by score dispatch, without disclosing credentials. */
+export async function isFeedbackScoreEligible(input: FeedbackScoreScope): Promise<boolean> {
+  return (await feedbackScoreDestinations(input)).length > 0;
+}
+
 export async function sendFeedbackScore({
   traceId,
   scoreId: requestedScoreId,
@@ -161,10 +188,14 @@ export async function sendFeedbackScore({
     return;
   }
 
-  const destinationIdSet = destinationIds == null ? undefined : new Set(destinationIds);
-  const destinations = (
-    await getScoreDestinations(appConfig, traceId, sampled, { centralTraceExportEnabled })
-  ).filter(({ id }) => destinationIdSet == null || (id != null && destinationIdSet.has(id)));
+  const destinations = await feedbackScoreDestinations({
+    appConfig,
+    traceId,
+    sampled,
+    destinationIds,
+    centralTraceExportEnabled,
+    isTemporary,
+  });
   assertActive?.();
   signal?.throwIfAborted();
   if (destinations.length === 0) {

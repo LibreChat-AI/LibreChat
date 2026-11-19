@@ -462,6 +462,7 @@ it('composes binding permissions, protected routing, and policy changes around t
     routes,
     inbox: createDiscordInboxStorage(db, policy.inbox),
     commands: createDiscordCommandStorage(db),
+    feedback: { recordDiscordFeedback: async () => ({ ok: false, error: { code: 'forbidden' } }) },
     gateway: createDiscordGatewayStorage(db, policy.ownership),
     discovery: createDiscordRuntimeStorage(db),
     messages: createDiscordMessageStorage(db),

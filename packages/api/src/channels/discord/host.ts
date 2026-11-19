@@ -21,6 +21,7 @@ import type { DiscordChannelConfig } from 'librechat-data-provider';
 import type { ChannelApplicationAuthorityDependencies } from '../applicationAuthority';
 import type { ChannelApplicationAuthority } from '../applicationAuthority';
 import type { SlackWorkspaceAdminDependencies } from '../workspaceRuntime';
+import type { ChannelFeedbackRuntime } from '../feedbackRuntime';
 import type { DiscordManagementPrincipal } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { SafeErrorMetadata } from '~/utils/errors';
@@ -32,6 +33,7 @@ import { createDiscordGatewayHandlers } from './gatewayHttp';
 import { createDiscordMessageHandlers } from './messageHttp';
 import { createDiscordCommandExecutor } from './commands';
 import { createDiscordRuntimeService } from './discovery';
+import { createDiscordFeedbackHandler } from './feedback';
 import { createDiscordMessageService } from './messages';
 import { createDiscordBindingService } from './bindings';
 import { createDiscordInboxHandlers } from './inboxHttp';
@@ -92,6 +94,7 @@ export function createDiscordChannelRuntime(
     discovery: DiscordRuntimeStorage;
     messages: DiscordMessageStorage;
     commands: DiscordCommandStorage;
+    feedback: Pick<ChannelFeedbackRuntime, 'recordDiscordFeedback'>;
     application: Pick<ChannelApplicationAuthority, 'authority' | 'storage'>;
     access: ChannelApplicationAuthorityDependencies['access'];
     policy: ReturnType<typeof createDiscordPolicyReader>;
@@ -153,6 +156,7 @@ export function createDiscordChannelRuntime(
     authority: deps.application.authority,
     publicBaseUrl: deps.publicBaseUrl || 'http://localhost:3080',
     runs: deps.application.storage,
+    feedback: createDiscordFeedbackHandler({ feedback: deps.feedback }),
     enabled,
   });
   const inbox = createDiscordInboxService({

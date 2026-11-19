@@ -130,6 +130,7 @@ module.exports = {
   runs,
   identityHandlers,
   feedbackHandlers: feedback.handlers,
+  recordDiscordFeedback: feedback.recordDiscordFeedback,
   initializeChannelFeedback: feedback.initialize,
   stopChannelFeedback: feedback.stop,
   initializeChannelCleanup: cleanup.initialize,
