@@ -3,11 +3,18 @@ import express from 'express';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { PermissionBits, ResourceType, channelConfigSchema } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
   createDiscordInstallationStorage,
   createDiscordRouteStorage,
+  createDiscordInboxStorage,
+  createDiscordCommandStorage,
+  createDiscordGatewayStorage,
+  createDiscordRuntimeStorage,
+  createChannelIdentityStorage,
+  createChannelRunStorage,
   tenantStorage,
   runAsSystem,
   getTenantId,
@@ -15,10 +22,12 @@ import {
 import type { DiscordGuild } from 'librechat-data-provider';
 import type { DiscordManagementPrincipal } from './service';
 import { createDiscordBindingHandlers, createDiscordRouteHandlers } from './bindingHttp';
+import { createDiscordChannelRuntime, createDiscordPolicyReader } from './host';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createDiscordBindingService } from './bindings';
 import { createDiscordProviderClient } from './client';
 import { createDiscordRouteResolver } from './routes';
+import { createChannelAuthority } from '../authority';
 
 const db = new mongoose.Mongoose();
 const principal = { id: '000000000000000000000001', tenantId: 'bindings-api' };
@@ -421,5 +430,126 @@ it('validates authenticated browser payloads and protects service key/route look
     .post('/service/resolve')
     .set('Authorization', `Bearer ${serviceToken}`)
     .send(resolveInput())
+    .expect(200);
+});
+
+it('composes binding permissions, protected routing, and policy changes around the canonical authority', async () => {
+  let permission = PermissionBits.VIEW;
+  let manage = true;
+  const policy = createDiscordPolicyReader(async () => ({
+    endpoints: {
+      agents: { channels: channelConfigSchema.parse({ enabled, discord: { enabled: true } }) },
+    },
+  }));
+  const access = {
+    getAgent: async () => ({ _id: new mongoose.Types.ObjectId(principal.id), name: 'Agent' }),
+    getEffectivePermissions: jest.fn(async () => permission),
+  };
+  const authority = createChannelAuthority({
+    channels,
+    identityStorage: createChannelIdentityStorage(db),
+    getConfig: async () => ({ enabled }),
+    findUser: (id) => channels.findUser({ _id: id }),
+    getRole: (name) => db.models.Role.findOne({ name }),
+    isPrincipalActive: async () => true,
+    getAgentPermissions: async () => PermissionBits.VIEW,
+    publicBaseUrl: 'https://chat.example',
+  });
+  const runtime = createDiscordChannelRuntime({
+    channels,
+    installations,
+    routes,
+    inbox: createDiscordInboxStorage(db, policy.inbox),
+    commands: createDiscordCommandStorage(db),
+    gateway: createDiscordGatewayStorage(db, policy.ownership),
+    discovery: createDiscordRuntimeStorage(db),
+    application: { authority, storage: createChannelRunStorage(db) },
+    policy,
+    access,
+    findUser: (id) => channels.findUser({ _id: id }),
+    isPrincipalActive: async () => true,
+    hasCapability: async () => manage,
+    serviceToken: () => serviceToken,
+    fetch: fetchProvider,
+    publicBaseUrl: 'https://chat.example',
+    logError: jest.fn(),
+  });
+  app.put('/host/:agentId/binding', runtime.bindings.bind);
+  app.get('/host/:agentId/binding', runtime.bindings.status);
+  app.delete('/host/:agentId/binding', runtime.bindings.remove);
+  app.get('/host/security/:applicationId', runtime.routes.security);
+  app.post('/host/inbox/claim', runtime.inbox.claim);
+  app.post('/host/gateway/acquire', runtime.gateway.acquire);
+  app.get('/host/runtime/bootstrap', runtime.discovery.bootstrap);
+  app.get('/host/runtime/applications', runtime.discovery.applications);
+  app.post('/host/gateway/bootstrap', runtime.gateway.bootstrap);
+  await request(app).get('/host/runtime/bootstrap').expect(401);
+  const bootstrapConfig = await request(app)
+    .get('/host/runtime/bootstrap')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(200);
+  expect(bootstrapConfig.body.discord.enabled).toBe(true);
+  expect(JSON.stringify(bootstrapConfig.body)).not.toMatch(/private-|encrypted/);
+  const applications = await request(app)
+    .get('/host/runtime/applications')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(200);
+  expect(applications.body.applications).toEqual([
+    { applicationId, applicationRevision, tenantId: principal.tenantId },
+  ]);
+  const { agentId, ...target } = input();
+  const url = `/host/${agentId}/binding`;
+  await request(app).put(url).send(target).expect(403);
+  expect(access.getEffectivePermissions).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resourceType: ResourceType.AGENT,
+      userId: principal.id,
+    }),
+  );
+  permission = PermissionBits.SHARE | PermissionBits.VIEW;
+  manage = false;
+  await request(app).put(url).send(target).expect(403);
+  expect(fetchProvider).not.toHaveBeenCalled();
+  manage = true;
+  const assigned = await request(app).put(url).send(target).expect(200);
+  await request(app).get(`/host/security/${applicationId}`).expect(401);
+  await request(app)
+    .get(`/host/security/${applicationId}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(200);
+  await request(app).post('/host/inbox/claim').send({ applicationId, owner: 'worker' }).expect(401);
+  const gatewayOwner = { applicationId, applicationRevision, ownerId: 'a'.repeat(32) };
+  await request(app)
+    .post('/host/gateway/acquire')
+    .send({ owner: gatewayOwner, leaseMs: 30000 })
+    .expect(401);
+  await request(app)
+    .post('/host/gateway/bootstrap')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({ owner: gatewayOwner })
+    .expect(409);
+  await request(app)
+    .post('/host/gateway/acquire')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({ owner: gatewayOwner, leaseMs: 30000 })
+    .expect(204);
+  const bootstrap = await request(app)
+    .post('/host/gateway/bootstrap')
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .send({ owner: gatewayOwner })
+    .expect(200);
+  expect(bootstrap.body.botToken).toBe(token);
+  expect(bootstrap.body.policy.enabled).toBe(false);
+  enabled = false;
+  await request(app)
+    .get(`/host/security/${applicationId}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(404);
+  await request(app).put(url).send(target).expect(404);
+  const status = await request(app).get(url).query(target).expect(200);
+  expect(status.body.value.canReplace).toBe(false);
+  await request(app)
+    .delete(url)
+    .send({ ...target, expectedRevision: assigned.body.value.routeRevision })
     .expect(200);
 });
