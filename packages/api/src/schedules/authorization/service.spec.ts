@@ -863,6 +863,87 @@ describe('a grant of the whole agent', () => {
     });
   });
 
+  it('holds a consent for a server the agents select as a whole when it is made', async () => {
+    const every: ScheduledMCPTarget = {
+      ...target,
+      permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }],
+      policyRevision: 'p3',
+    };
+    const s = setup();
+    s.changeTarget(every);
+    // Nothing to tick is listed for it, and it is still part of the whole agent.
+    expect((await s.service.view(identity)).targets).toEqual([]);
+    expect(await whole(s)).toMatchObject({ state: 'active', everything: true, targets: [] });
+    expect(s.snapshot.enrollment!.consents).toMatchObject([
+      { resource: { serverName: 'warehouse', audience: 'warehouse' } },
+    ]);
+    expect(await s.service.authority.authorize(call('anything'), {})).toMatchObject({
+      state: 'authorized',
+    });
+    // The same for a schedule that is being created.
+    const offer = await s.service.draft(identity);
+    expect(offer.targets).toEqual([]);
+    const grant = await s.service.grant(identity, {
+      offerDigest: offer.offer!.digest,
+      lifetimeHours: 1,
+      allow: {},
+      everything: true,
+    });
+    expect(grant.consents).toMatchObject([{ resource: { serverName: 'warehouse' } }]);
+  });
+
+  it('covers a declared server the agents take up after it was made', async () => {
+    const s = setup();
+    // Made while the agents used no MCP server at all.
+    s.changeTarget();
+    await whole(s);
+    expect(s.snapshot.enrollment!.consents).toEqual([]);
+    s.changeTarget(target);
+    const refused = (reason: string) => ({ state: 'denied', failure: { reason } });
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+      consentRevision: s.snapshot.enrollment!.revision,
+      validUntilMs: 1000 + 3_600_000,
+    });
+    expect(s.storage.pinScheduleMCPToolDefinition).not.toHaveBeenCalled();
+    // The recipient is the one the operator declares now, and no other.
+    expect(
+      await s.service.authority.authorize(
+        { ...call('query'), resource: { ...target.resource, audience: 'elsewhere' } },
+        {},
+      ),
+    ).toMatchObject(refused('binding_mismatch'));
+    s.changeTarget();
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject(
+      refused('binding_mismatch'),
+    );
+    s.changeTarget(target);
+    s.snapshot.configRevision = 1;
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject(
+      refused('binding_mismatch'),
+    );
+    s.snapshot.configRevision = 0;
+    s.setTime(1000 + 3_600_000);
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject(
+      refused('consent_expired'),
+    );
+    s.setTime(1000);
+    s.deny();
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject(
+      refused('rbac_denied'),
+    );
+
+    // A grant that lists its tools has no consent for a server it does not list.
+    const listed = setup();
+    listed.offerTools({ agentId: 'root', tools: ['web_search'] });
+    listed.changeTarget();
+    await listed.enroll({}, undefined, ['web_search']);
+    listed.changeTarget(target);
+    expect(await listed.service.authority.authorize(call('query'), {})).toMatchObject(
+      refused('consent_missing'),
+    );
+  });
+
   it('is not offered, and is refused, where a grant limits MCP tools only', async () => {
     const s = setup();
     const service = createScheduleMCPConsentService({

@@ -400,8 +400,16 @@ export function createScheduleMCPConsentService<
    */
   const standing = deps.resolveTools != null;
 
-  /** What each view offered beyond its MCP targets, per agent, for the confirmation of it. */
-  const offers = new WeakMap<ScheduleMCPConsentView, readonly ScheduledMCPToolSelection[]>();
+  /**
+   * What each view offered beyond the MCP targets it lists, for the confirmation of it: the
+   * agents' other tools, and every declared server the agents use. `servers` includes one
+   * selected as a whole, which is not listed to tick but is part of the whole agent: a grant
+   * of the whole agent holds a consent for it like any other, for its credentials.
+   */
+  const offers = new WeakMap<
+    ScheduleMCPConsentView,
+    { others: readonly ScheduledMCPToolSelection[]; servers: readonly ScheduledMCPTarget[] }
+  >();
 
   async function view(
     identity: Identity,
@@ -440,6 +448,7 @@ export function createScheduleMCPConsentService<
     const askingByServer = askingTools(enrollment?.consents ?? []);
     const allowedOther = toolNames(enrollment?.tools ?? []);
     let offeredOther: readonly ScheduledMCPToolSelection[] = [];
+    let servers: readonly ScheduledMCPTarget[] = [];
     const required = !enrollment && requiresGrant(limits, snapshot, now());
     const requireAfterMs =
       !enrollment && limits.enabled && !required ? (limits.requireAfterMs ?? null) : null;
@@ -467,10 +476,11 @@ export function createScheduleMCPConsentService<
     if (allowed && limits.enabled && deps.resolveEnrollment) {
       let resolved: readonly ScheduledMCPTarget[];
       try {
-        [resolved, offeredOther] = await Promise.all([
-          deps.resolveEnrollment(identity, options).then(listable),
+        [servers, offeredOther] = await Promise.all([
+          deps.resolveEnrollment(identity, options),
           deps.resolveTools?.(identity, options) ?? [],
         ]);
+        resolved = listable(servers);
       } catch (error) {
         if (!(error instanceof ScheduleMCPConsentError) || !enrollment) throw error;
         return {
@@ -539,7 +549,10 @@ export function createScheduleMCPConsentService<
       requireAfterMs,
       offer,
     };
-    offers.set(result, offeredOther);
+    offers.set(result, {
+      others: offeredOther,
+      servers: canonicalTargets(servers, { empty: true }),
+    });
     return result;
   }
 
@@ -624,10 +637,11 @@ export function createScheduleMCPConsentService<
       offer: null,
     };
     if (!limits.enabled || !deps.resolveEnrollment) return none;
-    const [resolved, others] = await Promise.all([
-      deps.resolveEnrollment(identity, options).then(listable),
+    const [servers, others] = await Promise.all([
+      deps.resolveEnrollment(identity, options),
       deps.resolveTools?.(identity, options) ?? [],
     ]);
+    const resolved = listable(servers);
     if (resolved.length === 0 && others.length === 0 && !standing) return none;
     const targets = canonicalTargets(resolved, { empty: true });
     const subject = {
@@ -646,7 +660,7 @@ export function createScheduleMCPConsentService<
         ...(standing && { everything: true as const }),
       },
     };
-    offers.set(result, others);
+    offers.set(result, { others, servers: canonicalTargets(servers, { empty: true }) });
     return result;
   }
 
@@ -668,8 +682,11 @@ export function createScheduleMCPConsentService<
     const everything = input.everything === true;
     if (everything && current.offer.everything !== true)
       throw new ScheduleMCPConsentError('consent_invalid');
-    const chosen = everything ? current.targets : selectAllowed(current.targets, input.allow);
-    const others = everything ? [] : selectTools(offers.get(current) ?? [], input.tools ?? []);
+    const offered = offers.get(current);
+    const chosen = everything
+      ? (offered?.servers ?? [])
+      : selectAllowed(current.targets, input.allow);
+    const others = everything ? [] : selectTools(offered?.others ?? [], input.tools ?? []);
     const asking = selectAsking(chosen, input.ask ?? {}, {});
     // Something must be allowed, and a tool nobody can approve would only ever be refused.
     if (
@@ -704,7 +721,7 @@ export function createScheduleMCPConsentService<
       throw new ScheduleMCPConsentError('consent_invalid');
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
-    const offered = offers.get(current) ?? [];
+    const { others: offered = [], servers = [] } = offers.get(current) ?? {};
     // Recompute the digest with the final observed row so an edit cannot reuse an old offer.
     const digest = offerDigest(
       identity,
@@ -717,7 +734,7 @@ export function createScheduleMCPConsentService<
     const everything = input.everything === true;
     if (everything && current.offer.everything !== true)
       throw new ScheduleMCPConsentError('consent_invalid');
-    const chosen = everything ? current.targets : selectAllowed(current.targets, input.allow);
+    const chosen = everything ? servers : selectAllowed(current.targets, input.allow);
     const others = everything ? [] : selectTools(offered, input.tools, snapshot.enrollment?.tools);
     // A grant allows something: the whole agent, an MCP tool, or one of the other tools.
     if (!everything && chosen.length === 0 && others.length === 0)
@@ -776,6 +793,28 @@ export function createScheduleMCPConsentService<
     );
   }
 
+  /**
+   * The server a call names, as the operator declares it and the agents use it now. A denial
+   * when it is no longer either, or is declared for another recipient than the call names.
+   */
+  const liveTarget = async (
+    request: Parameters<ScheduledMCPAuthority<Identity>['authorize']>[0],
+    options: { signal?: AbortSignal },
+  ): Promise<ScheduledMCPTarget | ReturnType<typeof denial>> => {
+    let targets: ScheduledMCPTarget[];
+    try {
+      targets = canonicalTargets(await deps.resolveEnrollment!(request.identity, options));
+    } catch (error) {
+      if (error instanceof ScheduleMCPConsentError)
+        return denial(error.code === 'consent_forbidden' ? 'rbac_denied' : 'binding_mismatch');
+      throw error;
+    }
+    const target = targets.find((t) => t.resource.serverName === request.resource.serverName);
+    return target && sameResource(target.resource, request.resource)
+      ? target
+      : denial('binding_mismatch');
+  };
+
   const authority: ScheduledMCPAuthority<Identity> = {
     async lookupConsent(identity, resource, options) {
       options.signal?.throwIfAborted();
@@ -831,7 +870,33 @@ export function createScheduleMCPConsentService<
       const consent = enrollment?.consents.find(
         (c) => c.resource.serverName === request.resource.serverName,
       );
-      if (!consent) return denial('consent_missing');
+      if (!consent) {
+        // A declared server the agents took up after a grant of the whole agent was made has
+        // no consent stored. The grant covers it all the same: its recipient is the one the
+        // operator declares now, and the grant's own lifetime and binding are what is checked.
+        if (enrollment?.everything !== true) return denial('consent_missing');
+        const lifetime = grantLifetime(enrollment);
+        if (lifetime.revoked) return denial('consent_revoked');
+        if (request.resource.credentialMode === 'browser_bearer') return denial('unsupported_mode');
+        if (now() >= lifetime.expiresAtMs) return denial('consent_expired');
+        if (
+          (!snapshot!.enabled && request.stage !== 'activation' && request.manual !== true) ||
+          snapshot!.agentId !== request.identity.agentId ||
+          enrollment.scheduleRevision !== snapshot!.configRevision
+        )
+          return denial('binding_mismatch');
+        if (!request.selection.tools.length) return denial('tool_policy_denied');
+        const target = await liveTarget(request, options);
+        if ('state' in target) return target;
+        if (options.signal?.aborted) return { state: 'cancelled' };
+        return {
+          state: 'authorized',
+          consentId: enrollment.revision,
+          consentRevision: enrollment.revision,
+          policyRevision: target.policyRevision,
+          validUntilMs: lifetime.expiresAtMs,
+        };
+      }
       if (consent.revokedAtMs != null) return denial('consent_revoked');
       if (request.resource.credentialMode === 'browser_bearer') return denial('unsupported_mode');
       if (now() >= consent.absoluteExpiresAtMs) return denial('consent_expired');
@@ -843,17 +908,9 @@ export function createScheduleMCPConsentService<
         !sameResource(consent.resource, request.resource)
       )
         return denial('binding_mismatch');
-      let targets: ScheduledMCPTarget[];
-      try {
-        targets = canonicalTargets(await deps.resolveEnrollment(request.identity, options));
-      } catch (error) {
-        if (error instanceof ScheduleMCPConsentError)
-          return denial(error.code === 'consent_forbidden' ? 'rbac_denied' : 'binding_mismatch');
-        throw error;
-      }
-      const target = targets.find((t) => t.resource.serverName === request.resource.serverName);
-      if (!target || !sameResource(target.resource, consent.resource))
-        return denial('binding_mismatch');
+      const target = await liveTarget(request, options);
+      if ('state' in target) return target;
+      if (!sameResource(target.resource, consent.resource)) return denial('binding_mismatch');
       /**
        * A grant of the whole agent allows whatever its agents have on the servers it was made
        * for: a tool or an agent added since, or a selection of every tool on the server, which

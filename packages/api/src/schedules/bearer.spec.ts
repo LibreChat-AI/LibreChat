@@ -57,8 +57,11 @@ const config: ParsedServerConfig = {
   headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
 };
 
-/** `everything`: the owner allowed the whole agent, and listed no tool. */
-async function bearerFixture(serverConfig = config, everything = false) {
+/**
+ * `everything`: the owner allowed the whole agent, and listed no tool. `tools` is what the
+ * agents select on the server when the owner confirms.
+ */
+async function bearerFixture(serverConfig = config, everything = false, tools = ['echo']) {
   let time = Date.now();
   let allowed = true;
   const target: ScheduledMCPTarget = {
@@ -72,8 +75,8 @@ async function bearerFixture(serverConfig = config, everything = false) {
       configurationRevision: '',
     },
     permittedTools: [
-      { agentId: 'root', tools: ['echo'] },
-      { agentId: 'child', tools: ['echo'] },
+      { agentId: 'root', tools: [...tools] },
+      { agentId: 'child', tools: [...tools] },
     ],
     policyRevision: 'offered-selections',
   };
@@ -93,7 +96,9 @@ async function bearerFixture(serverConfig = config, everything = false) {
       snapshot.enrollment = structuredClone(input.enrollment);
       return true;
     },
+    // As the real storage does: the grant itself is marked, and each of its consents.
     revokeScheduleMCPConsent: async () => {
+      if (snapshot.enrollment) snapshot.enrollment.revokedAtMs = time;
       for (const c of snapshot.enrollment?.consents ?? []) c.revokedAtMs = time;
       return true;
     },
@@ -276,6 +281,32 @@ it('admits a connection for whatever the agents select now under a grant of the 
   await expect(f.call('root', ['other'])).rejects.toMatchObject({
     failure: { reason: 'rbac_denied' },
   });
+});
+
+it('admits a connection to a server the agents select as a whole when the whole agent is allowed', async () => {
+  // The resolver reports such a selection under its marker: there is no tool to list.
+  const f = await bearerFixture(config, true, ['sys__all__sys']);
+  expect(f.snapshot.enrollment).toMatchObject({
+    everything: true,
+    consents: [{ resource: { serverName: 'Files' } }],
+  });
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await expect(f.call('root', ['echo'])).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+});
+
+it('admits a connection to a declared server the agents took up after the whole agent was allowed', async () => {
+  const f = await bearerFixture(config, true);
+  // As stored when the grant was made before the agents used this server.
+  f.snapshot.enrollment!.consents = [];
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await f.revoke();
+  await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
 });
 
 it('renews after synthetic expiry without a session, retaining no login refresh credentials', async () => {

@@ -57,7 +57,9 @@ grant lasts: every tool, skill and MCP server, including one added to the agent 
 grant was made. Nothing is listed and nothing is left out for not being listed.
 
 - The grant still stores a consent for each server the operator declared that the agents use
-  when it is made. A call there goes through the same authorization as any granted call
+  when it is made, including one they select as a whole. A declared server they take up later
+  has none stored and is covered all the same: its recipient is read from the operator's
+  declaration at the call. A call there goes through the same authorization as any granted call
   (recipient, credentials, lifetime, revocation, the owner's permissions), without the check
   against a list of tools and with no definition pin.
 - A server with no consent in the grant (one the operator did not declare, a local `stdio`
