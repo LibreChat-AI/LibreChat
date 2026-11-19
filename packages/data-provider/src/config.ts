@@ -1189,6 +1189,7 @@ const managementClientBindingSchema = z
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/, 'must be a valid tenant id')
       .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed'),
     enabled: z.boolean().default(true),
+    conversationRead: z.boolean().optional(),
   })
   .strict();
 
