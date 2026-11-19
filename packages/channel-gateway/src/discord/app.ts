@@ -217,6 +217,7 @@ export class DiscordGatewayApp {
                 CHANNEL_ID: row.channelId,
               };
               const provider = createDiscordWorkerProvider({
+                owner: context.owner,
                 rates: context.rates,
                 createClient: (bundle, rates) =>
                   new DiscordClient(

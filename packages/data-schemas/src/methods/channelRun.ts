@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   channelStorageConfigSchema,
-  channelRunActorSchema,
+  channelRunAdmissionSchema,
+  discordRunEffectAuthoritySchema,
   channelSnowflakeSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
 } from 'librechat-data-provider';
@@ -12,10 +13,12 @@ import type {
   ChannelDeliveryPlan,
   ChannelDeliveryReceipt,
   ChannelRunProgress,
+  DiscordRunEffectAuthority,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
 import type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
+import type { ChannelDestinationScope } from './channelDestination';
 import type { StoredResponseRecord } from '~/models/response';
 import {
   digest,
@@ -31,8 +34,9 @@ import {
   leaseDeadline,
   ChannelRunConflict,
 } from './channelProtocol';
-import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
+import { touchChannelRunAuthority, touchChannelDestinationBinding } from './channelDestination';
 import { assertDiscordMessageUnused, recordDiscordMessage } from './discordMessage';
+import { initializeChannelScope, touchChannelScope } from './channelScope';
 import { createDiscordMessageReceiptModel } from '~/models/discordMessage';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { createSlackThreadRouteModel } from '~/models/slackRoute';
@@ -50,6 +54,7 @@ export type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
 export { ChannelRunConflict } from './channelProtocol';
 
 export interface ChannelRunStorage {
+  authorizeDestination(scope: ChannelDestinationScope, now: number): Promise<boolean>;
   listPendingMetadata(
     cursor: string | undefined,
     limit: number,
@@ -94,7 +99,7 @@ export interface ChannelRunStorage {
     tenantId: string,
     fence: ChannelRunFence,
     now: number,
-    applicationRevision?: string,
+    applicationRevision?: string | DiscordRunEffectAuthority,
   ): Promise<ChannelRunRecord>;
   bindResponse(
     tenantId: string,
@@ -143,7 +148,7 @@ export interface ChannelRunStorage {
     fence: ChannelRunFence,
     revision: number,
     now: number,
-    applicationRevision?: string,
+    applicationRevision?: string | DiscordRunEffectAuthority,
   ): Promise<ChannelRunRecord>;
   settleProgress(
     tenantId: string,
@@ -162,7 +167,7 @@ export interface ChannelRunStorage {
     fence: ChannelRunFence,
     operationId: string,
     now: number,
-    applicationRevision?: string,
+    applicationRevision?: string | DiscordRunEffectAuthority,
   ): Promise<ChannelRunRecord>;
   settleDelivery(
     tenantId: string,
@@ -279,33 +284,65 @@ export function createChannelRunStorage(
       return result;
     });
   }
+  function effectAuthority(value?: string | DiscordRunEffectAuthority): DiscordRunEffectAuthority {
+    if (typeof value === 'string') return { applicationRevision: value };
+    const parsed = discordRunEffectAuthoritySchema.safeParse(value);
+    if (!parsed.success) throw new ChannelRunConflict('invalid_transition');
+    return parsed.data;
+  }
   /** New effects linearize here; settlements remain available after authority is revoked. */
   async function authorizeEffect(
     run: ChannelRunRecord,
     session: ClientSession,
     now: number,
-    applicationRevision?: string,
+    authority?: string | DiscordRunEffectAuthority,
   ): Promise<void> {
-    const actor = run.admission.actor;
-    if (actor.provider !== 'discord') return;
+    if (run.admission.actor.provider !== 'discord') {
+      if (authority !== undefined) throw new ChannelRunConflict('invalid_transition');
+      return;
+    }
+    const value = effectAuthority(authority);
     if (
-      !applicationRevision ||
-      !(await touchChannelAuthority(
+      !(await touchChannelRunAuthority(
         mongoose,
         {
           tenantId: run.tenantId,
           channelId: run.channelId,
           agentId: run.agentId,
-          channelRevision: run.principal.channelRevision,
           principal: run.principal,
-          provider: actor.provider,
-          applicationId: actor.applicationId,
-          guildId: actor.guildId,
-          externalUserId: actor.externalUserId,
-          externalChannelId: run.admission.externalChannelId,
-          applicationRevision,
+          admission: run.admission,
+          applicationRevision: value.applicationRevision,
+          discordAuthority: value.native,
           now,
         },
+        session,
+      ))
+    )
+      throw new ChannelRunConflict('invalid_transition');
+  }
+  async function authorizeContinuation(
+    run: ChannelRunRecord,
+    session: ClientSession,
+    now: number,
+    authority?: string | DiscordRunEffectAuthority,
+  ): Promise<void> {
+    if (run.admission.actor.provider !== 'discord') {
+      if (authority !== undefined) throw new ChannelRunConflict('invalid_transition');
+      return;
+    }
+    const value = effectAuthority(authority);
+    if (
+      !(await touchChannelDestinationBinding(
+        mongoose,
+        {
+          tenantId: run.tenantId,
+          channelId: run.channelId,
+          agentId: run.agentId,
+          principal: run.principal,
+          admission: run.admission,
+          applicationRevision: value.applicationRevision,
+        },
+        now,
         session,
       ))
     )
@@ -373,6 +410,8 @@ export function createChannelRunStorage(
     };
   }
   return {
+    authorizeDestination: (scope, now) =>
+      transaction((session) => touchChannelDestinationBinding(mongoose, scope, now, session)),
     async listPendingMetadata(cursor, limit) {
       if (
         !Number.isSafeInteger(limit) ||
@@ -428,7 +467,7 @@ export function createChannelRunStorage(
       });
     },
     async admit(input, now) {
-      channelRunActorSchema.parse(input.admission.actor);
+      channelRunAdmissionSchema.parse(input.admission);
       if (
         input.admission.actor.provider === 'discord' &&
         !channelSnowflakeSchema.safeParse(input.admission.eventId).success
@@ -479,6 +518,7 @@ export function createChannelRunStorage(
                 tenantId: input.tenantId,
                 channelId: input.channelId,
                 externalUserId: input.admission.actor.externalUserId,
+                externalChannelId: input.admission.externalChannelId,
                 applicationRevision: input.applicationRevision,
               },
               input.discordInbox,
@@ -489,24 +529,19 @@ export function createChannelRunStorage(
           throw new ChannelRunConflict('stale_fence');
         if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
         if (
-          !(await touchChannelAuthority(
+          !(await touchChannelRunAuthority(
             mongoose,
             {
               tenantId: input.tenantId,
               channelId: input.channelId,
               agentId: input.agentId,
-              channelRevision: input.principal.channelRevision,
-              promptEventAtMs,
-              provider: input.admission.actor.provider,
-              applicationId: input.admission.actor.applicationId,
-              applicationRevision: input.applicationRevision,
-              guildId: input.admission.actor.guildId,
-              teamId: input.admission.actor.teamId,
-              appId: input.admission.actor.appId,
               principal: input.principal,
-              externalUserId: input.admission.actor.externalUserId,
-              externalChannelId: input.admission.externalChannelId,
+              admission: input.admission,
+              applicationRevision: input.applicationRevision,
+              discordAuthority: input.discordAuthority,
               now,
+              newAdmission: true,
+              promptEventAtMs,
             },
             session,
           ))
@@ -570,7 +605,12 @@ export function createChannelRunStorage(
           const [record] = await runs().create(
             [
               {
-                ...input,
+                tenantId: input.tenantId,
+                channelId: input.channelId,
+                agentId: input.agentId,
+                principal: input.principal,
+                admission: input.admission,
+                ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
                 runId: randomUUID(),
                 laneId,
                 payloadHash,
@@ -735,8 +775,13 @@ export function createChannelRunStorage(
     },
     async prepareExecution(tenantId, fence, now, applicationRevision) {
       return mutate(tenantId, fence, now, async (run, session) => {
+        if (run.execution) {
+          if (typeof applicationRevision === 'object' && applicationRevision.native)
+            await authorizeEffect(run, session, now, applicationRevision);
+          else await authorizeContinuation(run, session, now, applicationRevision);
+          return {};
+        }
         await authorizeEffect(run, session, now, applicationRevision);
-        if (run.execution) return {};
         if (run.state !== 'queued') throw new ChannelRunConflict('invalid_transition');
         const lane = await lanes()
           .findOne({ tenantId, laneId: run.laneId, activeRunId: run.runId })
@@ -758,18 +803,17 @@ export function createChannelRunStorage(
         const execution = run.execution;
         if (
           !run.cancellationRequested ||
-          !execution ||
-          execution.apiKeyId ||
-          execution.responseId ||
-          execution.generationCreatedAt != null ||
-          execution.deliveryKey ||
-          execution.enqueueAttemptedAt ||
+          execution?.apiKeyId ||
+          execution?.responseId ||
+          execution?.generationCreatedAt != null ||
+          execution?.deliveryKey ||
+          execution?.enqueueAttemptedAt ||
           run.plan
         )
           throw new ChannelRunConflict('invalid_transition');
         return {
           state: 'delivering' as const,
-          execution: { ...execution, protocol: 'responses' as const },
+          ...(execution ? { execution: { ...execution, protocol: 'responses' as const } } : {}),
           snapshot: {
             status: 'cancelled' as const,
             text: '',

@@ -1,4 +1,10 @@
 import { gptPointReleaseFamily } from 'librechat-data-provider';
+import type {
+  DiscordNativeAuthority,
+  DiscordGatewayOwner,
+  DiscordGuildTextActorSource,
+} from 'librechat-data-provider';
+import { createDiscordGatewayStorage } from './discordGateway';
 
 /** Fail promptly if an operation settles without reaching the expected pause. */
 export function waitForPause<T>(pause: Promise<void>, operation: Promise<T>): Promise<void> {
@@ -95,4 +101,39 @@ export function matchModelName(modelName: string, _endpoint?: string): string | 
     return undefined;
   }
   return modelName;
+}
+
+/** Simulated fresh Discord reads for storage fixtures; ownership remains a real database lease. */
+export function discordTextAuthority(
+  input: Pick<
+    DiscordGuildTextActorSource,
+    'applicationId' | 'botUserId' | 'guildId' | 'channelId' | 'authorId'
+  > & { applicationRevision: string },
+): Extract<DiscordNativeAuthority, { kind: 'guild_text' }> {
+  const { applicationRevision, ...source } = input;
+  return {
+    kind: 'guild_text',
+    owner: { applicationId: input.applicationId, applicationRevision, ownerId: 'a'.repeat(32) },
+    source: {
+      kind: 'guild_text',
+      ...source,
+      permissions: '68608',
+      authorId: input.authorId,
+      authorMember: true,
+      authorPermissions: '1024',
+    },
+  };
+}
+export async function ownDiscordAuthority(
+  mongoose: typeof import('mongoose'),
+  owner: DiscordGatewayOwner,
+  previous?: DiscordGatewayOwner,
+): Promise<void> {
+  const gateway = createDiscordGatewayStorage(mongoose, async () => ({
+    ownershipLeaseMs: 120000,
+    shardCount: 1,
+  }));
+  if (previous) await gateway.release(previous);
+  if (!(await gateway.acquire(owner, 120000)))
+    throw new Error('Fixture application owner unavailable');
 }

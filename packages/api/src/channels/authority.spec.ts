@@ -20,6 +20,7 @@ import {
   createDiscordInstallationStorage,
   createDiscordRouteStorage,
   createDiscordInboxStorage,
+  createDiscordGatewayStorage,
   createMethods,
   createChannelIdentityStorage,
   createChannelRunStorage,
@@ -31,6 +32,8 @@ import {
 import type {
   ChannelRunAdmission,
   DiscordIngressAction,
+  DiscordNativeAuthority,
+  DiscordRunEffectAuthority,
   ChannelIdentityResult,
   ChannelRunSnapshot,
   ChannelRunSummary,
@@ -157,6 +160,17 @@ beforeEach(async () => {
   authority = createChannelAuthority({
     channels: db,
     identityStorage: createChannelIdentityStorage(mongoose),
+    authorizeDestination: (channel, admission, principal) =>
+      storage.authorizeDestination(
+        {
+          tenantId: channel.tenantId,
+          channelId: channel.channelId,
+          agentId: channel.agentId,
+          principal,
+          admission,
+        },
+        Date.now(),
+      ),
     getConfig: async () => ({ enabled: true }),
     findUser: (id) => db.findUser({ _id: id }),
     getRole: (name) => models.Role.findOne({ name }),
@@ -1940,19 +1954,61 @@ it(
         .set('Authorization', `Bearer ${token}`)
         .set('X-Tenant-Id', tenantId)
         .set('X-Discord-Application-Revision', revision);
-    const admitted = await call('runs')
-      .send({
-        actor: { provider: 'discord', applicationId, guildId, externalUserId },
-        eventId: promptEventId,
-        externalChannelId,
-        externalThreadKey: `${externalChannelId}:${promptEventId}`,
-        externalMessageKey: `${externalChannelId}:${promptEventId}`,
-        input: 'hello',
-      })
-      .expect(201);
+    const gateway = createDiscordGatewayStorage(mongoose, async () => ({
+      ownershipLeaseMs: 30000,
+      shardCount: 1,
+    }));
+    const owner = (revision = configured.value.revision) => ({
+      applicationId,
+      applicationRevision: revision,
+      ownerId: 'a'.repeat(32),
+    });
+    expect(await gateway.acquire(owner(), 30000)).toBe(true);
+    const native: DiscordNativeAuthority = {
+      kind: 'guild_text',
+      owner: owner(),
+      source: {
+        kind: 'guild_text',
+        applicationId,
+        botUserId,
+        guildId,
+        channelId: externalChannelId,
+        permissions: '68608',
+        authorId: externalUserId,
+        authorMember: true,
+        authorPermissions: '1024',
+      },
+    };
+    const actual = externalChannelId;
+    const admission: ChannelRunAdmission = {
+      actor: { provider: 'discord', applicationId, guildId, externalUserId },
+      eventId: promptEventId,
+      externalChannelId: actual,
+      externalThreadKey: `${actual}:${promptEventId}`,
+      externalMessageKey: `${actual}:${promptEventId}`,
+      input: 'hello',
+    };
+    await call('runs').send(admission).expect(409);
+    const linked = await authority.resolvePrincipal(current, admission.actor);
+    if (!linked) throw new Error('Missing confirmed Discord principal');
+    const admitted = await storage.admit(
+      {
+        tenantId,
+        channelId: current.channelId,
+        agentId: current.agentId,
+        applicationRevision: configured.value.revision,
+        discordAuthority: native,
+        principal: linked,
+        admission,
+      },
+      Date.now(),
+    );
     const claimed = await call('runs/claim').send({ owner: 'worker' }).expect(200);
     const fence = claimed.body.fence;
-    const route = `runs/${admitted.body.runId}/progress`;
+    await call(`runs/${admitted.run.runId}/advance`)
+      .send({ fence })
+      .expect(409, { error: 'execution_not_prepared' });
+    const route = `runs/${admitted.run.runId}/progress`;
     await call(`${route}/plan`)
       .send({ fence, revision: 1, rendererVersion: 'discord-progress-v1', text: 'Working' })
       .expect(200);
@@ -1966,7 +2022,17 @@ it(
     });
     if (!rotated.ok) throw new Error(rotated.error.code);
     await call(`${route}/begin`).send({ fence, revision: 1 }).expect(409);
-    await call(`${route}/begin`, rotated.value.revision).send({ fence, revision: 1 }).expect(200);
+    await call(`${route}/begin`, rotated.value.revision).send({ fence, revision: 1 }).expect(409);
+    await gateway.release(owner());
+    expect(await gateway.acquire(owner(rotated.value.revision), 30000)).toBe(true);
+    const proof: DiscordRunEffectAuthority = {
+      applicationRevision: rotated.value.revision,
+      native: { ...native, owner: owner(rotated.value.revision) },
+    };
+    await call(`${route}/begin`).send({ fence, revision: 1, discordAuthority: proof }).expect(409);
+    await call(`${route}/begin`, rotated.value.revision)
+      .send({ fence, revision: 1, discordAuthority: proof })
+      .expect(200);
     const again = await installations.configureApplication({
       actorId: users[0].id,
       applicationId,
@@ -1983,7 +2049,7 @@ it(
         receipt: {
           outcome: 'confirmed',
           attempts: 1,
-          externalMessageKey: `${externalChannelId}:789012345678901234`,
+          externalMessageKey: `${actual}:789012345678901234`,
         },
       })
       .expect(200);

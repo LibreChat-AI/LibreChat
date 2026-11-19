@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { sameChannelRunActor, sameDiscordNativeDestination } from 'librechat-data-provider';
 import type {
   ChannelDeliveryReceipt,
   ChannelDeliveryPart,
@@ -173,8 +174,24 @@ export class ChannelWorker {
     initial: ChannelRunView,
     fence: ChannelRunFence,
     signal: AbortSignal,
-    check: () => void,
+    checkLease: () => void,
   ): Promise<void> {
+    const original = structuredClone(initial.admission);
+    const check = (current?: ChannelRunView) => {
+      checkLease();
+      const admission = current?.admission;
+      if (
+        admission &&
+        (admission.eventId !== original.eventId ||
+          admission.input !== original.input ||
+          admission.externalChannelId !== original.externalChannelId ||
+          admission.externalThreadKey !== original.externalThreadKey ||
+          admission.externalMessageKey !== original.externalMessageKey ||
+          !sameChannelRunActor(admission.actor, original.actor) ||
+          !sameDiscordNativeDestination(admission.discordDestination, original.discordDestination))
+      )
+        throw new Error('Run admission changed');
+    };
     const bundle = await this.client.channel(signal);
     if (initial.revision !== bundle.channel.revision) throw new Error('Run binding changed');
     this.provider.assertBinding(initial, bundle);
@@ -183,7 +200,7 @@ export class ChannelWorker {
     let sessionRetry = 0;
     let lastProgressWrite = 0;
     const syncProgress = async (current: ChannelRunView) => {
-      check();
+      check(current);
       let native = false;
       if (bundle.gateway.nativeSessions && this.provider.setSessionStatus) {
         let status: 'active' | 'suspended' | 'processing' = 'processing';
@@ -215,11 +232,33 @@ export class ChannelWorker {
       return updated;
     };
     await this.provider.lifecycle?.(initial, bundle, 'started', signal);
-    let run = await syncProgress(initial);
+    let run = initial;
+    let projected = false;
+    if (this.provider.effectContext && !run.plan && run.state !== 'queued') {
+      try {
+        run = await this.client.mutate(fence, 'advance', {}, signal);
+        projected = true;
+        check(run);
+      } catch (error) {
+        if (
+          !(error instanceof ServiceError) ||
+          error.status !== 409 ||
+          error.code !== 'execution_not_prepared'
+        )
+          throw error;
+      }
+    }
+    run = await syncProgress(run);
     let grant: ResponseGrant | undefined;
     let unstartedCancellation = false;
-    if (!run.plan) {
-      const prepared = await this.client.prepare(fence, signal);
+    if (!run.plan && !projected) {
+      const context = run.cancellationRequested
+        ? undefined
+        : await this.provider.effectContext?.(run, bundle, signal);
+      check(run);
+      const prepared = context
+        ? await this.client.prepare(fence, signal, context)
+        : await this.client.prepare(fence, signal);
       if (prepared.settled) {
         this.assertView(prepared.settled, fence);
         if (
@@ -244,7 +283,7 @@ export class ChannelWorker {
         if (!prepared.responseId) {
           if (run.cancellationRequested)
             throw new Error('Unstarted cancellation awaits reconciliation');
-          check();
+          check(run);
           const response = await this.client.response(prepared, 'create', signal);
           prepared.responseId = response.id;
           run = await this.client.mutate(
@@ -258,10 +297,11 @@ export class ChannelWorker {
       }
     }
     for (let polls = 0; !run.plan; polls++) {
-      check();
+      check(run);
       if (grant)
         await this.client.response(grant, run.cancellationRequested ? 'cancel' : 'read', signal);
-      if (!unstartedCancellation) run = await this.client.mutate(fence, 'advance', {}, signal);
+      if (!unstartedCancellation && (!projected || polls > 0))
+        run = await this.client.mutate(fence, 'advance', {}, signal);
       this.assertView(run, fence);
       if (grant && run.snapshot?.responseId && run.snapshot.responseId !== grant.responseId)
         throw new Error('Response projection changed');
@@ -303,7 +343,7 @@ export class ChannelWorker {
       throw new Error('Unsupported delivery plan');
     const renderer = run.plan.rendererVersion;
     for (const part of run.plan.parts) {
-      check();
+      check(run);
       const traceAvailable = () =>
         !part.traceUrl ||
         run.plan?.parts.some(
@@ -339,7 +379,10 @@ export class ChannelWorker {
           run = await this.client.mutate(
             fence,
             'delivery/begin',
-            { operationId: part.operationId },
+            {
+              ...(await this.provider.effectContext?.(run, bundle, signal)),
+              operationId: part.operationId,
+            },
             signal,
           );
         } catch (error) {
@@ -355,7 +398,7 @@ export class ChannelWorker {
         if (!traceAvailable()) continue;
         receipt = deliveryReceipt(run, part.operationId);
         if (receipt.outcome !== 'inflight') throw new Error('Delivery begin not persisted');
-        check();
+        check(run);
         try {
           const result = await deliver(run, signal);
           receipt = {
@@ -369,13 +412,13 @@ export class ChannelWorker {
             ...failedWrite(this.provider.classifyError(error), receipt.attempts),
           };
         }
-        check();
+        check(run);
         run = await this.settle(run, fence, receipt, signal);
         if (receipt.outcome !== 'confirmed' && (part.required || receipt.outcome === 'retryable'))
           throw new Error('Delivery not confirmed');
       }
     }
-    check();
+    check(run);
     // The answer receipts are settled. Cosmetic cleanup must never cause answer replay.
     if (run.snapshot?.status === 'completed' && run.progress?.externalMessageKey) {
       try {
@@ -394,7 +437,7 @@ export class ChannelWorker {
         this.log.warn('optional_progress_cleanup_unavailable');
       }
     }
-    check();
+    check(run);
     run = await this.client.mutate(fence, 'commit', {}, signal);
     if (!terminalStates.has(run.state)) throw new Error('Commit not confirmed');
     await this.provider.lifecycle?.(
@@ -440,7 +483,7 @@ export class ChannelWorker {
     fence: ChannelRunFence,
     bundle: ChannelBundle,
     signal: AbortSignal,
-    check: () => void,
+    check: (run?: ChannelRunView) => void,
     lastWrite: number,
   ): Promise<ChannelRunView> {
     if (run.plan || terminalStates.has(run.state) || run.state === 'blocked') return run;
@@ -456,7 +499,7 @@ export class ChannelWorker {
     if (!progress || progress.outcome === 'confirmed') {
       if (progress?.text === text) return run;
       const revision = (progress?.revision ?? 0) + 1;
-      check();
+      check(run);
       run = await this.client.mutate(
         fence,
         'progress/plan',
@@ -475,9 +518,17 @@ export class ChannelWorker {
     if ((progress.retryAt ?? 0) > Date.now()) return run;
     if (Date.now() < lastWrite + 1000)
       await delay(lastWrite + 1000 - Date.now(), undefined, { signal });
-    check();
+    check(run);
     const revision = progress.revision;
-    run = await this.client.mutate(fence, 'progress/begin', { revision }, signal);
+    let context: Awaited<ReturnType<NonNullable<WorkerProvider['effectContext']>>> | undefined;
+    try {
+      context = await this.provider.effectContext?.(run, bundle, signal);
+    } catch (error) {
+      if (run.cancellationRequested && this.provider.classifyError(error).outcome === 'permanent')
+        return run;
+      throw error;
+    }
+    run = await this.client.mutate(fence, 'progress/begin', { ...context, revision }, signal);
     progress = run.progress;
     if (
       !progress ||
@@ -490,7 +541,7 @@ export class ChannelWorker {
       throw new Error('Progress begin not persisted');
     this.provider.validateAddress(run);
     let receipt: Omit<ChannelDeliveryReceipt, 'operationId'>;
-    check();
+    check(run);
     try {
       if (progress.attempts > 5) receipt = failedWrite({ outcome: 'permanent' }, progress.attempts);
       else {
@@ -504,7 +555,7 @@ export class ChannelWorker {
     } catch (error) {
       receipt = failedWrite(this.provider.classifyError(error), progress.attempts);
     }
-    check();
+    check(run);
     run = await this.client.mutate(fence, 'progress/settle', { revision, receipt }, signal);
     if (
       run.progress?.revision !== revision ||
@@ -522,7 +573,7 @@ export class ChannelWorker {
     part: ChannelDeliveryPart,
     bundle: ChannelBundle,
     signal: AbortSignal,
-    check: () => void,
+    check: (run?: ChannelRunView) => void,
   ): Promise<ChannelRunView> {
     const artifacts = run.snapshot?.artifacts ?? [];
     const artifact = artifacts.find((item) => item.artifactId === part.artifactId);
@@ -536,18 +587,21 @@ export class ChannelWorker {
       (receipt.retryAt ?? 0) > Date.now()
     )
       throw new Error('Artifact deferred or awaits reconciliation');
-    check();
+    check(run);
     run = await this.client.mutate(
       fence,
       'delivery/begin',
-      { operationId: part.operationId },
+      {
+        ...(await this.provider.effectContext?.(run, bundle, signal)),
+        operationId: part.operationId,
+      },
       signal,
     );
     receipt = deliveryReceipt(run, part.operationId);
     if (receipt.outcome !== 'inflight' || receipt.upload)
       throw new Error('Artifact begin not persisted');
     const settle = async (outcome: ChannelDeliveryReceipt['outcome'], errorCode?: string) => {
-      check();
+      check(run);
       run = await this.settle(run, fence, { ...receipt, outcome, errorCode }, signal);
       if (outcome === 'retryable') throw new Error('Artifact retry deferred');
       return run;
@@ -560,9 +614,9 @@ export class ChannelWorker {
       if (error instanceof ServiceError && [401, 403, 409].includes(error.status)) throw error;
       return settle('permanent_failure', 'artifact_unavailable');
     }
-    check();
+    check(run);
     const checkpoint = async (upload: NonNullable<ChannelDeliveryReceipt['upload']>) => {
-      check();
+      check(run);
       run = await this.client.mutate(
         fence,
         'delivery/checkpoint',

@@ -16,7 +16,10 @@ export interface ChannelLaneScope {
   channelId: string;
   agentId: string;
   principal: ChannelRunPrincipal;
-  admission: Pick<ChannelRunAdmission, 'actor' | 'externalChannelId' | 'externalThreadKey'>;
+  admission: Pick<
+    ChannelRunAdmission,
+    'actor' | 'externalChannelId' | 'externalThreadKey' | 'discordDestination'
+  >;
 }
 
 export interface DiscordMessageOccurrence {
@@ -74,6 +77,9 @@ export function laneKey(scope: ChannelLaneScope): string {
     thread: scope.admission.externalThreadKey,
     externalChannelId: scope.admission.externalChannelId,
     actor: scope.admission.actor,
+    ...(scope.admission.discordDestination
+      ? { discordDestination: scope.admission.discordDestination }
+      : {}),
     userId: scope.principal.userId,
     revision: scope.principal.channelRevision,
     linkRevision: scope.principal.linkRevision ?? null,
@@ -86,6 +92,9 @@ export function stopScopeKey(scope: ChannelLaneScope): string {
     tenantId: scope.tenantId,
     channelId: scope.channelId,
     actor: scope.admission.actor,
+    ...(scope.admission.discordDestination
+      ? { discordDestination: scope.admission.discordDestination }
+      : {}),
     thread: scope.admission.externalThreadKey,
     externalChannelId: scope.admission.externalChannelId,
   });

@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { ChannelRunConflict } from '@librechat/data-schemas';
 import {
   channelRunActorSchema,
+  channelRunAdmissionSchema,
+  discordRunEffectAuthoritySchema,
   sameChannelRunActor,
   channelActorMatchesChannel,
   responseReviewDecisionSchema,
@@ -19,6 +21,8 @@ import type {
   ChannelRunSnapshot,
   ChannelRunSummary,
   ResponseReviewView,
+  DiscordRunEffectAuthority,
+  ChannelConfig,
 } from 'librechat-data-provider';
 import type {
   AgentChannelRecord,
@@ -50,6 +54,7 @@ export interface ChannelRunDependencies {
   resolvePrincipal: (
     channel: AgentChannelRecord,
     actor: ChannelRunAdmission['actor'],
+    admission?: ChannelRunAdmission,
   ) => Promise<ChannelRunPrincipal | null>;
   advance: (
     run: ChannelRunRecord,
@@ -73,17 +78,11 @@ const id = z
   .regex(/^[\w:.-]+$/);
 const actorSchema = channelRunActorSchema;
 const fenceSchema = z.object({ runId: id, owner: id, epoch: z.number().int().positive() }).strict();
-const admissionSchema = z
-  .object({
-    eventId: id,
-    externalChannelId: id,
-    externalThreadKey: id,
-    externalMessageKey: id,
-    actor: actorSchema,
-    input: z.string().min(1).max(100_000),
-  })
-  .strict();
+const admissionSchema = channelRunAdmissionSchema;
 const fenceBody = z.object({ fence: fenceSchema }).strict();
+const effectBody = fenceBody
+  .extend({ discordAuthority: discordRunEffectAuthoritySchema.optional() })
+  .strict();
 /** Fixed wire safety bound, not a provider's rendering limit. Content remains opaque to Agents. */
 const presentationSchema = z
   .object({
@@ -133,7 +132,7 @@ const planBody = z
       .strict(),
   })
   .strict();
-const beginBody = z.object({ fence: fenceSchema, operationId: id }).strict();
+const beginBody = effectBody.extend({ operationId: id }).strict();
 const uploadBody = z
   .object({
     fence: fenceSchema,
@@ -151,7 +150,7 @@ const progressPlanBody = z
     text: z.string().max(4000),
   })
   .strict();
-const progressBeginBody = z.object({ fence: fenceSchema, revision: progressRevision }).strict();
+const progressBeginBody = effectBody.extend({ revision: progressRevision }).strict();
 const progressSettleBody = z
   .object({
     fence: fenceSchema,
@@ -286,7 +285,7 @@ export async function hasChannelRunAuthority(
     run.workspaceId !== channel.workspaceId
   )
     return false;
-  const principal = await resolve(channel, run.admission.actor);
+  const principal = await resolve(channel, run.admission.actor, run.admission);
   return Boolean(
     principal &&
       principal.userId === run.principal.userId &&
@@ -294,6 +293,26 @@ export async function hasChannelRunAuthority(
       principal.linkId === run.principal.linkId &&
       principal.linkRevision === run.principal.linkRevision,
   );
+}
+
+function effectAuthority(
+  req: Request,
+  channel: AgentChannelRecord,
+  config: ChannelConfig,
+  admission: ChannelRunAdmission,
+  value?: DiscordRunEffectAuthority,
+  enforcePolicy = true,
+): string | DiscordRunEffectAuthority | undefined {
+  if (channel.type !== 'discord') {
+    if (value) throw new ChannelRunConflict('invalid_transition');
+    return undefined;
+  }
+  if (enforcePolicy && admission.discordDestination?.kind === 'dm' && !config.discord?.dm.enabled)
+    throw new ChannelRunConflict('invalid_transition');
+  const revision = req.get('x-discord-application-revision');
+  if (value && value.applicationRevision !== revision)
+    throw new ChannelRunConflict('invalid_transition');
+  return value ?? revision;
 }
 
 export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelRunHandlers {
@@ -674,15 +693,38 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       }
       res.status(204).end();
     }),
-    prepareResponse: guarded(async (req, res, channel) => {
-      const parsed = fenceBody.safeParse(req.body);
+    prepareResponse: guarded(async (req, res, channel, config) => {
+      const parsed = effectBody.safeParse(req.body);
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding) return;
+      if (binding.run.cancellationRequested && !binding.run.execution?.apiKeyId) {
+        const settled = await deps.storage.finishUnstartedResponseCancellation(
+          channel.tenantId ?? '_',
+          binding.fence,
+          now(),
+        );
+        res.json({
+          settled: await presentRun(channel, settled),
+        } satisfies ChannelResponsePreparation);
+        return;
+      }
+      if (
+        channel.type === 'discord' &&
+        !binding.run.execution?.apiKeyId &&
+        !(parsed.success && parsed.data.discordAuthority?.native)
+      )
+        throw new ChannelRunConflict('invalid_transition');
       let run = await deps.storage.prepareExecution(
         channel.tenantId ?? '_',
         binding.fence,
         now(),
-        channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
+        effectAuthority(
+          req,
+          channel,
+          config,
+          binding.run.admission,
+          parsed.success ? parsed.data.discordAuthority : undefined,
+        ),
       );
       if (!run.execution || run.execution.deliveryKey || run.execution.enqueueAttemptedAt) {
         res.status(409).json({ error: 'execution_protocol_conflict' });
@@ -747,7 +789,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       );
       res.json(await presentRun(channel, run));
     }),
-    advance: guarded(async (req, res, channel) => {
+    advance: guarded(async (req, res, channel, config) => {
       const parsed = fenceBody.safeParse(req.body);
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding) return;
@@ -757,11 +799,25 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.json(await presentRun(channel, run));
         return;
       }
+      if (
+        channel.type === 'discord' &&
+        (run.execution?.protocol !== 'responses' || !run.execution.responseId)
+      ) {
+        res.status(409).json({ error: 'execution_not_prepared' });
+        return;
+      }
       run = await deps.storage.prepareExecution(
         channel.tenantId ?? '_',
         fence,
         now(),
-        channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
+        effectAuthority(
+          req,
+          channel,
+          config,
+          binding.run.admission,
+          undefined,
+          !binding.run.execution,
+        ),
       );
       const result = await deps.advance(run);
       if (deps.artifacts && result.snapshot.status === 'completed') {
@@ -864,7 +920,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         ),
       );
     }),
-    beginProgress: guarded(async (req, res, channel) => {
+    beginProgress: guarded(async (req, res, channel, config) => {
       const parsed = progressBeginBody.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: 'invalid_progress_operation' });
@@ -880,7 +936,13 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
             binding.fence,
             parsed.data.revision,
             now(),
-            channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
+            effectAuthority(
+              req,
+              channel,
+              config,
+              binding.run.admission,
+              parsed.data.discordAuthority,
+            ),
           ),
         ),
       );
@@ -942,7 +1004,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         ),
       );
     }),
-    begin: guarded(async (req, res, channel) => {
+    begin: guarded(async (req, res, channel, config) => {
       const parsed = beginBody.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: 'invalid_delivery_operation' });
@@ -968,7 +1030,13 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
             binding.fence,
             parsed.data.operationId,
             now(),
-            channel.type === 'discord' ? req.get('x-discord-application-revision') : undefined,
+            effectAuthority(
+              req,
+              channel,
+              config,
+              binding.run.admission,
+              parsed.data.discordAuthority,
+            ),
           ),
         ),
       );

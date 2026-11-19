@@ -1,5 +1,5 @@
+import type { DiscordNativeDestination, DiscordRunEffectAuthority } from '../channelDestination';
 import type { AccountingBasis, ResponseAccounting } from './responseAccounting';
-import type { DiscordNativeDestination } from '../channelDestination';
 
 export const CHANNEL_DELIVERY_TEXT_MAX_CHARS = 40_000;
 export const CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES = 64_000;
@@ -74,6 +74,11 @@ export type ChannelRunState =
   | 'failed'
   | 'cancelled'
   | 'blocked';
+
+/** Transient provider proof forwarded opaquely before a new durable execution or output grant. */
+export interface ChannelRunEffectContext {
+  discordAuthority?: DiscordRunEffectAuthority;
+}
 
 export interface ChannelRunFence {
   runId: string;

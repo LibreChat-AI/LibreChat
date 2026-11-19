@@ -3,19 +3,24 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { discordThreadAddress } from 'librechat-data-provider';
 import type {
   DiscordThreadRoute,
+  DiscordRunEffectAuthority,
   DiscordGuildThreadSource,
   DiscordThreadBinding,
 } from 'librechat-data-provider';
+import type { ChannelRunEnrollment } from './channelProtocol';
 import { createDiscordThreadStorage, touchDiscordThreadRoute } from './discordThread';
 import { createDiscordInboxResolutionStorage } from './discordInboxResolution';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createChannelIdentityStorage } from './channelIdentity';
 import { createDiscordGatewayStorage } from './discordGateway';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createDiscordInstallationStorage } from './discord';
 import { createDiscordInboxStorage } from './discordInbox';
 import { createDiscordRouteStorage } from './discordRoute';
+import { touchDiscordInbox } from './discordInboxScope';
+import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
-import { laneKey } from './channelProtocol';
+import { laneKey, digest } from './channelProtocol';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -429,6 +434,39 @@ describe('owned interaction preflight', () => {
         (await resolution.resolve(work.fence, owner(), source(), work.route, work.now + 1000)).ok,
       ).toBe(false);
     }));
+  it('does not reuse the same parent inbox lease to authorize another actual thread', () =>
+    scoped(async () => {
+      const work = await job();
+      unwrap(await resolution.resolve(work.fence, owner(), source(), work.route, work.now));
+      const scope = {
+        tenantId,
+        channelId: binding.channelId,
+        externalUserId: authorId,
+        applicationRevision: revision,
+      };
+      expect(
+        await withRequiredTransaction(db, (session) =>
+          touchDiscordInbox(
+            db,
+            { ...scope, externalChannelId: parentChannelId },
+            work.fence,
+            work.now,
+            session,
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        await withRequiredTransaction(db, (session) =>
+          touchDiscordInbox(
+            db,
+            { ...scope, externalChannelId: threadChannelId },
+            work.fence,
+            work.now,
+            session,
+          ),
+        ),
+      ).toBe(true);
+    }));
   it('rejects a changed actor or physical destination before reserving execution', () =>
     scoped(async () => {
       const work = await job();
@@ -543,4 +581,260 @@ describe('owned interaction preflight', () => {
         (await resolution.resolve(work.fence, owner(), source(), work.route, work.now)).ok,
       ).toBe(false);
     }));
+});
+
+describe('native run authority', () => {
+  const runs = createChannelRunStorage(db);
+  async function candidate(): Promise<{
+    input: ChannelRunEnrollment;
+    now: number;
+    proof: DiscordRunEffectAuthority;
+  }> {
+    const now = Date.now();
+    const eventId = ((BigInt(now) - BigInt(1420070400000)) << BigInt(22)).toString();
+    const route = unwrap(await threads.bind(owner(), source(), binding));
+    expect(
+      await createChannelIdentityStorage(db).saveChannelIdentity(
+        {
+          tenantId,
+          linkId: 'thread-link',
+          revision: 'link-revision',
+          state: 'active',
+          userId,
+          ticketHash: 'private-ticket',
+          ticketExpiresAtMs: now + 900000,
+          expiresAtMs: now + 900000,
+          identity: {
+            tenantId,
+            channelId: binding.channelId,
+            channelRevision: binding.channelRevision,
+            agentId: 'agent',
+            provider: 'discord',
+            applicationId,
+            guildId,
+            externalUserId: authorId,
+          },
+        },
+        null,
+        revision,
+      ),
+    ).toBe(true);
+    // Fixture represents server-confirmed consent preceding the physical event.
+    await models.ChannelIdentity.updateOne(
+      { linkId: 'thread-link' },
+      { $set: { discordActivatedAtMs: now - 1 } },
+    );
+    const native = { kind: 'guild_thread' as const, owner: owner(), source: source() };
+    const input: ChannelRunEnrollment = {
+      tenantId,
+      channelId: binding.channelId,
+      agentId: 'agent',
+      applicationRevision: revision,
+      discordAuthority: native,
+      principal: {
+        userId,
+        channelRevision: binding.channelRevision,
+        linkId: 'thread-link',
+        linkRevision: 'link-revision',
+      },
+      admission: {
+        actor: { provider: 'discord', applicationId, guildId, externalUserId: authorId },
+        eventId,
+        input: 'Original native prompt',
+        ...discordThreadAddress(threadChannelId, eventId),
+        discordDestination: {
+          kind: 'guild_thread',
+          parentChannelId,
+          mappingRevision: route.mappingRevision,
+        },
+      },
+    };
+    return { input, now, proof: { applicationRevision: revision, native } };
+  }
+  async function claimed() {
+    const value = await candidate();
+    const admitted = await runs.admit(value.input, value.now);
+    const run = await runs.claim(tenantId, binding.channelId, 'worker', value.now, 60000);
+    if (!run) throw new Error('Missing native run');
+    return {
+      ...value,
+      run: admitted.run,
+      fence: { runId: run.runId, owner: 'worker', epoch: run.leaseEpoch },
+    };
+  }
+  it('persists only immutable destination metadata and separates lanes by mapping generation', () =>
+    scoped(async () => {
+      const { input, now } = await candidate();
+      const admitted = await runs.admit(input, now);
+      expect(admitted.run.admission).toEqual(input.admission);
+      expect(admitted.run.payloadHash).toBe(digest(input.admission));
+      expect(admitted.run).not.toHaveProperty('discordAuthority');
+      expect(admitted.run).not.toHaveProperty('applicationRevision');
+      expect(JSON.stringify(admitted.run)).not.toContain('permissions');
+      const original = laneKey(input);
+      expect(
+        laneKey({
+          ...input,
+          admission: {
+            ...input.admission,
+            discordDestination: {
+              kind: 'guild_thread',
+              parentChannelId,
+              mappingRevision: 'different',
+            },
+          },
+        }),
+      ).not.toBe(original);
+      expect(await runs.authorizeDestination(input, now)).toBe(true);
+      await expect(
+        runs.authorizeDestination(
+          { ...input, admission: { ...input.admission, externalChannelId: parentChannelId } },
+          now,
+        ),
+      ).rejects.toThrow();
+    }));
+  it('rejects missing, stale-owner or mismatched physical source proofs before admission', () =>
+    scoped(async () => {
+      const { input, now } = await candidate();
+      await expect(
+        runs.admit({ ...input, discordAuthority: undefined }, now),
+      ).rejects.toMatchObject({ code: 'invalid_transition' });
+      if (input.discordAuthority?.kind !== 'guild_thread') throw new Error('Missing thread proof');
+      for (const actual of [
+        { ...source(), authorId: botUserId },
+        { ...source(), threadChannelId: authorId },
+        { ...source(), locked: true },
+      ])
+        await expect(
+          runs.admit(
+            { ...input, discordAuthority: { ...input.discordAuthority, source: actual } },
+            now,
+          ),
+        ).rejects.toMatchObject({ code: 'invalid_transition' });
+      expect(await gateway.release(owner())).toBe(true);
+      await expect(runs.admit(input, now)).rejects.toMatchObject({ code: 'invalid_transition' });
+      expect(await models.ChannelRun.countDocuments()).toBe(0);
+    }));
+  it('keeps original consent time and refuses old prompts after a new link activation', () =>
+    scoped(async () => {
+      const { input, now } = await candidate();
+      await models.ChannelIdentity.updateOne(
+        { linkId: 'thread-link' },
+        { $set: { discordActivatedAtMs: now } },
+      );
+      await expect(runs.admit(input, now + 1000)).rejects.toMatchObject({
+        code: 'invalid_transition',
+      });
+      expect(await models.ChannelRun.countDocuments()).toBe(0);
+    }));
+  it('requires fresh source for first execution while continuation retains the granted identity', () =>
+    scoped(async () => {
+      const value = await claimed();
+      await expect(
+        runs.prepareExecution(tenantId, value.fence, value.now, revision),
+      ).rejects.toMatchObject({ code: 'invalid_transition' });
+      const prepared = await runs.prepareExecution(tenantId, value.fence, value.now, value.proof);
+      expect(prepared.execution?.requestId).toBe(value.run.runId);
+      expect(await gateway.release(owner())).toBe(true);
+      const continued = await runs.prepareExecution(tenantId, value.fence, value.now, revision);
+      expect(continued.execution).toEqual(prepared.execution);
+      unwrap(
+        await routes.remove({
+          actorId: userId,
+          installationId,
+          externalChannelId: parentChannelId,
+          expectedRevision: binding.routeRevision,
+        }),
+      );
+      await expect(
+        runs.prepareExecution(tenantId, value.fence, value.now, revision),
+      ).rejects.toMatchObject({ code: 'invalid_transition' });
+      expect(await runs.authorizeDestination(value.input, value.now)).toBe(false);
+    }));
+  it.each(['progress', 'delivery'] as const)(
+    'joins every %s begin to fresh owned source but permits receipt settlement after owner loss',
+    async (effect) =>
+      scoped(async () => {
+        const value = await claimed();
+        if (effect === 'progress')
+          await runs.planProgress(
+            tenantId,
+            value.fence,
+            { revision: 1, rendererVersion: 'discord-progress-v1', text: 'Working' },
+            value.now,
+          );
+        else {
+          await runs.prepareExecution(tenantId, value.fence, value.now, value.proof);
+          await models.StoredResponse.create({
+            tenantId,
+            userId,
+            responseId: 'response',
+            requestKey: `channel:${value.run.runId}`,
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: JSON.stringify({
+              model: 'agent',
+              input: value.input.admission.input,
+              background: true,
+              store: true,
+            }),
+            conversationId: 'conversation',
+            parentMessageId: 'parent',
+            status: 'queued',
+            revision: 0,
+          });
+          await runs.bindResponse(tenantId, value.fence, 'response', value.now);
+          await runs.saveSnapshot(
+            tenantId,
+            value.fence,
+            { status: 'completed', text: 'Answer', responseId: 'response', elapsedMs: 1 },
+            value.now,
+          );
+          await runs.savePlan(
+            tenantId,
+            value.fence,
+            {
+              revision: 'plan',
+              rendererVersion: 'discord-text-v1',
+              parts: [{ operationId: 'answer', kind: 'message', required: true, text: 'Answer' }],
+            },
+            value.now,
+          );
+        }
+        const begin = (proof?: string | DiscordRunEffectAuthority) =>
+          effect === 'progress'
+            ? runs.beginProgress(tenantId, value.fence, 1, value.now, proof)
+            : runs.beginDelivery(tenantId, value.fence, 'answer', value.now, proof);
+        await expect(begin(revision)).rejects.toMatchObject({ code: 'invalid_transition' });
+        expect(value.proof.native?.kind).toBe('guild_thread');
+        if (value.proof.native?.kind !== 'guild_thread') throw new Error('Missing proof');
+        await expect(
+          begin({
+            ...value.proof,
+            native: { ...value.proof.native, source: { ...source(), archived: true } },
+          }),
+        ).rejects.toMatchObject({ code: 'invalid_transition' });
+        await begin(value.proof);
+        expect(await gateway.release(owner())).toBe(true);
+        await expect(begin(value.proof)).rejects.toMatchObject({ code: 'invalid_transition' });
+        const externalMessageKey = `${threadChannelId}:789012345678901234`;
+        const settled =
+          effect === 'progress'
+            ? await runs.settleProgress(
+                tenantId,
+                value.fence,
+                { revision: 1, outcome: 'confirmed', attempts: 1, externalMessageKey },
+                value.now,
+              )
+            : await runs.settleDelivery(
+                tenantId,
+                value.fence,
+                { operationId: 'answer', outcome: 'confirmed', attempts: 1, externalMessageKey },
+                value.now,
+              );
+        expect(
+          effect === 'progress' ? settled.progress?.outcome : settled.receipts[0].outcome,
+        ).toBe('confirmed');
+      }),
+  );
 });

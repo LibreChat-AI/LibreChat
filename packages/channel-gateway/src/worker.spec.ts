@@ -904,6 +904,44 @@ describe('durable Channels worker', () => {
     ]);
   });
 
+  test('a permanent progress preflight failure does not block a cancelled run', async () => {
+    const f = fixture();
+    f.bundle.gateway.nativeSessions = true;
+    f.state.state = 'queued';
+    f.state.cancellationRequested = true;
+    f.state.progress = {
+      revision: 1,
+      rendererVersion: 'test-progress-v1',
+      text: 'Provider status',
+      outcome: 'planned',
+      attempts: 0,
+    };
+    f.hooks.prepare = () => ({
+      settled: {
+        ...f.state,
+        state: 'delivering',
+        snapshot: { text: '', status: 'cancelled', elapsedMs: 0 },
+      },
+    });
+    const provider: WorkerProvider = {
+      ...createSlackWorkerProvider(f.slack, f.log),
+      progressRenderer: 'test-progress-v1',
+      maxProgressLength: 2000,
+      progressText: () => 'Provider status',
+      setSessionStatus: undefined,
+      lifecycle: undefined,
+      effectContext: jest.fn(async (run) => {
+        if (!run.plan) throw new Error('permission revoked');
+        return {};
+      }),
+      classifyError: () => ({ outcome: 'permanent' }),
+    };
+    const worker = new ChannelWorker(f.config, f.client, provider, f.log);
+    await worker.process({ ...f.lease, run: structuredClone(f.state) }, f.controller.signal);
+    expect(f.paths().some((path) => path.endsWith('/progress/begin'))).toBe(false);
+    expect(f.state.state).toBe('delivered');
+  });
+
   test('verified unstarted cancellation never creates or polls a Response', async () => {
     const f = fixture();
     f.bundle.gateway.nativeSessions = true;

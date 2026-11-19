@@ -49,6 +49,18 @@ export function createChannelApplicationAuthority(
   const authority = createChannelAuthority({
     channels: deps.channels,
     identityStorage: deps.identityStorage,
+    authorizeDestination: async (channel, admission, principal) => {
+      return deps.storage.authorizeDestination(
+        {
+          tenantId: channel.tenantId,
+          channelId: channel.channelId,
+          agentId: channel.agentId,
+          principal,
+          admission,
+        },
+        Date.now(),
+      );
+    },
     reply: deps.reply ?? {
       encrypt: deps.credentials.encrypt,
       decrypt: deps.credentials.decrypt,

@@ -303,3 +303,5 @@ export type {
   DiscordThreadAuthority,
   DiscordThreadResult,
 } from './methods/discordThread';
+
+export type { ChannelDestinationScope } from './methods/channelDestination';
