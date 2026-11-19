@@ -19,9 +19,10 @@ import { openChatHistory } from '../specs/mock/scenarios/sidebar';
  * The same main conversation is typed in and streamed into with the panel closed, with it open
  * and idle, and with it open and streaming a reply of its own. Each phase prints the browser's
  * main-thread time and the components React rendered, counted by where on the page they are:
- * the main thread and its composer, the side chat, the sidebar, and the shell around them. A
- * side chat that leaves the main chat alone shows the main counts unchanged from the closed
- * phases, and next to nothing rendered in main while only the side chat is busy.
+ * the main chat (its thread, navigation rail and composer), the side chat, the sidebar, and the
+ * shell around them. A side chat that leaves the main chat alone shows the main counts
+ * unchanged from the closed phases, and next to nothing rendered in main while only the side
+ * chat is busy.
  *
  * Built client (production timings; the render counts need no names):
  *   npx playwright test -c e2e/playwright.config.tree-perf-prod.ts side-chat
@@ -77,7 +78,8 @@ function installRenderProbe(): void {
     if (element.getAttribute('aria-label') === 'Side chat') {
       return 'side';
     }
-    if (zone === 'side') {
+    /** What is inside a chat is that chat's, its own navigation rail included. */
+    if (zone === 'side' || zone === 'main') {
       return zone;
     }
     if (element.tagName === 'MAIN') {
