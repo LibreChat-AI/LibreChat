@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { ListTodo } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useAtom, useAtomValue } from 'jotai';
@@ -16,15 +16,21 @@ import { cn } from '~/utils';
  * The chat header's session control and the rail it opens. It is always offered, so a reader
  * learns one place to look, and it is the single reader of the conversation's tasks: the dot on
  * the control and the rows in the rail cannot disagree.
+ *
+ * With `autoOpen`, work that starts running shows the rail without being asked. That costs the
+ * thread one re-wrap and no render: the rail's column narrows it, and nothing outside this
+ * component and the rail reads whether the rail is open.
  */
 function Session({
   conversationId,
   agentId,
   isSubmitting,
+  autoOpen = true,
 }: {
   conversationId: string;
   agentId?: string | null;
   isSubmitting: boolean;
+  autoOpen?: boolean;
 }) {
   const localize = useLocalize();
   const slot = useAtomValue(sessionRailSlot);
@@ -32,14 +38,39 @@ function Session({
   const [docked, setDocked] = useAtom(sessionRailOpen);
   /** A sheet covers the conversation, so it never reopens itself from a remembered choice. */
   const [sheetOpen, setSheetOpen] = useState(false);
-  const open = sheet ? sheetOpen : docked;
+  /**
+   * Shown for this conversation because work started in it. That is not the reader's standing
+   * choice, so it is not remembered and it ends with the conversation. Closing the rail is an
+   * answer: it is not shown again for the same conversation, whatever starts later.
+   */
+  const [summoned, setSummoned] = useState(false);
+  const dismissed = useRef(false);
+  const open = sheet ? sheetOpen : docked || summoned;
   const [now, setNow] = useState(() => Date.now());
   const view = useBackgroundTasks({ conversationId, isSubmitting, now, details: open });
   const { activeCount, awaitingCount, failedCount, incomplete } = view;
   useTaskExpiry(view.rows, setNow);
 
+  /** Never as a sheet: that would cover the conversation the reader is in the middle of. */
+  const working = activeCount > 0;
+  useEffect(() => {
+    if (autoOpen && working && !sheet && !dismissed.current) {
+      setSummoned(true);
+    }
+  }, [autoOpen, working, sheet]);
+
   const setOpen = useCallback(
-    (next: boolean) => (sheet ? setSheetOpen(next) : setDocked(next)),
+    (next: boolean) => {
+      if (sheet) {
+        setSheetOpen(next);
+        return;
+      }
+      if (!next) {
+        dismissed.current = true;
+        setSummoned(false);
+      }
+      setDocked(next);
+    },
     [sheet, setDocked],
   );
   const close = useCallback(

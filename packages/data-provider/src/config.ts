@@ -3567,6 +3567,11 @@ export const interfaceSchema = z
      *  background tasks, opened from the chat header. Enabled by default; false restores
      *  the header button that lists them in a popover and appears only once there are any. */
     sessionRail: z.boolean().optional(),
+    /** Shows the session rail by itself when work starts running in a conversation, on
+     *  screens wide enough to dock it. Enabled by default; false leaves the rail to the
+     *  header control, as it was. A reader who closes it is not shown it again for that
+     *  conversation either way. */
+    sessionRailAutoOpen: z.boolean().optional(),
     /** Asks each viewer for consent before Google Tag Manager (`ANALYTICS_GTM_ID`)
      *  loads. A deployment that settles consent itself, such as an internal one
      *  covered by its own policy, can set false to load the container without the
@@ -3812,6 +3817,7 @@ export const interfaceSchema = z
     artifactUndocking: true,
     sideChat: true,
     sessionRail: true,
+    sessionRailAutoOpen: true,
     feedback: true,
     peoplePicker: {
       users: true,
