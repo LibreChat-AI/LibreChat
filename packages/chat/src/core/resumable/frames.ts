@@ -17,9 +17,9 @@ import {
 } from './terminal';
 import { GENERATION_PROTOCOL_VERSION, supportsGenerationProtocolV2 } from '../protocol';
 import { isInitialNewConversation, buildCreatedInitialResponse } from './messages';
+import { isOAuthStepEvent, nameStepResponse } from './events';
 import { reconcileGenerationLifecycle } from './reconcile';
 import { ABORT_SWEEP_STATUSES } from '../steer/chips';
-import { isOAuthStepEvent } from './events';
 import { handleSync } from './sync';
 
 export function handleOpen({ sub, host }: StreamContext): void {
@@ -298,6 +298,7 @@ export async function handleFrame(ctx: StreamContext, event: ChatEvent): Promise
         sub.preCreatedStepEvents.push(data);
         return;
       }
+      nameStepResponse(host.usage, data, sub.liveSubmission());
       host.events.stepHandler(data, sub.liveSubmission() as EventSubmission);
       return;
     }

@@ -31,7 +31,7 @@ import {
   placeReasoningLabel,
 } from './parts/place';
 import { buildResumeEventSubmission, buildSubmissionFromResumeState } from './resumable/resume';
-import { getStepEventId, isOAuthStepEvent } from './resumable/events';
+import { getStepEventId, isOAuthStepEvent, nameStepResponse } from './resumable/events';
 import { buildCreatedInitialResponse } from './resumable/messages';
 import { placeResumedResponse } from './resumable/placement';
 import { normalizeFrame } from './transport/frames';
@@ -520,6 +520,7 @@ export function createEventApplier(init: EventApplierInit = {}): EventApplier {
     if (isOutputDelta(event)) {
       init.usage?.tapStream(event.data as { delta?: { content?: unknown } }, submission);
     }
+    nameStepResponse(init.usage, event, submission);
     settle(reduceStep(stream, event, stepContext(submission, context)));
   };
 

@@ -102,6 +102,7 @@ export type FollowBeside = AppliedBeside & {
 const forwardBeside = (read: () => FollowBeside | undefined): Required<AppliedBeside> => ({
   usage: {
     bindResponse: (submission) => read()?.usage?.bindResponse(submission),
+    nameResponse: (responseId, submission) => read()?.usage?.nameResponse?.(responseId, submission),
     contextHandler: (data, submission) => read()?.usage?.contextHandler(data, submission),
     usageHandler: (data, submission) => read()?.usage?.usageHandler(data, submission),
     tapStream: (data, submission) => read()?.usage?.tapStream(data, submission),
