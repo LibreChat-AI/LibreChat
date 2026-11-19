@@ -40,6 +40,8 @@ export const chatBrowserFacts = [
   }),
 ] as const;
 
+const tokens = z.number().int().nonnegative().optional();
+
 export const chatServerFacts = [
   z.strictObject({
     name: z.literal('librechat.chat.conversation.started'),
@@ -53,6 +55,37 @@ export const chatServerFacts = [
     runId: id,
     outcome,
     durationMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    name: z.literal('librechat.chat.model.usage.recorded'),
+    feature,
+    ...context,
+    callId: id,
+    usage_scope: z.enum(['call', 'run']).optional(),
+    parentCallId: id.optional(),
+    input_tokens: tokens,
+    output_tokens: tokens,
+    total_tokens: tokens,
+    input_token_details: z
+      .strictObject({
+        cache_creation: tokens,
+        cache_creation_1h: tokens,
+        cache_creation_12h: tokens,
+        cache_read: tokens,
+      })
+      .optional(),
+    usage_type: z
+      .enum([
+        'title',
+        'summarization',
+        'subagent',
+        'sequential',
+        'activity-label',
+        'activity-phase',
+        'reasoning-label',
+      ])
+      .optional(),
+    outcome,
   }),
 ] as const;
 

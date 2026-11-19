@@ -1,5 +1,6 @@
 import { createMetadataAggregator } from '@librechat/agents';
 import { ContentTypes, ReasoningLabelEvents } from 'librechat-data-provider';
+import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { HandleLLMEnd, Providers } from '@librechat/agents';
 import type {
   GeneratedReasoningLabel,
@@ -14,6 +15,8 @@ import type {
 import type { ResolvedReasoningLabelConfig } from '~/agents/activityLabels/host';
 import type { ActivityLabelLLM } from '~/agents/activityLabels/runtime';
 import type { LooseContentPart } from '~/agents/activityLabels/wiring';
+import type { ProductTrackingRequest } from '../product';
+import { withProductModelCallbacks } from '../product';
 import { createReasoningLabelWiring } from './runtime';
 
 type ReasoningLabelUsageMetadata = Record<string, unknown>;
@@ -45,7 +48,7 @@ interface ReasoningLabelSDKOptions {
   responseId: string;
   chainOptions: {
     signal: AbortSignal;
-    callbacks: ReasoningLabelCaptureCallback[];
+    callbacks: Array<ReasoningLabelCaptureCallback | CallbackHandlerMethods>;
     configurable: {
       thread_id: string;
       user_id?: string;
@@ -71,6 +74,7 @@ export interface ReasoningLabelUsageRecord {
 }
 
 export interface GenerateReasoningLabelRevisionOptions {
+  productTrackingRequest?: ProductTrackingRequest;
   payload: GenerateReasoningLabelPayload;
   run?: ReasoningLabelRun;
   resolveModel: () => Promise<ActivityLabelLLM>;
@@ -255,6 +259,7 @@ function serializeChatPrompt(messages: ReasoningLabelPromptMessage[][]): string 
 
 /** Invokes one SDK reasoning-label revision and captures complete provider text for billing. */
 export async function generateReasoningLabelRevision({
+  productTrackingRequest,
   payload,
   run,
   resolveModel,
@@ -313,7 +318,19 @@ export async function generateReasoningLabelRevision({
       responseId,
       chainOptions: {
         signal: payload.signal,
-        callbacks: [capturePrompt],
+        callbacks: withProductModelCallbacks(
+          [capturePrompt],
+          productTrackingRequest,
+          {
+            runId: sourceRunId,
+            conversationId: sessionId,
+            agentId: payload.agentId,
+            model: clientOptions.model,
+            provider,
+            usage_type: 'reasoning-label',
+          },
+          payload.signal,
+        ),
         configurable: {
           thread_id: sessionId,
           ...(userId != null && { user_id: userId }),

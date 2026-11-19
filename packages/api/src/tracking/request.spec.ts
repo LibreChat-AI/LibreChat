@@ -214,6 +214,32 @@ it('ignores queued correlation when tracking is disabled', () => {
   expect(req.productTrackingContext).toBeUndefined();
 });
 
+it('normalizes private chat labels before invoking an OSS host tracker', () => {
+  const productTracker = jest.fn();
+  trackRequestProductFact(
+    { productTracker, productTracking },
+    {
+      name: 'librechat.chat.model.usage.recorded',
+      feature: 'chat',
+      callId: 'call',
+      runId: 'run',
+      agentId: 'private-endpoint__model___Sender',
+      model: 'private-model',
+      provider: 'private-provider',
+      outcome: 'completed',
+    },
+  );
+  expect(productTracker).toHaveBeenCalledTimes(1);
+  expect(productTracker.mock.calls[0][0]).toMatchObject({
+    callId: 'call',
+    runId: 'run',
+    model: 'custom',
+    provider: 'custom',
+    agentId: undefined,
+  });
+  expect(JSON.stringify(productTracker.mock.calls)).not.toContain('private');
+});
+
 it('drops malformed facts and contains validation exceptions before host delivery', () => {
   const productTracker = jest.fn();
   const malformed = { ...fact, arguments: 'private' };
