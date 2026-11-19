@@ -6,6 +6,10 @@ on:
       - main
     paths-ignore:
       - '**.md'
+  pull_request:
+    paths:
+      - '.github/scripts/sync-helm-chart-tags*'
+      - '.github/workflows/sync-helm-chart-tags.yml'
   workflow_dispatch:
     inputs:
       release_existing_tag:
@@ -16,8 +20,9 @@ on:
 permissions:
   contents: read
 
+# Tag syncs share one group so two never push the same tag; a pull request only runs the tests.
 concurrency:
-  group: sync-helm-chart-tags
+  group: sync-helm-chart-tags-${{ github.event.pull_request.number || 'main' }}
   cancel-in-progress: false
 
 jobs:
@@ -30,6 +35,20 @@ jobs:
       - name: Skip tag sync
         run: echo "Helm chart tag sync only runs on main pushes or manual dispatch."
 
+  test:
+    name: Test chart tag sync
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Test tag sync against a remote that refuses tags
+        run: node --test .github/scripts/sync-helm-chart-tags.test.mjs
+
   sync:
     name: Sync chart tags
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
@@ -38,6 +57,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      packages: read
     env:
       BASE_REF: refs/remotes/origin/main
       BACKFILL_FROM_VERSION: 1.9.0
