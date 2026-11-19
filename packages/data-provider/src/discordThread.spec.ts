@@ -76,3 +76,21 @@ it('ships a bounded configurable mapping cap', () => {
     discordChannelConfigSchema.safeParse({ gateway: { maxThreadRoutes: 100001 } }).success,
   ).toBe(false);
 });
+
+it('allows signed commands from a visible read-only actor while requiring bot send/history access', () => {
+  expect(
+    discordThreadUsable({ ...source, permissions: { bot: String(required), author: '1024' } }),
+  ).toBe(true);
+  expect(
+    discordThreadUsable({ ...source, permissions: { bot: String(required), author: '0' } }),
+  ).toBe(false);
+  expect(discordThreadUsable({ ...source, permissions: { bot: '1024', author: '8' } })).toBe(false);
+  expect(
+    discordThreadUsable({
+      ...source,
+      threadType: 12,
+      permissions: { bot: String(required), author: '1024' },
+      membership: { bot: true, author: true },
+    }),
+  ).toBe(true);
+});
