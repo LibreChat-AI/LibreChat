@@ -824,8 +824,10 @@ describe('GET /api/config', () => {
             failClosed: true,
           }),
         );
-        // Startup already loads scoped config and base conversation-list limits in parallel.
-        expect(mockGetAppConfig).toHaveBeenCalledTimes(2);
+        const scopedCalls = mockGetAppConfig.mock.calls.filter(
+          ([options]) => options?.userId === userId,
+        );
+        expect(scopedCalls).toHaveLength(1);
       }
     });
 

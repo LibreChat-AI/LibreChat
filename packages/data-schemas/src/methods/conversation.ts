@@ -62,8 +62,8 @@ import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantConte
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
-import { attributeEarlierRecords } from './insights/attribution';
 import { prepareSubagentContentDeletion } from './subagentContent';
+import { attributeEarlierRecords } from './insights/attribution';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';
@@ -2792,7 +2792,6 @@ export function createConversationMethods(
       }
 
       if (conversationResult.lastErrorObject?.updatedExisting === false) {
-        /** `initial_agent_id` is not selected back, so pass the value this insert just wrote. */
         try {
           await attributeEarlierRecords(mongoose, {
             ...(conversation.toObject() as Record<string, unknown>),

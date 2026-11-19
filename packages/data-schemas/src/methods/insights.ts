@@ -265,7 +265,6 @@ function conversationScope(
   ];
 }
 
-/** Eligibility is decided when records are saved, so reads trust `insightsAgentId`. */
 function messageScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
   return [{ $match: { ...match, insightsAgentId: { $in: agentIds } } }];
 }
@@ -287,7 +286,6 @@ function transactionScope(
         ...match,
       },
     },
-    // The query form also matches arrays holding such values; only plain numbers count.
     {
       $addFields: {
         insightsUsageEligible: {
@@ -696,7 +694,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         },
         { $sort: { date: 1, model: 1 } },
       ]),
-        Transaction.aggregate<ReplyModel>([
+      Transaction.aggregate<ReplyModel>([
         ...transactionScope(
           agentIds,
           options.tenantId,

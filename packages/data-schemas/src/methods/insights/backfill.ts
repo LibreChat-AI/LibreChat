@@ -16,7 +16,6 @@ export type InsightsBackfillOptions = {
   apply?: boolean;
 };
 
-/** One resumable batch. Native collection reads deliberately cover every tenant. */
 export async function backfillInsightsAttribution(
   mongoose: typeof import('mongoose'),
   options: InsightsBackfillOptions,
@@ -106,8 +105,7 @@ async function finishBatch<T extends Document>(
 ): Promise<BatchResult> {
   const result =
     options.apply && operations.length > 0
-      ? // This explicit cross-tenant migration uses native records and identity-scoped filters.
-        // eslint-disable-next-line no-restricted-syntax
+      ? // eslint-disable-next-line no-restricted-syntax
         await collection.bulkWrite(operations, { ordered: false })
       : undefined;
   return {

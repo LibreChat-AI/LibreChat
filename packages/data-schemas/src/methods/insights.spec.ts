@@ -55,7 +55,6 @@ const fixtures = {
   },
 };
 
-/** Fixtures are inserted directly, so every read first runs the real migration. */
 async function migrateInsightsAttribution() {
   for (const collection of ['conversations', 'messages', 'transactions'] as const) {
     let after: string | undefined;

@@ -70,7 +70,6 @@ export async function resolveInsightsAttributions(
   return result;
 }
 
-/** Server-derived hints are never accepted from a message/transaction payload. */
 export async function withInsightsAttribution<
   T extends InsightsRecordIdentity & { insightsAgentId?: string },
 >(
@@ -85,7 +84,6 @@ export async function withInsightsAttribution<
   });
 }
 
-/** The first records of a new conversation are saved before it exists; this attributes them. */
 export async function attributeEarlierRecords(
   mongoose: typeof import('mongoose'),
   saved: Record<string, unknown>,
