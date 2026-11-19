@@ -43,6 +43,12 @@ export type ChatConversationContract = {
   setConversation: Dispatch<SetStateAction<TConversation | null>>;
   /** Starts a fresh conversation in this pane from a template and/or preset. */
   newConversation: (options?: NewConversationOptions) => void;
+  /**
+   * Whether the composer may offer a change of model, endpoint or agent though the pane is not
+   * main chat's: `newConversation` then changes the conversation the pane holds, in place, and
+   * takes nothing that would start another. Main chat's pane offers every choice without it.
+   */
+  retargets?: boolean;
   /** The preset applied to this pane, if any. */
   preset: TPreset | null;
   /** Replaces the preset applied to this pane. */

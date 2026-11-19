@@ -160,6 +160,12 @@ export default function SideChatSurface({
     };
   }, [conversationId, index]);
 
+  /**
+   * The app's `newConversation` for this pane changes the conversation in place and never
+   * leaves it, so the composer may offer the choices that do that.
+   */
+  const chat = useMemo(() => ({ ...contract, retargets: true }), [contract]);
+
   const form = useRef<HTMLDivElement>(null);
   const focused = useRef(false);
   useEffect(() => {
@@ -175,7 +181,7 @@ export default function SideChatSurface({
   }, [focusWhenReady, ready, conversation?.endpoint]);
 
   return (
-    <ChatContext.Provider value={contract}>
+    <ChatContext.Provider value={chat}>
       <TargetContext.Provider value={readiness}>
         <ChatFormProvider {...methods}>
           <ComposerRestoreProvider>

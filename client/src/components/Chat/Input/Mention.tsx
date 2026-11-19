@@ -1,12 +1,14 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { MentionPopover } from '@librechat/chat/components';
 import type { RecoilState } from 'recoil';
 import type { ConvoGenerator } from '~/common';
+import useSelectMention, { mentionEndpoint } from '~/hooks/Input/useSelectMention';
 import { useGetConversation, useLocalize, TranslationKeys } from '~/hooks';
-import useSelectMention from '~/hooks/Input/useSelectMention';
+import { getConvoSwitchLogic, switchesInPlace } from '~/utils';
 import { useAssistantsMapContext } from '~/Providers';
 import useMentions from '~/hooks/Input/useMentions';
+import store from '~/store';
 
 type MentionProps = {
   index: number;
@@ -16,18 +18,26 @@ type MentionProps = {
   commandChar?: string;
   placeholder?: TranslationKeys;
   includeAssistants?: boolean;
+  /**
+   * Offers only the choices that change the pane's conversation in place, for a pane that
+   * cannot start another one: a conversation open beside the chat.
+   */
+  inPlace?: boolean;
 };
 
 function MentionContent({
+  index,
   popoverAtom,
   newConversation,
   textAreaRef,
   commandChar = '@',
   placeholder = 'com_ui_mention',
   includeAssistants = true,
-}: Omit<MentionProps, 'index'>) {
+  inPlace = false,
+}: MentionProps) {
   const localize = useLocalize();
-  const getConversation = useGetConversation(0);
+  const getConversation = useGetConversation(index);
+  const modularChat = useRecoilValue(store.modularChat);
   const assistantsMap = useAssistantsMapContext();
   const setShowPopover = useSetRecoilState(popoverAtom);
   const {
@@ -49,12 +59,30 @@ function MentionContent({
     newConversation,
   });
 
+  /** Decided by the rule the selection itself follows, so what is offered is what is done. */
+  const offered = useMemo(() => {
+    if (!inPlace) {
+      return options;
+    }
+    const conversation = getConversation();
+    return options.filter((option) => {
+      const newEndpoint = mentionEndpoint(option, { presets, modelSpecs });
+      return (
+        newEndpoint != null &&
+        newEndpoint !== '' &&
+        switchesInPlace(
+          getConvoSwitchLogic({ newEndpoint, modularChat, conversation, endpointsConfig }),
+        )
+      );
+    });
+  }, [inPlace, options, presets, modelSpecs, modularChat, endpointsConfig, getConversation]);
+
   return (
     <MentionPopover
       textAreaRef={textAreaRef}
       commandChar={commandChar}
       placeholder={localize(placeholder)}
-      options={options}
+      options={offered}
       isLoading={isLoading}
       agentsList={agentsList}
       assistantListMap={assistantListMap}
@@ -66,7 +94,6 @@ function MentionContent({
 }
 
 const MentionPopoverContainer = memo(function MentionPopoverContainer({
-  index: _index,
   popoverAtom,
   ...rest
 }: MentionProps) {

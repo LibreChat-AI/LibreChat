@@ -15,10 +15,31 @@ import {
   removeUnavailableTools,
   getModelSpecIconURL,
   getConvoSwitchLogic,
+  switchesInPlace,
   logger,
 } from '~/utils';
 import { useDefaultConvo } from '~/hooks';
 import store from '~/store';
+
+/**
+ * The endpoint a mention would switch the conversation to, as {@link useSelectMention} reads
+ * it from the option; nothing for a preset or a model spec that is no longer there.
+ */
+export function mentionEndpoint(
+  option: MentionOption,
+  { presets, modelSpecs }: { presets?: TPreset[]; modelSpecs: TModelSpec[] },
+): string | null | undefined {
+  if (option.type === 'preset') {
+    return presets?.find((preset) => preset.presetId === option.value)?.endpoint;
+  }
+  if (option.type === 'modelSpec') {
+    return modelSpecs.find((spec) => spec.name === option.value)?.preset.endpoint;
+  }
+  if (option.type === 'model' || option.type === 'endpoint') {
+    return option.value;
+  }
+  return option.type;
+}
 
 export default function useSelectMention({
   presets,
@@ -69,19 +90,13 @@ export default function useSelectMention({
         return;
       }
 
-      const {
-        template,
-        shouldSwitch,
-        isNewModular,
-        newEndpointType,
-        isCurrentModular,
-        isExistingConversation,
-      } = getConvoSwitchLogic({
+      const logic = getConvoSwitchLogic({
         newEndpoint,
         modularChat,
         conversation,
         endpointsConfig,
       });
+      const { template, shouldSwitch, isNewModular, newEndpointType, isCurrentModular } = logic;
 
       if (newEndpointType) {
         preset.endpointType = newEndpointType;
@@ -96,7 +111,7 @@ export default function useSelectMention({
       }
 
       const isModular = isCurrentModular && isNewModular && shouldSwitch;
-      if (isExistingConversation && isModular) {
+      if (switchesInPlace(logic)) {
         template.endpointType = newEndpointType as EModelEndpoint | undefined;
 
         const currentConvo = getDefaultConversation({
@@ -153,19 +168,13 @@ export default function useSelectMention({
 
       const conversation = getConversation();
 
-      const {
-        shouldSwitch,
-        isNewModular,
-        isCurrentModular,
-        isExistingConversation,
-        newEndpointType,
-        template,
-      } = getConvoSwitchLogic({
+      const logic = getConvoSwitchLogic({
         newEndpoint,
         modularChat,
         conversation,
         endpointsConfig,
       });
+      const { isNewModular, newEndpointType, template } = logic;
 
       const model = kwargs.model ?? '';
       if (model) {
@@ -185,7 +194,7 @@ export default function useSelectMention({
       template.spec = null;
       template.iconURL = null;
       template.modelLabel = null;
-      if (isExistingConversation && isCurrentModular && isNewModular && shouldSwitch) {
+      if (switchesInPlace(logic)) {
         template.endpointType = newEndpointType;
 
         const currentConvo = getDefaultConversation({
@@ -245,26 +254,20 @@ export default function useSelectMention({
       const newPreset = removeUnavailableTools(_newPreset, availableTools);
       const newEndpoint = newPreset.endpoint ?? '';
 
-      const {
-        template,
-        shouldSwitch,
-        isNewModular,
-        newEndpointType,
-        isCurrentModular,
-        isExistingConversation,
-      } = getConvoSwitchLogic({
+      const logic = getConvoSwitchLogic({
         newEndpoint,
         modularChat,
         conversation,
         endpointsConfig,
       });
+      const { template, shouldSwitch, isNewModular, newEndpointType, isCurrentModular } = logic;
 
       newPreset.spec = null;
       newPreset.iconURL = newPreset.iconURL ?? null;
       newPreset.modelLabel = newPreset.modelLabel ?? null;
       const isModular = isCurrentModular && isNewModular && shouldSwitch;
       const disableParams = newPreset.defaultPreset === true;
-      if (isExistingConversation && isModular) {
+      if (switchesInPlace(logic)) {
         template.endpointType = newEndpointType as EModelEndpoint | undefined;
         template.spec = null;
         template.iconURL = null;

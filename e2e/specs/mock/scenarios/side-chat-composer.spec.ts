@@ -8,6 +8,7 @@ import {
   MOCK_ENDPOINTS,
   conversationRow,
   selectMockEndpoint,
+  modelSelectorTrigger,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { openChatHistory } from './sidebar';
@@ -470,4 +471,100 @@ test('the gauge beside the chat counts a reply as it is written @scenario:side-c
   const late = usedTokens(await gauge.getAttribute('aria-label'));
   await expect(stop).toBeVisible();
   expect(late).toBeGreaterThan(early);
+});
+
+/** Opens the side composer's `@` list, and gives its field and the rows it offers. */
+async function openSideMention(page: Page, sideChat: Locator, field: Locator) {
+  await field.click();
+  await field.press('@');
+  const combobox = sideChat.getByRole('combobox', { name: /Mention/ });
+  await expect(combobox).toBeFocused();
+  const listbox = page.locator(`[id="${await combobox.getAttribute('aria-controls')}"]`);
+  await expect(listbox.getByRole('option').first()).toBeVisible();
+  return { combobox, options: listbox.getByRole('option') };
+}
+
+test('a model picked with @ in a side chat changes that conversation, and nothing of the chat on screen @scenario:side-chat-mention-switches-the-model-in-place', async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  const { earlierUrl, sideChat, main, field } = await openBeside(page, 'mention');
+  const mainUrl = page.url();
+  const conversationId = new URL(earlierUrl).pathname.split('/').pop() ?? '';
+  const label = uniqueLabel('mentioned');
+  const other = MOCK_ENDPOINTS[1];
+  await expect(sideChat).toContainText('@ for models');
+
+  const { combobox, options } = await openSideMention(page, sideChat, field);
+  await combobox.fill(other.label);
+  await expect(options).toHaveCount(1);
+  await options.first().click();
+
+  /** The list closes on the side composer, which now writes to the model picked. */
+  await expect(page.getByRole('combobox', { name: /Mention/ })).toHaveCount(0);
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue('');
+  await expect(field).toHaveAttribute('placeholder', new RegExp(other.label));
+  /** The chat on screen is where it was, on the model it had. */
+  expect(page.url()).toBe(mainUrl);
+  await expect(modelSelectorTrigger(page)).toContainText(MOCK_ENDPOINTS[0].label);
+  await expect(main.getByRole('textbox', { name: 'Message input' })).toHaveAttribute(
+    'placeholder',
+    new RegExp(MOCK_ENDPOINTS[0].label),
+  );
+
+  /** The next turn goes to the same conversation, on that model. */
+  const started = page.waitForRequest((request) => isStart(request.url(), request.method()));
+  await field.click();
+  await page.keyboard.type(replyPrompt(label));
+  await page.keyboard.press('Enter');
+  const request = await started;
+  expect(decodeURIComponent(new URL(request.url()).pathname.split('/').pop() ?? '')).toBe(
+    other.label,
+  );
+  expect(request.postDataJSON()).toMatchObject({ conversationId, model: other.model });
+  const turns = sideChat.locator('.message-render');
+  await expect(turns).toHaveCount(4, { timeout: 30_000 });
+  await expect(turns.nth(3)).toContainText(replyText(label), { timeout: 30_000 });
+  await expect(turns.nth(3)).toContainText(other.label);
+  await expect(messagesView(page).locator('.message-render')).toHaveCount(2);
+  expect(page.url()).toBe(mainUrl);
+
+  /** It is the conversation's model from then on, wherever it is opened. */
+  await page.goto(earlierUrl, { timeout: 30_000 });
+  await expect(messagesView(page).locator('.message-render')).toHaveCount(4, { timeout: 30_000 });
+  await expect(modelSelectorTrigger(page)).toContainText(other.label);
+});
+
+test('@ in a side chat offers only what changes its conversation in place @scenario:side-chat-mention-offers-only-in-place-choices', async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  /** With modular chat off, another endpoint starts another conversation, which a side chat cannot. */
+  await page.addInitScript(() => {
+    localStorage.setItem('modularChat', JSON.stringify(false));
+  });
+  const { sideChat, field } = await openBeside(page, 'in-place');
+
+  const { combobox, options } = await openSideMention(page, sideChat, field);
+  await combobox.fill('Mock Provider');
+  await expect(options.filter({ hasText: MOCK_ENDPOINTS[0].label }).first()).toBeVisible();
+  await expect(options.filter({ hasText: MOCK_ENDPOINTS[1].label })).toHaveCount(0);
+  await combobox.press('Escape');
+  await expect(field).toBeFocused();
+
+  /** Main chat's own list still offers it: there it starts a new conversation. */
+  const mainField = page
+    .locator('main form')
+    .first()
+    .getByRole('textbox', { name: 'Message input' });
+  await mainField.click();
+  await mainField.press('@');
+  const mainCombobox = page.getByRole('combobox', { name: /Mention/ });
+  await expect(mainCombobox).toBeFocused();
+  await mainCombobox.fill('Mock Provider');
+  const mainOptions = page
+    .locator(`[id="${await mainCombobox.getAttribute('aria-controls')}"]`)
+    .getByRole('option');
+  await expect(mainOptions.filter({ hasText: MOCK_ENDPOINTS[1].label }).first()).toBeVisible();
 });
