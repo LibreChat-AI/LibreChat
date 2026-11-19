@@ -12,12 +12,13 @@ function renderDialog(props: Partial<React.ComponentProps<typeof ChannelsDialog>
 }
 
 describe('ChannelsDialog', () => {
-  it('lists Slack as the available channel and names the dialog', () => {
+  it('lists Slack and Discord and names the dialog', () => {
     renderDialog();
     expect(screen.getByRole('dialog', { name: 'com_ui_channels_title' })).toBeVisible();
     expect(screen.getByRole('heading', { name: 'com_ui_channels_title' })).toBeVisible();
-    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
     expect(screen.getByRole('button', { name: /com_ui_channels_slack/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /com_ui_discord_title/ })).toBeVisible();
   });
 
   it('hands the chosen channel to the caller', async () => {

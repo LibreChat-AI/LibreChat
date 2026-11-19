@@ -1,4 +1,6 @@
 export enum QueryKeys {
+  discordApps = 'discordApps',
+  discordGuilds = 'discordGuilds',
   slackApps = 'slackApps',
   slackWorkspaces = 'slackWorkspaces',
   agentChannelWorkspaceRoutes = 'agentChannelWorkspaceRoutes',
@@ -147,6 +149,7 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  discordSetup = 'discordSetup',
   slackApps = 'slackApps',
   slackWorkspaces = 'slackWorkspaces',
   agentChannelWorkspaceRoutes = 'agentChannelWorkspaceRoutes',

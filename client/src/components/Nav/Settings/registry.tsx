@@ -41,6 +41,7 @@ import DeleteAccount from '../SettingsTabs/Account/DeleteAccount';
 import StatefulWorkspaceDefault from './StatefulWorkspaceDefault';
 import { ForkSettings } from '../SettingsTabs/Chat/ForkSettings';
 import LinksSettings from '~/components/Channels/LinksSettings';
+import { DiscordSettings } from '~/components/Channels/Discord';
 import ChatDirection from '../SettingsTabs/Chat/ChatDirection';
 import { DeleteCache } from '../SettingsTabs/Data/DeleteCache';
 import { ManageFiles } from '../SettingsTabs/Data/ManageFiles';
@@ -834,6 +835,14 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_ui_channel_link_personal',
     keywords: ['slack', 'channel', 'identity', 'link', 'revoke'],
     Component: LinksSettings,
+  },
+  {
+    id: 'discordApps',
+    tab: ACCOUNT,
+    section: 'connections',
+    labelKey: 'com_ui_discord_title',
+    keywords: ['discord', 'guild', 'server', 'application', 'organization', 'connect'],
+    Component: DiscordSettings,
   },
   {
     id: 'pullRequestAccount',
