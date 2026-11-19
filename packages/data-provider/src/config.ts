@@ -3487,7 +3487,8 @@ export const interfaceSchema = z
     customWelcome: z.string().optional(),
     /** What heads the welcome screen when an agent, assistant or branded spec is
      *  selected: its name (`entity`), or the time-of-day greeting with the user's
-     *  name (`greeting`) for deployments whose header selector already names it. */
+     *  name (`greeting`) for deployments whose header selector already names it.
+     *  Greeting mode also drops the agent or endpoint icon beside the heading. */
     landingHeading: z.enum(['entity', 'greeting']).optional(),
     /** Shows the generic disclaimer and policy links on the welcome screen: at the bottom of the
      *  page (`true`), directly under the composer (`composer`), or not at all (`false`). A
