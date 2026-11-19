@@ -623,6 +623,119 @@ it('keeps sending a question about a tool the whole-server item still covers', a
   );
 });
 
+describe('the whole-server item beside named tools', () => {
+  const every = () =>
+    screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_server_every' });
+  const confirm = () => screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' });
+  const stored = (
+    over: Partial<ScheduleMCPConsentView>,
+    tools: string[],
+  ): ScheduleMCPConsentView => ({
+    ...view,
+    approval: true,
+    state: 'active',
+    revision: 'grant',
+    targets: [{ ...view.targets[0], permittedTools: [{ agentId: 'root', tools }] }],
+    ...over,
+  });
+
+  it('is unticked by a change to a tool that also has a box of its own', async () => {
+    // The root holds the whole server, the child names `query`, and `query` has changed.
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(
+      stored(
+        {
+          state: 'changed',
+          allowed: { warehouse: ['query', 'sys__all__sys'] },
+          changed: { warehouse: ['query'] },
+        },
+        ['query', 'sys__all__sys'],
+      ),
+    );
+    display();
+    // Left ticked, the whole server would allow the new definition for the root unseen.
+    expect(await every()).not.toBeChecked();
+    expect(await every()).toHaveAccessibleDescription('com_ui_schedule_consent_server_changed');
+    expect(screen.getByRole('checkbox', { name: 'query' })).not.toBeChecked();
+    expect(confirm()).toBeDisabled();
+  });
+
+  it('lets the owner stop a question about a tool that has no box of its own', async () => {
+    const data = stored(
+      { allowed: { warehouse: ['sys__all__sys'] }, asking: { warehouse: ['query'] } },
+      ['sys__all__sys'],
+    );
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(data);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(data);
+    display();
+    expect(await every()).toBeChecked();
+    // No agent names `query`, so it has no row. Its question does.
+    expect(screen.queryByRole('checkbox', { name: 'query' })).not.toBeInTheDocument();
+    const asked = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' });
+    expect(asked).toBeChecked();
+    await userEvent.click(asked);
+    expect(
+      screen.queryByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(confirm());
+    await waitFor(() =>
+      expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+        'schedule',
+        expect.objectContaining({ allow: { warehouse: ['sys__all__sys'] }, ask: {} }),
+      ),
+    );
+  });
+
+  it('keeps a question in view when its tool is unticked and the whole server still covers it', async () => {
+    const data = stored(
+      {
+        allowed: { warehouse: ['query', 'sys__all__sys'] },
+        asking: { warehouse: ['query'] },
+      },
+      ['query', 'sys__all__sys'],
+    );
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(data);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(data);
+    display();
+    expect(await every()).toBeChecked();
+    // Ticked, `query` shows its own ask box. Unticked, the root still reaches it through the
+    // whole server and is still asked: the question moves under that item, it is not hidden.
+    const asks = () =>
+      screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' });
+    expect(asks()).toHaveLength(1);
+    await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
+    expect(asks()).toHaveLength(1);
+    expect(asks()[0]).toBeChecked();
+    await userEvent.click(confirm());
+    await waitFor(() =>
+      expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+        'schedule',
+        expect.objectContaining({
+          allow: { warehouse: ['sys__all__sys'] },
+          ask: { warehouse: ['query'] },
+        }),
+      ),
+    );
+  });
+
+  it('starts the tools a whole-server grant already allows as ticked, once the agents name them', async () => {
+    // Granted as a whole. The agent now names its tools, and no longer selects the whole.
+    const data = stored({ allowed: { warehouse: ['sys__all__sys'] } }, ['export', 'query']);
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(data);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(data);
+    display();
+    expect(await screen.findByRole('checkbox', { name: 'query' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'export' })).toBeChecked();
+    // Confirming as shown keeps what is authorized now.
+    await userEvent.click(confirm());
+    await waitFor(() =>
+      expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+        'schedule',
+        expect.objectContaining({ allow: { warehouse: ['export', 'query'] } }),
+      ),
+    );
+  });
+});
+
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

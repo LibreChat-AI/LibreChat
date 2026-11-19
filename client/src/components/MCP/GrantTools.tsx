@@ -53,29 +53,23 @@ function offeredTools(target: ScheduledMCPTarget): string[] {
 }
 
 /**
- * Changed tools the offer does not list by name: used under a grant of the whole server,
- * which is the only item that covers them. Their change is the whole-server item's to
- * acknowledge.
+ * Whether a ticked item survives the marks. A named tool answers for its own. The whole server
+ * covers every tool on it, named elsewhere or not, so it answers for all of them: left ticked
+ * over a change it would allow the new definition with nobody having looked at it.
  */
-function unlisted(offered: readonly string[], changed: readonly string[]): string[] {
-  return changed.filter((tool) => !offered.includes(tool));
-}
-
-/** Whether a ticked item survives the marks: its own, or for the whole server, any it covers. */
-function unmarked(
-  tool: string,
-  offered: readonly string[],
-  marked: readonly string[],
-  seen: readonly string[] = [],
-): boolean {
+function unmarked(tool: string, marked: readonly string[], seen: readonly string[] = []): boolean {
   const every: string = Constants.mcp_all;
   if (tool !== every) return !marked.includes(tool) || seen.includes(tool);
-  return unlisted(offered, marked).every((name) => seen.includes(name));
+  return marked.every((name) => seen.includes(name));
 }
 
 /**
  * The owner's starting point: what the stored grant already allows and is still on offer.
  * A tool whose definition changed starts unticked, so allowing the new one is a decision.
+ *
+ * A grant of the whole server allows every tool there. When the agents come to name tools the
+ * grant never named, those start ticked too: they are authorized now, and confirming as shown
+ * must not take them away.
  */
 function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
   return Object.fromEntries(
@@ -85,7 +79,11 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
       const changed = data.changed[target.resource.serverName] ?? [];
       return [
         target.resource.serverName,
-        offered.filter((tool) => allowed.includes(tool) && unmarked(tool, offered, changed)),
+        offered.filter(
+          (tool) =>
+            (allowed.includes(tool) || allowed.includes(Constants.mcp_all)) &&
+            unmarked(tool, changed),
+        ),
       ];
     }),
   );
@@ -123,7 +121,7 @@ function currentChoice(
       return [
         serverName,
         (edited.choice[serverName] ?? initial[serverName]).filter(
-          (tool) => offered.includes(tool) && unmarked(tool, offered, marked, seen),
+          (tool) => offered.includes(tool) && unmarked(tool, marked, seen),
         ),
       ];
     }),
@@ -570,10 +568,18 @@ function ToolChoice({
   const named = offered.filter((tool) => tool !== every);
   const items = [...offered.filter((tool) => tool === every), ...named];
   const kept = chosen.filter((tool) => tool === every);
-  /** Changed tools only the whole-server item covers: named beside it, as its warning. */
-  const covered = unlisted(offered, changed);
+  /** The whole-server item covers every changed tool there: they are named beside it. */
   const warns = (tool: string): boolean =>
-    tool === every ? covered.length > 0 : changed.includes(tool);
+    tool === every ? changed.length > 0 : changed.includes(tool);
+  /**
+   * Questions the grant holds about tools whose own ask box is not showing: a tool with no row
+   * (reached only through the whole server), or one whose row is unticked. While the whole
+   * server is ticked they are still allowed and still asked about, so each gets a row under
+   * that item, where the owner can keep asking or stop.
+   */
+  const retained = chosen.includes(every)
+    ? asking.filter((tool) => tool !== every && !(named.includes(tool) && chosen.includes(tool)))
+    : [];
   /** Checked only when every tool is: the shared box has no partly-selected appearance. */
   const all = named.length > 0 && named.every((tool) => chosen.includes(tool));
   return (
@@ -645,10 +651,32 @@ function ToolChoice({
               <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
                 {tool === every
                   ? localize('com_ui_schedule_consent_server_changed', {
-                      tools: covered.join(', '),
+                      tools: changed.join(', '),
                     })
                   : localize('com_ui_schedule_consent_tool_changed')}
               </p>
+            )}
+            {tool === every && retained.length > 0 && (
+              <ul className="space-y-1 pl-6">
+                {retained.map((asked) => (
+                  <li key={asked} className="flex items-center gap-2">
+                    <Checkbox
+                      id={`${groupId}-${asked}-retained`}
+                      checked
+                      disabled={disabled}
+                      aria-label={localize('com_ui_schedule_consent_ask_tool', { tool: asked })}
+                      aria-describedby={askNoteId}
+                      onCheckedChange={(checked) => {
+                        if (checked !== true)
+                          onAskingChange(asking.filter((name) => name !== asked));
+                      }}
+                    />
+                    <Label htmlFor={`${groupId}-${asked}-retained`} className="text-xs break-all">
+                      {localize('com_ui_schedule_consent_ask_tool', { tool: asked })}
+                    </Label>
+                  </li>
+                ))}
+              </ul>
             )}
           </li>
         ))}
