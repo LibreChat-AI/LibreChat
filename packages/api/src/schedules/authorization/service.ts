@@ -201,10 +201,13 @@ function selectAsking(
   whole = false,
 ): Record<string, string[]> {
   const allowed = allowedTools(chosen);
-  // The whole server is not something to ask about: it names no tool to pause for.
-  const askable = (serverName: string, tool: string): boolean =>
-    tool !== Constants.mcp_all &&
-    (whole ? allowed[serverName] != null : allowed[serverName]?.includes(tool) === true);
+  // The whole server is not something to ask about: it names no tool to pause for. A tool it
+  // covers is: allowed there by name, or through a grant of the whole server to some agent.
+  const askable = (serverName: string, tool: string): boolean => {
+    const tools = allowed[serverName];
+    if (tool === Constants.mcp_all || tools == null) return false;
+    return whole || tools.includes(tool) || tools.includes(Constants.mcp_all);
+  };
   if (ask == null)
     return Object.fromEntries(
       Object.entries(stored)

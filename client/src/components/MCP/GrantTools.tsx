@@ -248,13 +248,18 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
       revision: data?.revision ?? null,
       tools: { ...asking, [serverName]: tools },
     });
-  /** Sent with the confirmation: of the tools ticked now, the ones the owner asks about. */
+  /**
+   * Sent with the confirmation: of the tools allowed now, the ones the owner asks about. A
+   * tool is allowed when it is ticked, or when the whole of its server is: a question about a
+   * tool the whole-server item still covers is not dropped because its own box went away.
+   */
   const ask = Object.fromEntries(
     Object.entries(asking)
-      .map(([serverName, tools]): [string, string[]] => [
-        serverName,
-        tools.filter((tool) => (choice[serverName] ?? []).includes(tool)),
-      ])
+      .map(([serverName, tools]): [string, string[]] => {
+        const ticked = choice[serverName] ?? [];
+        const every = ticked.includes(Constants.mcp_all);
+        return [serverName, tools.filter((tool) => every || ticked.includes(tool))];
+      })
       .filter(([, tools]) => tools.length > 0),
   );
   return {

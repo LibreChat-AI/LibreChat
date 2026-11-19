@@ -1141,6 +1141,52 @@ describe('a selection of every tool on a declared server, in a grant that lists 
     });
   });
 
+  it('keeps a question about a tool it still covers after the agent that named the tool drops it', async () => {
+    const both: ScheduledMCPTarget = {
+      ...target,
+      permittedTools: [
+        { agentId: 'child', tools: ['query'] },
+        { agentId: 'root', tools: [marker] },
+      ],
+      policyRevision: 'p4',
+    };
+    const s = setup();
+    s.changeTarget(both);
+    // The owner approves each use of `query`, which the root reaches through the whole server.
+    await s.enroll({ warehouse: ['query', marker] }, { warehouse: ['query'] });
+    // The child stops naming it. The root still has it.
+    s.changeTarget(every);
+    const view = await s.service.view(identity);
+    await s.service.confirm(identity, {
+      offerDigest: view.offer!.digest,
+      expectedRevision: view.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: [marker] },
+    });
+    expect(s.snapshot.enrollment!.consents[0].askTools).toEqual(['query']);
+    expect(await s.service.authority.authorize(call('query'), {})).toMatchObject({
+      state: 'authorized',
+      approvalRequired: true,
+    });
+    // Without the whole server, a question about a tool that is no longer allowed is dropped.
+    const named = setup();
+    named.changeTarget(both);
+    await named.enroll({ warehouse: ['query'] }, { warehouse: ['query'] });
+    named.changeTarget({
+      ...target,
+      permittedTools: [{ agentId: 'child', tools: ['export'] }],
+      policyRevision: 'p5',
+    });
+    const next = await named.service.view(identity);
+    await named.service.confirm(identity, {
+      offerDigest: next.offer!.digest,
+      expectedRevision: next.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['export'] },
+    });
+    expect(named.snapshot.enrollment!.consents[0]).not.toHaveProperty('askTools');
+  });
+
   it('cannot be asked about: it names no tool to pause for', async () => {
     const s = setup();
     s.changeTarget(every);

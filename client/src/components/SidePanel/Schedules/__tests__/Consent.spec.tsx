@@ -592,6 +592,37 @@ it('unticks the whole-server item and names the tools that changed under it', as
   );
 });
 
+it('keeps sending a question about a tool the whole-server item still covers', async () => {
+  // The grant asks about `query`. No agent names `query` any more: only the whole server.
+  const stored: ScheduleMCPConsentView = {
+    ...view,
+    approval: true,
+    state: 'active',
+    revision: 'grant',
+    targets: [
+      { ...view.targets[0], permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }] },
+    ],
+    allowed: { warehouse: ['sys__all__sys'] },
+    asking: { warehouse: ['query'] },
+  };
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(stored);
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(stored);
+  display();
+  expect(
+    await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_server_every' }),
+  ).toBeChecked();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({
+        allow: { warehouse: ['sys__all__sys'] },
+        ask: { warehouse: ['query'] },
+      }),
+    ),
+  );
+});
+
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,
