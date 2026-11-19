@@ -55,7 +55,7 @@ export class AuthoredSkillState {
     });
   }
 
-  /** Bindings recorded for this scope. Restored ones are left out until `take` verifies them. */
+  /** Restored bindings stay pending until permission checks confirm them. */
   recorded(scope: Scope): AuthoredSkillBinding[] {
     const bindings: AuthoredSkillBinding[] = [];
     for (const [key, binding] of this.bindings) {

@@ -3775,12 +3775,7 @@ describe('createToolExecuteHandler', () => {
       expect(getSkillByName).toHaveBeenLastCalledWith('shared-name', [SKILL_ID], {});
     });
 
-    it('keeps the authored id reachable when each batch gets a fresh configurable', async () => {
-      /**
-       * LangGraph builds a new top-level `configurable` for every tool step, so
-       * nothing assigned onto one batch's configurable reaches the next. Each
-       * batch below gets its own shallow copy, as the graph does.
-       */
+    it('keeps authored files usable when each batch gets a fresh configurable', async () => {
       const createdSkill = {
         _id: SKILL_ID,
         name: 'cross-batch-skill',
@@ -3790,7 +3785,22 @@ describe('createToolExecuteHandler', () => {
         version: 1,
       };
       let stored = false;
-      const getSkillByName = jest.fn(async () => (stored ? createdSkill : null));
+      const getSkillByName = jest.fn(async (name: string, ids: Array<typeof SKILL_ID>) =>
+        stored && name === createdSkill.name && ids.some((id) => id.equals(SKILL_ID))
+          ? { ...createdSkill }
+          : null,
+      );
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: 9,
+        relativePath: 'references/a.md',
+      }));
+      const updateSkill = jest.fn(
+        async ({ update }: Parameters<NonNullable<ToolExecuteOptions['updateSkill']>>[0]) => {
+          createdSkill.body = update.body ?? createdSkill.body;
+          createdSkill.version++;
+          return { status: 'updated' as const, skill: { ...createdSkill }, warnings: [] };
+        },
+      );
       const loadTools: ToolExecuteOptions['loadTools'] = jest.fn(async () => ({
         loadedTools: [],
         configurable: {
@@ -3802,42 +3812,71 @@ describe('createToolExecuteHandler', () => {
       const handler = createToolExecuteHandler({
         loadTools,
         canCreateSkill: jest.fn(async () => true),
+        canEditSkill: jest.fn(async () => true),
         grantSkillOwner: jest.fn(async () => undefined),
-        getSkillByName: getSkillByName as unknown as ToolExecuteOptions['getSkillByName'],
+        getSkillByName,
         createSkill: jest.fn(async () => {
           stored = true;
-          return { skill: createdSkill };
-        }) as unknown as ToolExecuteOptions['createSkill'],
+          return { skill: { ...createdSkill }, warnings: [] };
+        }),
+        getSkillFileByPath: jest.fn(async () => null),
+        saveSkillFileContent,
+        updateSkill,
       });
-      const runConfigurable: Record<string, unknown> = { req, accessibleSkillIds: [] };
-
-      await invokeHandlerWithConfig(
-        handler,
-        [
-          {
-            id: 'call_create_cross_batch',
-            name: 'create_file',
-            args: { path: 'skills/cross-batch-skill/SKILL.md', content: createdSkill.body },
+      const calls: ToolCallRequest[] = [
+        {
+          id: 'create-skill',
+          name: 'create_file',
+          args: { path: 'skills/cross-batch-skill/SKILL.md', content: createdSkill.body },
+        },
+        {
+          id: 'create-reference',
+          name: 'create_file',
+          args: { path: 'skills/cross-batch-skill/references/a.md', content: 'reference' },
+        },
+        {
+          id: 'read-skill',
+          name: Constants.READ_FILE,
+          args: { path: 'skills/cross-batch-skill/SKILL.md' },
+        },
+        {
+          id: 'edit-skill',
+          name: 'edit_file',
+          args: {
+            path: 'skills/cross-batch-skill/SKILL.md',
+            old_text: '# Cross batch body',
+            new_text: '# Refined body',
           },
-        ],
-        { ...runConfigurable },
-      );
+        },
+        {
+          id: 'invoke-skill',
+          name: Constants.SKILL_TOOL,
+          args: { skillName: 'cross-batch-skill' },
+        },
+      ];
+      const results: ToolExecuteResult[] = [];
+      for (const call of calls) {
+        // Neither the configurable nor its catalog is shared between graph tasks.
+        const [result] = await invokeHandlerWithConfig(handler, [call], {
+          req,
+          accessibleSkillIds: [],
+        });
+        expect(result).toMatchObject({ toolCallId: call.id, status: 'success' });
+        if (call.id !== 'create-skill') {
+          expect(getSkillByName).toHaveBeenLastCalledWith('cross-batch-skill', [SKILL_ID], {});
+        }
+        results.push(result);
+      }
 
-      const [invoked] = await invokeHandlerWithConfig(
-        handler,
-        [
-          {
-            id: 'call_invoke_cross_batch',
-            name: Constants.SKILL_TOOL,
-            args: { skillName: 'cross-batch-skill' },
-          },
-        ],
-        { ...runConfigurable },
+      expect(saveSkillFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({ skillId: SKILL_ID, relativePath: 'references/a.md' }),
       );
-
-      expect(invoked.status).toBe('success');
-      expect(JSON.stringify(invoked.injectedMessages)).toContain('# Cross batch body');
-      expect(getSkillByName).toHaveBeenLastCalledWith('cross-batch-skill', [SKILL_ID], {});
+      expect(results[2].content).toContain('# Cross batch body');
+      expect(updateSkill).toHaveBeenCalledWith(
+        expect.objectContaining({ id: SKILL_ID.toString(), expectedVersion: 1 }),
+      );
+      expect(JSON.stringify(results[4].injectedMessages)).toContain('# Refined body');
+      expect(JSON.stringify(results[4].injectedMessages)).not.toContain('# Cross batch body');
     });
 
     it('does not advertise invocation for a skill created with disable-model-invocation', async () => {
