@@ -206,13 +206,12 @@ it('does not refuse a run because its agent also has tools that are not MCP tool
 });
 
 it.each([[], ['execute_code']].map((tools) => ({ tools })))(
-  'refuses a protected run that selects no MCP tool before connecting: %s',
+  'has nothing to make ready, and connects to nothing, for a run that selects no MCP tool: %s',
   async ({ tools }) => {
     const f = await setup();
     f.setCandidates(tools);
-    await expect(f.check()).rejects.toMatchObject({
-      outcomes: [expect.objectContaining({ automaticReplay: false })],
-    });
+    // A grant may allow the agents' other tools and no MCP tool at all.
+    await expect(f.check()).resolves.toEqual([]);
     expect(f.connect).not.toHaveBeenCalled();
   },
 );
@@ -732,12 +731,102 @@ describe('a grant for only some of what the agents select', () => {
     expect(f.connect).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'warehouse' }));
   });
 
-  it('is not ready once the agents select nothing the owner allowed', async () => {
+  it('has nothing to make ready once the agents select no MCP tool the owner allowed', async () => {
     const f = await partial();
     f.setCandidates(['export_mcp_warehouse']);
     f.connect.mockClear();
+    await expect(f.check()).resolves.toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+    // The tool left out is still refused where it is called.
+    await f.host.prepare({ req: f.req, context: f.context });
+    await expect(
+      bindScheduledMCPInvocation(f.context, 'root', 'export')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'export',
+        loadTools: async () => ({ tools: [{ ...readTool, name: 'export' }], complete: true }),
+      }),
+    ).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
+  });
+
+  it('is ready to run when the owner allowed another tool and none of the MCP tools', async () => {
+    const f = await setup();
+    f.setCandidates(['web_search', 'query_mcp_warehouse']);
+    const offer = await f.host.consent.service.view(f.identity);
+    await f.host.consent.service.confirm(f.identity, {
+      offerDigest: offer.offer!.digest,
+      expectedRevision: offer.revision,
+      lifetimeHours: 1,
+      allow: {},
+      tools: ['web_search'],
+    });
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    expect(f.row.mcpConsent.consents).toEqual([]);
+    f.connect.mockClear();
+    await expect(f.check()).resolves.toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+  });
+});
+
+describe('an owner whose role may not use MCP servers', () => {
+  const role = {
+    permissions: {
+      [PermissionTypes.SCHEDULES]: { [Permissions.USE]: true, [Permissions.CREATE]: true },
+    },
+  } as IRole;
+
+  it('authorizes the other tools of a schedule, and is offered no MCP tool', async () => {
+    const f = await setup();
+    f.snapshot.enrollment = null;
+    f.row.mcpConsent = undefined;
+    f.getRoleByName.mockResolvedValue(role);
+    f.setCandidates(['web_search', 'query_mcp_warehouse']);
+    const offer = await f.host.consent.service.view(f.identity);
+    expect(offer).toMatchObject({ targets: [], tools: { offered: ['web_search'] } });
+    const confirm = (choice: { allow: Record<string, string[]>; tools?: string[] }) =>
+      f.host.consent.service.confirm(f.identity, {
+        offerDigest: offer.offer!.digest,
+        expectedRevision: offer.revision,
+        lifetimeHours: 1,
+        ...choice,
+      });
+    await expect(confirm({ allow: { warehouse: ['query'] } })).rejects.toMatchObject({
+      code: 'consent_invalid',
+    });
+    await expect(confirm({ allow: {}, tools: ['web_search'] })).resolves.toMatchObject({
+      state: 'active',
+      tools: { allowed: ['web_search'] },
+    });
+    expect(f.snapshot.enrollment).toMatchObject({ consents: [] });
+    // And the schedule runs: the MCP tool it selects is not one the grant allows.
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    f.connect.mockClear();
+    await expect(f.check()).resolves.toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+  });
+
+  it('is refused an MCP tool it was granted while it could use them', async () => {
+    const f = await setup();
+    await f.host.prepare({ req: f.req, context: f.context });
+    const call = () =>
+      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.serverConfig,
+        toolName: 'query',
+        loadTools: async () => ({ tools: [readTool], complete: true }),
+      });
+    await expect(call()).resolves.toBeUndefined();
+    f.getRoleByName.mockResolvedValue(role);
+    await expect(call()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
+    // Nor is the schedule ready to run with it, and nothing is connected to find that out.
+    f.connect.mockClear();
     await expect(f.check()).rejects.toMatchObject({
-      outcomes: [expect.objectContaining({ reason: 'tool_policy_denied' })],
+      code: 'mcp_permission_denied',
+      outcomes: expect.arrayContaining([
+        expect.objectContaining({ server: 'warehouse', status: 'mcp_permission_denied' }),
+      ]),
     });
     expect(f.connect).not.toHaveBeenCalled();
   });

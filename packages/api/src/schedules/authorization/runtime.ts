@@ -16,10 +16,10 @@ import {
 } from './execution';
 import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { readScheduleFireContext, isScheduleFireRequest } from '../trigger';
+import { createScheduleMCPConsentHost, createMCPUseCheck } from './host';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createScheduleLimitsResolver } from '../service';
 import { createScheduleMCPOffer } from './enrollment';
-import { createScheduleMCPConsentHost } from './host';
 import { isOwnedAbortError } from '~/utils/errors';
 import { ScheduledMCPPolicyError } from './policy';
 
@@ -53,7 +53,10 @@ export function createScheduleMCPRuntimeHost(
   }) => Promise<void>;
 } {
   function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
-    const offer = createScheduleMCPOffer(enrollment);
+    const offer = createScheduleMCPOffer({
+      ...enrollment,
+      canUseMCP: createMCPUseCheck(deps.getRoleByName),
+    });
     const consent = createScheduleMCPConsentHost({
       ...deps,
       findUser: enrollment.findUser,

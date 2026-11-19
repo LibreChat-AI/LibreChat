@@ -166,14 +166,39 @@ function enrollmentSchema<Consent extends z.ZodTypeAny>(consent: Consent) {
       /** The subject's configuration generation the grant was made for. Zero where it has none. */
       scheduleRevision: z.number().int().nonnegative(),
       revision: identifier,
-      consents: z.array(consent).min(1).max(32),
+      /** One per MCP server the owner allowed. None, for a grant that allows other tools only. */
+      consents: z.array(consent).max(32),
       /**
        * The agents' tools that are not MCP tools (code execution, web search, an action) that
        * the owner allowed, per agent. Absent: none of them is allowed.
        */
       tools: z.array(scheduledMCPToolSelectionSchema).max(MAX_SERVER_AGENTS).optional(),
+      /**
+       * The grant's own lifetime. A grant made before it was stored here has it only on its
+       * consents, which every such grant has at least one of.
+       */
+      grantedAtMs: timestamp.optional(),
+      absoluteExpiresAtMs: timestamp.optional(),
+      revokedAtMs: timestamp.nullable().optional(),
     })
-    .strict();
+    .strict()
+    .refine((value) => value.consents.length > 0 || (value.tools?.length ?? 0) > 0)
+    .refine((value) => value.consents.length > 0 || value.absoluteExpiresAtMs != null);
+}
+
+/** Until when a grant allows anything, and whether its owner withdrew it. */
+export function grantLifetime(grant: {
+  absoluteExpiresAtMs?: number;
+  revokedAtMs?: number | null;
+  consents: readonly { absoluteExpiresAtMs: number; revokedAtMs: number | null }[];
+}): { expiresAtMs: number; revoked: boolean } {
+  return {
+    expiresAtMs:
+      grant.absoluteExpiresAtMs ??
+      Math.min(...grant.consents.map((consent) => consent.absoluteExpiresAtMs)),
+    revoked:
+      grant.revokedAtMs != null || grant.consents.some((consent) => consent.revokedAtMs != null),
+  };
 }
 
 export const scheduledMCPConsentSchema = consentSchema(scheduledMCPIdentitySchema);
@@ -209,8 +234,7 @@ export const confirmScheduleMCPConsentSchema = z
      */
     allow: z
       .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
-      .refine((value) => Object.keys(value).length <= 32)
-      .refine((value) => Object.values(value).some((tools) => tools.length > 0)),
+      .refine((value) => Object.keys(value).length <= 32),
     /**
      * Of the allowed tools, the ones the owner wants to approve call by call, by server.
      * Each must also be listed in `allow`.
@@ -225,7 +249,13 @@ export const confirmScheduleMCPConsentSchema = z
      */
     tools: z.array(identifier).max(MAX_AGENT_TOOLS).optional(),
   })
-  .strict();
+  .strict()
+  // Something must be allowed: an MCP tool, or one of the other tools.
+  .refine(
+    (value) =>
+      Object.values(value.allow).some((tools) => tools.length > 0) ||
+      (value.tools?.length ?? 0) > 0,
+  );
 export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
 
 export const revokeScheduleMCPConsentSchema = z.object({ expectedRevision: identifier }).strict();

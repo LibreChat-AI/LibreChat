@@ -1,9 +1,10 @@
-import { Constants } from '@librechat/agents';
 import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
+import { Constants, DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { HookCallback } from '@librechat/agents';
 import {
   scheduleAsksEveryUse,
+  createScheduleMCPExecution,
   narrowScheduledMCPTools,
   collectApprovedToolCalls,
   bindScheduledMCPInvocation,
@@ -584,6 +585,117 @@ describe('the tools a run loads under a grant', () => {
     const next = (await revoked.factory.resolve(revoked.identity, 'invoke'))!;
     expect(next.grantsTool('root', 'web_search')).toBe(false);
     expect(next.narrow('root', keys)).not.toContain('web_search');
+  });
+
+  it('refuses every tool of a schedule that needs a grant it does not have, with the same reason', async () => {
+    const fixture = await executionFixture();
+    fixture.snapshot.enrollment = null;
+    let required = true;
+    const requiresGrant = jest.fn(async () => required);
+    const build = (coversTools?: boolean) =>
+      createScheduleMCPExecution({
+        storage: fixture.storage,
+        loadAuthorization: fixture.loadAuthorization,
+        requiresGrant,
+        ...(coversTools && { coversTools }),
+      }).resolve(fixture.identity, 'invoke');
+    const mcp = [{ name: 'query_mcp_warehouse', serverName: 'warehouse', toolType: 'mcp' }];
+    const decide = (execution: typeof fixture.execution, toolName: string) =>
+      createScheduledMCPRunPolicy(execution, [{ id: 'root', toolDefinitions: mcp }]).hook(
+        { toolName, toolInput: {}, executingAgentId: 'root' } as Parameters<
+          HookCallback<'PreToolUse'>
+        >[0],
+        new AbortController().signal,
+      );
+    const legacy = (await build(true))!;
+    // The tools still load, so the refusal is seen where the tool is called and recorded.
+    expect(legacy.narrow('root', keys)).toEqual(keys);
+    expect(await decide(legacy, 'web_search')).toEqual({
+      decision: 'deny',
+      reason: new ScheduledMCPPolicyError('consent_missing', '', 'root').message,
+    });
+    // An MCP call is refused where it is made, and the SDK's own controls are not tools to grant.
+    expect(await decide(legacy, 'query_mcp_warehouse')).toEqual({});
+    expect(await decide(legacy, 'tool_search')).toEqual({});
+    expect(requiresGrant).toHaveBeenCalledTimes(1);
+
+    required = false;
+    expect(await decide((await build(true))!, 'web_search')).toEqual({});
+    // A lookup that fails is not permission.
+    requiresGrant.mockRejectedValueOnce(new Error('PRIVATE store detail'));
+    const failed = await decide((await build(true))!, 'web_search');
+    expect(failed).toMatchObject({ decision: 'deny' });
+    expect(JSON.stringify(failed)).not.toContain('PRIVATE');
+    // A grant that limits MCP tools only never holds back the other tools.
+    required = true;
+    expect(await (await build())!.needsGrant()).toBe(false);
+  });
+
+  it('refuses a held tool before the hook times out, however slow the reads behind it', async () => {
+    const fixture = await executionFixture();
+    fixture.snapshot.enrollment = null;
+    const limit = DEFAULT_HOOK_TIMEOUT_MS / 2;
+    const read = fixture.storage.readScheduleMCPConsent;
+    // The lookup never answers.
+    const build = () =>
+      createScheduleMCPExecution({
+        storage: fixture.storage,
+        loadAuthorization: fixture.loadAuthorization,
+        requiresGrant: () => new Promise<boolean>(() => undefined),
+        coversTools: true,
+      }).resolve(fixture.identity, 'invoke');
+    const decide = async (execution: Awaited<ReturnType<typeof build>>) =>
+      createScheduledMCPRunPolicy(execution!, [{ id: 'root' }]).hook(
+        { toolName: 'web_search', toolInput: {}, executingAgentId: 'root' } as Parameters<
+          HookCallback<'PreToolUse'>
+        >[0],
+        new AbortController().signal,
+      );
+    const refusal = {
+      decision: 'deny',
+      reason: new ScheduledMCPPolicyError('dependency_unavailable', '', 'root').message,
+    };
+    const [one, two] = [await build(), await build()];
+    jest.useFakeTimers();
+    try {
+      const stalled = decide(one);
+      const seen = jest.fn();
+      void stalled.then(seen);
+      await jest.advanceTimersByTimeAsync(limit - 1);
+      expect(seen).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await stalled).toEqual(refusal);
+
+      // The read before it spent most of the time: the lookup gets only what is left.
+      const first = await read(fixture.identity);
+      jest
+        .mocked(read)
+        .mockImplementationOnce(
+          () => new Promise((resolve) => setTimeout(() => resolve(first), limit - 100)),
+        );
+      const late = decide(two);
+      const settled = jest.fn();
+      void late.then(settled);
+      await jest.advanceTimersByTimeAsync(limit - 100);
+      expect(settled).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(100);
+      expect(settled).toHaveBeenCalledWith(refusal);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('loads the other tools of a grant that allows no MCP server, until its own deadline', async () => {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      tools: ['execute_code', 'web_search'],
+      allowTools: ['web_search'],
+    });
+    const stored = fixture.snapshot.enrollment!;
+    fixture.snapshot.enrollment = { ...stored, consents: [] };
+    const run = (await fixture.factory.resolve(fixture.identity, 'invoke'))!;
+    expect(run.narrow('root', keys)).toEqual(['web_search', 'tool_search']);
+    fixture.expire();
+    expect(run.grantsTool('root', 'web_search')).toBe(false);
   });
 
   it('leaves the other tools alone under a grant that limits MCP tools only', async () => {

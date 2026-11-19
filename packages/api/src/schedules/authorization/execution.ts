@@ -1,6 +1,7 @@
 import { DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
 import {
   Constants,
+  grantLifetime,
   splitMCPToolKey,
   normalizeServerName,
   stripServerNamePrefix,
@@ -52,7 +53,14 @@ export interface ScheduleMCPExecution<Identity extends MCPGrantIdentity = Schedu
   readonly manual?: boolean;
   readonly enrolled: boolean;
   /** Legacy admits only while enrollment is still absent; it never acquires a later grant. */
-  readonly checkEnrollment: () => Promise<void>;
+  /** `deadline` is when the wait gives up; by default, well inside a tool hook's timeout. */
+  readonly checkEnrollment: (deadline?: number) => Promise<void>;
+  /**
+   * Whether this run has no grant and may use none of its tools until it gets one. Asked at the
+   * first tool call, so a run that calls nothing pays nothing, and kept for the run. Always
+   * false where a grant limits MCP tools only: there the MCP call asks for itself.
+   */
+  readonly needsGrant: (deadline?: number) => Promise<boolean>;
   /**
    * Whether the grant, as read when this run was admitted, lists the tool for the agent.
    * For a readiness check, which looks only at what the owner allowed; a call is checked live.
@@ -216,10 +224,8 @@ export function createScheduleMCPExecution<
      * all once any part of it was revoked. An MCP call is checked against the stored grant when
      * it is made; the agents' other tools have no such call, so they are held to this.
      */
-    const consents = snapshot.enrollment?.consents ?? [];
-    const liveUntil = consents.some((consent) => consent.revokedAtMs != null)
-      ? 0
-      : Math.min(...consents.map((consent) => consent.absoluteExpiresAtMs));
+    const lifetime = snapshot.enrollment ? grantLifetime(snapshot.enrollment) : undefined;
+    const liveUntil = lifetime && !lifetime.revoked ? lifetime.expiresAtMs : 0;
     const now = deps.now ?? Date.now;
     /** The agents' tools that are not MCP tools, as the owner allowed them. */
     const others = new Map<string, ReadonlySet<string>>(
@@ -278,13 +284,15 @@ export function createScheduleMCPExecution<
       );
       return required;
     };
-    const checkEnrollment = async (): Promise<void> => {
+    // Finish before the SDK discards a timed-out hook's contribution.
+    const settleBy = (): number => Date.now() + DEFAULT_HOOK_TIMEOUT_MS / 2;
+    const checkEnrollment = async (deadline = settleBy()): Promise<void> => {
       if (enrolled) return;
       if (fenced) throw new ScheduledMCPPolicyError('binding_mismatch', '');
-      // Finish before the SDK discards a timed-out hook's contribution. No allow decision cached.
+      // No allow decision cached.
       const observed = await waitUntilDeadline(
         deps.storage.readScheduleMCPConsent(capturedIdentity),
-        Date.now() + DEFAULT_HOOK_TIMEOUT_MS / 2,
+        deadline,
       );
       if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
       if (
@@ -302,6 +310,12 @@ export function createScheduleMCPExecution<
       ...(manual && { manual: true }),
       enrolled,
       checkEnrollment,
+      needsGrant: async (deadline = settleBy()) => {
+        if (enrolled || deps.coversTools !== true) return false;
+        const observed = await waitUntilDeadline(requiresGrant(), deadline);
+        if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
+        return observed.value;
+      },
       grants: (agentId: string, serverName: string, selectionName: string) =>
         granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
       narrow: (agentId: string, toolKeys: readonly string[]) =>

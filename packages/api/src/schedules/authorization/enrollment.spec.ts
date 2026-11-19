@@ -136,6 +136,28 @@ it("offers the agents' other tools beside their MCP tools, from one walk of the 
   const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
   expect(await limited.tools(identity, {})).toEqual([]);
 });
+it("offers the agents' other tools where the operator declared no MCP server at all", async () => {
+  const { deps } = setup();
+  jest.mocked(deps.getAppConfig).mockResolvedValue({
+    interfaceConfig: { schedules: { mcpConsent: { enabled: true } } },
+  } as AppConfig);
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools: ['web_search', 'query_mcp_warehouse'],
+    })),
+  );
+  const offer = createScheduleMCPOffer(deps);
+  expect(await offer.targets(identity, {})).toEqual([]);
+  expect(await offer.tools(identity, {})).toEqual([{ agentId: 'root', tools: ['web_search'] }]);
+  // A grant that limits MCP tools only has nothing to offer there, and walks no graph for it.
+  jest.mocked(deps.getNodes).mockClear();
+  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  expect(await limited.tools(identity, {})).toEqual([]);
+  expect(deps.getNodes).not.toHaveBeenCalled();
+});
 it('denies a changed resource URL even if the configured server name is unchanged', async () => {
   const { deps, resolve } = setup();
   jest.mocked(deps.getServers).mockResolvedValue({

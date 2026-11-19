@@ -1,4 +1,4 @@
-import { Constants } from '@librechat/agents';
+import { Constants, DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
 import {
   Tools,
   normalizeServerName,
@@ -185,8 +185,11 @@ export function createScheduledMCPRunPolicy(
     const pending = decisions.get(input);
     if (pending) return pending;
     const evaluated = (async () => {
+      // One deadline for both reads: a slow first leaves the second only what remains, so the
+      // refusal is always returned before the SDK gives up on the hook and lets the tool run.
+      const deadline = Date.now() + DEFAULT_HOOK_TIMEOUT_MS / 2;
       try {
-        await execution.checkEnrollment();
+        await execution.checkEnrollment(deadline);
       } catch (error) {
         return new ScheduledMCPPolicyError(
           error instanceof ScheduledMCPPolicyError
@@ -196,8 +199,21 @@ export function createScheduledMCPRunPolicy(
           input.executingAgentId,
         );
       }
-      if (!execution.enrolled || !denied(input)) return;
-      return new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId);
+      if (execution.enrolled)
+        return denied(input)
+          ? new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId)
+          : undefined;
+      // No grant. Once one is required the run may use none of its tools: an MCP call is
+      // refused where it is made, and any other tool here, with the same reason.
+      let held: boolean;
+      try {
+        held = denied(input) && (await execution.needsGrant(deadline));
+      } catch {
+        return new ScheduledMCPPolicyError('dependency_unavailable', '', input.executingAgentId);
+      }
+      return held
+        ? new ScheduledMCPPolicyError('consent_missing', '', input.executingAgentId)
+        : undefined;
     })();
     decisions.set(input, evaluated);
     return evaluated;

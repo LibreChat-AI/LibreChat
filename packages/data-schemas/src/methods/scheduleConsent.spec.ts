@@ -299,6 +299,29 @@ it('keeps the other tools the owner allowed on the grant, through revocation too
   expect(revoked?.enrollment?.tools).toEqual(tools);
 });
 
+it('holds a grant that allows other tools and no MCP server, with its own lifetime', async () => {
+  const tools = [{ agentId: 'root', tools: ['web_search'] }];
+  const grant = (revision: string, lifetime: Partial<ScheduledMCPEnrollment> = {}) => ({
+    ...enrollment(revision, { tools, ...lifetime }),
+    consents: [],
+  });
+  const live = { grantedAtMs: Date.now() - 1000, absoluteExpiresAtMs: Date.now() + 600_000 };
+  // Nothing carries its deadline but the grant itself, so one without it is not a grant.
+  await expect(confirm(null, grant('grant-1'))).rejects.toThrow();
+  // Already past its deadline: not written.
+  expect(
+    await confirm(null, grant('grant-1', { ...live, absoluteExpiresAtMs: Date.now() - 1 })),
+  ).toBe(false);
+  expect(await confirm(null, grant('grant-1', { ...live, revokedAtMs: null }))).toBe(true);
+  const stored = await storage.readScheduleMCPConsent(identity);
+  expect(stored).toMatchObject({ compatible: true, enrollment: { consents: [], tools } });
+
+  expect(await storage.revokeScheduleMCPConsent(identity, 'grant-1')).toBe(true);
+  const revoked = (await storage.readScheduleMCPConsent(identity))?.enrollment;
+  expect(revoked?.revokedAtMs).toEqual(expect.any(Number));
+  expect(revoked?.tools).toEqual(tools);
+});
+
 it('uses only classic update operators for confirmation, revocation and admission', async () => {
   const update = jest.spyOn(mongoose.models.Schedule, 'updateOne');
   await confirm();

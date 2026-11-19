@@ -64,6 +64,7 @@ function setup() {
     revokeScheduleMCPConsent: jest.fn(async (_identity, revision) => {
       if (snapshot.enrollment?.revision !== revision) return false;
       snapshot.enrollment.revision = 'revoked';
+      snapshot.enrollment.revokedAtMs = time;
       snapshot.enrollment.consents = snapshot.enrollment.consents.map((c) => ({
         ...c,
         revision: 'revoked',
@@ -473,6 +474,47 @@ describe("the agents' tools that are not MCP tools", () => {
     s.offerTools({ agentId: 'root', tools: ['web_search'] });
     expect(await s.enroll()).toMatchObject({ tools: { allowed: ['web_search'] } });
     expect(s.snapshot.enrollment!.tools).toEqual([{ agentId: 'root', tools: ['web_search'] }]);
+  });
+
+  it('grants a schedule whose agents use no MCP server at all', async () => {
+    const s = setup();
+    s.changeTarget();
+    s.offerTools({ agentId: 'root', tools: ['execute_code', 'web_search'] });
+    expect(await s.service.view(identity)).toMatchObject({
+      state: 'missing',
+      targets: [],
+      tools: { offered: ['execute_code', 'web_search'] },
+      offer: { digest: expect.any(String) },
+    });
+    const view = await s.enroll({}, undefined, ['web_search']);
+    // The lifetime is the grant's own: there is no MCP server to carry it.
+    expect(view).toMatchObject({ state: 'active', expiresAtMs: 1000 + 3_600_000, targets: [] });
+    expect(s.snapshot.enrollment).toMatchObject({
+      consents: [],
+      tools: [{ agentId: 'root', tools: ['web_search'] }],
+      grantedAtMs: 1000,
+      absoluteExpiresAtMs: 1000 + 3_600_000,
+      revokedAtMs: null,
+    });
+    s.setTime(1000 + 3_600_000);
+    expect(await s.service.view(identity)).toMatchObject({ state: 'expired' });
+    s.setTime(2000);
+    await s.service.revoke(identity, view.revision!);
+    expect(await s.service.view(identity)).toMatchObject({ state: 'revoked' });
+  });
+
+  it('rejects a grant that allows nothing, MCP tool or other', async () => {
+    const s = setup();
+    s.offerTools({ agentId: 'root', tools: ['web_search'] });
+    await expect(s.enroll({ warehouse: [] }, undefined, [])).rejects.toMatchObject({
+      code: 'consent_invalid',
+    });
+    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    // One of either kind is enough.
+    expect(await s.enroll({ warehouse: [] }, undefined, ['web_search'])).toMatchObject({
+      state: 'active',
+      allowed: {},
+    });
   });
 
   it('binds a confirmation to the tools the owner was shown', async () => {

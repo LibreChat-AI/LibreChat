@@ -39,6 +39,19 @@ export function createScheduledPauseCheck(deps: {
   };
 }
 
+/** Whether a user's role may use MCP servers: what offering or calling an MCP tool needs. */
+export function createMCPUseCheck(
+  getRoleByName: CheckAccessParams['getRoleByName'],
+): (user: IUser) => Promise<boolean> {
+  return (user) =>
+    checkAccess({
+      user,
+      getRoleByName,
+      permissionType: PermissionTypes.MCP_SERVERS,
+      permissions: [Permissions.USE],
+    });
+}
+
 export function createScheduleMCPConsentHost(deps: {
   methods: ScheduleMCPConsentStorage & Pick<SchedulesHandlersDeps['methods'], 'getScheduleById'>;
   getLimits: SchedulesHandlersDeps['getLimits'];
@@ -68,6 +81,7 @@ export function createScheduleMCPConsentHost(deps: {
     pendingPrincipals.set(key, lookup);
     return lookup;
   };
+  const canUseMCP = createMCPUseCheck(deps.getRoleByName);
   const service = createScheduleMCPConsentService({
     storage: deps.methods,
     getLimits: async (identity) => {
@@ -87,21 +101,19 @@ export function createScheduleMCPConsentHost(deps: {
     canUse: async (identity) => {
       const user = await loadPrincipal(identity);
       if (!user) return false;
-      const permissions = await Promise.all([
-        checkAccess({
-          user,
-          getRoleByName: deps.getRoleByName,
-          permissionType: PermissionTypes.SCHEDULES,
-          permissions: [Permissions.USE, Permissions.CREATE],
-        }),
-        checkAccess({
-          user,
-          getRoleByName: deps.getRoleByName,
-          permissionType: PermissionTypes.MCP_SERVERS,
-          permissions: [Permissions.USE],
-        }),
-      ]);
-      return permissions.every(Boolean) && (await deps.canViewAgent(identity.agentId, user));
+      // Authorizing a schedule is not using an MCP server: a role without MCP servers may
+      // still allow its agents' other tools. The MCP tools are held to `canUseMCP`.
+      const permitted = await checkAccess({
+        user,
+        getRoleByName: deps.getRoleByName,
+        permissionType: PermissionTypes.SCHEDULES,
+        permissions: [Permissions.USE, Permissions.CREATE],
+      });
+      return permitted && (await deps.canViewAgent(identity.agentId, user));
+    },
+    canUseMCP: async (identity) => {
+      const user = await loadPrincipal(identity);
+      return user != null && (await canUseMCP(user));
     },
     resolveEnrollment: deps.resolveEnrollment,
     resolveTools: deps.resolveTools,

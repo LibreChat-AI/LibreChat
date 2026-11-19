@@ -185,7 +185,6 @@ function Grant({
   const data: ScheduleMCPConsentView | undefined = query.data;
   const choosing = canConfirm && data?.offer != null;
   const choice = data ? currentChoice(data, edited) : {};
-  const chosenCount = Object.values(choice).reduce((count, tools) => count + tools.length, 0);
   /** Null until the owner changes an "ask me first" box, with the grant it was changed against. */
   const [editedAsking, setEditedAsking] = useState<{
     revision: string | null;
@@ -217,6 +216,9 @@ function Grant({
     data?.tools.allowed ??
     []
   ).filter((tool) => offeredOther.includes(tool));
+  /** A grant allows something: an MCP tool, or one of the other tools. */
+  const chosenCount =
+    Object.values(choice).reduce((count, tools) => count + tools.length, 0) + other.length;
   const setOther = (tools: string[]) => setEditedOther({ revision: data?.revision ?? null, tools });
   /** One click for an owner who trusts the agent as it is: every server, every tool. */
   const allowEverything = () => {

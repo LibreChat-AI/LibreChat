@@ -30,6 +30,8 @@ import { ScheduleMCPConsentError } from './service';
 export interface ScheduleMCPEnrollmentDeps {
   findUser: (id: string) => Promise<IUser | null>;
   canUseRoot: (agentId: string, user: IUser) => Promise<boolean>;
+  /** Whether the owner may use MCP servers. Absent, they may. Their other tools are offered either way. */
+  canUseMCP?: (user: IUser) => Promise<boolean>;
   getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig | undefined>;
   resolveGraphAccess: (user: IUser) => Promise<AgentGraphAccessContext>;
   getNodes: (ids: string[], access?: AgentGraphAccessContext) => Promise<AgentGraphNode[]>;
@@ -104,12 +106,17 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
     user.id = identity.ownerId;
     if (!(await deps.canUseRoot(identity.agentId, user)))
       throw new ScheduleMCPConsentError('consent_forbidden');
-    const appConfig = await deps.getAppConfig({
-      ...getAppConfigOptionsFromUser(user),
-      failClosed: true,
-    });
-    const bindings = declared(appConfig);
-    if (!bindings || !Object.keys(bindings).length) return { targets: [], tools: [] };
+    const [appConfig, mcp] = await Promise.all([
+      deps.getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true }),
+      deps.canUseMCP?.(user) ?? true,
+    ]);
+    const bindings = declared(appConfig) ?? {};
+    /**
+     * No MCP server can be offered: the operator declared none, or the owner may not use
+     * one. The agents' other tools still can, where the grant covers them.
+     */
+    const undeclared = !mcp || Object.keys(bindings).length === 0;
+    if (undeclared && options.otherTools === 'ignore') return { targets: [], tools: [] };
     const [servers, { tools, candidates: candidateTools }] = await Promise.all([
       deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
       resolveScheduledMCPRequirements(
@@ -137,7 +144,7 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       }
     }
     const selected = new Map<string, Map<string, Set<string>>>();
-    for (const { name: key, agentId } of tools) {
+    for (const { name: key, agentId } of undeclared ? [] : tools) {
       if (
         !key.includes(Constants.mcp_delimiter) ||
         key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`)

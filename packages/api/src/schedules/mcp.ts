@@ -242,12 +242,8 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         name.includes(Constants.mcp_delimiter) &&
         !name.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`),
     );
-    // An agent's other tools do not stop the run: the ones the grant leaves out are not loaded.
-    if (execution?.enrolled && selectedTools.length === 0) {
-      throw new ScheduleMCPError(
-        new ScheduledMCPPolicyError('binding_mismatch', '', agentId).outcomes,
-      );
-    }
+    // Nothing to make ready. A grant may allow the agents' other tools and no MCP tool at all,
+    // and the ones a grant leaves out are not loaded.
     if (selectedTools.length === 0) return [];
 
     const effectiveConfig = await loadAppConfig();
@@ -323,20 +319,22 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         ),
       );
     }
-    if (
-      !(await checkAccess({
-        user,
-        permissionType: PermissionTypes.MCP_SERVERS,
-        permissions: [Permissions.USE],
-        getRoleByName: deps.getRoleByName,
-      }))
-    ) {
+    const permitted = await checkAccess({
+      user,
+      permissionType: PermissionTypes.MCP_SERVERS,
+      permissions: [Permissions.USE],
+      getRoleByName: deps.getRoleByName,
+    });
+    const refuse = (): never => {
       throw new ScheduleMCPError(
         [...selected.keys()].flatMap((server) =>
           outcomesForOwners(server, 'mcp_permission_denied'),
         ),
       );
-    }
+    };
+    // A run under a grant needs the permission only for the MCP tools the grant allows, so
+    // it is held to it below, once the tools the owner left out are set aside.
+    if (!permitted && !execution?.enrolled) refuse();
     // Resolve once more against the ACL-filtered registry before initializing config.
     // Exact accessible identities must beat normalized aliases from another tier, just
     // as they do in the interactive runtime.
@@ -386,11 +384,10 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
           new Set([...serverTools.values()].flatMap((owners) => [...owners])),
         );
       }
-      if (selected.size === 0) {
-        throw new ScheduleMCPError(
-          new ScheduledMCPPolicyError('tool_policy_denied', '', agentId).outcomes,
-        );
-      }
+      // The owner allowed none of the MCP tools selected: the other tools, or none still
+      // selected. Nothing to connect to, and the run is not held back for it.
+      if (selected.size === 0) return [];
+      if (!permitted) refuse();
     }
     const selectedRawConfig = Object.fromEntries(
       Object.entries(rawConfig).filter(([serverName]) => selected.has(serverName)),

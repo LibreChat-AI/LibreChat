@@ -5,6 +5,7 @@ import {
   agentKeyMCPEnrollmentSchema,
   scheduledMCPEnrollmentSchema,
   MAX_SCHEDULED_MCP_SERVER_TOOLS,
+  grantLifetime,
 } from 'librechat-data-provider';
 import type {
   MCPGrantIdentity,
@@ -183,10 +184,15 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
             consent.identity.invocationMode !== 'delegated' ||
             consent.revision !== enrollment.revision ||
             consent.revokedAtMs != null,
-        )
+        ) ||
+        enrollment.revokedAtMs != null
       )
         throw new Error('Invalid scheduled MCP enrollment binding');
-      if (enrollment.consents.some((consent) => consent.absoluteExpiresAtMs <= now())) return false;
+      if (
+        enrollment.consents.some((consent) => consent.absoluteExpiresAtMs <= now()) ||
+        grantLifetime(enrollment).expiresAtMs <= now()
+      )
+        return false;
       const path = holder.path(input.identity);
       const result = await holder.model().updateOne(
         {
@@ -221,6 +227,8 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
         const enrollment = {
           ...current,
           revision: revokedRevision,
+          // On the grant itself too: one that allows no MCP server has no consent to carry it.
+          revokedAtMs: current.revokedAtMs ?? revokedAtMs,
           consents: current.consents.map((consent) => ({
             ...consent,
             revision: revokedRevision,
