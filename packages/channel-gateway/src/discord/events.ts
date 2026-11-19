@@ -3,11 +3,14 @@ import { createPublicKey, verify } from 'node:crypto';
 
 const snowflake = z.string().regex(/^[0-9]{1,20}$/);
 const user = z.object({ id: snowflake, bot: z.boolean().optional() });
-const option = z.object({
-  name: z.string().min(1).max(32),
-  type: z.number().int(),
-  value: z.union([z.string(), z.number(), z.boolean()]).optional(),
-});
+const valueOption = z
+  .object({
+    name: z.string().min(1).max(32),
+    type: z.number().int(),
+    value: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  })
+  .strict();
+const option = valueOption.extend({ options: z.array(valueOption).max(25).optional() });
 const component = z.object({
   type: z.number().int(),
   custom_id: z.string().max(100).optional(),
