@@ -179,6 +179,7 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
   persistence: 'operator',
+  roleCache: 'startup',
   configCache: 'operator',
   'telemetry.stackTraceLimit': 'operator',
   'telemetry.rum': 'operator',
