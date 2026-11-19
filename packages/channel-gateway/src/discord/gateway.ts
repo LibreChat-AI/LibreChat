@@ -69,6 +69,8 @@ export type DiscordGatewayEvent = {
   | { kind: 'guild'; guildId: string; state: 'available' | 'unavailable' | 'removed' }
 );
 export interface DiscordGatewayDependencies {
+  /** Reuse the application lease held by the host for REST and WebSocket work. */
+  ownerId?: string;
   ownership: DiscordGatewayOwnership;
   checkpoints: DiscordGatewayCheckpoints;
   /** Fence by ownerId and resolve after durable admission; deduplicate replayed message IDs. */
@@ -205,7 +207,10 @@ export class OwnedDiscordGateway {
     this.owner = {
       applicationId: application.applicationId,
       applicationRevision: application.applicationRevision,
-      ownerId: randomBytes(16).toString('hex'),
+      ownerId: z
+        .string()
+        .regex(/^[a-f0-9]{32}$/)
+        .parse(deps.ownerId ?? randomBytes(16).toString('hex')),
     };
   }
   private assertOwned = () => {
