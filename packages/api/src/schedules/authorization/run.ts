@@ -1,6 +1,7 @@
 import { Constants, DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
 import {
   Tools,
+  AgentCapabilities,
   normalizeServerName,
   SCHEDULE_APPROVAL_REASON,
   Constants as ProviderConstants,
@@ -13,6 +14,8 @@ import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
 import { ScheduledMCPPolicyError } from './policy';
 
 const MEMORY_TOOL_NAMES = new Set<string>([SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME]);
+/** What the skill catalog registers for an agent: the tool that runs a skill, and its file reader. */
+const SKILL_TOOL_NAMES = new Set<string>([Constants.SKILL_TOOL, Constants.READ_FILE]);
 
 interface HandoffEdge {
   from: string | string[];
@@ -154,13 +157,15 @@ export function createScheduledMCPRunPolicy(
   /**
    * Whether the grant lists this tool of the agent's, one that is not an MCP tool. Some items
    * the owner allows run as tools of other names: the code environment's tools are all allowed
-   * by code execution, and the two memory tools by memory.
+   * by code execution, the two memory tools by memory, and the tools an agent reads and
+   * runs its skills with by skills.
    */
   const allowsTool = (agentId: string, name: string): boolean =>
     execution.grantsTool(agentId, name) ||
     (isStatefulCodeEnvironmentToolName(name) &&
       execution.grantsTool(agentId, Tools.execute_code)) ||
-    (MEMORY_TOOL_NAMES.has(name) && execution.grantsTool(agentId, Tools.memory));
+    (MEMORY_TOOL_NAMES.has(name) && execution.grantsTool(agentId, Tools.memory)) ||
+    (SKILL_TOOL_NAMES.has(name) && execution.grantsTool(agentId, AgentCapabilities.skills));
   const denied = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean => {
     const agentId = input.executingAgentId;
     // Foreground delegation stays in this guarded run; detached continuations do not.

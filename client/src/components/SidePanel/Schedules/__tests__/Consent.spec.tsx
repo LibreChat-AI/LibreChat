@@ -438,6 +438,27 @@ describe('a grant that can be made for the whole agent', () => {
   });
 });
 
+it('offers the skills of the agent as one item, by name, and sends it like any other', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [],
+    tools: { offered: ['skills', 'web_search'], allowed: [] },
+  });
+  jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  const skills = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_tool_skills',
+  });
+  expect(skills).not.toBeChecked();
+  await userEvent.click(skills);
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
+  await waitFor(() =>
+    expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+      'schedule',
+      expect.objectContaining({ allow: {}, tools: ['skills'] }),
+    ),
+  );
+});
 it('authorizes a schedule whose agent uses no MCP server, once one of its tools is ticked', async () => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
     ...view,

@@ -7844,6 +7844,54 @@ describe("initializeAgent: under a schedule's grant", () => {
     expect(none).not.toContain('delete_memory');
   });
 
+  it('gives the agent its skills only where the owner allowed them', async () => {
+    const { Types } = await import('mongoose');
+    const run = async (allowTools?: string[]) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.id = 'root';
+      agent.tools = ['query_mcp_warehouse'];
+      loadTools.mockResolvedValue({ toolDefinitions: [] });
+      if (allowTools) {
+        const fixture = await executionFixture('invoke', readTool, undefined, {
+          tools: [AgentCapabilities.skills],
+          allowTools,
+        });
+        await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+      }
+      const listSkillsByAccess = jest.fn(async () => ({
+        skills: [],
+        has_more: false,
+        after: null,
+      }));
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+          accessibleSkillIds: [new Types.ObjectId()],
+        },
+        { ...db, listSkillsByAccess },
+      );
+      return {
+        catalog: listSkillsByAccess.mock.calls.length > 0,
+        names: (result.toolDefinitions ?? []).map((tool) => tool.name),
+      };
+    };
+    // One item stands for every skill: allowed, the agent's catalog is read as in chat.
+    expect((await run([AgentCapabilities.skills])).catalog).toBe(true);
+    // Left out, nothing of it reaches the model: no catalog, no tool to be refused.
+    const left = await run([]);
+    expect(left.catalog).toBe(false);
+    expect(left.names).not.toContain('read_file');
+    expect(left.names).not.toContain('skill');
+    // A request with no grant is untouched.
+    expect((await run()).catalog).toBe(true);
+  });
+
   it('loads everything the agent selects for a request with no grant', async () => {
     const [tools] = await initialize(false);
     expect(tools).toEqual(expect.arrayContaining(selected));

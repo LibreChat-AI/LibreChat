@@ -3957,6 +3957,7 @@
   "com_ui_schedule_consent_tool_code": "Code execution",
   "com_ui_schedule_consent_tool_web": "Web search",
   "com_ui_schedule_consent_tool_files": "File search",
+  "com_ui_schedule_consent_tool_skills": "Skills",
   "com_ui_schedule_consent_ask_first": "Ask me first",
   "com_ui_schedule_consent_ask_tool": "Ask me before each use of {{tool}}",
   "com_ui_schedule_consent_asking": "Asks you before each use: {{tools}}",
