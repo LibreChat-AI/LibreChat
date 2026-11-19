@@ -3080,6 +3080,8 @@ export const outboundTimeoutsSchema = z.object({
   moderationMs: outboundTimeoutMs,
   /** Reading a stored image, by URL or from blob storage, to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
+  /** Reading a stored document, audio or video file from storage to encode it for a provider. */
+  fileFetchMs: outboundTimeoutMs,
   /** Each call a built-in tool makes to its API (weather, Wolfram, web search). */
   toolsMs: outboundTimeoutMs,
   /** Each text-to-speech or speech-to-text provider request. */
