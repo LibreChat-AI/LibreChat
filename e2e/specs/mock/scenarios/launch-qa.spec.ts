@@ -1,12 +1,15 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { AgentDetail } from '../agents.helpers';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   getAccessToken,
+  modelSelectorTrigger,
   replyPrompt,
   replyText,
   requestJson,
+  selectMockEndpoint,
+  selectModelSpec,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { cleanupAgent, uniqueAgentName } from '../agents.helpers';
@@ -59,6 +62,28 @@ async function replyFromAgent(page: Page, agentId: string, label: string) {
   const row = page.locator('.agent-turn').last();
   await expect(row.getByText(replyText(label))).toBeVisible();
   return row;
+}
+
+/** Two model specs the harness config runs on the same endpoint and model, so only their labels differ. */
+const FIRST_SPEC = { name: 'e2e-icon-spec', label: 'E2E Icon Spec' };
+const SECOND_SPEC = { name: 'e2e-starters', label: 'E2E Starters' };
+
+/** The response row that holds this reply. */
+const replyRow = (page: Page, label: string) =>
+  page.locator('.agent-turn').filter({ hasText: replyText(label) });
+
+/** The row's author is drawn (a visible heading naming it) or only announced (`sr-only`). */
+async function expectAuthorDrawn(row: Locator, name: string) {
+  const heading = row.getByRole('heading', { name });
+  await expect(heading).toBeVisible();
+  await expect(heading).not.toHaveClass(/sr-only/);
+}
+
+async function expectAuthorOnlyAnnounced(row: Locator, name?: string) {
+  await expect(row.locator('h2')).toHaveClass(/sr-only/);
+  if (name != null) {
+    await expect(row.locator('h2')).toContainText(name);
+  }
 }
 
 const sectionHeading = (page: Page, name: string) =>
@@ -153,6 +178,88 @@ test.describe('response author', () => {
     } finally {
       await cleanupAgent(page, agentId);
       await cleanupAgent(page, otherId);
+    }
+  });
+
+  test('a response from the selected model spec drops the author the selector shows @scenario:spec-response-drops-the-author-the-selector-shows', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await serveInterface(page, { messageAuthor: 'whenDifferent' });
+    await page.goto(`${NEW_CHAT_PATH}?spec=${FIRST_SPEC.name}`, { timeout: 15000 });
+    await sendMessageAndWaitForCompletion(page, replyPrompt('spec-author-hidden'));
+
+    /** Still announced, no longer drawn, while the selector names the same spec. */
+    await expectAuthorOnlyAnnounced(replyRow(page, 'spec-author-hidden'), FIRST_SPEC.label);
+    await expect(modelSelectorTrigger(page)).toContainText(FIRST_SPEC.label);
+
+    await page.reload();
+    await expect(
+      replyRow(page, 'spec-author-hidden').getByText(replyText('spec-author-hidden')),
+    ).toBeVisible();
+    await expectAuthorOnlyAnnounced(replyRow(page, 'spec-author-hidden'), FIRST_SPEC.label);
+  });
+
+  test('a response from the selected model drops the author the selector shows @scenario:endpoint-response-drops-the-author-the-selector-shows', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await serveInterface(page, { messageAuthor: 'whenDifferent' });
+    await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+    await selectMockEndpoint(page, { label: 'Mock Provider C', model: 'mock-model-c' });
+    await sendMessageAndWaitForCompletion(page, replyPrompt('endpoint-author-hidden'));
+
+    await expectAuthorOnlyAnnounced(replyRow(page, 'endpoint-author-hidden'));
+
+    await page.reload();
+    await expect(
+      replyRow(page, 'endpoint-author-hidden').getByText(replyText('endpoint-author-hidden')),
+    ).toBeVisible();
+    await expectAuthorOnlyAnnounced(replyRow(page, 'endpoint-author-hidden'));
+  });
+
+  test('a response written under another spec on the same model keeps its author @scenario:response-from-another-spec-on-the-same-model-keeps-its-author', async ({
+    page,
+  }) => {
+    test.setTimeout(150000);
+    await serveInterface(page, { messageAuthor: 'whenDifferent' });
+    await page.goto(`${NEW_CHAT_PATH}?spec=${FIRST_SPEC.name}`, { timeout: 15000 });
+    await sendMessageAndWaitForCompletion(page, replyPrompt('first-spec'));
+    await expectAuthorOnlyAnnounced(replyRow(page, 'first-spec'), FIRST_SPEC.label);
+
+    /** Nothing is sent: the selector now names the second spec, which did not write this response. */
+    await selectModelSpec(page, SECOND_SPEC.label);
+    await expect(replyRow(page, 'first-spec').getByText(replyText('first-spec'))).toBeVisible();
+    await expectAuthorDrawn(replyRow(page, 'first-spec'), FIRST_SPEC.label);
+
+    await sendMessageAndWaitForCompletion(page, replyPrompt('second-spec'));
+    await expectAuthorOnlyAnnounced(replyRow(page, 'second-spec'), SECOND_SPEC.label);
+    await expectAuthorDrawn(replyRow(page, 'first-spec'), FIRST_SPEC.label);
+
+    await page.reload();
+    await expect(replyRow(page, 'second-spec').getByText(replyText('second-spec'))).toBeVisible();
+    await expectAuthorOnlyAnnounced(replyRow(page, 'second-spec'), SECOND_SPEC.label);
+    await expectAuthorDrawn(replyRow(page, 'first-spec'), FIRST_SPEC.label);
+  });
+
+  test('a response still streaming from the selected model spec drops the author the selector shows @scenario:streaming-spec-response-drops-the-author-the-selector-shows', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await serveInterface(page, { messageAuthor: 'whenDifferent' });
+    await page.goto(`${NEW_CHAT_PATH}?spec=${FIRST_SPEC.name}`, { timeout: 15000 });
+    await expect(modelSelectorTrigger(page)).toContainText(FIRST_SPEC.label);
+
+    try {
+      /** Held open, so the placeholder is the only response there is. */
+      await page.route(/\/api\/agents\/chat/, () => {});
+      await page.locator('#prompt-textarea').fill('Hold this turn open');
+      await page.keyboard.press('Enter');
+
+      await expect(page.getByRole('img', { name: 'Thinking...' }).first()).toBeVisible();
+      await expectAuthorOnlyAnnounced(page.locator('.agent-turn').last(), FIRST_SPEC.label);
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
     }
   });
 });
