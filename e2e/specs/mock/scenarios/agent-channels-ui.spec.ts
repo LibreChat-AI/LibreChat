@@ -121,7 +121,41 @@ async function openChannels(page: Page, kinds: Kind[]) {
     );
     await page.route(
       (url) => url.pathname === '/api/channels/discord/guilds',
-      (route) => route.fulfill({ json: { guilds: [] } }),
+      (route) =>
+        route.fulfill({
+          json: {
+            guilds: [
+              {
+                installationId: 'discord-installation',
+                revision: 'discord-installation-revision',
+                applicationId: '111',
+                guildId: '222',
+                guildName: 'Test server',
+                status: 'active',
+                createdBy: userId,
+                authorityWrites: 0,
+              },
+            ],
+          },
+        }),
+    );
+    await page.route(
+      (url) =>
+        url.pathname === `/api/channels/discord/agents/${agent.id}/binding` &&
+        url.searchParams.get('installationId') === 'discord-installation' &&
+        url.searchParams.get('externalChannelId') === '444',
+      (route) =>
+        route.fulfill({
+          json: {
+            ok: true,
+            value: {
+              occupied: true,
+              assignedToThisAgent: true,
+              canReplace: true,
+              revision: 'discord-route-revision',
+            },
+          },
+        }),
     );
   }
   const prefix = `/api/agents/${agent.id}/channels`;
@@ -385,7 +419,7 @@ test('a connection no provider serves is listed beside a working one and can onl
   }
 });
 
-test('an active Discord connection opens setup without generic deletion @scenario:active-discord-channel-opens-setup-without-generic-deletion', async ({
+test('an active Discord connection opens immutable binding management without generic deletion @scenario:active-discord-channel-opens-immutable-binding-management-without-generic-deletion', async ({
   page,
 }) => {
   const { section, calls, manifests, discordWrites, cleanup } = await openChannels(page, [
@@ -394,22 +428,31 @@ test('an active Discord connection opens setup without generic deletion @scenari
   try {
     const row = rowOf(section, 0);
     await expect(row.getByText('Discord', { exact: true })).toBeVisible();
+    await expect(row.getByText('444', { exact: true })).toBeVisible();
     await expect(row.getByText('Slack', { exact: true })).toHaveCount(0);
     await expect(row.getByText('Unavailable connection')).toHaveCount(0);
     await row.hover();
     await expect(row.getByRole('button', { name: 'Delete connection' })).toHaveCount(0);
-    await expect(row.getByRole('button', { name: 'Set up Discord' })).toBeEnabled();
-    await row.getByRole('button', { name: 'Set up Discord' }).click();
+    await expect(row.getByRole('button', { name: 'Set up Discord' })).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Manage connection' })).toBeEnabled();
+    await row.getByRole('button', { name: 'Manage connection' }).click();
     const dialog = dialogNamed(page, 'Discord');
-    await expect(dialog.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Add application' })).toBeEnabled();
-    await expect(dialog.getByRole('heading', { name: 'Servers', exact: true })).toBeVisible();
+    const server = dialog.getByRole('combobox', { name: 'Discord server' });
+    await expect(server).toBeDisabled();
+    await expect(server).toContainText('Test server');
+    const channel = dialog.getByLabel('Discord channel ID', { exact: true });
+    await expect(channel).toHaveValue('444');
+    await expect(channel).toHaveAttribute('readonly', '');
+    await expect(
+      dialog.getByRole('heading', { name: 'Channel binding', exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByText('This channel is bound to this agent.', { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Remove binding', exact: true })).toBeEnabled();
     expect(manifests).toEqual([]);
     expect(discordWrites).toEqual([]);
     expect(calls).toEqual([]);
-    await page.keyboard.press('Escape');
-    await expect(dialog).toHaveCount(0);
-    await expect(row.getByText('Discord', { exact: true })).toBeVisible();
   } finally {
     await cleanup();
   }

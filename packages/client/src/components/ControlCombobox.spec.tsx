@@ -214,7 +214,7 @@ describe('ControlCombobox popover sizing', () => {
     );
     openPopover();
 
-    const search = screen.getByPlaceholderText('Search projects');
+    const search = screen.getByRole('combobox', { name: 'Search projects' });
     fireEvent.change(search, { target: { value: 'Option B' } });
 
     expect(screen.getByRole('option', { name: 'Option B' })).toBeInTheDocument();
@@ -450,13 +450,11 @@ describe('ControlCombobox search actions', () => {
         searchActions={<button onClick={onFilter}>My agents</button>}
       />,
     );
+    const trigger = screen.getByRole('combobox', { name: 'Test combobox' });
     openPopover();
     fireEvent.click(screen.getByRole('button', { name: 'My agents' }));
     expect(onFilter).toHaveBeenCalledTimes(1);
     expect(onSelect).not.toHaveBeenCalled();
-    expect(screen.getByRole('combobox', { name: 'Test combobox' })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 });

@@ -26,6 +26,11 @@ import type {
   ConfigureDiscordApplication,
   RegisterDiscordCommands,
   DiscordCommandRegistration,
+  DiscordBindingStatus,
+  DiscordBindingTarget,
+  DiscordBindingView,
+  BindDiscordChannel,
+  RemoveDiscordBinding,
 } from './types/discord';
 import type {
   ResponseReviewView,
@@ -79,8 +84,7 @@ export function listAgentChannels(agentId: string): Promise<ListedAgentChannel[]
   return request.get(endpoints.agentChannels(agentId));
 }
 
-function discordFailure(error: unknown): never {
-  const response = isAxiosError<{ error?: { code?: string } }>(error) ? error.response : undefined;
+function discordError(code: string | undefined, status?: number): never {
   const allowed = new Set([
     'forbidden',
     'not_configured',
@@ -93,12 +97,53 @@ function discordFailure(error: unknown): never {
     'transactions_unavailable',
     'provider_refused',
     'rate_limited',
+    'binding_uncertain',
+    'route_changed',
+    'installation_unavailable',
+    'principal_unavailable',
+    'channel_unavailable',
+    'unsupported_channel',
+    'guild_changed',
+    'timeout',
+    'provider_unavailable',
+    'invalid_input',
   ]);
-  const code = response?.data?.error?.code;
   throw Object.assign(new Error('Discord operation was not confirmed'), {
     code: code && allowed.has(code) ? code : 'unavailable',
-    status: response?.status,
+    status,
   });
+}
+
+function discordFailure(error: unknown): never {
+  const response = isAxiosError<{ error?: { code?: string } }>(error) ? error.response : undefined;
+  return discordError(response?.data?.error?.code, response?.status);
+}
+type DiscordWireResult<T> = { ok: true; value: T } | { ok: false; error: { code: string } };
+function discordValue<T>(result: DiscordWireResult<T>): T {
+  if (!result.ok) return discordError(result.error.code);
+  return result.value;
+}
+export function getDiscordBinding(input: DiscordBindingTarget): Promise<DiscordBindingStatus> {
+  return request
+    .get<DiscordWireResult<DiscordBindingStatus>>(
+      `${endpoints.discordBinding(input.agentId)}?installationId=${encodeURIComponent(input.installationId)}&externalChannelId=${encodeURIComponent(input.externalChannelId)}`,
+    )
+    .catch(discordFailure)
+    .then(discordValue);
+}
+export function bindDiscordChannel(input: BindDiscordChannel): Promise<DiscordBindingView> {
+  const { agentId, ...body } = input;
+  return request
+    .put(endpoints.discordBinding(agentId), body)
+    .catch(discordFailure)
+    .then((result: DiscordWireResult<DiscordBindingView>) => discordValue(result));
+}
+export function removeDiscordBinding(input: RemoveDiscordBinding): Promise<null> {
+  const { agentId, ...body } = input;
+  return request
+    .deleteWithOptions<DiscordWireResult<null>>(endpoints.discordBinding(agentId), { data: body })
+    .catch(discordFailure)
+    .then(discordValue);
 }
 
 export function getDiscordApps(cursor?: string): Promise<DiscordApplicationPage> {
