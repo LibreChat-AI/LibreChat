@@ -91,9 +91,15 @@ export function settleStoredSteers(
     promoted,
     recoverySteerId,
     generationProtocolVersion,
+    sweep = true,
   }: {
     /** The conversation's stored rows, when they could be read. */
     messages: TMessage[] | undefined;
+    /**
+     * Whether the chips still left may be swept into the queue. Not when nothing has proved
+     * the run over to a client of its protocol: a chip still waiting may yet be taken.
+     */
+    sweep?: boolean;
     status?: Pick<StreamStatusResponse, 'resumeState' | 'aggregatedContent' | 'unrecoveredSteers'>;
     promoted?: TPromotedSteer[];
     /** The parked steer the ended turn was itself a recovery of. */
@@ -124,7 +130,7 @@ export function settleStoredSteers(
       }
     }
   }
-  if (messages) {
+  if (messages && sweep) {
     steers.convertLocalToQueued(conversationId, {
       excludeSteerIds: reconciledIds,
       generationProtocolVersion,

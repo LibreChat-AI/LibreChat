@@ -128,6 +128,7 @@ const createTransport = (generationProtocolVersion?: number) => {
   return {
     transport,
     streams,
+    open,
     sendMessages,
     abort,
     reconnectToStream,
@@ -245,6 +246,7 @@ function setup({
         endpoint: conversation.endpoint,
         onWithdrawn,
         beside,
+        settlesLost: true,
         ...runs,
       });
       const contract = useDrivenContract({
@@ -856,23 +858,112 @@ describe('useDrivenContract', () => {
       expect(onIdle.mock.invocationCallOrder[0]).toBeLessThan(onRunEnd.mock.invocationCallOrder[0]);
     });
 
-    it('hands over no rows as a lost run’s when another generation is running by then', async () => {
+    it('follows the generation that is running instead, when one is by the time it is looked for', async () => {
       const onRunEnd = jest.fn();
       const onIdle = jest.fn();
-      const view = setup({ runs: { onRunEnd, onIdle } });
+      const onGeneration = jest.fn();
+      const view = setup({ runs: { onRunEnd, onIdle, onGeneration } });
       await view.ready();
       await begin(view);
       onIdle.mockClear();
       /** Nothing to attach to when it is looked for; a newer run by the time its rows are read. */
       const reads = view.loadMessages.mock.calls.length;
+      const newer = { active: true, streamId: conversationId, createdAt: 9000 };
       view.transport.getStatus = async () =>
-        view.loadMessages.mock.calls.length > reads
-          ? { active: true, streamId: conversationId, createdAt: 9000 }
-          : { active: false };
+        view.loadMessages.mock.calls.length > reads ? newer : { active: false };
+      view.reconnectToStream.mockImplementation(async () =>
+        view.loadMessages.mock.calls.length > reads ? view.open() : null,
+      );
+
+      await dropping(view, 1);
+
+      /** No rows are handed over as the lost run's, and nothing is said to have ended. */
+      await waitFor(() => expect(view.streams).toHaveLength(2));
+      expect(onIdle).not.toHaveBeenCalled();
+      expect(onRunEnd).not.toHaveBeenCalled();
+      expect(onGeneration).not.toHaveBeenLastCalledWith(null);
+    });
+
+    it('sweeps no waiting steers when nothing proved the run over to a client of its protocol', async () => {
+      const { calls, steers } = record();
+      const onRunEnd = jest.fn();
+      const harness = createTransport(2);
+      const view = setup({ beside: { steers }, runs: { onRunEnd }, harness });
+      await view.ready();
+      const sent = await begin(view);
+      calls.length = 0;
+      view.loadMessages.mockResolvedValue(whole(sent));
+      /** Gone when it is looked for, and its status cannot be read once its rows are in. */
+      const reads = view.loadMessages.mock.calls.length;
+      view.transport.getStatus = async () => {
+        if (view.loadMessages.mock.calls.length > reads) {
+          throw new Error('The status route is down');
+        }
+        return { active: false };
+      };
 
       await dropping(view, 1);
       await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
-      expect(onIdle).not.toHaveBeenCalled();
+
+      /** What the stored rows hold is settled; a chip still waiting may yet be taken, and stays. */
+      expect(calls.map(([name]) => name)).toEqual(['appliedIds', 'settle', 'adopt']);
+      expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+    });
+
+    it('settles nothing on the word of a server that does not speak the generation’s protocol', async () => {
+      const { calls, steers } = record();
+      const onRunEnd = jest.fn();
+      const onGeneration = jest.fn();
+      const harness = createTransport(2);
+      const view = setup({ beside: { steers }, runs: { onRunEnd, onGeneration }, harness });
+      await view.ready();
+      const sent = await begin(view);
+      calls.length = 0;
+      view.setStatus({ active: true, streamId: conversationId, createdAt: 3000 });
+      await dropping(view, MAX_RETRIES + 1);
+      await waitFor(() => expect(view.streams.length).toBe(MAX_RETRIES + 2));
+
+      /** Past the last retry, an older responder says nothing is running: it cannot say that of this run. */
+      view.loadMessages.mockResolvedValue(whole(sent));
+      view.setStatus({ active: false, status: 'complete', createdAt: 3000 });
+      act(() => view.streams[MAX_RETRIES + 1].push({ type: 'error', status: 0 }));
+      await settle();
+      await settle();
+      expect(onRunEnd).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(onGeneration).toHaveBeenLastCalledWith({ createdAt: 3000, protocolVersion: 2 });
+
+      /** A responder that speaks it says the same, and now it is settled. */
+      view.setStatus({
+        active: false,
+        status: 'complete',
+        createdAt: 3000,
+        generationProtocolVersion: 2,
+      });
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1));
+      expect(calls.map(([name]) => name)).toEqual(['appliedIds', 'settle', 'adopt', 'sweep']);
+      expect(onGeneration).toHaveBeenLastCalledWith(null);
+    });
+
+    it('keeps the generation while it is looked for again, so a later round can still settle it', async () => {
+      const onRunEnd = jest.fn();
+      const view = setup({ runs: { onRunEnd } });
+      await view.ready();
+      const sent = await begin(view);
+      view.setStatus({ active: true, streamId: conversationId, createdAt: 3000 });
+      await dropping(view, MAX_RETRIES + 2);
+      const opened = view.reconnectToStream.mock.calls.length;
+
+      /** The next round never opens a stream at all, and by its end the run has finished. */
+      view.reconnectToStream.mockRejectedValue(new Error('The stream route is down'));
+      await waitFor(() =>
+        expect(view.reconnectToStream.mock.calls.length).toBeGreaterThan(opened + 1),
+      );
+      view.loadMessages.mockResolvedValue(whole(sent));
+      view.setStatus({ active: false, status: 'complete', createdAt: 3000 });
+
+      await waitFor(() => expect(onRunEnd).toHaveBeenCalledTimes(1), { timeout: 4000 });
+      expect(onRunEnd).toHaveBeenCalledWith(expect.objectContaining({ generationCreatedAt: 3000 }));
     });
 
     it('is settled by the server’s word once reconnecting has failed past its last retry', async () => {

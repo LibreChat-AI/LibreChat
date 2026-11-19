@@ -219,7 +219,14 @@ function setup({
   const openConversation = jest.fn();
   const sideChatHost: SideChatHost = {
     useChat: ({ conversationId: id, endpoint }, options) =>
-      useFollowChat({ id: id ?? '', transport, loadMessages, endpoint, ...options }),
+      useFollowChat({
+        id: id ?? '',
+        transport,
+        loadMessages,
+        endpoint,
+        settlesLost: true,
+        ...options,
+      }),
     useOpenConversation: () => openConversation,
     useSheetLayout: () => false,
     useClearsFooter: () => false,
