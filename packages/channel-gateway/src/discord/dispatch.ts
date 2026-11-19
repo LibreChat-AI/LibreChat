@@ -76,18 +76,27 @@ export async function dispatchDiscordEvent(
     await deps.runtime.dmMessage(deps.owner, event, prepared, source, signal);
     return;
   }
-  const source = event.guildId
-    ? await client.inspectGuildTextActorSource(
-        {
-          applicationId: deps.owner.applicationId,
-          botUserId: deps.application.botUserId,
-          guildId: event.guildId,
-          channelId: event.channelId,
-          authorId: event.authorId,
-        },
-        signal,
-      )
-    : null;
+  const source =
+    (await client.inspectGuildTextActorSource(
+      {
+        applicationId: deps.owner.applicationId,
+        botUserId: deps.application.botUserId,
+        guildId: event.guildId,
+        channelId: event.channelId,
+        authorId: event.authorId,
+      },
+      signal,
+    )) ??
+    (await client.inspectGuildThreadSource(
+      {
+        applicationId: deps.owner.applicationId,
+        botUserId: deps.application.botUserId,
+        guildId: event.guildId,
+        threadChannelId: event.channelId,
+        authorId: event.authorId,
+      },
+      signal,
+    ));
   signal.throwIfAborted();
   await deps.runtime.message(deps.owner, event, source, signal);
 }

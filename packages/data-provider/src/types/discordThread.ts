@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { discordGuildTextSourceSchema } from './discordMessage';
+import { discordGuildTextSourceSchema } from './discordSource';
 import { channelSnowflakeSchema } from '../channelProvider';
 
 const reference = z
