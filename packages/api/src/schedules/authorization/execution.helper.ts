@@ -205,6 +205,7 @@ export async function executionFixture(
     storage,
     loadAuthorization,
     coversTools: choice.coversTools ?? true,
+    now: () => time,
   });
   const execution = (await factory.resolve(identity, stage, {
     approvedToolCalls: choice.approvedToolCalls,

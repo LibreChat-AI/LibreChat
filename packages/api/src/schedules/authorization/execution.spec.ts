@@ -560,6 +560,23 @@ describe('the tools a run loads under a grant', () => {
     expect(fixture.execution.narrow('root', keys)).toEqual(['query_mcp_warehouse', 'tool_search']);
   });
 
+  it('stops loading and allowing the other tools once the grant has run out or been revoked', async () => {
+    const choice = { tools: ['execute_code', 'web_search'], allowTools: ['web_search'] };
+    const fixture = await executionFixture('invoke', readTool, undefined, choice);
+    expect(fixture.execution.narrow('root', keys)).toContain('web_search');
+    // Nothing checks these tools at the call as an MCP call is checked, so the run does.
+    fixture.expire();
+    expect(fixture.execution.grantsTool('root', 'web_search')).toBe(false);
+    // The MCP tool still loads: its call is refused where it is made.
+    expect(fixture.execution.narrow('root', keys)).toEqual(['query_mcp_warehouse', 'tool_search']);
+
+    const revoked = await executionFixture('invoke', readTool, undefined, choice);
+    await revoked.revoke();
+    const next = (await revoked.factory.resolve(revoked.identity, 'invoke'))!;
+    expect(next.grantsTool('root', 'web_search')).toBe(false);
+    expect(next.narrow('root', keys)).not.toContain('web_search');
+  });
+
   it('leaves the other tools alone under a grant that limits MCP tools only', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, { coversTools: false });
     expect(fixture.execution.narrow('root', keys)).toEqual([

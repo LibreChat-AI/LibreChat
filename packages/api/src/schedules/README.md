@@ -83,6 +83,10 @@ every server and tool at once. The grant stores them per agent (`tools`). Under 
   still refused with `tool_policy_denied`.
 - A grant made before these tools could be chosen lists none, so none of them loads until the
   owner confirms again.
+- Nothing checks these tools against the stored grant when they are called, as an MCP call is
+  checked. The run holds them to the grant it read when it started: they stop at the grant's
+  deadline, and a grant that was already revoked allows none. A revocation made while a run is
+  under way stops its MCP calls at once and its other tools from the next run.
 
 A grant still needs at least one MCP tool: a schedule whose agents use no MCP server has
 nothing to authorize and runs as before. An API key's grant limits MCP tools only.

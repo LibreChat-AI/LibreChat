@@ -156,6 +156,7 @@ export interface ScheduleMCPExecutionDeps<
    * it does not list is left out. Absent, a grant limits MCP tools only.
    */
   coversTools?: boolean;
+  now?: () => number;
 }
 
 export interface ScheduleMCPExecutionOptions {
@@ -210,6 +211,16 @@ export function createScheduleMCPExecution<
         new Map(permittedTools.map(({ agentId, tools }) => [agentId, new Set(tools)])),
       ]),
     );
+    /**
+     * Until when the grant read for this run allows anything: its earliest deadline, or not at
+     * all once any part of it was revoked. An MCP call is checked against the stored grant when
+     * it is made; the agents' other tools have no such call, so they are held to this.
+     */
+    const consents = snapshot.enrollment?.consents ?? [];
+    const liveUntil = consents.some((consent) => consent.revokedAtMs != null)
+      ? 0
+      : Math.min(...consents.map((consent) => consent.absoluteExpiresAtMs));
+    const now = deps.now ?? Date.now;
     /** The agents' tools that are not MCP tools, as the owner allowed them. */
     const others = new Map<string, ReadonlySet<string>>(
       deps.coversTools === true
@@ -248,14 +259,12 @@ export function createScheduleMCPExecution<
         if (keys.size > 0) asking.set(agentId, keys);
       }
     }
+    const allows = (agentId: string, toolKey: string): boolean =>
+      others.get(agentId)?.has(toolKey) === true && now() < liveUntil;
     /** Whether a run under the grant loads this key of the agent's. */
     const loads = (agentId: string, toolKey: string): boolean => {
       if (toolKey.includes(Constants.mcp_delimiter)) return isGrantedKey(agentId, toolKey);
-      return (
-        deps.coversTools !== true ||
-        !isScheduledToolItem(toolKey) ||
-        others.get(agentId)?.has(toolKey) === true
-      );
+      return deps.coversTools !== true || !isScheduledToolItem(toolKey) || allows(agentId, toolKey);
     };
     let fenced = false;
     /** Asked at the first MCP call, so a run that uses none pays nothing. Kept for the run. */
@@ -297,7 +306,7 @@ export function createScheduleMCPExecution<
         granted.get(serverName)?.get(agentId)?.has(selectionName) === true,
       narrow: (agentId: string, toolKeys: readonly string[]) =>
         enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
-      grantsTool: (agentId: string, toolKey: string) => others.get(agentId)?.has(toolKey) === true,
+      grantsTool: allows,
       mayAsk: asking.size > 0,
       asksAbout: (agentId: string, toolKey: string) => asking.get(agentId)?.has(toolKey) === true,
       asksAboutAny: (toolKeys: readonly string[]) =>
