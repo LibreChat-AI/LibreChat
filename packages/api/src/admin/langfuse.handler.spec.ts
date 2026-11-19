@@ -2608,7 +2608,34 @@ describe('createAdminLangfuseHandlers', () => {
         listPrompts: expect.any(Function),
         lockLeaseMs: 300_000,
         maxPages: 50,
+        trackProductFact: expect.any(Function),
       });
+    });
+
+    it('delivers manual import facts through the initiating request tracker', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const fact = {
+        name: 'librechat.prompts.imported',
+        feature: 'prompts',
+        source: 'langfuse',
+        groupId: 'group-1',
+      } as const;
+      const productTracker = jest.fn();
+      const { handlers } = createSyncHandlers({
+        syncPromptCatalog: jest.fn(
+          async (input: import('../langfuse/promptSyncRunner').LangfusePromptSyncRequest) => {
+            await input.trackProductFact?.(fact, { actor: 'system', tenantId: 't1' });
+            return { ok: true, value: { created: 1, unchanged: 0, skipped: 0 } };
+          },
+        ),
+      });
+      const res = mockRes();
+      await handlers.syncPrompts(
+        syncReq({ productTracking: { enabled: true }, productTracker }),
+        res,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(productTracker).toHaveBeenCalledWith(fact);
     });
 
     it("passes the runner's complete: false through unchanged when the page cap stopped the run", async () => {

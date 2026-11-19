@@ -1,5 +1,6 @@
 import { OGDialogContent, OGDialog, OGDialogTitle } from '@librechat/client';
 import type { TPromptGroup } from 'librechat-data-provider';
+import { usePromptOpened } from '~/hooks/Prompts/usePromptTracking';
 import PromptDetails from '../display/PromptDetails';
 import { useLocalize } from '~/hooks';
 
@@ -20,6 +21,7 @@ const PreviewPrompt = ({
   onCloseAutoFocus?: () => void;
 }) => {
   const localize = useLocalize();
+  usePromptOpened('preview', open, group._id);
   return (
     <OGDialog open={open} onOpenChange={onOpenChange}>
       <OGDialogContent

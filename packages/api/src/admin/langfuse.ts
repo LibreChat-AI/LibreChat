@@ -55,6 +55,7 @@ import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
 import { trackLangfuseTransition } from '~/langfuse/tracking';
+import { trackRequestProductFact } from '~/tracking/request';
 import { resolveLangfuseSession } from '~/langfuse/session';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAdminAuditEmitter } from './audit';
@@ -906,6 +907,7 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
         listPrompts: (query) => listLangfusePrompts(connection, query, { timeoutMs }),
         lockLeaseMs: getLangfusePromptSyncLockLeaseMs(req.config),
         maxPages: getLangfusePromptSyncMaxPages(req.config),
+        trackProductFact: (fact) => trackRequestProductFact(req, fact),
       });
 
       if (!result.ok) {
