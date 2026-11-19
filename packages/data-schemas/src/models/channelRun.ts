@@ -131,6 +131,14 @@ export function createChannelRunModel(
   );
   schema.index({ tenantId: 1, runId: 1 }, { unique: true });
   schema.index({ tenantId: 1, 'principal.userId': 1 });
+  schema.index({
+    tenantId: 1,
+    channelId: 1,
+    'principal.userId': 1,
+    'admission.actor.externalUserId': 1,
+    receivedAt: -1,
+    runId: -1,
+  });
   schema.index(
     {
       tenantId: 1,
