@@ -4,7 +4,8 @@ import {
   discordMessageSubmissionSchema,
   discordChannelConfigSchema,
   discordMentionPrompt,
-  discordGuildTextPermissions,
+  discordGuildTextActorSourceSchema,
+  discordGuildTextActorUsable,
 } from 'librechat-data-provider';
 import type {
   DiscordMessageStorage,
@@ -95,7 +96,8 @@ export function createDiscordMessageService(deps: {
             (source.applicationId !== app.applicationId ||
               source.botUserId !== app.botUserId ||
               source.guildId !== event.guildId ||
-              source.channelId !== event.channelId)
+              source.channelId !== event.channelId ||
+              ('authorId' in source && source.authorId !== event.authorId))
           )
             return denied('invalid_input');
           const route = event.guildId
@@ -126,7 +128,8 @@ export function createDiscordMessageService(deps: {
           if (timestamp - createdAt >= policy.gateway.messageMaxAgeMs) return consume('expired');
           if (!event.guildId || (event.channelType !== undefined && event.channelType !== 0))
             return consume('unsupported');
-          if (!source || !discordGuildTextPermissions(source.permissions))
+          const actorSource = discordGuildTextActorSourceSchema.safeParse(source);
+          if (!actorSource.success || !discordGuildTextActorUsable(actorSource.data))
             return consume(route ? 'unavailable' : 'unsupported');
           if (!route) return consume('unavailable');
           const channel = await deps.channels.getAgentChannelMetadata(route.channelId);
@@ -165,6 +168,7 @@ export function createDiscordMessageService(deps: {
                 agentId: channel.agentId,
                 applicationRevision: owner.applicationRevision,
                 discordGateway: { owner, occurrence },
+                discordAuthority: { kind: 'guild_text', owner, source: actorSource.data },
                 principal,
                 admission: {
                   actor,

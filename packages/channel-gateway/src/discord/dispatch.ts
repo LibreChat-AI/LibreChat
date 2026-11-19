@@ -49,12 +49,13 @@ export async function dispatchDiscordEvent(
     return;
   }
   const source = event.guildId
-    ? await client.inspectGuildTextSource(
+    ? await client.inspectGuildTextActorSource(
         {
           applicationId: deps.owner.applicationId,
           botUserId: deps.application.botUserId,
           guildId: event.guildId,
           channelId: event.channelId,
+          authorId: event.authorId,
         },
         signal,
       )

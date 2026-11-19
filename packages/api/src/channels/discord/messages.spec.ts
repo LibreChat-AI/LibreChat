@@ -112,6 +112,9 @@ function submission(content = `<@${botUserId}> question`, age = 0): DiscordMessa
       guildId,
       channelId: externalChannelId,
       permissions: String(1024 | 2048 | 65536),
+      authorId: externalUserId,
+      authorMember: true,
+      authorPermissions: '1024',
     },
   };
 }
@@ -782,3 +785,42 @@ it.each([false, true])(
     });
   },
 );
+
+it('requires fresh actor visibility proof instead of legacy bot-only source observations', async () => {
+  await scoped(() => linked());
+  const legacy = submission();
+  legacy.source = {
+    kind: 'guild_text',
+    applicationId,
+    botUserId,
+    guildId,
+    channelId: externalChannelId,
+    permissions: String(1024 | 2048 | 65536),
+  };
+  expect(await service.submit(legacy)).toEqual({
+    ok: true,
+    value: { outcome: 'ignored', reason: 'unavailable' },
+  });
+  const denied = submission();
+  denied.source = {
+    kind: 'guild_text',
+    applicationId,
+    botUserId,
+    guildId,
+    channelId: externalChannelId,
+    permissions: String(1024 | 2048 | 65536),
+    authorId: externalUserId,
+    authorMember: true,
+    authorPermissions: '0',
+  };
+  expect(await service.submit(denied)).toEqual({
+    ok: true,
+    value: { outcome: 'ignored', reason: 'unavailable' },
+  });
+  const forged = submission();
+  forged.source = { ...denied.source, authorId: '567890123456789013', authorPermissions: '1024' };
+  expect(await service.submit(forged)).toEqual({ ok: false, error: { code: 'invalid_input' } });
+  await scoped(async () => {
+    expect(await models.ChannelRun.countDocuments()).toBe(0);
+  });
+});
