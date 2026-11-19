@@ -799,6 +799,11 @@ describe('an owner whose role may not use MCP servers', () => {
       tools: { allowed: ['web_search'] },
     });
     expect(f.snapshot.enrollment).toMatchObject({ consents: [] });
+    // And the schedule runs: the MCP tool it selects is not one the grant allows.
+    f.row.mcpConsent = f.snapshot.enrollment!;
+    f.connect.mockClear();
+    await expect(f.check()).resolves.toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
   });
 
   it('is refused an MCP tool it was granted while it could use them', async () => {
@@ -815,6 +820,15 @@ describe('an owner whose role may not use MCP servers', () => {
     await expect(call()).resolves.toBeUndefined();
     f.getRoleByName.mockResolvedValue(role);
     await expect(call()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
+    // Nor is the schedule ready to run with it, and nothing is connected to find that out.
+    f.connect.mockClear();
+    await expect(f.check()).rejects.toMatchObject({
+      code: 'mcp_permission_denied',
+      outcomes: expect.arrayContaining([
+        expect.objectContaining({ server: 'warehouse', status: 'mcp_permission_denied' }),
+      ]),
+    });
+    expect(f.connect).not.toHaveBeenCalled();
   });
 });
 
