@@ -983,7 +983,7 @@ describe('ScheduleDialog', () => {
             authorization: {
               offerDigest: 'c'.repeat(64),
               expectedRevision: 'grant-1',
-              lifetimeHours: 1,
+              lifetimeHours: 24,
               allow: { warehouse: ['query'] },
               ask: {},
               tools: [],
