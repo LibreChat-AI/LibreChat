@@ -13,7 +13,9 @@ import { mapAgentManagementError } from '../agents/management';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 const identifier = z.string().trim().min(1).max(512);
-const tag = z.string().min(1).max(256);
+// Stored bookmark names are exact strings. Let the request line bound their
+// encoded size and cap how many labels can reach a single MongoDB filter.
+const tag = z.string();
 const date = z.string().datetime().nullable();
 
 type Query = {

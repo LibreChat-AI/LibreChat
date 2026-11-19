@@ -12,6 +12,7 @@ const path = '/api/agents/v1/conversations';
 const newest = new Date('2026-10-01T00:00:00.000Z');
 const label = 'Disposable metadata fixture';
 const legacyTag = ' legacy ';
+const longTag = 'long-'.padEnd(300, 'x');
 
 test('lists, filters, pages and reads the bound account’s conversation metadata', async ({
   request,
@@ -45,7 +46,7 @@ test('lists, filters, pages and reads the bound account’s conversation metadat
         { ...base, conversationId: second, updatedAt: newest, isArchived: true },
         { ...base, conversationId: first, updatedAt: newest, agent_id: 'agent_123' },
         { ...base, conversationId: undated, updatedAt: null },
-        { ...base, conversationId: legacy, tags: [legacyTag] },
+        { ...base, conversationId: legacy, tags: [legacyTag, longTag, ''] },
         { ...base, conversationId: unrelated, user: new ObjectId().toString(), updatedAt: newest },
         { ...base, conversationId: otherTenant, tenantId: otherTenantId, updatedAt: newest },
         {
@@ -107,7 +108,13 @@ test('lists, filters, pages and reads the bound account’s conversation metadat
     const agent = await fetchPage({ agent_id: 'agent_123' });
     expect(agent.data).toMatchObject([{ id: first }]);
     const tagged = await fetchPage({ tags: legacyTag });
-    expect(tagged.data).toMatchObject([{ id: legacy, tags: [legacyTag] }]);
+    expect(tagged.data).toMatchObject([{ id: legacy, tags: [legacyTag, longTag, ''] }]);
+    for (const tag of [longTag, '']) {
+      const matching = await fetchPage({ tags: tag });
+      expect(matching.data.map((conversation: { id: string }) => conversation.id)).toEqual([
+        legacy,
+      ]);
+    }
 
     const mismatch = await request.get(path, {
       headers,

@@ -2424,18 +2424,14 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
+                  "type": "string"
                 },
                 {
                   "minItems": 1,
                   "maxItems": 100,
                   "type": "array",
                   "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 256
+                    "type": "string"
                   }
                 }
               ]
