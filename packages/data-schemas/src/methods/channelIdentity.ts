@@ -1,4 +1,7 @@
-import { channelExternalIdentitySchema } from 'librechat-data-provider';
+import {
+  channelExternalIdentitySchema,
+  sameChannelExternalIdentity,
+} from 'librechat-data-provider';
 import type { ChannelExternalIdentity, DiscordInboxFence } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
@@ -161,8 +164,43 @@ export function createChannelIdentityStorage(
         ...(['pending', 'revoked'].includes(record.state) ? { slackReply: '' } : {}),
         ...(!record.userId ? { userId: '' } : {}),
         ...(record.accountLabel == null ? { accountLabel: '' } : {}),
+        ...(record.state !== 'active' || record.identity.provider !== 'discord'
+          ? { discordActivatedAtMs: '' }
+          : {}),
       };
       const persist = async (session: ClientSession): Promise<boolean> => {
+        if (record.identity.provider === 'discord' && record.state === 'active') {
+          // Never trust caller metadata or ordinary active saves to establish new consent.
+          delete fields.discordActivatedAtMs;
+          absent.discordActivatedAtMs = '';
+          const previous =
+            expectedRevision === null
+              ? null
+              : await model()
+                  .findOne({
+                    tenantId: record.tenantId,
+                    linkId: record.linkId,
+                    revision: expectedRevision,
+                  })
+                  .session(session)
+                  .lean();
+          if (
+            previous &&
+            previous.userId === record.userId &&
+            sameChannelExternalIdentity(previous.identity, record.identity)
+          ) {
+            if (previous.state === 'accepted' && ingress) fields.discordActivatedAtMs = Date.now();
+            else if (
+              previous.state === 'active' &&
+              previous.revision === record.revision &&
+              Number.isSafeInteger(previous.discordActivatedAtMs) &&
+              (previous.discordActivatedAtMs ?? 0) > 0
+            )
+              fields.discordActivatedAtMs = previous.discordActivatedAtMs;
+          }
+          if (fields.discordActivatedAtMs !== undefined) delete absent.discordActivatedAtMs;
+        }
+
         if (expectedRevision === null) {
           await model().create([{ tenantId: record.tenantId, linkId: record.linkId, ...fields }], {
             session,
@@ -280,7 +318,10 @@ export function createChannelIdentityStorage(
           await lockChannelScope(mongoose, owner.tenantId, record.identity.channelId, session);
           const result = await model().updateOne(
             filter,
-            { $set: { state: 'revoked', revision }, $unset: { slackReply: '' } },
+            {
+              $set: { state: 'revoked', revision },
+              $unset: { slackReply: '', discordActivatedAtMs: '' },
+            },
             { session, runValidators: true },
           );
           matched = result.matchedCount === 1;
@@ -300,7 +341,10 @@ export function createChannelIdentityStorage(
           await lockChannelScope(mongoose, tenantId, channelId, session);
           await model().updateMany(
             { tenantId, 'identity.channelId': channelId, state: { $ne: 'revoked' } },
-            { $set: { state: 'revoked', revision }, $unset: { slackReply: '' } },
+            {
+              $set: { state: 'revoked', revision },
+              $unset: { slackReply: '', discordActivatedAtMs: '' },
+            },
             { session, runValidators: true },
           );
         });

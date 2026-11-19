@@ -1,5 +1,6 @@
-import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
+import { randomBytes, randomUUID } from 'crypto';
+import { discordConfirmationControl, parseDiscordControl } from 'librechat-data-provider';
 import type { DiscordAgentChannel } from 'librechat-data-provider';
 import {
   GUILDS,
@@ -25,7 +26,7 @@ test('Discord authority preserves binding and fences linked admission @scenario:
     const [owner, user] = await Promise.all([world.member(tenantId), world.member(tenantId)]);
     const app = world.app();
     await inOrg(tenantId, async () => {
-      const { store, methods, identities, runs, routes } = world;
+      const { store, methods, identities, runs, routes, inbox } = world;
       type Enrollment = Parameters<typeof runs.admit>[0];
       const configured = ok(await store.configureApplication({ actorId: owner, ...app }));
       const guildId = snowflake();
@@ -111,7 +112,7 @@ test('Discord authority preserves binding and fences linked admission @scenario:
       const link: Parameters<typeof identities.saveChannelIdentity>[0] = {
         tenantId,
         identity,
-        linkId: randomUUID(),
+        linkId: randomBytes(32).toString('base64url'),
         revision: randomUUID(),
         state: 'active',
         userId: user,
@@ -119,10 +120,67 @@ test('Discord authority preserves binding and fences linked admission @scenario:
         ticketExpiresAtMs: Date.now() + 60_000,
         expiresAtMs: Date.now() + 60_000,
       };
-      expect(await identities.saveChannelIdentity(link, null, configured.revision)).toBe(true);
-      expect(await identities.readChannelIdentity(identity)).toMatchObject({ ...link });
+      const acceptedRevision = randomBytes(32).toString('base64url');
+      expect(
+        await identities.saveChannelIdentity(
+          { ...link, state: 'accepted', revision: acceptedRevision },
+          null,
+          configured.revision,
+        ),
+      ).toBe(true);
+      const action = parseDiscordControl(discordConfirmationControl(link.linkId, acceptedRevision));
+      if (!action || action.kind !== 'confirm') throw new Error('Invalid confirmation action');
+      const confirmationId = snowflake();
+      const worker = randomUUID();
+      const submitted = await inbox.submit(
+        {
+          eventId: confirmationId,
+          applicationId: app.applicationId,
+          applicationRevision: configured.revision,
+          guildId,
+          externalChannelId,
+          externalUserId: identity.externalUserId,
+          channelId: channel.channelId,
+          channelRevision: channel.revision,
+          agentId: channel.agentId,
+          action,
+          encryptedToken: secret('confirmation'),
+          tokenHash: 'b'.repeat(64),
+          expiresAt: Date.now() + 60_000,
+        },
+        Date.now(),
+      );
+      expect(submitted).toEqual({
+        ok: true,
+        value: { eventId: confirmationId, state: 'queued', duplicate: false },
+      });
+      const claimed = await inbox.claim(app.applicationId, worker, Date.now());
+      if (!claimed) throw new Error('Missing confirmation inbox claim');
+      expect(claimed.eventId).toBe(confirmationId);
+      expect(
+        await identities.saveChannelIdentity(link, acceptedRevision, configured.revision, {
+          fence: {
+            applicationId: app.applicationId,
+            eventId: claimed.eventId,
+            owner: worker,
+            epoch: claimed.leaseEpoch,
+          },
+          now: Date.now(),
+        }),
+      ).toBe(true);
+      const confirmed = await identities.readChannelIdentity(identity);
+      expect(confirmed).toMatchObject({ ...link });
+      if (!confirmed || typeof confirmed.discordActivatedAtMs !== 'number')
+        throw new Error('Missing server-written Discord activation time');
+      expect(Number.isSafeInteger(confirmed.discordActivatedAtMs)).toBe(true);
+      expect(confirmed.discordActivatedAtMs).toBeGreaterThan(0);
+      let eventAtMs = confirmed.discordActivatedAtMs;
+      const clock = () => {
+        eventAtMs = Math.max(Date.now(), eventAtMs + 1);
+        return eventAtMs;
+      };
       const event = (applicationRevision = configured.revision): Enrollment => {
-        const eventId = snowflake();
+        const eventId = String(BigInt(clock() - 1420070400000) << BigInt(22));
         return {
           tenantId,
           channelId: channel.channelId,
@@ -149,7 +207,7 @@ test('Discord authority preserves binding and fences linked admission @scenario:
           },
         };
       };
-      const admit = (input: Enrollment) => runs.admit(input, Date.now());
+      const admit = (input: Enrollment) => runs.admit(input, clock());
       const refused = async (input: Enrollment) => {
         await expect(admit(input)).rejects.toMatchObject({ code: 'invalid_transition' });
       };

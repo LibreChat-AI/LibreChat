@@ -133,6 +133,10 @@ async function link(userId = member, actor = externalUserId) {
   expect(
     await createChannelIdentityStorage(db).saveChannelIdentity(record, null, app.revision),
   ).toBe(true);
+  await db.models.ChannelIdentity.updateOne(
+    { linkId: record.linkId },
+    { $set: { discordActivatedAtMs: Number(BigInt(eventId) >> BigInt(22)) + 1420070400000 - 1 } },
+  );
   return record;
 }
 async function pendingState(installation = guild) {
@@ -222,7 +226,7 @@ it('erases owned application credentials and every dependent binding while other
         linkRevision: identity.revision,
       },
       admission: {
-        eventId: 'run-event',
+        eventId,
         externalChannelId,
         externalThreadKey: 'thread',
         externalMessageKey: 'message',
@@ -277,7 +281,10 @@ it('erases owned application credentials and every dependent binding while other
     });
     await expect(
       runs.admit(
-        { ...enrollment, admission: { ...enrollment.admission, eventId: 'late-event' } },
+        {
+          ...enrollment,
+          admission: { ...enrollment.admission, eventId: String(BigInt(eventId) + BigInt(1)) },
+        },
         now + 1,
       ),
     ).rejects.toMatchObject({ code: 'invalid_transition' });
@@ -441,7 +448,7 @@ it('erases guild owner metadata while preserving an application and other guilds
           linkRevision: identity.revision,
         },
         admission: {
-          eventId: 'guild-run',
+          eventId,
           externalChannelId,
           externalThreadKey: 'thread',
           externalMessageKey: 'message',

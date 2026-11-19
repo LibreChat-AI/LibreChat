@@ -157,25 +157,31 @@ export function createDiscordMessageService(deps: {
           if (admittedAt - createdAt >= current.gateway.messageMaxAgeMs) return consume('expired');
           if (event.content.length > current.gateway.maxMessageCharacters)
             return consume('unavailable');
-          await deps.runs.admit(
-            {
-              tenantId: route.tenantId,
-              channelId: channel.channelId,
-              agentId: channel.agentId,
-              applicationRevision: owner.applicationRevision,
-              discordGateway: { owner, occurrence },
-              principal,
-              admission: {
-                actor,
-                eventId: event.messageId,
-                input: prompt,
-                externalChannelId: event.channelId,
-                externalThreadKey: `${event.channelId}:${event.messageId}`,
-                externalMessageKey: `${event.channelId}:${event.messageId}`,
+          try {
+            await deps.runs.admit(
+              {
+                tenantId: route.tenantId,
+                channelId: channel.channelId,
+                agentId: channel.agentId,
+                applicationRevision: owner.applicationRevision,
+                discordGateway: { owner, occurrence },
+                principal,
+                admission: {
+                  actor,
+                  eventId: event.messageId,
+                  input: prompt,
+                  externalChannelId: event.channelId,
+                  externalThreadKey: `${event.channelId}:${event.messageId}`,
+                  externalMessageKey: `${event.channelId}:${event.messageId}`,
+                },
               },
-            },
-            admittedAt,
-          );
+              admittedAt,
+            );
+          } catch (error) {
+            if (error instanceof ChannelRunConflict && error.code === 'invalid_transition')
+              return consume('unavailable');
+            throw error;
+          }
           return { ok: true, value: { outcome: 'admitted' } };
         } catch (error) {
           if (!(error instanceof ChannelRunConflict)) throw error;

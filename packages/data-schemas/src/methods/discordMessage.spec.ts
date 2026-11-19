@@ -94,6 +94,10 @@ async function linked() {
       revision,
     ),
   ).toBe(true);
+  await models.ChannelIdentity.updateOne(
+    { linkId: 'link' },
+    { $set: { discordActivatedAtMs: Number(BigInt(messageId) >> BigInt(22)) + 1420070400000 - 1 } },
+  );
 }
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });

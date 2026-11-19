@@ -16,6 +16,7 @@ import {
   createDiscordRouteStorage,
   createDiscordGatewayStorage,
   createDiscordMessageStorage,
+  createDiscordInboxStorage,
   createChannelIdentityStorage,
   createChannelRunStorage,
   tenantStorage,
@@ -53,11 +54,14 @@ let policy: DiscordChannelConfig;
 let allowed: boolean;
 let clock: number;
 let sequence: number;
+let interactionSequence: number;
+let gatewayOwnerId: string;
 const gateway = createDiscordGatewayStorage(db, async () => ({
   ownershipLeaseMs: 30000,
   shardCount: 1,
 }));
 const authority = createChannelAuthority({
+  publicBaseUrl: 'http://127.0.0.1:3080',
   channels,
   identityStorage: identities,
   getConfig: async () => ({ enabled: policy.enabled }),
@@ -82,7 +86,7 @@ const service = createDiscordMessageService({
   settings: async () => policy,
   now: () => clock,
 });
-const owner = () => ({ applicationId, applicationRevision: revision, ownerId: 'a'.repeat(32) });
+const owner = () => ({ applicationId, applicationRevision: revision, ownerId: gatewayOwnerId });
 function submission(content = `<@${botUserId}> question`, age = 0): DiscordMessageSubmission {
   const messageId = String(
     (BigInt(clock - age - 1420070400000) << BigInt(22)) + BigInt(++sequence),
@@ -111,34 +115,87 @@ function submission(content = `<@${botUserId}> question`, age = 0): DiscordMessa
     },
   };
 }
-async function linked() {
-  expect(
-    await identities.saveChannelIdentity(
-      {
-        tenantId,
-        linkId: 'link',
-        revision: 'link-revision',
-        state: 'active',
-        userId,
-        ticketHash: 'private-ticket',
-        ticketExpiresAtMs: clock + 900000,
-        expiresAtMs: clock + 900000,
-        identity: {
-          tenantId,
+async function linked(accountId = userId) {
+  const unwrap = <T>(
+    result: { ok: true; value: T } | { ok: false; error: { code: string } },
+  ): T => {
+    if (!result.ok) throw new Error(result.error.code);
+    return result.value;
+  };
+  const identity = {
+    tenantId,
+    channelId: channel.channelId,
+    channelRevision: channel.revision,
+    agentId: channel.agentId,
+    provider: 'discord' as const,
+    applicationId,
+    guildId,
+    externalUserId,
+  };
+  const previous = await identities.readChannelIdentity(identity);
+  if (previous?.userId && Number.isSafeInteger(previous.discordActivatedAtMs))
+    unwrap(
+      await authority.identity.revoke(
+        { tenantId, userId: previous.userId, accountLabel: 'Previous account' },
+        previous.linkId,
+        previous.revision,
+      ),
+    );
+  const inbox = createDiscordInboxStorage(db);
+  const interaction = async (action: { kind: 'link' } | { kind: 'confirm'; reference: string }) => {
+    const timestamp = Date.now();
+    const eventId = String(
+      (BigInt(timestamp - 1420070400000) << BigInt(22)) + BigInt(++interactionSequence),
+    );
+    unwrap(
+      await inbox.submit(
+        {
+          eventId,
+          applicationId,
+          applicationRevision: revision,
+          guildId,
           channelId: channel.channelId,
           channelRevision: channel.revision,
           agentId: channel.agentId,
-          provider: 'discord',
-          applicationId,
-          guildId,
+          externalChannelId,
           externalUserId,
+          action,
+          encryptedToken: 'sealed',
+          tokenHash: 'a'.repeat(64),
+          expiresAt: timestamp + 900000,
         },
-      },
-      null,
-      revision,
-    ),
-  ).toBe(true);
+        timestamp,
+      ),
+    );
+    const record = await inbox.claim(applicationId, 'consent-worker', timestamp);
+    if (!record) throw new Error('Missing consent interaction');
+    return {
+      applicationRevision: revision,
+      fence: { applicationId, eventId, owner: 'consent-worker', epoch: record.leaseEpoch },
+    };
+  };
+  const finish = async (ingress: Awaited<ReturnType<typeof interaction>>) => {
+    unwrap(await inbox.prepareReply(ingress.fence, 'sealed-reply', Date.now()));
+    expect(await inbox.finish(ingress.fence, 'completed', Date.now())).toBe(true);
+  };
+  const issuedInteraction = await interaction({ kind: 'link' });
+  const issued = unwrap(await authority.identity.issue(identity, issuedInteraction));
+  await finish(issuedInteraction);
+  const secret = new URL(issued.url).hash.slice(1);
+  const principal = { tenantId, userId: accountId, accountLabel: 'Selected account' };
+  const preview = unwrap(await authority.identity.preview(principal, secret));
+  const accepted = unwrap(await authority.identity.accept(principal, secret, preview.revision));
+  const confirmation = await interaction({
+    kind: 'confirm',
+    reference: accepted.linkId + accepted.revision,
+  });
+  unwrap(
+    await authority.identity.confirm(identity, accepted.linkId, accepted.revision, confirmation),
+  );
+  await finish(confirmation);
+  clock = Date.now() + 2;
 }
+
 function server(value = service) {
   const app = express();
   app.use(express.json());
@@ -163,6 +220,8 @@ beforeEach(async () => {
   });
   clock = Date.now();
   sequence = 0;
+  interactionSequence = 1000;
+  gatewayOwnerId = 'a'.repeat(32);
   allowed = true;
   policy = discordChannelConfigSchema.parse({ enabled: true, gateway: { enabled: true } });
   await scoped(async () => {
@@ -470,3 +529,256 @@ it('protects HTTP ingress, ignores caller tenant headers and sanitizes unexpecte
   expect(failed.status).toBe(503);
   expect(failed.body).toEqual({ error: 'discord_message_unavailable' });
 });
+
+it.each([false, true])(
+  'does not replay an old prompt under replacement consent after owner loss %s',
+  async (loseOwner) => {
+    await scoped(() => linked());
+    const otherId = '000000000000000000000002';
+    await scoped(async () => {
+      await models.User.create({
+        _id: otherId,
+        tenantId,
+        provider: 'local',
+        role: 'USER',
+        email: 'other@example.test',
+      });
+    });
+    const input = submission();
+    let switched = false;
+    const raced = createDiscordMessageService({
+      installations,
+      channels,
+      resolver,
+      messages: createDiscordMessageStorage(db),
+      runs,
+      settings: async () => policy,
+      now: () => clock,
+      authority: {
+        ...authority,
+        resolvePrincipal: async (bound, actor) => {
+          const original = await authority.resolvePrincipal(bound, actor);
+          if (!switched) {
+            switched = true;
+            if (loseOwner) {
+              expect(await gateway.release(owner())).toBe(true);
+              gatewayOwnerId = 'b'.repeat(32);
+              expect(await gateway.acquire(owner(), 30000)).toBe(true);
+            }
+            await linked(otherId);
+          }
+          return original;
+        },
+      },
+    });
+    expect(await raced.submit(input)).not.toEqual({ ok: true, value: { outcome: 'admitted' } });
+    expect(await models.DiscordMessageReceipt.countDocuments()).toBe(loseOwner ? 0 : 1);
+    const replay = await service.submit({
+      ...input,
+      owner: owner(),
+      event: { ...input.event, ...owner() },
+    });
+    expect(replay).not.toEqual({ ok: true, value: { outcome: 'admitted' } });
+    expect(
+      await models.DiscordMessageReceipt.findOne({ messageId: input.event.messageId }).lean(),
+    ).toMatchObject({ outcome: 'ignored' });
+    expect(await service.submit(submission())).toEqual({
+      ok: true,
+      value: { outcome: 'admitted' },
+    });
+    await scoped(async () => {
+      const stored = await models.ChannelRun.findOne().lean();
+      expect(stored?.principal.userId).toBe(otherId);
+      expect(await models.ChannelRun.countDocuments()).toBe(1);
+    });
+  },
+);
+
+it('rejects first ingestion of a physical message created before native confirmation', async () => {
+  const old = submission();
+  await scoped(() => linked());
+  expect(await service.submit(old)).toEqual({
+    ok: true,
+    value: { outcome: 'ignored', reason: 'unavailable' },
+  });
+  expect(await service.submit(old)).toEqual({ ok: true, value: { outcome: 'duplicate' } });
+  expect(await service.submit(submission())).toEqual({ ok: true, value: { outcome: 'admitted' } });
+});
+
+it('keeps confirmed consent stable across active saves, owner takeover and credential rotation', async () => {
+  await scoped(() => linked());
+  const input = submission();
+  const oldOwner = owner();
+  await scoped(async () => {
+    const link = await models.ChannelIdentity.findOne().lean();
+    if (!link || !link.discordActivatedAtMs) throw new Error('Missing native confirmation');
+    const saved = await identities.readChannelLink(tenantId, link.linkId);
+    if (!saved) throw new Error('Missing link');
+    expect(
+      await identities.saveChannelIdentity(
+        { ...saved, accountLabel: 'Changed label', discordActivatedAtMs: Date.now() + 100000 },
+        saved.revision,
+        revision,
+      ),
+    ).toBe(true);
+    expect((await identities.readChannelLink(tenantId, link.linkId))?.discordActivatedAtMs).toBe(
+      link.discordActivatedAtMs,
+    );
+    const rotated = await installations.configureApplication({
+      actorId: userId,
+      applicationId,
+      botUserId,
+      publicKey: 'b'.repeat(64),
+      encryptedBotToken: 'rotated',
+      expectedRevision: revision,
+    });
+    if (!rotated.ok) throw new Error(rotated.error.code);
+    revision = rotated.value.revision;
+    await gateway.release(oldOwner);
+    gatewayOwnerId = 'b'.repeat(32);
+    expect(await gateway.acquire(owner(), 30000)).toBe(true);
+  });
+  expect(await service.submit(input)).toMatchObject({ ok: false });
+  expect(await models.DiscordMessageReceipt.countDocuments()).toBe(0);
+  const replay = { ...input, owner: owner(), event: { ...input.event, ...owner() } };
+  expect(await service.submit(replay)).toEqual({ ok: true, value: { outcome: 'admitted' } });
+  expect(await service.submit(replay)).toEqual({ ok: true, value: { outcome: 'duplicate' } });
+});
+
+it('keeps operational database failures retryable under unchanged consent', async () => {
+  await scoped(() => linked());
+  const input = submission();
+  const failure = jest
+    .spyOn(models.ChannelRun.collection, 'insertOne')
+    .mockRejectedValueOnce(new Error('database outage'));
+  try {
+    await expect(service.submit(input)).rejects.toThrow('database outage');
+  } finally {
+    failure.mockRestore();
+  }
+  expect(await models.DiscordMessageReceipt.countDocuments()).toBe(0);
+  expect(await service.submit(input)).toEqual({ ok: true, value: { outcome: 'admitted' } });
+});
+
+it('requires fresh native confirmation for restored markerless links without interrupting an authorized run', async () => {
+  await scoped(() => linked());
+  expect(await service.submit(submission())).toEqual({ ok: true, value: { outcome: 'admitted' } });
+  await scoped(async () => {
+    await models.ChannelIdentity.updateMany({}, { $unset: { discordActivatedAtMs: '' } });
+    const record = await models.ChannelIdentity.findOne().lean();
+    if (!record) throw new Error('Missing restored link');
+    const link = await identities.readChannelLink(tenantId, record.linkId);
+    if (!link) throw new Error('Missing link');
+    expect(
+      await identities.saveChannelIdentity(
+        { ...link, discordActivatedAtMs: 1 },
+        link.revision,
+        revision,
+      ),
+    ).toBe(true);
+    expect(
+      (await identities.readChannelLink(tenantId, link.linkId))?.discordActivatedAtMs,
+    ).toBeUndefined();
+    expect(await authority.identity.inspectActor(link.identity)).toMatchObject({
+      ok: true,
+      value: { state: 'expired' },
+    });
+    const claimed = await runs.claim(tenantId, channel.channelId, 'continuation', clock, 60000);
+    if (!claimed) throw new Error('Missing authorized run');
+    expect(
+      (
+        await runs.prepareExecution(
+          tenantId,
+          { runId: claimed.runId, owner: 'continuation', epoch: claimed.leaseEpoch },
+          clock,
+          revision,
+        )
+      ).execution,
+    ).toBeDefined();
+  });
+  expect(await service.submit(submission())).toEqual({
+    ok: true,
+    value: { outcome: 'ignored', reason: 'unavailable' },
+  });
+  await scoped(() => linked());
+  expect(await service.submit(submission())).toEqual({ ok: true, value: { outcome: 'admitted' } });
+});
+
+it.each([false, true])(
+  'does not revive an unconsumed old message after route replacement with reconnect %s',
+  async (reconnect) => {
+    await scoped(() => linked());
+    const oldMessage = submission();
+    await scoped(async () => {
+      const routes = createDiscordRouteStorage(db);
+      const oldRoute = await routes.read(channel.installationId, externalChannelId);
+      if (!oldRoute) throw new Error('Missing original route');
+      const removed = await routes.remove({
+        actorId: userId,
+        installationId: channel.installationId,
+        externalChannelId,
+        expectedRevision: oldRoute.revision,
+      });
+      if (!removed.ok) throw new Error(removed.error.code);
+      let installationRevision = channel.installationRevision;
+      if (reconnect) {
+        const disconnected = await installations.disconnectGuild({
+          actorId: userId,
+          installationId: channel.installationId,
+          expectedRevision: installationRevision,
+        });
+        if (!disconnected.ok) throw new Error(disconnected.error.code);
+        const connected = await installations.connectGuild({
+          actorId: userId,
+          applicationId,
+          applicationRevision: revision,
+          guildId,
+          guildName: 'Guild',
+          installationId: channel.installationId,
+          expectedRevision: disconnected.value.revision,
+        });
+        if (!connected.ok) throw new Error(connected.error.code);
+        installationRevision = connected.value.revision;
+      }
+      await channels.createAgentChannel({
+        ...channel,
+        channelId: 'replacement',
+        agentId: 'other-agent',
+        status: 'pending_install',
+        revision: 'initial',
+        installationRevision,
+        applicationRevision: revision,
+      });
+      const assigned = await routes.assign({
+        actorId: userId,
+        installationId: channel.installationId,
+        installationRevision,
+        applicationRevision: revision,
+        externalChannelId,
+        channelId: 'replacement',
+        channelRevision: 'initial',
+      });
+      if (!assigned.ok) throw new Error(assigned.error.code);
+      const current = await channels.getAgentChannelMetadata('replacement');
+      if (!current || current.type !== 'discord') throw new Error('Missing replacement route');
+      channel = current;
+      await linked();
+    });
+    expect(await models.DiscordMessageReceipt.countDocuments()).toBe(0);
+    expect(await service.submit(oldMessage)).toEqual({
+      ok: true,
+      value: { outcome: 'ignored', reason: 'unavailable' },
+    });
+    expect(await service.submit(submission())).toEqual({
+      ok: true,
+      value: { outcome: 'admitted' },
+    });
+    await scoped(async () => {
+      expect(await models.ChannelRun.countDocuments()).toBe(1);
+      expect(await models.ChannelRun.findOne().lean()).toMatchObject({
+        channelId: 'replacement',
+        agentId: 'other-agent',
+      });
+    });
+  },
+);

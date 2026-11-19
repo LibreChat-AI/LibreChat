@@ -107,6 +107,8 @@ export async function touchChannelAuthority(
     applicationId?: string;
     guildId?: string;
     applicationRevision?: string;
+    /** Set only by new prompt admission from its immutable provider occurrence. */
+    promptEventAtMs?: number;
     teamId?: string;
     appId?: string;
     principal?: { userId: string; linkId?: string; linkRevision?: string };
@@ -230,6 +232,13 @@ export async function touchChannelAuthority(
     (authority.appId !== undefined && parent.slack?.appId !== authority.appId)
   )
     return false;
+  if (
+    authority.promptEventAtMs !== undefined &&
+    (authority.provider !== 'discord' ||
+      !Number.isSafeInteger(authority.promptEventAtMs) ||
+      authority.promptEventAtMs <= 0)
+  )
+    return false;
   const principal = authority.principal;
   if (!principal) return true;
   if (principal.linkId === undefined && principal.linkRevision === undefined)
@@ -263,6 +272,9 @@ export async function touchChannelAuthority(
               'identity.teamId': authority.teamId,
             }),
         'identity.externalUserId': authority.externalUserId,
+        ...(authority.promptEventAtMs !== undefined
+          ? { discordActivatedAtMs: { $gt: 0, $lt: authority.promptEventAtMs } }
+          : {}),
       })
       .session(session),
   );

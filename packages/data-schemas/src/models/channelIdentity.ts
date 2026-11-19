@@ -15,6 +15,8 @@ export interface ChannelIdentityRecord {
   expiresAtMs: number;
   userId?: string;
   accountLabel?: string;
+  /** Server-written native confirmation time; missing legacy consent must be confirmed again. */
+  discordActivatedAtMs?: number;
   slackReply?: {
     encryptedUrl: string;
     expiresAtMs: number;
@@ -56,6 +58,7 @@ export function createChannelIdentityModel(
       expiresAtMs: { type: Number, required: true },
       userId: String,
       accountLabel: String,
+      discordActivatedAtMs: { type: Number, min: 1, validate: Number.isSafeInteger },
       slackReply: {
         type: new Schema(
           {
