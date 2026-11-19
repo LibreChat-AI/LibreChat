@@ -4,6 +4,7 @@ import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import type {
+  Agent,
   ChannelLinkView,
   DiscordDmIssuedCode,
   DiscordDmSelectionView,
@@ -16,6 +17,7 @@ jest.mock('librechat-data-provider', () => {
     ...actual,
     dataService: {
       ...actual.dataService,
+      getAgentById: jest.fn(),
       listDiscordDmSelections: jest.fn(),
       issueDiscordDmCode: jest.fn(),
       revokeDiscordDmSelection: jest.fn(),
@@ -23,10 +25,6 @@ jest.mock('librechat-data-provider', () => {
     },
   };
 });
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
-jest.mock('~/data-provider', () => ({
-  useGetAgentByIdQuery: () => ({ data: { name: 'Support agent' } }),
-}));
 const link: ChannelLinkView = {
   linkId: 'link',
   revision: 'link-v1',
@@ -67,10 +65,18 @@ function page() {
   return { ...render(view()), client, view, user: userEvent.setup() };
 }
 async function openCode(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole('button', { name: 'com_ui_discord_dm_select_for' }));
-  await user.click(screen.getByRole('button', { name: 'com_ui_discord_dm_generate' }));
+  await user.click(
+    await screen.findByRole('button', {
+      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+    }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Generate Code' }));
 }
 beforeEach(() => {
+  jest
+    .mocked(dataService.getAgentById)
+    .mockReset()
+    .mockResolvedValue({ name: 'Support agent' } as Agent);
   jest.mocked(dataService.channelIdentityClient.list).mockReset().mockResolvedValue([link]);
   jest
     .mocked(dataService.listDiscordDmSelections)
@@ -86,8 +92,8 @@ beforeEach(() => {
 test('issues only an owned active link revision, keeps code out of query and mutation caches, and clears on close', async () => {
   const f = page();
   await openCode(f.user);
-  expect(await screen.findByLabelText('com_ui_discord_dm_code')).toHaveValue(secret);
-  expect(screen.getByLabelText('com_ui_discord_dm_code')).toHaveFocus();
+  expect(await screen.findByLabelText('Selection code')).toHaveValue(secret);
+  expect(screen.getByLabelText('Selection code')).toHaveFocus();
   expect(dataService.issueDiscordDmCode).toHaveBeenCalledWith({
     linkId: 'link',
     expectedLinkRevision: 'link-v1',
@@ -105,9 +111,11 @@ test('issues only an owned active link revision, keeps code out of query and mut
   expect(cached).not.toContain(secret);
   await f.user.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
-  await f.user.click(screen.getByRole('button', { name: 'com_ui_discord_dm_select_for' }));
+  await f.user.click(
+    screen.getByRole('button', { name: /^Use in Direct Messages: agent agent, Discord user 789/ }),
+  );
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'com_ui_discord_dm_generate' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Generate Code' })).toBeVisible();
 });
 
 test('ignores a code that resolves after dialog cancellation or an account switch', async () => {
@@ -124,7 +132,11 @@ test('ignores a code that resolves after dialog cancellation or an account switc
   f.rerender(f.view('tenant:other-user'));
   await act(async () => resolve({ code: secret, expiresAtMs: Date.now() + 60000 }));
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
-  await f.user.click(await screen.findByRole('button', { name: 'com_ui_discord_dm_select_for' }));
+  await f.user.click(
+    await screen.findByRole('button', {
+      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+    }),
+  );
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
   expect(
     JSON.stringify(
@@ -142,9 +154,9 @@ test('expired codes are removed and may be regenerated', async () => {
     .mockResolvedValue({ code: secret, expiresAtMs: Date.now() - 1 });
   const f = page();
   await openCode(f.user);
-  await screen.findByText('com_ui_discord_dm_code_expired');
+  await screen.findByText('This code has expired. Generate a new code to continue.');
   expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'com_ui_discord_dm_generate' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Generate Code' })).toBeEnabled();
 });
 
 test('failed code issuance exposes safe guidance and permits a fresh explicit attempt', async () => {
@@ -155,11 +167,13 @@ test('failed code issuance exposes safe guidance and permits a fresh explicit at
     );
   const f = page();
   await openCode(f.user);
-  await screen.findByText('com_ui_discord_dm_capacity');
+  await screen.findByText(
+    'Too many pending selections. Wait for an unused code to expire, then try again.',
+  );
   expect(screen.queryByText('private provider response')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('com_ui_discord_dm_code')).not.toBeInTheDocument();
-  await f.user.click(screen.getByRole('button', { name: 'com_ui_discord_dm_generate' }));
-  expect(await screen.findByLabelText('com_ui_discord_dm_code')).toHaveValue(secret);
+  expect(screen.queryByLabelText('Selection code')).not.toBeInTheDocument();
+  await f.user.click(screen.getByRole('button', { name: 'Generate Code' }));
+  expect(await screen.findByLabelText('Selection code')).toHaveValue(secret);
 });
 
 test.each(['pending', 'accepted', 'expired', 'revoked', 'unavailable'] as const)(
@@ -167,9 +181,13 @@ test.each(['pending', 'accepted', 'expired', 'revoked', 'unavailable'] as const)
   async (state) => {
     jest.mocked(dataService.channelIdentityClient.list).mockResolvedValue([{ ...link, state }]);
     page();
-    await screen.findByText('com_ui_discord_dm_link_first');
+    await screen.findByText(
+      'Link your Discord account to an agent in a server channel and confirm it in Discord before selecting that agent for direct messages.',
+    );
     expect(
-      screen.queryByRole('button', { name: 'com_ui_discord_dm_select_for' }),
+      screen.queryByRole('button', {
+        name: /^Use in Direct Messages: agent agent, Discord user 789/,
+      }),
     ).not.toBeInTheDocument();
   },
 );
@@ -189,9 +207,13 @@ test('does not offer Slack links for Discord selection', async () => {
     },
   ]);
   page();
-  await screen.findByText('com_ui_discord_dm_link_first');
+  await screen.findByText(
+    'Link your Discord account to an agent in a server channel and confirm it in Discord before selecting that agent for direct messages.',
+  );
   expect(
-    screen.queryByRole('button', { name: 'com_ui_discord_dm_select_for' }),
+    screen.queryByRole('button', {
+      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+    }),
   ).not.toBeInTheDocument();
 });
 
@@ -200,14 +222,20 @@ test('disabled deployments still allow revision-fenced cleanup of unavailable se
     .mocked(dataService.listDiscordDmSelections)
     .mockResolvedValue({ enabled: false, selections: [{ ...selection, state: 'unavailable' }] });
   const f = page();
-  await screen.findByText('com_ui_discord_dm_disabled');
+  await screen.findByText(
+    'New Discord DM selections are disabled. You can still revoke existing selections.',
+  );
   expect(
-    screen.queryByRole('button', { name: 'com_ui_discord_dm_select_for' }),
+    screen.queryByRole('button', {
+      name: /^Use in Direct Messages: agent agent, Discord user 789/,
+    }),
   ).not.toBeInTheDocument();
-  const trigger = await screen.findByRole('button', { name: 'com_ui_discord_dm_revoke_for' });
+  const trigger = await screen.findByRole('button', {
+    name: /^Revoke DM Selection: agent agent, channel 999$/,
+  });
   await f.user.click(trigger);
   await f.user.click(
-    within(screen.getByRole('alertdialog')).getByRole('button', { name: 'com_ui_cancel' }),
+    within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }),
   );
   expect(dataService.revokeDiscordDmSelection).not.toHaveBeenCalled();
   await waitFor(() => expect(trigger).toHaveFocus());
@@ -217,7 +245,7 @@ test('disabled deployments still allow revision-fenced cleanup of unavailable se
     .mockResolvedValue({ enabled: false, selections: [{ ...selection, state: 'revoked' }] });
   await f.user.click(
     within(screen.getByRole('alertdialog')).getByRole('button', {
-      name: 'com_ui_discord_dm_revoke',
+      name: 'Revoke DM Selection',
     }),
   );
   await waitFor(() =>
@@ -226,9 +254,9 @@ test('disabled deployments still allow revision-fenced cleanup of unavailable se
       revision: 'selection-v1',
     }),
   );
-  await screen.findByText('com_ui_channel_link_revoked');
+  await screen.findByText('Revoked');
   expect(
-    screen.queryByRole('button', { name: 'com_ui_discord_dm_revoke_for' }),
+    screen.queryByRole('button', { name: /^Revoke DM Selection: agent agent, channel 999$/ }),
   ).not.toBeInTheDocument();
 });
 
@@ -240,13 +268,17 @@ test('failed revocation stays open with safe copy and refreshes server metadata'
     .mocked(dataService.revokeDiscordDmSelection)
     .mockRejectedValue(Object.assign(new Error('private provider payload'), { code: 'changed' }));
   const f = page();
-  await f.user.click(await screen.findByRole('button', { name: 'com_ui_discord_dm_revoke_for' }));
+  await f.user.click(
+    await screen.findByRole('button', { name: /^Revoke DM Selection: agent agent, channel 999$/ }),
+  );
   await f.user.click(
     within(screen.getByRole('alertdialog')).getByRole('button', {
-      name: 'com_ui_discord_dm_revoke',
+      name: 'Revoke DM Selection',
     }),
   );
-  await screen.findByText('com_ui_discord_dm_changed');
+  await screen.findByText(
+    'This link or selection is no longer available. Refresh the list and try again.',
+  );
   expect(screen.getByRole('alertdialog')).toBeVisible();
   expect(screen.queryByText('private provider payload')).not.toBeInTheDocument();
   await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalledTimes(2));
@@ -258,9 +290,13 @@ test('a failed cursor page keeps the loaded prefix and retries only that page', 
     return { enabled: true, selections: [selection], next: 'next-page' };
   });
   const f = page();
-  await f.user.click(await screen.findByRole('button', { name: 'com_ui_load_more' }));
-  await screen.findByText('com_ui_discord_error');
-  expect(screen.getByRole('button', { name: 'com_ui_discord_dm_revoke_for' })).toBeVisible();
+  await f.user.click(await screen.findByRole('button', { name: 'Load more' }));
+  await screen.findByText(
+    'The operation could not be confirmed. Refresh the configuration before trying again.',
+  );
+  expect(
+    screen.getByRole('button', { name: /^Revoke DM Selection: agent agent, channel 999$/ }),
+  ).toBeVisible();
   jest.mocked(dataService.listDiscordDmSelections).mockImplementation(async (cursor) =>
     cursor
       ? {
@@ -269,9 +305,13 @@ test('a failed cursor page keeps the loaded prefix and retries only that page', 
         }
       : { enabled: true, selections: [selection], next: 'next-page' },
   );
-  await f.user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+  await f.user.click(screen.getByRole('button', { name: 'Retry' }));
   await waitFor(() =>
-    expect(screen.getAllByRole('button', { name: 'com_ui_discord_dm_revoke_for' })).toHaveLength(2),
+    expect(
+      screen.getAllByRole('button', {
+        name: /^Revoke DM Selection: agent agent, channel (?:999|888)$/,
+      }),
+    ).toHaveLength(2),
   );
   expect(jest.mocked(dataService.listDiscordDmSelections).mock.calls).toEqual([
     [undefined],
@@ -283,7 +323,33 @@ test('a failed cursor page keeps the loaded prefix and retries only that page', 
 test('an initial list failure can be retried without issuing a code', async () => {
   jest.mocked(dataService.listDiscordDmSelections).mockRejectedValueOnce(new Error('temporary'));
   const f = page();
-  await f.user.click(await screen.findByRole('button', { name: 'com_ui_retry' }));
-  await screen.findByText('com_ui_discord_dm_empty');
+  await f.user.click(await screen.findByRole('button', { name: 'Retry' }));
+  await screen.findByText('No Discord DM selections yet.');
   expect(dataService.issueDiscordDmCode).not.toHaveBeenCalled();
+});
+
+test('shows the agent name once it loads and falls back to the id when it cannot be read', async () => {
+  let resolve!: (agent: Agent) => void;
+  jest.mocked(dataService.getAgentById).mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  jest
+    .mocked(dataService.listDiscordDmSelections)
+    .mockResolvedValue({ enabled: true, selections: [{ ...selection, agentId: 'agent_abc123' }] });
+  jest
+    .mocked(dataService.channelIdentityClient.list)
+    .mockResolvedValue([{ ...link, identity: { ...link.identity, agentId: 'agent_abc123' } }]);
+  const first = page();
+  expect((await screen.findAllByText('Channel agent')).length).toBeGreaterThan(0);
+  await waitFor(() => expect(dataService.getAgentById).toHaveBeenCalled());
+  await act(async () => resolve({ name: 'Support agent' } as Agent));
+  expect((await screen.findAllByText('Support agent')).length).toBeGreaterThan(0);
+  first.unmount();
+  jest.mocked(dataService.getAgentById).mockReset().mockRejectedValue({ status: 404 });
+  page();
+  await waitFor(() => expect(screen.getAllByText('agent_abc123').length).toBeGreaterThan(0));
+  expect(screen.queryByText('Support agent')).not.toBeInTheDocument();
 });
