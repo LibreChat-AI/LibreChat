@@ -382,12 +382,36 @@ export interface ScheduleMCPConsentService<
     identity: Identity,
     options?: { signal?: AbortSignal },
   ) => Promise<ScheduleMCPConsentView>;
-  /** The grant for a subject about to be created. Stores nothing. */
+  /**
+   * The grant for a subject about to be created, or for a stored one that an edit is moving
+   * to another agent: either way it is chosen from the offer for the agent alone. Stores
+   * nothing. `revision` is the subject's configuration generation the grant is made for:
+   * zero for a new subject, the one the edit makes for a stored one.
+   */
   grant: (
     identity: Identity,
     input: ScheduleAuthorization,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; revision?: number },
   ) => Promise<MCPGrantEnrollment<Identity>>;
+  /**
+   * The grant an edit of a stored subject carries, chosen from the subject's own offer like
+   * a confirmation and checked the same way. Stores nothing: the caller writes it with the
+   * edit, for the configuration generation (`revision`) that edit makes.
+   */
+  renew: (
+    identity: Identity,
+    input: ConfirmScheduleMCPConsent,
+    revision: number,
+    options?: { signal?: AbortSignal },
+  ) => Promise<{
+    enrollment: MCPGrantEnrollment<Identity>;
+    /**
+     * The stored grant the new one was decided against, `null` where there was none. The
+     * caller's write must be refused unless that is still what is stored, untouched: a
+     * revocation, another confirmation, or a pin or mark a run added since would be lost.
+     */
+    basis: MCPGrantEnrollment<Identity> | null;
+  }>;
   confirm: (
     identity: Identity,
     input: ConfirmScheduleMCPConsent,
@@ -696,7 +720,7 @@ export function createScheduleMCPConsentService<
   async function grant(
     identity: Identity,
     input: ScheduleAuthorization,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; revision?: number } = {},
   ): Promise<MCPGrantEnrollment<Identity>> {
     const current = await draft(identity, options);
     if (!current.offer) throw new ScheduleMCPConsentError('consent_unavailable');
@@ -722,7 +746,7 @@ export function createScheduleMCPConsentService<
     options.signal?.throwIfAborted();
     return build({
       identity,
-      configRevision: 0,
+      configRevision: options.revision ?? 0,
       lifetimeHours: input.lifetimeHours,
       chosen,
       others,
@@ -731,11 +755,17 @@ export function createScheduleMCPConsentService<
     });
   }
 
-  async function confirm(
+  /** The grant a confirmation asks for, checked against the stored subject. Stores nothing. */
+  async function decide(
     identity: Identity,
     input: ConfirmScheduleMCPConsent,
     options: { signal?: AbortSignal } = {},
-  ): Promise<ScheduleMCPConsentView> {
+  ): Promise<{
+    enrollment: MCPGrantEnrollment<Identity>;
+    snapshot: NonNullable<
+      Awaited<ReturnType<MCPConsentStorage<Identity>['readScheduleMCPConsent']>>
+    >;
+  }> {
     if (!(await deps.canUse(identity, options)))
       throw new ScheduleMCPConsentError('consent_forbidden');
     const current = await view(identity, options);
@@ -746,6 +776,11 @@ export function createScheduleMCPConsentService<
       throw new ScheduleMCPConsentError('consent_invalid');
     const snapshot = await deps.storage.readScheduleMCPConsent(identity);
     if (!snapshot) throw new ScheduleMCPConsentError('consent_not_found');
+    // The grant the owner saw is checked on this read too. The digest does not name it, so a
+    // revocation or another confirmation landing since the view would otherwise pass here
+    // and become what the new grant is taken to replace.
+    if ((snapshot.enrollment?.revision ?? null) !== input.expectedRevision)
+      throw new ScheduleMCPConsentError('consent_changed');
     const { others: offered = [], servers = [] } = offers.get(current) ?? {};
     // Recompute the digest with the final observed row so an edit cannot reuse an old offer.
     const digest = offerDigest(
@@ -787,6 +822,15 @@ export function createScheduleMCPConsentService<
       prior: snapshot.enrollment?.consents,
       everything,
     });
+    return { enrollment, snapshot };
+  }
+
+  async function confirm(
+    identity: Identity,
+    input: ConfirmScheduleMCPConsent,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ScheduleMCPConsentView> {
+    const { enrollment, snapshot } = await decide(identity, input, options);
     const committed = await deps.storage.confirmScheduleMCPConsent({
       identity,
       expectedRevision: input.expectedRevision,
@@ -797,6 +841,22 @@ export function createScheduleMCPConsentService<
     });
     if (!committed) throw new ScheduleMCPConsentError('consent_changed');
     return view(identity, options);
+  }
+
+  async function renew(
+    identity: Identity,
+    input: ConfirmScheduleMCPConsent,
+    revision: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{
+    enrollment: MCPGrantEnrollment<Identity>;
+    basis: MCPGrantEnrollment<Identity> | null;
+  }> {
+    const { enrollment, snapshot } = await decide(identity, input, options);
+    return {
+      enrollment: { ...enrollment, scheduleRevision: revision },
+      basis: snapshot.enrollment ?? null,
+    };
   }
 
   async function revoke(identity: Identity, revision: string): Promise<void> {
@@ -1039,5 +1099,14 @@ export function createScheduleMCPConsentService<
       };
     },
   };
-  return { view, draft, grant, confirm, revoke, requiresGrant: requiresGrantFor, authority };
+  return {
+    view,
+    draft,
+    grant,
+    renew,
+    confirm,
+    revoke,
+    requiresGrant: requiresGrantFor,
+    authority,
+  };
 }

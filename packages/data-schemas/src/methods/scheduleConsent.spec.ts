@@ -125,6 +125,53 @@ it('carries consent through activation atomically without extending its absolute
   ).toBe(true);
 });
 
+it('replaces the grant with an edit only while it is the grant the new one was decided against', async () => {
+  await confirm();
+  const methods = createScheduleMethods(mongoose);
+  const basis = (await storage.readScheduleMCPConsent(identity))!.enrollment!;
+  const next = (revision: string, scheduleRevision: number) =>
+    enrollment(revision, { scheduleRevision });
+  const edit = (
+    grant: ScheduledMCPEnrollment,
+    expectedConfigRevision: number,
+    replaces?: ScheduledMCPEnrollment | null,
+  ) =>
+    methods.updateScheduleById(
+      identity.scheduleId,
+      owner,
+      { prompt: 'Edited', mcpConsent: grant },
+      undefined,
+      { expectedConfigRevision, ...(replaces !== undefined && { replacesMCPConsent: replaces }) },
+    );
+  // An edit that writes a grant has to say which one it replaces.
+  await expect(edit(next('grant-2', 1), 0)).rejects.toThrow(
+    'A grant written with an edit must name the grant it replaces',
+  );
+  // A run pins a tool between the decision and the write: the pin is not dropped.
+  await storage.pinScheduleMCPToolDefinition({
+    identity,
+    revision: 'grant-1',
+    consentId: 'consent-1',
+    tool: 'query',
+    digest: 'a'.repeat(64),
+  });
+  expect(await edit(next('grant-2', 1), 0, basis)).toBeNull();
+  const pinned = (await storage.readScheduleMCPConsent(identity))!.enrollment!;
+  expect(pinned.consents[0].definitions).toEqual([{ tool: 'query', digest: 'a'.repeat(64) }]);
+  // Decided against what is stored now, the edit goes through and carries the new grant.
+  const updated = await edit(next('grant-2', 1), 0, pinned);
+  expect(updated?.mcpConsent).toMatchObject({ revision: 'grant-2', scheduleRevision: 1 });
+  // The owner revokes in another tab: an edit decided before that does not bring it back.
+  const stored = (await storage.readScheduleMCPConsent(identity))!.enrollment!;
+  await storage.revokeScheduleMCPConsent(identity, 'grant-2');
+  expect(await edit(next('grant-3', 2), 1, stored)).toBeNull();
+  expect(
+    (await storage.readScheduleMCPConsent(identity))!.enrollment!.consents[0].revokedAtMs,
+  ).not.toBeNull();
+  // Nor does one decided when the schedule had no grant overwrite one made since.
+  expect(await edit(next('grant-3', 2), 1, null)).toBeNull();
+});
+
 it('does not revive stale enrollment through a later enabled-state edit', async () => {
   await confirm();
   const methods = createScheduleMethods(mongoose);

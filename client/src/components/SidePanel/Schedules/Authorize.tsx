@@ -1,31 +1,36 @@
 import { useEffect, useId, useState } from 'react';
 import { Input, Label, Button, Spinner } from '@librechat/client';
-import type { ScheduleAuthorization } from 'librechat-data-provider';
+import type { ScheduleReauthorization } from 'librechat-data-provider';
 import GrantTools, { useGrantChoice } from '~/components/MCP/GrantTools';
 import { useScheduleMCPOffer } from '~/data-provider/Schedules/consent';
 import { useLocalize } from '~/hooks';
 
 /** What the form needs to know: the owner's choice, and whether one is owed before creating. */
 export interface Authorization {
-  value: ScheduleAuthorization | null;
+  value: ScheduleReauthorization | null;
   /** There is something to allow, so the schedule is not created until something is. */
   owed: boolean;
 }
 
 /**
- * What a schedule may use while its owner is away, chosen as it is created. Mounted per
- * agent (`key`), so a choice made for one agent is never carried to the next.
+ * What a schedule may use while its owner is away, chosen as it is created or edited. Mounted
+ * per agent (`key`), so a choice made for one agent is never carried to the next.
+ *
+ * `scheduleId` is a stored schedule that keeps its agent: the choice starts from the grant it
+ * has and names it, so the edit replaces that grant and no other.
  */
 export default function Authorize({
   agentId,
+  scheduleId,
   onChange,
 }: {
   agentId: string;
+  scheduleId?: string;
   onChange: (authorization: Authorization) => void;
 }) {
   const localize = useLocalize();
   const inputId = useId();
-  const query = useScheduleMCPOffer(agentId);
+  const query = useScheduleMCPOffer(agentId, scheduleId);
   const state = useGrantChoice(query.data);
   const offer = query.data?.offer ?? null;
   /**
@@ -47,13 +52,14 @@ export default function Authorize({
   const chosen = valid
     ? JSON.stringify({
         offerDigest: offer.digest,
+        ...(scheduleId && { expectedRevision: query.data?.revision ?? null }),
         lifetimeHours: hours,
         ...state.request,
       })
     : null;
   const owed = offer != null;
   useEffect(() => {
-    onChange({ value: chosen ? (JSON.parse(chosen) as ScheduleAuthorization) : null, owed });
+    onChange({ value: chosen ? (JSON.parse(chosen) as ScheduleReauthorization) : null, owed });
   }, [chosen, owed, onChange]);
 
   if (query.isLoading && query.fetchStatus !== 'idle') return <Spinner />;

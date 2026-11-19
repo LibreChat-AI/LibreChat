@@ -255,8 +255,11 @@ export default function ScheduleDialog({
   const pinnedProjectId = schedulesData?.limits.projectId;
   const minIntervalMinutes = schedulesData?.limits.minIntervalMinutes;
   const requireProject = schedulesData?.limits.requireProject === true;
-  /** Where consent is on, a new schedule is authorized in the same step that creates it. */
-  const authorizes = schedule == null && schedulesData?.limits.mcpConsent === true;
+  /**
+   * Where consent is on, a schedule is authorized in the same step that creates it, and
+   * again in the same step that edits it: an edit ends the grant it had.
+   */
+  const authorizes = schedulesData?.limits.mcpConsent === true;
   const [authorization, setAuthorization] = useState<Authorization>({ value: null, owed: false });
   const {
     items: loadedProjectItems,
@@ -370,10 +373,14 @@ export default function ScheduleDialog({
     onError: (error) => {
       setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
       const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
+      // As on create: the offer the choice was made from is not the one the server holds.
+      const rejected = scheduleAuthorizationRejected(error);
+      if (rejected) refreshOffer();
+      const fallback = status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error';
       showToast({
         message:
           scheduleMCPErrorMessage(error, localize) ??
-          localize(status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error'),
+          localize(rejected ? 'com_ui_schedule_authorize_changed' : fallback),
         status: 'error',
       });
     },
@@ -435,6 +442,7 @@ export default function ScheduleDialog({
         // silently overwritten — the server answers 409 instead.
         payload: {
           ...payload,
+          ...(authorizes && authorization.value && { authorization: authorization.value }),
           ...(openedConfigRevision.current != null
             ? { expectedConfigRevision: openedConfigRevision.current }
             : {}),
@@ -997,6 +1005,9 @@ export default function ScheduleDialog({
               <Authorize
                 key={selectedAgentId}
                 agentId={selectedAgentId}
+                scheduleId={
+                  schedule && selectedAgentId === schedule.agent_id ? schedule.id : undefined
+                }
                 onChange={setAuthorization}
               />
             )}

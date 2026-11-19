@@ -201,6 +201,22 @@ longer fits is refused and nothing is created.
 A schedule created without one, by another client for instance, is marked as needing
 authorization from the start, so none of its tools runs until its owner confirms.
 
+### A schedule authorized again as it is edited
+
+An edit other than pausing or resuming ends the grant a schedule had: the grant was made for
+the schedule as it was. `PATCH /api/schedules/:id` takes the owner's choice as `authorization`
+and makes the grant again in the same write, for the revision that write makes, so the
+schedule never waits for a second step. With the agent unchanged the choice is made from the
+schedule's own offer and names the stored grant (`expectedRevision`, checked like a
+confirmation by `service.renew`, which keeps what the stored grant asks about and has pinned).
+When the edit moves the schedule to another agent, the choice is made from that agent's offer,
+as for a new schedule (`service.grant`). Readiness is checked against the grant the edit
+carries, not the one it replaces. A choice that no longer fits is refused and nothing is
+edited. The write names the stored grant the new one was decided against
+(`replacesMCPConsent`) and matches only while that is still what is stored, untouched: a
+revocation or another confirmation since, or a pin or mark a run added, refuses the edit
+with `consent_changed`, since consent writes do not move the schedule's edit generation. An edit that carries none behaves as before, and `authorization` alone is not an edit.
+
 ### A tool that changes after it was allowed
 
 The owner allows a tool by name, so the grant also remembers what the tool was. The first

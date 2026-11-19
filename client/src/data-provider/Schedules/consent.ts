@@ -15,11 +15,19 @@ export function useScheduleMCPConsent(id: string) {
   );
 }
 
-/** What a schedule of this agent could be allowed, before the schedule exists. */
-export function useScheduleMCPOffer(agentId: string) {
+/**
+ * What a schedule of this agent could be allowed. Before the schedule exists, or when an edit
+ * moves it to another agent, that is the offer for the agent alone. For a stored schedule
+ * that keeps its agent (`scheduleId`) it is the schedule's own offer, which starts from the
+ * grant it has.
+ */
+export function useScheduleMCPOffer(agentId: string, scheduleId?: string) {
   return useQuery<ScheduleMCPConsentView>(
-    [QueryKeys.scheduleMCPOffer, agentId],
-    () => dataService.getScheduleMCPOffer(agentId),
+    scheduleId ? [QueryKeys.scheduleMCPConsent, scheduleId] : [QueryKeys.scheduleMCPOffer, agentId],
+    () =>
+      scheduleId
+        ? dataService.getScheduleMCPConsent(scheduleId)
+        : dataService.getScheduleMCPOffer(agentId),
     { enabled: agentId !== '', retry: false, refetchOnWindowFocus: false },
   );
 }
@@ -32,6 +40,7 @@ export function useScheduleMCPOfferRefresh(): () => void {
   const queryClient = useQueryClient();
   return useCallback(() => {
     void queryClient.invalidateQueries([QueryKeys.scheduleMCPOffer]);
+    void queryClient.invalidateQueries([QueryKeys.scheduleMCPConsent]);
   }, [queryClient]);
 }
 

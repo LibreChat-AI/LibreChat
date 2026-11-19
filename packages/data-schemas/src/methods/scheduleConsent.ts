@@ -124,6 +124,21 @@ function untouchedSince(
   };
 }
 
+/**
+ * Matches a schedule whose stored grant is still `basis`, with no pin or mark added to it
+ * since. A grant decided against `basis` may replace it only then: a revocation or another
+ * confirmation moves the revision, and a run's pin or mark grows a list. `null` is a
+ * schedule with no grant.
+ */
+export function unchangedScheduleGrant(basis: MCPGrantEnrollment<MCPGrantIdentity> | null): Filter {
+  if (basis == null) return { mcpConsent: { $exists: false } };
+  return {
+    'mcpConsent.version': 1,
+    'mcpConsent.revision': basis.revision,
+    ...untouchedSince('mcpConsent', basis),
+  };
+}
+
 /** Matches a consent in which none of the tools is marked or pinned to a different digest. */
 function unchangedDefinitions(definitions: Readonly<Record<string, string>> | undefined): Filter {
   const live = Object.entries(definitions ?? {});

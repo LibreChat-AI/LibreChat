@@ -1047,6 +1047,86 @@ describe('a grant of the whole agent', () => {
   });
 });
 
+describe('a grant made again with an edit of the schedule', () => {
+  it('is decided like a confirmation, for the revision the edit makes, and stores nothing', async () => {
+    const s = setup();
+    await s.enroll({ warehouse: ['query'] }, { warehouse: ['query'] });
+    await s.service.authority.authorize(
+      { ...request('invoke'), definitions: { query: 'a'.repeat(64) } },
+      {},
+    );
+    const before = structuredClone(s.snapshot.enrollment!);
+    const view = await s.service.view(identity);
+    const choice = {
+      offerDigest: view.offer!.digest,
+      expectedRevision: view.revision,
+      lifetimeHours: 2,
+      allow: { warehouse: ['query'] },
+    };
+    jest.mocked(s.storage.confirmScheduleMCPConsent).mockClear();
+    const { enrollment: renewed, basis } = await s.service.renew(identity, choice, 1);
+    // What it was decided against goes with it, so the write can refuse anything newer.
+    expect(basis).toEqual(before);
+    expect(renewed).toMatchObject({
+      scheduleRevision: 1,
+      absoluteExpiresAtMs: 1000 + 2 * 3_600_000,
+      // What the stored grant asks about and has pinned comes with it.
+      consents: [{ askTools: ['query'], definitions: [{ tool: 'query' }] }],
+    });
+    expect(renewed.revision).not.toBe(before.revision);
+    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.snapshot.enrollment).toEqual(before);
+    // The same checks: another grant than the one the owner saw, or an offer that moved.
+    await expect(
+      s.service.renew(identity, { ...choice, expectedRevision: 'other' }, 1),
+    ).rejects.toMatchObject({ code: 'consent_changed' });
+    await expect(
+      s.service.renew(identity, { ...choice, allow: { warehouse: ['purge'] } }, 1),
+    ).rejects.toMatchObject({ code: 'consent_invalid' });
+    s.deny();
+    await expect(s.service.renew(identity, choice, 1)).rejects.toMatchObject({
+      code: 'consent_forbidden',
+    });
+  });
+
+  it('is refused when the grant is revoked while it is being decided', async () => {
+    const s = setup();
+    await s.enroll();
+    const view = await s.service.view(identity);
+    const choice = {
+      offerDigest: view.offer!.digest,
+      expectedRevision: view.revision,
+      lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
+    };
+    // The decision reads the grant twice. The owner revokes it, in another tab, in between.
+    const read = jest.mocked(s.storage.readScheduleMCPConsent);
+    const stored = read.getMockImplementation()!;
+    let reads = 0;
+    read.mockImplementation(async (...args) => {
+      if (++reads === 2) await s.service.revoke(identity, view.revision!);
+      return stored(...args);
+    });
+    await expect(s.service.renew(identity, choice, 1)).rejects.toMatchObject({
+      code: 'consent_changed',
+    });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    // And it stays revoked: nothing was returned for the edit to write over it.
+    expect(s.snapshot.enrollment!.revokedAtMs).not.toBeNull();
+  });
+
+  it('is made for the revision of the edit when the edit moves the schedule to another agent', async () => {
+    const s = setup();
+    const offer = await s.service.draft(identity);
+    const grant = await s.service.grant(
+      identity,
+      { offerDigest: offer.offer!.digest, lifetimeHours: 1, allow: {}, everything: true },
+      { revision: 5 },
+    );
+    expect(grant).toMatchObject({ scheduleRevision: 5, everything: true });
+  });
+});
+
 describe('definition pins', () => {
   const first = 'a'.repeat(64);
   const second = 'b'.repeat(64);
