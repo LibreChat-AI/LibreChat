@@ -33,6 +33,7 @@ import { ArchiveAllChats } from '../SettingsTabs/Data/ArchiveAllChats';
 import { toggleControl, ThemeSetting, LangSetting } from './controls';
 import BackupCodesItem from '../SettingsTabs/Account/BackupCodesItem';
 import UiScaleSelector from '../SettingsTabs/General/UiScaleSelector';
+import { sessionRailAutoOpen } from '~/components/Chat/Session/state';
 import FontSizeSelector from '../SettingsTabs/Chat/FontSizeSelector';
 import ChatTitleInTab from '../SettingsTabs/General/ChatTitleInTab';
 import AdvancedPrompts from '../SettingsTabs/Chat/AdvancedPrompts';
@@ -182,6 +183,20 @@ export const registry: SettingEntry[] = [
       stateAtom: store.showScrollButton,
       localizationKey: 'com_nav_scroll_button',
       switchId: 'showScrollButton',
+    }),
+  },
+  {
+    id: 'sessionRailAutoOpen',
+    tab: GENERAL,
+    section: 'layout',
+    labelKey: 'com_nav_session_rail_auto_open',
+    keywords: ['session', 'rail', 'background', 'tasks', 'subagents', 'sidebar', 'panel'],
+    show: (ctx) => ctx.sessionRailAutoOpenAllowed,
+    Component: toggleControl({
+      stateAtom: sessionRailAutoOpen,
+      localizationKey: 'com_nav_session_rail_auto_open',
+      switchId: 'sessionRailAutoOpen',
+      hoverCardText: 'com_nav_info_session_rail_auto_open',
     }),
   },
   {

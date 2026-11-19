@@ -3,7 +3,16 @@ import { ListTodo } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useAtom, useAtomValue } from 'jotai';
 import { TooltipAnchor } from '@librechat/client';
-import { SESSION_RAIL_ID, SESSION_TOGGLE_ID, sessionRailOpen, sessionRailSlot } from './state';
+import { Constants } from 'librechat-data-provider';
+import {
+  SESSION_RAIL_ID,
+  sessionRailOpen,
+  sessionRailSlot,
+  SESSION_TOGGLE_ID,
+  sessionRailAutoOpen,
+  sessionRailDismissed,
+  SESSION_RAIL_DISMISSED_LIMIT,
+} from './state';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useBackgroundTasks from '../BackgroundTasks/useTasks';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
@@ -40,11 +49,17 @@ function Session({
   const [sheetOpen, setSheetOpen] = useState(false);
   /**
    * Shown for this conversation because work started in it. That is not the reader's standing
-   * choice, so it is not remembered and it ends with the conversation. Closing the rail is an
-   * answer: it is not shown again for the same conversation, whatever starts later.
+   * choice, so it is not remembered as one and it ends with the conversation. Closing the rail
+   * is an answer: it is not shown again for the same conversation, whatever starts later and
+   * however often the reader comes back to it. An unsaved chat has no identity to remember
+   * that under, so its answer lasts as long as this control does.
    */
   const [summoned, setSummoned] = useState(false);
-  const dismissed = useRef(false);
+  const wanted = useAtomValue(sessionRailAutoOpen);
+  const [dismissedIds, setDismissedIds] = useAtom(sessionRailDismissed);
+  const dismissedUnsaved = useRef(false);
+  const saved = conversationId !== '' && conversationId !== Constants.NEW_CONVO;
+  const dismissed = saved && dismissedIds.includes(conversationId);
   const open = sheet ? sheetOpen : docked || summoned;
   const [now, setNow] = useState(() => Date.now());
   const view = useBackgroundTasks({ conversationId, isSubmitting, now, details: open });
@@ -54,10 +69,10 @@ function Session({
   /** Never as a sheet: that would cover the conversation the reader is in the middle of. */
   const working = activeCount > 0;
   useEffect(() => {
-    if (autoOpen && working && !sheet && !dismissed.current) {
+    if (autoOpen && wanted && working && !sheet && !dismissed && !dismissedUnsaved.current) {
       setSummoned(true);
     }
-  }, [autoOpen, working, sheet]);
+  }, [autoOpen, wanted, working, sheet, dismissed]);
 
   const setOpen = useCallback(
     (next: boolean) => {
@@ -65,13 +80,22 @@ function Session({
         setSheetOpen(next);
         return;
       }
-      if (!next) {
-        dismissed.current = true;
-        setSummoned(false);
-      }
+      setSummoned(false);
       setDocked(next);
+      if (!saved) {
+        dismissedUnsaved.current = !next;
+        return;
+      }
+      /** Closing is remembered for this conversation; opening it by hand takes that back. */
+      setDismissedIds((ids) => {
+        const others = ids.filter((id) => id !== conversationId);
+        if (next) {
+          return others.length === ids.length ? ids : others;
+        }
+        return [...others, conversationId].slice(-SESSION_RAIL_DISMISSED_LIMIT);
+      });
     },
-    [sheet, setDocked],
+    [conversationId, saved, sheet, setDismissedIds, setDocked],
   );
   const close = useCallback(
     (restoreFocus = true) => {

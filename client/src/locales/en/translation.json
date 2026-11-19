@@ -1207,6 +1207,8 @@
   "com_nav_setting_speech": "Speech",
   "com_nav_settings": "Settings",
   "com_nav_shared_links": "Shared chats",
+  "com_nav_session_rail_auto_open": "Open the session rail when work starts",
+  "com_nav_info_session_rail_auto_open": "Shows the session rail beside the chat when a subagent or background task starts running. If you close it, it stays closed for that chat.",
   "com_nav_show_lia": "Show Lia on the Welcome Screen",
   "com_nav_show_thinking": "Open Thinking Dropdowns by Default",
   "com_nav_slash_command": "/-Command",
