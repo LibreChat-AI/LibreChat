@@ -154,6 +154,59 @@ test('a message queued behind a side chat’s reply is sent when the reply ends 
   await expect(mainTurns).toHaveCount(2);
 });
 
+test('a message written before a side chat’s reply sends its first frame is queued behind it @scenario:side-chat-queues-before-the-first-frame', async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  const { sideChat, side, turns, mainTurns, queued, field, send } = await openBeside(page, 'early');
+  const conversationId = (await sideChat.getAttribute('data-side-chat')) ?? '';
+  const label = uniqueLabel('early');
+  const followUp = `Queued before the first frame ${label}`;
+  /** The server takes the turn at once; its stream is slow to open, as one behind a proxy can be. */
+  let release: (() => void) | undefined;
+  let held = false;
+  await page.route(
+    (url) => url.pathname === `/api/agents/chat/stream/${conversationId}`,
+    async (route) => {
+      if (!held) {
+        held = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      await route.continue();
+    },
+  );
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect.poll(() => held).toBe(true);
+
+  /**
+   * The run is the conversation's from the moment the server has it, so what the reader writes
+   * meanwhile is offered the run's own actions: here Enter steers, and Ctrl/Cmd+Enter queues.
+   */
+  await field.click();
+  await page.keyboard.type(followUp);
+  await expect(side.getByTestId('during-run-send-button')).toHaveAttribute(
+    'data-during-run-action',
+    'steer',
+    { timeout: 5_000 },
+  );
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(queued).toHaveCount(1);
+  await expect(queued).toContainText(followUp);
+  await expect(field).toHaveValue('');
+  await expect(turns).toHaveCount(4);
+
+  /** Once the stream opens the reply is read to its end, and the queued message follows it. */
+  release?.();
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 90_000 });
+  await expect(turns).toHaveCount(6, { timeout: 60_000 });
+  await expect(turns.nth(4)).toContainText(followUp);
+  await expect(queued).toHaveCount(0);
+  await expect(mainTurns).toHaveCount(2);
+});
+
 test('a steer sent from a side chat joins its reply where the run takes it @scenario:side-chat-steer-joins-the-reply', async ({
   page,
 }) => {

@@ -312,6 +312,11 @@ async function startTurn(
     /** A start the server folded into a generation already running is replayed from its start. */
     resume: isResumedStartResponse(data),
   };
+  request.onGeneration?.({
+    streamId: target.streamId,
+    generationCreatedAt: target.generationCreatedAt,
+    generationProtocolVersion: target.generationProtocolVersion,
+  });
   /**
    * The server has taken the turn, so nothing its stream does on opening is a refusal of it:
    * reported as one, a running turn would be shown as failed, and put back in a queue it was
