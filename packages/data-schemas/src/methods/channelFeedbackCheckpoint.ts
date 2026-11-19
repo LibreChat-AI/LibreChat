@@ -4,7 +4,7 @@ import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models
 import {
   CHANNEL_FEEDBACK_RECEIPT_RETENTION_MS,
   CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
-  channelFeedbackReactionIdentity,
+  channelFeedbackSlot,
   isLaterChannelFeedbackEvent,
 } from './channelFeedbackProtocol';
 import { sameFeedbackSource, ChannelFeedbackAuthorityError } from './channelFeedbackScope';
@@ -16,8 +16,6 @@ export interface FeedbackCheckpoint {
   ids: Set<string>;
   slots: Map<string, ChannelFeedbackVote>;
 }
-const slotKey = (message: string, reaction: string) =>
-  JSON.stringify([message, channelFeedbackReactionIdentity(reaction)]);
 
 /** A transaction-local snapshot, never retained by the shared storage instance. */
 export function feedbackCheckpoint(record: ChannelFeedbackLedger): FeedbackCheckpoint {
@@ -28,9 +26,7 @@ export function feedbackCheckpoint(record: ChannelFeedbackLedger): FeedbackCheck
     revision: record.revision,
     mapping: { ...record.mapping },
     ids: new Set(record.votes.map((vote) => vote.eventId)),
-    slots: new Map(
-      record.votes.map((vote) => [slotKey(vote.externalMessageKey, vote.reaction), { ...vote }]),
-    ),
+    slots: new Map(record.votes.map((vote) => [channelFeedbackSlot(vote), { ...vote }])),
   };
 }
 
@@ -109,9 +105,7 @@ export async function acknowledgeFeedbackReceipt(
     digest: record.digest,
   };
   const model = mongoose.model<ChannelFeedbackEventRecord>('ChannelFeedbackEvent');
-  const current = checkpoint.slots.get(
-    slotKey(record.event.externalMessageKey, record.event.reaction),
-  );
+  const current = checkpoint.slots.get(channelFeedbackSlot(record.event));
   if (
     !current ||
     (current.eventId !== record.eventId && !isLaterChannelFeedbackEvent(current, record.event))

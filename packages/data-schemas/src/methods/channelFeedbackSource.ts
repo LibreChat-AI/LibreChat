@@ -1,20 +1,76 @@
-import type { ChannelFeedbackActor, ChannelReplyMapping } from 'librechat-data-provider';
+import type {
+  ChannelFeedbackActor,
+  ChannelReplyMapping,
+  SlackChannelReplyMapping,
+  DiscordChannelReplyMapping,
+} from 'librechat-data-provider';
+import type { ClientSession, FilterQuery } from 'mongoose';
+import type { ChannelRunRecord } from '~/models/channelRun';
+import { channelFeedbackProviderFilter } from './channelFeedbackProtocol';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { assertChannelTenant } from './channelScope';
 
-export type ChannelFeedbackReplySource = Omit<
-  ChannelReplyMapping,
+type ReplySource<T extends ChannelReplyMapping> = Omit<
+  T,
   'traceId' | 'centralTraceExportEnabled'
 > & { langfuseRunId?: string; centralTraceExportEnabled?: boolean };
+export type ChannelFeedbackReplySource =
+  | ReplySource<SlackChannelReplyMapping>
+  | ReplySource<DiscordChannelReplyMapping>;
+
+/** Match a confirmed receipt to its immutable required answer part, excluding progress and diagnostics. */
+export function discordFeedbackDeliveryFilter(
+  externalMessageKey: string,
+): FilterQuery<ChannelRunRecord> {
+  const receipts = {
+    $map: {
+      input: {
+        $filter: {
+          input: { $ifNull: ['$receipts', []] },
+          as: 'receipt',
+          cond: {
+            $and: [
+              { $eq: ['$$receipt.outcome', 'confirmed'] },
+              { $eq: ['$$receipt.externalMessageKey', externalMessageKey] },
+            ],
+          },
+        },
+      },
+      as: 'receipt',
+      in: '$$receipt.operationId',
+    },
+  };
+  const parts = {
+    $map: {
+      input: {
+        $filter: {
+          input: { $ifNull: ['$plan.parts', []] },
+          as: 'part',
+          cond: {
+            $and: [
+              { $eq: ['$$part.kind', 'message'] },
+              { $eq: ['$$part.required', true] },
+              { $eq: [{ $ifNull: ['$$part.traceUrl', null] }, null] },
+            ],
+          },
+        },
+      },
+      as: 'part',
+      in: '$$part.operationId',
+    },
+  };
+  return { $expr: { $gt: [{ $size: { $setIntersection: [receipts, parts] } }, 0] } };
+}
 
 /** Dedicated metadata projection for feedback on a delivered reply; never exposes history or credentials. */
 export async function readChannelFeedbackReplySource(
   mongoose: typeof import('mongoose'),
   actor: ChannelFeedbackActor,
   externalMessageKey: string,
+  session?: ClientSession,
 ): Promise<ChannelFeedbackReplySource | null> {
   assertChannelTenant(actor.tenantId);
-  const rows = await mongoose.model('ChannelRun').aggregate<ChannelFeedbackReplySource>([
+  const query = mongoose.model('ChannelRun').aggregate<ChannelFeedbackReplySource>([
     {
       $match: {
         tenantId: actor.tenantId,
@@ -22,10 +78,21 @@ export async function readChannelFeedbackReplySource(
         agentId: actor.agentId,
         state: 'delivered',
         'principal.channelRevision': actor.channelRevision,
-        'admission.actor.teamId': actor.teamId,
+        ...channelFeedbackProviderFilter(actor, 'admission.actor.'),
+        ...(actor.provider === 'discord'
+          ? {
+              'principal.linkId': { $type: 'string', $ne: '' },
+              'principal.linkRevision': { $type: 'string', $ne: '' },
+            }
+          : {}),
         'execution.protocol': 'responses',
         'snapshot.responseId': { $type: 'string', $ne: '' },
-        $expr: { $eq: ['$execution.responseId', '$snapshot.responseId'] },
+        $and: [
+          { $expr: { $eq: ['$execution.responseId', '$snapshot.responseId'] } },
+          ...(actor.provider === 'discord'
+            ? [discordFeedbackDeliveryFilter(externalMessageKey)]
+            : []),
+        ],
         receipts: { $elemMatch: { outcome: 'confirmed', externalMessageKey } },
       },
     },
@@ -78,7 +145,17 @@ export async function readChannelFeedbackReplySource(
         tenantId: 1,
         channelId: 1,
         channelRevision: '$principal.channelRevision',
-        teamId: '$admission.actor.teamId',
+        ...(actor.provider === 'discord'
+          ? {
+              provider: { $literal: 'discord' },
+              applicationId: '$admission.actor.applicationId',
+              guildId: '$admission.actor.guildId',
+              externalChannelId: '$admission.externalChannelId',
+              externalUserId: '$admission.actor.externalUserId',
+              linkId: '$principal.linkId',
+              linkRevision: '$principal.linkRevision',
+            }
+          : { teamId: '$admission.actor.teamId' }),
         agentId: 1,
         externalMessageKey: { $literal: externalMessageKey },
         runId: 1,
@@ -94,6 +171,8 @@ export async function readChannelFeedbackReplySource(
       },
     },
   ]);
+  if (session) query.session(session);
+  const rows = await query;
   const source = rows.length === 1 ? rows[0] : null;
   return source?.messageId === source?.responseId && source?.messageId ? source : null;
 }
