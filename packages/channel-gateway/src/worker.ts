@@ -520,12 +520,15 @@ export class ChannelWorker {
       await delay(lastWrite + 1000 - Date.now(), undefined, { signal });
     check(run);
     const revision = progress.revision;
-    run = await this.client.mutate(
-      fence,
-      'progress/begin',
-      { ...(await this.provider.effectContext?.(run, bundle, signal)), revision },
-      signal,
-    );
+    let context: Awaited<ReturnType<NonNullable<WorkerProvider['effectContext']>>> | undefined;
+    try {
+      context = await this.provider.effectContext?.(run, bundle, signal);
+    } catch (error) {
+      if (run.cancellationRequested && this.provider.classifyError(error).outcome === 'permanent')
+        return run;
+      throw error;
+    }
+    run = await this.client.mutate(fence, 'progress/begin', { ...context, revision }, signal);
     progress = run.progress;
     if (
       !progress ||
