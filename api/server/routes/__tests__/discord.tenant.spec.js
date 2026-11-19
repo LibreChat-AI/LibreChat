@@ -29,6 +29,12 @@ jest.mock(
 
 jest.mock('~/server/services/DiscordChannels', () => ({
   messages: { submit: (_req, res) => res.sendStatus(401) },
+  dm: {
+    select: (_req, res) => res.sendStatus(401),
+    list: (_req, res) => res.sendStatus(204),
+    issue: (_req, res) => res.sendStatus(204),
+    revoke: (_req, res) => res.sendStatus(204),
+  },
   discovery: Object.fromEntries(
     ['bootstrap', 'applications', 'channels'].map((name) => [
       name,
@@ -57,7 +63,7 @@ jest.mock('~/server/services/DiscordChannels', () => ({
     resolve: (_req, res) => res.sendStatus(401),
   },
   inbox: Object.fromEntries(
-    ['submit', 'claim', 'finish', 'defer'].map((name) => [
+    ['submit', 'claim', 'resolve', 'finish', 'defer'].map((name) => [
       name,
       (_req, res) => res.sendStatus(401),
     ]),
