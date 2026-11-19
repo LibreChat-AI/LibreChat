@@ -513,7 +513,7 @@ it('reads the tool and the server out of a key against the servers in use, not b
   expect(splitToolKey('send_action_mail.example', ['notes'])).toBeUndefined();
 });
 
-it('offers a selection of a whole server as its own item, apart from ticking each tool', async () => {
+it('offers a selection of a whole server as its own item, which ticks and locks each named tool', async () => {
   const whole: ScheduleMCPConsentView = {
     ...view,
     approval: true,
@@ -530,29 +530,36 @@ it('offers a selection of a whole server as its own item, apart from ticking eac
   const every = await screen.findByRole('checkbox', {
     name: 'com_ui_schedule_consent_server_every',
   });
+  const all = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_allow_server' });
+  const query = screen.getByRole('checkbox', { name: 'query' });
   expect(every).not.toBeChecked();
   expect(screen.queryByRole('checkbox', { name: 'sys__all__sys' })).not.toBeInTheDocument();
   // Ticking every named tool is not allowing whatever the server gains later.
-  await userEvent.click(
-    screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_allow_server' }),
-  );
-  expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+  await userEvent.click(all);
+  expect(query).toBeChecked();
   expect(every).not.toBeChecked();
+  await userEvent.click(all);
+  expect(query).not.toBeChecked();
+  // The whole server is every tool on it: the named ones are ticked with it, and stay so.
   await userEvent.click(every);
-  // It names no tool, so there is nothing to be asked about for it.
+  expect(query).toBeChecked();
+  expect(query).toBeDisabled();
+  expect(all).toBeChecked();
+  expect(all).toBeDisabled();
+  // It names no tool, so there is nothing to be asked about for it: only `query` has a box.
   expect(
     screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' }),
   ).toHaveLength(1);
-  // Unticking the named tools leaves it as the owner set it.
-  await userEvent.click(
-    screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_allow_server' }),
-  );
-  expect(every).toBeChecked();
+  // Unticked, the named tools are the owner's to choose again, starting from ticked.
+  await userEvent.click(every);
+  expect(query).toBeChecked();
+  expect(query).toBeEnabled();
+  await userEvent.click(every);
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' }));
   await waitFor(() =>
     expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
       'schedule',
-      expect.objectContaining({ allow: { warehouse: ['sys__all__sys'] } }),
+      expect.objectContaining({ allow: { warehouse: ['query', 'sys__all__sys'] } }),
     ),
   );
 });
@@ -685,32 +692,41 @@ describe('the whole-server item beside named tools', () => {
     );
   });
 
-  it('keeps a question in view when its tool is unticked and the whole server still covers it', async () => {
-    const data = stored(
-      {
-        allowed: { warehouse: ['query', 'sys__all__sys'] },
-        asking: { warehouse: ['query'] },
-      },
-      ['query', 'sys__all__sys'],
-    );
+  it('allows a tool another agent names along with the whole server, not only for the agent that holds it', async () => {
+    // The root selects the whole server and the child names `query`. The grant on file holds
+    // the whole server alone, so the child is refused `query` while the root may call it.
+    const data: ScheduleMCPConsentView = {
+      ...stored({ allowed: { warehouse: ['sys__all__sys'] }, asking: { warehouse: ['query'] } }, [
+        'sys__all__sys',
+      ]),
+      targets: [
+        {
+          ...view.targets[0],
+          permittedTools: [
+            { agentId: 'root', tools: ['sys__all__sys'] },
+            { agentId: 'child', tools: ['query'] },
+          ],
+        },
+      ],
+    };
     jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(data);
     jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(data);
     display();
     expect(await every()).toBeChecked();
-    // Ticked, `query` shows its own ask box. Unticked, the root still reaches it through the
-    // whole server and is still asked: the question moves under that item, it is not hidden.
-    const asks = () =>
-      screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' });
-    expect(asks()).toHaveLength(1);
-    await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
-    expect(asks()).toHaveLength(1);
-    expect(asks()[0]).toBeChecked();
+    // One list for the server: with the whole of it ticked, no tool on it is shown left out.
+    const query = screen.getByRole('checkbox', { name: 'query' });
+    expect(query).toBeChecked();
+    expect(query).toBeDisabled();
+    // Its question shows once, on its own row.
+    const asks = screen.getAllByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' });
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toBeChecked();
     await userEvent.click(confirm());
     await waitFor(() =>
       expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
         'schedule',
         expect.objectContaining({
-          allow: { warehouse: ['sys__all__sys'] },
+          allow: { warehouse: ['query', 'sys__all__sys'] },
           ask: { warehouse: ['query'] },
         }),
       ),

@@ -64,6 +64,16 @@ function unmarked(tool: string, marked: readonly string[], seen: readonly string
 }
 
 /**
+ * The whole server ticked is every tool on it ticked. One agent may select the server as a
+ * whole while another names a tool there, and the owner sees one list for the server: a named
+ * tool left out beside a ticked whole server would be allowed for the first agent and refused
+ * for the second, with nothing on screen to tell them apart.
+ */
+function spread(offered: readonly string[], ticked: string[]): string[] {
+  return ticked.includes(Constants.mcp_all) ? [...offered] : ticked;
+}
+
+/**
  * The owner's starting point: what the stored grant already allows and is still on offer.
  * A tool whose definition changed starts unticked, so allowing the new one is a decision.
  *
@@ -79,10 +89,13 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
       const changed = data.changed[target.resource.serverName] ?? [];
       return [
         target.resource.serverName,
-        offered.filter(
-          (tool) =>
-            (allowed.includes(tool) || allowed.includes(Constants.mcp_all)) &&
-            unmarked(tool, changed),
+        spread(
+          offered,
+          offered.filter(
+            (tool) =>
+              (allowed.includes(tool) || allowed.includes(Constants.mcp_all)) &&
+              unmarked(tool, changed),
+          ),
         ),
       ];
     }),
@@ -120,8 +133,11 @@ function currentChoice(
       const seen = edited.revision === data.revision ? (edited.changed[serverName] ?? []) : [];
       return [
         serverName,
-        (edited.choice[serverName] ?? initial[serverName]).filter(
-          (tool) => offered.includes(tool) && unmarked(tool, marked, seen),
+        spread(
+          offered,
+          (edited.choice[serverName] ?? initial[serverName]).filter(
+            (tool) => offered.includes(tool) && unmarked(tool, marked, seen),
+          ),
         ),
       ];
     }),
@@ -561,37 +577,82 @@ function ToolChoice({
   const groupId = useId();
   /**
    * A selection of the whole server is one item of its own, listed first: every tool there,
-   * including ones the server gains later. It is not what ticking each named tool means, so
-   * the shared box below leaves it as the owner set it.
+   * including ones the server gains later. While it is ticked each named tool is ticked with
+   * it and cannot be unticked on its own; unticked, the named tools stay as they are.
    */
   const every: string = Constants.mcp_all;
   const named = offered.filter((tool) => tool !== every);
-  const items = [...offered.filter((tool) => tool === every), ...named];
-  const kept = chosen.filter((tool) => tool === every);
-  /** The whole-server item covers every changed tool there: they are named beside it. */
-  const warns = (tool: string): boolean =>
-    tool === every ? changed.length > 0 : changed.includes(tool);
+  const whole = offered.includes(every);
+  const covered = chosen.includes(every);
   /**
-   * Questions the grant holds about tools whose own ask box is not showing: a tool with no row
-   * (reached only through the whole server), or one whose row is unticked. While the whole
-   * server is ticked they are still allowed and still asked about, so each gets a row under
-   * that item, where the owner can keep asking or stop.
+   * Questions the grant holds about tools that have no row here: reached only through the
+   * whole server. Each gets a row under that item while it is ticked, so the owner can keep
+   * asking or stop.
    */
-  const retained = chosen.includes(every)
-    ? asking.filter((tool) => tool !== every && !(named.includes(tool) && chosen.includes(tool)))
-    : [];
+  const retained = covered ? asking.filter((tool) => tool !== every && !named.includes(tool)) : [];
   /** Checked only when every tool is: the shared box has no partly-selected appearance. */
   const all = named.length > 0 && named.every((tool) => chosen.includes(tool));
+  const everyId = `${groupId}-every`;
   return (
     <fieldset className="mt-2 space-y-1" disabled={disabled}>
+      {whole && (
+        <div>
+          <div className="flex items-start gap-2">
+            <Checkbox
+              id={everyId}
+              checked={covered}
+              disabled={disabled}
+              className="mt-0.5"
+              aria-labelledby={`${everyId}-label`}
+              aria-describedby={changed.length > 0 ? `${everyId}-changed` : undefined}
+              onCheckedChange={(checked) =>
+                onChange(
+                  checked === true ? [...chosen, every] : chosen.filter((name) => name !== every),
+                )
+              }
+            />
+            <Label id={`${everyId}-label`} htmlFor={everyId} className="text-xs wrap-anywhere">
+              {localize('com_ui_schedule_consent_server_every', { server: serverName })}
+            </Label>
+          </div>
+          {changed.length > 0 && (
+            <p id={`${everyId}-changed`} className="text-status-warning pl-6 text-xs wrap-anywhere">
+              {localize('com_ui_schedule_consent_server_changed', { tools: changed.join(', ') })}
+            </p>
+          )}
+          {retained.length > 0 && (
+            <ul className="space-y-1 pl-6">
+              {retained.map((asked) => (
+                <li key={asked} className="flex items-start gap-2">
+                  <Checkbox
+                    id={`${groupId}-${asked}-retained`}
+                    checked
+                    disabled={disabled}
+                    className="mt-0.5"
+                    aria-label={localize('com_ui_schedule_consent_ask_tool', { tool: asked })}
+                    aria-describedby={askNoteId}
+                    onCheckedChange={(checked) => {
+                      if (checked !== true) onAskingChange(asking.filter((name) => name !== asked));
+                    }}
+                  />
+                  <Label htmlFor={`${groupId}-${asked}-retained`} className="text-xs wrap-anywhere">
+                    {localize('com_ui_schedule_consent_ask_tool', { tool: asked })}
+                  </Label>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {named.length > 0 && (
         <div className="flex items-center gap-2">
           <Checkbox
             id={`${groupId}-all`}
             checked={all}
-            disabled={disabled}
+            disabled={disabled || covered}
             aria-label={localize('com_ui_schedule_consent_allow_server', { server: serverName })}
-            onCheckedChange={(checked) => onChange(checked === true ? [...kept, ...named] : kept)}
+            aria-describedby={covered ? `${everyId}-label` : undefined}
+            onCheckedChange={(checked) => onChange(checked === true ? named : [])}
           />
           <Label htmlFor={`${groupId}-all`} className="text-xs">
             {localize('com_ui_schedule_consent_allow_server', { server: serverName })}
@@ -599,87 +660,70 @@ function ToolChoice({
         </div>
       )}
       <ul className="space-y-1 pl-6">
-        {items.map((tool) => (
-          <li key={tool}>
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id={`${groupId}-${tool}`}
-                checked={chosen.includes(tool)}
-                disabled={disabled}
-                aria-labelledby={`${groupId}-${tool}-label`}
-                aria-describedby={warns(tool) ? `${groupId}-${tool}-changed` : undefined}
-                onCheckedChange={(checked) =>
-                  onChange(
-                    checked === true
-                      ? offered.filter((name) => name === tool || chosen.includes(name))
-                      : chosen.filter((name) => name !== tool),
-                  )
-                }
-              />
-              <Label
-                id={`${groupId}-${tool}-label`}
-                htmlFor={`${groupId}-${tool}`}
-                className="text-xs break-all"
-              >
-                {tool === every
-                  ? localize('com_ui_schedule_consent_server_every', { server: serverName })
-                  : tool}
-              </Label>
-              {tool !== every && askable.includes(tool) && chosen.includes(tool) && (
-                <span className="ml-auto flex shrink-0 items-center gap-2">
-                  <Checkbox
-                    id={`${groupId}-${tool}-ask`}
-                    checked={asking.includes(tool)}
-                    disabled={disabled}
-                    aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
-                    aria-describedby={askNoteId}
-                    onCheckedChange={(checked) =>
-                      onAskingChange(
-                        checked === true
-                          ? [...asking, tool]
-                          : asking.filter((name) => name !== tool),
-                      )
-                    }
-                  />
-                  <Label htmlFor={`${groupId}-${tool}-ask`} variant="secondary" className="text-xs">
-                    {localize('com_ui_schedule_consent_ask_first')}
-                  </Label>
-                </span>
-              )}
-            </div>
-            {warns(tool) && (
-              <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
-                {tool === every
-                  ? localize('com_ui_schedule_consent_server_changed', {
-                      tools: changed.join(', '),
-                    })
-                  : localize('com_ui_schedule_consent_tool_changed')}
-              </p>
-            )}
-            {tool === every && retained.length > 0 && (
-              <ul className="space-y-1 pl-6">
-                {retained.map((asked) => (
-                  <li key={asked} className="flex items-center gap-2">
+        {named.map((tool) => {
+          const warned = changed.includes(tool);
+          const described = [
+            covered ? `${everyId}-label` : undefined,
+            warned ? `${groupId}-${tool}-changed` : undefined,
+          ].filter(Boolean);
+          return (
+            <li key={tool}>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`${groupId}-${tool}`}
+                  checked={chosen.includes(tool)}
+                  disabled={disabled || covered}
+                  aria-labelledby={`${groupId}-${tool}-label`}
+                  aria-describedby={described.length > 0 ? described.join(' ') : undefined}
+                  onCheckedChange={(checked) =>
+                    onChange(
+                      checked === true
+                        ? offered.filter((name) => name === tool || chosen.includes(name))
+                        : chosen.filter((name) => name !== tool),
+                    )
+                  }
+                />
+                <Label
+                  id={`${groupId}-${tool}-label`}
+                  htmlFor={`${groupId}-${tool}`}
+                  className="text-xs break-all"
+                >
+                  {tool}
+                </Label>
+                {askable.includes(tool) && chosen.includes(tool) && (
+                  <span className="ml-auto flex shrink-0 items-center gap-2">
                     <Checkbox
-                      id={`${groupId}-${asked}-retained`}
-                      checked
+                      id={`${groupId}-${tool}-ask`}
+                      checked={asking.includes(tool)}
                       disabled={disabled}
-                      aria-label={localize('com_ui_schedule_consent_ask_tool', { tool: asked })}
+                      aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
                       aria-describedby={askNoteId}
-                      onCheckedChange={(checked) => {
-                        if (checked !== true)
-                          onAskingChange(asking.filter((name) => name !== asked));
-                      }}
+                      onCheckedChange={(checked) =>
+                        onAskingChange(
+                          checked === true
+                            ? [...asking, tool]
+                            : asking.filter((name) => name !== tool),
+                        )
+                      }
                     />
-                    <Label htmlFor={`${groupId}-${asked}-retained`} className="text-xs break-all">
-                      {localize('com_ui_schedule_consent_ask_tool', { tool: asked })}
+                    <Label
+                      htmlFor={`${groupId}-${tool}-ask`}
+                      variant="secondary"
+                      className="text-xs"
+                    >
+                      {localize('com_ui_schedule_consent_ask_first')}
                     </Label>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
+                  </span>
+                )}
+              </div>
+              {warned && (
+                <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
+                  {localize('com_ui_schedule_consent_tool_changed')}
+                </p>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </fieldset>
   );
