@@ -19,6 +19,7 @@ function status(code: string): number {
   if (code === 'rate_limited') return 429;
   if (
     code === 'unavailable' ||
+    code === 'transactions_unavailable' ||
     code === 'binding_uncertain' ||
     code === 'provider_unavailable' ||
     code === 'timeout'

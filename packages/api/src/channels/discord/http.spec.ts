@@ -6,6 +6,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { channelConfigSchema } from 'librechat-data-provider';
 import {
+  TransactionUnavailableError,
   createModels,
   createDiscordInstallationStorage,
   createDiscordInstallStorage,
@@ -40,6 +41,7 @@ let settings: DiscordHttpConfig | undefined;
 let payloads: Record<string, unknown>;
 let providerFetch: jest.Mock<Promise<Response>, [string, RequestInit]>;
 let sessionId: string;
+let installations: ReturnType<typeof createDiscordInstallationStorage>;
 let authenticate = true;
 let callbackUser: string | undefined;
 const previous = {
@@ -164,8 +166,9 @@ beforeEach(async () => {
     if (!(path in payloads)) throw new Error('private provider diagnostic');
     return new Response(JSON.stringify(payloads[path]));
   });
+  installations = createDiscordInstallationStorage(db);
   const handlers = createDiscordManagementRuntime({
-    installations: createDiscordInstallationStorage(db),
+    installations,
     states: createDiscordInstallStorage(db),
     browserSessions: createDiscordBrowserSessionStorage(db),
     readSettings: async () => settings,
@@ -576,4 +579,55 @@ it('advertises only the explicitly configured Discord public ingress, including 
     oauthCallbackUrl: `${publicBaseUrl}${DISCORD_CALLBACK_PATH}`,
     interactionBaseUrl: 'https://discord.example/prefix/discord/',
   });
+});
+
+it.each([true, false])(
+  'classifies only typed transaction capability failures during setup (%s)',
+  async (typed) => {
+    const error = typed
+      ? new TransactionUnavailableError()
+      : Object.assign(new Error('private storage diagnostic'), {
+          code: 'transactions_unavailable',
+        });
+    error.message = 'private storage diagnostic';
+    const write = jest.spyOn(installations, 'configureApplication').mockRejectedValueOnce(error);
+    try {
+      const response = await request(app)
+        .put(`${base}/apps`)
+        .set('Authorization', 'Bearer admin')
+        .set('Origin', clientBaseUrl)
+        .send({
+          applicationId,
+          botToken: 'private-bot-token',
+          clientSecret: 'private-client-secret',
+        })
+        .expect(503);
+      expect(response.body).toEqual({
+        ok: false,
+        error: { code: typed ? 'transactions_unavailable' : 'unavailable' },
+      });
+      expect(JSON.stringify(response.body)).not.toContain('private');
+      expect(await scoped(() => installations.readApplication(applicationId))).toBeNull();
+    } finally {
+      write.mockRestore();
+    }
+  },
+);
+
+it('redirects a transaction capability failure from guild connection with a safe code', async () => {
+  const flow = await connect();
+  const failure = new TransactionUnavailableError();
+  failure.message = 'private database credentials';
+  const write = jest.spyOn(installations, 'connectGuild').mockRejectedValueOnce(failure);
+  try {
+    const response = await callback(flow.state, flow.cookies).expect(302);
+    const landing = new URL(response.headers.location);
+    expect(landing.pathname).toBe('/oauth/error');
+    expect(landing.searchParams.get('error')).toBe('discord_transactions_unavailable');
+    expect(landing.searchParams.get('flow')).toBe(flow.flowId);
+    expect(response.headers.location).not.toContain('private');
+    expect((await scoped(() => installations.listGuilds())).guilds).toEqual([]);
+  } finally {
+    write.mockRestore();
+  }
 });

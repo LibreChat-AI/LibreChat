@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { channelSnowflakeSchema } from 'librechat-data-provider';
-import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import {
+  getTenantId,
+  SYSTEM_TENANT_ID,
+  TransactionUnavailableError,
+} from '@librechat/data-schemas';
 import type {
   DiscordGuild,
   DiscordBindingStatus,
@@ -52,6 +56,7 @@ type BindingError =
   | 'not_configured'
   | 'application_changed'
   | 'binding_uncertain'
+  | 'transactions_unavailable'
   | 'unavailable';
 export type DiscordBindingResult<T> =
   | { ok: true; value: T }
@@ -106,7 +111,7 @@ export function createDiscordBindingService(deps: {
       return await action();
     } catch (error) {
       deps.logError?.(getSafeErrorMetadata(error));
-      return failure('unavailable');
+      return failure(error instanceof TransactionUnavailableError ? error.code : 'unavailable');
     }
   }
   return {
@@ -207,6 +212,7 @@ export function createDiscordBindingService(deps: {
         try {
           assigned = await deps.routes.assign(assignment);
         } catch (error) {
+          if (error instanceof TransactionUnavailableError) throw error;
           deps.logError?.(getSafeErrorMetadata(error));
           // A lost acknowledgement may follow a committed replacement. Never retire its successor.
           try {

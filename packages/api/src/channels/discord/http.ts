@@ -121,6 +121,7 @@ export function createDiscordManagementHandlers(deps: {
       invalid_input: 400,
       invalid_state: 400,
       unavailable: 503,
+      transactions_unavailable: 503,
       provider_unavailable: 503,
       timeout: 503,
       rate_limited: 429,

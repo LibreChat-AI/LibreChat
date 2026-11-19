@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { PermissionBits, ResourceType, channelConfigSchema } from 'librechat-data-provider';
 import {
+  TransactionUnavailableError,
   createModels,
   createMethods,
   createDiscordInstallationStorage,
@@ -569,4 +570,47 @@ it('composes binding permissions, protected routing, and policy changes around t
     .delete(url)
     .send({ ...target, expectedRevision: assigned.body.value.routeRevision })
     .expect(200);
+});
+
+it.each(['candidate', 'assignment'] as const)(
+  'reports transactional storage failure at %s without activating a binding',
+  async (stage) => {
+    const error = new TransactionUnavailableError();
+    error.message = 'private database diagnostic';
+    const write =
+      stage === 'candidate'
+        ? jest.spyOn(channels, 'createAgentChannel').mockRejectedValueOnce(error)
+        : jest.spyOn(routes, 'assign').mockRejectedValueOnce(error);
+    try {
+      const response = await request(app).post('/agents/agent/binding').send(input()).expect(503);
+      expect(response.body).toEqual({ ok: false, error: { code: 'transactions_unavailable' } });
+      expect(JSON.stringify(response.body)).not.toContain('private');
+      await scope(async () => {
+        expect(await routes.read(guild.installationId, externalChannelId)).toBeNull();
+        const candidates = await channels.listAgentChannels('agent');
+        expect(candidates.every((channel) => channel.status !== 'active')).toBe(true);
+      });
+    } finally {
+      write.mockRestore();
+    }
+  },
+);
+
+it('preserves the binding when transactional storage prevents removal', async () => {
+  const bound = await scope(async () => unwrap(await bind()));
+  const write = jest
+    .spyOn(routes, 'remove')
+    .mockRejectedValueOnce(new TransactionUnavailableError());
+  try {
+    const response = await request(app)
+      .delete('/agents/agent/binding')
+      .send({ ...input(), expectedRevision: bound.routeRevision })
+      .expect(503);
+    expect(response.body).toEqual({ ok: false, error: { code: 'transactions_unavailable' } });
+    expect(
+      (await scope(() => routes.read(guild.installationId, externalChannelId)))?.channelId,
+    ).toBe(bound.channel.channelId);
+  } finally {
+    write.mockRestore();
+  }
 });
