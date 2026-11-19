@@ -5,6 +5,7 @@ import type { AgentChannelRecord } from '~/models/channel';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { eraseDiscordThreadRoutes } from './discordThreadErasure';
 import { createDiscordApplicationModel } from '~/models/discord';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { createDiscordRouteModel } from '~/models/discordRoute';
@@ -352,6 +353,8 @@ export async function retireAgentChannel(
       await createDiscordInboxErasure(mongoose, async (scope, transaction) => {
         await lockExistingChannelScope(mongoose, scope.tenantId, scope.channelId, transaction);
       }).erase({ kind: 'channel', tenantId, channelId }, erasureBatchSize);
+    if (deleting.type === 'discord')
+      await eraseDiscordThreadRoutes(mongoose, { kind: 'channel', tenantId, channelId });
     await createChannelIdentityModel(mongoose).deleteMany({
       tenantId: tenantId || '_',
       'identity.channelId': channelId,
