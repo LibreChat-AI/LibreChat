@@ -539,6 +539,95 @@ test('a side chat’s reply whose stream a gateway answers on opening is followe
   await expect(mainTurns).toHaveCount(2);
 });
 
+test('a side chat’s reply that cannot be reached through every retry is settled by the server’s word, and its queue sent @scenario:side-chat-unreachable-run-is-settled-at-the-retry-limit', async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const { sideChat, side, turns, mainTurns, queued, field, send } = await openBeside(
+    page,
+    'unreachable',
+  );
+  const conversationId = (await sideChat.getAttribute('data-side-chat')) ?? '';
+  const label = uniqueLabel('unreachable');
+  const followUp = `Queued behind an unreachable reply ${label}`;
+  /** The turn's own request for its stream and the five retries after it, and one retry more. */
+  const attempts = 7;
+  /** Every request for the reply's stream is answered by a gateway, for as long as it is retried. */
+  const refused: number[] = [];
+  await page.route(
+    (url) => url.pathname === `/api/agents/chat/stream/${conversationId}`,
+    async (route) => {
+      if (refused.length >= attempts) {
+        await route.continue();
+        return;
+      }
+      refused.push(Date.now());
+      await route.fulfill({ status: 502, contentType: 'text/html', body: '<h1>Bad Gateway</h1>' });
+    },
+  );
+  /**
+   * The reply here is over well before the retries are, and a side chat that learns so stops
+   * retrying. So the status route goes on saying what it said while the reply ran until the
+   * last retry has been refused: a reply that ran through all of them and ended by the last.
+   */
+  let running: string | undefined;
+  await page.route(
+    (url) => url.pathname === `/api/agents/chat/status/${conversationId}`,
+    async (route) => {
+      const upstream = await route.fetch();
+      const body = await upstream.text();
+      if (body.includes('"active":true')) {
+        running = body;
+      }
+      const held = running != null && refused.length < attempts;
+      await route.fulfill({ response: upstream, body: held ? running : body });
+    },
+  );
+  await sideChat.evaluate((region) => {
+    const shown = new Set<string>();
+    new MutationObserver(() => {
+      for (const row of region.querySelectorAll('.message-render')) {
+        shown.add(row.textContent ?? '');
+      }
+    }).observe(region, { subtree: true, childList: true, characterData: true });
+    Object.assign(window, { shownInSideChat: shown });
+  });
+
+  await send(`E2E_SLOW_REPLY:${label}`);
+  await expect(side.getByRole('button', { name: 'Stop generating' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await field.click();
+  await page.keyboard.type(followUp);
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(queued).toHaveCount(1);
+
+  /**
+   * It is waited for through every retry, as running. After the last one the server is asked
+   * what became of it: it completed, so what it left is read, and what was queued behind it is
+   * the conversation's next turn.
+   */
+  await expect(turns.nth(3)).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 90_000 });
+  await expect(turns).toHaveCount(6, { timeout: 30_000 });
+  await expect(turns.nth(4)).toContainText(followUp);
+  await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
+  await expect(queued).toHaveCount(0);
+  await expect(mainTurns).toHaveCount(2);
+
+  /** Asked for again after 1, 2, 4, 8 and 16 seconds, and no row ever said the reply failed. */
+  expect(refused).toHaveLength(attempts);
+  const waits = refused.slice(1).map((at, index) => at - refused[index]);
+  expect(waits[3]).toBeGreaterThan(3_000);
+  expect(waits[4]).toBeGreaterThan(6_500);
+  expect(waits[5]).toBeGreaterThan(13_000);
+  const failures = await page.evaluate(() =>
+    [...(window as unknown as { shownInSideChat: Set<string> }).shownInSideChat].filter((text) =>
+      /could not complete|error connecting|failed|try refreshing/i.test(text),
+    ),
+  );
+  expect(failures).toEqual([]);
+});
+
 test('a queue behind a reply the panel was closed on is sent when that reply is then lost and found whole @scenario:side-chat-lost-remembered-run-sends-the-queue', async ({
   page,
 }) => {
