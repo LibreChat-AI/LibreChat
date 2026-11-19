@@ -13,7 +13,7 @@ export interface SideChatHost {
    * under it, and a transport that can start and stop one on the conversation's endpoint.
    */
   useChat: (
-    conversation: Pick<TConversation, 'conversationId' | 'endpoint'>,
+    conversation: Pick<TConversation, 'conversationId' | 'endpoint' | 'agent_id'>,
     options?: Pick<FollowChatOptions, 'onWithdrawn'>,
   ) => FollowedChat;
   /** Opens the conversation as the page's main one. */

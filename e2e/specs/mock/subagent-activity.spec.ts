@@ -400,6 +400,11 @@ test.describe('detached subagent activity', () => {
 
       /** A finished child takes no more guidance: what the reader writes continues it as a
        *  chat of their own, which opens where the child's activity was. */
+      await page.route(`**/api/agents/${children[0].id}`, async (route) => {
+        if (route.request().method() === 'GET')
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        await route.continue();
+      });
       const startsBefore = starts.length;
       await panel.getByRole('textbox', { name: 'Message input' }).fill('What did you find?');
       await panel.getByRole('button', { name: 'Continue in a new chat' }).click();
