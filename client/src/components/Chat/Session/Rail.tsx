@@ -14,8 +14,8 @@ import {
 } from '@librechat/chat/react';
 import type { BackgroundTasksView } from '../BackgroundTasks/useTasks';
 import type { TaskRow } from '../BackgroundTasks/rows';
-import { findTaskTarget, focusTaskTarget, scrollToTaskTarget } from '../BackgroundTasks/jump';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { visitTaskTarget } from '../BackgroundTasks/jump';
 import Section from '../BackgroundTasks/Section';
 import { SESSION_RAIL_ID } from './state';
 import { useLocalize } from '~/hooks';
@@ -82,12 +82,7 @@ export default function SessionRail({
   const openRow = useCallback(
     (row: TaskRow): boolean => {
       if (row.kind === 'tool') {
-        const target = findTaskTarget(row);
-        if (target == null) return false;
-        if (sheet) onClose(false);
-        focusTaskTarget(target);
-        scrollToTaskTarget(target);
-        return true;
+        return visitTaskTarget(row, sheet ? () => onClose(false) : undefined);
       }
       if (
         openSubagentPanel == null ||
