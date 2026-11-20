@@ -1238,6 +1238,7 @@ describe('getGoogleModels', () => {
         'gemini-omni-1.2-flash',
         'gemini-4-argon',
         'gemini-4-neon',
+        'gemini-4-neon',
         'gemma-4-31b-it',
       ),
     );

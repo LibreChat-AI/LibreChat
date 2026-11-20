@@ -628,16 +628,15 @@ export async function getGoogleModels(
     name: EModelEndpoint.google,
     createTokenConfig: false,
   });
-  const chat = listed
-    .map((id) => id.replace(/^models\//, ''))
-    .filter((id) => GOOGLE_CHAT_MODEL.test(id) && !GOOGLE_NON_CHAT_MODEL.test(id));
-  if (chat.length === 0) {
+  const chat = new Set(
+    listed
+      .map((id) => id.replace(/^models\//, ''))
+      .filter((id) => GOOGLE_CHAT_MODEL.test(id) && !GOOGLE_NON_CHAT_MODEL.test(id)),
+  );
+  if (chat.size === 0) {
     return models;
   }
-  return [
-    ...models.filter((id) => chat.includes(id)),
-    ...chat.filter((id) => !models.includes(id)),
-  ];
+  return [...new Set([...models.filter((id) => chat.has(id)), ...chat])];
 }
 
 /**

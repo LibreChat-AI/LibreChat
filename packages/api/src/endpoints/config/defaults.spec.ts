@@ -74,6 +74,18 @@ describe('scoped default model discovery', () => {
     );
   });
 
+  it('forwards the configured Google list and discovery opt-in', async () => {
+    const deps = loaders();
+    const configured = Object.assign({}, config, {
+      endpoints: { google: { models: ['configured'], fetch: true } },
+    });
+    await loadDefaultEndpointModels(req, configured, 'google', deps);
+    expect(deps.getGoogleModels).toHaveBeenCalledWith({
+      configuredModels: ['configured'],
+      fetch: true,
+    });
+  });
+
   it('never falls through to OpenAI discovery for Azure Assistants', async () => {
     const deps = loaders();
     await loadDefaultEndpointModels(req, config, 'azureAssistants', deps);

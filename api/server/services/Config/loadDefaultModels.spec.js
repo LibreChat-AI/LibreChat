@@ -49,6 +49,15 @@ describe('loadDefaultModels', () => {
     expect(getGoogleModels).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards the configured Google list and discovery opt-in', async () => {
+    const config = {
+      endpoints: { [EModelEndpoint.google]: { models: ['configured'], fetch: true } },
+    };
+    await loadDefaultModels({ ...request, config });
+
+    expect(getGoogleModels).toHaveBeenCalledWith({ configuredModels: ['configured'], fetch: true });
+  });
+
   it('keeps the configured Google catalog empty when its model source fails', async () => {
     const error = new Error('Google models unavailable');
     getGoogleModels.mockRejectedValue(error);
