@@ -30,11 +30,24 @@ const MCP_SKIPPED_LABELS: Record<Exclude<ScheduleMCPStatus, 'ready'>, Translatio
   mcp_unavailable: 'com_ui_schedule_mcp_skipped_unavailable',
 };
 
+/**
+ * No renewable credential is configured for unattended use: an administrator's to fix, not
+ * the owner's by reconnecting. A server a run went without carries it as its reason.
+ */
+function needsUnattendedProvider(outcome: ScheduleMCPOutcome): boolean {
+  return (
+    outcome.detail === 'unattended_auth_required' ||
+    (outcome.skipped === true && outcome.reason === 'provider_missing')
+  );
+}
+
 export function scheduleMCPStatusLabel(outcome: ScheduleMCPOutcome): TranslationKeys {
+  // The way out comes first, skipped or not: authorizing the schedule and asking an
+  // administrator are not what reconnecting the server does.
+  if (needsUnattendedProvider(outcome)) return 'com_ui_schedule_mcp_unattended_auth';
+  if (needsScheduleAuthorization(outcome)) return 'com_ui_schedule_mcp_authorization';
   if (outcome.skipped === true && outcome.status !== 'ready')
     return MCP_SKIPPED_LABELS[outcome.status];
-  if (outcome.detail === 'unattended_auth_required') return 'com_ui_schedule_mcp_unattended_auth';
-  if (needsScheduleAuthorization(outcome)) return 'com_ui_schedule_mcp_authorization';
   return MCP_STATUS_LABELS[outcome.status];
 }
 
@@ -90,7 +103,7 @@ export function scheduleMCPNeedsAgentRecovery(outcomes: ScheduleMCPOutcome[]): b
     (outcome) =>
       outcome.status !== 'ready' &&
       outcome.status !== 'mcp_permission_denied' &&
-      outcome.detail !== 'unattended_auth_required' &&
+      !needsUnattendedProvider(outcome) &&
       !needsScheduleAuthorization(outcome),
   );
 }

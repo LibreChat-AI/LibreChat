@@ -239,3 +239,34 @@ it('says why a run went without a server, without telling the owner to enable an
     expect(scheduleMCPStatusLabel({ server: 'Notion', status })).not.toBe(key);
   }
 });
+
+it('keeps the specific way out for a server a run went without', () => {
+  const unauthorized = {
+    server: 'Notion',
+    status: 'mcp_reauth_required' as const,
+    reason: 'consent_revoked' as const,
+    recovery: 'authorize' as const,
+    skipped: true as const,
+  };
+  // Reconnecting the server would not renew the schedule's grant.
+  expect(scheduleMCPStatusLabel(unauthorized)).toBe('com_ui_schedule_mcp_authorization');
+  expect(scheduleMCPNeedsAgentRecovery([unauthorized])).toBe(false);
+
+  const unattended = {
+    server: 'Vault',
+    status: 'mcp_configuration_missing' as const,
+    reason: 'provider_missing' as const,
+    skipped: true as const,
+  };
+  expect(scheduleMCPStatusLabel(unattended)).toBe('com_ui_schedule_mcp_unattended_auth');
+  expect(scheduleMCPNeedsAgentRecovery([unattended])).toBe(false);
+
+  // A plain sign-in is the owner's to fix from the agent.
+  const signedOut = {
+    server: 'Linear',
+    status: 'mcp_reauth_required' as const,
+    skipped: true as const,
+  };
+  expect(scheduleMCPStatusLabel(signedOut)).toBe('com_ui_schedule_mcp_skipped_reauth');
+  expect(scheduleMCPNeedsAgentRecovery([signedOut])).toBe(true);
+});

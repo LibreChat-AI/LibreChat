@@ -13,6 +13,7 @@ import { AgentTriggerServiceUnavailableError } from '../agents/triggers/service'
 import { AgentTriggerDeliveryError } from '../agents/triggers/delivery';
 import { computeNextRunAt, cadenceIntervalMinutes } from './cadence';
 import { resolveScheduleProjectId } from './types';
+import { skippedMCPServers } from './trigger';
 import { ScheduleMCPError } from './mcp';
 
 /** Consecutive balance skips (pre-fire or mid-generation) before auto-disable. */
@@ -55,8 +56,8 @@ function buildScheduleTriggerEnvelope(
   conversationId: string,
   manual: boolean,
   chatProjectId?: string,
-  /** MCP servers that were not ready, which the run is started without. */
-  skip: string[] = [],
+  /** MCP servers that were not ready, which the run is started without, among those checked. */
+  skipped: { skip: string[]; servers: string[] } = { skip: [], servers: [] },
 ): AgentTriggerEnvelope {
   const occurrenceId = buildFireClientRequestId(schedule.id, scheduledFor);
   const triggerFiles: JsonValue[] = files.map((file) => {
@@ -97,7 +98,7 @@ function buildScheduleTriggerEnvelope(
         ...(typeof schedule.configRevision === 'number' && {
           configRevision: schedule.configRevision,
         }),
-        ...(skip.length > 0 && { skip }),
+        ...(skipped.skip.length > 0 && { skip: skipped.skip, servers: skipped.servers }),
       },
     },
   });
@@ -105,15 +106,23 @@ function buildScheduleTriggerEnvelope(
 
 /**
  * How a server that was not ready is recorded on a run that starts without it: where, why
- * and what its owner can do about it, marked as skipped. The fields that make an outcome a
- * denial of the run (`reason`, `automaticReplay`, `detail`) are left off, since a run row
- * that carries them is settled as an error and its schedule suspended.
+ * and what its owner can do about it, marked as skipped.
+ *
+ * `automaticReplay` and `detail` are left off. A run row that carries `automaticReplay:
+ * false` beside a reason, or `detail`, is a denial of the run: it is settled as an error and
+ * its schedule suspended, by replicas from before this mark existed as well. The reason is
+ * kept, since the owner's way out depends on it (authorize the schedule, not reconnect the
+ * server), and the unattended-auth diagnosis is kept as the reason it amounts to.
  */
 function skipUnready(outcome: ScheduleMCPOutcome): ScheduleMCPOutcome {
   if (outcome.status === 'ready') return outcome;
+  const reason =
+    outcome.reason ??
+    (outcome.detail === 'unattended_auth_required' ? ('provider_missing' as const) : undefined);
   return {
     server: outcome.server,
     ...(outcome.agentId != null && { agentId: outcome.agentId }),
+    ...(reason != null && { reason }),
     ...(outcome.recovery != null && { recovery: outcome.recovery }),
     status: outcome.status,
     skipped: true,
@@ -544,7 +553,7 @@ export async function fireSchedule(
         conversationId,
         options?.manual === true,
         chatProjectId,
-        [...new Set(mcp.filter((outcome) => outcome.skipped === true).map((o) => o.server))],
+        skippedMCPServers(mcp),
       );
     } catch (envelopeError) {
       logger.error(`[schedules] trigger envelope build failed for ${schedule.id}:`, envelopeError);

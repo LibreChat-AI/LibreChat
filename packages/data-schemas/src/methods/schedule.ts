@@ -275,6 +275,11 @@ export type ScheduleMethods = {
     scheduleId: string,
     scheduledFor: string | Date,
   ) => Promise<{ recorded: boolean; chatProjectId?: string } | null>;
+  /** The MCP outcomes one occurrence's run holds; empty when the row is absent or holds none. */
+  getScheduleRunMCP: (
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ) => Promise<ScheduleMCPOutcome[]>;
   reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<StartedRunReservation>;
   getCapacityOccupancy: () => Promise<{ takenSlots: number[]; unslotted: number }>;
   requestRunAbort: (
@@ -916,6 +921,21 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     return recorded && run.chatProjectId != null
       ? { recorded, chatProjectId: run.chatProjectId }
       : { recorded };
+  }
+
+  /**
+   * What an occurrence's readiness check and any receipt since left on its run row. A resumed
+   * run reads back from it the servers the occurrence was started without.
+   */
+  async function getScheduleRunMCP(
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await ScheduleRun()
+      .findOne({ scheduleId, scheduledFor: new Date(scheduledFor) })
+      .select('mcp')
+      .lean<{ mcp?: ScheduleMCPOutcome[] } | null>();
+    return run?.mcp ?? [];
   }
 
   async function persistResolvedProject(
@@ -2342,6 +2362,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     requestRunAbort,
     persistResolvedProject,
     getScheduleRunProject,
+    getScheduleRunMCP,
     getScheduleRunAbortState,
     getScheduleMCPCompletionState,
     recordMCPToolAuthFailure,

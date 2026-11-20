@@ -56,6 +56,7 @@ import { createTermsBlockCheck } from '../middleware/terms';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { startScheduleErasureSweep } from './erasure';
+import { restoreSkippedMCPServers } from './trigger';
 import { getBalanceConfig } from '../app/config';
 import { waitUntilDeadline } from '~/mcp/utils';
 import { startScheduleEngine } from './engine';
@@ -289,6 +290,15 @@ export interface SchedulesService {
     expectedConfigRevision?: number,
     options?: { automatic?: boolean; policy?: boolean; scheduledFor?: string | Date },
   ) => Promise<boolean>;
+  /**
+   * Puts back, on the request that resumes a paused scheduled run, the MCP servers its
+   * occurrence was started without, read from the occurrence's run row.
+   */
+  restoreSkippedServers: (
+    req: object,
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ) => Promise<void>;
   /** Soft-deletes an owner's schedule: stop claims, abort active runs, drain, erase. */
   deleteScheduleForOwner: (scheduleId: string, userId: string) => Promise<ScheduleDeleteResult>;
   /**
@@ -1759,6 +1769,14 @@ export function createSchedulesService(
     }).catch((err) => logger.warn('[schedules] post-acknowledgement settlement failed:', err));
   }
 
+  async function restoreSkippedServers(
+    req: object,
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ): Promise<void> {
+    restoreSkippedMCPServers(req, await methods.getScheduleRunMCP(scheduleId, scheduledFor));
+  }
+
   async function isScheduleLive(
     scheduleId: string,
     expectedConfigRevision?: number,
@@ -2510,6 +2528,7 @@ export function createSchedulesService(
     finalizeScheduleResumeClaim,
     releaseScheduleResumeFence,
     isScheduleLive,
+    restoreSkippedServers,
     deleteScheduleForOwner,
     quiesceUserSchedules,
     restoreUserSchedulesFromDeletion,

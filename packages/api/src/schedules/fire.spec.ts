@@ -976,6 +976,7 @@ it('fires without a server that is not ready, and says which the run goes withou
     },
     { server: 'Linear', status: 'ready' },
     { server: 'Warehouse', agentId: 'child', status: 'mcp_unavailable' },
+    { server: 'Vault', status: 'mcp_configuration_missing', detail: 'unattended_auth_required' },
   ]);
   const deps = makeDeps(methods, {
     preflightMCP: async () => {
@@ -989,17 +990,36 @@ it('fires without a server that is not ready, and says which the run goes withou
   );
   expect(deps.enqueueTrigger).toHaveBeenCalledTimes(1);
   const [envelope] = jest.mocked(deps.enqueueTrigger).mock.calls[0];
-  expect(envelope).toMatchObject({ run: { metadata: { skip: ['Notion', 'Warehouse'] } } });
-  // Each is recorded with what its owner can do and marked as skipped, without the fields
-  // that would make it a denial of the run.
+  expect(envelope).toMatchObject({
+    run: {
+      metadata: {
+        skip: ['Notion', 'Warehouse', 'Vault'],
+        servers: ['Notion', 'Linear', 'Warehouse', 'Vault'],
+      },
+    },
+  });
+  // Each is recorded with why and what its owner can do, marked as skipped, and without the
+  // two fields that would make it a denial of the run.
   expect(methods.setRunFireDetails).toHaveBeenCalledWith(
     expect.anything(),
     expect.anything(),
     expect.objectContaining({
       mcp: [
-        { server: 'Notion', status: 'mcp_reauth_required', recovery: 'authorize', skipped: true },
+        {
+          server: 'Notion',
+          status: 'mcp_reauth_required',
+          reason: 'consent_revoked',
+          recovery: 'authorize',
+          skipped: true,
+        },
         { server: 'Linear', status: 'ready' },
         { server: 'Warehouse', agentId: 'child', status: 'mcp_unavailable', skipped: true },
+        {
+          server: 'Vault',
+          status: 'mcp_configuration_missing',
+          reason: 'provider_missing',
+          skipped: true,
+        },
       ],
     }),
   );

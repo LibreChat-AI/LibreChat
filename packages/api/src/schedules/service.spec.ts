@@ -1464,6 +1464,23 @@ describe('isScheduleLive policy recheck', () => {
    * abort-and-settle, so a policy stop settles the occurrence rather than leaving it at
    * `requires_action` answering 409 to every approval until it expires.
    */
+  it('puts back on a resume request what its occurrence went without, from the run row', async () => {
+    const service = makeService(jest.fn<Promise<ActiveRun[]>, [string]>().mockResolvedValue([]));
+    const getScheduleRunMCP = jest.fn(async () => [
+      { server: 'Notion', status: 'mcp_reauth_required' as const, skipped: true as const },
+      { server: 'Linear', status: 'ready' as const },
+    ]);
+    Object.assign(service.engineDeps.methods, { getScheduleRunMCP });
+    const req: { _scheduleSkippedServers?: string[]; _scheduleCheckedServers?: string[] } = {};
+    const scheduledFor = new Date('2026-09-09T12:00:00Z');
+    await service.restoreSkippedServers(req, 's1', scheduledFor);
+    expect(getScheduleRunMCP).toHaveBeenCalledWith('s1', scheduledFor);
+    expect(req).toEqual({
+      _scheduleSkippedServers: ['Notion'],
+      _scheduleCheckedServers: ['Notion', 'Linear'],
+    });
+  });
+
   describe('project policy', () => {
     function makeProjectService(
       row: Record<string, unknown>,

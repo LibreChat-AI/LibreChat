@@ -3485,9 +3485,11 @@ describe('scheduled MCP failure policy', () => {
     await methods.insertScheduleRun(
       runData(schedule, { scheduledFor, conversationId: 'conversation-1' }),
     );
+    // The reason is kept, so the owner is told to authorize the schedule and not to reconnect.
     const skipped = {
       server: 'Notion',
       status: 'mcp_reauth_required' as const,
+      reason: 'consent_revoked' as const,
       recovery: 'authorize' as const,
       skipped: true as const,
     };
@@ -3508,6 +3510,14 @@ describe('scheduled MCP failure policy', () => {
     expect(updated.lastRun?.status).toBe('success');
     expect(updated.lastRun?.mcp).toEqual(
       expect.arrayContaining([expect.objectContaining(skipped)]),
+    );
+    // What a resumed run reads back: every outcome of the check, skipped or ready.
+    expect(await methods.getScheduleRunMCP(schedule.id, scheduledFor)).toEqual([
+      expect.objectContaining(skipped),
+      expect.objectContaining({ server: 'Linear', status: 'ready' }),
+    ]);
+    expect(await methods.getScheduleRunMCP(schedule.id, new Date('2020-01-01T00:00:00Z'))).toEqual(
+      [],
     );
   });
 
