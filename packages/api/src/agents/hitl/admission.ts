@@ -584,6 +584,35 @@ export function canAgentGraphPause({
   return asksUserQuestion;
 }
 
+/** What a scheduled run that could pause is missing where it cannot. */
+export type ScheduledPauseGap = 'shared_store' | 'durable_checkpointer';
+
+/**
+ * Whether a run keeps its pause and resume wiring.
+ *
+ * A scheduled run that pauses waits for its owner on another day and, often, another replica:
+ * that takes a shared generation store and a durable checkpointer. Where either is missing
+ * the run still starts, as a caller with no resume path does. Its ask-user tool is left out,
+ * and a tool whose policy asks is refused for that call, so nothing runs unapproved and
+ * nothing waits for an answer that could never be delivered. Any other run keeps its wiring.
+ */
+export async function resolveScheduledPause({
+  scheduled,
+  canPause,
+  sharedStore,
+  getCheckpointer,
+}: {
+  scheduled: boolean;
+  canPause: boolean;
+  sharedStore: boolean;
+  getCheckpointer: () => Promise<unknown>;
+}): Promise<{ capable: true } | { capable: false; missing: ScheduledPauseGap }> {
+  if (!scheduled || !canPause) return { capable: true };
+  if (!sharedStore) return { capable: false, missing: 'shared_store' };
+  if ((await getCheckpointer()) == null) return { capable: false, missing: 'durable_checkpointer' };
+  return { capable: true };
+}
+
 /**
  * Whether `createRun` attaches a checkpointer for this initialization.
  * Cleanup follows attachment, not current pause capability: a retry must not

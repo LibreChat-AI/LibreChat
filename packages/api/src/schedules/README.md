@@ -231,6 +231,12 @@ other tool starts prompting. Where it does not, the consent view reports `approv
 the dialog offers no "ask me first", and confirming with `ask` is rejected: a tool nobody can
 approve would only ever be refused.
 
+A scheduled run starts either way. Where a pause could not be held, a run whose agents could
+pause (the ask-user tool, a tool under an approval rule, an approval hook) is built without
+the pause wiring, as a remote API run is (`resolveScheduledPause`): the ask-user tool is left
+out, a call whose policy asks is refused for that call, and every other tool runs. Nothing
+runs unapproved, and nothing waits for an answer that could not be delivered.
+
 ### A schedule its owner never authorized
 
 A schedule with no grant keeps using its MCP tools unrestricted, as it did before consent

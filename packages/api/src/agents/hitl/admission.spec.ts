@@ -8,6 +8,7 @@ import type { ToolApprovalHook } from './hooks';
 import {
   agentRunUsesCheckpointer,
   canAgentGraphPause,
+  resolveScheduledPause,
   copyToolApprovalAdmissionMetadata,
 } from './admission';
 import { buildToolClassification, aliasMCPToolOptions } from '~/tools/classification';
@@ -1681,5 +1682,67 @@ describe('bounded approval admission', () => {
         resolvedProgrammaticHooks: [{ hook: askHook, toolNames: [name] }],
       }),
     ).toThrow('safety work limit');
+  });
+});
+
+describe('resolveScheduledPause', () => {
+  const saver = jest.fn(async () => ({}));
+  beforeEach(() => saver.mockClear());
+
+  it('keeps the wiring of a run that is not scheduled, whatever the deployment has', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: false,
+        canPause: true,
+        sharedStore: false,
+        getCheckpointer: async () => null,
+      }),
+    ).resolves.toEqual({ capable: true });
+  });
+
+  it('keeps the wiring of a scheduled run that cannot pause, without asking for a checkpointer', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: false,
+        sharedStore: false,
+        getCheckpointer: saver,
+      }),
+    ).resolves.toEqual({ capable: true });
+    expect(saver).not.toHaveBeenCalled();
+  });
+
+  it('starts a scheduled run that could pause without the wiring where there is no shared store', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: true,
+        sharedStore: false,
+        getCheckpointer: saver,
+      }),
+    ).resolves.toEqual({ capable: false, missing: 'shared_store' });
+    expect(saver).not.toHaveBeenCalled();
+  });
+
+  it('starts it without the wiring where there is no durable checkpointer', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: true,
+        sharedStore: true,
+        getCheckpointer: async () => null,
+      }),
+    ).resolves.toEqual({ capable: false, missing: 'durable_checkpointer' });
+  });
+
+  it('keeps the wiring where the deployment can hold the pause', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: true,
+        sharedStore: true,
+        getCheckpointer: saver,
+      }),
+    ).resolves.toEqual({ capable: true });
   });
 });
