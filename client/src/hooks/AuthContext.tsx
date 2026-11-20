@@ -333,6 +333,14 @@ const AuthContextProvider = ({
     setIsAuthenticated(false);
   }, [setUser]);
 
+  /** The exit from Retry. The session service can be down, so it does not wait on a server call:
+   *  it ends the session in this tab and opens the login page, as a denied refresh does. */
+  const signInAgain = useCallback(() => {
+    clearAuthenticationForRedirect();
+    setIsAuthReady(true);
+    navigate(buildLoginRedirectUrl());
+  }, [clearAuthenticationForRedirect, navigate]);
+
   const userQuery = useGetUserQuery({ enabled: !!(token ?? '') });
 
   const login = useCallback(
@@ -589,7 +597,11 @@ const AuthContextProvider = ({
       {/* Query subscriptions commit child-first; enqueue permissions before descendant discovery. */}
       <RoleQueryPriority isAuthenticated={isAuthenticated} userRoleName={userRoleName} />
       {blocksAuthenticatedContent ? (
-        <Retry onRetry={silentRefresh} isRetrying={refreshToken.isLoading} />
+        <Retry
+          onRetry={silentRefresh}
+          onSignInAgain={signInAgain}
+          isRetrying={refreshToken.isLoading}
+        />
       ) : (
         children
       )}

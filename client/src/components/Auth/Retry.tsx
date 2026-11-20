@@ -1,7 +1,15 @@
 import { Button } from '@librechat/client';
 import useLocalize from '~/hooks/useLocalize';
 
-function Retry({ onRetry, isRetrying = false }: { onRetry: () => void; isRetrying?: boolean }) {
+function Retry({
+  onRetry,
+  onSignInAgain,
+  isRetrying = false,
+}: {
+  onRetry: () => void;
+  onSignInAgain: () => void;
+  isRetrying?: boolean;
+}) {
   const localize = useLocalize();
 
   return (
@@ -16,11 +24,16 @@ function Retry({ onRetry, isRetrying = false }: { onRetry: () => void; isRetryin
       <p className="text-text-secondary mb-6 max-w-sm text-sm">
         {localize('com_auth_session_check_unavailable_body')}
       </p>
-      <Button type="button" variant="submit" onClick={onRetry} disabled={isRetrying}>
-        {isRetrying
-          ? localize('com_auth_session_check_retrying')
-          : localize('com_auth_session_check_retry')}
-      </Button>
+      <div className="flex flex-col items-center gap-3">
+        <Button type="button" variant="submit" onClick={onRetry} disabled={isRetrying}>
+          {isRetrying
+            ? localize('com_auth_session_check_retrying')
+            : localize('com_auth_session_check_retry')}
+        </Button>
+        <Button type="button" variant="outline" onClick={onSignInAgain}>
+          {localize('com_auth_session_check_sign_in_again')}
+        </Button>
+      </div>
     </div>
   );
 }
