@@ -72,8 +72,7 @@ if (import.meta.hot) {
  * that reliably sees the transition. Both are cleared together so neither can be added to an exit
  * path the other was wired into. */
 const endSessionClientState = (): void => {
-  /** Marks this identity transition so an in-flight refresh for the ending session is
-   *  recognized as stale and cannot overwrite the account state that follows it. */
+  // Ignore late refresh results from the session that is ending.
   request.advanceAuthGeneration();
   getDefaultStore().set(resetChatFilterSessionAtom);
   getDefaultStore().set(resetMCPStateAtom);
@@ -328,13 +327,14 @@ const AuthContextProvider = ({
    */
   const clearAuthenticationForRedirect = useCallback(() => {
     endSessionClientState();
+    // A bearer left by another provider can trigger a refresh after this tab signs out.
+    setTokenHeader(undefined);
     setUser(undefined);
     setToken(undefined);
     setIsAuthenticated(false);
   }, [setUser]);
 
-  /** The exit from Retry. The session service can be down, so it does not wait on a server call:
-   *  it ends the session in this tab and opens the login page, as a denied refresh does. */
+  /** Opens login without waiting for the session service. */
   const signInAgain = useCallback(() => {
     clearAuthenticationForRedirect();
     setIsAuthReady(true);
@@ -583,8 +583,6 @@ const AuthContextProvider = ({
     ],
   );
 
-  /** The initial-load session check could not be confirmed: hold the screen on Retry instead of
-   *  rendering as signed out, except on routes that render without a signed-in session. */
   const blocksAuthenticatedContent =
     authSessionUnavailable &&
     !isAuthenticated &&

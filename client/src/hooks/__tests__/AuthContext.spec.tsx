@@ -1743,6 +1743,16 @@ describe('AuthContextProvider — sign in again from Retry', () => {
     expect(screen.getByTestId('consumer')).toHaveAttribute('data-authenticated', 'false');
   });
 
+  it('clears the axios bearer that another provider left on the shared defaults', () => {
+    const mockSetTokenHeader = jest.requireMock('librechat-data-provider').setTokenHeader;
+    showRetry();
+    mockSetTokenHeader.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    expect(mockSetTokenHeader).toHaveBeenCalledWith(undefined);
+  });
+
   it('ignores a retry that settles after the user chose to sign in again', () => {
     jest.useFakeTimers();
     showRetry();
@@ -1780,8 +1790,6 @@ describe('AuthContextProvider — userQuery session check unavailable', () => {
     window.history.replaceState({}, '', '/');
   });
 
-  /** The provider enables the user query only once it holds a token, and it sets the token
-   *  together with `isAuthenticated`, so the query can fail only for a signed-in session. */
   const failUserQueryWhenEnabled = (error: unknown) =>
     mockUseGetUserQuery.mockImplementation((options?: { enabled?: boolean }) =>
       options?.enabled === true
@@ -1806,7 +1814,6 @@ describe('AuthContextProvider — userQuery session check unavailable', () => {
 
   it('keeps the signed-in session when the user query fails because the session check is unavailable', () => {
     jest.useFakeTimers();
-    /** The 401 that the interceptor rethrows after a refresh it classified as unavailable. */
     failUserQueryWhenEnabled({ response: { status: 401 }, __authSessionUnavailable: true });
 
     renderProviderLive();
@@ -1929,7 +1936,6 @@ describe('AuthContextProvider — stale auth generation', () => {
       refreshOptions.onError({ response: { status: 503 } });
     });
 
-    /** A stale "unavailable" result must not block the screen the logout already produced. */
     expect(
       screen.queryByRole('heading', { name: "We couldn't verify your session" }),
     ).not.toBeInTheDocument();

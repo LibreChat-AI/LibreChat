@@ -115,7 +115,6 @@ export const TERMS_NOT_ACCEPTED_CODE = 'terms_not_accepted' as const;
 export const TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE =
   'TWO_FACTOR_FEDERATED_LOGIN_BLOCKED' as const;
 
-/** The session check could not be completed; retry, this is not a logout. */
 export const AUTH_SESSION_CHECK_UNAVAILABLE = 'AUTH_SESSION_CHECK_UNAVAILABLE' as const;
 
 const TWO_FACTOR_POLICY_PROVIDERS = new Set(['local', 'ldap']);

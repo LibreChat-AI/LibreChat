@@ -78,32 +78,24 @@ const TOKEN_REFRESH_BUFFER_MS = 2 * 60 * 1000;
 
 type RetryableAxiosRequestConfig = AxiosRequestConfig & {
   _retry?: boolean;
-  /** Marks a refresh call dispatched by startAuthRecovery, independent of the
-   *  generation-cleared refreshPromise, so its own failure is never retried. */
   _managedRefresh?: boolean;
 };
 
 type AuthRecoveryState = {
   lastRedirectStartedAt: number;
   refreshPromise: Promise<string | null> | null;
-  /** Bumped on login, logout and confirmed denial so a refresh response from a
-   *  superseded account can be recognized and ignored. */
   generation: number;
 };
 
 type RefreshFailureClassification = 'unavailable' | 'denied';
 
-/** A refresh failure ends the session only when the server answers with a 4xx other than 429,
- *  because that answer is about the session itself. A 5xx, a 429, or a failure without a response
- *  (network error, timeout) tells that the check did not complete, so the session stays. The
- *  proactive and the reactive refresh paths both use this classification. */
+/** A 429 means the server could not run the check, so the session stays active. */
 const classifyRefreshFailure = (error: unknown): RefreshFailureClassification => {
   const status = (error as { response?: { status?: unknown } } | undefined)?.response?.status;
   const isDenial = typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
   return isDenial ? 'denied' : 'unavailable';
 };
 
-/** The 503 that the refresh endpoint sends when it cannot complete the session check. */
 const isSessionCheckUnavailableResponse = (error: unknown): boolean => {
   const response = (error as { response?: { status?: number; data?: unknown } } | undefined)
     ?.response;
@@ -115,8 +107,7 @@ const AUTH_SESSION_UNAVAILABLE_MARKER = '__authSessionUnavailable';
 
 type MarkedUnavailable = { [AUTH_SESSION_UNAVAILABLE_MARKER]?: true };
 
-/** The interceptor re-throws the original 401 so the caller's error stays recognizable; marking
- *  it is what lets a consumer tell that rethrown 401 apart from a plain denial. */
+/** Marks the original 401 so callers can distinguish it from a session denial. */
 const markAuthSessionUnavailable = <T>(target: T): T => {
   if (target != null && typeof target === 'object') {
     (target as MarkedUnavailable)[AUTH_SESSION_UNAVAILABLE_MARKER] = true;
@@ -124,9 +115,6 @@ const markAuthSessionUnavailable = <T>(target: T): T => {
   return target;
 };
 
-/** True for an error the interceptor marked while classifying its own refresh failure as
- *  unavailable, or for a raw session-check-unavailable response passed in directly. Other
- *  failures of the request itself are not refresh failures, so they do not count. */
 const isAuthSessionUnavailableError = (error: unknown): boolean =>
   isSessionCheckUnavailableResponse(error) ||
   (error != null &&
@@ -217,7 +205,7 @@ const getAuthGeneration = (): number => getAuthRecoveryState().generation;
 const advanceAuthGeneration = (): number => {
   const state = getAuthRecoveryState();
   state.generation += 1;
-  /** A promise started under the old generation would resolve null and read as denial. */
+  // Joining the old refresh would treat its stale result as a denial.
   state.refreshPromise = null;
   return state.generation;
 };
@@ -392,8 +380,7 @@ const startAuthRecovery = (retryRefresh?: boolean) => {
       return token;
     })
     .finally(() => {
-      /** An older flight settling after a newer one has started must not erase the newer
-       *  flight's promise, or a request arriving after it would start a redundant third. */
+      // An older refresh can settle while a newer one is still running.
       if (state.refreshPromise === refreshPromise) {
         state.refreshPromise = null;
       }
@@ -482,11 +469,7 @@ const shouldRefreshBeforeRequest = (url?: string) => {
   return timeUntilExpiry > 0 && timeUntilExpiry <= TOKEN_REFRESH_BUFFER_MS;
 };
 
-/** Thrown when a proactive renewal is definitively denied, so the request interceptor and
- *  `_authenticatedFetch` reject the pending request instead of sending it with the bearer the
- *  denial just invalidated. It carries no `response`, so the axios response interceptor's
- *  reactive 401 handler — which only acts once `error.response` exists — rejects it unchanged
- *  without starting a second refresh or redirect. */
+// An error without an HTTP response bypasses Axios's 401 recovery.
 class AuthSessionEndedError extends Error {
   readonly code = 'AUTH_SESSION_ENDED';
   constructor() {
@@ -495,15 +478,7 @@ class AuthSessionEndedError extends Error {
   }
 }
 
-/** Handles a rejected refresh for the proactive path, which has no failed request of its own to
- *  reject. It uses the same classification as the reactive 401 path: an unavailable check
- *  dispatches the unavailable event and keeps the old token, which is still valid. A denial throws
- *  `AuthSessionEndedError` so the pending request is never sent with the invalidated bearer —
- *  whether or not the generation still matches, since a request that only joined the denied
- *  flight must be denied too — unless a newer login already replaced that bearer, in which case
- *  the request continues with the new token instead. advanceAuthGeneration()/redirectToLoginOnce()
- *  stay guarded by the generation check so only the flight that first discovers the denial
- *  redirects. */
+/** Returns `null` to keep the current token. Rejects requests still using a denied token. */
 const handleProactiveRefreshFailure = (
   error: unknown,
   requestGeneration: number,
@@ -683,8 +658,7 @@ if (typeof window !== 'undefined') {
         return Promise.reject(error);
       }
 
-      /** A managed refresh's own failure is already awaited by its caller; retrying it here
-       *  would loop, since a superseded generation has already cleared refreshPromise. */
+      // Retrying a managed refresh here can loop after its promise is cleared.
       if (isRefreshRequest && originalRequest._managedRefresh) {
         return Promise.reject(error);
       }
@@ -751,7 +725,6 @@ if (typeof window !== 'undefined') {
             return Promise.reject(markAuthSessionUnavailable(error));
           }
 
-          /** A rejected refresh must route to login like an empty token, or the 401 reaches the caller unredirected. */
           advanceAuthGeneration();
           redirectToLoginOnce();
           return Promise.reject(error);

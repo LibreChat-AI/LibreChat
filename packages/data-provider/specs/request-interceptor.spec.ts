@@ -81,7 +81,6 @@ function createJwt(expiresAtMs: number) {
   return `header.${payload}.signature`;
 }
 
-/** Refresh failures that tell the session check did not complete: the session stays. */
 const unavailableRefreshFailures: Array<[string, (config: InternalAxiosRequestConfig) => unknown]> =
   [
     ['500', (config) => ({ response: { status: 500, data: {} }, config })],
@@ -1163,7 +1162,6 @@ describe('axios 401 interceptor — stale auth generation', () => {
 
     mockAdapter.mockImplementation((config: RetryableAdapterConfig) => {
       if (config.url?.includes('/api/auth/refresh') === true) {
-        /** Simulates a login/logout completing while this refresh call is still in flight. */
         dataRequest.advanceAuthGeneration();
         return createAdapterResponse(config, { token: 'new-token' });
       }
@@ -1234,7 +1232,6 @@ describe('axios 401 interceptor — stale auth generation', () => {
     const accountARequest = axios.get('/api/account-a').catch(() => undefined);
     await waitForAdapterCall('/api/auth/refresh');
 
-    /** Simulates account B signing in while account A's refresh is still in flight. */
     dataRequest.advanceAuthGeneration();
 
     const accountBResponse = await axios.get('/api/account-b');
@@ -1253,8 +1250,6 @@ describe('axios 401 interceptor — stale auth generation', () => {
 
     const staleRefresh = createDeferred<void>();
     const newerRefresh = createDeferred<void>();
-    /** Holds account C's own 401 until B is already in flight, instead of a fresh axios.get,
-     *  which the proactive request interceptor would gate behind B and never send as a 401. */
     const accountCDenial = createDeferred<void>();
     let refreshCalls = 0;
 
@@ -1280,24 +1275,21 @@ describe('axios 401 interceptor — stale auth generation', () => {
       return create401Error(config);
     });
 
-    /** Flight A starts for account A's 401. Account C is sent now, before any refresh is
-     *  active, so its own 401 (held back below) is not gated by the proactive join. */
+    // Send C before the first refresh starts so the request interceptor lets it through.
     const accountARequest = axios.get('/api/account-a').catch(() => undefined);
     const accountCRequest = axios.get('/api/account-c');
     await waitForAdapterCall('/api/auth/refresh');
 
-    /** Simulates account B signing in while A is still in flight: A's promise is dropped. */
+    // Account B signs in while A's refresh is pending.
     dataRequest.advanceAuthGeneration();
 
-    /** Flight B starts for account B's 401 because A's promise was cleared above. */
     const accountBRequest = axios.get('/api/account-b');
     await waitForAdapterCallCount('/api/auth/refresh', 2);
 
-    /** A settles after B has already started; it must not erase B's in-flight promise. */
     staleRefresh.resolve();
     await accountARequest;
 
-    /** Account C's 401 arrives while B is still in flight: it must join B, not start flight C. */
+    // C's 401 must join B's refresh after A settles.
     accountCDenial.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1385,8 +1377,6 @@ describe('proactive refresh — failure handling before a request is sent', () =
     const firstRequest = axios.get('/api/messages');
     await waitForAdapterCall('/api/auth/refresh');
 
-    /** Simulates a login completing with a new bearer while this proactive refresh for the
-     *  old one is still in flight. */
     dataRequest.advanceAuthGeneration();
     const newToken = createJwt(Date.now() + 120_000);
     setTokenHeader(newToken);
@@ -1661,14 +1651,10 @@ describe('proactive refresh — failure handling before a request is sent', () =
     const firstRequest = axios.get('/api/messages').catch(() => undefined);
     await waitForAdapterCall('/api/auth/refresh');
 
-    /** Simulates another flight (e.g. a logout) advancing the generation while this denial is
-     *  still in flight, without replacing the bearer token. */
     dataRequest.advanceAuthGeneration();
     refresh.resolve();
     await firstRequest;
 
-    /** The generation only advanced once, from the simulated concurrent flight above; the
-     *  now-stale denial must not redirect or advance it a second time. */
     expect(hrefWrites).toHaveLength(0);
     expect(dataRequest.getAuthGeneration()).toBe(startingGeneration + 1);
   });
@@ -1696,7 +1682,6 @@ describe('proactive refresh — failure handling before a request is sent', () =
     const firstRequest = axios.get('/api/messages');
     await waitForAdapterCall('/api/auth/refresh');
 
-    /** Simulates another flight advancing the generation while this 503 is still in flight. */
     dataRequest.advanceAuthGeneration();
     refresh.resolve();
     const response = await firstRequest;
@@ -1734,8 +1719,6 @@ describe('proactive refresh — failure handling before a request is sent', () =
     const responses = await Promise.all([firstRequest, secondRequest]);
     window.removeEventListener('authSessionUnavailable', listener);
 
-    /** A 503 does not advance the generation, so both the owning and the joined caller run the
-     *  same classification independently and each dispatch their own event. */
     expect(responses.map((response) => response.data)).toEqual([{ ok: true }, { ok: true }]);
     expect(unavailableEvents).toHaveLength(2);
   });
