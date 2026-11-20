@@ -58,7 +58,7 @@ import {
 
 import type { Dirent } from 'node:fs';
 import type { LintReport, SuppressionsFile } from './diagnostics.mts';
-import { isTranslationReferenced } from './i18n.mts';
+import { isTranslationReferenced, referenceIn } from './i18n.mts';
 import { introducedViolations, isDesignRule } from './diagnostics.mts';
 import { resolveTypecheck } from './typecheck.mts';
 import { importedPackages } from './imports.mts';
@@ -1794,12 +1794,7 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
     }
   }
 
-  let tokenList: string[] | null = null;
-  const isReferenced = (key: string): boolean => {
-    if (tokens.has(key)) return true;
-    tokenList ??= [...tokens];
-    return tokenList.some((token) => token.includes(key));
-  };
+  const isReferenced = referenceIn(tokens);
 
   const unused = keys.filter((key) => {
     // Special variable labels are built dynamically from TSpecialVarLabel.
