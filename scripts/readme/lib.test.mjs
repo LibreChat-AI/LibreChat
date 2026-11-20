@@ -79,6 +79,16 @@ test('validate accepts a faithful translation', () => {
   assert.deepEqual(validate(source, out, 'ru'), []);
 });
 
+test('validate lets prose move around links, code and emphasis', () => {
+  const source = '- Text-to-image and image-to-image with [GPT-Image-1](https://x.y)';
+  assert.deepEqual(
+    validate(source, '- 使用 [GPT-Image-1](https://x.y) 进行文生图和图生图', 'zh'),
+    [],
+  );
+  assert.deepEqual(validate('Run `npm ci` first.', '`npm ci` を最初に実行します。', 'ja'), []);
+  assert.deepEqual(validate('**Agents** are here', 'ここに **エージェント**', 'ja'), []);
+});
+
 test('validate flags structural changes', () => {
   const html = '<a href="https://a.b"><img src="x.svg"></a>';
   assert.ok(validate(html, '<a href="https://a.b"></a>', 'ru').length > 0);

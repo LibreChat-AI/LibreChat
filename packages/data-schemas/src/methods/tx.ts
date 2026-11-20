@@ -16,6 +16,8 @@
  *    the last-defined key wins.
  */
 
+import { getGeminiHydrogenRates } from 'librechat-data-provider';
+
 export interface TxDeps {
   /** From @librechat/api — matches a model name to a canonical key. */
   matchModelName: (model: string, endpoint?: string) => string | undefined;
@@ -170,6 +172,7 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'gpt-6-cyber': { prompt: 20, completion: 100 },
     'gpt-6-astra': { prompt: 10, completion: 50 },
     'gpt-6-sol': { prompt: 2, completion: 10 },
+    'gpt-6.2-sol': { prompt: 2, completion: 10 },
     'gpt-6.1-terra': { prompt: 1, completion: 5 },
     'gpt-6-luna': { prompt: 0.1, completion: 0.5 },
     'chat-latest': { prompt: 5, completion: 30 },
@@ -259,6 +262,7 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'gemini-3.8-flash': { prompt: 0.75, completion: 3.75 },
     // Gemini 4 Argon introductory pricing through 2026-11-30; revert to { prompt: 4, completion: 20 } on 2026-12-01.
     'gemini-4-argon': { prompt: 2, completion: 10 },
+    'gemini-4-hydrogen': getGeminiHydrogenRates(),
     'gemini-pro-vision': { prompt: 0.5, completion: 1.5 },
     grok: { prompt: 2.0, completion: 10.0 },
     'grok-beta': { prompt: 5.0, completion: 15.0 },
@@ -439,6 +443,7 @@ export const cacheTokenValues: Record<string, CacheRates> = {
   'gpt-6-cyber': { write: 25, write12h: 50, read: 2 },
   'gpt-6-astra': { write: 12.5, read: 1 },
   'gpt-6-sol': { write: 2.5, read: 0.2 },
+  'gpt-6.2-sol': { write: 2.5, read: 0.1 },
   'gpt-6.1-terra': { write: 1.25, read: 0.05 },
   'gpt-6-luna': { write: 0.125, read: 0.01 },
   'chat-latest': { write: 5, read: 0.5 },
@@ -484,6 +489,7 @@ export const cacheTokenValues: Record<string, CacheRates> = {
   'gemini-3.8-flash': { write: 0.75, read: 0.075 },
   // Gemini 4 Argon (implicit caching only) introductory pricing through 2026-11-30; revert to { write: 4, read: 0.2 } on 2026-12-01.
   'gemini-4-argon': { write: 2, read: 0.1 },
+  'gemini-4-hydrogen': { write: 1.5, read: getGeminiHydrogenRates().read },
 };
 
 /**
@@ -506,6 +512,7 @@ export const premiumTokenValues: Record<
   'gpt-6-cyber': { threshold: 272000, prompt: 40, completion: 150 },
   'gpt-6-astra': { threshold: 272000, prompt: 20, completion: 75 },
   'gpt-6-sol': { threshold: 272000, prompt: 4, completion: 15 },
+  'gpt-6.2-sol': { threshold: 272000, prompt: 4, completion: 15 },
   'gpt-6.1-terra': { threshold: 272000, prompt: 2, completion: 7.5 },
   'gpt-6-luna': { threshold: 272000, prompt: 0.2, completion: 0.75 },
   'grok-4.5': { threshold: 200000, prompt: 4, completion: 12 },
@@ -538,6 +545,7 @@ export const premiumCacheTokenValues: Record<
   'gpt-6-cyber': { threshold: 272000, read: 4 },
   'gpt-6-astra': { threshold: 272000, write: 25, read: 2 },
   'gpt-6-sol': { threshold: 272000, write: 5, read: 0.4 },
+  'gpt-6.2-sol': { threshold: 272000, write: 5, read: 0.2 },
   'gpt-6.1-terra': { threshold: 272000, write: 2.5, read: 0.1 },
   'gpt-6-luna': { threshold: 272000, write: 0.25, read: 0.02 },
   'grok-4.7': { threshold: 199999, write: 4, read: 1 },

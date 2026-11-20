@@ -3598,3 +3598,132 @@ describe('primeResources', () => {
     });
   });
 });
+
+describe('primeResources snapshot upload receipts', () => {
+  const sha256 = 'a'.repeat(64);
+  const receipt = {
+    kind: 'user' as const,
+    id: 'user1',
+    storage_session_id: 'upload-session',
+    file_id: 'upload-object',
+    executionProfile: 'default' as const,
+    sandboxFilename: 'chart.csv',
+    provisionedAt: 1,
+    content: { sha256, md5: 'b'.repeat(32), bytes: 12 },
+  };
+  const snapshot = (overrides: Partial<TFile> = {}): TFile => ({
+    user: 'user1',
+    file_id: 'snapshot',
+    filename: 'chart.csv',
+    filepath: '/uploads/snapshot',
+    type: 'text/csv',
+    bytes: 12,
+    object: 'file' as const,
+    usage: 0,
+    embedded: false,
+    source: FileSources.local,
+    context: FileContext.execute_code_snapshot,
+    metadata: {
+      codeDestination: true,
+      sourceDispatchedAt: 1,
+      codeOutput: { messageId: 'message', sha256 },
+      codeEnvRefs: { default: receipt },
+    },
+    ...overrides,
+  });
+  const prime = (
+    file: TFile,
+    checkSessionsAlive: jest.Mock,
+    route: { codeRouteKey?: string; codeBaseUrl?: string } = {},
+  ) =>
+    primeResources({
+      req: { user: { id: 'user1', role: 'USER' } } as unknown as ServerRequest & { user?: IUser },
+      appConfig: {
+        endpoints: { [EModelEndpoint.agents]: { capabilities: [] } as unknown as TAgentsEndpoint },
+      } as AppConfig,
+      getFiles: jest.fn(),
+      filterFiles: jest.fn().mockImplementation(({ files }) => Promise.resolve(files)),
+      tool_resources: {},
+      attachments: Promise.resolve([file]),
+      requestFileSet: new Set<string>(),
+      agentId: 'agent1',
+      enabledToolResources: new Set([EToolResources.execute_code]),
+      checkSessionsAlive,
+      ...route,
+    });
+
+  it('mounts a snapshot from its proven upload instead of queueing it again', async () => {
+    const file = snapshot();
+    const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['snapshot']));
+    const result = await prime(file, checkSessionsAlive);
+
+    expect(checkSessionsAlive).toHaveBeenCalledWith(
+      expect.objectContaining({ files: [file], routeKey: 'default' }),
+    );
+    expect(result.provisionState).toBeUndefined();
+    expect(
+      result.tool_resources?.[EToolResources.execute_code]?.files?.map((f) => f.file_id),
+    ).toEqual(['snapshot']);
+  });
+
+  it.each([
+    ['the stored object could not be proven', snapshot(), new Set<string>(), true],
+    [
+      'the receipt is for other content',
+      snapshot({
+        metadata: {
+          ...snapshot().metadata,
+          codeOutput: { messageId: 'message', sha256: 'c'.repeat(64) },
+        },
+      }),
+      new Set(['snapshot']),
+      false,
+    ],
+    [
+      'the upload recorded no digest',
+      snapshot({
+        metadata: {
+          ...snapshot().metadata,
+          codeEnvRefs: { default: { ...receipt, content: undefined } },
+        },
+      }),
+      new Set(['snapshot']),
+      false,
+    ],
+    [
+      'the receipt belongs to another identity',
+      snapshot({
+        metadata: { ...snapshot().metadata, codeEnvRefs: { default: { ...receipt, id: 'other' } } },
+      }),
+      new Set(['snapshot']),
+      true,
+    ],
+  ])('queues the stored bytes when %s', async (_label, file, alive, probed) => {
+    const checkSessionsAlive = jest.fn().mockResolvedValue(alive);
+    const result = await prime(file, checkSessionsAlive);
+
+    expect(checkSessionsAlive).toHaveBeenCalledTimes(probed ? 1 : 0);
+    expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual(['snapshot']);
+    expect(result.tool_resources?.[EToolResources.execute_code]?.files ?? []).toEqual([]);
+  });
+
+  it('queues every turn on a route whose sandbox keeps its own copy', async () => {
+    const routeKey = 'stateful:workspace';
+    const file = snapshot({
+      metadata: {
+        ...snapshot().metadata,
+        codeEnvRefs: {
+          [routeKey]: { ...receipt, executionProfile: 'stateful', executionRouteKey: routeKey },
+        },
+      },
+    });
+    const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['snapshot']));
+    const result = await prime(file, checkSessionsAlive, {
+      codeRouteKey: routeKey,
+      codeBaseUrl: 'https://code.example',
+    });
+
+    expect(checkSessionsAlive).not.toHaveBeenCalled();
+    expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual(['snapshot']);
+  });
+});

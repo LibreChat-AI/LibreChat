@@ -1,0 +1,247 @@
+import { z } from 'zod';
+import WebSocket from 'ws';
+import { randomUUID } from 'node:crypto';
+import { encodeSdkValue, decodeSdkValue } from './wire';
+
+/** Logical connections may survive replacement of their underlying WebSocket. */
+export interface SdkSocket {
+  readonly readyState: number;
+  readonly bufferedAmount: number;
+  send(data: string): void;
+  close(code?: number): void;
+  on(event: 'message', listener: (data: WebSocket.RawData) => void): this;
+  on(event: 'close' | 'error', listener: () => void): this;
+  once(event: 'close' | 'error', listener: () => void): this;
+}
+
+/** Cancellation requests remote cleanup; settlement waits for its reply (or the RPC deadline). */
+export type SdkRpc = (
+  method: string,
+  data: unknown,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+) => Promise<unknown>;
+export type SdkFrame =
+  | { type: 'call'; id: string; method: string; data: unknown }
+  | { type: 'cancel'; id: string }
+  | { type: 'result'; id: string; data: unknown; failed?: boolean }
+  | { type: 'event'; name: string; data: unknown; metadata?: Record<string, unknown> }
+  | { type: 'snapshot'; data: unknown }
+  | { type: 'done'; data: unknown }
+  | { type: 'error' };
+
+export interface SdkPeer {
+  call: SdkRpc;
+  send(frame: SdkFrame): void;
+  close(): void;
+}
+
+const frameSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('cancel'), id: z.string().uuid() }),
+  z.object({
+    type: z.literal('call'),
+    id: z.string().uuid(),
+    method: z.string().min(1).max(64),
+    data: z.unknown(),
+  }),
+  z.object({
+    type: z.literal('result'),
+    id: z.string().uuid(),
+    data: z.unknown(),
+    failed: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('event'),
+    name: z.string().min(1).max(128),
+    data: z.unknown(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  }),
+  z.object({ type: z.literal('snapshot'), data: z.unknown() }),
+  z.object({ type: z.literal('done'), data: z.unknown() }),
+  z.object({ type: z.literal('error') }),
+]);
+
+/** Ordered dispatch and bounded RPC lifetime. Errors on this boundary never disclose upstream text. */
+export function createSdkPeer(
+  socket: SdkSocket,
+  options: {
+    maxFrameBytes: number;
+    maxBufferedBytes: number;
+    timeoutMs: number;
+    onCall: SdkRpc;
+    onFrame: (frame: SdkFrame) => Promise<void>;
+    onClose: (error: Error) => void;
+    onError?: (error: unknown) => void;
+  },
+): SdkPeer {
+  const pending = new Map<
+    string,
+    { resolve: (data: unknown) => void; reject: (error: Error) => void }
+  >();
+  const incoming = new Map<string, AbortController>();
+  let queue = Promise.resolve();
+  let closed = false;
+  let queuedBytes = 0;
+  const report = (error: unknown) => {
+    try {
+      options.onError?.(error);
+    } catch {
+      /* Diagnostics must not prevent cleanup. */
+    }
+  };
+  const failure = () => new Error('SDK runtime connection failed');
+  const send = (frame: SdkFrame): void => {
+    if (closed || socket.readyState !== WebSocket.OPEN) throw failure();
+    const data = JSON.stringify(encodeSdkValue(frame));
+    if (
+      Buffer.byteLength(data) > options.maxFrameBytes ||
+      socket.bufferedAmount + Buffer.byteLength(data) > options.maxBufferedBytes
+    )
+      throw failure();
+    socket.send(data);
+  };
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    for (const entry of pending.values()) entry.reject(failure());
+    pending.clear();
+    for (const controller of incoming.values()) controller.abort();
+    incoming.clear();
+    options.onClose(failure());
+  };
+  socket.on('close', close);
+  socket.on('error', close);
+  socket.on('message', (raw) => {
+    if (closed) return;
+    const bytes = Buffer.byteLength(raw.toString());
+    if (bytes > options.maxFrameBytes) {
+      socket.close(1009);
+      return;
+    }
+    let frame: SdkFrame;
+    try {
+      frame = frameSchema.parse(decodeSdkValue(JSON.parse(raw.toString())));
+    } catch {
+      socket.close(1008);
+      return;
+    }
+    // Cancel before dispatch as well as during execution, without waiting behind event/hooks.
+    // Unknown/settled IDs are harmless; this cannot cancel another connection's invocation.
+    if (frame.type === 'cancel') {
+      incoming.get(frame.id)?.abort();
+      return;
+    }
+    // RPC replies must bypass the event queue: a handler may itself be awaiting this reply.
+    if (frame.type === 'result') {
+      const entry = pending.get(frame.id);
+      if (entry == null) return;
+      pending.delete(frame.id);
+      if (frame.failed) entry.reject(failure());
+      else entry.resolve(frame.data);
+      return;
+    }
+    if (frame.type === 'call') {
+      if (incoming.has(frame.id)) {
+        close();
+        socket.close(1008);
+        return;
+      }
+      const controller = new AbortController();
+      incoming.set(frame.id, controller);
+      queuedBytes += bytes;
+      if (queuedBytes > options.maxBufferedBytes) {
+        close();
+        socket.close(1009);
+        return;
+      }
+      const dispatch = () =>
+        Promise.resolve()
+          .then(() => {
+            if (closed) throw failure();
+            controller.signal.throwIfAborted();
+            return options.onCall(frame.method, frame.data, undefined, controller.signal);
+          })
+          .then(
+            (data) => send({ type: 'result', id: frame.id, data }),
+            (error) => {
+              report(error);
+              send({ type: 'result', id: frame.id, failed: true, data: null });
+            },
+          )
+          .catch(() => socket.close(1011))
+          .finally(() => {
+            incoming.delete(frame.id);
+            queuedBytes -= bytes;
+          });
+      // Hooks observe all earlier events and can reserve content slots for later ones.
+      // Ordinary RPCs stay reentrant; replies above always bypass this barrier.
+      if (frame.method === 'hook') queue = queue.then(dispatch);
+      else if (frame.method === 'tools')
+        queue = queue.then(() => {
+          void dispatch();
+        });
+      else void dispatch();
+      return;
+    }
+    queuedBytes += bytes;
+    if (queuedBytes > options.maxBufferedBytes) {
+      close();
+      socket.close(1009);
+      return;
+    }
+    queue = queue
+      .then(() => (closed ? undefined : options.onFrame(frame)))
+      .finally(() => {
+        queuedBytes -= bytes;
+      })
+      .catch((error) => {
+        report(error);
+        close();
+        socket.close(1011);
+      });
+  });
+  const call: SdkRpc = async (method, data, timeoutMs = options.timeoutMs, signal) => {
+    signal?.throwIfAborted();
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw failure();
+    const id = randomUUID();
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        try {
+          send({ type: 'cancel', id });
+        } catch {
+          close();
+          socket.close(1011);
+        }
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        pending.delete(id);
+        reject(failure());
+      }, timeoutMs);
+      timer.unref();
+      pending.set(id, {
+        resolve: (value) => {
+          cleanup();
+          resolve(value);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
+      });
+      try {
+        send({ type: 'call', id, method, data });
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
+      } catch (error) {
+        pending.get(id)?.reject(error instanceof Error ? error : failure());
+        pending.delete(id);
+      }
+    });
+  };
+  return { call, send, close };
+}

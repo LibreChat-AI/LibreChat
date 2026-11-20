@@ -18,6 +18,17 @@ export const codeEnvRefSchema: Schema = new Schema(
     executionRouteKey: { type: String },
     provisionedAt: { type: Number },
     sandboxFilename: { type: String },
+    content: {
+      type: new Schema(
+        {
+          sha256: { type: String, required: true },
+          bytes: { type: Number, required: true },
+          md5: { type: String },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
   },
   { _id: false },
 );

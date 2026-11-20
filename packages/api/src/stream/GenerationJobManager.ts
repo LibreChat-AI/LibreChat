@@ -86,7 +86,11 @@ import { InMemoryEventTransport } from './implementations/InMemoryEventTransport
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
 import { attachAskUserQuestionAnswers, normalizeResumeRunStepIndices } from '~/agents/hitl/resume';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
-import { emitChunkWithReceipt } from './internal/chunkPublication';
+import {
+  readChunkEmission,
+  stampChunkEmission,
+  emitChunkWithReceipt,
+} from './internal/chunkPublication';
 import { resolveCoalesceWindowMs } from './internal/coalescing';
 import {
   REDIS_ABORT_TERMINAL_GRACE_MS,
@@ -98,7 +102,7 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
-import { sanitizeJobMetadata } from './metadata';
+import { sanitizeJobMetadata, isListedChatJob } from './metadata';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -519,6 +523,15 @@ function isCoalescableDeltaEvent(eventType: string | undefined): boolean {
   );
 }
 
+/**
+ * Deltas a client appends to text it already holds, and that every emitter folds into the
+ * run's content before emitting. Run-step deltas are left out: OAuth and action prompts emit
+ * them without folding, so a content snapshot cannot be assumed to hold one.
+ */
+function isAppendedTextDelta(eventType: string | undefined): boolean {
+  return eventType === 'on_message_delta' || eventType === 'on_reasoning_delta';
+}
+
 function getReplayStepId(event: t.ServerSentEvent): unknown {
   if (!('event' in event) || !event.data || typeof event.data !== 'object') {
     return undefined;
@@ -911,6 +924,14 @@ class GenerationJobManagerClass {
 
   /** Jobs actively owned by this process, pinned to their durable creation epoch. */
   private ownedJobs = new Map<string, number>();
+
+  /**
+   * This manager's identity on published chunks, with a count of everything it has emitted.
+   * A resume on the replica that hosts a run copies the run's content at a known count, and
+   * the pair lets it recognise its own deltas up to that count when Pub/Sub hands them back.
+   */
+  private readonly emitterId = randomUUID();
+  private emissionOrdinal = 0;
 
   /** Serializes replay-event read/modify/write updates per stream. */
   private replayEventWriteQueues = new Map<string, Promise<void>>();
@@ -3158,6 +3179,8 @@ class GenerationJobManagerClass {
         agentEventDetachedActionProducerRequired: jobData.agentEventDetachedActionProducerRequired,
         agentEventDetachedTerminalEvidence: jobData.agentEventDetachedTerminalEvidence,
         agentEventBindingId: jobData.agentEventBindingId,
+        subagentTaskId: jobData.subagentTaskId,
+        subagentParentConversationId: jobData.subagentParentConversationId,
         agentEventExpectedAction: jobData.agentEventExpectedAction,
         agentEventSuspension: jobData.agentEventSuspension,
         scheduleId: jobData.scheduleId,
@@ -6439,6 +6462,8 @@ class GenerationJobManagerClass {
       sequence: number;
     }> = [];
     let snapshotFrontier = 0;
+    /** This manager's emission count when a hosted run's content was copied for a Redis client. */
+    let localFrontier: number | undefined;
     let snapshotClassified = this._isRedis;
     const classifyEmission = (event: t.ServerSentEvent, sequence: number): void => {
       if (sequence <= snapshotFrontier) {
@@ -6696,6 +6721,12 @@ class GenerationJobManagerClass {
         if (capturedEventSet.has(event) || snapshotCoveredEventSet.has(event)) {
           return;
         }
+        if (localFrontier != null && isAppendedTextDelta((event as { event?: string }).event)) {
+          const emission = readChunkEmission(event);
+          if (emission?.[0] === this.emitterId && emission[1] <= localFrontier) {
+            return;
+          }
+        }
         onChunk(event);
       };
       subscription = await this.attachSubscription(
@@ -6772,6 +6803,34 @@ class GenerationJobManagerClass {
            * through the durable-only recovery path now reflected in `runtime`. */
           cancelResumeSubscription();
           return this.subscribeWithResume(streamId, onChunk, onDone, onError, options);
+        }
+      }
+
+      /**
+       * On the replica that hosts the run, the snapshot's content is the run's live array.
+       * It was read before the subscription existed and is serialized after it, so every
+       * delta in between reached the client twice: once in the snapshot and once from
+       * Pub/Sub. Replace it with a copy taken now, at a known emission count, and let
+       * delivery skip this manager's text and reasoning deltas up to that count. Everything
+       * else is still delivered: the client applies those events idempotently, and only the
+       * content is exact at the count. The copy, the count and the run steps are all local,
+       * so the sync frame waits on no further read.
+       */
+      if (this._isRedis && resumeState != null && pendingOverflow == null && liveOverflow == null) {
+        const frontier = this.emissionOrdinal;
+        const content = this.jobStore.copyHostContent?.(streamId, runtime.createdAt);
+        if (content != null) {
+          localFrontier = frontier;
+          resumeState.aggregatedContent = attachAskUserQuestionAnswers(
+            content,
+            liveJob.resolvedAskUserQuestions ?? [],
+          );
+          resumeState.runSteps = this.withBufferedRunSteps(
+            streamId,
+            runtime.createdAt,
+            resumeState.runSteps,
+            content,
+          );
         }
       }
       if (!resumeState?.pendingAction) {
@@ -7127,6 +7186,11 @@ class GenerationJobManagerClass {
       return;
     }
     const sequence = ++runtime.emissionSequence;
+    /** Counted in the same synchronous step as the caller's fold into the run's content. */
+    const ordinal = ++this.emissionOrdinal;
+    if (this._isRedis) {
+      stampChunkEmission(event, [this.emitterId, ordinal]);
+    }
     let signalSnapshotReady!: () => void;
     const snapshotReady = new Promise<void>((resolve) => {
       signalSnapshotReady = resolve;
@@ -8738,6 +8802,24 @@ class GenerationJobManagerClass {
   }
 
   /**
+   * Keeps a silent run alive. A job's idle clock otherwise advances only with emitted chunks,
+   * so an owner whose run is working without output, such as a child waiting on a long tool
+   * call, calls this on its own heartbeat. Only the replica that owns the runtime may touch.
+   */
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const runtime = this.runtimeState.get(streamId);
+    if (
+      !runtime ||
+      runtime.createdAt !== expectedCreatedAt ||
+      !this.isCurrentRuntime(streamId, runtime) ||
+      this.jobStore.touchJob == null
+    ) {
+      return false;
+    }
+    return this.jobStore.touchJob(streamId, expectedCreatedAt);
+  }
+
+  /**
    * Set reference to the graph's contentParts array.
    */
   setContentParts(
@@ -9079,6 +9161,22 @@ class GenerationJobManagerClass {
     this.clearPreemptIds(runtime, runtime.createdAt, steerIds);
   }
 
+  /** Stored run steps under the ones this replica has seen since, indexed against `content`. */
+  private withBufferedRunSteps(
+    streamId: string,
+    createdAt: number,
+    runSteps: Agents.RunStep[],
+    content: Agents.MessageContentComplex[],
+  ): Agents.RunStep[] {
+    const bufferState = this.runStepBuffers?.get(streamId);
+    const bufferedRunSteps = bufferState?.createdAt === createdAt ? bufferState.steps : [];
+    const runStepsById = new Map(runSteps.map((runStep) => [runStep.id, runStep]));
+    for (const runStep of bufferedRunSteps) {
+      runStepsById.set(runStep.id, runStep);
+    }
+    return normalizeResumeRunStepIndices([...runStepsById.values()], content);
+  }
+
   /**
    * Get resume state for reconnecting clients.
    */
@@ -9205,14 +9303,10 @@ class GenerationJobManagerClass {
       }
     }
     const reconstructedContent = result?.content ?? [];
-    const bufferState = this.runStepBuffers?.get(streamId);
-    const bufferedRunSteps = bufferState?.createdAt === jobData.createdAt ? bufferState.steps : [];
-    const runStepsById = new Map(runSteps.map((runStep) => [runStep.id, runStep]));
-    for (const runStep of bufferedRunSteps) {
-      runStepsById.set(runStep.id, runStep);
-    }
-    const effectiveRunSteps = normalizeResumeRunStepIndices(
-      [...runStepsById.values()],
+    const effectiveRunSteps = this.withBufferedRunSteps(
+      streamId,
+      jobData.createdAt,
+      runSteps,
       reconstructedContent,
     );
     let titleEvent: t.ResumeState['titleEvent'];
@@ -9936,15 +10030,16 @@ class GenerationJobManagerClass {
   }
 
   /**
-   * Get active job IDs for a user.
-   * Returns conversation IDs of running jobs belonging to the user.
+   * The user's running chats: the stream ids a client lists as conversations.
+   * A job whose stream is a subagent child thread is left out. It still answers its own
+   * status and stream reads, and cleanup enumeration still counts it.
    * Performs self-healing cleanup of stale entries.
    *
    * @param userId - The user ID to query
    * @returns Array of conversation IDs with active jobs
    */
   async getActiveJobIdsForUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.jobStore.getActiveJobIdsByUser(userId, tenantId);
+    return this.jobStore.getActiveJobIdsByUser(userId, tenantId, isListedChatJob);
   }
 
   /** Returns every generation whose provider can still mutate user-owned data,

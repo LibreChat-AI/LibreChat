@@ -2,10 +2,17 @@ import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { consumeChatFocus, logger } from '~/utils';
 
-export default function useFocusChatEffect(textAreaRef: React.RefObject<HTMLTextAreaElement>) {
+/**
+ * Focuses the composer a navigation asked focus for. The request is taken by the first composer
+ * to see it, so only the one the route addresses (`enabled`) looks.
+ */
+export default function useFocusChatEffect(
+  textAreaRef: React.RefObject<HTMLTextAreaElement>,
+  enabled = true,
+) {
   const location = useLocation();
   useEffect(() => {
-    if (!textAreaRef?.current || !consumeChatFocus()) {
+    if (!enabled || !textAreaRef?.current || !consumeChatFocus()) {
       return;
     }
     logger.log('conversation', `Focusing textarea on navigation: ${location.pathname}`);
@@ -22,5 +29,5 @@ export default function useFocusChatEffect(textAreaRef: React.RefObject<HTMLText
     /** `location.key` changes on EVERY navigation (including same-path pushes),
      * so a pending focus request is always consumed by the navigation that
      * requested it. */
-  }, [textAreaRef, location.key, location.pathname]);
+  }, [enabled, textAreaRef, location.key, location.pathname]);
 }

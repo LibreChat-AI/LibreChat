@@ -82,6 +82,27 @@ const endedWithoutSummary = (message: TMessage): boolean => {
   return failed;
 };
 
+/**
+ * How a run ended whose connection gave up before it did, from a status that says nothing is
+ * running any more. It completed only if the status says so of this very generation and its
+ * stored rows are in hand; it was stopped if the status says that; anything else, including a
+ * status that names another generation or none, is not known to have gone well, so what is
+ * queued behind the run is left for the reader instead of being sent on a guess.
+ */
+export function resolveLostRunOutcome(
+  status: { status?: string; createdAt?: number },
+  generationCreatedAt: number,
+  read: boolean,
+): RunEnd['outcome'] {
+  if (status.createdAt != null && status.createdAt !== generationCreatedAt) {
+    return 'error';
+  }
+  if (status.status === 'complete' && read) {
+    return 'completed';
+  }
+  return status.status === 'aborted' ? 'aborted' : 'error';
+}
+
 const writtenAt = (message: TMessage): number => {
   const stamp = message.updatedAt ?? message.createdAt;
   return stamp == null ? Number.NaN : Date.parse(stamp);

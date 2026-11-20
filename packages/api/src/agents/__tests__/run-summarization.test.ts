@@ -2505,6 +2505,56 @@ describe('Azure deployment alias', () => {
     expect(azure.headers.get('api-key')).toBe('expanded-azure-key');
   });
 
+  it('forwards the primary agent id on OpenAI and Azure summarizer headers', async () => {
+    jest.replaceProperty(process, 'env', { ...process.env, OPENAI_API_KEY: 'openai-summary-key' });
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.all = { headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' } };
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const compact = async (summarizationConfig: SummarizationConfig) => {
+      (Run.create as jest.Mock).mockClear();
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig,
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      return requests[0];
+    };
+
+    const openAI = await compact({
+      provider: EModelEndpoint.openAI,
+      model: 'gpt-4.1-mini',
+      parameters: { streaming: false },
+    });
+    expect(openAI.url.origin).toBe('https://api.openai.com');
+    expect(openAI.headers.get('X-Agent-Id')).toBe('agent_1');
+
+    const azure = await compact({ model: 'gpt-4.1-mini', parameters: { streaming: false } });
+    expect(azure.url.origin).toBe('https://summary-instance.openai.azure.com');
+    expect(azure.headers.get('X-Agent-Id')).toBe('agent_1');
+  });
+
   it("leaves Azure's reserved URL templates to the summary deployment", async () => {
     jest.replaceProperty(process, 'env', {
       ...process.env,
@@ -3397,6 +3447,28 @@ describe('custom-endpoint provider resolution', () => {
     expect(configuration.defaultHeaders).toEqual({ 'X-Tenant-ID': 'request-tenant' });
   });
 
+  it('forwards the primary agent id in custom-endpoint summarization headers', async () => {
+    const appConfig = makeAppConfig([
+      {
+        name: 'Agent Gateway',
+        baseURL: 'https://gateway.example.com/v1',
+        apiKey: 'gateway-key',
+        headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' },
+      },
+    ]);
+    const agents = await callAndCapture({
+      agents: [makeAgent({ id: 'agent_gateway' })],
+      summarizationConfig: { provider: 'Agent Gateway', model: 'summary-model' },
+      appConfig,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    const configuration = parameters.configuration as Record<string, unknown>;
+
+    expect(configuration.defaultHeaders).toEqual({ 'X-Agent-Id': 'agent_gateway' });
+  });
+
   it('forwards PROXY env var into summarization client configuration', async () => {
     const originalProxy = process.env.PROXY;
     process.env.PROXY = 'http://proxy.internal:3128';
@@ -3647,6 +3719,62 @@ describe('built-in provider request shaping', () => {
       firstPartyEndpoint: true,
       reasoning: { effort: 'minimal' },
     });
+  });
+
+  it.each(['none', 'minimal'])(
+    'normalizes Sol 6.2 summary effort %s after user overrides',
+    async (effort) => {
+      const result = await summarizeWith(
+        { reasoning_effort: effort, temperature: 0.7 },
+        'gpt-6.2-sol',
+      );
+      expect(result).toMatchObject({ firstPartyEndpoint: true, reasoning: { effort: 'low' } });
+      expect(result.temperature).toBeUndefined();
+    },
+  );
+
+  it('clears inherited unsupported controls when switching summaries to Sol 6.2', async () => {
+    const sourceModel = 'gpt-6.1-sol';
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        streaming: false,
+        modelOptions: {
+          model: sourceModel,
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+        addParams: { modelKwargs: { reasoning: { effort: 'none' }, temperature: 0.7 } },
+      },
+      EModelEndpoint.openAI,
+    );
+    const agents = await callAndCapture({
+      agents: [makeAgent({ model: sourceModel, model_parameters: llmConfig })],
+      appConfig: makeAppConfig([]),
+      summarizationConfig: {
+        provider: 'openAI',
+        model: 'gpt-6.2-sol',
+        parameters: { reasoning_effort: 'none' },
+      },
+    });
+    const config = agents[0].summarizationConfig;
+    expect(config).toMatchObject({
+      parameters: {
+        reasoning: { effort: 'low' },
+        modelKwargs: { reasoning: { effort: 'low' } },
+      },
+    });
+    expect(config).toHaveProperty('parameters.temperature', undefined);
+    expect(config).not.toHaveProperty('parameters.modelKwargs.temperature');
+    expect(llmConfig.modelKwargs).toHaveProperty('reasoning.effort', 'none');
+  });
+
+  it('keeps Sol gateway summary controls unchanged', async () => {
+    const result = await summarizeWith(
+      { baseURL: 'https://gateway.internal/v1', reasoning_effort: 'none', temperature: 0.7 },
+      'gpt-6.2-sol',
+    );
+    expect(result).toMatchObject({ reasoning: { effort: 'none' }, temperature: 0.7 });
   });
 
   it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
@@ -5590,10 +5718,17 @@ describe('HITL wiring is gated on hitlCapable', () => {
     },
   );
 
-  it.each([true, false])(
-    'withholds detached task/wakeup capabilities only for enrolled=%s',
-    async (enrolled) => {
-      const f = await executionFixture();
+  // A schedule's completion turn finds its grant again, so its runs keep these capabilities
+  // with or without a grant. A grant that cannot be found again keeps its runs foreground.
+  it.each([
+    ['a schedule grant', true, true],
+    ['no grant', false, true],
+    ['a grant its completion turn could not find again', true, false],
+  ] as const)(
+    'withholds detached task/wakeup capabilities only under such a grant: %s',
+    async (_name, enrolled, detaches) => {
+      const withheld = enrolled && !detaches;
+      const f = await executionFixture('invoke', undefined, undefined, { detaches });
       if (!enrolled) f.snapshot.enrollment = null;
       const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
       const tasks = {
@@ -5617,23 +5752,23 @@ describe('HITL wiring is gated on hitlCapable', () => {
         } as unknown as AppConfig,
       });
       const config = (Run.create as jest.Mock).mock.calls[0][0];
-      expect(config.subagentTasks).toBe(enrolled ? undefined : tasks);
+      expect(config.subagentTasks).toBe(withheld ? undefined : tasks);
       const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
         background: config.subagentTasks != null,
         threadContinuation: true,
       });
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       const agent = config.graphConfig.agents[0];
       expect(agent.subagentConfigs).toEqual([
         expect.objectContaining({ type: 'child', allowNested: true }),
       ]);
       const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
-      expect(names.includes('check_background_task')).toBe(!enrolled);
+      expect(names.includes('check_background_task')).toBe(!withheld);
     },
   );
 

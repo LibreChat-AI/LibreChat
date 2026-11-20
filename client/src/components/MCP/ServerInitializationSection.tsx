@@ -3,6 +3,7 @@ import { RefreshCw, Trash2 } from 'lucide-react';
 import { Button, Spinner } from '@librechat/client';
 import { useLocalize, useMCPServerManager } from '~/hooks';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
+import { getMCPControlState } from './mcpServerUtils';
 import { openInNewTab } from '~/utils';
 
 interface ServerInitializationSectionProps {
@@ -33,6 +34,7 @@ export default function ServerInitializationSection({
     availableMCPServers,
     availableMCPServersMap,
     connectionStatus,
+    connectionViews,
     revokeOAuthForServer,
   } = useMCPServerManager({
     conversationId,
@@ -43,7 +45,8 @@ export default function ServerInitializationSection({
   useMCPRefresh({ enabled: availableMCPServers.length > 0 });
 
   const serverStatus = connectionStatus?.[serverName];
-  const isConnected = serverStatus?.connectionState === 'connected';
+  const view = connectionViews?.[serverName];
+  const isConnected = getMCPControlState(serverStatus, view) === 'connected';
   const hasPendingOAuth =
     requiresOAuth &&
     serverStatus?.requiresOAuth === true &&

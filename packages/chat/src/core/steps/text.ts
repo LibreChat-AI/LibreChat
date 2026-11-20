@@ -151,7 +151,10 @@ export function applySummaryStep(
   );
 }
 
-/** Appends a summary delta to its step's in-flight summary part. */
+/**
+ * Appends a summary delta to its step's in-flight summary part. A delta marked `reset` replaces
+ * what the part held: the attempt that streamed it was abandoned.
+ */
 export function applySummarizeDelta(
   message: TMessage,
   runStep: Agents.RunStep,
@@ -163,7 +166,7 @@ export function applySummarizeDelta(
     message,
     runStep.index + editPrefixOffset,
     contentPart,
-    false,
+    delta.reset === true,
     getStepMetadata(runStep),
   );
 }

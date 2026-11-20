@@ -3,6 +3,7 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Providers, Constants: AgentConstants } = require('@librechat/agents');
 const {
   sendEvent,
+  resolveMCPConnectionStatus,
   createMCPToolApprovalMetadata,
   PENDING_STALE_MS,
   MCPOAuthHandler,
@@ -23,6 +24,7 @@ const {
   resolveJsonSchemaRefs,
   sanitizeGeminiSchema,
   processMCPEnv,
+  createAgentMCPTool,
   preProcessGraphTokens,
   createMCPReauthenticationPrompt,
   createMCPInitializationOAuthPrompts,
@@ -38,7 +40,6 @@ const {
   getServerCustomUserVars,
   requiresEphemeralUserConnection,
   requiresOAuthMachinery,
-  hasRuntimeUrlPlaceholders,
   containsGraphTokenPlaceholder,
   createAuthIdentityContext,
   isOAuthServer,
@@ -848,7 +849,11 @@ async function reconnectServer({
  * @param {import('librechat-data-provider').TMCPAppsPolicy} [params.mcpApps] - Request-admitted MCP Apps policy.
  * @returns { Promise<Array<typeof tool | { _call: (toolInput: Object | string) => unknown}>> } An object with `_call` method to execute the tool input.
  */
-async function createMCPTools({
+function createMCPTools(params) {
+  return createAgentMCPTool(params, createMCPToolsImpl);
+}
+
+async function createMCPToolsImpl({
   agentId,
   res,
   mcpPermissionContext,
@@ -1002,7 +1007,12 @@ async function createMCPTools({
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
-async function createMCPTool({
+function createMCPTool(params) {
+  return createAgentMCPTool(params, createMCPToolImpl);
+}
+
+async function createMCPToolImpl({
+  invokeTool,
   agentId,
   res,
   mcpPermissionContext,
@@ -1192,6 +1202,7 @@ async function createMCPTool({
   }
 
   return createToolInstance({
+    invokeTool,
     scheduledBearerInvocation: bindScheduledMCPBearerInvocation(
       requestScopedConnections,
       agentId,
@@ -1231,6 +1242,7 @@ async function createMCPTool({
 }
 
 function createToolInstance({
+  invokeTool,
   scheduledBearerInvocation,
   scheduledMCPInvocation,
   res,
@@ -1358,7 +1370,7 @@ function createToolInstance({
        * as the jwt-bearer assertion.
        */
       return await oauthPrompt.run(() =>
-        mcpManager.callTool({
+        invokeTool(mcpManager, {
           scheduledBearerInvocation,
           scheduledMCPInvocation,
           serverName,
@@ -1712,22 +1724,7 @@ async function getMCPUserConfigurationState(serverName, config, runtimeContext =
     : 'configured';
 }
 
-function canDetectMCPRuntimeOAuth(config) {
-  return config.requiresOAuth == null && config.apiKey == null && hasRuntimeUrlPlaceholders(config);
-}
-
-/**
- * Get connection status for a specific MCP server
- * @param {string} userId - The user ID
- * @param {string} serverName - The server name
- * @param {import('@librechat/api').ParsedServerConfig} config - The server configuration
- * @param {Map<string, import('@librechat/api').MCPConnection>} appConnections - App-level connections
- * @param {Map<string, import('@librechat/api').MCPConnection>} userConnections - User-level connections
- * @param {Set} oauthServers - Set of OAuth servers
- * @param {{ user?: Partial<IUser>, userMCPAuthMap?: Record<string, Record<string, string>>, loadUserMCPAuthMap?: () => Promise<Record<string, Record<string, string>> | undefined>, loadMCPAllowlists?: () => Promise<{ allowedDomains?: string[] | null, allowedAddresses?: string[] | null }> }} [runtimeContext]
- * @returns {Object} Object containing requiresOAuth, requestScoped, connectionState, and authorizationState
- */
-async function getServerConnectionStatus(
+function getServerConnectionStatus(
   userId,
   serverName,
   config,
@@ -1736,65 +1733,22 @@ async function getServerConnectionStatus(
   oauthServers,
   runtimeContext = {},
 ) {
-  const connection = appConnections.get(serverName) || userConnections.get(serverName);
-  const isStaleOrDoNotExist = connection ? connection?.isStale(config.updatedAt) : true;
-  const configuredOAuth = oauthServers.has(serverName);
-  const liveConnectionOAuth = connection?.usesOAuth?.() === true;
-  const runtimeOAuthCandidate = canDetectMCPRuntimeOAuth(config);
-  const effectiveOAuth = configuredOAuth || liveConnectionOAuth;
-  const requestScoped = requiresEphemeralUserConnection(config);
-  const configurationState = requestScoped
-    ? await getMCPUserConfigurationState(serverName, config, runtimeContext)
-    : undefined;
-
-  const baseConnectionState = isStaleOrDoNotExist
-    ? 'disconnected'
-    : connection?.connectionState || 'disconnected';
-  let finalConnectionState = baseConnectionState;
-  let requiresOAuth = effectiveOAuth;
-  let authorizationState = effectiveOAuth ? 'needs_authorization' : 'not_required';
-
-  // connection state overrides specific to OAuth servers
-  if (effectiveOAuth && baseConnectionState === 'connected') {
-    authorizationState = 'authorized';
-  } else if (effectiveOAuth && baseConnectionState === 'connecting') {
-    authorizationState = 'authorizing';
-  } else if (effectiveOAuth && baseConnectionState === 'error') {
-    authorizationState = 'error';
-  } else if (baseConnectionState === 'disconnected' && (effectiveOAuth || runtimeOAuthCandidate)) {
-    // check if server is actively being reconnected
-    const oauthReconnectionManager = getOAuthReconnectionManager();
-    if (oauthReconnectionManager.isReconnecting(userId, serverName)) {
-      requiresOAuth = true;
-      finalConnectionState = 'connecting';
-      authorizationState = 'authorizing';
-    } else {
-      const { hasActiveFlow, hasFailedFlow } = await checkOAuthFlowStatus(userId, serverName);
-
-      if (hasFailedFlow) {
-        requiresOAuth = true;
-        finalConnectionState = 'error';
-        authorizationState = 'error';
-      } else if (hasActiveFlow) {
-        requiresOAuth = true;
-        finalConnectionState = 'connecting';
-        authorizationState = 'authorizing';
-      } else if (await hasDurableMCPAuthorization(userId, serverName, config, runtimeContext)) {
-        /** OAuth readiness is durable even when this pod has no live connection. */
-        requiresOAuth = true;
-        finalConnectionState = 'connected';
-        authorizationState = 'authorized';
-      }
-    }
-  }
-
-  return {
-    requiresOAuth,
-    ...(requestScoped && { requestScoped: true }),
-    ...(configurationState && { configurationState }),
-    connectionState: finalConnectionState,
-    authorizationState,
-  };
+  return resolveMCPConnectionStatus(
+    userId,
+    serverName,
+    config,
+    appConnections,
+    userConnections,
+    oauthServers,
+    {
+      getConfigurationState: (name, options) =>
+        getMCPUserConfigurationState(name, options, runtimeContext),
+      isReconnecting: (id, name) => getOAuthReconnectionManager().isReconnecting(id, name),
+      getOAuthFlowStatus: checkOAuthFlowStatus,
+      hasAuthorization: (id, name, options) =>
+        hasDurableMCPAuthorization(id, name, options, runtimeContext),
+    },
+  );
 }
 
 module.exports = {

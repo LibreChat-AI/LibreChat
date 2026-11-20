@@ -58,6 +58,11 @@ const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
 const INTERRUPT_TOOL_REPLY_MARKER = 'E2E_INTERRUPT_TOOL_REPLY:';
 const MCP_APP_MARKER = 'E2E_MCP_APP:';
 const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
+/** `E2E_TOOL_LIMIT_PADDED:<spaces>`: call `padded_echo` on every model step, so the
+ *  turn ends at the agent's tool-call limit holding a result padded with that many
+ *  spaces in one unbroken run. */
+const TOOL_LIMIT_PADDED_MARKER = 'E2E_TOOL_LIMIT_PADDED:';
+const PADDED_ECHO_TOOL_NAME = 'padded_echo_mcp_e2e-memory';
 const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
 const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
 const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
@@ -116,6 +121,8 @@ const GATEWAY_ERROR_MARKER = 'E2E_GATEWAY_ERROR:';
 const BARE_GATEWAY_ERROR_MARKER = 'E2E_BARE_GATEWAY_ERROR:';
 const GATEWAY_ERROR_STATUS = { MODEL_RATE_LIMIT: 429, MODEL_NOT_FOUND: 404 };
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
+/** Display and inline math, so a spec can tell KaTeX rendered (it loads on first need). */
+const MATH_REPLY_MARKER = 'E2E_MATH_REPLY';
 const STREAMING_MARKDOWN_REPLY_MARKER = 'E2E_STREAMING_MARKDOWN_REPLY';
 const HIGHLIGHT_CODE_MARKER = 'E2E_HIGHLIGHT_CODE:';
 const STATEFUL_CODE_MARKER = 'E2E_STATEFUL_CODE:';
@@ -555,6 +562,8 @@ function llmConfigReportResponses(graph) {
     model: clientOptions.model ?? clientOptions.modelName ?? null,
     sampling,
     reasoningEffort: modelKwargs.reasoning_effort ?? null,
+    thinkingLevel: clientOptions.thinkingConfig?.thinkingLevel ?? null,
+    maxOutputTokens: clientOptions.maxOutputTokens ?? null,
     maxContextTokens: agent?.maxContextTokens ?? null,
   };
   return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
@@ -722,6 +731,13 @@ function replyResponses(text) {
     };
   }
 
+  if (text.includes(MATH_REPLY_MARKER)) {
+    return {
+      responses: [
+        ['E2E math reply:', '', '$$E = mc^2$$', '', 'Water is \\(\\ce{H2O}\\).'].join('\n'),
+      ],
+    };
+  }
   if (text.includes(MARKDOWN_REPLY_MARKER)) {
     return {
       responses: [
@@ -1532,6 +1548,35 @@ function mcpAppResponses(label, toolNames) {
         type: 'tool_call',
       },
     ],
+  };
+}
+
+/** Never answers in text: each model step calls `padded_echo` again, so only the
+ *  agent's `recursion_limit` ends the turn, and the final step's result is the one
+ *  the save path counts as retained past the last context snapshot. */
+function toolLimitPaddedResponses(padSpaces, toolNames) {
+  if (!toolNames.has(PADDED_ECHO_TOOL_NAME)) {
+    return {
+      responses: [`E2E tool limit unavailable: ${PADDED_ECHO_TOOL_NAME} was not advertised.`],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      return {
+        response: '',
+        toolCalls: [
+          {
+            id: `call_e2e_tool_limit_padded_${invocation}`,
+            name: PADDED_ECHO_TOOL_NAME,
+            args: { text: `step ${invocation}`, pad_spaces: padSpaces },
+            type: 'tool_call',
+          },
+        ],
+      };
+    },
   };
 }
 
@@ -3836,9 +3881,23 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
   }
 
+  if (text.includes('E2E_REPLICA_TOOL:')) {
+    const name = Array.from(toolNames).find((name) => name === 'status_ping_mcp_e2e-status');
+    return name
+      ? {
+          responses: ['', 'E2E replica tool finished'],
+          toolCalls: [{ id: `call_replica_${Date.now()}`, name, args: {}, type: 'tool_call' }],
+        }
+      : { responses: ['E2E replica tool unavailable'] };
+  }
   const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
   if (mcpAppLabel) {
     return mcpAppResponses(mcpAppLabel, toolNames);
+  }
+
+  const toolLimitPadded = getMarkerValue(text, TOOL_LIMIT_PADDED_MARKER);
+  if (toolLimitPadded) {
+    return toolLimitPaddedResponses(Number(toolLimitPadded) || 0, toolNames);
   }
 
   const mcpAppPhaseLabel = getMarkerValue(text, MCP_APP_PHASE_MARKER);

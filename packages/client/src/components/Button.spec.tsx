@@ -10,6 +10,57 @@ jest.mock('react-i18next', () => ({
 }));
 
 describe('Button', () => {
+  it('keeps fold headers in inherited typography with their original hover and focus geometry', () => {
+    render(<Button variant="fold-header">Tool activity</Button>);
+    const header = screen.getByRole('button', { name: 'Tool activity' });
+    expect(header).toHaveAttribute('type', 'button');
+    expect(header).not.toHaveAttribute('data-activity-card');
+    expect(header).toHaveClass(
+      'text-text-secondary',
+      'hover:text-text-secondary',
+      'bg-transparent',
+      'hover:bg-transparent',
+      'rounded-none',
+      'p-0',
+      'py-1',
+      'focus-visible:ring-focus-subtle',
+      'focus-visible:ring-2',
+      'focus-visible:ring-offset-0',
+    );
+    expect(header).not.toHaveClass(
+      'text-sm',
+      'font-theme-control',
+      'whitespace-nowrap',
+      'transition-colors',
+      'h-theme-button',
+    );
+  });
+
+  it('keeps the ordinary button recipe after adding the fold header bypass', () => {
+    render(<Button>Continue</Button>);
+    const button = screen.getByRole('button', { name: 'Continue' });
+    expect(button).toHaveClass('text-sm', 'font-theme-control', 'h-theme-button');
+    expect(button).not.toHaveClass('rounded-none', 'py-1');
+    expect(button).not.toHaveAttribute('data-activity-card');
+  });
+
+  it('keeps the activity card content-sized with native focus and disabled semantics', () => {
+    render(
+      <Button variant="activity-card" disabled>
+        <span>Agent activity</span>
+        <ul>
+          <li>Details</li>
+        </ul>
+      </Button>,
+    );
+    const card = screen.getByRole('button', { name: 'Agent activity Details' });
+    expect(card).toBeDisabled();
+    expect(card).toHaveClass('flex-col', 'w-full', 'text-start', 'bg-surface-secondary');
+    expect(card).not.toHaveClass('h-theme-button', 'whitespace-nowrap', 'disabled:opacity-50');
+    expect(card.className).not.toContain('theme-disabled:');
+    expect(card.className).not.toContain('focus-visible:outline');
+  });
+
   it('keeps a confirming destructive button solid in every theme', () => {
     const destructive = cn(buttonVariants({ variant: 'destructive' }));
 

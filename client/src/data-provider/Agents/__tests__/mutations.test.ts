@@ -54,6 +54,83 @@ const createWrapper = (queryClient: QueryClient) =>
   };
 
 describe('useDeleteAgentMutation', () => {
+  it.each(['legacy', 'direct', 'team'] as const)(
+    'prunes deleted %s targets from list and detail caches before refetch completes',
+    async (kind) => {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const targetId = 'deleted';
+      const parent = {
+        ...createAgent('parent'),
+        ...(kind === 'legacy' && { agent_ids: [targetId, 'kept'] }),
+        subagents: {
+          enabled: true,
+          allowSelf: false,
+          shareFiles: true,
+          agent_ids: kind === 'direct' ? [targetId, 'kept'] : ['kept'],
+          graphs:
+            kind === 'team'
+              ? [
+                  {
+                    type: 'team',
+                    name: 'Team',
+                    description: 'Team',
+                    agent_ids: [targetId],
+                    edges: [],
+                    entry_agent_id: targetId,
+                    result_agent_id: targetId,
+                  },
+                ]
+              : [],
+        },
+      };
+      const expected = {
+        ...parent,
+        ...(kind === 'legacy' && { agent_ids: ['kept'] }),
+        subagents: { ...parent.subagents, agent_ids: ['kept'], graphs: [] },
+      };
+      const unrelated = {
+        ...createAgent('unrelated'),
+        subagents: { enabled: true, agent_ids: ['kept'] },
+      };
+      const keys = [
+        [QueryKeys.agent, parent.id],
+        [QueryKeys.agent, parent.id, 'expanded'],
+      ];
+      const listKey = [QueryKeys.agents, { requiredPermission: PermissionBits.VIEW }];
+      const fetchParent = jest
+        .fn()
+        .mockResolvedValueOnce(parent)
+        .mockResolvedValueOnce(parent)
+        .mockImplementation(() => new Promise(() => {}));
+      for (const key of keys) await queryClient.prefetchQuery(key, fetchParent);
+      queryClient.setQueryData([QueryKeys.agent, unrelated.id], unrelated);
+      queryClient.setQueryData<AgentListResponse>(listKey, {
+        object: 'list',
+        data: [parent, unrelated, createAgent(targetId)],
+        first_id: parent.id,
+        last_id: targetId,
+        has_more: false,
+      });
+      jest.mocked(dataService.deleteAgent).mockResolvedValue();
+      const { result } = renderHook(() => useDeleteAgentMutation(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await act(async () => {
+        await result.current.mutateAsync({ agent_id: targetId });
+      });
+
+      await waitFor(() => expect(fetchParent).toHaveBeenCalledTimes(4));
+      for (const key of keys) expect(queryClient.getQueryData(key)).toEqual(expected);
+      expect(queryClient.getQueryData<AgentListResponse>(listKey)?.data).toEqual([
+        expected,
+        unrelated,
+      ]);
+      expect(queryClient.getQueryData([QueryKeys.agent, unrelated.id])).toBe(unrelated);
+      queryClient.clear();
+    },
+  );
+
   it('refreshes only expanded agent caches with edges that reference the deleted agent', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {

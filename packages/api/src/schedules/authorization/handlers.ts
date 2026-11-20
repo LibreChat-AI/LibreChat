@@ -2,33 +2,36 @@ import {
   confirmScheduleMCPConsentSchema,
   revokeScheduleMCPConsentSchema,
 } from 'librechat-data-provider';
-import type { ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { MCPGrantIdentity, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ScheduleMCPConsentService } from './service';
 import type { ServerRequest } from '~/types';
 import { ScheduleMCPConsentError } from './service';
 
 export interface ScheduleMCPConsentHandlers {
+  /** The offer for a subject that is not stored yet. Absent where there is no such thing. */
+  draft?: (req: ServerRequest, res: Response) => Promise<void>;
   get: (req: ServerRequest, res: Response) => Promise<void>;
   confirm: (req: ServerRequest, res: Response) => Promise<void>;
   revoke: (req: ServerRequest, res: Response) => Promise<void>;
 }
 
-export function createScheduleMCPConsentHandlers(deps: {
-  service: ScheduleMCPConsentService;
-  resolveIdentity: (req: ServerRequest) => Promise<ScheduledMCPIdentity | null>;
+export function createScheduleMCPConsentHandlers<
+  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+>(deps: {
+  service: ScheduleMCPConsentService<Identity>;
+  resolveIdentity: (req: ServerRequest) => Promise<Identity | null>;
+  /** Who a subject being created would act for, from the request that asks about it. */
+  resolveDraft?: (req: ServerRequest) => Promise<Identity | null>;
 }): ScheduleMCPConsentHandlers {
   const handler =
     (
-      operation: (
-        req: ServerRequest,
-        res: Response,
-        identity: ScheduledMCPIdentity,
-      ) => Promise<void>,
+      operation: (req: ServerRequest, res: Response, identity: Identity) => Promise<void>,
+      resolve = deps.resolveIdentity,
     ) =>
     async (req: ServerRequest, res: Response): Promise<void> => {
       try {
-        const identity = await deps.resolveIdentity(req);
+        const identity = await resolve(req);
         if (!identity) {
           res.status(404).json({ code: 'consent_not_found' });
           return;
@@ -47,7 +50,13 @@ export function createScheduleMCPConsentHandlers(deps: {
         res.status(status).json({ code });
       }
     };
+  const { resolveDraft } = deps;
   return {
+    ...(resolveDraft && {
+      draft: handler(async (_req, res, identity) => {
+        res.json(await deps.service.draft(identity));
+      }, resolveDraft),
+    }),
     get: handler(async (_req, res, identity) => {
       res.json(await deps.service.view(identity));
     }),

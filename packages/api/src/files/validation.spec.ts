@@ -1,6 +1,12 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes } from 'librechat-data-provider';
-import { validatePdf, validateBedrockDocument, validateVideo, validateAudio } from './validation';
+import {
+  validatePdf,
+  validateVideo,
+  validateAudio,
+  validateBedrockDocument,
+  getBedrockDocumentLimit,
+} from './validation';
 
 describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
   /** Helper to create a PDF buffer with valid header */
@@ -377,6 +383,21 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
 
       expect(result.isValid).toBe(true);
       expect(result.error).toBeUndefined();
+    });
+  });
+
+  describe('getBedrockDocumentLimit', () => {
+    const claude4 = 'anthropic.claude-sonnet-4-20250514-v1:0';
+
+    it('is 4.5MB by default and 32MB for a type the model exempts', () => {
+      expect(getBedrockDocumentLimit('text/csv')).toBe(mbToBytes(4.5));
+      expect(getBedrockDocumentLimit('application/pdf', undefined, claude4)).toBe(mbToBytes(32));
+      expect(getBedrockDocumentLimit('text/csv', undefined, claude4)).toBe(mbToBytes(4.5));
+    });
+
+    it('gives way to a limit the operator set, lower or higher', () => {
+      expect(getBedrockDocumentLimit('text/csv', mbToBytes(2))).toBe(mbToBytes(2));
+      expect(getBedrockDocumentLimit('text/csv', mbToBytes(10))).toBe(mbToBytes(10));
     });
   });
 

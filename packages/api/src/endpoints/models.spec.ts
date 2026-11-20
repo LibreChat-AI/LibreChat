@@ -1,5 +1,6 @@
 import axios from 'axios';
 import Anthropic from '@anthropic-ai/sdk';
+import { logger } from '@librechat/data-schemas';
 import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
 import type { FetchModelsParams } from './models';
 import type { ServerRequest } from '~/types';
@@ -1256,6 +1257,57 @@ describe('fetchModels caching behavior', () => {
       Time.TWO_MINUTES,
     );
   });
+
+  it.each(['read', 'write', 'token read', 'token write', 'ollama write'])(
+    'returns provider models after a cache %s failure',
+    async (operation) => {
+      const secret = 'sk-CANARY-cache-error';
+      const failure = Object.assign(new Error(`Redis unavailable: ${secret}`), {
+        status: 503,
+        config: { headers: { Authorization: secret } },
+      });
+      const warn = jest.spyOn(logger, 'warn');
+      if (operation === 'read') mockCacheGet.mockRejectedValue(failure);
+      if (operation === 'write' || operation === 'ollama write')
+        mockCacheSet.mockRejectedValue(failure);
+      if (operation === 'token read') {
+        mockCacheGet.mockResolvedValue(['stale-model']);
+        mockTokenConfigGet.mockRejectedValue(failure);
+      }
+      if (operation === 'token write') {
+        mockTokenConfigSet.mockRejectedValue(failure);
+        mockedAxios.get.mockResolvedValue({
+          data: {
+            data: ['cached-model-1', 'cached-model-2'].map((id) => ({
+              id,
+              pricing: { prompt: '0.002', completion: '0.001' },
+              context_length: 1024,
+            })),
+          },
+        });
+      }
+      const ollama = operation === 'ollama write';
+      if (ollama) {
+        mockedAxios.get.mockResolvedValue({ data: { models: [{ name: 'ollama-model' }] } });
+      }
+
+      await expect(
+        fetchModels({
+          apiKey: secret,
+          baseURL: 'https://api.test.com',
+          name: ollama ? 'Ollama' : 'TestAPI',
+          tokenKey: 'test-token-key',
+        }),
+      ).resolves.toEqual(ollama ? ['ollama-model'] : ['cached-model-1', 'cached-model-2']);
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[fetchModels]'), {
+        type: 'Error',
+        status: 503,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+      expect(logAxiosError).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns cached result without making HTTP request', async () => {
     mockCacheGet.mockResolvedValue(['from-cache']);

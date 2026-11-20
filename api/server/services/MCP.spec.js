@@ -526,7 +526,7 @@ describe('tests for the new helper functions used by the MCP connection status e
         [
           mockServerName,
           {
-            connectionState: 'connected',
+            getConnectionState: () => 'connected',
             isStale: jest.fn(() => false),
           },
         ],
@@ -544,6 +544,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: false,
         connectionState: 'connected',
         authorizationState: 'not_required',
@@ -556,7 +557,7 @@ describe('tests for the new helper functions used by the MCP connection status e
         [
           mockServerName,
           {
-            connectionState: 'connecting',
+            getConnectionState: () => 'connecting',
             isStale: jest.fn(() => false),
           },
         ],
@@ -573,6 +574,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: false,
         connectionState: 'connecting',
         authorizationState: 'not_required',
@@ -594,6 +596,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: false,
         connectionState: 'disconnected',
         authorizationState: 'not_required',
@@ -615,6 +618,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: false,
         requestScoped: true,
         connectionState: 'disconnected',
@@ -659,7 +663,7 @@ describe('tests for the new helper functions used by the MCP connection status e
         [
           mockServerName,
           {
-            connectionState: 'connected',
+            getConnectionState: () => 'connected',
             isStale: jest.fn(() => false),
           },
         ],
@@ -668,7 +672,7 @@ describe('tests for the new helper functions used by the MCP connection status e
         [
           mockServerName,
           {
-            connectionState: 'disconnected',
+            getConnectionState: () => 'disconnected',
             isStale: jest.fn(() => false),
           },
         ],
@@ -685,6 +689,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: false,
         connectionState: 'connected',
         authorizationState: 'not_required',
@@ -747,6 +752,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'error',
         authorizationState: 'error',
@@ -786,6 +792,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connecting',
         authorizationState: 'authorizing',
@@ -818,6 +825,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -860,6 +868,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -902,6 +911,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -949,6 +959,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -962,7 +973,7 @@ describe('tests for the new helper functions used by the MCP connection status e
         [
           mockServerName,
           {
-            connectionState: 'connected',
+            getConnectionState: () => 'connected',
             isStale: jest.fn(() => false),
             usesOAuth: jest.fn(() => true),
           },
@@ -983,6 +994,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1020,6 +1032,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         requestScoped: true,
         connectionState: 'connecting',
@@ -1051,6 +1064,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: false,
         connectionState: 'disconnected',
         authorizationState: 'not_required',
@@ -1086,6 +1100,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -1143,6 +1158,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1206,6 +1222,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1259,9 +1276,11 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
+        configurationState: 'needs_configuration',
       });
       expect(findToken).not.toHaveBeenCalled();
     });
@@ -1311,6 +1330,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -1346,6 +1366,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -1373,6 +1394,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connecting',
         authorizationState: 'authorizing',
@@ -1394,7 +1416,7 @@ describe('tests for the new helper functions used by the MCP connection status e
         [
           mockServerName,
           {
-            connectionState: 'connected',
+            getConnectionState: () => 'connected',
             isStale: jest.fn(() => false),
           },
         ],
@@ -1412,6 +1434,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1442,6 +1465,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionStateSource: expect.any(String),
         requiresOAuth: false,
         connectionState: 'disconnected',
         authorizationState: 'not_required',
@@ -2779,64 +2803,70 @@ describe('User parameter passing tests', () => {
       expect(mockCallTool).toHaveBeenCalledTimes(2);
     });
 
-    it('should pass the captured user to MCPManager.callTool when invocation config omits configurable.user', async () => {
-      const mockUser = { id: 'captured-user', email: 'captured@example.com', role: 'USER' };
-      const mockRes = { write: jest.fn(), flush: jest.fn() };
-      const { getRoleByName } = require('~/models');
-      getRoleByName.mockResolvedValue({
-        permissions: {
-          [PermissionTypes.MCP_SERVERS]: {
-            [Permissions.USE]: true,
-          },
-        },
-      });
-
-      const mockCallTool = jest.fn().mockResolvedValue(['ok', null]);
-      mockGetMCPManager.mockReturnValue({
-        callTool: mockCallTool,
-      });
-
-      const mcpTool = await createMCPTool({
-        res: mockRes,
-        user: mockUser,
-        toolKey: `test-tool${D}test-server`,
-        provider: 'openai',
-        userMCPAuthMap: {},
-        availableTools: {
-          [`test-tool${D}test-server`]: {
-            function: {
-              description: 'Cached tool',
-              parameters: { type: 'object', properties: {} },
+    it.each(['agent_root', 'agent_child'])(
+      'passes captured user and tool owner %s when invocation context changes',
+      async (agentId) => {
+        const mockUser = { id: 'captured-user', email: 'captured@example.com', role: 'USER' };
+        const mockRes = { write: jest.fn(), flush: jest.fn() };
+        const { getRoleByName } = require('~/models');
+        getRoleByName.mockResolvedValue({
+          permissions: {
+            [PermissionTypes.MCP_SERVERS]: {
+              [Permissions.USE]: true,
             },
           },
-        },
-      });
+        });
 
-      await expect(
-        mcpTool.invoke(
-          {},
-          {
-            configurable: {
-              user_id: mockUser.id,
-            },
-            metadata: {
-              provider: 'openai',
-              thread_id: 'thread-1',
-              run_id: 'run-1',
-            },
-            toolCall: {},
-          },
-        ),
-      ).resolves.toBe('ok');
+        const mockCallTool = jest.fn().mockResolvedValue(['ok', null]);
+        mockGetMCPManager.mockReturnValue({
+          callTool: mockCallTool,
+        });
 
-      expect(mockCallTool).toHaveBeenCalledWith(
-        expect.objectContaining({
-          serverName: 'test-server',
-          toolName: 'test-tool',
+        const mcpTool = await createMCPTool({
+          agentId,
+          res: mockRes,
           user: mockUser,
-        }),
-      );
-    });
+          toolKey: `test-tool${D}test-server`,
+          provider: 'openai',
+          userMCPAuthMap: {},
+          availableTools: {
+            [`test-tool${D}test-server`]: {
+              function: {
+                description: 'Cached tool',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
+          },
+        });
+
+        await expect(
+          mcpTool.invoke(
+            {},
+            {
+              configurable: {
+                user_id: mockUser.id,
+                requestBody: { conversationId: 'conversation', agentId: 'agent_spoofed' },
+              },
+              metadata: {
+                provider: 'openai',
+                thread_id: 'thread-1',
+                run_id: 'run-1',
+              },
+              toolCall: {},
+            },
+          ),
+        ).resolves.toBe('ok');
+
+        expect(mockCallTool).toHaveBeenCalledWith(
+          expect.objectContaining({
+            serverName: 'test-server',
+            toolName: 'test-tool',
+            user: mockUser,
+            requestBody: { conversationId: 'conversation', agentId },
+          }),
+        );
+      },
+    );
 
     it('should pass captured request body when invocation config omits requestBody', async () => {
       const mockUser = { id: 'captured-body-user', email: 'captured@example.com', role: 'USER' };

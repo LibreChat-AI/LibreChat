@@ -236,6 +236,60 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.artifactUndocking).toBe(true);
   });
 
+  it('carries a disabled side chat flag to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { sideChat: false } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sideChat).toBe(false);
+  });
+
+  it('uses the schema default for side chats when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sideChat).toBe(true);
+  });
+
+  it('carries a disabled session rail flag to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { sessionRail: false } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRail).toBe(false);
+  });
+
+  it('uses the schema default for the session rail when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRail).toBe(true);
+  });
+
+  it('carries a disabled session rail auto-open flag to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { sessionRailAutoOpen: false } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRailAutoOpen).toBe(false);
+  });
+
+  it('opens the session rail by itself by default', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRailAutoOpen).toBe(true);
+  });
+
   it('carries a disabled analytics consent prompt to the clients', async () => {
     const interfaceConfig = await loadDefaultInterface({
       config: { interface: { analyticsConsent: false } },
@@ -518,6 +572,7 @@ describe('welcome screen heading and footer', () => {
     expect(interfaceConfig?.landingHeading).toBe('entity');
     expect(interfaceConfig?.landingFooter).toBe(true);
     expect(interfaceConfig?.messageAuthor).toBe('always');
+    expect(interfaceConfig?.conversationIcons).toBe(true);
   });
 
   it('copies the configured settings through', async () => {
@@ -527,6 +582,7 @@ describe('welcome screen heading and footer', () => {
           landingHeading: 'greeting',
           landingFooter: 'composer',
           messageAuthor: 'whenDifferent',
+          conversationIcons: false,
         },
       },
       configDefaults: getConfigDefaults(),
@@ -534,6 +590,7 @@ describe('welcome screen heading and footer', () => {
     expect(interfaceConfig?.landingHeading).toBe('greeting');
     expect(interfaceConfig?.landingFooter).toBe('composer');
     expect(interfaceConfig?.messageAuthor).toBe('whenDifferent');
+    expect(interfaceConfig?.conversationIcons).toBe(false);
   });
 });
 

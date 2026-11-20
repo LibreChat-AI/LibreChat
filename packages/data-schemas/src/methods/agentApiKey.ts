@@ -185,6 +185,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
         lastUsedAt: key.lastUsedAt,
         expiresAt: key.expiresAt,
         createdAt: key.createdAt,
+        ...(key.binding != null && { bound: true }),
       }));
     } catch (error) {
       logger.error('[listAgentApiKeys] Error listing API keys:', error);

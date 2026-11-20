@@ -3,6 +3,7 @@ const {
   reportLocatorTraversalFailure,
   isEnabled,
   GenerationJobManager,
+  createBackgroundChildAbortGuard,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
@@ -40,7 +41,7 @@ const {
   requireJwtAuth,
   requireTermsAcceptance,
   messageIpLimiter,
-  configMiddleware,
+  strictConfigMiddleware,
   messageUserLimiter,
   loadStreamKeepaliveMs,
 } = require('~/server/middleware');
@@ -78,6 +79,7 @@ const {
   cancelOwnerBackgroundResponse,
 } = require('~/server/services/Responses');
 const management = require('./management');
+const conversations = require('./conversations');
 const skills = require('./skills');
 const openai = require('./openai');
 const { v1 } = require('./v1');
@@ -152,6 +154,7 @@ router.use('/v1/responses', responses);
  */
 router.use('/v1/agents', management);
 router.use('/v1/skills', skills);
+router.use('/v1/conversations', conversations);
 
 /**
  * OpenAI-compatible API routes (API key authentication handled in route file)
@@ -174,10 +177,10 @@ const privateTextIngress = createPrivateTextIngress({
   getLegacyPii: (req) => req.config?.messageFilter?.pii,
   getKey: () => process.env.CREDS_KEY ?? '',
 });
-const chatConfigMiddleware = unless((req) => req.config != null, configMiddleware);
+const chatConfigMiddleware = strictConfigMiddleware;
 router.use(
   '/chat',
-  unless((req) => !isPreDenialTextSubmission(req), configMiddleware),
+  unless((req) => !isPreDenialTextSubmission(req), strictConfigMiddleware),
   unless((req) => !isPrivateTextChatSubmission(req), privateTextIngress),
 );
 router.use(checkBan);
@@ -622,6 +625,12 @@ router.get('/chat/status/:conversationId', async (req, res) => {
  * @access Private
  * @description Mounted before chatRouter to bypass buildEndpointOption middleware
  */
+router.post(
+  '/chat/abort',
+  createBackgroundChildAbortGuard({
+    getJob: (streamId) => GenerationJobManager.getJob(streamId),
+  }),
+);
 router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
   logger.debug(`[AgentStream] ========== ABORT ENDPOINT HIT ==========`);
   logger.debug(`[AgentStream] Method: ${req.method}, Path: ${req.path}`);

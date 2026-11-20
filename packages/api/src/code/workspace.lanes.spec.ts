@@ -73,6 +73,30 @@ describe('toLinkedWorktreeRequest', () => {
     ).toMatchObject({ cwd: 'packages/api', worktree: 'fix-a' });
   });
 
+  it('keeps a detached command detached inside its worktree lane', () => {
+    expect(
+      toLinkedWorktreeRequest({
+        ...base,
+        operation: 'execute_command',
+        command: 'npm test',
+        cwd: '.worktrees/fix-a/packages/api',
+        timeoutMs: 60_000,
+        detached: true,
+      }),
+    ).toEqual({
+      worktree: 'fix-a',
+      request: {
+        ...base,
+        operation: 'execute_command',
+        command: 'npm test',
+        cwd: 'packages/api',
+        timeoutMs: 60_000,
+        detached: true,
+        worktree: 'fix-a',
+      },
+    });
+  });
+
   it.each<[string, WorkspaceToolRequest]>([
     ['a root path', { ...base, operation: 'read_file', path: 'src/index.ts' }],
     ['the worktree directory itself', { ...base, operation: 'read_file', path: '.worktrees/a' }],

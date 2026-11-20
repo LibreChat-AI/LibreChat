@@ -26,6 +26,7 @@ const {
   checkAndIncrementPendingRequest,
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
+  createScheduleExecutionContext,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -72,6 +73,7 @@ const {
   createDisconnectSnapshotQueue,
   isTemporaryTurn,
   getPreliminaryResponseMessageId,
+  describeCreatedTurn,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -2055,6 +2057,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       req,
       res,
       endpointOption,
+      executionContext: createScheduleExecutionContext(req),
       // Use the job's abort controller signal - allows abort via GenerationJobManager.abortJob()
       signal: job.abortController.signal,
       jobCreatedAt,
@@ -2451,6 +2454,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                   req.body.files.length > 0 && { files: req.body.files }),
               },
               streamId,
+              turn: describeCreatedTurn({
+                responseMessageId: respMsgId,
+                sourceMessageId: editedResponseMessageId,
+                isRegenerate,
+                isCompaction,
+                isContinued,
+                editedContent,
+              }),
             },
             { expectedCreatedAt: jobCreatedAt },
           ).catch((err) => {

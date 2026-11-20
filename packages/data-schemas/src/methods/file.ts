@@ -406,7 +406,11 @@ function serializeRunArtifact(
 
 /** Factory function that takes mongoose instance and returns the file methods */
 export function createFileMethods(mongoose: typeof import('mongoose')): {
-  getRunFileCandidates: (fileIds: readonly string[], tenantId?: string | null) => Promise<TFile[]>;
+  getRunFileCandidates: (
+    fileIds: readonly string[],
+    tenantId?: string | null,
+    options?: { storageOnly?: boolean },
+  ) => Promise<TFile[]>;
   claimRunArtifactFile: (scope: RunArtifactScope) => Promise<RunArtifactClaim>;
   publishRunArtifactFile: (input: PublishRunArtifactInput) => Promise<RunArtifactFile>;
   findRunArtifactFile: (scope: RunArtifactScope) => Promise<RunArtifactFile | null>;
@@ -521,15 +525,23 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
   async function getRunFileCandidates(
     fileIds: readonly string[],
     tenantId?: string | null,
+    options?: { storageOnly?: boolean },
   ): Promise<TFile[]> {
     if (fileIds.length === 0) {
       return [];
     }
     const File = mongoose.models.File as Model<IMongoFile>;
-    const files = await File.find({
+    const query = File.find({
       file_id: { $in: fileIds },
       tenantId: tenantId ?? null,
-    }).lean<PlainFileDocument[]>();
+    });
+    // Range-read authorization must not fetch extracted file content for every chunk.
+    if (options?.storageOnly) {
+      query.select(
+        'file_id user source filepath storageKey bytes type filename updatedAt object usage embedded',
+      );
+    }
+    const files = await query.lean<PlainFileDocument[]>();
     return files.map(({ user, _id, ...file }) => ({
       ...file,
       user: String(user),

@@ -102,6 +102,7 @@ jest.mock('@librechat/client', () => ({
       {action}
     </div>
   ),
+  Shimmer: jest.requireActual('@librechat/client').Shimmer,
   Spinner: () => <div data-testid="spinner" />,
   useMediaQuery: () => false,
   useToastContext: () => ({ showToast: jest.fn() }),
