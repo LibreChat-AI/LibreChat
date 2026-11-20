@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { MCPIcon } from '@librechat/client';
+import { MCPIcon, CustomIcon } from '@librechat/client';
 import { PermissionBits, hasPermissions } from 'librechat-data-provider';
 import type { MCPServerStatusIconProps } from '~/components/MCP/MCPServerStatusIcon';
 import type { MCPServerDefinition } from '~/hooks';
@@ -11,7 +11,6 @@ import {
 } from '~/components/MCP/mcpServerUtils';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import { useMCPServerManager, useLocalize } from '~/hooks';
-import CustomIcon from '~/components/ui/CustomIcon';
 import MCPServerDialog from './MCPServerDialog';
 import MCPCardActions from './MCPCardActions';
 import { cn } from '~/utils';

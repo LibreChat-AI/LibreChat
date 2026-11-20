@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { CustomIcon } from '@librechat/client';
 import { LangIcon } from '@librechat/chat/components';
 import { Constants, isActionTool, splitToolCallName } from 'librechat-data-provider';
 import {
@@ -18,7 +19,6 @@ import {
   Wrench,
   ListChecks,
 } from 'lucide-react';
-import CustomIcon from '~/components/ui/CustomIcon';
 import { cn } from '~/utils';
 
 function BashIcon({ className }: { className?: string }) {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { isSvgIcon, detectMonochrome, isSameOriginOrDataIcon } from '~/utils';
+import { isSvgIcon, detectMonochrome, isSameOriginOrDataIcon } from '../utils/icon';
 
 const monochromeCache = new Map<string, boolean>();
 const inFlight = new Map<string, Promise<boolean>>();

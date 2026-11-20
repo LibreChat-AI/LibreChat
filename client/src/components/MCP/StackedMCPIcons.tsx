@@ -1,8 +1,7 @@
 import { useMemo } from 'react';
-import { MCPIcon } from '@librechat/client';
+import { MCPIcon, CustomIcon } from '@librechat/client';
 import type { MCPServerDefinition } from '~/hooks/MCP/useMCPServerManager';
 import { getSelectedServerIcons } from './mcpServerUtils';
-import CustomIcon from '~/components/ui/CustomIcon';
 import { cn } from '~/utils';
 
 interface StackedMCPIconsProps {

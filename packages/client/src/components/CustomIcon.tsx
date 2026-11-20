@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactEventHandler } from 'react';
-import useAdaptiveIcon from '~/hooks/useAdaptiveIcon';
+import type { JSX } from 'react/jsx-runtime';
+import useAdaptiveIcon from '../hooks/useAdaptiveIcon';
 import { cn } from '~/utils';
 
 interface CustomIconProps {
@@ -15,7 +16,7 @@ interface CustomIconProps {
  * SVG glyphs are masked with `currentColor` so they follow the theme; set a
  * `text-*` class to pick the tint. `object-cover` carries over as `mask-size:
  * cover`; anything else letterboxes with `contain`. `custom-icon-tint` repaints
- * the glyph under forced-colors mode (see `style.css`).
+ * the glyph under forced-colors mode (see `theme/parts.css`).
  */
 export default function CustomIcon({
   src,
@@ -23,7 +24,7 @@ export default function CustomIcon({
   className,
   monochrome,
   onError,
-}: CustomIconProps) {
+}: CustomIconProps): JSX.Element {
   const { shouldTint } = useAdaptiveIcon(src, monochrome);
   const decorative = alt === '';
 

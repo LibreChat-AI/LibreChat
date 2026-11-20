@@ -231,14 +231,6 @@ html.high-contrast.dark .btn-neutral:hover {
   background-color: rgb(var(--surface-hover));
 }
 
-/* Forced-colors overrides the `background-color: currentColor` a masked CustomIcon
- * paints with. */
-@media (forced-colors: active) {
-  .custom-icon-tint {
-    background-color: CanvasText !important;
-  }
-}
-
 .ellipsis {
   overflow: hidden;
   white-space: nowrap;

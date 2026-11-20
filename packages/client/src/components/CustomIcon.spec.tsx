@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import CustomIcon from '../CustomIcon';
+import CustomIcon from './CustomIcon';
 
 describe('CustomIcon', () => {
   it('renders a raster image with its source and accessible label', () => {
