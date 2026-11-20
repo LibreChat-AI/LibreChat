@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Maximize2, X } from 'lucide-react';
 import { FileSources } from 'librechat-data-provider';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { cn, Button, useLocalize } from '@librechat/client';
+import { cn, Button, useLocalize, usePortalContainer } from '@librechat/client';
 import ProgressCircle from './ProgressCircle';
 import SourceIcon from './SourceIcon';
 
@@ -22,6 +22,7 @@ const ImagePreview = ({
   alt?: string;
 }): React.JSX.Element | null => {
   const localize = useLocalize();
+  const portals = usePortalContainer();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -142,7 +143,7 @@ const ImagePreview = ({
       </button>
 
       <DialogPrimitive.Root open={isModalOpen} onOpenChange={handleOpenChange}>
-        <DialogPrimitive.Portal>
+        <DialogPrimitive.Portal container={portals}>
           <DialogPrimitive.Overlay
             className="bg-surface-media-overlay/90 fixed inset-0 z-[250]"
             onClick={handleBackgroundClick}

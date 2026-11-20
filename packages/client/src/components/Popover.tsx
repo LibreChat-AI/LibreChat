@@ -1,5 +1,6 @@
 import * as React from 'react';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
+import { usePortalContainer } from '../Providers/PortalContext';
 import { cn } from '~/utils';
 
 /**
@@ -14,7 +15,11 @@ const PopoverTrigger: React.ForwardRefExoticComponent<
   PopoverPrimitive.PopoverTriggerProps & React.RefAttributes<HTMLButtonElement>
 > = PopoverPrimitive.Trigger;
 
-const PopoverPortal: React.FC<PopoverPrimitive.PopoverPortalProps> = PopoverPrimitive.Portal;
+/** Radix's portal, into the element a `PortalProvider` names where the caller names none. */
+const PopoverPortal: React.FC<PopoverPrimitive.PopoverPortalProps> = ({ container, ...props }) => {
+  const fallback = usePortalContainer();
+  return <PopoverPrimitive.Portal container={container ?? fallback} {...props} />;
+};
 
 const PopoverContent: React.ForwardRefExoticComponent<
   PopoverPrimitive.PopoverContentProps & React.RefAttributes<HTMLDivElement>
