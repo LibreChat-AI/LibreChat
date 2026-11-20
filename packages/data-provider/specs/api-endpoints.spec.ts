@@ -23,15 +23,15 @@ describe('withLoginError', () => {
     expect(withLoginError('/login?redirect_to=%2Fc%2Fnew')).toBe('/login?redirect_to=%2Fc%2Fnew');
   });
 
-  it('adds the code as the first query parameter', () => {
+  it('adds redirect=false and the code as the first query parameters', () => {
     expect(withLoginError('/login', 'OPENID_SESSION_ENDED')).toBe(
-      '/login?error=OPENID_SESSION_ENDED',
+      '/login?redirect=false&error=OPENID_SESSION_ENDED',
     );
   });
 
-  it('adds the code after an existing redirect_to', () => {
+  it('adds redirect=false and the code after an existing redirect_to', () => {
     expect(withLoginError('/login?redirect_to=%2Fc%2Fnew', 'OPENID_SESSION_ENDED')).toBe(
-      '/login?redirect_to=%2Fc%2Fnew&error=OPENID_SESSION_ENDED',
+      '/login?redirect_to=%2Fc%2Fnew&redirect=false&error=OPENID_SESSION_ENDED',
     );
   });
 });
