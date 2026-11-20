@@ -32,6 +32,7 @@ import {
   createOpenIDRefreshOwnershipError,
   createOpenIDSessionEndedError,
   isOpenIDRefreshOwnershipError,
+  isOpenIDSessionEndedError,
   reloadOpenIDSessionIfPersisted,
   toOpenIDLogArgument,
 } from './errors';
@@ -1242,40 +1243,7 @@ export function createOpenIDSessionRefreshService(
       );
     }
 
-    let bridgeIdentity: RefreshTokenBridgeIdentity | null = null;
-    let preAuthorizeBridgeVersion: string | null = null;
-    if (needsRefreshTokenSync) {
-      bridgeIdentity = createRefreshTokenBridgeIdentity({
-        user,
-        requestUser: req?.user,
-        userId: identityContext?.appUserId,
-        tenantId: identityContext?.tenantId,
-        openidIssuer: identityContext?.openidIssuer,
-      });
-      if (mode !== 'off' && bridgeIdentity?.userId) {
-        /** `refreshTokenGrant` already rotated this token; bridge it before `authorize` can
-         *  throw `ProviderSessionUnavailableError`, so a check outage cannot strand it. */
-        try {
-          preAuthorizeBridgeVersion = await storeRefreshTokenBridgeWithLease({
-            oldRefreshToken: browserRefreshToken,
-            newRefreshToken: nextRefreshToken,
-            userId: bridgeIdentity.userId,
-            tenantId: bridgeIdentity.tenantId,
-            openidIssuer: bridgeIdentity.openidIssuer,
-            ttl: OPENID_REFRESH_BRIDGE_GRACE_MS,
-            providerSession: mergedProviderSession ?? undefined,
-            assertLeaseOwned,
-          });
-        } catch (bridgeError) {
-          logger.warn(
-            '[OpenIDSessionRefresh] Failed to store pre-authorize refresh-token bridge',
-            toOpenIDLogArgument(bridgeError),
-          );
-        }
-      }
-    }
-
-    /** Single-owner inline renewal: the final authorization, run before any cookie/bridge/session write. */
+    /** Inline renewal (no flight key): the final authorization, run before any cookie/bridge/session write. */
     const inlineAuthOutcome = await providerSessionAuthorizer.authorize({
       ref: mergedProviderSession,
       subject: identityContext?.openidSubject ?? sessionTokens.openidSubject,
@@ -1283,21 +1251,6 @@ export function createOpenIDSessionRefreshService(
       legacy: mergedProviderSession == null,
     });
     if (!inlineAuthOutcome.ok) {
-      if (preAuthorizeBridgeVersion && bridgeIdentity?.userId) {
-        try {
-          await deleteRefreshTokenBridges({
-            refreshTokens: [browserRefreshToken],
-            userId: bridgeIdentity.userId,
-            tenantId: bridgeIdentity.tenantId,
-            version: preAuthorizeBridgeVersion,
-          });
-        } catch (cleanupError) {
-          logger.warn(
-            '[OpenIDSessionRefresh] Failed to remove the denied pre-authorize bridge',
-            toOpenIDLogArgument(cleanupError),
-          );
-        }
-      }
       throw createOpenIDSessionEndedError();
     }
 
@@ -1306,7 +1259,16 @@ export function createOpenIDSessionRefreshService(
      * already sent (SSE streaming), store a recovery bridge instead. Do this before the
      * session save so a transient session-store failure cannot lose an IdP-rotated token.
      */
+    let bridgeIdentity: RefreshTokenBridgeIdentity | null = null;
     if (needsRefreshTokenSync) {
+      bridgeIdentity = createRefreshTokenBridgeIdentity({
+        user,
+        requestUser: req?.user,
+        userId: identityContext?.appUserId,
+        tenantId: identityContext?.tenantId,
+        openidIssuer: identityContext?.openidIssuer,
+      });
+
       await syncRefreshTokenCookie({
         res,
         newRefreshToken: nextRefreshToken,
@@ -1869,8 +1831,10 @@ export function createOpenIDSessionRefreshService(
               successorRefreshToken,
             );
           }
+          /** A revoked refresh or a denied publication must not leave a bridge that a later
+           *  `/refresh` could recover through. */
           if (
-            isOpenIDRefreshOwnershipError(error) &&
+            (isOpenIDRefreshOwnershipError(error) || isOpenIDSessionEndedError(error)) &&
             recoveryBridgeVersion &&
             recoveryBridgeIdentity &&
             recoveryBridgePredecessor &&
@@ -1885,7 +1849,7 @@ export function createOpenIDSessionRefreshService(
               });
             } catch (cleanupError) {
               logger.warn(
-                '[OpenIDSessionRefresh] Failed to remove the owned bridge after refresh revocation',
+                '[OpenIDSessionRefresh] Failed to remove the owned bridge after refresh revocation or denial',
                 toOpenIDLogArgument(cleanupError),
               );
             }
