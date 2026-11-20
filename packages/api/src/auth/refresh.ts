@@ -646,17 +646,12 @@ export async function applyAdminRefresh(
           { upsertSession: deps.upsertSession, deleteSession: deps.deleteSession },
         );
       } catch (error) {
-        const mode = await deps.getMode?.();
-        if (mode === 'record') {
-          logger.warn(
-            '[adminRefresh] Failed to persist the refreshed session; tolerating in record mode',
-            { error },
-          );
-        } else {
-          throw new ProviderSessionUnavailableError('Failed to persist the refreshed session', {
-            cause: error,
-          });
-        }
+        /** Answers 503 in every mode. A rotated token without a Session row has no binding, so
+         *  later logouts could never apply to it. The bridge is already stored, so a retry with
+         *  the same presented token recovers the rotated token and stores the Session row. */
+        throw new ProviderSessionUnavailableError('Failed to persist the refreshed session', {
+          cause: error,
+        });
       }
     }
   }

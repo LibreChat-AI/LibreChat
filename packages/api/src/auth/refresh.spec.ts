@@ -1199,35 +1199,38 @@ describe('applyAdminRefresh', () => {
       expect(deleteRefreshTokenBridges).not.toHaveBeenCalled();
     });
 
-    it('tolerates a session-store failure in record mode, logs a warning, and returns the rotated token', async () => {
+    it('answers 503 on a session-store failure in record mode too', async () => {
       const user = makeUser();
       const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
       const saveError = new Error('session upsert failed');
       const upsertSession = jest.fn().mockRejectedValue(saveError);
       const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
       const getMode = jest.fn().mockResolvedValue('record');
+      const mintToken = jest.fn();
       const deps = makeDepsWithClient(user, {
         authorizeProviderSession,
         upsertSession,
         deleteSession,
         getMode,
+        mintToken,
       });
       const tokenset = makeTokenset({
         refresh_token: 'rotated-refresh',
         claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
       });
 
-      const result = await applyAdminRefresh(tokenset, deps, {
-        userId: String(user._id),
-        previousRefreshToken: 'old-refresh',
-        boundProviderSession: ref,
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          userId: String(user._id),
+          previousRefreshToken: 'old-refresh',
+          boundProviderSession: ref,
+        }),
+      ).rejects.toMatchObject({
+        name: 'ProviderSessionUnavailableError',
+        status: 503,
+        cause: saveError,
       });
-
-      expect(result.refreshToken).toBe('rotated-refresh');
-      expect(logger.warn).toHaveBeenCalledWith(
-        '[adminRefresh] Failed to persist the refreshed session; tolerating in record mode',
-        { error: saveError },
-      );
+      expect(mintToken).not.toHaveBeenCalled();
     });
 
     it('logs and swallows a failure storing the bridge immediately after the grant, continuing the rest of the refresh', async () => {

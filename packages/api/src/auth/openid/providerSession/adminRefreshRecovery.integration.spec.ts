@@ -474,7 +474,7 @@ describe.each(['record', 'enforce'] as const)('admin refresh recovery (%s mode)'
     expect(bridge).toBeNull();
   });
 
-  it('(c) tolerates a session-store failure after rotation, then recovers the bridge on retry', async () => {
+  it('(c) answers 503 on a session-store failure after rotation, then recovers the bridge on retry', async () => {
     const bridgeService = await makeBridgeService();
     const A = 'refresh-c';
     await seedLoggedIn(A, ADMIN_USER_ID);
@@ -491,14 +491,9 @@ describe.each(['record', 'enforce'] as const)('admin refresh recovery (%s mode)'
       },
     });
 
-    if (mode === 'enforce') {
-      expect(first.status).toBe(503);
-    } else {
-      expect(first.status).toBe(200);
-    }
+    expect(first.status).toBe(503);
 
-    // The bridge is stored right after the grant, before the failing session-store step, so it
-    // survives regardless of mode.
+    // The bridge is stored right after the grant, before the failing session-store step.
     const bridgeAfterFirst = await bridgeService.getRefreshTokenBridge({
       oldRefreshToken: A,
       userId: ADMIN_USER_ID,
