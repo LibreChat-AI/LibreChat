@@ -6,6 +6,8 @@ import { applyTenantIsolation } from './plugins/tenantIsolation';
 export interface DiscordApplicationRecord extends DiscordApplication {
   encryptedBotToken: string;
   encryptedClientSecret: string;
+  /** The newest credential observation and its owner. Private: no projection reads it. */
+  credentialFence?: { holder: string; sequence: number };
 }
 
 export function createDiscordApplicationModel(
@@ -29,6 +31,17 @@ export function createDiscordApplicationModel(
           },
           { _id: false },
         ),
+        default: undefined,
+      },
+      credentialFence: {
+        type: new Schema(
+          {
+            holder: { type: String, required: true, maxlength: 256 },
+            sequence: { type: Number, required: true, min: 1 },
+          },
+          { _id: false },
+        ),
+        select: false,
         default: undefined,
       },
       encryptedBotToken: { type: String, required: true, select: false },

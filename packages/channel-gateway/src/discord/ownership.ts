@@ -1,6 +1,7 @@
 import {
   discordGatewayOwnerSchema,
   discordCredentialStateSchema,
+  discordCredentialSequenceSchema,
   discordGatewayBatchSchema,
   discordGatewayBootstrapSchema,
   discordGuildRemovalTargetSchema,
@@ -23,9 +24,11 @@ export class DiscordGatewayControlClient extends ServiceClient {
   constructor(connection: ServiceConnection, transport: typeof fetch = fetch) {
     super({ ...connection, CHANNEL_TENANT_ID: undefined }, transport);
   }
+  /** `sequence` orders one owner's observations; the server ignores one that is not newer. */
   async observeCredentials(
     owner: DiscordGatewayOwner,
     state: DiscordCredentialState,
+    sequence: number,
     signal?: AbortSignal,
   ): Promise<boolean> {
     const response = await this.raw(
@@ -33,6 +36,7 @@ export class DiscordGatewayControlClient extends ServiceClient {
       {
         owner: discordGatewayOwnerSchema.parse(owner),
         state: discordCredentialStateSchema.parse(state),
+        sequence: discordCredentialSequenceSchema.parse(sequence),
       },
       signal,
     );

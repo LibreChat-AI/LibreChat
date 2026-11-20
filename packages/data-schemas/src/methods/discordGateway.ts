@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import {
   discordGatewayOwnerSchema,
   discordCredentialStateSchema,
+  discordCredentialSequenceSchema,
   discordGuildRemovalTargetSchema,
   channelSnowflakeSchema,
 } from 'librechat-data-provider';
@@ -41,7 +42,15 @@ export interface DiscordGatewayPrivateState {
   checkpoints: DiscordGatewayCheckpointRecord[];
 }
 export interface DiscordGatewayStorage {
-  observeCredentials(owner: DiscordGatewayOwner, state: DiscordCredentialState): Promise<boolean>;
+  /**
+   * `sequence` is the owner's own counter. An observation that is not newer than the recorded one
+   * is a successful no-op; false means this owner no longer holds the application.
+   */
+  observeCredentials(
+    owner: DiscordGatewayOwner,
+    state: DiscordCredentialState,
+    sequence: number,
+  ): Promise<boolean>;
   prepareGuildRemoval(
     owner: DiscordGatewayOwner,
     guildId: string,
@@ -187,20 +196,35 @@ export function createDiscordGatewayStorage(
     expiresAt: { $gt: new Date() },
   });
   return {
-    observeCredentials: (owner, state) => {
+    observeCredentials: async (owner, state, sequence) => {
       const parsed = discordCredentialStateSchema.parse(state);
+      const ordinal = discordCredentialSequenceSchema.parse(sequence);
       return operation(owner, false, async (scope, _policy, session) => {
         if (!(await touchLease(mongoose, scope, session))) return false;
-        const result = await applications.updateOne(
+        // The record keeps one fence: the newest observation of its current owner. The filter and
+        // the write are one statement inside the authority transaction, so a late older request
+        // matches nothing. A different holder is a new owner, which starts from its first
+        // observation. `authority` already proved the application is current, so no match here
+        // means only that this observation is not newer.
+        await applications.updateOne(
           {
             tenantId: tenant() ?? null,
             applicationId: owner.applicationId,
             revision: owner.applicationRevision,
+            $or: [
+              { 'credentialFence.holder': { $ne: holder(owner) } },
+              { 'credentialFence.sequence': { $lt: ordinal } },
+            ],
           },
-          { $set: { credentialHealth: { state: parsed, checkedAt: Date.now() } } },
+          {
+            $set: {
+              credentialHealth: { state: parsed, checkedAt: Date.now() },
+              credentialFence: { holder: holder(owner), sequence: ordinal },
+            },
+          },
           { session, runValidators: true },
         );
-        return result.matchedCount === 1;
+        return true;
       });
     },
     prepareGuildRemoval: (owner, guildId) => {

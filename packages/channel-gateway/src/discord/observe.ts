@@ -1,5 +1,5 @@
 import { Counter, Gauge, Histogram } from 'prom-client';
-import type { ChannelRunView } from 'librechat-data-provider';
+import type { ChannelRunView, DiscordCredentialState } from 'librechat-data-provider';
 import type { Registry } from 'prom-client';
 import type { DiscordDiscoverySource, DiscordHealth, DiscordHealthEntry } from './health';
 import type { DiscordRateObservation, DiscordRateRejection } from './rates';
@@ -212,6 +212,20 @@ export function discordRestStatus(status: number | undefined): DiscordRestStatus
   return status < 500 ? '4xx' : '5xx';
 }
 
+/** The same credential evidence drives private health and persisted operator status. */
+export function discordCredentialObservation(
+  observation: DiscordApplicationObservation,
+): DiscordCredentialState | undefined {
+  if (observation.type === 'stop')
+    return observation.reason === 'credentials' ? 'invalid' : undefined;
+  if (observation.type === 'session')
+    return observation.event === 'ready' || observation.event === 'resumed' ? 'valid' : undefined;
+  if (observation.type !== 'rest' || !botRoutes.has(discordRestRoute(observation.route))) return;
+  const status = discordRestStatus(observation.status);
+  if (status === '2xx') return 'valid';
+  if (status === '401') return 'invalid';
+}
+
 const prefix = 'channel_gateway_discord_';
 
 /**
@@ -375,16 +389,14 @@ export function createDiscordTelemetry(options: {
       }
       let released = false;
       const observeApplication = (observation: DiscordApplicationObservation): void => {
+        const credential = discordCredentialObservation(observation);
+        if (credential) entry?.credential(credential === 'valid' ? 'ok' : 'rejected');
         switch (observation.type) {
           case 'rest': {
             const route = discordRestRoute(observation.route);
             const status = discordRestStatus(observation.status);
             rest.inc({ route, status });
             if (!entry || !botRoutes.has(route)) return;
-            // Only a 2xx or a 401 says anything about the bot token. A 5xx, a 429 or a missing
-            // response proves nothing, and a 403 or 404 on a member or thread read is per user.
-            if (status === '2xx') entry.credential('ok');
-            else if (status === '401') entry.credential('rejected');
             if (!writeRoutes.has(route)) return;
             // 404 is what Discord answers for a message or channel a user deleted, so only a
             // 403 on a bot write is a bot side permission denial.
@@ -405,7 +417,6 @@ export function createDiscordTelemetry(options: {
             const { shardId } = observation;
             if (observation.event === 'ready' || observation.event === 'resumed') {
               entry.native('up', shardId);
-              entry.credential('ok');
             } else if (observation.event === 'closed_transient') entry.native('closed', shardId);
             else if (observation.event === 'closed_fatal') entry.fatal();
             else if (observation.event === 'gap') entry.native('gap', shardId);
@@ -418,7 +429,6 @@ export function createDiscordTelemetry(options: {
             return;
           case 'stop':
             stops.inc({ reason: label(discordStopReasons, observation.reason) });
-            if (observation.reason === 'credentials') entry?.credential('rejected');
             if (
               observation.reason === 'credentials' ||
               observation.reason === 'configuration' ||

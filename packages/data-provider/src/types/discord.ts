@@ -3,6 +3,8 @@ import type { DiscordAgentChannel } from './channels';
 import { channelSnowflakeSchema } from '../channelProvider';
 export const discordPublicKeySchema = z.string().regex(/^[a-f\d]{64}$/i);
 export const discordCredentialStateSchema = z.enum(['valid', 'invalid']);
+/** One owner's observation counter. Storage compares it, never a clock, and ignores what is not newer. */
+export const discordCredentialSequenceSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 export const discordCredentialHealthSchema = z
   .object({
     state: discordCredentialStateSchema,

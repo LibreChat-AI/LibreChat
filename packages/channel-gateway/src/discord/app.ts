@@ -11,6 +11,7 @@ import type { Logger } from '../types';
 import { observeDiscordProvider, safeDiscordObserver, noopDiscordTelemetry } from './observe';
 import { DiscordReplyClient, deliverDiscordReply } from './reply';
 import { DiscordGatewayControlClient } from './ownership';
+import { DiscordCredentialReporter } from './credentials';
 import { ChannelWorker, recoveryEvent } from '../worker';
 import { createDiscordWorkerProvider } from './worker';
 import { withDiscordApplicationLease } from './lease';
@@ -138,7 +139,18 @@ export class DiscordGatewayApp {
       async (ownedSignal) => {
         // The health entry lives exactly as long as this lease: released with it, replaced by a new owner.
         const scope = this.scope(owner);
-        const { observe } = scope;
+        const credentials = new DiscordCredentialReporter({
+          owner,
+          intervalMs: this.policy.health.observationTtlMs,
+          retryMs: this.policy.health.observationRetryMs,
+          write: (authority, state, sequence) =>
+            this.ownership.observeCredentials(authority, state, sequence),
+        });
+        const metrics = safeDiscordObserver(scope.observe);
+        const observe: DiscordApplicationObserver = (observation) => {
+          credentials.observe(observation);
+          metrics(observation);
+        };
         const context: OwnedApplication = {
           owner,
           signal: ownedSignal,
@@ -155,7 +167,11 @@ export class DiscordGatewayApp {
           try {
             await Promise.allSettled([...context.tasks]);
           } finally {
-            scope.release();
+            try {
+              await credentials.close();
+            } finally {
+              scope.release();
+            }
           }
         }
       },
