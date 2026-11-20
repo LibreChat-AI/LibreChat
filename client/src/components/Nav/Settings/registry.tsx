@@ -841,7 +841,16 @@ export const registry: SettingEntry[] = [
     tab: ACCOUNT,
     section: 'connections',
     labelKey: 'com_ui_discord_title',
-    keywords: ['discord', 'guild', 'server', 'application', 'organization', 'connect'],
+    keywords: [
+      'discord',
+      'guild',
+      'server',
+      'application',
+      'organization',
+      'connect',
+      'dm',
+      'direct message',
+    ],
     Component: DiscordSettings,
   },
   {

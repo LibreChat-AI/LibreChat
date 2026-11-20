@@ -53,6 +53,7 @@ import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { discordCallbackLabels } from '~/components/OAuth/discord';
 import { settingsTargetAtom } from '~/components/Nav/Settings';
 import { useAuthContext, useLocalize } from '~/hooks';
+import Dm from './Dm';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
 const confirmAtom = atom<DiscordGuild | null>(null);
@@ -206,7 +207,16 @@ function SettingsControl({
         mainClassName="max-h-[70dvh] overflow-y-auto"
         showCloseButton
         showCancelButton={false}
-        main={open ? <Discord {...props} showDescription={false} /> : null}
+        main={
+          open ? (
+            <div className="space-y-6">
+              <Discord {...props} showDescription={false} />
+              <div className="border-border-light border-t pt-6">
+                <Dm principalKey={JSON.stringify([props.tenantId ?? '_', props.userId])} />
+              </div>
+            </div>
+          ) : null
+        }
       />
     </OGDialog>
   );
@@ -566,6 +576,12 @@ function Setup({
         : guilds.refetch());
     }
   };
+  // Server management is admin-only; everyone else sees just their own Discord settings.
+  const forbidden = [apps.error, guilds.error].some(
+    (error) =>
+      typeof error === 'object' && error !== null && 'status' in error && error.status === 403,
+  );
+  if (forbidden) return null;
   return (
     <div className="space-y-4">
       {showDescription && (

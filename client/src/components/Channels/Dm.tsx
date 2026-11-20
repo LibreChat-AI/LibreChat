@@ -257,11 +257,13 @@ function Selections({ principalKey }: { principalKey: string }) {
     if (trigger.current?.isConnected) trigger.current.focus();
     else heading.current?.focus();
   };
+  // Nothing to show or revoke while new selections are off: stay out of the way.
+  if (selections.isSuccess && !enabled && rows.length === 0) return null;
   return (
     <section className="space-y-3" aria-labelledby={`${id}-heading`}>
-      <h2 id={`${id}-heading`} ref={heading} tabIndex={-1} className="text-sm font-medium">
+      <h3 id={`${id}-heading`} ref={heading} tabIndex={-1} className="text-sm font-semibold">
         {localize('com_ui_discord_dm_title')}
-      </h2>
+      </h3>
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_description')}</p>
       {selections.isLoading && (
         <div role="status">

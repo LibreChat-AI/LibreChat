@@ -26,6 +26,11 @@ jest.mock('librechat-data-provider', () => {
       connectDiscordGuild: jest.fn(),
       cancelDiscordInstall: jest.fn(),
       disconnectDiscordGuild: jest.fn(),
+      listDiscordDmSelections: jest.fn(async () => ({ enabled: false, selections: [] })),
+      channelIdentityClient: {
+        ...actual.dataService.channelIdentityClient,
+        list: jest.fn(async () => []),
+      },
     },
   };
 });
@@ -145,7 +150,24 @@ test('loads independent metadata, server URLs and configuration-needed state', a
   expect(screen.queryByLabelText('com_ui_discord_callback')).toBeNull();
 });
 
-test.each([403, 404])(
+test('hides server management from people without organization authority', async () => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { status: 403 }));
+  const client = new QueryClient({ logger: { log: () => {}, warn: () => {}, error: () => {} } });
+  render(
+    <QueryClientProvider client={client}>
+      <Discord userId="member" />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: 'com_ui_discord_app_create' })).toBeNull(),
+  );
+  expect(screen.queryByText('com_ui_discord_admin')).toBeNull();
+});
+
+test.each([404])(
   'explains management authority status %s and retries without Slack',
   async (status) => {
     jest
