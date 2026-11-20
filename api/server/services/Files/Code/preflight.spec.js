@@ -21,8 +21,11 @@ jest.mock('librechat-data-provider', () => ({
   })),
 }));
 
+const mockReleasePreparedCodeOutputBuffer = jest.fn();
+
 jest.mock('./process', () => ({
   prepareCodeOutputForInspection: (...args) => mockPrepareCodeOutputForInspection(...args),
+  releasePreparedCodeOutputBuffer: (...args) => mockReleasePreparedCodeOutputBuffer(...args),
 }));
 
 const { logger } = require('@librechat/data-schemas');
@@ -81,6 +84,33 @@ describe('preflightCodeOutputBatch Code API routing', () => {
     expect(mockRunCodeOutputBatchPreflight).toHaveBeenCalledWith(
       expect.objectContaining({ concurrency: 2 }),
     );
+  });
+
+  it('evicts a discarded prefetch through the same Code API route', async () => {
+    const req = { config: {}, user: { id: 'user-1' } };
+    mockRunCodeOutputBatchPreflight.mockImplementationOnce(async ({ release }) => {
+      release({ file: { id: 'file-1', name: 'output.txt' }, sessionId: 'session-1' });
+      return [];
+    });
+
+    await preflightCodeOutputBatch({
+      req,
+      artifact: { files: [{ id: 'file-1', name: 'output.txt' }] },
+      codeExecutionContext: {
+        baseUrl: 'https://code-stateful.example.com',
+        executionProfile: 'stateful',
+        executionRouteKey: 'stateful:route',
+      },
+    });
+
+    expect(mockReleasePreparedCodeOutputBuffer).toHaveBeenCalledWith({
+      req,
+      id: 'file-1',
+      session_id: 'session-1',
+      codeApiBaseUrl: 'https://code-stateful.example.com',
+      executionProfile: 'stateful',
+      executionRouteKey: 'stateful:route',
+    });
   });
 
   /* The batch degrades an uninspectable artifact to the download fallback and

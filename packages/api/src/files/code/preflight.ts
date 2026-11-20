@@ -68,6 +68,12 @@ export interface PreflightCodeOutputBatchInput {
   readonly prepare: (input: PrepareCodeOutputInput) => Promise<PreparedCodeOutput>;
   /** Downloads prefetched at once (`concurrency.codeOutputDownloads`); `1` keeps the batch serial. */
   readonly concurrency?: number;
+  /** Drops whatever a `prepare` call retained outside the batch (a request-scoped
+   *  buffer cache) for a prefetched file the batch discards before a full-cap retry. */
+  readonly release?: (input: {
+    readonly file: CodeOutputArtifactFile;
+    readonly sessionId?: string;
+  }) => void;
   /** Reports an artifact whose bytes could not be fetched for inspection.
    *  The batch degrades that entry to the download fallback and the turn
    *  still succeeds, so this callback is the only trace the failure leaves;
@@ -139,8 +145,9 @@ type PrefetchAttempt =
  * prefetch could not fetch, or fetched under a smaller cap than the serial
  * pass allows, is simply prepared again by that pass, which keeps its result
  * identical to a serial run. Before such a second download the pass releases
- * the prefetched bytes of that file and every later one, so a retry never
- * holds more than the serial pass would. Batches under active content
+ * the prefetched bytes of that file and every later one, including the copies
+ * `release` evicts from the caller's cache, so a retry never holds more than
+ * the serial pass would. Batches under active content
  * inspection stay serial, as do batches with a concurrency of one.
  */
 async function prefetchCodeOutputs(
@@ -258,7 +265,13 @@ export async function preflightCodeOutputBatch(
     } else if (attempt != null && transportBytes <= attempt.maxBytes) {
       throw attempt.error;
     }
-    prefetched.fill(undefined, index);
+    for (let later = index; later < prefetched.length; later++) {
+      const discarded = prefetched[later];
+      if (discarded != null && 'prepared' in discarded) {
+        input.release?.({ file: entries[later].file, sessionId: entries[later].sessionId });
+      }
+      prefetched[later] = undefined;
+    }
     return input.prepare({
       file: entry.file,
       sessionId: entry.sessionId,
