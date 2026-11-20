@@ -32,7 +32,7 @@ const ownershipTrackingStart = '2020-01-01T00:00:00.000Z';
 const read = () => File.findOne({ file_id: data.file_id }).lean();
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
   File = mongoose.model('File', fileSchema);
   await File.init();

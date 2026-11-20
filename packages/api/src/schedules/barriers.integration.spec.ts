@@ -49,7 +49,7 @@ async function fixture(
   store: IJobStoreV2 = new InMemoryJobStore({ ttlAfterComplete: 0 }),
   retainInitially = false,
 ) {
-  const mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  const mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   const database = new mongoose.Mongoose();
   await database.connect(mongo.getUri(), { autoIndex: false });
   createModels(database);

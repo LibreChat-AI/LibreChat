@@ -28,7 +28,7 @@ function input(id: string, ownerId: string): CodeEnvironmentSetupInput {
 describe('staged browser setup registry', () => {
   let mongo: MongoMemoryServer;
   beforeAll(async () => {
-    mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     createModels(mongoose);
     await Promise.all(Object.values(mongoose.models).map((model) => model.init()));

@@ -71,7 +71,7 @@ describe('mongoMeili findOneAndUpdate with includeResultMetadata (saveConvo path
     ({ createConversationModel } = await import('~/models/convo'));
     mongoServer = await MongoMemoryReplSet.create({
       replSet: { count: 1 },
-      instanceOpts: [{ args: ['--nounixsocket'] }],
+      instanceOpts: [{ args: process.platform === 'win32' ? [] : ['--nounixsocket'] }],
     });
     await mongoose.connect(mongoServer.getUri());
     conversationModel = createConversationModel(mongoose) as unknown as SchemaWithMeiliMethods;

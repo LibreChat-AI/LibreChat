@@ -13,9 +13,9 @@ describe.each([false, true])('principal storage with transactions: %s', (transac
     mongo = transactions
       ? await MongoMemoryReplSet.create({
           replSet: { count: 1, storageEngine: 'wiredTiger' },
-          instanceOpts: [{ args: ['--nounixsocket'] }],
+          instanceOpts: [{ args: process.platform === 'win32' ? [] : ['--nounixsocket'] }],
         })
-      : await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+      : await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     createModels(mongoose);
     // Transactions must not race the fixture’s background collection/index initialization.

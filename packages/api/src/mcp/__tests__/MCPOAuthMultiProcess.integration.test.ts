@@ -241,7 +241,7 @@ describeWithRedis('MCP OAuth credential lifecycle across separate replica proces
      * `--nounixsocket` keeps mongod off its hardcoded /tmp socket path, which a read-only root
      * filesystem rejects with an opaque fassert failure. It changes nothing about the server.
      */
-    mongod = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongod = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   }, BOOT_TIMEOUT_MS);
 
   afterAll(async () => {

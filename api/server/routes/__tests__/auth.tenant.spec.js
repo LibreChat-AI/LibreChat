@@ -44,7 +44,7 @@ describe.each([false, true])('pre-auth tenant routes (strict=%s)', (strictMode) 
     bcrypt = require('bcryptjs');
     schemas = require('@librechat/data-schemas');
     api = require('@librechat/api');
-    mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     schemas.createModels(mongoose);
     models = require('~/models');

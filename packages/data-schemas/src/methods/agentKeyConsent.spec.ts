@@ -73,7 +73,7 @@ const admit = (subject: AgentKeyMCPIdentity = identity, revision = 'grant-1') =>
   });
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   storage = createAgentKeyMCPConsentStorage(mongoose);

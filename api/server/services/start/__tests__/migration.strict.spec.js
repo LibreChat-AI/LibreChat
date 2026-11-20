@@ -27,7 +27,7 @@ const originalStrict = process.env.TENANT_ISOLATION_STRICT;
 
 beforeAll(async () => {
   process.env.TENANT_ISOLATION_STRICT = 'true';
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   methods = createMethods(mongoose);

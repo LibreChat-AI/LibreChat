@@ -69,7 +69,7 @@ describe('Shared-link directory principal provisioning', () => {
   };
 
   beforeAll(async () => {
-    mongoServer = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongoServer = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongoServer.getUri());
     createModels(mongoose);
     ({ User, Group, AclEntry } = mongoose.models);

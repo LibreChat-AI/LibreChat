@@ -53,7 +53,7 @@ function synchronizeAbsentReads(assistantId: string, count: number) {
 }
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongoServer = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongoServer.getUri());
   await Assistant.init();
 });

@@ -601,7 +601,7 @@ describe('scheduled MCP connection initialization', () => {
       const { MongoMemoryServer } = require('mongodb-memory-server');
       const { createModels, createMethods } = require('@librechat/data-schemas');
       const database = new (require('mongoose').Mongoose)();
-      const mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+      const mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
       await database.connect(mongo.getUri(), { autoIndex: false });
       createModels(database);
       const methods = createMethods(database);

@@ -134,7 +134,7 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
   });
   beforeAll(async () => {
     await admin.query(`CREATE SCHEMA ${schema}`);
-    mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   }, 90_000);
   beforeEach(async () => {
     jest.clearAllMocks();

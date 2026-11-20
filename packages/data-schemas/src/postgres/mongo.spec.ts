@@ -14,7 +14,7 @@ describe('CLI Mongo favorite snapshots', () => {
   let server: MongoMemoryServer;
   const database = new mongoose.Mongoose();
   beforeAll(async () => {
-    server = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    server = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   }, 90000);
   beforeEach(async () => {
     await database.connect(server.getUri(), { autoCreate: false, autoIndex: false });

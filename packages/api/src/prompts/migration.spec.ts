@@ -16,7 +16,7 @@ let methods: ReturnType<typeof createMethods>;
 let PromptGroupModel: Model<IPromptGroupDocument>;
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   methods = createMethods(mongoose);

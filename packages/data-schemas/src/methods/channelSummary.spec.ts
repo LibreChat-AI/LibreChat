@@ -62,7 +62,7 @@ async function read(scope: ChannelRunRecord): Promise<ChannelSummaryRow[]> {
   });
 }
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
   createChannelRunModel(mongoose);
   await mongoose.models.ChannelRun.init();

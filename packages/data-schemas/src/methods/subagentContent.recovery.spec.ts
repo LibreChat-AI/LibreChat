@@ -22,7 +22,7 @@ const methods = createSubagentContentMethods(mongoose);
 const queries: CommandStartedEvent['command'][] = [];
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
   Content = createSubagentContentModel(mongoose);
   await mongoose.connect(mongo.getUri(), { monitorCommands: true });
   await Content.init();

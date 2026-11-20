@@ -54,7 +54,7 @@ describe('Generated file snapshots', () => {
   const paths = () => ({ publicPath: directory, uploads: path.join(directory, 'uploads') });
 
   beforeAll(async () => {
-    mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     const File = mongoose.model('File', fileSchema);
     await File.init();

@@ -117,7 +117,7 @@ describe('browser setup HTTP protocol boundary', () => {
     process.env.CODEAPI_JWT_ENABLED = 'true';
     process.env.CODEAPI_JWT_PRIVATE_KEY = privateKey;
     process.env.CODE_SETUP_TEST_ADMIN = 'server-only-administrator';
-    mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+    mongo = await MongoMemoryServer.create({ instance: { args: process.platform === 'win32' ? [] : ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     createModels(mongoose);
     await Promise.all(Object.values(mongoose.models).map((model) => model.init()));
