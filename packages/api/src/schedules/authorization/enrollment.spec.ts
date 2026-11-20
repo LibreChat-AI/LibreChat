@@ -109,10 +109,19 @@ it('inspects only the declared servers the agents select, and hands over no decl
           },
         },
       },
-      // The agents select a tool on `warehouse` alone. `idle` is declared and unused; nothing
-      // is declared for `notes`.
+      // The agents select a tool on `warehouse` alone. `idle` is declared and attached with
+      // no tool selected, which leaves its marker among the agent's tools; nothing is
+      // declared for `notes`.
       mcpConfig: { warehouse: server('warehouse'), idle: server('idle'), notes: server('notes') },
     }),
+  );
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools: ['query_mcp_warehouse', 'sys__server__sys_mcp_idle'],
+    })),
   );
   expect(await resolve(identity, {})).toHaveLength(1);
   expect(deps.ensureConfigServers).toHaveBeenCalledTimes(1);

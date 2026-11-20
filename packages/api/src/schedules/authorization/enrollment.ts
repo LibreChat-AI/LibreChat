@@ -96,6 +96,14 @@ export function createScheduleMCPEnrollmentResolver<
 }
 
 /**
+ * Whether a key selects something on an MCP server: a tool, or every tool there. The marker
+ * that only attaches a server to an agent, with no tool selected, does not.
+ */
+const selectsTool = (key: string): boolean =>
+  key.includes(Constants.mcp_delimiter) &&
+  !key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`);
+
+/**
  * The operator's servers to hand the registry, so that a declared server the agents use comes
  * back as a run will see it. A grant is bound to that configuration, and inspection fills in
  * what the operator left out (whether the server requires OAuth): the entry as written would
@@ -117,10 +125,10 @@ async function configured(
   const candidates = [...names, ...aliases.keys()];
   const selected = new Set<string>();
   for (const { name: key } of tools) {
-    if (!key.includes(Constants.mcp_delimiter)) continue;
-    const [, alias] = splitMCPToolKey(key, candidates);
+    if (!selectsTool(key)) continue;
+    const [tool, alias] = splitMCPToolKey(key, candidates);
     const name = alias && (raw[alias] ? alias : aliases.get(alias));
-    if (name && declared.has(name)) selected.add(name);
+    if (tool && name && declared.has(name)) selected.add(name);
   }
   const entries = Object.entries(raw);
   const rest = Object.fromEntries(entries.filter(([name]) => !declared.has(name)));
@@ -221,11 +229,7 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
      */
     const used = new Set<string>();
     for (const { name: key, agentId } of tools) {
-      if (
-        !key.includes(Constants.mcp_delimiter) ||
-        key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`)
-      )
-        continue;
+      if (!selectsTool(key)) continue;
       // A selection of every tool on a server is kept under its marker (`mcp_all`): it names
       // no tool to tick, but the server is in use, and a whole-agent grant covers it.
       const [tool, alias] = splitMCPToolKey(key, candidates);
