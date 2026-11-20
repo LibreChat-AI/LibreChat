@@ -86,6 +86,42 @@ it('binds the configuration a run will see, which inspection completes, not the 
   expect(configurationRevision).toBe(getScheduledMCPConfigurationRevision(inspected, binding));
   expect(deps.getServers).toHaveBeenCalledWith(expect.anything(), {});
 });
+it('inspects only the declared servers the agents select, and hands over no declared server as written', async () => {
+  const { deps, resolve } = setup();
+  const server = (host: string) => ({
+    type: 'streamable-http',
+    url: `https://${host}.example/mcp`,
+  });
+  const resource = (host: string) => ({
+    url: `https://${host}.example/mcp`,
+    credentialMode: 'resource_bearer',
+    issuer: 'https://issuer.example/',
+    audience: host,
+    scopes: ['read'],
+  });
+  jest.mocked(deps.getAppConfig).mockResolvedValue(
+    Object.assign({} as AppConfig, {
+      interfaceConfig: {
+        schedules: {
+          mcpConsent: {
+            enabled: true,
+            resources: { warehouse: resource('warehouse'), idle: resource('idle') },
+          },
+        },
+      },
+      // The agents select a tool on `warehouse` alone. `idle` is declared and unused; nothing
+      // is declared for `notes`.
+      mcpConfig: { warehouse: server('warehouse'), idle: server('idle'), notes: server('notes') },
+    }),
+  );
+  expect(await resolve(identity, {})).toHaveLength(1);
+  expect(deps.ensureConfigServers).toHaveBeenCalledTimes(1);
+  expect(deps.ensureConfigServers).toHaveBeenCalledWith({ warehouse: server('warehouse') });
+  expect(deps.getServers).toHaveBeenCalledWith(expect.anything(), {
+    warehouse: server('warehouse'),
+    notes: server('notes'),
+  });
+});
 it('binds reachable persisted child selections without transferring the enrolled root', async () => {
   const { deps, resolve } = setup();
   jest.mocked(deps.getNodes).mockImplementation(async (ids) =>

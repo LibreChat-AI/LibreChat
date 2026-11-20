@@ -96,6 +96,41 @@ export function createScheduleMCPEnrollmentResolver<
 }
 
 /**
+ * The operator's servers to hand the registry, so that a declared server the agents use comes
+ * back as a run will see it. A grant is bound to that configuration, and inspection fills in
+ * what the operator left out (whether the server requires OAuth): the entry as written would
+ * never match the one a run checks the grant against.
+ *
+ * Only the declared servers the agents select are inspected, as a run's readiness check
+ * inspects only what it needs: a cold or unreachable server nobody selected must not hold up
+ * an offer. A declared server is never handed over as written. The rest are, since nothing
+ * is bound to them and only their names are read.
+ */
+async function configured(
+  deps: Pick<ScheduleMCPEnrollmentDeps, 'ensureConfigServers'>,
+  raw: NonNullable<AppConfig['mcpConfig']>,
+  declared: ReadonlySet<string>,
+  tools: ReadonlyArray<{ name: string }>,
+): Promise<Record<string, ParsedServerConfig>> {
+  const names = Object.keys(raw);
+  const aliases = buildServerNameAliases(names);
+  const candidates = [...names, ...aliases.keys()];
+  const selected = new Set<string>();
+  for (const { name: key } of tools) {
+    if (!key.includes(Constants.mcp_delimiter)) continue;
+    const [, alias] = splitMCPToolKey(key, candidates);
+    const name = alias && (raw[alias] ? alias : aliases.get(alias));
+    if (name && declared.has(name)) selected.add(name);
+  }
+  const entries = Object.entries(raw);
+  const rest = Object.fromEntries(entries.filter(([name]) => !declared.has(name)));
+  const inspected = await deps.ensureConfigServers(
+    Object.fromEntries(entries.filter(([name]) => selected.has(name))),
+  );
+  return { ...(rest as Record<string, ParsedServerConfig>), ...inspected };
+}
+
+/**
  * Both halves of an offer, read once: the MCP tools on declared servers, and the agents'
  * other tools. Asked for together, as the consent view does, they share one walk of the
  * agent graph.
@@ -145,25 +180,27 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
     const undeclared = !mcp || Object.keys(bindings).length === 0;
     if (undeclared && options.otherTools === 'ignore')
       return { targets: [], tools: [], servers: [] };
-    const [servers, { tools, candidates: candidateTools }] = await Promise.all([
-      // A grant is bound to each server's configuration as a run will see it. Inspection
-      // fills in what the operator left out (whether the server requires OAuth), so the
-      // configuration as written would never match the one a run checks the grant against.
-      deps
-        .ensureConfigServers(appConfig?.mcpConfig ?? {})
-        .then((config) => deps.getServers(user, config)),
-      resolveScheduledMCPRequirements(
-        identity.agentId,
-        user,
-        {
-          getAgentGraphNodes: deps.getNodes,
-          resolveAgentGraphAccess: () => deps.resolveGraphAccess(user),
-          getModelsConfig: deps.getModelsConfig,
-        },
-        async () => appConfig,
-        signal,
+    const { tools, candidates: candidateTools } = await resolveScheduledMCPRequirements(
+      identity.agentId,
+      user,
+      {
+        getAgentGraphNodes: deps.getNodes,
+        resolveAgentGraphAccess: () => deps.resolveGraphAccess(user),
+        getModelsConfig: deps.getModelsConfig,
+      },
+      async () => appConfig,
+      signal,
+    );
+    signal?.throwIfAborted();
+    const servers = await deps.getServers(
+      user,
+      await configured(
+        deps,
+        appConfig?.mcpConfig ?? {},
+        new Set(mcp ? Object.keys(bindings) : []),
+        tools,
       ),
-    ]);
+    );
     const names = Object.keys(servers);
     const aliases = buildServerNameAliases(names);
     const candidates = [...names, ...aliases.keys()];
