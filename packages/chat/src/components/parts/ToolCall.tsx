@@ -25,6 +25,7 @@ import { useToolCallIntent } from '../../react/parts/intent';
 import useProgress from '../../react/parts/useProgress';
 import { hasToolParams } from '../../core/parts/params';
 import { useMessagePartsHost } from '../../react/host';
+import ToolIcon, { getToolIconType } from './ToolIcon';
 import useRowHandoff from '../../react/parts/handoff';
 import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
@@ -85,7 +86,6 @@ export default function ToolCall({
     logError,
     renderProgress,
     renderInfo,
-    renderIcon,
     renderAttachments,
   } = useMessagePartsHost().useToolCallChrome();
   const [oauthError, setOAuthError] = useState<string | null>(null);
@@ -478,11 +478,13 @@ export default function ToolCall({
             toolExecutionDurationMs,
             phaseStartAt: toolDispatchedAt ?? toolPreparationStartedAt,
             phaseStepId: stepId,
-            icon: renderIcon({
-              name,
-              iconUrl: mcpIconUrl,
-              isAnimating: phase === 'running',
-            }),
+            icon: (
+              <ToolIcon
+                type={getToolIconType(name)}
+                iconUrl={mcpIconUrl}
+                isAnimating={phase === 'running'}
+              />
+            ),
             hasInput: hasInfo,
             isExpanded: showInfo,
           })}

@@ -1,4 +1,4 @@
-export type { ToolIconType } from './ToolIcon';
+export type { ToolIconType } from '@librechat/chat/components';
 export { default as StackedToolIcons } from './StackedToolIcons';
 export { default as OutputRenderer, isError, hasRenderableOutput } from './OutputRenderer';
-export { default as ToolIcon, getToolIconType, getMCPServerName } from './ToolIcon';
+export { ToolIcon, getToolIconType, getMCPServerName } from '@librechat/chat/components';

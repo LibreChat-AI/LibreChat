@@ -95,9 +95,6 @@ jest.mock('../ProgressText', () => ({
 }));
 
 jest.mock('../ToolOutput', () => ({
-  ToolIcon: ({ type, isAnimating }: { type: string; isAnimating?: boolean }) => (
-    <span data-testid="tool-icon" data-type={type} data-animating={isAnimating} />
-  ),
   OutputRenderer: ({ text }: { text: string }) => <pre data-testid="output-renderer">{text}</pre>,
   isError: (output: string) => typeof output === 'string' && output.toLowerCase().includes('error'),
 }));
@@ -151,12 +148,11 @@ beforeEach(() => {
 });
 
 describe('RetrievalCall - LGCY-02: Modern visual patterns', () => {
-  it('renders ToolIcon with type="file_search"', () => {
+  it('draws the file search icon in the row', () => {
     renderRetrievalCall({ initialProgress: 1, isSubmitting: false });
 
-    const icon = screen.getByTestId('tool-icon');
-    expect(icon).toBeInTheDocument();
-    expect(icon).toHaveAttribute('data-type', 'file_search');
+    const row = screen.getByTestId('progress-text');
+    expect(row.querySelector('svg.lucide-file-search')).not.toBeNull();
   });
 
   it('does not render ProgressCircle', () => {

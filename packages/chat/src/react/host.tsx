@@ -101,16 +101,9 @@ export type ToolCallInfoProps = {
   output?: string | null;
 };
 
-/** What the app's tool icon draws for one tool call. `name` is the raw tool id. */
-export type ToolCallIconProps = {
-  name: string;
-  iconUrl?: string;
-  isAnimating: boolean;
-};
-
 /**
- * App services and renderers for a generic tool call card. The progress row, parameter panel,
- * icon and attachment stack stay in the app because other cards still share them.
+ * App services and renderers for a generic tool call card. The progress row, parameter panel
+ * and attachment stack stay in the app because other cards still share them.
  */
 export type ToolCallChrome = {
   localize: ToolCallLocalize;
@@ -125,7 +118,6 @@ export type ToolCallChrome = {
   logError: (message: string, error?: unknown) => void;
   renderProgress: (props: ToolCallProgressProps) => ReactNode;
   renderInfo: (props: ToolCallInfoProps) => ReactNode;
-  renderIcon: (props: ToolCallIconProps) => ReactNode;
   renderAttachments: (attachments: TAttachment[]) => ReactNode;
 };
 
@@ -139,7 +131,6 @@ const emptyChrome: ToolCallChrome = {
   logError: () => undefined,
   renderProgress: () => null,
   renderInfo: () => null,
-  renderIcon: () => null,
   renderAttachments: () => null,
 };
 

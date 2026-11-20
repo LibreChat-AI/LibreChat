@@ -318,6 +318,15 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+export {
+  default as ToolIcon,
+  getToolIconType,
+  getMCPServerName,
+} from './components/parts/ToolIcon';
+export type { ToolIconType, ToolIconProps } from './components/parts/ToolIcon';
+export { default as StackedToolIcons } from './components/parts/StackedToolIcons';
+export type { StackedToolIconsProps } from './components/parts/StackedToolIcons';
+export { default as FaviconImage } from './components/parts/Favicon';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
 export { default as RetrievalCall } from './components/parts/Retrieval';
 export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
@@ -367,11 +376,7 @@ export {
   StreamingThoughtPeek,
 } from './components/parts/Reasoning';
 export { default as WebSearch } from './components/parts/WebSearch';
-export type {
-  WebSearchFailedCall,
-  WebSearchFaviconProps,
-  WebSearchStackProps,
-} from './components/parts/WebSearch';
+export type { WebSearchFailedCall, WebSearchStackProps } from './components/parts/WebSearch';
 export {
   collectSources,
   getCleanDomain,

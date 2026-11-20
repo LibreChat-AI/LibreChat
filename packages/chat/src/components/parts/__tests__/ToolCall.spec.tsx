@@ -78,7 +78,6 @@ const chrome: ToolCallChrome = {
   logError,
   renderProgress: (props) => <ProgressStub {...props} />,
   renderInfo: (props) => <InfoStub input={props.input} output={props.output} />,
-  renderIcon: () => null,
   renderAttachments: (attachments) => <AttachmentStub attachments={attachments} />,
 };
 
