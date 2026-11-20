@@ -638,6 +638,11 @@ registration:
 #   codeOutputDownloads: 4 # generated code output files downloaded at once before the tool result returns; 1 keeps them serial
 
 # rateLimits:
+#   # Admin panel token renewal (POST /api/admin/oauth/refresh), per client IP address.
+#   # A separate budget from sign-in attempts, so page loads cannot use up login attempts.
+#   adminRefresh:
+#     windowMs: 60000 # default: 60000 (one minute)
+#     max: 120 # default: 120 renewals per window
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
 #   mcpApps:
 #     resourcesPerMinute: 120
