@@ -365,7 +365,9 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
       )}
       <div>
         <div className="flex items-center gap-1.5">
-          <Label htmlFor={`${id}-channel`}>{localize('com_ui_discord_binding_channel')}</Label>
+          <Label htmlFor={`${id}-channel`} className="w-auto">
+            {localize('com_ui_discord_binding_channel')}
+          </Label>
           {!immutable && (
             <InfoHoverCard text={localize('com_ui_discord_binding_channel_help')} icon="info" />
           )}
@@ -374,7 +376,14 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
           id={`${id}-channel`}
           value={target.externalChannelId}
           readOnly={immutable}
-          disabled={busy || uncertain || !enabled || noActiveServers || Boolean(confirmation)}
+          disabled={
+            busy ||
+            uncertain ||
+            !enabled ||
+            noActiveServers ||
+            (!immutable && !selected) ||
+            Boolean(confirmation)
+          }
           inputMode="numeric"
           maxLength={20}
           autoComplete="off"

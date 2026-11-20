@@ -200,6 +200,17 @@ test('disables both fields and keeps the empty warning through a background refe
   expect(screen.getByText('com_ui_discord_binding_empty')).toBeVisible();
 });
 
+test('keeps the channel ID field disabled until a server is selected', async () => {
+  const { user } = await page(null);
+  const input = await screen.findByLabelText('com_ui_discord_binding_channel');
+  expect(input).toBeDisabled();
+  await user.click(await screen.findByRole('combobox', { name: 'com_ui_discord_binding_server' }));
+  await user.click(
+    await screen.findByRole('option', { name: 'com_ui_discord_binding_server_named' }),
+  );
+  await waitFor(() => expect(input).toBeEnabled());
+});
+
 test('offers the channel ID help behind an info button and as the field description', async () => {
   await page(null);
   const help = await screen.findByRole('button', { name: 'com_ui_discord_binding_channel_help' });
