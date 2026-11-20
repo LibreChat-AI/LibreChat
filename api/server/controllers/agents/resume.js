@@ -52,7 +52,9 @@ const {
   rejectChangedResumeProjectContext,
   PROJECT_CONTEXT_CHANGED_REASON,
   PROJECT_CONTEXT_CHANGED_RESPONSE,
-  restoreScheduledTokenContext,
+  restoreExecutionContext,
+  collectApprovedToolCalls,
+  scheduleAsksEveryUse,
   recoverTurnMessageReference,
   applyForcedRetention,
   applyForcedTemporaryRequest,
@@ -1953,8 +1955,9 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           parentMessageId: job.metadata.userMessage?.messageId ?? Constants.NO_PARENT,
         });
       const result = await initializeClient({
-        scheduledTokenContext: restoreScheduledTokenContext(req, job.metadata),
+        executionContext: restoreExecutionContext(req, job.metadata),
         scheduleJobIdentity: job.metadata,
+        approvedToolCalls: collectApprovedToolCalls(mapped.resumeValue),
         req,
         res,
         endpointOption: req.body.endpointOption,
@@ -2040,6 +2043,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           appConfig: req.config,
         },
         pluginHookSource: getPluginHookSource(),
+        asksEveryUse: scheduleAsksEveryUse(req),
         request: req,
         addConvoToolApprovalAllows,
       });

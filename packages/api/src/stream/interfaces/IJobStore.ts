@@ -1110,6 +1110,15 @@ export interface IJobStore {
     contentParts: Agents.MessageContentComplex[],
     expectedCreatedAt?: number,
   ): void;
+  /**
+   * A synchronous copy of the content array `setContentParts` registered on this replica, or
+   * null when this replica does not host the run. A store that only ever returns copies from
+   * `getContentParts` has no need for it.
+   */
+  copyHostContent?(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null;
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,

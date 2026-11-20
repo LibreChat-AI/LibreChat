@@ -1,9 +1,9 @@
 import React, { memo, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { useElementSize } from '@librechat/chat/react';
 import { ComposerChip as Chip } from '@librechat/chat/components';
 import { Mic, Plus, Check, Square, ChevronDown } from 'lucide-react';
 import { IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
+import { useElementSize, useElementSizeSelect } from '@librechat/chat/react';
 import type { TConversation, EModelEndpoint, EndpointFileConfig } from 'librechat-data-provider';
 import type { PaletteEntry, PaletteMode } from '~/hooks/Input/usePaletteEntries';
 import type { Dictation } from '~/hooks/Input/useDictation';
@@ -276,17 +276,21 @@ function Bar({
      that row; packing widest-first fills the rows instead. */
   const { ordered: packedEntries, rootRef, widths } = useChipPacking(barEntries);
 
-  const { ref: rowRef, width: rowWidth } = useElementSize<HTMLDivElement>();
   const { ref: plusRef, width: plusWidth } = useElementSize<HTMLSpanElement>();
   const { ref: controlsRef, width: controlsWidth } = useElementSize<HTMLDivElement>();
 
   /* A row of their own once they need one, and it runs the full width of the
      composer (the `+` corner included), since the buttons are on the row below
-     it rather than in the flow. */
-  const inlineChips = useMemo(
-    () =>
-      chipsFitInline(packedEntries, widths, rowWidth - plusWidth - controlsWidth - CHIP_GAP * 2),
-    [packedEntries, widths, rowWidth, plusWidth, controlsWidth],
+     it rather than in the flow. Only whether they fit is read from the row's
+     width: the composer changes width on every frame while a panel beside the
+     chat opens or closes, and the bar must not render for each of them. */
+  const chipsFitRow = useCallback(
+    ({ width }: { width: number }) =>
+      chipsFitInline(packedEntries, widths, width - plusWidth - controlsWidth - CHIP_GAP * 2),
+    [packedEntries, widths, plusWidth, controlsWidth],
+  );
+  const { ref: rowRef, value: inlineChips } = useElementSizeSelect<HTMLDivElement, boolean>(
+    chipsFitRow,
   );
   const dictating = dictation.active || dictation.transcribing;
 

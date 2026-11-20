@@ -3,33 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { getToolDisplayLabel } from '@librechat/chat';
 import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
 import { Shimmer, Spinner, IconButton, TooltipAnchor } from '@librechat/client';
-import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
-import type { TranslationKeys } from '~/hooks/useLocalize';
+import type { TaskRow } from './rows';
+import { DELIVERY_CLASSES, DELIVERY_KEYS, STATUS_CLASSES, STATUS_KEYS } from './labels';
 import { getRunStepDurationLabels, cn } from '~/utils';
 import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
-
-const STATUS_KEYS: Record<TaskRowStatus, TranslationKeys> = {
-  running: 'com_ui_background_tasks_running',
-  stopping: 'com_ui_background_tasks_stopping',
-  completed: 'com_ui_background_tasks_completed',
-  error: 'com_ui_failed',
-  cancelled: 'com_ui_cancelled',
-};
-
-const STATUS_CLASSES: Partial<Record<TaskRowStatus, string>> = {
-  error: 'text-status-error',
-  cancelled: 'text-status-warning',
-};
-
-const DELIVERY_KEYS: Record<TaskRowDelivery, TranslationKeys> = {
-  pending: 'com_ui_background_tasks_result_pending',
-  failed: 'com_ui_background_tasks_result_undelivered',
-};
-
-const DELIVERY_CLASSES: Partial<Record<TaskRowDelivery, string>> = {
-  failed: 'text-status-warning',
-};
 
 function TaskCard({
   row,

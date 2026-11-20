@@ -5,7 +5,7 @@ const { clearFileCodeEnvRefs } = require('~/models');
 const {
   logAxiosError,
   createCodeFileDeleter,
-  dispatchFileStorageOperation,
+  dispatchCodeApiUpload,
   wrapCodeApiUploadError,
   appendCodeEnvFile,
   createAxiosInstance,
@@ -152,7 +152,7 @@ async function uploadCodeEnvFile({
       ...(signal ? { signal } : {}),
     };
 
-    const response = await dispatchFileStorageOperation(onUploadStart, () =>
+    const response = await dispatchCodeApiUpload([onUploadStart], () =>
       axios.post(`${baseURL}/upload`, form, options),
     );
 

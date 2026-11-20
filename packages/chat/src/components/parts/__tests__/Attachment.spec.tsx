@@ -10,6 +10,7 @@ import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
 import Attachment, { AttachmentGroup } from '../Attachment';
 import { FilesHostProvider } from '../../../react/files';
+import { HiddenAttachmentsContext } from '../media';
 
 const TRANSLATIONS: Record<string, string> = {
   com_ui_download: 'Download',
@@ -171,5 +172,57 @@ describe('AttachmentGroup', () => {
 
     expect(screen.queryByRole('button', { name: /files$/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'results.zip' })).toBeInTheDocument();
+  });
+});
+
+describe('stable tool outputs', () => {
+  it('keeps an unchanged file row out of streaming parent renders', () => {
+    const attachment = file();
+    const classifyAttachment = jest.fn(() => null);
+    const host = { ...baseHost, classifyAttachment };
+    const frame = (files: TAttachment[]) => (
+      <MessagePartsHostProvider host={createMessagePartsHost()}>
+        <FilesHostProvider host={host}>
+          <AttachmentGroup attachments={files} />
+        </FilesHostProvider>
+      </MessagePartsHostProvider>
+    );
+    const { rerender } = render(frame([attachment]));
+    const calls = classifyAttachment.mock.calls.length;
+    rerender(frame([attachment]));
+    expect(classifyAttachment).toHaveBeenCalledTimes(calls);
+    rerender(frame([{ ...attachment, filename: 'updated.zip' }]));
+    expect(screen.getByRole('button', { name: 'updated.zip' })).toBeInTheDocument();
+  });
+
+  it('does not hide a painted image when its attachment metadata is replaced', () => {
+    const attachment = file({ filename: 'chart.png', type: 'image/png', width: 100, height: 100 });
+    const host = createMessagePartsHost({
+      renderImage: ({ imagePath, altText }) => <img src={imagePath} alt={altText} />,
+    });
+    const frame = (value: TAttachment) => (
+      <MessagePartsHostProvider host={host}>
+        <AttachmentGroup attachments={[value]} />
+      </MessagePartsHostProvider>
+    );
+    const { rerender } = render(frame(attachment));
+    const image = screen.getByRole('img', { name: 'chart.png' });
+    expect(image.parentElement).not.toHaveClass('opacity-0');
+    rerender(frame({ ...attachment, bytes: 4000 }));
+    expect(screen.getByRole('img', { name: 'chart.png' })).toBe(image);
+    expect(image.parentElement).not.toHaveClass('opacity-0');
+  });
+
+  it('hides only files already rendered at the stable parent', () => {
+    const first = file();
+    const second = file({ file_id: 'second', filename: 'second.zip' });
+    renderRow(
+      <HiddenAttachmentsContext.Provider value={new Set([first])}>
+        <AttachmentGroup attachments={[first, second]} />
+        <Attachment attachment={first} />
+      </HiddenAttachmentsContext.Provider>,
+    );
+    expect(screen.queryByRole('button', { name: 'results.zip' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'second.zip' })).toBeInTheDocument();
   });
 });

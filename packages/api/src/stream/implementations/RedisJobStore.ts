@@ -4408,6 +4408,23 @@ export class RedisJobStore implements IJobStoreV2 {
   }
 
   /**
+   * A copy of the content of a run this replica hosts, taken synchronously. The run folds an
+   * event into that array and emits it in one synchronous step, so the copy holds exactly
+   * what the run had emitted at the instant of the call.
+   */
+  copyHostContent(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null {
+    const hostParts = this.getLocalEntry(
+      this.localContentParts,
+      streamId,
+      expectedCreatedAt,
+    )?.value.deref();
+    return hostParts != null && hostParts.length > 0 ? structuredClone(hostParts) : null;
+  }
+
+  /**
    * Store collectedUsage reference in local cache.
    * This is used for abort handling to spend tokens for all models.
    * Note: Only available on the generating instance; cross-replica abort uses fallback.

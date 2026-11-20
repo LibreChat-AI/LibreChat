@@ -3726,7 +3726,7 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
-    it('passes negotiated lane and native sandbox capabilities to the attached bash tool', async () => {
+    it('passes negotiated lane, sandbox and detached command capabilities to the attached bash tool', async () => {
       const capabilities = [
         AgentCapabilities.tools,
         AgentCapabilities.execute_code,
@@ -3748,6 +3748,7 @@ describe('ToolService - Action Capability Gating', () => {
           operations: attachedWorkspaceOperations,
           linkedWorktrees: true,
           nativeSandbox: true,
+          detachedCommands: true,
         },
       }));
 
@@ -3767,7 +3768,11 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       expect(mockCreateAttachedWorkspaceBashTool).toHaveBeenLastCalledWith(
-        expect.objectContaining({ linkedWorktrees: true, nativeSandbox: true }),
+        expect.objectContaining({
+          linkedWorktrees: true,
+          nativeSandbox: true,
+          detachedCommands: true,
+        }),
       );
     });
 
@@ -4800,6 +4805,31 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockCreateActionTool).toHaveBeenCalledTimes(2);
       expectBothActionsResolved(mockCreateActionTool.mock.calls);
     });
+
+    it.each([
+      ['a run nobody can sign in for', true],
+      ['a run somebody can sign in for', false],
+      ['a run that does not say', undefined],
+    ])(
+      'passes on to action tools what the run says about attendance: %s',
+      async (_label, unattended) => {
+        mockLoadActionSets.mockResolvedValue([actionA]);
+        const req = createMockReq([AgentCapabilities.actions]);
+        req.config = {};
+
+        await loadToolsForExecution({
+          req,
+          res: {},
+          agent: { id: 'agent_collision' },
+          toolNames: [toolNameA],
+          actionsEnabled: true,
+          unattended,
+        });
+
+        expect(mockCreateActionTool).toHaveBeenCalledTimes(1);
+        expect(mockCreateActionTool.mock.calls[0][0].unattended).toBe(unattended);
+      },
+    );
 
     it('processRequiredActions resolves both actions when they share a hostname', async () => {
       // The assistants/threads path received the same structural rewrite

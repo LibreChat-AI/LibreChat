@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, createStore } from 'jotai';
+import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import {
   approvalPanelOpenFamily,
@@ -78,6 +79,27 @@ function DecisionProbe() {
 const decisions = () => JSON.parse(screen.getByTestId('decisions').textContent ?? '[]');
 
 describe('ToolApproval', () => {
+  test("says a coded explanation in the reader's language and shows any other as sent", () => {
+    renderCards(
+      <ToolApproval
+        approval={{ ...approval(), description: SCHEDULE_APPROVAL_REASON }}
+        toolCallId="call-1"
+        args={{}}
+      />,
+    );
+    expect(screen.getByText('com_ui_approval_schedule_owner')).toBeInTheDocument();
+    expect(screen.queryByText(SCHEDULE_APPROVAL_REASON)).not.toBeInTheDocument();
+    cleanup();
+    renderCards(
+      <ToolApproval
+        approval={{ ...approval(), description: 'Deletes a file' }}
+        toolCallId="call-1"
+        args={{}}
+      />,
+    );
+    expect(screen.getByText('Deletes a file')).toBeInTheDocument();
+  });
+
   test('hides Always allow unless the server offered it', () => {
     renderCards(<ToolApproval approval={approval()} toolCallId="call-1" args={{}} />);
     expect(screen.queryByRole('button', { name: 'Always allow' })).not.toBeInTheDocument();

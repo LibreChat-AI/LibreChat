@@ -695,6 +695,12 @@ export type ParentSubagentTaskRecord = {
   sourceTruncated?: boolean;
   tasks: Array<
     Pick<IMessage, 'messageId' | 'createdAt'> & {
+      /**
+       * When the task was dispatched: the time of its brief's row. `createdAt` is the time of
+       * the task's newest row, which is its reply once it has one, so the two together say how
+       * long the task ran. Absent when the brief was not among the rows read.
+       */
+      startedAt?: Date;
       status: NonNullable<IMessage['subagentTask']>['status'];
       /** True when status was inferred from an ordinary event-turn row. */
       statusDerived?: boolean;
@@ -965,6 +971,7 @@ export interface MessageMethods {
       limit?: number;
       cursor?: string | null;
       select?: string;
+      maxBytes?: number;
     },
   ): Promise<{ messages: IMessage[]; nextCursor: string | null }>;
   searchMessages(
@@ -4023,9 +4030,12 @@ export function createMessageMethods(
           $group: {
             _id: { conversationId: '$conversationId', taskId: '$_subagentTaskId' },
             task: { $first: taskProjection },
+            /** The brief's time; `$min` passes over the reply's null. */
+            startedAt: { $min: { $cond: ['$_subagentIsAssistant', null, '$createdAt'] } },
             sourceRows: { $sum: 1 },
           },
         },
+        { $addFields: { 'task.startedAt': '$startedAt' } },
         {
           $sort: {
             '_id.conversationId': 1,
@@ -4054,6 +4064,20 @@ export function createMessageMethods(
     ]);
     const sourceTruncated =
       recentRecords.reduce((total, record) => total + (record.sourceRows ?? 0), 0) > sourceLimit;
+    type TaskRow = ParentSubagentTaskRecord['tasks'][number];
+    /** A task read as its newest row alone knows its start only when that row is its brief. */
+    const withStart = (task: TaskRow & { startedAt?: Date | null }): TaskRow => {
+      const { startedAt, ...row } = task;
+      const start = startedAt ?? (row.messageId.endsWith(':user') ? row.createdAt : undefined);
+      return start == null ? row : { ...row, startedAt: start };
+    };
+    const earliest = (left?: Date, right?: Date): Date | undefined => {
+      if (left == null || right == null) return left ?? right;
+      return left <= right ? left : right;
+    };
+    for (const record of [...recentRecords, ...latestRecords]) {
+      record.tasks = record.tasks.map(withStart);
+    }
     const records = new Map<string, ParentSubagentTaskRecord>(
       recentRecords.map((record) => [
         record.conversationId,
@@ -4086,7 +4110,7 @@ export function createMessageMethods(
           candidate.occurrenceId,
           existing?.occurrenceId,
         );
-        if (
+        const chosen =
           existing == null ||
           candidateTime > existingTime ||
           (candidateTime === existingTime && occurrenceDifference > 0) ||
@@ -4094,9 +4118,11 @@ export function createMessageMethods(
             occurrenceDifference === 0 &&
             candidateIsAssistant &&
             !existingIsAssistant)
-        ) {
-          tasksById.set(taskId, candidate);
-        }
+            ? candidate
+            : existing;
+        /** Whichever read saw the brief knows the start, whichever row stands for the task. */
+        const startedAt = earliest(existing?.startedAt, candidate.startedAt);
+        tasksById.set(taskId, startedAt == null ? chosen : { ...chosen, startedAt });
       }
       current.tasks = [...tasksById.values()]
         .sort((left, right) => {
@@ -4345,10 +4371,23 @@ export function createMessageMethods(
       cursor?: string | null;
       /** Projection for the page, e.g. `CLIENT_MESSAGE_SELECT` for client-facing reads. */
       select?: string;
+      /**
+       * The most stored bytes a page holds. Rows come off a database cursor in order and the
+       * read stops before the row that would pass it, so a heavy conversation is never
+       * materialized whole. A page always holds one row, however large that row is.
+       */
+      maxBytes?: number;
     } = {},
   ) {
     const Message = mongoose.models.Message as Model<IMessage>;
-    const { sortField = 'createdAt', sortOrder = -1, limit = 25, cursor, select } = options;
+    const {
+      sortField = 'createdAt',
+      sortOrder = -1,
+      limit = 25,
+      cursor,
+      select,
+      maxBytes,
+    } = options;
     const queryFilter: FilterQuery<IMessage> = { ...filter };
     const position = cursor ? parseMessageCursor(cursor) : null;
     if (position != null) {
@@ -4369,14 +4408,36 @@ export function createMessageMethods(
       query.select(tokens.filter((token) => token !== '-_id').join(' '));
     }
     /** `_id` makes the order total, so a page boundary inside a run of equal sort values is stable. */
-    const messages = await query
-      .sort({ [sortField]: sortOrder, _id: sortOrder })
-      .limit(limit + 1)
-      .lean<IMessage[]>();
+    const ordered = query.sort({ [sortField]: sortOrder, _id: sortOrder }).limit(limit + 1);
+    let messages: IMessage[];
+    let more = false;
+    if (maxBytes == null) {
+      messages = await ordered.lean<IMessage[]>();
+      if (messages.length > limit) {
+        messages.pop();
+        more = true;
+      }
+    } else {
+      messages = [];
+      let bytes = 0;
+      const rows = ordered.lean<IMessage[]>().cursor();
+      try {
+        for await (const row of rows) {
+          const size = mongoose.mongo.BSON.calculateObjectSize(row);
+          if (messages.length >= limit || (messages.length > 0 && bytes + size > maxBytes)) {
+            more = true;
+            break;
+          }
+          messages.push(row as IMessage);
+          bytes += size;
+        }
+      } finally {
+        await rows.close();
+      }
+    }
 
     let nextCursor: string | null = null;
-    if (messages.length > limit) {
-      messages.pop();
+    if (more) {
       const last = messages[messages.length - 1];
       nextCursor = formatMessageCursor(last[sortField as keyof IMessage], last._id);
     }

@@ -1,5 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { dataService, MutationKeys, PermissionBits, QueryKeys } from 'librechat-data-provider';
+import {
+  dataService,
+  MutationKeys,
+  PermissionBits,
+  QueryKeys,
+  hasSubagentReference,
+  pruneSubagentReferences,
+} from 'librechat-data-provider';
 import type { QueryClient, UseMutationResult } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
 import { getAgentListQueryData, setAgentListQueryData } from './queries';
@@ -175,6 +182,32 @@ export const useDeleteAgentMutation = (
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
       onSuccess: (_data, variables) => {
+        const removed = new Set([variables.agent_id]);
+        const referencesAgent = (data: unknown): boolean => {
+          if (!data || typeof data !== 'object') {
+            return false;
+          }
+          const agent = data as Partial<t.Agent>;
+          return (
+            hasEdgeWithAgent(agent, variables.agent_id) ||
+            agent.agent_ids?.includes(variables.agent_id) === true ||
+            hasSubagentReference(agent.subagents, removed)
+          );
+        };
+        const pruneReferences = (agent: t.Agent): t.Agent => {
+          if (!referencesAgent(agent)) {
+            return agent;
+          }
+          return {
+            ...pruneAgentEdges(agent, variables.agent_id),
+            ...(agent.agent_ids != null && {
+              agent_ids: agent.agent_ids.filter((id) => !removed.has(id)),
+            }),
+            ...(agent.subagents != null && {
+              subagents: pruneSubagentReferences(agent.subagents, removed),
+            }),
+          };
+        };
         const data = ((keys: t.AgentListParams[]) => {
           let data: t.Agent[] = [];
           keys.forEach((key) => {
@@ -186,7 +219,7 @@ export const useDeleteAgentMutation = (
 
             const remainingAgents = listRes.data
               .filter((agent) => agent.id !== variables.agent_id)
-              .map((agent) => pruneAgentEdges(agent, variables.agent_id));
+              .map(pruneReferences);
 
             setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
               ...listRes,
@@ -202,19 +235,18 @@ export const useDeleteAgentMutation = (
 
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id]);
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id, 'expanded']);
-        /** Deletion removes the agent from every edge endpoint server-side. Refresh every cached
-         * graph known to reference it, then mirror that cleanup immediately while refetch runs. */
+        /** Mirror server cleanup while affected agent details refetch. */
         queryClient.invalidateQueries({
           queryKey: [QueryKeys.agent],
-          predicate: (query) => hasEdgeWithAgent(query.state.data, variables.agent_id),
+          predicate: (query) => referencesAgent(query.state.data),
           refetchType: 'all',
         });
         queryClient.setQueriesData<t.Agent>(
           {
             queryKey: [QueryKeys.agent],
-            predicate: (query) => hasEdgeWithAgent(query.state.data, variables.agent_id),
+            predicate: (query) => referencesAgent(query.state.data),
           },
-          (agent) => (agent ? pruneAgentEdges(agent, variables.agent_id) : agent),
+          (agent) => (agent ? pruneReferences(agent) : agent),
         );
         invalidateAgentMarketplaceQueries(queryClient);
 

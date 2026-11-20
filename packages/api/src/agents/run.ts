@@ -14,6 +14,7 @@ import {
   normalizeEndpointName,
   mapModelToAzureConfig,
   resolveUseResponsesApi,
+  gpt6Release,
 } from 'librechat-data-provider';
 import type {
   SummarizationConfig as AgentSummarizationConfig,
@@ -65,10 +66,12 @@ import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { SubagentCodeHostArgSpecs } from '~/code/targets';
+import type { SdkFileSession } from './remoteSdk/attachments';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
+import type { SdkModelHost } from './remoteSdk/builder';
 import type { RunFileSession } from './files/session';
 import type { SdkAgentRuntimeLoader } from './sdk';
 import type { RunFadingTiers } from './fading';
@@ -89,6 +92,13 @@ import {
   stripBackgroundFromToolDefinitions,
 } from '~/agents/background';
 import {
+  extractDefaultParams,
+  getOpenAILLMConfig,
+  isNativeCyberRequest,
+  resolveReasoningParams,
+  applySol62Constraints,
+} from '~/endpoints/openai/llm';
+import {
   createSubagentWakeupHandleHook,
   agentUsesSubagentCompletionWakeups,
   usesSubagentCompletionWakeups,
@@ -99,12 +109,6 @@ import {
   resolveSubagentMaxTurns,
   resolveRecursionLimit,
 } from '~/agents/config';
-import {
-  extractDefaultParams,
-  getOpenAILLMConfig,
-  isNativeCyberRequest,
-  resolveReasoningParams,
-} from '~/endpoints/openai/llm';
 import {
   isSteeringSupported,
   isSteerPreemptSupported,
@@ -1547,6 +1551,30 @@ function shapeSummarizationConfig(
     parameters: modelKwargs != null ? { modelKwargs, ...mergedParameters } : mergedParameters,
   });
 
+  const inheritedParameters: Record<string, unknown> | undefined =
+    provider === fallbackProvider ? agent?.model_parameters : undefined;
+  if (
+    gpt6Release(model)?.toLowerCase() === 'gpt-6.2-sol' &&
+    (provider === Providers.OPENAI || provider === Providers.AZURE)
+  ) {
+    const baseURL = transportOverrides.baseURL;
+    const nativeTransport =
+      baseURL == null
+        ? (parameters?.firstPartyEndpoint ?? inheritedParameters?.firstPartyEndpoint) === true
+        : getOpenAILLMConfig({
+            apiKey: '',
+            streaming: false,
+            baseURL,
+            endpoint: targetsAzure ? EModelEndpoint.azureOpenAI : EModelEndpoint.openAI,
+            azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
+            modelOptions: { model },
+          }).llmConfig.firstPartyEndpoint === true;
+    if (nativeTransport) {
+      parameters = { ...parameters, firstPartyEndpoint: true };
+      applySol62Constraints(parameters, inheritedParameters);
+    }
+  }
+
   if (
     model === 'gpt-6-cyber' &&
     config?.enabled !== false &&
@@ -2324,9 +2352,12 @@ export async function createRun({
   toolInputValidationErrors,
   sessionStartSource,
   loadSdkRuntime,
+  sdkModelHost,
+  sdkFiles,
   sdkResumeState,
   streaming = true,
   streamUsage = true,
+  eagerToolExecution = true,
 }: {
   agents: RunAgent[];
   signal: AbortSignal;
@@ -2336,6 +2367,8 @@ export async function createRun({
   conversationId?: string;
   streaming?: boolean;
   streamUsage?: boolean;
+  /** Host-owned execution policy; observed Chat results require post-acceptance execution. */
+  eagerToolExecution?: boolean;
   requestBody?: t.RequestBody;
   codeApprovalMode?: CodeApprovalMode;
   user?: IUser;
@@ -2480,6 +2513,8 @@ export async function createRun({
   /** Request-scoped tool input failures consumed by the completion handler. */
   toolInputValidationErrors?: Map<string, ToolInputValidationError>;
   loadSdkRuntime?: SdkAgentRuntimeLoader;
+  sdkModelHost?: SdkModelHost;
+  sdkFiles?: SdkFileSession;
   sdkResumeState?: import('./remoteSdk/types').RemoteSdkResumeState;
 } & Pick<
   RunConfig,
@@ -2492,6 +2527,10 @@ export async function createRun({
     user?.role,
     hasModelBoundContentProtection(appConfig?.filters) ||
       hasActivePiiPatterns(appConfig?.messageFilter?.pii),
+    sdkModelHost != null &&
+      modelCallbacks?.some(
+        (callback) => callback.name === 'librechat-model-bound-content-filter',
+      ) === true,
   );
   const runFilesActive =
     runFiles?.activate(
@@ -2513,9 +2552,12 @@ export async function createRun({
   }
   // Detached child threads resume in a new host request without this run's
   // input snapshot or publication routing. Shared children stay foreground.
-  // Detached completion turns cannot yet restore enrolled schedule authority.
-  const activeSubagentTasks =
-    runFilesActive || scheduledMCPExecution?.enrolled === true ? undefined : subagentTasks;
+  // A schedule's grant does not keep them foreground: a detached child runs with this run's
+  // hooks and narrowed tools, and its completion turn resolves the schedule's grant afresh.
+  // A grant whose completion turn could not find it again (`detaches` false) still does.
+  const foregroundOnly =
+    scheduledMCPExecution?.enrolled === true && scheduledMCPExecution.detaches !== true;
+  const activeSubagentTasks = runFilesActive || foregroundOnly ? undefined : subagentTasks;
   /**
    * Only extract discovered tools if:
    * 1. We have message history to parse
@@ -2961,6 +3003,7 @@ export async function createRun({
   const toolApprovalPolicy = resolveToolApprovalPolicy({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+    ownerApproval: scheduledMCPExecution?.mayAsk === true,
   });
   // Every caller needs the policy hooks, including API-key ingresses. Only
   // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
@@ -3255,7 +3298,7 @@ export async function createRun({
     // `interrupt()` from its tool body, which must run inside the Pregel task
     // frame — a speculative eager execution could never pause the run.
     eagerEventToolExecution: {
-      enabled: true,
+      enabled: eagerToolExecution,
       excludeToolNames: [
         CREATE_FILE_TOOL_NAME,
         EDIT_FILE_TOOL_NAME,
@@ -3335,6 +3378,8 @@ export async function createRun({
         registration,
         config: runConfig,
         loadModule: loadSdkRuntime,
+        modelHost: sdkModelHost,
+        files: sdkFiles,
         resumeState: sdkResumeState,
         signal,
         identity: {

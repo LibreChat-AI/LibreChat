@@ -80,7 +80,7 @@ const WorkspaceChange = memo(({ attachment }: { attachment: StatefulWorkspaceAtt
 
 WorkspaceChange.displayName = 'WorkspaceChange';
 
-export default function WorkspaceChanges({
+export default memo(function WorkspaceChanges({
   attachments,
 }: {
   attachments: StatefulWorkspaceAttachment[];
@@ -140,4 +140,4 @@ export default function WorkspaceChanges({
       </div>
     </div>
   );
-}
+});

@@ -23,8 +23,9 @@ import type {
   UpstreamTokenProviderResolver,
   UpstreamTokenTarget,
 } from '../mcp/oauth/obo';
-import type { ScheduleMCPExecution, createScheduleMCPExecution } from './authorization/execution';
+import type { ScheduleMCPExecution, ScheduleMCPExecutionFactory } from './authorization/execution';
 import type { ParsedServerConfig, UserMCPConnectionOptions } from '../mcp/types';
+import type { ExecutionContext } from '~/agents/authority/context';
 import type { CheckAccessParams } from '../middleware/access';
 import type { MCPToolsSnapshot } from '../mcp/connection';
 import type { GetAppConfigOptions } from '../app/service';
@@ -42,11 +43,11 @@ import {
   findShadowedServerNames,
   createDeadlineAbortSignal,
 } from '../mcp/utils';
-import { ScheduledMCPPolicyError, isScheduledMCPCandidate } from './authorization/policy';
 import { MCPConfigInitializationCanceledError } from '../mcp/registry/MCPServersRegistry';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '../mcp/request';
+import { ScheduledMCPPolicyError, listedMCPKeys } from './authorization/policy';
 import { attachScheduledMCPBearer, ScheduledMCPBearerError } from './bearer';
-import { isScheduleFireRequest, readScheduleFireContext } from './trigger';
+import { toScheduledTokenContext } from '~/agents/authority/context';
 import { resolveScheduledMCPRequirements } from './requirements';
 import { getAppConfigOptionsFromUser } from '../app/service';
 import { createConcurrencyLimiter } from '../utils/promise';
@@ -54,6 +55,7 @@ import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { OpenIDReauthRequiredError } from '../utils/oidc';
 import { formatMCPServerTools } from '../mcp/tools';
 import { checkAccess } from '../middleware/access';
+import { isScheduleFireRequest } from './trigger';
 import { detachOnAbort } from '../utils/promises';
 import { getPluginAuthMap } from '../agents/auth';
 
@@ -117,24 +119,15 @@ export function createScheduleUpstreamTokenProviderResolver(
   req: Parameters<typeof isScheduleFireRequest>[0] & { user: ScheduledTokenIdentity },
   resolve: HostUpstreamTokenProviderResolver | undefined,
   signal?: AbortSignal,
-  restoredContext?: ScheduledTokenContext,
+  executionContext?: ExecutionContext,
 ): UpstreamTokenProviderResolver | undefined {
   if (!isScheduleFireRequest(req)) return undefined;
-  if (restoredContext)
-    return bindUpstreamTokenProviderResolver(req.user, resolve, signal, restoredContext);
-  const fire = readScheduleFireContext(req);
-  const agentId = req.body?.agent_id;
-  const context: ScheduledTokenContext | undefined =
-    fire && typeof agentId === 'string' && agentId.trim().length > 0
-      ? {
-          scheduleId: fire.scheduleId,
-          ownerId: req.user.id,
-          ...(req.user.tenantId ? { tenantId: req.user.tenantId } : {}),
-          agentId,
-          invocationMode: 'delegated',
-        }
-      : undefined;
-  return bindUpstreamTokenProviderResolver(req.user, resolve, signal, context);
+  return bindUpstreamTokenProviderResolver(
+    req.user,
+    resolve,
+    signal,
+    toScheduledTokenContext(executionContext),
+  );
 }
 
 // The public schedule schema caps mcpPreflightConcurrency at 10. Keep the same
@@ -190,7 +183,7 @@ interface ScheduleMCPDeps {
   ) => Promise<Record<string, ParsedServerConfig>>;
   findPluginAuthsByKeys: PluginAuthMethods['findPluginAuthsByKeys'];
   resolveUpstreamTokenProvider?: HostUpstreamTokenProviderResolver;
-  execution?: ReturnType<typeof createScheduleMCPExecution>;
+  execution?: ScheduleMCPExecutionFactory;
   connect: (options: UserMCPConnectionOptions) => Promise<{
     fetchToolsSnapshot: (deadlineMs?: number, signal?: AbortSignal) => Promise<MCPToolsSnapshot>;
   }>;
@@ -203,8 +196,10 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
     const signal = options.signal;
     let execution: ScheduleMCPExecution | undefined;
     try {
+      // A grant handed over is the one the schedule is being created or edited with: it
+      // stands in for whatever is stored, which this write replaces.
       execution =
-        options.scheduleId && deps.execution
+        options.scheduleId && deps.execution && !options.grant
           ? await deps.execution.resolve(
               {
                 scheduleId: options.scheduleId,
@@ -237,7 +232,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       });
       return appConfig;
     };
-    const { tools, serverHints, candidates } = await resolveScheduledMCPRequirements(
+    const { tools, serverHints } = await resolveScheduledMCPRequirements(
       agentId,
       user,
       deps,
@@ -249,18 +244,8 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         name.includes(Constants.mcp_delimiter) &&
         !name.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`),
     );
-    if (execution?.enrolled) {
-      const denied = candidates.find(({ name }) => !isScheduledMCPCandidate(name));
-      if (denied || selectedTools.length === 0) {
-        throw new ScheduleMCPError(
-          new ScheduledMCPPolicyError(
-            denied ? 'tool_policy_denied' : 'binding_mismatch',
-            '',
-            denied?.agentId ?? agentId,
-          ).outcomes,
-        );
-      }
-    }
+    // Nothing to make ready. A grant may allow the agents' other tools and no MCP tool at all,
+    // and the ones a grant leaves out are not loaded.
     if (selectedTools.length === 0) return [];
 
     const effectiveConfig = await loadAppConfig();
@@ -336,20 +321,42 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         ),
       );
     }
-    if (
-      !(await checkAccess({
-        user,
-        permissionType: PermissionTypes.MCP_SERVERS,
-        permissions: [Permissions.USE],
-        getRoleByName: deps.getRoleByName,
-      }))
-    ) {
+    const permitted = await checkAccess({
+      user,
+      permissionType: PermissionTypes.MCP_SERVERS,
+      permissions: [Permissions.USE],
+      getRoleByName: deps.getRoleByName,
+    });
+    const refuse = (): never => {
       throw new ScheduleMCPError(
         [...selected.keys()].flatMap((server) =>
           outcomesForOwners(server, 'mcp_permission_denied'),
         ),
       );
-    }
+    };
+    /** The MCP tools a grant allows: the stored grant's, or the one a schedule is created with. */
+    const pending =
+      options.grant &&
+      new Map(
+        options.grant.consents.map(({ resource, permittedTools }) => [
+          resource.serverName,
+          new Map(permittedTools.map(({ agentId: owner, tools }) => [owner, new Set(tools)])),
+        ]),
+      );
+    /** MCP tools the pending grant lists among the other tools: on a server with no consent. */
+    const listed = new Map(
+      (options.grant?.tools ?? []).map(({ agentId: owner, tools }) => [owner, new Set(tools)]),
+    );
+    const grants: ScheduleMCPExecution['grants'] | undefined = execution?.enrolled
+      ? execution.grants
+      : pending &&
+        ((owner, server, tool) =>
+          options.grant?.everything === true ||
+          pending.get(server)?.get(owner)?.has(tool) === true ||
+          listedMCPKeys(server, tool).some((key) => listed.get(owner)?.has(key) === true));
+    // A run under a grant needs the permission only for the MCP tools the grant allows, so
+    // it is held to it below, once the tools the owner left out are set aside.
+    if (!permitted && !grants) refuse();
     // Resolve once more against the ACL-filtered registry before initializing config.
     // Exact accessible identities must beat normalized aliases from another tier, just
     // as they do in the interactive runtime.
@@ -369,6 +376,50 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       authoritativeAliases,
       new Set([...Object.keys(accessibleServers), ...configNames]),
     ));
+    if (grants) {
+      // The owner may have allowed only some of what the agents select. Readiness is about
+      // what the run is allowed to use: a tool or a whole server left out of the grant is
+      // refused when called, and must not keep the schedule from running.
+      const isGranted = (server: string, toolKey: string, owner: string): boolean =>
+        grants(owner, server, splitMCPToolKey(toolKey, authoritativeCandidates)[0]);
+      for (const [server, serverTools] of toolAgentIds) {
+        for (const [toolKey, owners] of serverTools) {
+          for (const owner of owners) if (!isGranted(server, toolKey, owner)) owners.delete(owner);
+          if (owners.size === 0) serverTools.delete(toolKey);
+        }
+        if (serverTools.size === 0) toolAgentIds.delete(server);
+      }
+      for (const [server, required] of selected) {
+        const serverTools = toolAgentIds.get(server);
+        if (!serverTools) {
+          // No tool is named there: the agents select the server as a whole. It is made
+          // ready for the agents the grant allows that for, which a grant of the whole agent
+          // does and a grant that lists its tools does not.
+          const owners = [...(serverAgentIds.get(server) ?? [])].filter((owner) =>
+            grants(owner, server, Constants.mcp_all),
+          );
+          if (owners.length > 0) {
+            serverAgentIds.set(server, new Set(owners));
+            continue;
+          }
+          selected.delete(server);
+          serverAgentIds.delete(server);
+          continue;
+        }
+        selected.set(
+          server,
+          required.filter((toolKey) => serverTools.has(toolKey)),
+        );
+        serverAgentIds.set(
+          server,
+          new Set([...serverTools.values()].flatMap((owners) => [...owners])),
+        );
+      }
+      // The owner allowed none of the MCP tools selected: the other tools, or none still
+      // selected. Nothing to connect to, and the run is not held back for it.
+      if (selected.size === 0) return [];
+      if (!permitted) refuse();
+    }
     const selectedRawConfig = Object.fromEntries(
       Object.entries(rawConfig).filter(([serverName]) => selected.has(serverName)),
     );
@@ -483,6 +534,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                             toolName: definitions.length === 1 ? definitions[0].name : '',
                             loadTools: async () => snapshot,
                             signal,
+                            readiness: true,
                           }),
                         );
                       }

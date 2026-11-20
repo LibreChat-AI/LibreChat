@@ -5,6 +5,7 @@ import type { TFile } from 'librechat-data-provider';
 import type { ProvisionCallbackDeps, ProvisionToolContext } from '~/files/provision/callback';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import type { ServerRequest } from '~/types';
+import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
@@ -522,6 +523,20 @@ describe('createRun code-tool eager/session wiring', () => {
     );
   });
 
+  it('lets observed Chat results defer tool execution until model acceptance', async () => {
+    await createRun({
+      agents: [makeAgent()] as never,
+      signal: new AbortController().signal,
+      eagerToolExecution: false,
+    });
+    expect((Run.create as jest.Mock).mock.calls[0][0].eagerEventToolExecution).toEqual(
+      expect.objectContaining({
+        enabled: false,
+        excludeToolNames: expect.arrayContaining(['create_file', 'execute_code']),
+      }),
+    );
+  });
+
   it('declares create_file/edit_file/read_file as code-session participants', async () => {
     const runConfig = await captureRunConfig();
     expect(runConfig.codeSessionToolNames).toEqual(
@@ -573,6 +588,52 @@ describe('createRun code-tool eager/session wiring', () => {
       selfConfig.agentInputs?.toolDefinitions?.map((definition) => definition.name),
     ).not.toContain(CHECK_BACKGROUND_TASK_NAME);
     expect(selfConfig.agentInputs?.toolRegistry?.has(CHECK_BACKGROUND_TASK_NAME)).toBe(false);
+  });
+
+  it('keeps detached subagent tasks for a run under a schedule grant, as for any other run', async () => {
+    const subagentTasks: SubagentTaskConfig = {
+      store: new InMemorySubagentTaskStore(),
+      scopeId: 'owner:scheduled-thread',
+    };
+    const { execution } = await executionFixture();
+    expect(execution.enrolled).toBe(true);
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: true },
+          toolDefinitions: [],
+          toolRegistry: new Map(),
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      subagentTasks,
+      scheduledMCPExecution: execution,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    // The detached child runs with this run's hooks, the schedule's among them.
+    expect(runConfig.subagentTasks).toBe(subagentTasks);
+    expect(runConfig.hooks).toBeDefined();
+
+    // A grant whose completion turn could not find it again keeps its children foreground.
+    jest.clearAllMocks();
+    const bound = await executionFixture('invoke', undefined, undefined, { detaches: false });
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: true },
+          toolDefinitions: [],
+          toolRegistry: new Map(),
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      subagentTasks,
+      scheduledMCPExecution: bound.execution,
+    });
+    expect((Run.create as jest.Mock).mock.calls[0][0].subagentTasks).toBeUndefined();
   });
 
   it('registers wakeup-aware schema and handle guidance for automatic subagent delivery', async () => {

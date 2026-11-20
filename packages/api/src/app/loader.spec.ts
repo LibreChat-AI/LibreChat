@@ -240,6 +240,73 @@ describe('createCustomConfigLoader policy links', () => {
   });
 });
 
+describe('createCustomConfigLoader retired schedule tool policy', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(logger, 'warn');
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  it('still loads a config that carries the retired read-only list and says it no longer applies', async () => {
+    process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'schedules', 'retired.yaml');
+    const config = await createLoader()(false);
+
+    expect(config?.interface?.schedules).toMatchObject({
+      use: true,
+      mcpConsent: { enabled: true },
+    });
+    expect(warnings(warn)).toContain('interface.schedules.mcpConsent.readOnlyPolicy');
+    expect(warnings(warn)).toContain('schedule owner now chooses');
+  });
+
+  it('says nothing when the key is absent', async () => {
+    process.env.CONFIG_PATH = fixture('valid');
+    await createLoader()(false);
+
+    expect(warnings(warn)).not.toContain('readOnlyPolicy');
+  });
+
+  it('tells an operator who limits key runs to grants that there is no MCP server to be granted', async () => {
+    process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'remote', 'ungrantable.yaml');
+    const config = await createLoader()(false);
+
+    expect(config?.interface?.remoteAgents).toMatchObject({ use: true });
+    expect(warnings(warn)).toContain('Agent API key runs cannot use MCP tools');
+    expect(warnings(warn)).toContain('endpoints.agents.remoteApi.integrations.resources');
+    expect(warnings(warn)).toContain('"delegated"');
+  });
+
+  // `unset` uses the remote API and leaves the mode alone: key runs are not limited there.
+  it.each(['declared', 'owner', 'unset'])(
+    'says nothing about key runs when the %s configuration leaves nothing ungrantable',
+    async (name) => {
+      process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'remote', `${name}.yaml`);
+      await createLoader()(false);
+
+      expect(warnings(warn)).not.toContain('Agent API key runs');
+    },
+  );
+
+  it('says nothing about key runs to a deployment that does not mention the remote API', async () => {
+    process.env.CONFIG_PATH = fixture('valid');
+    await createLoader()(false);
+
+    expect(warnings(warn)).not.toContain('Agent API key runs');
+  });
+});
+
 describe('createCustomConfigLoader remote fetch failures', () => {
   const originalConfigPath = process.env.CONFIG_PATH;
 
@@ -368,6 +435,97 @@ describe('createCustomConfigLoader onLoad', () => {
 
     await expect(load(false, { mode: 'reload' })).rejects.toBeInstanceOf(ConfigReloadError);
     expect(onLoad).not.toHaveBeenCalled();
+  });
+});
+
+describe('createCustomConfigLoader safe success logging', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+  const secret = 'opaque-config-credential-canary';
+  const text = `
+version: 1.3.19
+endpoints:
+  custom:
+    - name: Gateway
+      apiKey: ${secret}-provider
+      baseURL: https://provider.example/v1
+      headers:
+        X-Custom-Credential: ${secret}-header
+      models:
+        default: [permitted]
+        fetch: false
+mcpServers:
+  local:
+    command: node
+    args: [server.js, --api-token, ${secret}-argument]
+    env:
+      CUSTOM_CREDENTIAL: ${secret}-environment
+`;
+
+  beforeEach(() => {
+    process.env.CONFIG_PATH = '/virtual/librechat.yaml';
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+    jest.spyOn(logger, 'debug').mockImplementation(() => logger);
+    jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) delete process.env.CONFIG_PATH;
+    else process.env.CONFIG_PATH = originalConfigPath;
+  });
+
+  it.each(['startup', 'reload'] as const)(
+    'logs only the digest on %s without changing runtime secrets',
+    async (mode) => {
+      const onLoad = jest.fn();
+      const redactConfig = jest.fn((value: TCustomConfig) => value);
+      const load = createCustomConfigLoader({
+        defaultConfigPath: '/virtual/librechat.yaml',
+        loadLocal: () => text,
+        redactConfig,
+        onLoad,
+      });
+
+      const config = await load(true, { mode });
+
+      expect(config?.endpoints?.custom?.[0]).toMatchObject({
+        apiKey: `${secret}-provider`,
+        headers: { 'X-Custom-Credential': `${secret}-header` },
+      });
+      expect(config?.mcpServers?.local).toMatchObject({
+        args: ['server.js', '--api-token', `${secret}-argument`],
+        env: { CUSTOM_CREDENTIAL: `${secret}-environment` },
+      });
+      expect(onLoad).toHaveBeenCalledWith({
+        config,
+        digest: expect.stringMatching(/^[a-f0-9]{12}$/),
+      });
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(
+        `Custom config file loaded (digest: ${onLoad.mock.calls[0][0].digest})`,
+      );
+      expect(logger.debug).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(redactConfig).not.toHaveBeenCalled();
+      const logs = [logger.info, logger.debug, logger.warn, logger.error].map(
+        (log) => jest.mocked(log).mock.calls,
+      );
+      expect(JSON.stringify(logs)).not.toContain(secret);
+    },
+  );
+
+  it('keeps explicit quiet loading silent', async () => {
+    const load = createCustomConfigLoader({
+      defaultConfigPath: '/virtual/librechat.yaml',
+      loadLocal: () => text,
+    });
+
+    await load(false);
+
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.debug).not.toHaveBeenCalled();
   });
 });
 

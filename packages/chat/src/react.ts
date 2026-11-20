@@ -48,6 +48,9 @@ export {
   runEndByIndex,
   resetQueueFamilies,
   isDetachedRunManual,
+  parkDetachedRunEnd,
+  settleDetachedRun,
+  clearSupersededRunMarkers,
   detachedRunByConvoId,
   drainAfterAbortByIndex,
   pendingRunEndByConvoId,
@@ -126,6 +129,29 @@ export {
   buildRevealedMessage,
 } from './react/steering/useQueuedTurnReveal';
 export { useCoreChat } from './react/core';
+export { useFollowChat } from './react/follow';
+export type {
+  FollowedChat,
+  FollowedRunEnd,
+  FollowChatOptions,
+  FollowedGeneration,
+} from './react/follow';
+export { useFollowedContract } from './react/chat/followed';
+export type { FollowedContractOptions } from './react/chat/followed';
+export { useDrivenContract } from './react/chat/driven';
+export type { DrivenContractOptions } from './react/chat/driven';
+export {
+  sideChatAtom,
+  sideChatDraftTakenAtom,
+  SIDE_CHAT_PANE,
+  sideChatBesideAtom,
+  sideChatRequestAtom,
+  sideChatAvailableAtom,
+} from './react/side/state';
+export type { SideChatBeside } from './react/side/state';
+export type { SideChat } from './react/side/state';
+export { useSideChatHost, SideChatHostProvider } from './react/side/host';
+export type { SideChatHost, SideChatOptions, SideChatSurfaceProps } from './react/side/host';
 export { useSnapshot } from './react/snapshot';
 export { ReactQueryChatState } from './react/state';
 export type { Subscribe, SnapshotOptions } from './react/snapshot';
@@ -209,6 +235,7 @@ export {
   useOptionalMessagesOperations,
   useOptionalMessagesConversation,
 } from './react/messages/view';
+export { PartsPreviewContext, useIsPartsPreview } from './react/parts/preview';
 export type {
   MessagesEditing,
   MessagesOperations,
@@ -274,7 +301,7 @@ export type {
   AttachmentDownloadTarget,
 } from './react/files';
 export { default as useReducedMotion } from './react/motion';
-export { default as useElementSize } from './react/size';
+export { default as useElementSize, useElementSizeSelect } from './react/size';
 export { default as useAudioLevels, frameLevel } from './react/levels';
 export { default as useInitPopoverInput } from './react/popover';
 export { useComposerHost, ComposerHostProvider } from './react/input';
@@ -299,12 +326,11 @@ export type {
 } from './react/palette';
 export {
   RowMountProvider,
-  useRowMountWindow,
   useProgressiveRowMount,
   completeProgressiveRowMounts,
 } from './react/messages/useProgressiveRowMount';
 export type { RowMountWindow } from './react/messages/useProgressiveRowMount';
-export { revealOffscreenRows } from './react/messages/offscreen';
+export { reachRow, revealOffscreenRows } from './react/messages/offscreen';
 export {
   default as useScrollbarGutter,
   useScrollbarGutterSeed,

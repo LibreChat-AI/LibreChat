@@ -8,6 +8,7 @@ import {
   prefersResponsesApiByModel,
   supportsAdaptiveThinking,
   gpt6Tier,
+  gpt6Release,
 } from 'librechat-data-provider';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import type { AzureOpenAIInput } from '@librechat/agents/langchain/openai';
@@ -494,6 +495,59 @@ export function resolveReasoningParams({
       : undefined;
   resolved.reasoning = { ...base, effort: reasoningEffort };
   return resolved;
+}
+
+const sol62SamplingKeys = [
+  'temperature',
+  'topP',
+  'top_p',
+  'logprobs',
+  'topLogprobs',
+  'top_logprobs',
+] as const;
+
+/** Mutates request copies; explicit undefined values clear inherited summary options. */
+export function applySol62Constraints(
+  parameters: Record<string, unknown>,
+  inherited?: Record<string, unknown>,
+): void {
+  const effective = inherited ? { ...inherited, ...parameters } : parameters;
+  const targets = [effective];
+  const kwargs = effective.modelKwargs;
+  if (kwargs != null && typeof kwargs === 'object' && !Array.isArray(kwargs)) {
+    const copy = { ...kwargs };
+    effective.modelKwargs = copy;
+    targets.push(copy);
+  }
+  for (const target of targets) {
+    if (target.reasoning_effort === 'none' || target.reasoning_effort === 'minimal') {
+      target.reasoning_effort = 'low';
+    }
+    const reasoning = target.reasoning;
+    if (
+      reasoning != null &&
+      typeof reasoning === 'object' &&
+      'effort' in reasoning &&
+      (reasoning.effort === 'none' || reasoning.effort === 'minimal')
+    ) {
+      target.reasoning = { ...reasoning, effort: 'low' };
+    }
+    for (const key of sol62SamplingKeys) delete target[key];
+    if (Array.isArray(target.include)) {
+      target.include = target.include.filter((value) => value !== 'message.output_text.logprobs');
+    }
+  }
+  if (inherited) {
+    for (const key of [
+      'reasoning',
+      'reasoning_effort',
+      'modelKwargs',
+      'include',
+      ...sol62SamplingKeys,
+    ]) {
+      parameters[key] = effective[key];
+    }
+  }
 }
 
 function applyReasoningConfig({
@@ -1052,6 +1106,7 @@ export function getOpenAILLMConfig({
   const tier = gpt6Tier(llmConfig.model);
   const solLunaRulesApply =
     firstPartyEndpoint && (tier === 'sol' || tier === 'terra' || tier === 'luna');
+  const sol62 = firstPartyEndpoint && gpt6Release(llmConfig.model)?.toLowerCase() === 'gpt-6.2-sol';
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -1139,7 +1194,10 @@ export function getOpenAILLMConfig({
   /** Normalize the final effective value in either API, regardless of whether
    * it came from saved settings, flat params, or a nested configured object.
    * Copy nested objects so administrator defaults are never mutated. */
-  if (solLunaRulesApply) {
+  if (sol62) {
+    applySol62Constraints(llmConfig as Record<string, unknown>);
+    applySol62Constraints(modelKwargs);
+  } else if (solLunaRulesApply) {
     if (llmConfig.reasoning?.effort === ReasoningEffort.minimal) {
       llmConfig.reasoning = { ...llmConfig.reasoning, effort: ReasoningEffort.low };
     }
@@ -1151,12 +1209,13 @@ export function getOpenAILLMConfig({
   /** Sol/Luna/Terra reject sampling controls when Responses uses reasoning. The
    * provider default is medium, so an unset effort is reasoning-enabled too.
    * Strip only the request copy; saved settings remain available when the user
-   * switches models or explicitly selects `none`. */
+   * switches models or explicitly selects `none`. GPT-6.2 Sol rejects these
+   * controls on both APIs and cannot disable reasoning. */
   const solLunaResponsesReasoning =
     solLunaRulesApply &&
     llmConfig.useResponsesApi === true &&
     llmConfig.reasoning?.effort !== ReasoningEffort.none;
-  if (solLunaResponsesReasoning) {
+  if (!sol62 && solLunaResponsesReasoning) {
     for (const param of [
       'temperature',
       'topP',

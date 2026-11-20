@@ -14,6 +14,7 @@
  */
 
 const http = require('http');
+const { z } = require('zod');
 const { randomUUID } = require('crypto');
 const { keepIdleConnections } = require('./keepalive');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
@@ -34,6 +35,17 @@ function createMcpServer() {
     },
     async () => ({
       content: [{ type: 'text', text: 'E2E HTTP MCP pong' }],
+    }),
+  );
+  // URL-backed tool result fixture: delegated API-key grants require a declared recipient.
+  server.registerTool(
+    'remember_fact',
+    {
+      description: 'Records a deterministic fact for API tool result tests.',
+      inputSchema: { fact: z.string().optional() },
+    },
+    async ({ fact = 'LibreChat MCP e2e fact' }) => ({
+      content: [{ type: 'text', text: `E2E MCP memory noted: ${fact}` }],
     }),
   );
   return server;

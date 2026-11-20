@@ -1,6 +1,7 @@
 import { cn } from '@librechat/client';
 import type { ReactNode } from 'react';
 import { revealOnRowHoverClasses, messageFooterClasses } from './styles';
+import { useRowReached } from '../../react/messages/offscreen';
 import Elapsed, { shouldShowElapsed } from './Elapsed';
 import SiblingSwitch from './SiblingSwitch';
 import SubRow from './SubRow';
@@ -36,6 +37,15 @@ export default function MessageFooter({
   setSiblingIdx,
   toolbar,
 }: MessageFooterProps): ReactNode {
+  /**
+   * The toolbar is the costliest part of a row to mount and the one part nobody can use from a
+   * distance: its buttons show on hover, or under the latest message. A row a long thread adds
+   * away from the reader leaves it out until the row comes within a screen of the viewport, so
+   * opening the thread does not build a toolbar per message before the first can be clicked.
+   * The latest message keeps its own always: the keyboard shortcuts press its buttons wherever
+   * the reader has scrolled to.
+   */
+  const reached = useRowReached();
   return (
     <SubRow classes={cn(messageFooterClasses, isUserSide && 'justify-end')}>
       {/* The reading holds the column start: it takes over the slot the streaming
@@ -64,7 +74,9 @@ export default function MessageFooter({
           isSubmitting && isLatestMessage && revealOnRowHoverClasses,
         )}
       />
-      {toolbar}
+      {/* The stand-in keeps the footer from counting as empty, which would collapse the height
+          it holds for the toolbar. */}
+      {reached || isLatestMessage ? toolbar : <span aria-hidden="true" />}
     </SubRow>
   );
 }

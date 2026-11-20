@@ -463,6 +463,37 @@ describe('background Responses execution handoff', () => {
     expect(processStream).toHaveBeenCalledTimes(1);
     expect(resume).not.toHaveBeenCalled();
   });
+  it('marks only a worker-admitted run as background, whatever the caller sends', async () => {
+    let admitted: boolean | undefined;
+    const { app } = fixture(async (req, res) => {
+      admitted = createResponseExecutionRuntime(req, res, {
+        getMessage: async () => null,
+        jobs: GenerationJobManager,
+      }).background;
+      res.json({ ok: true });
+    });
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
+      .send({})
+      .expect(200, { ok: true });
+    expect(admitted).toBe(true);
+
+    const direct = express();
+    direct.use(express.json());
+    direct.post('/', (req, res) => {
+      const runtime = createResponseExecutionRuntime(req, res, { getMessage: async () => null });
+      res.json({
+        background: runtime.background,
+        tools: runtime.toolContext({ createdAt: 1 }),
+      });
+    });
+    await request(direct)
+      .post('/')
+      .send({ background: true })
+      .expect(200, { background: false, tools: { streamId: null } });
+  });
   it('does not enable interactive execution from caller fields without an installed resume validator', async () => {
     const { app } = fixture(async (req, res) => {
       const runtime = createResponseExecutionRuntime(req, res, {
