@@ -87,7 +87,7 @@ describe('ChatSessionProvider', () => {
     const { host, useMessages } = createHost({ messages, isLoading: false, isFetching: false });
     const pane = renderSession(host);
 
-    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false });
+    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false, messages: true });
     expect(pane).toHaveBeenLastCalledWith({ messages, isLoading: false });
   });
 
@@ -104,7 +104,7 @@ describe('ChatSessionProvider', () => {
         </ChatSessionProvider>
       </ChatHostProvider>,
     );
-    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false });
+    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false, messages: true });
     expect(mockUseResumeOnLoad).toHaveBeenLastCalledWith('convo-1', expect.any(Function), 0, false);
   });
 
@@ -113,7 +113,7 @@ describe('ChatSessionProvider', () => {
     const { host, useMessages } = createHost({ messages, isLoading: false, isFetching: false });
     renderSession(host);
 
-    expect(useMessages).toHaveBeenLastCalledWith('convo-1', { isStreaming: true });
+    expect(useMessages).toHaveBeenLastCalledWith('convo-1', { isStreaming: true, messages: true });
     getDefaultStore().set(isSubmittingFamily(1), false);
   });
 
@@ -169,6 +169,7 @@ describe('ChatSessionProvider', () => {
   });
 
   describe('with its pane given as an element', () => {
+    const idle = () => () => undefined;
     /** A host whose messages change the way a streamed reply changes them. */
     function createLiveHost() {
       let query: ChatMessagesQuery = { messages, isLoading: false, isFetching: false };
@@ -178,9 +179,15 @@ describe('ChatSessionProvider', () => {
         return () => listeners.delete(listener);
       };
       const asked = jest.fn();
-      const useMessages = (id: string | undefined, options: object): ChatMessagesQuery => {
+      /** As an app's host does: a caller that wants no messages is not told when they change. */
+      const status: ChatMessagesQuery = { messages: null, isLoading: false, isFetching: false };
+      const useMessages = (
+        id: string | undefined,
+        options: { messages?: boolean },
+      ): ChatMessagesQuery => {
         asked(id, options);
-        return useSyncExternalStore(subscribe, () => query);
+        const reads = options.messages !== false;
+        return useSyncExternalStore(reads ? subscribe : idle, () => (reads ? query : status));
       };
       const write = (next: TMessage[]) =>
         act(() => {
@@ -190,7 +197,7 @@ describe('ChatSessionProvider', () => {
       return { host: { useMessages } as unknown as ChatHost, write, asked };
     }
 
-    it('redraws what reads the messages on every change, and not the pane around it', () => {
+    it('redraws what reads the messages on every change, and neither the pane nor the session', () => {
       const { host, write, asked } = createLiveHost();
       const drawn = { pane: 0, reader: [] as Array<TMessage[] | null> };
       function Reader() {
@@ -210,8 +217,9 @@ describe('ChatSessionProvider', () => {
       );
       expect(drawn.pane).toBe(1);
       expect(drawn.reader[drawn.reader.length - 1]).toBe(messages);
-      /** The session loads the conversation; the reader follows that and loads nothing. */
-      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: false });
+      /** The session loads the conversation and asks only whether it is loading; the reader
+       *  follows that load and starts none. */
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: false, messages: false });
       expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: false, enabled: false });
       const sessions = mockUseChatHelpers.mock.calls.length;
 
@@ -219,8 +227,8 @@ describe('ChatSessionProvider', () => {
       write(longer);
       write([...longer, { messageId: 'm-3' } as TMessage]);
 
-      /** The session itself still ran for each change, as its hooks need to. */
-      expect(mockUseChatHelpers.mock.calls.length).toBe(sessions + 2);
+      /** No session hook ran again: nothing the session reads changed. */
+      expect(mockUseChatHelpers.mock.calls.length).toBe(sessions);
       expect(drawn.reader[drawn.reader.length - 1]).toHaveLength(3);
       expect(drawn.pane).toBe(1);
     });

@@ -1,10 +1,10 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { appChatHost } from '../ChatHostContext';
+import { appChatHost, createMessageCache } from '../ChatHostContext';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -73,6 +73,33 @@ describe('appChatHost.useMessages', () => {
       expect(getMessages).toHaveBeenCalledTimes(1);
     });
 
+    it('tells a reader that asks only whether they are loading of that, and not of each change', async () => {
+      const queryClient = new QueryClient();
+      let renders = 0;
+      const { result } = renderHook(
+        () => {
+          renders += 1;
+          return appChatHost.useMessages('convo-1', { isStreaming: false, messages: false });
+        },
+        { wrapper: wrapperFor(queryClient) },
+      );
+
+      expect(result.current).toEqual({ messages: null, isLoading: true, isFetching: true });
+      await waitFor(() =>
+        expect(result.current).toEqual({ messages: null, isLoading: false, isFetching: false }),
+      );
+      expect(getMessages).toHaveBeenCalledTimes(1);
+
+      /** A reply being written changes the messages on every frame, and nothing it asked about. */
+      const settled = renders;
+      for (const text of ['One', 'One two', 'One two three']) {
+        act(() => {
+          queryClient.setQueryData([QueryKeys.messages, 'convo-1'], [{ ...messages[0], text }]);
+        });
+      }
+      expect(renders).toBe(settled);
+    });
+
     it('loads nothing where no session does', async () => {
       const { result } = renderHook(follow, { wrapper: wrapperFor(new QueryClient()) });
 
@@ -102,5 +129,23 @@ describe('appChatHost.useMessages', () => {
     expect(result.current.messages).toBeNull();
     expect(result.current.isFetching).toBe(false);
     expect(getMessages).not.toHaveBeenCalled();
+  });
+});
+
+describe('createMessageCache', () => {
+  it('reads a conversation by its own entry, without comparing every query in the cache', () => {
+    const queryClient = new QueryClient();
+    for (let other = 0; other < 50; other++) {
+      queryClient.setQueryData([QueryKeys.messages, `other-${other}`], []);
+    }
+    queryClient.setQueryData([QueryKeys.messages, 'convo-1'], messages);
+    const cache = createMessageCache(queryClient);
+    const find = jest.spyOn(queryClient.getQueryCache(), 'find');
+
+    expect(cache.read('convo-1')).toBe(messages);
+    expect(cache.read('never-loaded')).toBeUndefined();
+    expect(cache.messagesUpdatedAt('convo-1')).toEqual(expect.any(Number));
+    expect(cache.messagesUpdatedAt('never-loaded')).toBeUndefined();
+    expect(find).not.toHaveBeenCalled();
   });
 });

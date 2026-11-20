@@ -45,9 +45,10 @@ export function useChatSessionMessages(conversationId?: string): ChatSessionMess
  * released its in-flight guard and sees the refetch before the drain can call it.
  *
  * The pane under it is given as an element, and what draws the messages reads them with
- * {@link useChatSessionMessages}: a session render, which every frame of a reply causes, then
- * stops here instead of re-rendering the pane. A render function is still taken, and is called
- * with the messages on every session render.
+ * {@link useChatSessionMessages}: a frame of a reply then re-renders that reader, and neither
+ * the pane nor this session, which asks its host only whether the messages are loading. A
+ * render function is still taken; the session then reads the messages too, and calls it with
+ * them on every change.
  */
 export function ChatSessionProvider({
   index = 0,
@@ -65,8 +66,14 @@ export function ChatSessionProvider({
 }): ReactNode {
   const host = useChatHost();
   const isSubmitting = useIsSubmitting(index);
+  /**
+   * The session itself needs to know only whether the messages are loading, for resume. A pane
+   * given as an element reads them for itself, so the session is not re-rendered for them: every
+   * frame of a reply would otherwise run each session hook again for nothing.
+   */
   const { messages, isLoading, isFetching } = host.useMessages(conversationId, {
     isStreaming: isSubmitting,
+    messages: typeof children === 'function',
   });
 
   const chat = useChatHelpers(index, conversationId);
