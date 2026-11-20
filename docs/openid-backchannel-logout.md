@@ -55,6 +55,24 @@ number of times with its own backoff; it does not retry indefinitely.
    path that does not call the configured URL) cannot be enforced; this design does not poll the
    provider to compensate, so coverage is limited to notifications that are actually delivered.
 
+## Admin panel renewal limit
+
+The admin panel renews its OpenID session through `POST /api/admin/oauth/refresh`. The panel's
+server makes this call, so every admin who uses one panel shares that server's IP address. The
+route therefore has its own limit, `rateLimits.adminRefresh`, separate from the sign-in limit:
+
+```yaml
+rateLimits:
+  adminRefresh:
+    windowMs: 60000 # default: one minute
+    max: 30 # default: 30 renewals per window, per client IP address
+```
+
+Raise `max` when many admins use the same panel. A rejected renewal answers `429` and logs the
+warning `[adminRefreshLimiter] Admin token renewal rate limit exceeded` with the client address,
+the window and the limit. The route runs before authentication, so a rejection does not add to a
+user's violation score.
+
 ## Verifying before production
 
 Test the deployment's actual logout action, including signing out of another application that
