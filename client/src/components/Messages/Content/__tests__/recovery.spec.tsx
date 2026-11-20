@@ -29,6 +29,8 @@ const catalog = translation as Record<string, string>;
 const mockNavigateToConvo = jest.fn();
 const mockShowToast = jest.fn();
 const mockForkMutate = jest.fn();
+const mockExclusionMutate = jest.fn();
+let mockExcludedFiles: string[] | undefined;
 let mockForkOptions: {
   onSuccess?: (data: { conversation: TConversation; messages: TMessage[] }) => void;
 } = {};
@@ -49,6 +51,10 @@ jest.mock('~/data-provider', () => ({
     mockForkOptions = options;
     return { mutate: mockForkMutate, isLoading: false };
   },
+  useFileExclusionMutation: () => ({ mutate: mockExclusionMutate, isLoading: false }),
+  useFileExclusionQuery: () => ({
+    data: mockExcludedFiles == null ? undefined : { excludedFiles: mockExcludedFiles },
+  }),
 }));
 
 jest.mock('@librechat/client', () => ({
@@ -181,6 +187,7 @@ const branchFixture = () => [
 describe('AttachmentRecoveryActions', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockExcludedFiles = undefined;
     composerHandoff = undefined;
     getDefaultStore().set(pendingQuotesByConvoId('forked'), []);
     getDefaultStore().set(pendingManualSkillsByConvoId('forked'), []);
@@ -241,6 +248,124 @@ describe('AttachmentRecoveryActions', () => {
     expect(mockShowToast).toHaveBeenCalledWith(
       expect.objectContaining({ message: catalog.com_ui_branch_without_files_draft }),
     );
+  });
+
+  describe('when earlier messages carry other files', () => {
+    const diagram = { file_id: 'diagram', filename: 'diagram.png', type: 'image/png' };
+    const report = { file_id: 'report', filename: 'report.pdf', type: 'application/pdf' };
+    const olderFixture = () => [
+      user('u0', Constants.NO_PARENT, { files: [report] }),
+      answer('a0', 'u0', {
+        attachments: [{ file_id: 'chart', filename: 'chart.png' }] as TMessage['attachments'],
+      }),
+      user('u1', 'a0', { files: [diagram, screenshot] }),
+      answer('a1', 'u1'),
+      user('u2', 'a1', { files: [screenshot], quotes: ['quoted line'] }),
+      answer('a2', 'u2', { error: true }),
+    ];
+    const tooLarge =
+      'This turn exceeds the configured total attachment size limit (30 > 20). Remove some attachments or use smaller files and try again.';
+
+    it('first offers to leave the older files out and send the turn again with its own', async () => {
+      const { ask } = renderRecovery({ messages: olderFixture(), text: tooLarge });
+
+      expect(
+        screen.getByText(catalog.com_error_attachments_older_info, { exact: false }),
+      ).toBeTruthy();
+      const [first] = screen.getAllByRole('button');
+      expect(first).toHaveAccessibleName(catalog.com_ui_retry_without_older_files);
+      await userEvent.click(first);
+
+      /** Every earlier file on the branch except the one the failed turn carries itself. */
+      expect(mockExclusionMutate).toHaveBeenCalledTimes(1);
+      const [change, callbacks] = mockExclusionMutate.mock.calls[0];
+      expect(change).toEqual({
+        conversationId: 'convo',
+        fileIds: ['diagram', 'chart', 'report'],
+        excluded: true,
+      });
+      expect(ask).not.toHaveBeenCalled();
+
+      act(() => callbacks.onSuccess());
+
+      expect(ask).toHaveBeenCalledWith(
+        { text: 'question u2', parentMessageId: 'a1', conversationId: 'convo' },
+        expect.objectContaining({ overrideFiles: [screenshot], overrideQuotes: ['quoted line'] }),
+      );
+    });
+
+    it('sends nothing again when the files could not be left out, and says so', async () => {
+      const { ask } = renderRecovery({ messages: olderFixture(), text: tooLarge });
+      await userEvent.click(
+        screen.getByRole('button', { name: catalog.com_ui_retry_without_older_files }),
+      );
+
+      act(() => mockExclusionMutate.mock.calls[0][1].onError());
+
+      expect(ask).not.toHaveBeenCalled();
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: catalog.com_ui_retry_without_older_files_error,
+          status: 'error',
+        }),
+      );
+    });
+
+    it('keeps the other two ways out beside it', () => {
+      renderRecovery({ messages: olderFixture(), text: tooLarge });
+
+      expect(screen.getByRole('button', { name: catalog.com_ui_retry_without_files })).toBeTruthy();
+      expect(
+        screen.getByRole('button', { name: catalog.com_ui_branch_without_files }),
+      ).toBeTruthy();
+    });
+
+    it('does not offer it for a turn with too many files of its own, and does not blame the conversation', () => {
+      renderRecovery({
+        messages: olderFixture(),
+        text: 'This turn exceeds the configured attachment count limit (11 > 10). Remove some attachments or use smaller files and try again.',
+      });
+
+      expect(
+        screen.queryByRole('button', { name: catalog.com_ui_retry_without_older_files }),
+      ).toBeNull();
+      expect(
+        screen.getByText(catalog.com_error_attachments_count_cause, { exact: false }),
+      ).toBeTruthy();
+      expect(screen.queryByText(catalog.com_error_attachments_cause, { exact: false })).toBeNull();
+    });
+
+    it('leaves out only what is not left out already', async () => {
+      mockExcludedFiles = ['report'];
+      renderRecovery({ messages: olderFixture(), text: tooLarge });
+
+      await userEvent.click(
+        screen.getByRole('button', { name: catalog.com_ui_retry_without_older_files }),
+      );
+
+      expect(mockExclusionMutate.mock.calls[0][0].fileIds).toEqual(['diagram', 'chart']);
+    });
+
+    it('does not offer it again once every older file is already left out', () => {
+      mockExcludedFiles = ['diagram', 'chart', 'report'];
+      renderRecovery({ messages: olderFixture(), text: tooLarge });
+
+      expect(
+        screen.queryByRole('button', { name: catalog.com_ui_retry_without_older_files }),
+      ).toBeNull();
+      expect(screen.getByRole('button', { name: catalog.com_ui_retry_without_files })).toBeTruthy();
+    });
+
+    it('does not offer it when the only earlier file is one the failed turn carries too', () => {
+      renderRecovery({ messages: branchFixture(), text: tooLarge });
+
+      expect(
+        screen.queryByRole('button', { name: catalog.com_ui_retry_without_older_files }),
+      ).toBeNull();
+      expect(
+        screen.getByRole('button', { name: catalog.com_ui_branch_without_files }),
+      ).toBeTruthy();
+    });
   });
 
   it('reports a copy that still has its files instead of announcing a recovery', async () => {

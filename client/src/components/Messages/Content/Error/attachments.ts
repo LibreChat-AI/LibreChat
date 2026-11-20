@@ -1,6 +1,7 @@
 import {
   Constants,
   ErrorTypes,
+  messageFileIds,
   findMessageById,
   messageCarriesFiles,
   parseLangChainErrorCode,
@@ -30,6 +31,15 @@ const attachmentErrorPatterns: RegExp[] = [
 /** Whether a failed turn's text reads as a failure caused by the conversation's files. */
 export function isAttachmentError(text: string): boolean {
   return attachmentErrorPatterns.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Whether the turn was refused for carrying too many files of its own. Only the files new to a
+ * turn count toward that limit, so the conversation's earlier files are not the cause and
+ * leaving them out changes nothing.
+ */
+export function isCountLimitError(text: string): boolean {
+  return /attachment count limit/i.test(text);
 }
 
 /**
@@ -100,6 +110,8 @@ export type AttachmentRecovery = {
    * the failed turn, so the copy has no failure in it and the failed message can be sent again.
    */
   branchTargetId?: string;
+  /** Earlier turns carry files the failed turn does not, which the conversation can leave out. */
+  olderCarryFiles: boolean;
 };
 
 /**
@@ -120,7 +132,9 @@ export function findAttachmentRecovery(
   }
 
   const visited = new Set<string>([parent.messageId]);
+  let own: Set<string> | undefined;
   let earlierCarriesFiles = false;
+  let olderCarryFiles = false;
   let currentId = parent.parentMessageId;
   while (currentId != null && currentId !== Constants.NO_PARENT && !visited.has(currentId)) {
     visited.add(currentId);
@@ -130,7 +144,13 @@ export function findAttachmentRecovery(
     }
     if (messageCarriesFiles(ancestor)) {
       earlierCarriesFiles = true;
-      break;
+      /** A file the failed turn carries too would still be sent, so it is not one to leave out. */
+      own ??= new Set(messageFileIds(parent));
+      const kept = own;
+      if (messageFileIds(ancestor).some((fileId) => !kept.has(fileId))) {
+        olderCarryFiles = true;
+        break;
+      }
     }
     currentId = ancestor.parentMessageId;
   }
@@ -145,5 +165,34 @@ export function findAttachmentRecovery(
   if (!canRetry && branchTargetId == null) {
     return null;
   }
-  return { parent, canRetry, branchTargetId };
+  return { parent, canRetry, branchTargetId, olderCarryFiles };
+}
+
+/**
+ * The files of the turns before `parent` on its branch, oldest turn last, without any the turn
+ * carries itself: those it would still send. Walked on the click that needs them, not while the
+ * card renders.
+ */
+export function collectOlderFileIds(
+  messages: TMessage[] | null | undefined,
+  parent: Pick<TMessage, 'messageId' | 'parentMessageId' | 'files' | 'attachments' | 'content'>,
+): string[] {
+  const own = new Set(messageFileIds(parent));
+  const older = new Set<string>();
+  const visited = new Set<string>([parent.messageId]);
+  let currentId = parent.parentMessageId;
+  while (currentId != null && currentId !== Constants.NO_PARENT && !visited.has(currentId)) {
+    visited.add(currentId);
+    const ancestor = findMessageById(messages, currentId);
+    if (ancestor == null) {
+      break;
+    }
+    for (const fileId of messageFileIds(ancestor)) {
+      if (!own.has(fileId)) {
+        older.add(fileId);
+      }
+    }
+    currentId = ancestor.parentMessageId;
+  }
+  return [...older];
 }
