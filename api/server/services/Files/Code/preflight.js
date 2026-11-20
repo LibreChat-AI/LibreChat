@@ -1,7 +1,6 @@
 const { logger } = require('@librechat/data-schemas');
 const {
   getSafeErrorMetadata,
-  releasePreparedCodeOutputBuffer,
   preflightCodeOutputBatch: runCodeOutputBatchPreflight,
 } = require('@librechat/api');
 const {
@@ -29,15 +28,12 @@ const preflightCodeOutputBatch = async ({ req, artifact, codeExecutionContext })
         mergedFileConfig.serverFileSizeLimit,
     },
     concurrency: req.config?.concurrency?.codeOutputDownloads,
-    release: ({ file, sessionId }) =>
-      releasePreparedCodeOutputBuffer({
-        req,
-        id: file.id,
-        session_id: sessionId,
-        codeApiBaseUrl: codeExecutionContext?.baseUrl,
-        executionProfile: codeExecutionContext?.executionProfile,
-        executionRouteKey: codeExecutionContext?.executionRouteKey,
-      }),
+    bufferCache: {
+      req,
+      codeApiBaseUrl: codeExecutionContext?.baseUrl,
+      executionProfile: codeExecutionContext?.executionProfile,
+      executionRouteKey: codeExecutionContext?.executionRouteKey,
+    },
     prepare: ({ file, sessionId, maxBytes, inspectContent }) =>
       prepareCodeOutputForInspection({
         req,

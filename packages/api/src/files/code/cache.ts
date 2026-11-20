@@ -1,5 +1,5 @@
 import path from 'path';
-import { CODE_OUTPUT_PREFLIGHT_MAX_BYTES, CODE_OUTPUT_PREFLIGHT_MAX_COUNT } from './preflight';
+import { CODE_OUTPUT_PREFLIGHT_MAX_BYTES, CODE_OUTPUT_PREFLIGHT_MAX_COUNT } from './limits';
 
 /** The Code API route a buffer was fetched through; one of these identifies it. */
 export interface CodeOutputRoute {

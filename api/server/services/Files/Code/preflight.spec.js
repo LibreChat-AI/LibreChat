@@ -1,7 +1,6 @@
 const mockRunCodeOutputBatchPreflight = jest.fn();
 const mockPrepareCodeOutputForInspection = jest.fn();
 const mockGetSafeErrorMetadata = jest.fn(() => ({ type: 'Error', status: 404 }));
-const mockReleasePreparedCodeOutputBuffer = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn() },
@@ -10,7 +9,6 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('@librechat/api', () => ({
   preflightCodeOutputBatch: (...args) => mockRunCodeOutputBatchPreflight(...args),
   getSafeErrorMetadata: (...args) => mockGetSafeErrorMetadata(...args),
-  releasePreparedCodeOutputBuffer: (...args) => mockReleasePreparedCodeOutputBuffer(...args),
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -85,12 +83,8 @@ describe('preflightCodeOutputBatch Code API routing', () => {
     );
   });
 
-  it('evicts a discarded prefetch through the same Code API route', async () => {
+  it('scopes prefetch eviction to the request and its Code API route', async () => {
     const req = { config: {}, user: { id: 'user-1' } };
-    mockRunCodeOutputBatchPreflight.mockImplementationOnce(async ({ release }) => {
-      release({ file: { id: 'file-1', name: 'output.txt' }, sessionId: 'session-1' });
-      return [];
-    });
 
     await preflightCodeOutputBatch({
       req,
@@ -102,14 +96,16 @@ describe('preflightCodeOutputBatch Code API routing', () => {
       },
     });
 
-    expect(mockReleasePreparedCodeOutputBuffer).toHaveBeenCalledWith({
-      req,
-      id: 'file-1',
-      session_id: 'session-1',
-      codeApiBaseUrl: 'https://code-stateful.example.com',
-      executionProfile: 'stateful',
-      executionRouteKey: 'stateful:route',
-    });
+    expect(mockRunCodeOutputBatchPreflight).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bufferCache: {
+          req,
+          codeApiBaseUrl: 'https://code-stateful.example.com',
+          executionProfile: 'stateful',
+          executionRouteKey: 'stateful:route',
+        },
+      }),
+    );
   });
 
   /* The batch degrades an uninspectable artifact to the download fallback and
