@@ -385,3 +385,11 @@ export { default as PhaseMarker, PhaseGlyph } from './components/parts/phase/Mar
 export type { PhaseMarkerProps, PhaseGlyphProps } from './components/parts/phase/Marker';
 export { default as LivePhaseHeader } from './components/parts/phase/Live';
 export type { LivePhaseHeaderProps } from './components/parts/phase/Live';
+export {
+  getLiveActivity,
+  blocksLiveFold,
+  getSpanIconNames,
+  LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
+} from './components/parts/phase/live';
+export type { LiveActivity } from './components/parts/phase/live';

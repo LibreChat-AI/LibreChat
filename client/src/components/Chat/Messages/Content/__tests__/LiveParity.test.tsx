@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { Provider, useSetAtom } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { resolveAskUserQuestionPart } from '@librechat/chat';
+import { getLiveActivity } from '@librechat/chat/components';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
@@ -14,7 +15,6 @@ import type {
 } from 'librechat-data-provider';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import ContentParts from '../ContentParts';
-import { getLiveActivity } from '../live';
 import * as mcpHooks from '~/hooks/MCP';
 import store from '~/store';
 
