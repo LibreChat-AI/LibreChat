@@ -85,6 +85,12 @@ function ChatViewPane({
   const modularChat = useRecoilValue(store.modularChat);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
+  const speechToText = useRecoilValue(store.speechToText);
+  const textToSpeech = useRecoilValue(store.textToSpeech);
+  const automaticPlayback = useRecoilValue(store.automaticPlayback);
+  const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
+  const slashCommand = useRecoilValue(store.slashCommand);
+  const atCommand = useRecoilValue(store.atCommand);
   const pendingAction = useAtomValue(
     pendingApprovalActionFamily(conversationId ?? Constants.NEW_CONVO),
   );
@@ -112,8 +118,30 @@ function ChatViewPane({
     defaultValues: { text: '' },
   });
   const composerPreferences = useMemo(
-    () => ({ enterToSend, autoSendText, speechSettingsInitialized, modularChat }),
-    [enterToSend, autoSendText, speechSettingsInitialized, modularChat],
+    () => ({
+      enterToSend,
+      autoSendText,
+      speechSettingsInitialized,
+      modularChat,
+      speechToText,
+      textToSpeech,
+      automaticPlayback,
+      maximizeChatSpace,
+      slashCommand,
+      atCommand,
+    }),
+    [
+      enterToSend,
+      autoSendText,
+      speechSettingsInitialized,
+      modularChat,
+      speechToText,
+      textToSpeech,
+      automaticPlayback,
+      maximizeChatSpace,
+      slashCommand,
+      atCommand,
+    ],
   );
 
   const fileMap = useFileMapContext();

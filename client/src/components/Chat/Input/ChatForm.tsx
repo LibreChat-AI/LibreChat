@@ -1,5 +1,4 @@
 import { memo, useRef, useMemo, useEffect, useState, Suspense, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
@@ -55,6 +54,7 @@ import {
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
 import { onGreetingSettled, canClaimWelcomeFocus, isTouchFirst } from '../welcome';
+import { useComposerPreferences } from '~/Providers/ComposerPreferencesContext';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -112,6 +112,18 @@ interface ChatFormProps {
   /** Owned by the host: the app-level preference for where the welcome-screen
    *  composer sits. The chat feature only consumes it. */
   centerFormOnLanding: boolean;
+  /** Owned by the host: the Speech to Text preference; shows the dictation control. */
+  speechToText: boolean;
+  /** Owned by the host: the Text to Speech preference; with automatic playback, reads replies aloud. */
+  textToSpeech: boolean;
+  /** Owned by the host: the Automatic Playback preference. */
+  automaticPlayback: boolean;
+  /** Owned by the host: the Maximize Chat Space preference; widens the composer. */
+  maximizeChatSpace: boolean;
+  /** Owned by the host: the `/` prompts command preference. */
+  slashCommand: boolean;
+  /** Owned by the host: the `@` mentions command preference. */
+  atCommand: boolean;
   /** Owned by ChatView: whether a footer bar renders under this band. It is an
    *  absolutely positioned bar in a zero-height wrapper, so the clearance here
    *  is the only thing keeping it off the composer. True on the welcome screen,
@@ -147,6 +159,12 @@ const ChatForm = memo(function ChatForm({
   speechSettingsInitialized,
   footerBelow,
   centerFormOnLanding,
+  speechToText,
+  textToSpeech,
+  automaticPlayback,
+  maximizeChatSpace,
+  slashCommand,
+  atCommand,
   files,
   setFiles,
   conversation,
@@ -177,11 +195,7 @@ const ChatForm = memo(function ChatForm({
   const [, setIsScrollable] = useState(false);
   const [isTextAreaFocused, setIsTextAreaFocused] = useState(false);
 
-  const SpeechToText = useRecoilValue(store.speechToText);
-  const TextToSpeech = useRecoilValue(store.textToSpeech);
   const chatDirection = useAtomValue(chatDirectionAtom);
-  const automaticPlayback = useRecoilValue(store.automaticPlayback);
-  const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const { isTemporary } = useChatSettings();
 
   const [showStopButton, setShowStopButton] = useAtom(showStopButtonByIndex(index));
@@ -484,23 +498,14 @@ const ChatForm = memo(function ChatForm({
     permissionType: PermissionTypes.PROMPTS,
     permission: Permissions.USE,
   });
-  const slashCommandEnabled = useRecoilValue(store.slashCommand);
-  const atCommandEnabled = useRecoilValue(store.atCommand);
   const idleActions = useMemo(
     () => ({
-      prompts: hasPromptsAccess && slashCommandEnabled,
+      prompts: hasPromptsAccess && slashCommand,
       /* A mention picks the conversation's model: main chat's, or one that is changed in place. */
-      mentions: atCommandEnabled && (routed || retargets),
+      mentions: atCommand && (routed || retargets),
       attach: attachTarget.canAttach,
     }),
-    [
-      routed,
-      retargets,
-      hasPromptsAccess,
-      atCommandEnabled,
-      slashCommandEnabled,
-      attachTarget.canAttach,
-    ],
+    [routed, retargets, hasPromptsAccess, atCommand, slashCommand, attachTarget.canAttach],
   );
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
@@ -536,7 +541,7 @@ const ChatForm = memo(function ChatForm({
     deferComposerReset: dictationAnswerModeActive,
     disabled: speechDisabled,
     autoSendText,
-    speechToText: SpeechToText,
+    speechToText,
     index,
   });
   const uploadingCount = useMemo(() => {
@@ -896,7 +901,7 @@ const ChatForm = memo(function ChatForm({
           anchorRef={composerBoxRef}
           showTools={showTools}
           isSubmitting={isSubmitting}
-          showSpeech={SpeechToText}
+          showSpeech={speechToText}
           speechDisabled={speechDisabled}
           dictation={dictation}
           approvalSlot={approvalSlot}
@@ -908,7 +913,7 @@ const ChatForm = memo(function ChatForm({
         </Suspense>
       </BadgeRowProvider>
       {/* Reads main chat's run and owns the page's one audio element. */}
-      {routed && TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
+      {routed && textToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
     </ComposerFrame>
   );
 });
@@ -947,6 +952,16 @@ function ChatFormWrapper({
   footerBelow: boolean;
   centerFormOnLanding: boolean;
 }) {
+  /** The app's preferences, from the chat view that hosts this composer (main chat's or a side
+   *  chat's), or their defaults outside one. */
+  const {
+    speechToText,
+    textToSpeech,
+    automaticPlayback,
+    maximizeChatSpace,
+    slashCommand,
+    atCommand,
+  } = useComposerPreferences();
   const {
     files,
     setFiles,
@@ -1031,6 +1046,12 @@ function ChatFormWrapper({
       isLandingPage={isLandingPage}
       footerBelow={footerBelow}
       centerFormOnLanding={centerFormOnLanding}
+      speechToText={speechToText}
+      textToSpeech={textToSpeech}
+      automaticPlayback={automaticPlayback}
+      maximizeChatSpace={maximizeChatSpace}
+      slashCommand={slashCommand}
+      atCommand={atCommand}
       files={files}
       setFiles={setFiles}
       conversation={stableConversation}
