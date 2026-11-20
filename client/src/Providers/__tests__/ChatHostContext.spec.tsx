@@ -47,6 +47,41 @@ describe('appChatHost.useMessages', () => {
     expect(getMessages).toHaveBeenCalledWith('convo-1', { toolPreviews: true });
   });
 
+  describe('for a second reader of the conversation', () => {
+    const wrapperFor = (queryClient: QueryClient) =>
+      function Wrapper({ children }: { children: React.ReactNode }) {
+        return (
+          <MemoryRouter>
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          </MemoryRouter>
+        );
+      };
+    const follow = () => appChatHost.useMessages('convo-1', { isStreaming: false, enabled: false });
+
+    it('follows what the session loads, without a load of its own', async () => {
+      const { result } = renderHook(
+        () => ({
+          reader: follow(),
+          session: appChatHost.useMessages('convo-1', { isStreaming: false }),
+        }),
+        { wrapper: wrapperFor(new QueryClient()) },
+      );
+
+      expect(result.current.reader).toMatchObject({ messages: null, isLoading: true });
+      await waitFor(() => expect(result.current.session.isLoading).toBe(false));
+      expect(result.current.reader).toMatchObject({ messages, isLoading: false });
+      expect(getMessages).toHaveBeenCalledTimes(1);
+    });
+
+    it('loads nothing where no session does', async () => {
+      const { result } = renderHook(follow, { wrapper: wrapperFor(new QueryClient()) });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(getMessages).not.toHaveBeenCalled();
+      expect(result.current.messages).toBeNull();
+    });
+  });
+
   it('serves a warm cache at once while it revalidates in the background', async () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData([QueryKeys.messages, 'convo-1'], messages);

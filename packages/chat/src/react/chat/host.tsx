@@ -166,7 +166,8 @@ export interface ChatHost {
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
   /** Loads a conversation's messages; `isStreaming` lets the query hold off refetching under a
-   *  live stream. An absent id loads nothing. */
+   *  live stream. An absent id loads nothing. With `enabled: false` it loads nothing either,
+   *  and follows what another reader of the same conversation loaded. */
   useMessages(
     conversationId: string | undefined,
     options: { isStreaming: boolean; enabled?: boolean },
