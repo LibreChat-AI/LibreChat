@@ -1,10 +1,7 @@
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { CodeOutputArtifact, PrepareCodeOutputInput, PreparedCodeOutput } from './preflight';
-import {
-  preflightCodeOutputBatch,
-  CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
-  CODE_OUTPUT_PREFLIGHT_CONCURRENCY,
-} from './preflight';
+import { preflightCodeOutputBatch, CODE_OUTPUT_PREFLIGHT_MAX_BYTES } from './preflight';
+import { DEFAULT_LOOKUP_CONCURRENCY } from '../../utils/concurrency';
 
 const BLOCK_PATTERN = {
   id: 'private-token',
@@ -396,7 +393,7 @@ describe('preflightCodeOutputBatch', () => {
 
       expect(outcome(result)).toEqual(sizes);
       expect(prepare).toHaveBeenCalledTimes(sizes.length);
-      expect(peak().open).toBe(CODE_OUTPUT_PREFLIGHT_CONCURRENCY);
+      expect(peak().open).toBe(DEFAULT_LOOKUP_CONCURRENCY.codeOutputDownloads);
     });
 
     it('never holds more open transport capacity than the batch budget', async () => {
@@ -481,26 +478,62 @@ describe('preflightCodeOutputBatch', () => {
       expect(result[1].downloadFallback).toBe(true);
     });
 
-    it('still rejects a blocked file under active inspection', async () => {
+    it('keeps a batch under active inspection serial and still rejects a blocked file', async () => {
       const filters: FiltersConfig = {
         files: {
           pii: { fields: ['content'], starterPatterns: [], customPatterns: [BLOCK_PATTERN] },
         },
       };
-      const prepare = jest.fn(async (input: PrepareCodeOutputInput) =>
-        prepared(input, {
+      let open = 0;
+      let peakOpen = 0;
+      const prepare = jest.fn(async (input: PrepareCodeOutputInput) => {
+        open++;
+        peakOpen = Math.max(peakOpen, open);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        open--;
+        return prepared(input, {
           file: {
             ...input.file,
             type: 'text/plain',
             content: input.file.id === 'file-2' ? 'PRIVATE-SECRET' : 'safe',
           },
-        }),
-      );
+        });
+      });
 
       await expect(
         preflightCodeOutputBatch({ filters, artifact: artifact(4), limits: largeLimits, prepare }),
       ).rejects.toMatchObject({ code: 'content_filter_block' });
-      expect(prepare.mock.calls.every(([input]) => input.inspectContent === true)).toBe(true);
+      expect(peakOpen).toBe(1);
+      expect(prepare).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the batch serial when the configured concurrency is one', async () => {
+      const sizes = Array.from({ length: 4 }, () => 200 * 1024);
+      const { prepare, peak } = sizedPrepare(sizes);
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+        concurrency: 1,
+      });
+
+      expect(outcome(result)).toEqual(sizes);
+      expect(peak().open).toBe(1);
+    });
+
+    it('uses the configured concurrency', async () => {
+      const sizes = Array.from({ length: 8 }, () => 200 * 1024);
+      const { prepare, peak } = sizedPrepare(sizes);
+
+      await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+        concurrency: 2,
+      });
+
+      expect(peak().open).toBe(2);
     });
   });
 });

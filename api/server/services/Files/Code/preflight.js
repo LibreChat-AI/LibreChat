@@ -27,6 +27,7 @@ const preflightCodeOutputBatch = async ({ req, artifact, codeExecutionContext })
         endpointFileConfig.fileSizeLimit ??
         mergedFileConfig.serverFileSizeLimit,
     },
+    concurrency: req.config?.concurrency?.codeOutputDownloads,
     prepare: ({ file, sessionId, maxBytes, inspectContent }) =>
       prepareCodeOutputForInspection({
         req,
