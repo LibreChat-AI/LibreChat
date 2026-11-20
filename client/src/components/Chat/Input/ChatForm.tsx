@@ -1,22 +1,10 @@
 import { memo, useRef, useMemo, useEffect, useState, Suspense, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
-import { useWatch } from 'react-hook-form';
+import { Button } from '@librechat/client';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { isInlineablePastedText } from '@librechat/chat';
-import { useDirection } from '@radix-ui/react-direction';
-import {
-  submitFromComposer,
-  composerClearance,
-  ComposerField,
-  ComposerFrame,
-} from '@librechat/chat/components';
-import {
-  PastedTextDialog,
-  QuoteButton,
-  composerHintId,
-  ComposerHints as Hints,
-} from '@librechat/chat/components';
+import { PastedTextDialog, QuoteButton, composerHintId } from '@librechat/chat/components';
+import { submitFromComposer, composerClearance, ComposerFrame } from '@librechat/chat/components';
 import {
   useSteering,
   useComposerItems,
@@ -66,6 +54,7 @@ import {
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
 import { onGreetingSettled, canClaimWelcomeFocus, isTouchFirst } from '../welcome';
+import { useComposerPreferences } from '~/Providers/ComposerPreferencesContext';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -75,6 +64,7 @@ import { useTargetContext } from '~/Providers/TargetContext';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
 import { handedComposerFilesFamily } from '~/store/handoff';
 import { chatDirectionAtom } from '~/store/chatDirection';
+import { DraftField, DraftHints } from './Composer/Draft';
 import ProjectLandingChip from '../ProjectLandingChip';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
@@ -122,6 +112,18 @@ interface ChatFormProps {
   /** Owned by the host: the app-level preference for where the welcome-screen
    *  composer sits. The chat feature only consumes it. */
   centerFormOnLanding: boolean;
+  /** Owned by the host: the Speech to Text preference; shows the dictation control. */
+  speechToText: boolean;
+  /** Owned by the host: the Text to Speech preference; with automatic playback, reads replies aloud. */
+  textToSpeech: boolean;
+  /** Owned by the host: the Automatic Playback preference. */
+  automaticPlayback: boolean;
+  /** Owned by the host: the Maximize Chat Space preference; widens the composer. */
+  maximizeChatSpace: boolean;
+  /** Owned by the host: the `/` prompts command preference. */
+  slashCommand: boolean;
+  /** Owned by the host: the `@` mentions command preference. */
+  atCommand: boolean;
   /** Owned by ChatView: whether a footer bar renders under this band. It is an
    *  absolutely positioned bar in a zero-height wrapper, so the clearance here
    *  is the only thing keeping it off the composer. True on the welcome screen,
@@ -157,6 +159,12 @@ const ChatForm = memo(function ChatForm({
   speechSettingsInitialized,
   footerBelow,
   centerFormOnLanding,
+  speechToText,
+  textToSpeech,
+  automaticPlayback,
+  maximizeChatSpace,
+  slashCommand,
+  atCommand,
   files,
   setFiles,
   conversation,
@@ -187,11 +195,7 @@ const ChatForm = memo(function ChatForm({
   const [, setIsScrollable] = useState(false);
   const [isTextAreaFocused, setIsTextAreaFocused] = useState(false);
 
-  const SpeechToText = useRecoilValue(store.speechToText);
-  const TextToSpeech = useRecoilValue(store.textToSpeech);
   const chatDirection = useAtomValue(chatDirectionAtom);
-  const automaticPlayback = useRecoilValue(store.automaticPlayback);
-  const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const { isTemporary } = useChatSettings();
 
   const [showStopButton, setShowStopButton] = useAtom(showStopButtonByIndex(index));
@@ -288,7 +292,6 @@ const ChatForm = memo(function ChatForm({
    *  answer box, or is locked behind the batch card that owns the answer. A
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
-  const textValue = useWatch({ control: methods.control, name: 'text' });
 
   const { consumeDraft, preserveText, settleText } = useAutoSave({
     index,
@@ -350,11 +353,7 @@ const ChatForm = memo(function ChatForm({
   );
   /** The chip's actions hide while a replacement upload or inline move is in flight, so the
    * same original cannot be acted on twice. */
-  const { isActionPending } = pastedTextEdit;
-  const isPasteActionPending = useCallback(
-    (file: ExtendedFile) => isActionPending(file),
-    [isActionPending],
-  );
+  const isPasteActionPending = pastedTextEdit.isActionPending;
 
   const { submitMessage, submitPrompt } = useSubmitMessage();
   const codeWorkspace = useCodeWorkspace(conversation, addedConvo);
@@ -434,9 +433,7 @@ const ChatForm = memo(function ChatForm({
     (kind: 'other' | 'interrupt' | 'preempt') => {
       const text = methods.getValues('text');
       let consumed = false;
-      if (kind === 'interrupt') {
-        consumed = steering.interruptSteer(text);
-      } else if (kind === 'preempt') {
+      if (kind === 'interrupt' || kind === 'preempt') {
         consumed = steering.interruptSteer(text);
       } else if (steering.effectiveAction !== 'queue') {
         consumed = steering.queueFromComposer(text);
@@ -495,44 +492,29 @@ const ChatForm = memo(function ChatForm({
     ),
   });
 
-  const interfaceDirection = useDirection();
-  /** An empty `dir="auto"` field resolves to LTR, which would park an RTL interface's placeholder on
-   *  the wrong edge, so the empty field follows the interface until text gives it a direction. */
-  const autoDirection = textValue ? 'auto' : interfaceDirection;
-  const textDirection = chatDirection === 'auto' ? autoDirection : chatDirection;
-
   const composerItems = useComposerItems(conversationId, quotesEnabled);
   const attachTarget = useAttachTarget(conversation, disableInputs);
   const hasPromptsAccess = useHasAccess({
     permissionType: PermissionTypes.PROMPTS,
     permission: Permissions.USE,
   });
-  const slashCommandEnabled = useRecoilValue(store.slashCommand);
-  const atCommandEnabled = useRecoilValue(store.atCommand);
   const idleActions = useMemo(
     () => ({
-      prompts: hasPromptsAccess && slashCommandEnabled,
+      prompts: hasPromptsAccess && slashCommand,
       /* A mention picks the conversation's model: main chat's, or one that is changed in place. */
-      mentions: atCommandEnabled && (routed || retargets),
+      mentions: atCommand && (routed || retargets),
       attach: attachTarget.canAttach,
     }),
-    [
-      routed,
-      retargets,
-      hasPromptsAccess,
-      atCommandEnabled,
-      slashCommandEnabled,
-      attachTarget.canAttach,
-    ],
+    [routed, retargets, hasPromptsAccess, atCommand, slashCommand, attachTarget.canAttach],
   );
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
-  const speechDisabled =
-    !speechSettingsInitialized ||
-    disableInputs ||
-    isNotAppendable ||
-    answerMode.composerLocked ||
-    isPreparingFromUrl;
+  /** The draft cannot be edited: no key, a non-appendable conversation, a question card holding
+   *  the answer, or a URL prompt still being prepared. Typing, dictation and sending all stop here;
+   *  sending has further gates of its own. */
+  const draftBlocked =
+    disableInputs || isNotAppendable || answerMode.composerLocked || isPreparingFromUrl;
+  const speechDisabled = !speechSettingsInitialized || draftBlocked;
   /** The same gate `onSubmit` applies: while a question pause is live the
    * composer IS the answer box, so a dictated turn has to answer it rather
    * than start a turn the paused run would drop. */
@@ -559,12 +541,9 @@ const ChatForm = memo(function ChatForm({
     deferComposerReset: dictationAnswerModeActive,
     disabled: speechDisabled,
     autoSendText,
-    speechToText: SpeechToText,
+    speechToText,
     index,
   });
-  /** The waveform stands in for the placeholder until words arrive, and is
-   *  then the only thing drawn on that line. */
-  const listening = dictation.active && (textValue?.trim() ?? '') === '';
   const uploadingCount = useMemo(() => {
     let count = 0;
     for (const file of files.values()) {
@@ -597,14 +576,7 @@ const ChatForm = memo(function ChatForm({
         fileCount={submittableFileCount}
         hasInlinePaste={hasInlinePaste}
         sendDisabled={
-          filesLoading ||
-          isPreparingFromUrl ||
-          disableInputs ||
-          !target.ready ||
-          routePending ||
-          !codeWorkspace.canSubmit ||
-          isNotAppendable ||
-          answerMode.composerLocked
+          draftBlocked || filesLoading || !target.ready || routePending || !codeWorkspace.canSubmit
         }
         duringRunDisabled={filesLoading || isPreparingFromUrl}
         showStopButton={showStopButton}
@@ -617,7 +589,6 @@ const ChatForm = memo(function ChatForm({
     [
       isSubmitting,
       answerMode.composerAnswers,
-      answerMode.composerLocked,
       endpoint,
       steering,
       isNewConversation,
@@ -628,11 +599,10 @@ const ChatForm = memo(function ChatForm({
       hasInlinePaste,
       filesLoading,
       isPreparingFromUrl,
-      disableInputs,
+      draftBlocked,
       target.ready,
       routePending,
       codeWorkspace.canSubmit,
-      isNotAppendable,
       showStopButton,
       setShowStopButton,
       handleStopGenerating,
@@ -798,10 +768,10 @@ const ChatForm = memo(function ChatForm({
         </>
       }
       hints={
-        <Hints
+        <DraftHints
+          control={methods.control}
           index={index}
           enterToSend={enterToSend}
-          hasText={(textValue?.trim() ?? '') !== ''}
           isSubmitting={isSubmitting}
           duringRunActive={steering.duringRunActive}
           canControlGeneration={steering.canControlGeneration}
@@ -835,19 +805,17 @@ const ChatForm = memo(function ChatForm({
         onSave={pastedTextEdit.saveEdit}
       />
       {endpoint && (
-        <ComposerField
+        <DraftField
+          control={methods.control}
+          chatDirection={chatDirection}
           textAreaRef={textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>}
           inputRef={ref}
-          value={textValue ?? ''}
-          listening={listening}
           dictationActive={dictation.active}
           locked={answerMode.composerLocked}
           ariaLabel={localize('com_ui_message_input')}
           textareaProps={{
             ...registerProps,
-            dir: textDirection,
-            disabled:
-              disableInputs || isNotAppendable || answerMode.composerLocked || isPreparingFromUrl,
+            disabled: draftBlocked,
             onPaste: handlePaste,
             onKeyDown: (e) => {
               // Answer mode consumes option-navigation keys from the
@@ -876,25 +844,31 @@ const ChatForm = memo(function ChatForm({
       {target.failed && (
         <p role="alert" className="text-text-secondary px-5 pb-2 text-sm">
           {localize('com_ui_chat_target_failed')}{' '}
-          <button type="button" className="underline" onClick={target.retry}>
+          <Button
+            type="button"
+            variant="hyperlink"
+            size="bare"
+            className="inline"
+            onClick={target.retry}
+          >
             {localize('com_ui_retry')}
-          </button>
+          </Button>
         </p>
       )}
-      {(isPreparingFromUrl || urlSettingsError) && (
-        <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
-          {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
-        </p>
-      )}
-      {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
-        <p
-          id={`code-workspace-hint-${index}`}
-          role="status"
-          className="text-text-secondary px-5 pb-2 text-sm"
-        >
-          {localize('com_error_code_workspace_required')}
-        </p>
-      )}
+      {/* Mounted for the composer's lifetime: a live region that appears with its text already
+          in it is often not announced. */}
+      <div role="status" className="text-text-secondary text-sm">
+        {(isPreparingFromUrl || urlSettingsError) && (
+          <p className="px-5 pb-2">
+            {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
+          </p>
+        )}
+        {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
+          <p id={`code-workspace-hint-${index}`} className="px-5 pb-2">
+            {localize('com_error_code_workspace_required')}
+          </p>
+        )}
+      </div>
       {/* The composer is what keeps MCP connection and authorization state
           current wherever its ephemeral tools apply; the Agent Builder's
           tool library reads the same cache, so without this a server it
@@ -927,7 +901,7 @@ const ChatForm = memo(function ChatForm({
           anchorRef={composerBoxRef}
           showTools={showTools}
           isSubmitting={isSubmitting}
-          showSpeech={SpeechToText}
+          showSpeech={speechToText}
           speechDisabled={speechDisabled}
           dictation={dictation}
           approvalSlot={approvalSlot}
@@ -939,7 +913,7 @@ const ChatForm = memo(function ChatForm({
         </Suspense>
       </BadgeRowProvider>
       {/* Reads main chat's run and owns the page's one audio element. */}
-      {routed && TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
+      {routed && textToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
     </ComposerFrame>
   );
 });
@@ -978,6 +952,16 @@ function ChatFormWrapper({
   footerBelow: boolean;
   centerFormOnLanding: boolean;
 }) {
+  /** The app's preferences, from the chat view that hosts this composer (main chat's or a side
+   *  chat's), or their defaults outside one. */
+  const {
+    speechToText,
+    textToSpeech,
+    automaticPlayback,
+    maximizeChatSpace,
+    slashCommand,
+    atCommand,
+  } = useComposerPreferences();
   const {
     files,
     setFiles,
@@ -1062,6 +1046,12 @@ function ChatFormWrapper({
       isLandingPage={isLandingPage}
       footerBelow={footerBelow}
       centerFormOnLanding={centerFormOnLanding}
+      speechToText={speechToText}
+      textToSpeech={textToSpeech}
+      automaticPlayback={automaticPlayback}
+      maximizeChatSpace={maximizeChatSpace}
+      slashCommand={slashCommand}
+      atCommand={atCommand}
       files={files}
       setFiles={setFiles}
       conversation={stableConversation}
