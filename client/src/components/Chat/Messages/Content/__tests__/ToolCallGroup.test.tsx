@@ -2339,4 +2339,63 @@ describe('ToolCallGroup as a fold a call can be followed into', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await waitFor(() => expect(row).toHaveFocus());
   });
+
+  /** Closed over a pending approval, a group keeps its rows in the document, hidden. The call
+   *  is then found but cannot be reached, which is not the same as having nowhere to go. */
+  it('opens when asked for a call it is still holding in the document, hidden', async () => {
+    const { container } = render(
+      <RecoilRoot>
+        <div id="message-fold">
+          <ToolCallGroup
+            parts={[
+              { part: makeApprovalPart('t1'), idx: 0 },
+              { part: makeApprovalPart('t2'), idx: 1 },
+            ]}
+            isSubmitting={false}
+            isLast={false}
+            showThinking={false}
+            lastContentIdx={1}
+            renderPart={(part, idx) => (
+              <div
+                key={idx}
+                data-task-tool-call={
+                  part.type === ContentTypes.TOOL_CALL
+                    ? part[ContentTypes.TOOL_CALL]?.id
+                    : undefined
+                }
+              />
+            )}
+          />
+        </div>
+      </RecoilRoot>,
+    );
+
+    const root = container.querySelector('[data-fold-root]') as HTMLElement;
+    const toggle = root.querySelector('[data-fold-toggle]') as HTMLElement;
+    const panel = screen.getByTestId('tool-call-group-panel');
+    if (toggle.getAttribute('aria-expanded') === 'true') {
+      fireEvent.click(toggle);
+      fireEvent.transitionEnd(panel);
+    }
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(panel).toHaveAttribute('aria-hidden', 'true');
+    const held = container.querySelector<HTMLElement>('[data-task-tool-call="t2"]');
+    expect(held).not.toBeNull();
+
+    const reached = visitTaskTarget({
+      id: 'tool:task',
+      kind: 'tool',
+      name: 'approval_probe',
+      status: 'running',
+      messageId: 'message-fold',
+      toolCallId: 't2',
+    });
+
+    expect(reached).toBe(true);
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'));
+    expect(panel).toHaveAttribute('aria-hidden', 'false');
+    await waitFor(() =>
+      expect(container.querySelector('[data-task-tool-call="t2"]')).toHaveFocus(),
+    );
+  });
 });
