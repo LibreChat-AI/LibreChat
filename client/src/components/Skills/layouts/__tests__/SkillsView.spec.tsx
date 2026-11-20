@@ -1,6 +1,7 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { TrackingProvider } from '~/Providers/TrackingContext';
 import SkillsView from '../SkillsView';
 
 const mockUseHasAccess = jest.fn((..._args: unknown[]) => true);
@@ -8,10 +9,12 @@ const mockUseMediaQuery = jest.fn((_query: string) => false);
 const mockGetSkillByIdQuery = jest.fn(() => ({
   isLoading: false,
   isError: false,
+  isSuccess: false,
   data: null as { _id: string; name: string } | null,
 }));
 
 jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
   PermissionTypes: { SKILLS: 'skills' },
   Permissions: { USE: 'use', CREATE: 'create' },
 }));
@@ -38,6 +41,7 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/data-provider', () => ({
   useGetSkillByIdQuery: () => mockGetSkillByIdQuery(),
+  useGetStartupConfig: () => ({ data: { productTracking: { enabled: true } } }),
 }));
 
 jest.mock('~/components/Skills/forms', () => ({
@@ -66,7 +70,12 @@ describe('SkillsView', () => {
     mockUseMediaQuery.mockReset();
     mockUseMediaQuery.mockReturnValue(false);
     mockGetSkillByIdQuery.mockReset();
-    mockGetSkillByIdQuery.mockReturnValue({ isLoading: false, isError: false, data: null });
+    mockGetSkillByIdQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isSuccess: false,
+      data: null,
+    });
   });
 
   it('renders the create skill form for /skills/new', () => {
@@ -83,6 +92,7 @@ describe('SkillsView', () => {
     mockGetSkillByIdQuery.mockReturnValue({
       isLoading: false,
       isError: false,
+      isSuccess: true,
       data: { _id: 'skill-id', name: 'stored skill' },
     });
     const router = createMemoryRouter([{ path: '/skills/:skillId', element: <SkillsView /> }], {
@@ -115,5 +125,54 @@ describe('SkillsView', () => {
     render(<RouterProvider router={router} />);
 
     expect(screen.queryByTestId('open-sidebar')).not.toBeInTheDocument();
+  });
+});
+
+it.each([false, true])(
+  'does not export an unvalidated route on query error=%s',
+  async (isError) => {
+    const track = jest.fn();
+    mockGetSkillByIdQuery.mockReturnValue({
+      isLoading: !isError,
+      isError,
+      isSuccess: false,
+      data: null,
+    });
+    const router = createMemoryRouter([{ path: '/skills/:skillId', element: <SkillsView /> }], {
+      initialEntries: ['/skills/private-user-text'],
+    });
+    render(
+      <TrackingProvider track={track}>
+        <RouterProvider router={router} />
+      </TrackingProvider>,
+    );
+    await act(async () => {});
+    expect(track).not.toHaveBeenCalled();
+  },
+);
+
+it('emits one loaded detail open without an extra catalog event', async () => {
+  const track = jest.fn();
+  mockGetSkillByIdQuery.mockReturnValue({
+    isLoading: false,
+    isError: false,
+    isSuccess: true,
+    data: { _id: 'stored-id', name: 'private' },
+  });
+  const router = createMemoryRouter([{ path: '/skills/:skillId', element: <SkillsView /> }], {
+    initialEntries: ['/skills/stored-id'],
+  });
+  render(
+    <TrackingProvider track={track}>
+      <RouterProvider router={router} />
+    </TrackingProvider>,
+  );
+  await act(async () => {});
+  expect(track).toHaveBeenCalledTimes(1);
+  expect(track.mock.calls[0][0]).toEqual({
+    name: 'librechat.skills.opened',
+    feature: 'skills',
+    entryPoint: 'route',
+    skillId: 'stored-id',
   });
 });

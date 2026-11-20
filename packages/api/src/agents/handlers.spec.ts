@@ -3527,6 +3527,11 @@ describe('createToolExecuteHandler', () => {
     });
 
     it('creates a new SKILL.md through create_file', async () => {
+      const productTracker = jest.fn();
+      const trackingReq = Object.assign({}, req, {
+        productTracking: { enabled: true },
+        productTracker,
+      });
       const createSkill = jest.fn(async () => ({
         skill: {
           _id: SKILL_ID,
@@ -3536,11 +3541,14 @@ describe('createToolExecuteHandler', () => {
         },
       }));
       const grantSkillOwner = jest.fn(async () => undefined);
-      const handler = makeAuthoringHandler({
-        getSkillByName: jest.fn(async () => null),
-        createSkill: createSkill as unknown as ToolExecuteOptions['createSkill'],
-        grantSkillOwner,
-      });
+      const handler = makeAuthoringHandler(
+        {
+          getSkillByName: jest.fn(async () => null),
+          createSkill: createSkill as unknown as ToolExecuteOptions['createSkill'],
+          grantSkillOwner,
+        },
+        { req: trackingReq },
+      );
 
       const [result] = await invokeHandler(handler, [
         {
@@ -3572,7 +3580,17 @@ describe('createToolExecuteHandler', () => {
           }),
         }),
       );
-      expect(grantSkillOwner).toHaveBeenCalledWith({ req, skillId: SKILL_ID });
+      expect(grantSkillOwner).toHaveBeenCalledWith({ req: trackingReq, skillId: SKILL_ID });
+      expect(
+        productTracker.mock.calls.map(([fact]) => fact).filter((fact) => fact.feature === 'skills'),
+      ).toEqual([
+        {
+          name: 'librechat.skills.added',
+          feature: 'skills',
+          skillId: SKILL_ID.toString(),
+          source: 'inline',
+        },
+      ]);
     });
 
     it('retries dependent cleanup when create_file cannot grant ownership', async () => {
@@ -5286,6 +5304,11 @@ describe('createToolExecuteHandler', () => {
     });
 
     it('passes structured frontmatter when editing SKILL.md', async () => {
+      const productTracker = jest.fn();
+      const trackingReq = Object.assign({}, req, {
+        productTracking: { enabled: true },
+        productTracker,
+      });
       const oldBody =
         '---\nname: runtime-skill\ndescription: Use before\naction: ignored\n---\n# Body\n';
       const currentBody =
@@ -5299,16 +5322,19 @@ describe('createToolExecuteHandler', () => {
           version: 2,
         },
       }));
-      const handler = makeAuthoringHandler({
-        getSkillByName: jest.fn(async () => ({
-          _id: SKILL_ID,
-          name: 'runtime-skill',
-          body: oldBody,
-          fileCount: 0,
-          version: 1,
-        })),
-        updateSkill: updateSkill as unknown as ToolExecuteOptions['updateSkill'],
-      });
+      const handler = makeAuthoringHandler(
+        {
+          getSkillByName: jest.fn(async () => ({
+            _id: SKILL_ID,
+            name: 'runtime-skill',
+            body: oldBody,
+            fileCount: 0,
+            version: 1,
+          })),
+          updateSkill: updateSkill as unknown as ToolExecuteOptions['updateSkill'],
+        },
+        { req: trackingReq },
+      );
 
       const [result] = await invokeHandler(handler, [
         {
@@ -5324,6 +5350,11 @@ describe('createToolExecuteHandler', () => {
       ]);
 
       expect(result.status).toBe('success');
+      expect(
+        productTracker.mock.calls.map(([fact]) => fact).filter((fact) => fact.feature === 'skills'),
+      ).toEqual([
+        { name: 'librechat.skills.updated', feature: 'skills', skillId: SKILL_ID.toString() },
+      ]);
       expect(updateSkill).toHaveBeenCalledWith(
         expect.objectContaining({
           update: expect.objectContaining({
