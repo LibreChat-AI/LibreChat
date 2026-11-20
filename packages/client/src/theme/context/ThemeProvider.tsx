@@ -31,6 +31,7 @@ import '../highContrast.css';
 import '../preflight.css';
 import '../parts.css';
 import '../prose.css';
+import '../syntax.css';
 
 const THEME_KEY = 'color-theme';
 const THEME_COLORS_KEY = 'theme-colors';

@@ -109,7 +109,8 @@
     "packages/client/src/theme/semanticTokens.spec.ts": [
       "client/src/style.css",
       "packages/client/src/components/",
-      "packages/client/src/theme/defaults.css"
+      "packages/client/src/theme/defaults.css",
+      "packages/client/src/theme/syntax.css"
     ],
     "packages/client/src/theme/tailwind.spec.js": [
       "client/src/style.css",

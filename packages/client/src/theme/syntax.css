@@ -1,0 +1,86 @@
+/**
+ * How code reads: the box a highlighted block or an inline run of code sits in, and the color of
+ * each kind of token a highlighter marks. The colors are the theme's `--syntax-*` roles. It ships
+ * here so an app that imports only `@librechat/client/style.css` draws code the way LibreChat
+ * does, and it follows the typography, whose `code` rules it has to come after.
+ */
+
+/* `code`, `kbd`, `samp` and `pre` take their font from Tailwind's preflight, which
+   reads `--font-mono`, mapped to `--theme-mono-font-family` in `tokens.css`. Do not restate it
+   here: the app's stylesheet used to, with `!important`, which silently beat every `font-mono`
+   class in the app and pinned code to faces the repository does not ship. */
+code.language-text,
+code.language-txt,
+code.language-plaintext,
+code.language-markdown,
+code.language-md {
+  white-space: pre-wrap !important;
+}
+code.hljs,
+code[class*='language-'],
+pre[class*='language-'] {
+  direction: ltr;
+  unicode-bidi: isolate;
+  word-wrap: normal;
+  background: none;
+  color: rgb(var(--syntax-text));
+  -webkit-hyphens: none;
+  hyphens: none;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  tab-size: 4;
+  text-align: left;
+  white-space: pre;
+  word-break: normal;
+  word-spacing: normal;
+}
+pre[class*='language-'] {
+  border-radius: 0.3em;
+  overflow: auto;
+}
+:not(pre) > code.hljs,
+:not(pre) > code[class*='language-'] {
+  border-radius: 0.3em;
+  padding: 0.1em;
+  white-space: normal;
+}
+.hljs-comment {
+  color: rgb(var(--syntax-comment));
+}
+.hljs-meta {
+  color: rgb(var(--syntax-meta));
+}
+.hljs-built_in,
+.hljs-class .hljs-title {
+  color: rgb(var(--syntax-builtin));
+}
+.hljs-doctag,
+.hljs-formula,
+.hljs-keyword,
+.hljs-literal {
+  color: rgb(var(--syntax-keyword));
+}
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta-string,
+.hljs-regexp,
+.hljs-string {
+  color: rgb(var(--syntax-string));
+}
+.hljs-attr,
+.hljs-number,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-pseudo,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable {
+  color: rgb(var(--syntax-attr));
+}
+.hljs-bullet,
+.hljs-link,
+.hljs-selector-id,
+.hljs-symbol,
+.hljs-title {
+  color: rgb(var(--syntax-title));
+}

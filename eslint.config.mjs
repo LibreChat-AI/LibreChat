@@ -347,6 +347,8 @@ export default [
             'lucide',
             'lucide-*',
             'language-*',
+            'hljs',
+            'hljs-*',
             'i-heroicons-*',
             'form-check-label',
             // Markers a selector reads rather than Tailwind styling: each one is queried by a
