@@ -347,7 +347,7 @@ export interface ConversationMethods {
     conversationId: string,
     pinned: boolean,
   ): Promise<IConversation | null>;
-  getConvoExcludedFiles(conversationId: string): Promise<string[]>;
+  getConvoExcludedFiles(conversationId: string, user?: string): Promise<string[]>;
   setConvoFileExclusion(
     user: string,
     conversationId: string,
@@ -3006,12 +3006,16 @@ export function createConversationMethods(
     }
   }
 
-  /** The file ids a conversation leaves out of later turns; none for one that is not stored. */
-  async function getConvoExcludedFiles(conversationId: string): Promise<string[]> {
+  /**
+   * The file ids a conversation leaves out of later turns; none for one that is not stored.
+   * With `user`, none for a conversation that is not theirs either, which is what a request
+   * answering a client must pass.
+   */
+  async function getConvoExcludedFiles(conversationId: string, user?: string): Promise<string[]> {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       const conversation = await Conversation.findOne(
-        { conversationId },
+        user == null ? { conversationId } : { conversationId, user },
         'excludedFiles',
       ).lean<IConversation>();
       return conversation?.excludedFiles ?? [];

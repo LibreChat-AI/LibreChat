@@ -16,6 +16,7 @@ import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useBackgroundTasks from '../BackgroundTasks/useTasks';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useTaskExpiry } from '../BackgroundTasks/clock';
+import useSessionFiles from './useFiles';
 import { useLocalize } from '~/hooks';
 import SessionRail from './Rail';
 import { cn } from '~/utils';
@@ -35,11 +36,17 @@ function Session({
   agentId,
   isSubmitting,
   autoOpen = true,
+  files: listFiles = true,
 }: {
   conversationId: string;
   agentId?: string | null;
   isSubmitting: boolean;
   autoOpen?: boolean;
+  /**
+   * Whether the conversation's files are listed. Off where leaving one out would change nothing:
+   * an assistants thread keeps its own copy of every attachment upstream.
+   */
+  files?: boolean;
 }) {
   const localize = useLocalize();
   const slot = useAtomValue(sessionRailSlot);
@@ -62,6 +69,8 @@ function Session({
   const view = useBackgroundTasks({ conversationId, isSubmitting, now, details: open });
   const { activeCount, awaitingCount, failedCount, incomplete } = view;
   useTaskExpiry(view.rows, setNow);
+  /** Read only while the rail shows them: a closed rail asks nothing about files. */
+  const files = useSessionFiles({ conversationId, enabled: open && listFiles });
 
   /** Never as a sheet: that would cover the conversation the reader is in the middle of. */
   const working = activeCount > 0;
@@ -144,6 +153,7 @@ function Session({
         createPortal(
           <SessionRail
             view={view}
+            files={files}
             conversationId={conversationId}
             agentId={agentId}
             sheet={sheet}

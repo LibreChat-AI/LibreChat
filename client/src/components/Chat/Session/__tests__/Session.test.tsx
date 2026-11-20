@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { ContentTypes, QueryKeys, dataService } from 'librechat-data-provider';
 import { activeSubagentPanel, ParentSubagentsProvider } from '@librechat/chat/react';
 import type { ParentSubagentSummary, BackgroundTaskIndex, TMessage } from 'librechat-data-provider';
@@ -130,7 +130,13 @@ const renderSession = ({
   autoOpen = false,
   wanted,
   dismissed,
+  thread = messages,
+  files,
 }: {
+  /** Whether the conversation's files are listed; the control's default when left out. */
+  files?: boolean;
+  /** The loaded messages; the fixture's by default. */
+  thread?: TMessage[];
   children?: ParentSubagentSummary[];
   /** The reader's stored choice for the docked rail. */
   remembered?: boolean;
@@ -144,7 +150,7 @@ const renderSession = ({
 } = {}) => {
   jest.spyOn(dataService, 'getSubagentThread').mockImplementation(() => new Promise(() => {}));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData([QueryKeys.messages, conversationId], messages);
+  queryClient.setQueryData([QueryKeys.messages, conversationId], thread);
   jest.spyOn(dataService, 'getParentSubagents').mockResolvedValue({
     parentConversationId: conversationId,
     children,
@@ -166,7 +172,12 @@ const renderSession = ({
             <SubagentIndexHostProvider>
               <ParentSubagentsProvider conversationId={id} enabled>
                 <header>
-                  <Session conversationId={id} isSubmitting={false} autoOpen={autoOpen} />
+                  <Session
+                    conversationId={id}
+                    isSubmitting={false}
+                    autoOpen={autoOpen}
+                    files={files}
+                  />
                 </header>
                 <SessionRailSlot />
               </ParentSubagentsProvider>
@@ -217,6 +228,269 @@ describe('Session', () => {
     expect(rail).toHaveAccessibleName('com_ui_session');
     expect(rail).toHaveTextContent('com_ui_session_empty');
     expect(within(rail).queryByTestId('session-stop-all')).toBeNull();
+  });
+
+  describe('files', () => {
+    const thread: TMessage[] = [
+      {
+        messageId: 'user-1',
+        conversationId,
+        parentMessageId: null,
+        isCreatedByUser: true,
+        text: 'Compare these',
+        files: [
+          { file_id: 'shot', filename: 'screenshot.png', type: 'image/png', bytes: 2048 },
+          {
+            file_id: 'sheet',
+            filename: 'figures.csv',
+            llmDeliveryPath: 'none',
+            metadata: { fileIdentifier: 'session/figures.csv' },
+          },
+        ],
+      } as TMessage,
+    ];
+    const file = (name: string) =>
+      screen.getAllByTestId('session-file').find((row) => row.textContent?.includes(name));
+    const switchFor = (name: string) => within(file(name) as HTMLElement).getByRole('switch');
+
+    beforeEach(() => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index({ tasks: [] }));
+    });
+
+    it('lists the conversation’s files, says what happens to each, and which are left out', async () => {
+      const getFileExclusion = jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockResolvedValue({ excludedFiles: ['sheet'] });
+      renderSession({ thread });
+      const rail = await openRail();
+
+      await waitFor(() => expect(getFileExclusion).toHaveBeenCalledWith(conversationId));
+      expect(within(rail).getAllByTestId('session-file')).toHaveLength(2);
+      expect(file('screenshot.png')).toHaveTextContent('com_ui_session_file_to_model');
+      expect(switchFor('screenshot.png')).toBeChecked();
+      await waitFor(() => expect(switchFor('figures.csv')).not.toBeChecked());
+      expect(file('figures.csv')).toHaveTextContent('com_ui_session_file_left_out');
+      expect(rail).toHaveTextContent('com_ui_session_files_left_out');
+      expect(rail).not.toHaveTextContent('com_ui_session_empty');
+      expect(switchFor('screenshot.png')).toHaveAccessibleName('com_ui_session_file_include');
+    });
+
+    it('names where a kept tool file goes', async () => {
+      jest.spyOn(dataService, 'getFileExclusion').mockResolvedValue({ excludedFiles: [] });
+      renderSession({ thread });
+      await openRail();
+
+      await waitFor(() =>
+        expect(file('figures.csv')).toHaveTextContent('com_ui_session_file_code'),
+      );
+    });
+
+    it('leaves a file out from its switch, at once, and takes the server’s list when it answers', async () => {
+      jest.spyOn(dataService, 'getFileExclusion').mockResolvedValue({ excludedFiles: [] });
+      let answer!: (value: { excludedFiles: string[] }) => void;
+      const setFileExclusion = jest
+        .spyOn(dataService, 'setFileExclusion')
+        .mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+      renderSession({ thread });
+      await openRail();
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeChecked());
+
+      await userEvent.click(switchFor('screenshot.png'));
+
+      expect(setFileExclusion).toHaveBeenCalledWith(conversationId, {
+        fileIds: ['shot'],
+        excluded: true,
+      });
+      await waitFor(() => expect(switchFor('screenshot.png')).not.toBeChecked());
+      await act(async () => answer({ excludedFiles: ['shot'] }));
+      expect(switchFor('screenshot.png')).not.toBeChecked();
+      expect(switchFor('figures.csv')).toBeChecked();
+    });
+
+    it('takes a file back in', async () => {
+      jest.spyOn(dataService, 'getFileExclusion').mockResolvedValue({ excludedFiles: ['shot'] });
+      const setFileExclusion = jest
+        .spyOn(dataService, 'setFileExclusion')
+        .mockResolvedValue({ excludedFiles: [] });
+      renderSession({ thread });
+      await openRail();
+      await waitFor(() => expect(switchFor('screenshot.png')).not.toBeChecked());
+
+      await userEvent.click(switchFor('screenshot.png'));
+
+      expect(setFileExclusion).toHaveBeenCalledWith(conversationId, {
+        fileIds: ['shot'],
+        excluded: false,
+      });
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeChecked());
+    });
+
+    it('puts the switch back and says so when the change is refused', async () => {
+      jest.spyOn(dataService, 'getFileExclusion').mockResolvedValue({ excludedFiles: [] });
+      jest.spyOn(dataService, 'setFileExclusion').mockRejectedValue(new Error('offline'));
+      renderSession({ thread });
+      const rail = await openRail();
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeChecked());
+
+      await userEvent.click(switchFor('screenshot.png'));
+
+      await waitFor(() =>
+        expect(within(rail).getByRole('alert')).toHaveTextContent('com_ui_session_files_failed'),
+      );
+      expect(switchFor('screenshot.png')).toBeChecked();
+    });
+
+    it('says when too many files are already left out', async () => {
+      jest.spyOn(dataService, 'getFileExclusion').mockResolvedValue({ excludedFiles: [] });
+      jest.spyOn(dataService, 'setFileExclusion').mockRejectedValue({ response: { status: 409 } });
+      renderSession({ thread });
+      const rail = await openRail();
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeChecked());
+
+      await userEvent.click(switchFor('screenshot.png'));
+
+      await waitFor(() =>
+        expect(within(rail).getByRole('alert')).toHaveTextContent('com_ui_session_files_full'),
+      );
+    });
+
+    it('keeps the switches still until the stored list has been read', async () => {
+      let answer!: (value: { excludedFiles: string[] }) => void;
+      jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+      const setFileExclusion = jest.spyOn(dataService, 'setFileExclusion');
+      renderSession({ thread });
+      await openRail();
+
+      expect(switchFor('screenshot.png')).toBeDisabled();
+      await userEvent.click(switchFor('screenshot.png'));
+      expect(setFileExclusion).not.toHaveBeenCalled();
+
+      await act(async () => answer({ excludedFiles: ['shot'] }));
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeEnabled());
+      expect(switchFor('screenshot.png')).not.toBeChecked();
+    });
+
+    it('says so when the stored list cannot be read, and changes nothing until it can', async () => {
+      const getFileExclusion = jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValue({ excludedFiles: ['shot'] });
+      const setFileExclusion = jest.spyOn(dataService, 'setFileExclusion');
+      renderSession({ thread });
+      const rail = await openRail();
+
+      const alert = await within(rail).findByRole('alert');
+      expect(alert).toHaveTextContent('com_ui_session_files_load_failed');
+      expect(switchFor('screenshot.png')).toBeDisabled();
+      expect(setFileExclusion).not.toHaveBeenCalled();
+
+      await userEvent.click(within(alert).getByRole('button', { name: 'com_ui_retry' }));
+
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeEnabled());
+      expect(getFileExclusion).toHaveBeenCalledTimes(2);
+      expect(switchFor('screenshot.png')).not.toBeChecked();
+      expect(within(rail).queryByRole('alert')).toBeNull();
+    });
+
+    it('does not let an earlier answer undo a later change, and reads the list once both land', async () => {
+      const getFileExclusion = jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockResolvedValueOnce({ excludedFiles: [] })
+        .mockResolvedValue({ excludedFiles: ['shot', 'sheet'] });
+      const answers: Array<(value: { excludedFiles: string[] }) => void> = [];
+      jest
+        .spyOn(dataService, 'setFileExclusion')
+        .mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+      renderSession({ thread });
+      await openRail();
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeEnabled());
+
+      await userEvent.click(switchFor('screenshot.png'));
+      await userEvent.click(switchFor('figures.csv'));
+      expect(answers).toHaveLength(2);
+
+      /** The second change is answered first; the first answer still lists only its own file. */
+      await act(async () => answers[1]({ excludedFiles: ['shot', 'sheet'] }));
+      await act(async () => answers[0]({ excludedFiles: ['shot'] }));
+
+      expect(switchFor('screenshot.png')).not.toBeChecked();
+      expect(switchFor('figures.csv')).not.toBeChecked();
+      await waitFor(() => expect(getFileExclusion).toHaveBeenCalledTimes(2));
+      expect(switchFor('figures.csv')).not.toBeChecked();
+    });
+
+    it('undoes only the change that was refused', async () => {
+      jest.spyOn(dataService, 'getFileExclusion').mockResolvedValue({ excludedFiles: [] });
+      const settle: Array<{
+        resolve: (value: { excludedFiles: string[] }) => void;
+        reject: (reason: unknown) => void;
+      }> = [];
+      jest
+        .spyOn(dataService, 'setFileExclusion')
+        .mockImplementation(
+          () => new Promise((resolve, reject) => settle.push({ resolve, reject })),
+        );
+      renderSession({ thread });
+      await openRail();
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeEnabled());
+
+      await userEvent.click(switchFor('screenshot.png'));
+      await userEvent.click(switchFor('figures.csv'));
+      await act(async () => settle[0].reject(new Error('offline')));
+
+      await waitFor(() => expect(switchFor('screenshot.png')).toBeChecked());
+      expect(switchFor('figures.csv')).not.toBeChecked();
+    });
+
+    it('names a file that a message only points at by what it is', async () => {
+      jest.spyOn(dataService, 'getFileExclusion').mockResolvedValue({ excludedFiles: [] });
+      renderSession({
+        thread: [
+          {
+            messageId: 'assistant-1',
+            conversationId,
+            parentMessageId: null,
+            isCreatedByUser: false,
+            text: '',
+            content: [{ type: 'image_file', image_file: { file_id: 'generated' } }],
+          } as unknown as TMessage,
+        ],
+      });
+      const rail = await openRail();
+
+      const row = within(rail).getByTestId('session-file');
+      expect(row).toHaveTextContent('com_ui_session_file_unnamed_image');
+      expect(row).toHaveTextContent('com_ui_session_file_made');
+    });
+
+    it('lists no files, and asks about none, where leaving one out would change nothing', async () => {
+      const getFileExclusion = jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockResolvedValue({ excludedFiles: [] });
+      renderSession({ thread, files: false });
+      const rail = await openRail();
+
+      expect(within(rail).queryByTestId('session-file')).toBeNull();
+      expect(rail).toHaveTextContent('com_ui_session_empty');
+      expect(getFileExclusion).not.toHaveBeenCalled();
+    });
+
+    it('asks nothing about files while the rail is closed, or for a thread that has none', async () => {
+      const getFileExclusion = jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockResolvedValue({ excludedFiles: [] });
+      const closed = renderSession({ thread });
+      await waitFor(() => expect(toggle()).toHaveAccessibleName('com_ui_session'));
+      expect(getFileExclusion).not.toHaveBeenCalled();
+      closed.unmount();
+
+      renderSession();
+      const rail = await openRail();
+      expect(within(rail).queryByTestId('session-file')).toBeNull();
+      expect(getFileExclusion).not.toHaveBeenCalled();
+    });
   });
 
   it('draws the rail in the layout column, not in the header', async () => {

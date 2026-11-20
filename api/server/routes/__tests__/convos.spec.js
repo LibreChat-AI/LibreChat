@@ -72,6 +72,7 @@ describe('Convos Routes', () => {
     markConvoSeen,
     markConvoUnread,
     setConvoFileExclusion,
+    getConvoExcludedFiles,
   } = require('~/models');
   const {
     deleteOwnedAgentCheckpoints,
@@ -280,6 +281,17 @@ describe('Convos Routes', () => {
 
       expect(response.status).toBe(404);
       expect(response.body).toEqual({ error: 'Conversation not found', code: 'not_found' });
+    });
+
+    it('reads the list for the caller, and not the conversation itself', async () => {
+      getConvoExcludedFiles.mockResolvedValue(['file-a']);
+
+      const response = await request(app).get('/api/convos/ordinary/files/exclusion');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ excludedFiles: ['file-a'] });
+      expect(getConvoExcludedFiles).toHaveBeenCalledWith('ordinary', 'test-user-123');
+      expect(getConvo).not.toHaveBeenCalled();
     });
 
     it('refuses a change that names no files before reaching the conversation', async () => {
