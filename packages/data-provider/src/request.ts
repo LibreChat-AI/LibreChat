@@ -763,9 +763,11 @@ if (typeof window !== 'undefined') {
             return Promise.reject(markAuthSessionUnavailable(error));
           }
 
-          /** A rejected refresh must route to login like an empty token, or the 401 reaches the caller unredirected. */
+          /** A rejected refresh must route to login like an empty token, or the 401 reaches the caller unredirected.
+           *  When the original request is itself a refresh, its denial carries the reason; the server
+           *  then removes the session, so the retry gets a 403 without a code. */
           advanceAuthGeneration();
-          redirectToLoginOnce(getLoginErrorCode(refreshError));
+          redirectToLoginOnce(getLoginErrorCode(refreshError) ?? getLoginErrorCode(error));
           return Promise.reject(error);
         }
       }
