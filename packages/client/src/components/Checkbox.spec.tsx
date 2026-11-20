@@ -24,6 +24,25 @@ describe('Checkbox', () => {
   });
 });
 
+describe('Checkbox fade variant', () => {
+  it('eases the check fill over 300ms and snaps under reduced motion', () => {
+    render(<Checkbox aria-label="Fading" variant="fade" />);
+
+    expect(screen.getByRole('checkbox', { name: 'Fading' })).toHaveClass(
+      'transition',
+      'duration-300',
+      'ease-in-out',
+      'motion-reduce:transition-none',
+    );
+  });
+
+  it('keeps the default checkbox free of motion', () => {
+    render(<Checkbox aria-label="Plain" />);
+
+    expect(screen.getByRole('checkbox', { name: 'Plain' })).not.toHaveClass('transition');
+  });
+});
+
 describe('CheckboxGlyph', () => {
   it('paints the unchecked fill role only while unchecked', () => {
     const { container, rerender } = render(<CheckboxGlyph checked={false} />);

@@ -107,6 +107,27 @@ describe('getLazySubagentConfigId', () => {
     expect(getLazySubagentConfigId(linkedA)).not.toBe(getLazySubagentConfigId(linkedB));
   });
 
+  it('changes when a linked Langfuse prompt pins a different version, even at the same groupId', () => {
+    const pinnedV3 = {
+      ...agent,
+      instructionsPrompt: {
+        source: 'langfuse' as const,
+        groupId: 'group-a',
+        selection: { type: 'exact' as const, version: 3 },
+      },
+    };
+    const pinnedV4 = {
+      ...agent,
+      instructionsPrompt: {
+        source: 'langfuse' as const,
+        groupId: 'group-a',
+        selection: { type: 'exact' as const, version: 4 },
+      },
+    };
+
+    expect(getLazySubagentConfigId(pinnedV3)).not.toBe(getLazySubagentConfigId(pinnedV4));
+  });
+
   it('leaves the descriptor identity unchanged for an agent with no linked prompt', () => {
     const withoutLink = getLazySubagentConfigId(agent);
     const explicitlyUnset = getLazySubagentConfigId({ ...agent, instructionsPrompt: undefined });

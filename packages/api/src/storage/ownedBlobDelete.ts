@@ -1,3 +1,6 @@
+import type { TFileConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
+
 interface StoredBlobFile {
   filepath: string;
   user?: { toString(): string };
@@ -7,7 +10,12 @@ interface OwnedBlobDeleteDependencies {
   extractPath: (url: string) => string;
   deleteBlob: (path: string) => Promise<unknown>;
   isMissing: (error: unknown) => boolean;
-  deleteRagFile: (args: { userId: string; file: StoredBlobFile }) => Promise<unknown>;
+  deleteRagFile: (args: {
+    userId: string;
+    file: StoredBlobFile;
+    fileConfig?: TFileConfig;
+    timeouts?: AppConfig['timeouts'];
+  }) => Promise<unknown>;
 }
 
 /** File descriptors cannot override the storage owner supplied by the request. */
@@ -17,7 +25,13 @@ export function createOwnedBlobFileDeleter({
   isMissing,
   deleteRagFile,
 }: OwnedBlobDeleteDependencies) {
-  return async (req: { user: { id: string } }, file: StoredBlobFile): Promise<void> => {
+  return async (
+    req: {
+      user: { id: string };
+      config?: { fileConfig?: TFileConfig; timeouts?: AppConfig['timeouts'] };
+    },
+    file: StoredBlobFile,
+  ): Promise<void> => {
     const ownerId = req.user.id;
     const blobPath = extractPath(file.filepath);
     const segments = blobPath.split('/');
@@ -32,12 +46,21 @@ export function createOwnedBlobFileDeleter({
       throw new Error('Invalid file path');
     }
 
+    if (
+      (await deleteRagFile({
+        userId: ownerId,
+        file,
+        ...(req.config?.fileConfig ? { fileConfig: req.config.fileConfig } : {}),
+        ...(req.config?.timeouts ? { timeouts: req.config.timeouts } : {}),
+      })) === false
+    ) {
+      throw new Error('Vector deletion was not confirmed');
+    }
     try {
       await deleteBlob(blobPath);
     } catch (error) {
       if (!isMissing(error)) throw error;
     }
-    await deleteRagFile({ userId: ownerId, file });
   };
 }
 

@@ -58,6 +58,7 @@ const chatLiteralAttributes = {
 export default [
   {
     ignores: [
+      'vendor/code/**/*',
       'client/dist/**/*',
       'client/public/**/*',
       'client/coverage/**/*',
@@ -246,6 +247,14 @@ export default [
               pattern: '^(Label|Description|DialogTitle|DialogDescription|SeriesLabel)(\\$\\d+)?$',
               allow: ['layout', 'icon-*', 'typography'],
             },
+            // The sweep on an in-flight label is drawn over the caller's own line of text, so
+            // the caller sets that line's size, weight and truncation, `tool-status-text`
+            // included: the status rows' type scale, which has no Tailwind form. The sweep's
+            // two colors are the theme's.
+            {
+              pattern: '^Shimmer(\\$\\d+)?$',
+              allow: ['layout', 'icon-*', 'typography', 'tool-status-text'],
+            },
             // A skeleton stands in for the caller's content, so it takes that content's
             // silhouette and footprint.
             { pattern: '^Skeleton(\\$\\d+)?$', allow: ['layout', 'icon-*', 'shape', 'spacing'] },
@@ -316,6 +325,7 @@ export default [
             'select-item',
             'reset-rc-number-input',
             'reset-rc-number-input-text-right',
+            'choice-badge',
             'assistant-item',
             'animated-tab',
             'animated-tab-list',
@@ -329,6 +339,8 @@ export default [
             'slow-pulse',
             'hide-scrollbar',
             'scrollbar-gutter-spacer',
+            'progress-text-wrapper',
+            'progress-text-content',
             'active',
             // put in the DOM by a dependency, not by Tailwind
             'lucide',
@@ -351,10 +363,43 @@ export default [
             // that stylesheet, so its lint has no Tailwind entry that declares them.
             'markdown',
             'prose',
+            'prose-sm',
             'message-content',
             'submitting',
             'result-streaming',
             'result-thinking',
+            'shimmer',
+            'shimmer-clip',
+            'shimmer-band',
+            'shimmer-copy',
+            'attachment-settle',
+            'part-fold',
+            'tool-status-text',
+            'tool-call-expand',
+            'part-expand',
+            'thought-peek',
+            'message-render',
+            'message-timestamp',
+            'popover-animate',
+            // The thinking-level slider's spring curves, which have no theme token.
+            'composer-effort-glide',
+            'composer-effort-thumb',
+            'composer-effort-fill',
+            // The thinking button's label roll and the composer popover clock it resizes on.
+            'composer-slot-resize',
+            'composer-label-in-up',
+            'composer-label-in-down',
+            'composer-label-out-up',
+            'composer-label-out-down',
+            'animate-composer-icon',
+            'animate-composer-popover',
+            'animate-composer-popover-resize',
+            // Composer palette list chrome and row motion, painted by parts.css.
+            'composer-palette-scroll',
+            'composer-palette-rows',
+            'composer-palette-instant',
+            'animate-composer-palette-row',
+            'animate-composer-palette-row-out',
           ],
         },
       ],

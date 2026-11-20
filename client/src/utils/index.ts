@@ -21,6 +21,7 @@ export * from './morph';
 export * from './forms';
 export * from './roles';
 export * from './errors';
+export * from './promptErrors';
 export * from './agents';
 export * from './drafts';
 export * from './convos';
@@ -33,6 +34,7 @@ export * from './textarea';
 export * from './messages';
 export * from './branch';
 export * from './focus';
+export * from './viewport';
 export * from './tokens';
 export * from './balance';
 export * from './redirect';
@@ -49,12 +51,11 @@ export * from './localStorage';
 export * from './promptGroups';
 export * from './previewCache';
 export * from './groupToolCalls';
-export * from './toolLabels';
 export * from './favoritesError';
-export * from './approval';
 export {
   getSteerPart,
   applySteerPart,
+  applyReasoningLabel,
   MAX_QUOTE_COUNT,
   dedupeSteersById,
   insertQueuedOrigin,
@@ -63,6 +64,7 @@ export {
   carriedSteerContext,
   appendAppliedSteerIds,
   findSteerMessageIndex,
+  findReasoningLabelMessageIndex,
   collectAppliedSteerIds,
   resolveAbortSteerTarget,
   findResponseMessageIndex,
@@ -71,13 +73,10 @@ export {
   collectQuotelessAppliedSteerIds,
 } from '@librechat/chat';
 export type { SteerCarriedContext } from '@librechat/chat';
-export * from './pane';
-export * from './activityLabels';
+export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/chat';
 export * from './agentModelSelection';
 export * from './runStepDuration';
-export * from './toolCallPhase';
 export * from './documentTitle';
-export * from './reasoningLabels';
 export * from './numbers';
 export { default as cn } from './cn';
 export { default as logger } from './logger';

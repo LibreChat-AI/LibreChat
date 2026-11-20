@@ -138,6 +138,7 @@ export async function reconcileCodeEnvironmentLifecycle({
     }
     const staleRegistration = new Date(Date.now() - REGISTRATION_STALE_MS);
     const registrationCandidates = await CodeEnvironment.find({
+      setupAttemptId: { $exists: false },
       registrationPendingAt: { $lte: staleRegistration },
       $and: [
         {

@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { getE2EUser } from '../../../setup/user';
@@ -18,6 +17,7 @@ import {
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { openConversationMenu, openSidebar } from './sidebar';
+import { expect, test } from '../fixtures';
 
 const userEmail = getE2EUser().email;
 const now = () => new Date();
@@ -569,7 +569,16 @@ test.describe('unseen replies', () => {
         await selectMockEndpoint(second, MOCK_ENDPOINTS[0]);
         await second.bringToFront();
         await unfocus(page);
+        const acknowledged = second.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === '/api/convos/seen' &&
+            response.request().method() === 'POST',
+        );
         await sendMessageAndWaitForCompletion(second, `E2E_REPLY:withheld-${id.slice(0, 8)}`);
+        /* The reply tab acknowledges the reply it just rendered. Restoring the unread baseline
+         * before that write lands is overwritten by it, and the first tab then polls a
+         * conversation the server considers read, so its dot never appears. */
+        await acknowledged;
         const completed = await readConversation(id);
         if (completed?.lastResponseAt == null) throw new Error('Reply timestamp was not saved');
         completedReplyAt = new Date(completed.lastResponseAt);

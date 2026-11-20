@@ -133,9 +133,9 @@ test('repository instruction mode defaults to prefer and retains an explicit off
   HTMLElement.prototype.scrollIntoView = jest.fn();
   render(<IdentityForm />);
   expect(
-    screen.getByRole('combobox', { name: 'com_ui_repository_instructions' }),
+    screen.getByRole('combobox', { name: /^com_ui_repository_instructions / }),
   ).toHaveTextContent('com_ui_repository_instructions_prefer');
-  fireEvent.click(screen.getByRole('combobox', { name: 'com_ui_repository_instructions' }));
+  fireEvent.click(screen.getByRole('combobox', { name: /^com_ui_repository_instructions / }));
   fireEvent.click(
     await screen.findByRole('option', { name: 'com_ui_repository_instructions_off' }),
   );
@@ -143,18 +143,18 @@ test('repository instruction mode defaults to prefer and retains an explicit off
   fireEvent.click(screen.getByText('Toggle Dialog'));
   fireEvent.click(screen.getByText('Toggle Dialog'));
   expect(
-    screen.getByRole('combobox', { name: 'com_ui_repository_instructions' }),
+    screen.getByRole('combobox', { name: /^com_ui_repository_instructions / }),
   ).toHaveTextContent('com_ui_repository_instructions_off');
 });
 
 test('saves a workspace default bound to the selected machine and permits clearing it', async () => {
   HTMLElement.prototype.scrollIntoView = jest.fn();
   render(<IdentityForm />);
-  fireEvent.click(screen.getByRole('combobox', { name: 'com_ui_code_workspace_default' }));
+  fireEvent.click(screen.getByRole('combobox', { name: /^com_ui_code_workspace_default / }));
   fireEvent.click(await screen.findByRole('option', { name: 'Project A' }));
   expect(screen.getByTestId('workspace-default')).toHaveTextContent('project-a');
   expect(screen.getByTestId('machine-default')).toHaveTextContent('byom');
-  fireEvent.click(screen.getByRole('combobox', { name: 'com_ui_code_workspace_default' }));
+  fireEvent.click(screen.getByRole('combobox', { name: /^com_ui_code_workspace_default / }));
   fireEvent.click(await screen.findByRole('option', { name: 'com_ui_code_workspace_last_used' }));
   expect(screen.getByTestId('workspace-default')).toBeEmptyDOMElement();
 });
@@ -184,7 +184,7 @@ test('permits clearing a saved workspace while discovery is unavailable', async 
   mockWorkspaceStatusQueries.mockReturnValue([{ isLoading: false, isError: true }]);
   render(<IdentityForm savedWorkspace="project-a" />);
 
-  fireEvent.click(screen.getByRole('combobox', { name: 'com_ui_code_workspace_default' }));
+  fireEvent.click(screen.getByRole('combobox', { name: /^com_ui_code_workspace_default / }));
   fireEvent.click(await screen.findByRole('option', { name: 'com_ui_code_workspace_last_used' }));
 
   expect(screen.getByTestId('workspace-default')).toBeEmptyDOMElement();

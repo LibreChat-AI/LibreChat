@@ -20,7 +20,7 @@ export function validateAzureGroups(configs: TAzureGroups): TAzureConfigValidati
   const result = azureGroupConfigsSchema.safeParse(configs);
   if (!result.success) {
     isValid = false;
-    errors.push(errorsToString(result.error.errors));
+    errors.push(errorsToString(result.error.issues));
   } else {
     for (const group of result.data) {
       const {

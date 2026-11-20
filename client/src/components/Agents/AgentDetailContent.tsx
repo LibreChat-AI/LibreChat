@@ -271,7 +271,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="-mt-2 -mr-2 shrink-0 rtl:mr-0 rtl:-ml-2"
+                className="-me-2 -mt-2 shrink-0"
                 aria-label={localize('com_ui_close')}
               >
                 <X className="size-4" aria-hidden="true" />
@@ -285,7 +285,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
           layoutScroll
           className="relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pt-4 pb-5 sm:px-6 sm:pb-6"
         >
-          <OGDialogHeader className="space-y-0 text-left sm:text-left rtl:text-right sm:rtl:text-right">
+          <OGDialogHeader className="space-y-0 text-start">
             {/* The avatar holds the top of the row and the copy centres on it,
                 so a title with a line or two of description reads as one block
                 beside it. Once the copy is the taller of the two there is
@@ -370,7 +370,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                   <Button
                     key={starter.key}
                     variant="outline"
-                    className="h-auto min-h-14 items-start justify-between gap-3 py-3 text-left whitespace-normal rtl:text-right"
+                    className="h-auto min-h-14 items-start justify-between gap-3 py-3 text-start whitespace-normal"
                     aria-disabled={actionsDisabled || undefined}
                     onClick={() => {
                       if (!actionsDisabled) {

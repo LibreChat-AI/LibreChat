@@ -98,7 +98,9 @@ const ordinary = {
   codeDecisionListed: true,
 } as TConversation;
 
-const renderRow = (props: { isGenerating?: boolean; convo?: TConversation } = {}) =>
+const renderRow = (
+  props: { isGenerating?: boolean; convo?: TConversation; showProjectBadge?: boolean } = {},
+) =>
   render(
     <DndProvider backend={HTML5Backend}>
       <Conversation
@@ -106,6 +108,7 @@ const renderRow = (props: { isGenerating?: boolean; convo?: TConversation } = {}
         retainView={jest.fn()}
         toggleNav={jest.fn()}
         isGenerating={props.isGenerating}
+        showProjectBadge={props.showProjectBadge}
       />
     </DndProvider>,
   );
@@ -131,14 +134,31 @@ describe('Conversation row pull request', () => {
     expect(mark.parentElement?.parentElement).toBe(screen.getByTestId('convo-item'));
   });
 
-  it('sits after the row menu, which grows on hover, so it does not slide out from under the pointer', () => {
+  it('places the pull request before the conversation title', () => {
     renderRow();
-    const row = screen.getByTestId('convo-item');
     const mark = screen.getByTestId('convo-pull-request');
-    const menuSlot = screen.getByTestId('convo-options').parentElement as HTMLElement;
-    expect(row).toContainElement(menuSlot);
-    expect(menuSlot.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(row.lastElementChild).toBe(mark.parentElement);
+    expect(
+      mark.compareDocumentPosition(rowButton()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('places the project badge at the start of the row', () => {
+    renderRow({
+      convo: { ...conversation, chatProjectId: 'project-1' },
+      showProjectBadge: true,
+    });
+    const badge = screen.getByTestId('convo-project-badge');
+    expect(screen.getByTestId('convo-item').firstElementChild?.firstElementChild).toBe(badge);
+  });
+
+  it('places the pull request immediately after the project badge', () => {
+    renderRow({
+      convo: { ...conversation, chatProjectId: 'project-1' },
+      showProjectBadge: true,
+    });
+    expect(screen.getByTestId('convo-project-badge').nextElementSibling).toBe(
+      screen.getByTestId('convo-pull-request'),
+    );
   });
 
   it("names the pull request in the row's description so a screen reader hears what the colors say", () => {
@@ -160,10 +180,11 @@ describe('Conversation row pull request', () => {
   });
 
   it('reserves no space around the mark, since an absent mark must leave the row unchanged', () => {
+    mockMarkState.described = false;
     renderRow();
-    const wrapper = screen.getByTestId('convo-pull-request').parentElement as HTMLElement;
-    expect(wrapper.className).not.toMatch(/\bm[rlxy]?-\d/);
-    expect(wrapper.className).not.toMatch(/\bp[rlxy]?-\d/);
+    const wrapper = screen.getByTestId('convo-item').firstElementChild as HTMLElement;
+    expect(wrapper).toBeEmptyDOMElement();
+    expect(wrapper.className).not.toMatch(/\b[mp][rlxyse]?-\d/);
   });
 
   it('does not point the row at a description that is not in the page', () => {

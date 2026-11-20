@@ -8,7 +8,10 @@ import type { TMessage, TAgentsMap } from 'librechat-data-provider';
 import { ShareMessagesProvider } from './ShareMessagesProvider';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { ShareContext } from '~/Providers/ShareContext';
+import '~/Providers/MessagesHostContext';
 import MessagesView from './MessagesView';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -21,8 +24,6 @@ jest.mock('librechat-data-provider', () => {
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useAttachments: () => ({ attachments: [], searchResults: [] }),
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
   ...jest.requireActual('~/hooks/Messages/useCopyToClipboard'),
 }));
 jest.mock('~/hooks/MCP', () => ({
@@ -301,6 +302,6 @@ it('copies only the visible public wake-up result through its real footer', () =
   const clipboard = jest.mocked(copy);
   clipboard.mockReturnValue(true);
   renderShared(prompt(), true);
-  fireEvent.click(screen.getByRole('button', { name: 'com_ui_copy_to_clipboard' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
   expect(clipboard).toHaveBeenCalledWith('Shared durable result.', expect.anything());
 });

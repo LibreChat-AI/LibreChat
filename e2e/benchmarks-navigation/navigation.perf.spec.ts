@@ -9,6 +9,7 @@ import {
   seedMessages,
 } from '../specs/mock/db';
 import { messagesView } from '../specs/mock/helpers';
+import { unroute } from '../specs/mock/fixtures';
 import { getE2EUser } from '../setup/user';
 import {
   attachSnapshot,
@@ -224,7 +225,7 @@ async function holdConversationRecord(page: Page, conversationId: string) {
 
   return async () => {
     release();
-    await page.unroute(pattern);
+    await unroute(page, pattern);
     return heldRequests;
   };
 }

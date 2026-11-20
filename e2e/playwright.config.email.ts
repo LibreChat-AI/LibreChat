@@ -53,7 +53,11 @@ export default defineConfig({
   outputDir: `specs/.test-results/email-change${profileSuffix}`,
   fullyParallel: false,
   workers: 1,
-  reporter: [['html', { outputFolder: reportPath, open: 'never' }], ['list']],
+  reporter: [
+    ['html', { outputFolder: reportPath, open: 'never' }],
+    ['list'],
+    ['./reporters/retried.mjs'],
+  ],
   use: {
     ...mockConfig.use,
     storageState: path.resolve(rootPath, `e2e/.generated/storageState.email${profileSuffix}.json`),

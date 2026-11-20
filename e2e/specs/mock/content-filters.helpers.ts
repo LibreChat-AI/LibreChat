@@ -3,20 +3,19 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import yaml from 'js-yaml';
 import { expect } from '@playwright/test';
-import { configSchema } from 'librechat-data-provider';
+import { configSchema, setPiiRegexProgramSizer } from 'librechat-data-provider';
 import type { APIRequestContext } from '@playwright/test';
 import type {
   FiltersConfig,
   MessageFilterConfig,
   MessageFilterPiiConfig,
 } from 'librechat-data-provider';
+import { getPiiRegexProgramSize } from '../../../packages/api/src/protection/programSize';
 import { getPrimaryE2EUser } from '../../setup/users.mock';
 
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const GENERATED_CONFIG_ROOT = path.join(PROJECT_ROOT, 'e2e/.generated');
-const RELOAD_SENTINEL = `e2e-content-filter-reload-${process.pid}-${randomUUID()}`;
-const RELOAD_SENTINEL_PATH = `/api/admin/config/user/${encodeURIComponent(RELOAD_SENTINEL)}`;
-const RELOAD_PRIORITY = 10;
+const RELOAD_PATH = '/api/admin/config/reload';
 
 type RequestFetchOptions = NonNullable<Parameters<APIRequestContext['fetch']>[1]>;
 
@@ -128,6 +127,9 @@ function captureBaseline(): BaselineState {
 }
 
 function validateRuntimeConfig(config: RuntimeConfig): void {
+  /* Custom PII patterns are sized by RE2, which the server registers at startup; this process
+     validates the same config, so it registers the same engine. */
+  setPiiRegexProgramSizer(getPiiRegexProgramSize);
   const result = configSchema.strict().safeParse(config);
   if (result.success) {
     return;
@@ -179,20 +181,22 @@ function getConfigFromResult(result: RequestResult): RuntimeConfig {
   return result.body.config as RuntimeConfig;
 }
 
+/**
+ * Makes the server load librechat.yaml again: the admin config reload route clears the cached
+ * file and merged configs (on every instance, with Redis) without writing a config profile, and
+ * loads the file before it answers. It answers 200 only once the file loaded and every instance
+ * it could reach has been told (`broadcast` is false without Redis), 422 when the file fails to
+ * load, and 503 when the other instances could not be told.
+ */
 async function triggerConfigReload(request: APIRequestContext, token: string): Promise<void> {
   const result = await requestResult(request, {
-    path: RELOAD_SENTINEL_PATH,
+    path: RELOAD_PATH,
     token,
-    method: 'PUT',
-    data: { overrides: {}, priority: RELOAD_PRIORITY },
+    method: 'POST',
   });
 
-  expect(result.ok, `Expected config reload trigger to succeed: ${result.text}`).toBe(true);
-  expect(result.body, result.text).toEqual(
-    expect.objectContaining({
-      config: expect.objectContaining({ principalId: RELOAD_SENTINEL }),
-    }),
-  );
+  expect(result.ok, `Expected config reload to succeed: ${result.text}`).toBe(true);
+  expect(result.body, result.text).toEqual({ success: true, broadcast: expect.any(Boolean) });
 }
 
 async function getLoadedConfig(
@@ -225,17 +229,6 @@ async function getLoadedProtectionState(
       messageFilter: effectiveConfig.messageFilter,
     },
   };
-}
-
-async function deleteReloadSentinel(request: APIRequestContext, token: string): Promise<void> {
-  const result = await requestResult(request, {
-    path: RELOAD_SENTINEL_PATH,
-    token,
-    method: 'DELETE',
-  });
-  expect([200, 404], `Expected reload sentinel cleanup to succeed: ${result.text}`).toContain(
-    result.status,
-  );
 }
 
 export async function loginAdmin(request: APIRequestContext): Promise<string> {
@@ -347,26 +340,22 @@ export async function restoreRuntimeFilters(
   const baselineConfig = parseRuntimeConfig(baseline.contents);
   atomicWrite(baseline, baseline.contents);
 
-  try {
-    await triggerConfigReload(request, token);
-    await expect
-      .poll(async () => getLoadedProtectionState(request, token), {
-        timeout: 30000,
-        intervals: [100, 250, 500, 1000],
-      })
-      .toEqual({
-        base: {
-          filters: baselineConfig.filters,
-          messageFilter: baselineConfig.messageFilter,
-        },
-        effective: {
-          filters: baselineConfig.filters,
-          messageFilter: baselineConfig.messageFilter,
-        },
-      });
-  } finally {
-    await deleteReloadSentinel(request, token);
-  }
+  await triggerConfigReload(request, token);
+  await expect
+    .poll(async () => getLoadedProtectionState(request, token), {
+      timeout: 30000,
+      intervals: [100, 250, 500, 1000],
+    })
+    .toEqual({
+      base: {
+        filters: baselineConfig.filters,
+        messageFilter: baselineConfig.messageFilter,
+      },
+      effective: {
+        filters: baselineConfig.filters,
+        messageFilter: baselineConfig.messageFilter,
+      },
+    });
 
   baselineState = undefined;
 }

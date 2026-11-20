@@ -5,6 +5,56 @@
  * @see https://openresponses.org/specification
  */
 
+export {
+  ResponsePersistenceError,
+  selectResponseHistory,
+  selectStoredResponse,
+  buildResponseInputChain,
+  projectResponseMessage,
+  resolveResponseContinuation,
+} from './persistence';
+export { createBackgroundResponseService } from './background';
+export { createBackgroundResponsesHost } from './host';
+export { createInteractiveResponsesHost } from './interactive';
+export { createResponseExecutionRuntime } from './runtime';
+export { createResponseDecisionSubmission } from './decision';
+export { createResponseResumeValidation, createResponseResumeAdmission } from './resume';
+export { createBackgroundResponseAuthority } from './authority';
+export type {
+  ResponseDecisionDependencies,
+  ResponseDecisionResult,
+  ResponseDecisionSubmission,
+} from './decision';
+export { pauseResponseForReview, type ResponsePauseDependencies } from './pause';
+export { createBackgroundResponseQueue, backgroundResponseDeliveryKey } from './queue';
+export {
+  createBackgroundResponseWorkerAuth,
+  mintBackgroundResponseWorkerToken,
+  mintResponseResumeWorkerToken,
+} from './worker';
+export type { BackgroundResponseDependencies, BackgroundResponseResult } from './background';
+
+export {
+  createResponseAccountingCollector,
+  createResponseAccountingSnapshot,
+  captureResponseAccountingUsage,
+  createApplicationBillingQuote,
+  buildCollectedResponseAccounting,
+  buildPersistedResponseAccounting,
+} from './accounting';
+export type {
+  AccountingQuote,
+  AccountingCollectorOptions,
+  AccountingInvocationIdentity,
+  CollectedResponseAccountingUsage,
+} from './accounting';
+export type {
+  AccountingBasis,
+  AccountingModelSource,
+  ResponseAccountingCall,
+  ResponseAccounting,
+} from './types';
+
 // Types
 export type {
   // Enums
@@ -160,6 +210,7 @@ export {
   isValidationFailure,
   // Input conversion
   convertInputToMessages,
+  extractResponseInputFileContent,
   type InternalMessage,
   // Error response
   sendResponsesErrorResponse,
@@ -180,3 +231,8 @@ export {
 
 // Client-side tool execution
 export { createClientToolHandoff, type ClientToolHandoff } from './clientTools';
+
+export * from './foreground';
+export { createResponseTurn, stageResponseTurn } from './turn';
+export * from './stored';
+export type { ResponseCompletion, ResponseCompletionRecord } from './completion';

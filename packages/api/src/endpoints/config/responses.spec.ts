@@ -21,7 +21,14 @@ const env = { ...process.env };
 const enabled = { default: true, on: true, off: false };
 const disabled = { default: false, on: false, off: false };
 const optIn = { default: false, on: true, off: false };
-const models = ['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'];
+const models = [
+  'gpt-6.2-sol',
+  'gpt-6-sol',
+  'gpt-6.1-sol',
+  'gpt-6.1-terra',
+  'gpt-6-luna',
+  'gpt-6-astra',
+];
 function grouped(overrides: Partial<TAzureGroup> = {}) {
   const azure = validateAzureGroups([
     {
@@ -98,7 +105,7 @@ describe.each([EModelEndpoint.openAI, EModelEndpoint.azureOpenAI])(
       'matches every stored toggle and web-search state for native %s',
       async (model) => {
         const routing = await expectParity(config(), endpoint, model);
-        expect(routing[model]).toMatchObject(enabled);
+        expect(routing[model]).toMatchObject({ ...enabled, firstPartyEndpoint: true });
       },
     );
     it.each(models)(
@@ -118,7 +125,7 @@ describe.each([EModelEndpoint.openAI, EModelEndpoint.azureOpenAI])(
         endpoint === EModelEndpoint.openAI ? 'OPENAI_REVERSE_PROXY' : 'AZURE_OPENAI_BASEURL'
       ] = 'https://gateway.example/v1';
       const routing = await expectParity(config(), endpoint, 'gpt-6-sol');
-      expect(routing['gpt-6-sol']).toMatchObject(optIn);
+      expect(routing['gpt-6-sol']).toMatchObject({ ...optIn, firstPartyEndpoint: false });
       expect(JSON.stringify(routing)).not.toMatch(/gateway|https|apiKey|api-key/);
     });
     it('handles a user-provided URL conservatively but retains forced routing by web search', async () => {
@@ -126,7 +133,7 @@ describe.each([EModelEndpoint.openAI, EModelEndpoint.azureOpenAI])(
         endpoint === EModelEndpoint.openAI ? 'OPENAI_REVERSE_PROXY' : 'AZURE_OPENAI_BASEURL'
       ] = 'user_provided';
       const routing = await expectParity(config(), endpoint, 'gpt-6-sol');
-      expect(routing['gpt-6-sol']).toMatchObject(optIn);
+      expect(routing['gpt-6-sol']).toMatchObject({ ...optIn, firstPartyEndpoint: false });
       expect(db.getUserKeyValues).toHaveBeenCalled();
     });
   },

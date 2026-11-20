@@ -1,4 +1,6 @@
 import { logger } from '@librechat/data-schemas';
+import type { PrincipalType } from 'librechat-data-provider';
+import type { ConfigRecord } from '@librechat/data-schemas';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 /** One removal in a delete cascade, with the way to put back what it removed. */
@@ -112,4 +114,71 @@ export async function runCascade(steps: CascadeStep[], logPrefix: string): Promi
   }
 
   return { failed, removed, compensate };
+}
+
+/** The config store calls a principal's deletion makes: remove its profile, or put it back. */
+export interface ConfigProfileStore {
+  deleteConfig: (principalType: PrincipalType, principalId: string) => Promise<ConfigRecord | null>;
+  /** Re-creates a removed profile only when none exists; resolves to whether it inserted. */
+  restoreConfig?: (snapshot: ConfigRecord) => Promise<boolean>;
+}
+
+/**
+ * `store` with each change followed by the cache invalidation a config write runs, awaited before
+ * the deletion goes on: this instance's merged configs (and, with Redis, every other instance's)
+ * stop applying a removed profile, or apply a restored one again, before the response. A call
+ * that rejects may still have committed (its acknowledgement lost), so it invalidates too; one
+ * that changed nothing (no profile to remove, or one already back in place) does not. A failed
+ * invalidation is logged, not thrown: the change it follows has committed.
+ */
+export function invalidatingConfigStore(
+  store: ConfigProfileStore,
+  invalidation: {
+    invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
+    tenantId: string | undefined;
+    logPrefix: string;
+  },
+): ConfigProfileStore {
+  const { invalidateConfigCaches, tenantId, logPrefix } = invalidation;
+  if (!invalidateConfigCaches) {
+    return store;
+  }
+  async function invalidate(): Promise<void> {
+    try {
+      await invalidateConfigCaches?.(tenantId);
+    } catch (error) {
+      logger.error(`${logPrefix} config cache invalidation failed:`, getSafeErrorMetadata(error));
+    }
+  }
+  async function changing<T>(
+    change: () => Promise<T>,
+    changed: (result: T) => boolean,
+  ): Promise<T> {
+    let result: T;
+    try {
+      result = await change();
+    } catch (error) {
+      await invalidate();
+      throw error;
+    }
+    if (changed(result)) {
+      await invalidate();
+    }
+    return result;
+  }
+  const { deleteConfig, restoreConfig } = store;
+  return {
+    deleteConfig: (principalType, principalId) =>
+      changing(
+        () => deleteConfig(principalType, principalId),
+        (removed) => removed != null,
+      ),
+    restoreConfig:
+      restoreConfig &&
+      ((snapshot) =>
+        changing(
+          () => restoreConfig(snapshot),
+          (inserted) => inserted,
+        )),
+  };
 }

@@ -86,7 +86,12 @@ export interface MCPOAuthFlowMetadata extends FlowMetadata {
   metadata?: OAuthMetadata;
   resourceMetadata?: OAuthProtectedResourceMetadata;
   authorizationUrl?: string;
-  /** Custom headers for OAuth token exchange, persisted at flow initiation for the callback. */
+  /**
+   * Custom headers for OAuth token exchange, persisted at flow initiation for the callback. An
+   * empty map is persisted too: it records that the principal's config sends no headers, which a
+   * callback must not replace with headers a profile removed. Absent only on flows started before
+   * the empty map was persisted.
+   */
   oauthHeaders?: Record<string, string>;
   /** Domain allowlist captured at flow initiation for callback-time SSRF enforcement. */
   allowedDomains?: string[] | null;

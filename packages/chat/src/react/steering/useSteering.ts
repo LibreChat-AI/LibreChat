@@ -27,8 +27,14 @@ import {
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
 } from '../steer/atoms';
-import { hasLiveRunPause, selectLiveMessageState, carriedSteerContext } from '../../core';
+import {
+  hasLiveRunPause,
+  carriedSteerContext,
+  selectLiveMessageState,
+  resolveCodeApprovalModes,
+} from '../../core';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../composer';
+import { useBranchTailSelect } from '../latest';
 import useQueuedTurnReceipts from './receipts';
 import { useSteerHost } from '../steer/host';
 import useDuringRunActions from './actions';
@@ -44,6 +50,12 @@ export interface UseSteeringParams<File extends ComposerFile = ComposerFile> {
   /** Consume the actual storage key selected by the composer’s autosave owner. */
   consumeDraft: () => void;
   index: number;
+  /**
+   * Whether this composer's chat takes what is done to a run in flight: a steer, a queued
+   * follow-up, an interrupt. Main chat's does. Any other pane's does only when its chat
+   * publishes its runs the way main chat's stream session does, and says so here.
+   */
+  duringRun?: boolean;
   conversationId: string;
   conversation: TConversation | null;
   addedConversation?: TConversation | null;
@@ -56,6 +68,8 @@ export interface UseSteeringParams<File extends ComposerFile = ComposerFile> {
   /** Composer attachments: consumed into queued items (steering is text-only). */
   files?: Map<string, File>;
   setFiles?: ComposerFileSetter<File>;
+  /** Discards uploaded sources superseded by an accepted inline replacement. */
+  discardFiles?: (fileIds: string[]) => void;
   /** Uploads still in flight: during-run submits are held like the send button. */
   filesLoading?: boolean;
   /** Submits text (and optional attachments/quotes/skills) as a normal new
@@ -121,6 +135,16 @@ export interface SteeringControls {
 }
 
 /**
+ * What steering reads of the branch tail: where a queued turn anchors and whether the run is
+ * paused. Neither moves while a reply streams, so the projection keeps one identity through
+ * structural sharing and the composer sits out every delta.
+ */
+const pickLiveTail = (tail: TMessage | null): { parentMessageId?: string; paused: boolean } => ({
+  parentMessageId: selectLiveMessageState(tail).parentMessageId,
+  paused: hasLiveRunPause(tail),
+});
+
+/**
  * The composer's during-run brain: decides what Enter does while a run is
  * generating (steer vs queue, per the user preference and run state), owns the
  * pending-steer / queued-message chip state, and implements the three actions:
@@ -130,6 +154,7 @@ export interface SteeringControls {
 export default function useSteering<File extends ComposerFile = ComposerFile>({
   consumeDraft: takeComposerDraft,
   index,
+  duringRun = index === 0,
   conversationId,
   conversation,
   addedConversation,
@@ -139,6 +164,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   composerDisabled = false,
   files,
   setFiles,
+  discardFiles,
   filesLoading = false,
   sendNow,
   stopGenerating,
@@ -152,18 +178,18 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     setDuringRunDefaultAction: setDefaultAction,
   } = host.useSettings();
 
-  const codeApprovalMode = host.useCodeApprovalMode(
-    conversation,
-    addedConversation,
+  const codeApprovalInputs = host.useCodeApprovalInputs(conversation, addedConversation);
+  const codeApprovalMode = resolveCodeApprovalModes({
+    ...codeApprovalInputs,
     codeEnvironmentMode,
-  );
+  }).selected;
   const endpoint = conversation?.endpointType ?? conversation?.endpoint;
   const steerable = !isAssistantsEndpoint(endpoint);
   const hasRealConvoId =
     conversationId != null && conversationId !== '' && conversationId !== Constants.NEW_CONVO;
   const serverQueueEnabled = isAgentsEndpoint(endpoint) && hasRealConvoId;
-  /** v1 gates the during-run UI to the primary composer, like the HITL popover. */
-  const enabled = steerable && index === 0;
+  /** The primary composer, and any other whose chat runs the during-run machinery. */
+  const enabled = steerable && duringRun;
   const queueKey = hasRealConvoId ? conversationId : Constants.NEW_CONVO;
   const reasoningStateKey = getReasoningStateKey(conversationId, index);
   const sendLockTimeoutMs = queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
@@ -212,15 +238,21 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   /** Capture a durable branch anchor into a server queued turn. Optimistic
    * assistant placeholders are siblings of their eventual persisted response,
    * so they anchor through their stable user parent. */
-  const latestMessage = host.useLatestMessage(index, hasRealConvoId ? conversationId : null);
-  const liveMessageState = useMemo(() => selectLiveMessageState(latestMessage), [latestMessage]);
+  const paneConversationId = conversation?.conversationId ?? null;
+  const routeConversationId = host.useRouteConversationId();
+  const unsavedQueryId = (index === 0 ? routeConversationId : undefined) ?? paneConversationId;
+  const liveTail = useBranchTailSelect(
+    paneConversationId,
+    paneConversationId && (hasRealConvoId ? conversationId : unsavedQueryId),
+    pickLiveTail,
+  );
   /** Both approval cards and `ask_user_question` suspend the current
    * generation while keeping its submission slot occupied. Answer mode hides
    * the ordinary during-run composer, but waiting-message controls still need
    * to know a live generation exists so they remain discoverable and disabled
    * instead of looking as though the action disappeared. */
   const pausedOnApproval =
-    enabled && isSubmitting ? answerModeActive || hasLiveRunPause(latestMessage) : false;
+    enabled && isSubmitting ? answerModeActive || liveTail?.paused === true : false;
   const canSteer = hasRealConvoId && canControlGeneration && !pausedOnApproval;
   const canSendQueuedNow = (!isSubmitting && !revealPending) || (duringRunActive && canSteer);
 
@@ -243,7 +275,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     conversationId,
     serverQueueEnabled,
     codeApprovalMode,
-    liveParentMessageId: liveMessageState?.parentMessageId,
+    liveParentMessageId: liveTail?.parentMessageId,
     pendingReveal,
     activeGenerationCreatedAt,
     applyQueuedTurnReceipts,
@@ -263,6 +295,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     reasoningStateKey,
     files,
     setFiles,
+    discardFiles,
   });
 
   const submitSteer = useSubmitSteer({
@@ -276,6 +309,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     chips,
     rows,
     enqueue,
+    codeApprovalMode,
   });
 
   /** Retry a failed chip through the normal steer path. */

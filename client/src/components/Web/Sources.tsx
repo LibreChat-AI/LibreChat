@@ -408,7 +408,7 @@ const SourcesGroup = React.memo(function SourcesGroup({
   }, [sources, limit]);
 
   return (
-    <div className="grid w-full grid-cols-4 gap-2 overflow-x-auto">
+    <div className="hide-scrollbar grid w-full grid-cols-4 gap-2 overflow-x-auto">
       <OGDialog>
         {visibleSources.map((source, i) => (
           <div key={`source-${i}`} className="w-full min-w-[7.5rem]">
@@ -497,7 +497,7 @@ function FilesGroup({ files, messageId, conversationId, limit = 3 }: FilesGroupP
   const hasMoreFiles = remainingFiles.length > 0;
 
   return (
-    <div className="grid w-full grid-cols-4 gap-2 overflow-x-auto">
+    <div className="hide-scrollbar grid w-full grid-cols-4 gap-2 overflow-x-auto">
       <OGDialog>
         {visibleFiles.map((file, i) => (
           <div key={`file-${i}`} className="w-full min-w-[7.5rem]">

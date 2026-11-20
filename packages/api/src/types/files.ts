@@ -1,6 +1,7 @@
 import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { Readable } from 'stream';
+import type { FileStorageDeletionObserver } from '~/files/dispatch';
 import type { DownloadURLParams } from '~/storage/types';
 import type { ServerRequest } from './http';
 export interface STTService {
@@ -181,7 +182,13 @@ export interface ProcessedFile<T = IMongoFile> {
 
 /** Subset of storage strategy functions needed by download and delete access flows. */
 export interface StrategyFunctions {
-  getDownloadStream: (req: ServerRequest, filepath: string) => Promise<Readable>;
+  /** Canonical object identity independent of renewable delivery URLs. */
+  getStorageKey?: (file: { filepath: string; storageKey?: string | null }) => string;
+  getDownloadStream: (
+    req: ServerRequest,
+    filepath: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<Readable>;
   getDownloadURL?: (params: DownloadURLParams) => Promise<string>;
   deleteFile?: (
     req: ServerRequest,
@@ -192,5 +199,7 @@ export interface StrategyFunctions {
       user?: string;
       tenantId?: string | null;
     },
+    client?: unknown,
+    onDelete?: FileStorageDeletionObserver,
   ) => Promise<void>;
 }

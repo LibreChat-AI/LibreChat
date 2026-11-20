@@ -1,5 +1,6 @@
 import type {
   TEndpoint,
+  TGoogleEndpoint,
   FileStorage,
   TFileConfig,
   TAzureConfig,
@@ -69,6 +70,13 @@ export interface AppConfig {
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
   githubCompare?: TCustomConfig['githubCompare'];
+  /** Outbound call budgets; unset keys fall back to the server defaults */
+  timeouts?: TCustomConfig['timeouts'];
+  /** Violation log retention; unset keeps the server default */
+  violationLog?: TCustomConfig['violationLog'];
+  messages?: TCustomConfig['messages'];
+  /** Bounds on parallel per-request lookups; unset keys fall back to the server defaults */
+  concurrency?: TCustomConfig['concurrency'];
   skillDeletion?: {
     finalizationEnabled?: boolean;
     sweepIntervalMs?: number;
@@ -88,6 +96,8 @@ export interface AppConfig {
   fileStrategy: FileStorage;
   /** File strategies configuration */
   fileStrategies?: TCustomConfig['fileStrategies'];
+  /** Maximum rows an explicitly limited GET /files request may return */
+  fileListLimit?: TCustomConfig['fileListLimit'];
   /** CloudFront CDN configuration */
   cloudfront?: CloudFrontConfig;
   /** Chat Projects limits resolved from the deployment configuration */
@@ -124,6 +134,7 @@ export interface AppConfig {
   mcpAppSandbox?: TCustomConfig['mcpAppSandbox'];
   /** File configuration */
   fileConfig?: TFileConfig;
+  spreadsheetParsing?: TCustomConfig['spreadsheetParsing'];
   /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
   /** Stored user credential write format, `v3` unless configured */
@@ -139,12 +150,14 @@ export interface AppConfig {
   endpoints?: {
     /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
     allowedAddresses?: string[];
+    /** How long the admin config catalog reuses a scope's model lists, in milliseconds */
+    catalogModelsTtlMs?: number;
     /** OpenAI endpoint configuration */
     openAI?: Partial<TEndpoint>;
     /** Google endpoint configuration */
-    google?: Partial<TEndpoint>;
+    google?: Partial<TGoogleEndpoint>;
     /** Bedrock endpoint configuration */
-    bedrock?: Partial<TEndpoint>;
+    bedrock?: Partial<TEndpoint> & { availableRegions?: string[] };
     /** Anthropic endpoint configuration with optional Vertex AI support */
     anthropic?: Partial<TAnthropicEndpoint> & {
       /** Validated Vertex AI configuration */

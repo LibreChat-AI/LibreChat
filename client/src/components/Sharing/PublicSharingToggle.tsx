@@ -85,7 +85,7 @@ export default function PublicSharingToggle({
         </div>
       </div>
 
-      <Collapse open={isPublic} overflowVisibleWhenOpen className="pt-4">
+      <Collapse open={isPublic} className="pt-4">
         <div className="flex items-center justify-between bg-transparent">
           <div className="flex items-center gap-3">
             <div className="text-status-info">
@@ -97,7 +97,7 @@ export default function PublicSharingToggle({
               </Label>
             </div>
           </div>
-          <div className="relative z-50">
+          <div>
             <AccessRolesPicker
               id="permission-level"
               ariaLabel={localize('com_ui_everyone_permission_level')}

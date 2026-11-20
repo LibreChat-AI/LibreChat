@@ -876,7 +876,7 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
         expect(result).toBeNull();
         expect(logger.error).toHaveBeenCalledWith(
           expect.stringContaining('Failed to refresh tokens'),
-          expect.any(Error),
+          { type: 'Error' },
         );
       } finally {
         await server.close();

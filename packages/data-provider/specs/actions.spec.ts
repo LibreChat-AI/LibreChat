@@ -75,6 +75,31 @@ describe('ActionRequest', () => {
     expect(response.data).toEqual({ success: true, method: 'GET' });
   });
 
+  it('bounds the request by the given timeout and abort signal', async () => {
+    const actionRequest = new ActionRequest(
+      'https://example.com',
+      '/test',
+      'GET',
+      'testOp',
+      false,
+      'application/json',
+    );
+    const executor = actionRequest.setParams({});
+    const controller = new AbortController();
+
+    await executor.execute({ timeout: 5_000, signal: controller.signal });
+
+    expect(mockedAxios.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ timeout: 5_000, maxRedirects: 0 }),
+    );
+    /* One signal follows both the caller and a wall-clock deadline. */
+    const { signal: combined } = mockedAxios.create.mock.lastCall?.[0] as { signal: AbortSignal };
+    expect(combined).toBeInstanceOf(AbortSignal);
+    expect(combined.aborted).toBe(false);
+    controller.abort();
+    expect(combined.aborted).toBe(true);
+  });
+
   describe('ActionRequest', () => {
     beforeEach(() => {
       mockedAxios.get.mockClear();
@@ -1305,7 +1330,7 @@ describe('createURL', () => {
         expect(timeSchema._def.innerType instanceof z.ZodString).toBe(true);
 
         // Check the description
-        expect(shape.locations._def.description).toBe(
+        expect(shape.locations.description).toBe(
           'A list of locations to retrieve the weather for.',
         );
       });

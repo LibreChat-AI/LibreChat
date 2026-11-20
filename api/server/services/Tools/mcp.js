@@ -163,6 +163,7 @@ async function reinitMCPServer({
   mcpApps,
   streamId,
   jobCreatedAt,
+  unattended,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** @type {MCPConnection | null} */
@@ -184,7 +185,10 @@ async function reinitMCPServer({
     const resolution = await resolveMCPReinitializeConfig(
       registry,
       serverName,
-      serverConfig ?? (await registry.getServerConfig(serverName, user?.id, configServers)),
+      serverConfig ??
+        (await registry.getServerConfig(serverName, user?.id, configServers, user?.role, {
+          idOnTheSource: user?.idOnTheSource,
+        })),
       user?.id,
     );
     if (resolution.result) {
@@ -287,6 +291,7 @@ async function reinitMCPServer({
         onOAuthCredentialsChanging,
         returnOnOAuth,
         oauthEnd,
+        unattended,
         customUserVars,
         requestBody,
         requestScopedConnections,

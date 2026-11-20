@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
 import { getPrimaryE2EUser } from '../../setup/users.mock';
@@ -11,6 +10,7 @@ import {
   selectModelSpec,
   sendMessage,
 } from './helpers';
+import { expect, test } from './fixtures';
 
 /** Label of the `softDefault: true` spec in e2e/config/librechat.e2e.yaml. */
 const SOFT_DEFAULT_LABEL = 'E2E Soft Default';
@@ -25,14 +25,10 @@ const uniqueName = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Mat
 
 const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Select a model' }).first();
 
-/** Reset selection state so the test starts as a fresh instance (auth stays in cookies).
- *  The Enter opt-in from global setup is restored because `sendMessage` presses Enter. */
+/** Reset selection state so the test starts as a fresh instance (auth stays in cookies). */
 async function startFresh(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await page.evaluate(() => {
-    localStorage.clear();
-    localStorage.setItem('enterToSend', 'true');
-  });
+  await page.evaluate(() => localStorage.clear());
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
 }
 
@@ -202,10 +198,7 @@ test.describe('soft default model spec', () => {
     await expect(modelTrigger(page)).toContainText(agentName, { timeout: 15000 });
 
     // The soft default still owns the fresh-instance landing under this allow-list.
-    await page.evaluate(() => {
-      localStorage.clear();
-      localStorage.setItem('enterToSend', 'true');
-    });
+    await page.evaluate(() => localStorage.clear());
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await expect(modelTrigger(page)).toContainText(SOFT_DEFAULT_LABEL, { timeout: 15000 });
   });

@@ -1,11 +1,18 @@
 import type { TEndpointsConfig } from './types';
+
 import {
   allowedAddressesSchema,
   agentsEndpointSchema,
+  BASE_ONLY_CONFIG_PATHS,
+  BASE_ONLY_CONFIG_SECTIONS,
+  DEPLOYMENT_ONLY_CONFIG_PATHS,
+  getAllowedAddressEntryIssue,
   DEFAULT_RETAINED_ANSWER_TOKENS,
+  DEFAULT_HISTORY_CACHE_MAX_BYTES,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
   configSchema,
+  telemetrySchema,
   chatProjectsConfigSchema,
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
@@ -27,7 +34,72 @@ import {
   isTwoFactorPolicyProvider,
   resolveEndpointType,
   webSearchSchema,
+  isSafeLinkUrl,
 } from './config';
+
+describe('local configuration cache limits', () => {
+  it('defaults an explicit block and keeps the policy deployment-only', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).configCache).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.18', configCache: {} }).configCache).toEqual({
+      maxBytes: 16 * 1024 * 1024,
+      maxEntries: 1000,
+    });
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS.configCache).toBe('operator');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, '100'])(
+    'rejects invalid bounds %p',
+    (value) => {
+      for (const field of ['maxBytes', 'maxEntries']) {
+        expect(
+          configSchema.safeParse({ version: '1.3.18', configCache: { [field]: value } }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('accepts explicit positive bounds and rejects unknown settings', () => {
+    expect(
+      configSchema.parse({ version: '1.3.18', configCache: { maxBytes: 4096, maxEntries: 2 } })
+        .configCache,
+    ).toEqual({ maxBytes: 4096, maxEntries: 2 });
+    expect(configSchema.safeParse({ version: '1.3.18', configCache: { maxSize: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('independent browser replay opt-in', () => {
+  it('preserves absent configuration for existing environment-based RUM deployments', () => {
+    expect(configSchema.parse({ version: '1.3.17' }).telemetry).toBeUndefined();
+    expect(telemetrySchema.parse({ rum: { enabled: true } })).toEqual({ rum: { enabled: true } });
+  });
+
+  it('defaults an explicitly configured replay block to off', () => {
+    expect(telemetrySchema.parse({ rum: { enabled: true, sessionReplay: {} } })).toEqual({
+      rum: { enabled: true, sessionReplay: { enabled: false } },
+    });
+  });
+
+  it.each([
+    { rum: { sessionReplay: { enabled: 'true' } } },
+    { rum: { sessionReplay: { enable: false } } },
+    { rum: { enable: true } },
+  ])('rejects invalid or misspelled policy %p', (telemetry) => {
+    expect(telemetrySchema.safeParse(telemetry).success).toBe(false);
+  });
+});
+
+describe('telemetry.stackTraceLimit', () => {
+  it('stays absent unless configured, so the process default applies', () => {
+    expect(telemetrySchema.parse({})).toEqual({});
+    expect(telemetrySchema.parse({ stackTraceLimit: 50 })).toEqual({ stackTraceLimit: 50 });
+  });
+
+  it.each([0, -1, 2.5, 1001, '50'])('rejects %p', (stackTraceLimit) => {
+    expect(telemetrySchema.safeParse({ stackTraceLimit }).success).toBe(false);
+  });
+});
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
 import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';
@@ -234,6 +306,50 @@ describe('repository instruction configuration', () => {
   });
 });
 
+describe('workspace attachment configuration', () => {
+  it('defaults the copy budget to ten seconds and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).workspaceAttachments).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ workspaceAttachments: {} }).workspaceAttachments).toEqual({
+      timeoutMs: 10_000,
+      concurrency: 3,
+    });
+    expect(
+      agentsEndpointSchema.parse({ workspaceAttachments: { timeoutMs: 30_000 } })
+        .workspaceAttachments,
+    ).toEqual({ timeoutMs: 30_000, concurrency: 3 });
+    for (const concurrency of [0, 17, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ workspaceAttachments: { concurrency } }).success,
+      ).toBe(false);
+    }
+    for (const timeoutMs of [0, 999, 120_001, 1.5]) {
+      expect(agentsEndpointSchema.safeParse({ workspaceAttachments: { timeoutMs } }).success).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('inactive history payload budget', () => {
+  it('defaults the budget with and without an interface block', () => {
+    expect(interfaceSchema.parse({}).historyCacheMaxBytes).toBe(DEFAULT_HISTORY_CACHE_MAX_BYTES);
+    expect(interfaceSchema.parse(undefined).historyCacheMaxBytes).toBe(
+      DEFAULT_HISTORY_CACHE_MAX_BYTES,
+    );
+  });
+
+  it('accepts zero to disable the inactive-history grace', () => {
+    expect(interfaceSchema.parse({ historyCacheMaxBytes: 0 }).historyCacheMaxBytes).toBe(0);
+  });
+
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '8MB'])(
+    'rejects an invalid payload budget %p',
+    (historyCacheMaxBytes) => {
+      expect(interfaceSchema.safeParse({ historyCacheMaxBytes }).success).toBe(false);
+    },
+  );
+});
+
 describe('steer escalation confirmation timeout', () => {
   it('defaults to the existing ten-second confirmation window', () => {
     expect(interfaceSchema.parse({}).steerArmConfirmationTimeoutMs).toBe(
@@ -269,12 +385,21 @@ describe('linked instructions configuration', () => {
     expect(agentsEndpointSchema.parse({ linkedInstructions: {} }).linkedInstructions).toEqual({
       timeoutMs: 2000,
       native: { cacheTtlMs: 300_000, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
     });
     expect(
       agentsEndpointSchema.parse({
         linkedInstructions: { timeoutMs: 5000, native: { cacheTtlMs: 0 } },
       }).linkedInstructions,
-    ).toEqual({ timeoutMs: 5000, native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 } });
+    ).toEqual({
+      timeoutMs: 5000,
+      native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
+    });
+    expect(
+      agentsEndpointSchema.parse({ linkedInstructions: { langfuse: { enabled: true } } })
+        .linkedInstructions?.langfuse,
+    ).toEqual({ enabled: true });
     for (const timeoutMs of [0, 99, 30_001, 1.5]) {
       expect(agentsEndpointSchema.safeParse({ linkedInstructions: { timeoutMs } }).success).toBe(
         false,
@@ -1083,7 +1208,10 @@ describe('attached code environment user config schema', () => {
     [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
-  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    [{ detachedCommands: true }, true],
+    [{ detachedCommands: false }, true],
+    [{ detachedCommands: 'yes' }, false],
+  ])('validates the workspace toggles %p', (workspaces, valid) => {
     const result = configSchema.safeParse({
       version: '1.0',
       endpoints: {
@@ -1445,6 +1573,24 @@ describe('agent event runtime config', () => {
     });
     expect(result.data.rateLimits?.agentEvents).toEqual({
       userMax: 80,
+      userWindowInMinutes: 2,
+    });
+  });
+
+  it('accepts a configured prompt resolve rate limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      rateLimits: {
+        promptResolve: { userMax: 30, userWindowInMinutes: 2 },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.rateLimits?.promptResolve).toEqual({
+      userMax: 30,
       userWindowInMinutes: 2,
     });
   });
@@ -1918,6 +2064,23 @@ describe('any custom endpoint is document-supported regardless of name', () => {
   );
 });
 
+describe('endpoints.catalogModelsTtlMs', () => {
+  const parse = (catalogModelsTtlMs: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { catalogModelsTtlMs } });
+
+  it('accepts zero up to one hour of whole milliseconds', () => {
+    for (const value of [0, 120_000, 3_600_000]) {
+      expect(parse(value).success).toBe(true);
+    }
+  });
+
+  it('rejects negative, fractional and longer lifetimes', () => {
+    for (const value of [-1, 1.5, 3_600_001, '120000']) {
+      expect(parse(value).success).toBe(false);
+    }
+  });
+});
+
 describe('allowedAddressesSchema', () => {
   describe('accepts valid entries', () => {
     it.each([
@@ -1937,6 +2100,11 @@ describe('allowedAddressesSchema', () => {
       ['[fd00::1]:8080', 'IPv6 unique-local with port'],
       ['[fe80::1]:8080', 'IPv6 link-local with port'],
       ['[::ffff:10.0.0.5]:8080', 'IPv4-mapped IPv6 of a private address'],
+      ['[::ffff:0:10.0.0.1]:8080', 'IPv4-translated dotted private address'],
+      ['[::ffff:0:a00:1]:8080', 'IPv4-translated hex private address'],
+      ['[::ffff:0:a9fe:a9fe]:80', 'IPv4-translated metadata address'],
+      ['[0:0:0:0:ffff:0:10.0.0.1]:8080', 'expanded IPv4-translated address'],
+      ['[0000:0000:0000:0000:FFFF:0000:0A00:0001]:8080', 'padded translated address'],
       ['[64:ff9b::a00:1]:8080', 'NAT64 embedding private 10.0.0.1'],
       ['[2002:a00:1::]:8080', '6to4 embedding private 10.0.0.1'],
       ['[2001::ffff:f5ff:fffe]:8080', 'Teredo embedding a private address'],
@@ -1962,6 +2130,9 @@ describe('allowedAddressesSchema', () => {
       ['ws://10.0.0.5', 'ws URL'],
       ['10.0.0.0/24', 'CIDR range'],
       ['[64:ff9b::808:808]:8080', 'NAT64 embedding public 8.8.8.8'],
+      ['[::ffff:0:808:808]:8080', 'translated public IPv4 in hex form'],
+      ['[::ffff:0:8.8.8.8]:8080', 'translated public IPv4 in dotted form'],
+      ['[::ffff:1:a00:1]:8080', 'address outside the translated prefix'],
       ['[2002:808:808::]:8080', '6to4 embedding public 8.8.8.8'],
       ['/path', 'leading slash / path'],
       ['10.0.0.5/api', 'embedded path'],
@@ -2007,7 +2178,86 @@ describe('allowedAddressesSchema', () => {
     });
   });
 
+  describe('one issue per refused entry', () => {
+    it.each([
+      ['', 'empty'],
+      ['   ', 'empty'],
+      ['http://localhost:11434', 'format'],
+      ['10.0.0.0/24', 'format'],
+      ['10.0.0.5 ', 'format'],
+      ['localhost', 'missing_port'],
+      ['10.0.0.5', 'missing_port'],
+      ['localhost:0', 'missing_port'],
+      ['8.8.8.8:53', 'public_ip'],
+      ['[2001:4860:4860::8888]:443', 'public_ip'],
+    ])('reports "%s" once, as %s', (entry, reason) => {
+      expect(getAllowedAddressEntryIssue(entry)).toBe(reason);
+      const result = allowedAddressesSchema.safeParse([entry]);
+      expect(result.success).toBe(false);
+      if (result.success) {
+        return;
+      }
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]).toMatchObject({
+        code: 'custom',
+        path: [0],
+        params: { reason },
+      });
+    });
+
+    it.each([['localhost:11434'], ['10.0.0.5:11434'], ['[::1]:8080'], ['ollama.internal:443']])(
+      'accepts "%s" without an issue',
+      (entry) => {
+        expect(getAllowedAddressEntryIssue(entry)).toBeNull();
+      },
+    );
+
+    it('keeps the message of the rule an entry fails', () => {
+      const messages = ['', 'http://x', 'localhost', '8.8.8.8:53'].map((entry) => {
+        const result = allowedAddressesSchema.safeParse([entry]);
+        return result.success ? undefined : result.error.issues[0]?.message;
+      });
+      expect(messages).toEqual([
+        'allowedAddresses entries must be non-empty',
+        'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
+        'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
+        'allowedAddresses is scoped to private IP space — public IP literals are not permitted (use hostname:port if it resolves to a private IP)',
+      ]);
+    });
+
+    it('reports a bare host in a config section once', () => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        endpoints: { allowedAddresses: ['localhost'] },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toEqual([
+          expect.objectContaining({
+            path: ['endpoints', 'allowedAddresses', 0],
+            params: { reason: 'missing_port' },
+          }),
+        ]);
+      }
+    });
+  });
+
   describe('integration with configSchema', () => {
+    it.each(['actions', 'mcpSettings'] as const)(
+      'accepts translated private-address exemptions on %s',
+      (section) => {
+        const allowedAddresses = ['[::ffff:0:10.0.0.1]:8080'];
+        const result = configSchema.safeParse({
+          version: '1.0',
+          [section]: { allowedAddresses },
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data[section]?.allowedAddresses).toEqual(allowedAddresses);
+        }
+      },
+    );
+
     it('accepts the field on endpoints', () => {
       const result = configSchema.safeParse({
         version: '1.0',
@@ -2724,6 +2974,120 @@ describe('interface theme config', () => {
   });
 });
 
+describe('policy link URLs', () => {
+  const scriptUrls = [
+    'javascript:alert(document.domain)',
+    'JavaScript:alert(1)',
+    ' javascript:alert(1)',
+    '\u0001javascript:alert(1)',
+    'java\tscript:alert(1)',
+    'java\nscript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'vbscript:msgbox(1)',
+    'file:///etc/passwd',
+    'blob:https://example.com/0b1c',
+  ];
+  /** Unicode white space the URL parser keeps but `String.prototype.trim()` strips. */
+  const trimmedScriptUrls = ['\u00a0', '\ufeff', '\u2028', '\u3000'].map(
+    (space) => `${space}javascript:alert(document.domain)${space}`,
+  );
+  const linkUrls = [
+    'https://example.com/privacy',
+    'HTTP://example.com/terms',
+    'https://example.com/privacy policy',
+    '\u00a0https://example.com/privacy',
+    'mailto:privacy@example.com',
+    'tel:+15555550100',
+    '/privacy',
+    'legal/terms.html',
+    './privacy',
+    '//example.com/privacy',
+    '#privacy',
+    '?doc=privacy',
+    '',
+    '   ',
+    '\u3000',
+  ];
+  const linkProtocols = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+  const parseInterface = (value: Record<string, unknown>) =>
+    configSchema.safeParse({ version: '1.3.0', interface: value });
+
+  it.each([...scriptUrls, ...trimmedScriptUrls])(
+    'refuses %j, which a browser would not open as a web page, mail or phone link',
+    (url) => {
+      expect(isSafeLinkUrl(url)).toBe(false);
+    },
+  );
+
+  it.each(linkUrls)('accepts %j, an http(s), mailto:, tel:, relative or blank link', (url) => {
+    expect(isSafeLinkUrl(url)).toBe(true);
+  });
+
+  it('keeps accepting a malformed http(s) link, which a browser does not open at all', () => {
+    expect(isSafeLinkUrl('https://exa mple.com')).toBe(true);
+    expect(isSafeLinkUrl('http://')).toBe(true);
+  });
+
+  it('reads the scheme the URL parser reads, before and after the trim a client applies', () => {
+    const base = 'https://chat.example.com/c/new';
+    for (const url of [...scriptUrls, ...trimmedScriptUrls, ...linkUrls]) {
+      const readable = [url, url.trim()].every((read) =>
+        linkProtocols.has(new URL(read, base).protocol),
+      );
+      expect([isSafeLinkUrl(url), url]).toEqual([readable, url]);
+    }
+  });
+
+  it('refuses a scheme behind any mix of control characters and Unicode white space', () => {
+    expect(isSafeLinkUrl('\u0001\u00a0javascript:alert(1)')).toBe(false);
+    expect(isSafeLinkUrl('\u00a0\t\u0001\ufeffJAVASCRIPT:alert(1)')).toBe(false);
+  });
+
+  it('judges a link with long white-space runs in time that grows linearly with its length', () => {
+    const run = 100_000;
+    const cases: [string, boolean][] = [
+      [`https://example.com/${' '.repeat(run)}x`, true],
+      [`https://example.com/${'\u00a0\t'.repeat(run / 2)}x`, true],
+      [`${' '.repeat(run)}x`, true],
+      [`${'\u3000'.repeat(run)}${'a'.repeat(run)}`, true],
+      [`${' \u00a0\u0001'.repeat(run / 3)}javascript:alert(1)${' '.repeat(run)}x`, false],
+      [`java${'\t'.repeat(run)}script:alert(1)`, false],
+    ];
+    for (const [url, safe] of cases) {
+      const started = performance.now();
+      const decision = isSafeLinkUrl(url);
+      const elapsed = performance.now() - started;
+      expect([decision, elapsed < 100]).toEqual([safe, true]);
+    }
+  });
+
+  it('rejects a script URL in either policy link and points at the field', () => {
+    for (const field of ['privacyPolicy', 'termsOfService']) {
+      const result = parseInterface({ [field]: { externalUrl: 'javascript:alert(1)' } });
+      expect(result.success).toBe(false);
+      expect(result.success ? [] : result.error.issues.map((issue) => issue.path)).toEqual([
+        ['interface', field, 'externalUrl'],
+      ]);
+    }
+  });
+
+  it('accepts http(s), mailto:, relative and blank policy links with their other settings', () => {
+    const result = parseInterface({
+      privacyPolicy: { externalUrl: 'https://example.com/privacy', openNewTab: true },
+      termsOfService: { externalUrl: '/terms', modalAcceptance: true, modalContent: '# Terms' },
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.privacyPolicy).toEqual({
+      externalUrl: 'https://example.com/privacy',
+      openNewTab: true,
+    });
+    expect(parseInterface({ privacyPolicy: { externalUrl: '' } }).success).toBe(true);
+    expect(
+      parseInterface({ privacyPolicy: { externalUrl: 'mailto:privacy@example.com' } }).success,
+    ).toBe(true);
+  });
+});
+
 describe('built-in endpoint model lists', () => {
   const parse = (endpoints: Record<string, unknown>) =>
     configSchema.safeParse({ version: '1.0', endpoints });
@@ -2756,6 +3120,15 @@ describe('subagent activity policy', () => {
       endpoints: { agents: { subagentActivity: {} } },
     });
     expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      generationJobs: true,
+      generationContentBytes: 4_194_304,
+      contentRecoveryEnabled: false,
+      contentPageBytes: 262_144,
+      contentFlushMs: 250,
+      contentSettlementTimeoutMs: 1000,
+      contentRecoveryGraceMs: 30_000,
+      contentBatchBytes: 65_536,
+      contentPendingBytes: 8_388_608,
       replayTtlMs: 300_000,
       publicationTimeoutMs: 1_000,
       retryAttempts: 3,
@@ -2771,6 +3144,13 @@ describe('subagent activity policy', () => {
       endpoints: {
         agents: {
           subagentActivity: {
+            contentRecoveryEnabled: true,
+            contentPageBytes: 524_288,
+            contentFlushMs: 500,
+            contentSettlementTimeoutMs: 5000,
+            contentRecoveryGraceMs: 60_000,
+            contentBatchBytes: 131_072,
+            contentPendingBytes: 16_777_216,
             replayTtlMs: 3_600_000,
             publicationTimeoutMs: 5_000,
             retryAttempts: 2,
@@ -2871,9 +3251,18 @@ describe('workspace admission configuration', () => {
     { jitterRatio: 1.1 },
     { maxDelayMs: Infinity },
     { queueWaitMs: 1.5 },
+    { resubmissionWindowMs: -1 },
+    { resubmissionWindowMs: 60_001 },
+    { resubmissionWindowMs: 1.5 },
     { unexpected: true },
   ])('rejects an invalid policy %j', (admission) => {
     expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 20_500, 60_000])('accepts a resubmission window of %i ms', (resubmissionWindowMs) => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ admission: { resubmissionWindowMs } }).admission,
+    ).toMatchObject({ resubmissionWindowMs });
   });
 
   it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
@@ -2913,5 +3302,343 @@ describe('GitHub comparison configuration', () => {
         githubCompare: { enabled: true, baseURL: 'https://other.test' },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('agent recursion limits', () => {
+  it.each(['recursionLimit', 'maxRecursionLimit'])(
+    '%s takes a whole number of at least 1',
+    (field) => {
+      for (const value of [1, 50, 500]) {
+        expect(agentsEndpointSchema.safeParse({ [field]: value }).success).toBe(true);
+      }
+      for (const value of [0, -5, 2.5, 0.5]) {
+        expect(agentsEndpointSchema.safeParse({ [field]: value }).success).toBe(false);
+      }
+      expect(agentsEndpointSchema.parse({})[field as 'recursionLimit']).toBeUndefined();
+    },
+  );
+});
+
+describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
+  type Node = { _def: { typeName?: string; innerType?: Node; schema?: Node }; shape?: unknown };
+
+  /** The object schema beneath optional, default and refinement wrappers. */
+  function unwrap(node: Node): Node {
+    let current = node;
+    while (current._def.innerType ?? current._def.schema) {
+      current = (current._def.innerType ?? current._def.schema) as Node;
+    }
+    return current;
+  }
+
+  function hasSchemaPath(path: string): boolean {
+    let node: Node | undefined = configSchema as unknown as Node;
+    for (const segment of path.split('.')) {
+      const shape: Record<string, Node> | undefined = node
+        ? (unwrap(node).shape as Record<string, Node> | undefined)
+        : undefined;
+      node = shape?.[segment];
+      if (!node) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  it('names fields configSchema defines', () => {
+    const paths = Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS);
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.filter((path) => !hasSchemaPath(path))).toEqual([]);
+  });
+
+  it('declares the tool filters deployment-only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS).toMatchObject({
+      includedTools: 'operator',
+      filteredTools: 'operator',
+      'endpoints.agents.toolApproval.hooks': 'operator',
+      cache: 'unused',
+    });
+  });
+
+  it('keeps the process-wide stack limit deployment-only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['telemetry.stackTraceLimit']).toBe('operator');
+  });
+
+  it('declares the settings read from librechat.yaml itself or only at startup', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS).toMatchObject({
+      'telemetry.rum': 'operator',
+      clientLimits: 'operator',
+      conversationList: 'operator',
+      passwordHashing: 'startup',
+      'interface.colorModeFromUrl': 'startup',
+      'fileConfig.skills.deletionCleanupConcurrency': 'operator',
+      'endpoints.agents.managementApi': 'operator',
+    });
+  });
+
+  it('overlaps neither the base-only sections nor the base-only paths', () => {
+    const baseOnly = new Set<string>([...BASE_ONLY_CONFIG_SECTIONS, ...BASE_ONLY_CONFIG_PATHS]);
+    for (const path of Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS)) {
+      const segments = path.split('.');
+      const prefixes = segments.map((_, index) => segments.slice(0, index + 1).join('.'));
+      expect(prefixes.filter((prefix) => baseOnly.has(prefix))).toEqual([]);
+    }
+  });
+});
+
+describe('Permission principal concurrency', () => {
+  it('accepts bounded permission lookup concurrency', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', concurrency: { permissionPrincipalLookups: 2 } })
+        .concurrency?.permissionPrincipalLookups,
+    ).toBe(2);
+  });
+  it.each([0, 33, 1.5])(
+    'rejects invalid principal concurrency: %s',
+    (permissionPrincipalLookups) => {
+      expect(
+        configSchema.safeParse({ version: '1.3.5', concurrency: { permissionPrincipalLookups } })
+          .success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('directory verification deadline configuration', () => {
+  it('preserves an explicitly configured directory budget', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', timeouts: { directoryMs: 50 } }).timeouts?.directoryMs,
+    ).toBe(50);
+  });
+  it.each([0, -1, 1.5, 2147483648])('rejects unsafe directory budget %s', (directoryMs) => {
+    expect(configSchema.safeParse({ version: '1.3.5', timeouts: { directoryMs } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('channel storage work limit', () => {
+  it('preserves the claim default and exposes an operator override through YAML config', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.claimBatchSize).toBe(25);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { claimBatchSize: 60 } } },
+      }).endpoints?.agents?.channels?.claimBatchSize,
+    ).toBe(60);
+  });
+  it.each([0, 101, 1.5, '25'])('rejects invalid claim batch %s', (claimBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { claimBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('channel erasure configuration', () => {
+  it('defaults cleanup batches and exposes a deployment override', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.erasureBatchSize).toBe(250);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { erasureBatchSize: 12 } } },
+      }).endpoints?.agents?.channels?.erasureBatchSize,
+    ).toBe(12);
+  });
+  it.each([0, 1001, 1.5, '250'])('rejects invalid erasure batch %s', (erasureBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { erasureBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('complete channel operator configuration', () => {
+  it('owns gateway feature and signature policy with behavior-preserving defaults', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels).toMatchObject({
+      transport: 'socket_mode',
+      nativeSessions: false,
+      lifecycleReactions: false,
+      signatureToleranceSeconds: 300,
+      socketReconnectDelayMs: 5000,
+    });
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        endpoints: {
+          agents: {
+            channels: {
+              enabled: true,
+              transport: 'webhook',
+              nativeSessions: true,
+              lifecycleReactions: true,
+              signatureToleranceSeconds: 60,
+              socketReconnectDelayMs: 100,
+            },
+          },
+        },
+      }).endpoints?.agents?.channels,
+    ).toMatchObject({
+      transport: 'webhook',
+      nativeSessions: true,
+      lifecycleReactions: true,
+      signatureToleranceSeconds: 60,
+      socketReconnectDelayMs: 100,
+    });
+  });
+  it.each([
+    { socketReconnectDelayMs: 99 },
+    { socketReconnectDelayMs: 60001 },
+    { socketReconnectDelayMs: 100.5 },
+    { socketReconnectDelayMs: '5000' },
+    { nativeSessions: 'true' },
+    { lifecycleReactions: 'false' },
+    { signatureToleranceSeconds: 0 },
+    { signatureToleranceSeconds: 301 },
+    { signatureToleranceSeconds: 1.5 },
+  ])('rejects malformed shared gateway policy %p', (channels) => {
+    expect(agentsEndpointSchema.safeParse({ channels }).success).toBe(false);
+  });
+  it('keeps channel execution disabled by default and accepts explicit enablement with runtime limits', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.enabled).toBe(false);
+    const parsed = configSchema.parse({
+      version: '1.2.1',
+      endpoints: {
+        agents: {
+          channels: {
+            enabled: true,
+            transport: 'webhook',
+            gatewayUrl: 'https://gateway.example',
+            cleanup: { batchSize: 12 },
+            ticketLifetimeMs: 180000,
+            artifactAnswerFileThresholdBytes: 8192,
+          },
+        },
+      },
+    });
+    expect(parsed.endpoints?.agents?.channels).toMatchObject({
+      enabled: true,
+      transport: 'webhook',
+      gatewayUrl: 'https://gateway.example',
+      cleanup: { batchSize: 12 },
+      ticketLifetimeMs: 180000,
+      artifactAnswerFileThresholdBytes: 8192,
+    });
+  });
+  it.each([{ artifactMaxBytes: 50 * 1024 * 1024 + 1 }, { ticketLifetimeMs: 0 }, { batchSize: 12 }])(
+    'rejects invalid or unknown runtime configuration %p',
+    (channels) => {
+      expect(
+        agentsEndpointSchema.safeParse({ channels: { enabled: true, ...channels } }).success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('remote SDK runtime configuration', () => {
+  it('keeps native file reads opt-in and bounds process budgets', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostFiles).toBeUndefined();
+    const parsed = agentsEndpointSchema.parse({
+      sdkHostFiles: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostFiles: true },
+        },
+      },
+    });
+    expect(parsed.sdkHostFiles?.maxChunkBytes).toBe(262144);
+    expect(parsed.sdkRuntimes?.runtime).toMatchObject({ remote: { hostFiles: true } });
+    for (const field of Object.keys(parsed.sdkHostFiles!)) {
+      for (const value of [0, -1, Number.MAX_SAFE_INTEGER])
+        expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { [field]: value } }).success).toBe(
+          false,
+        );
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { unknown: true } }).success).toBe(false);
+  });
+  it('opts into builder models with bounded process-wide admission', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
+    const result = agentsEndpointSchema.parse({
+      sdkHostModels: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostModel: true },
+        },
+      },
+    });
+    expect(result.sdkHostModels).toEqual({
+      maxConcurrentCalls: 32,
+      maxAdmissionEntries: 4096,
+      maxBufferedRequestBytes: 67108864,
+      timeoutMs: 60000,
+      maxRequestBytes: 4194304,
+      maxResponseBytes: 4194304,
+    });
+    expect(result.sdkRuntimes?.runtime).toMatchObject({ remote: { hostModel: true } });
+    for (const field of Object.keys(result.sdkHostModels!)) {
+      expect(agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: 0 } }).success).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: Number.MAX_SAFE_INTEGER } })
+          .success,
+      ).toBe(false);
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostModels: { unknown: true } }).success).toBe(
+      false,
+    );
+  });
+  it('keeps module registrations and supplies remote transport defaults', () => {
+    const result = agentsEndpointSchema.parse({
+      sdkRuntimes: {
+        local: { module: './local.cjs' },
+        remote: { remote: { url: 'wss://runtime.example/sdk', secret: '${SDK_RUNTIME_SECRET}' } },
+      },
+    });
+    expect(result?.sdkRuntimes?.local).toEqual({ module: './local.cjs', roles: ['ADMIN'] });
+    expect(result?.sdkRuntimes?.remote).toEqual({
+      roles: ['ADMIN'],
+      remote: {
+        url: 'wss://runtime.example/sdk',
+        secret: '${SDK_RUNTIME_SECRET}',
+        connectTimeoutMs: 10000,
+        rpcTimeoutMs: 60000,
+        maxFrameBytes: 1048576,
+        maxBufferedBytes: 4194304,
+        maxRunMs: 600000,
+      },
+    });
+  });
+  it('enables recovery explicitly with bounded defaults', () => {
+    const remote = (recovery: unknown) => ({
+      sdkRuntimes: {
+        test: { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', recovery } },
+      },
+    });
+    const registration = agentsEndpointSchema.parse(remote({}))?.sdkRuntimes?.test;
+    expect(
+      registration && 'remote' in registration ? registration.remote.recovery : undefined,
+    ).toEqual({
+      maxDisconnectMs: 15000,
+      retryDelayMs: 250,
+      maxJournalBytes: 67108864,
+    });
+    const routed = agentsEndpointSchema.parse(
+      remote({ routes: { 'worker-a': 'wss://worker-a.internal/sdk' } }),
+    )?.sdkRuntimes?.test;
+    expect(routed && 'remote' in routed ? routed.remote.recovery?.routes : undefined).toEqual({
+      'worker-a': 'wss://worker-a.internal/sdk',
+    });
+    for (const recovery of [
+      { routes: { 'worker-a': 'https://worker-a.internal/sdk' } },
+      { maxDisconnectMs: 0 },
+      { maxDisconnectMs: 60000 },
+      { retryDelayMs: -1 },
+      { maxJournalBytes: 0 },
+      { unknown: true },
+    ])
+      expect(agentsEndpointSchema.safeParse(remote(recovery)).success).toBe(false);
+  });
+  it.each([
+    { module: './local.cjs', remote: { url: 'wss://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'https://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', maxFrameBytes: 0 } },
+  ])('rejects ambiguous or invalid transport registrations', (registration) => {
+    expect(agentsEndpointSchema.safeParse({ sdkRuntimes: { invalid: registration } }).success).toBe(
+      false,
+    );
   });
 });

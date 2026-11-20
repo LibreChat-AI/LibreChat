@@ -5,6 +5,7 @@ import type {
   EndpointFileConfig,
   TDefaultLLMDeliveryPath,
 } from 'librechat-data-provider';
+import type { ServerRequest } from '~/types';
 import {
   extractInspectableFileText,
   getFileExtractionLogDetails,
@@ -42,7 +43,10 @@ interface ExtractedText {
 
 /** The built-in readers fallback text comes from. */
 export interface UploadFallbackTextExtractors {
-  parseDocument: (params: { file: Express.Multer.File }) => Promise<ExtractedText>;
+  parseDocument: (params: {
+    file: Express.Multer.File;
+    req?: Pick<ServerRequest, 'config'>;
+  }) => Promise<ExtractedText>;
   parseTextNative: (file: Express.Multer.File) => Promise<ExtractedText>;
 }
 
@@ -88,12 +92,14 @@ export function getUploadFallbackTextPlan(
 export async function resolveUploadFallbackText({
   file,
   fileId,
+  req,
   filters,
   extractors = builtInExtractors,
   ...route
 }: Omit<UploadFallbackTextRoute, 'mimeType'> & {
   file: Express.Multer.File;
   fileId: string;
+  req?: Pick<ServerRequest, 'config'>;
   filters?: FiltersConfig;
   extractors?: UploadFallbackTextExtractors;
 }): Promise<string | undefined> {
@@ -119,7 +125,7 @@ export async function resolveUploadFallbackText({
       filters,
       extract: () =>
         plan === UPLOAD_FALLBACK_TEXT_PLANS.documentParser
-          ? extractors.parseDocument({ file })
+          ? extractors.parseDocument({ file, req })
           : extractors.parseTextNative(file),
     });
     const text = result?.text;

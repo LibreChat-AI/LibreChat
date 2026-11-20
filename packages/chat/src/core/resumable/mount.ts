@@ -49,11 +49,12 @@ function attachStartedStream(
   if (isNewConvo && !submission.isTemporary) {
     host.cache.queueTitleGeneration(newStreamId);
   }
-  if (isInitialNewConversation(submission)) {
+  // The host adopts the composer before the address bar leaves its source route.
+  const streamSubmission = host.cache.addOptimisticConversation(newStreamId, submission);
+  if (isNewConvo) {
     run.optimisticStreamIds.add(newStreamId);
     host.pane.replaceNewConversationUrl(newStreamId);
   }
-  const streamSubmission = host.cache.addOptimisticConversation(newStreamId, submission);
   run.submission = streamSubmission;
   // A deduped retry (status: 'resumed') attaches to an already-running stream, so
   // subscribe with resume=true to replay its state instead of only live events.

@@ -87,6 +87,20 @@ function tailwindDefault(variable) {
 }
 
 describe('LibreChat Tailwind preset', () => {
+  it('ships the phase ticker animation properties without changing transition easing', async () => {
+    const css = await generate([
+      'animation-ease-fold',
+      'animation-fill-forwards',
+      'fill-mode-forwards',
+    ]);
+
+    expect(rule(css, 'animation-ease-fold')).toBe(
+      'animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);',
+    );
+    expect(rule(css, 'animation-fill-forwards')).toBe('animation-fill-mode: forwards;');
+    expect(rule(css, 'animation-fill-forwards')).toBe(rule(css, 'fill-mode-forwards'));
+  });
+
   it('owns the loading-dot delay with a zero-delay fallback for plain preset consumers', async () => {
     const css = await generate(['animate-loading-dot']);
 
@@ -113,6 +127,28 @@ describe('LibreChat Tailwind preset', () => {
     /** Only a browser without `:dir()` falls back to the attribute. */
     expect(fallback).toContain('@container style(--dir-fallback: rtl)');
     expect(fallback).toContain('--theme-switch-width');
+  });
+
+  it('publishes the chat motion roles the package components write', async () => {
+    const css = await generate([
+      'transition-reveal',
+      'transition-crossfade',
+      'transition-max-width',
+      'transition-stroke-dashoffset',
+      'blur-crossfade',
+    ]);
+
+    expect(rule(css, 'transition-reveal')).toContain(
+      'transition-property: opacity, color, background-color',
+    );
+    expect(rule(css, 'transition-crossfade')).toContain(
+      'transition-property: opacity, transform, filter',
+    );
+    expect(rule(css, 'transition-max-width')).toContain('transition-property: max-width');
+    expect(rule(css, 'transition-stroke-dashoffset')).toContain(
+      'transition-property: stroke-dashoffset',
+    );
+    expect(rule(css, 'blur-crossfade')).toContain('blur(2px)');
   });
 
   it('generates every component animation and its keyframes together', async () => {
@@ -247,9 +283,7 @@ describe('LibreChat Tailwind preset', () => {
       expect(css).toContain(`var(${property}, ${fallback})`);
     });
 
-    expect(rule(css, 'max-h-theme-list')).toContain(
-      'var(--radix-select-content-available-height, 100dvh)',
-    );
+    expect(rule(css, 'max-h-theme-list')).toContain('var(--popover-available-height, 100dvh)');
 
     /** The tap-target floor is the role's reason to exist, so the floor itself is asserted
      *  rather than only the control-height variable it is built from. */

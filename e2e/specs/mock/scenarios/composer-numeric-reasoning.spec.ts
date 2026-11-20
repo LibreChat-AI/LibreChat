@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import {
   messagesView,
   MOCK_ENDPOINTS,
@@ -6,6 +5,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from '../helpers';
+import { expect, test } from '../fixtures';
 
 test('Inspecting numeric reasoning preserves Auto and steering @scenario:inspecting-numeric-reasoning-preserves-auto-and-steering', async ({
   page,
@@ -36,7 +36,7 @@ test('Inspecting numeric reasoning preserves Auto and steering @scenario:inspect
   await input.fill('Keep steering after inspecting Auto');
   const send = page.getByTestId('during-run-send-button');
   await expect(send).toHaveAttribute('data-during-run-action', 'steer');
-  const reasoning = page.getByRole('button', { name: /Reasoning for next message.*Auto/i });
+  const reasoning = page.getByRole('button', { name: /^Thinking .*Auto/i });
   await reasoning.click();
   const budget = page.getByRole('spinbutton');
   await expect(budget).toHaveValue('');

@@ -5,7 +5,13 @@ import TwoFactorScreen from '../TwoFactorScreen';
 
 const mockShowToast = jest.fn();
 const mockVerify = jest.fn();
-let mockVerifyOptions: { onError: (error: unknown) => void } | undefined;
+const mockCompleteAuthentication = jest.fn();
+let mockVerifyOptions:
+  | {
+      onError: (error: unknown) => void;
+      onSuccess: (data: { token?: string; user?: { id: string } }) => void;
+    }
+  | undefined;
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
@@ -16,8 +22,12 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ completeAuthentication: mockCompleteAuthentication }),
+}));
+
 jest.mock('~/data-provider', () => ({
-  useVerifyTwoFactorTempMutation: (options: { onError: (error: unknown) => void }) => {
+  useVerifyTwoFactorTempMutation: (options: NonNullable<typeof mockVerifyOptions>) => {
     mockVerifyOptions = options;
     return { mutate: mockVerify };
   },
@@ -85,4 +95,16 @@ describe('TwoFactorScreen verification errors', () => {
       status: 'error',
     });
   });
+});
+
+it('completes normal authentication instead of navigating to the host root', () => {
+  renderScreen();
+  act(() => mockVerifyOptions?.onSuccess({ token: 'verified-token', user: { id: 'user-1' } }));
+  expect(mockCompleteAuthentication).toHaveBeenCalledWith('verified-token', { id: 'user-1' });
+});
+
+it('does not finish authentication without both the session token and user', () => {
+  renderScreen();
+  act(() => mockVerifyOptions?.onSuccess({ token: 'verified-token' }));
+  expect(mockCompleteAuthentication).not.toHaveBeenCalled();
 });

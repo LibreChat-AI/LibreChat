@@ -1,8 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
-import { randomUUID } from 'node:crypto';
-import { getE2EUser } from '../../../setup/user';
-import { deleteConversations, deleteMessagesByConversation, seedMessages, withMongo } from '../db';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -11,6 +9,9 @@ import {
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
+import { deleteConversations, deleteMessagesByConversation, seedMessages, withMongo } from '../db';
+import { sendCompactionHistory } from '../compaction.helpers';
+import { getE2EUser } from '../../../setup/user';
 
 const userEmail = getE2EUser().email;
 const LABEL_SERVER = `http://127.0.0.1:${process.env.E2E_LABEL_PORT || '8889'}`;
@@ -26,10 +27,11 @@ function findRow(filter: Row): Promise<Row | null> {
   return withMongo((db) => db.collection('messages').findOne(filter));
 }
 
-/** A finished exchange plus a user leaf seeded under its answer, then a manual
+/** Finished exchanges plus a user leaf seeded under the latest answer, then a manual
  *  compaction held open on that leaf until the caller presses Stop. */
 async function startCompactionOnUserLeaf(page: Page, request: APIRequestContext, label: string) {
   await page.goto('/c/new');
+  await sendCompactionHistory(page, label, 1);
   await sendMessageAndWaitForCompletion(page, `tell me about ${label}`);
   const conversationId = new URL(page.url()).pathname.replace('/c/', '');
   expect(conversationId).not.toBe('new');

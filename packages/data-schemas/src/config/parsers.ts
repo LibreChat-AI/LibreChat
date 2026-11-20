@@ -61,9 +61,11 @@ const sensitiveKeys: RegExp[] = [
 /**
  * Matches a whole delimiter-bounded token that holds an address. The lookbehind lets the scan start
  * only at a token boundary, so long non-email text is scanned once instead of once per character.
+ * An `@` between path separators (`node_modules/@scope/pkg/...`) names a scoped package in a file
+ * path or stack frame, not an address, so frame locations survive.
  */
 const EMAIL_PATTERN =
-  /(?:(?<!\\)\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"|(?<!\\)"(?:[^"\\\r\n]|\\.)*"|(?<![^\s<>[\],;"])[^\s<>[\],;"]+)@(?:\[[^\]\s@]+\]|[^\s<>[\],;"@]+\.[^\s<>[\],;"@]+)/gu;
+  /(?:(?<!\\)\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"|(?<!\\)"(?:[^"\\\r\n]|\\.)*"|(?<![^\s<>[\],;"])[^\s<>[\],;"]+)(?!(?<=[/\\])@[^\s<>[\],;"@/\\]+[/\\])@(?:\[[^\]\s@]+\]|[^\s<>[\],;"@]+\.[^\s<>[\],;"@]+)/gu;
 /** Set while redacting splat arguments at levels whose later format strips heavy error fields. */
 let skipHeavyErrorFields = false;
 /** URL-encoded addresses (`user%40host.tld`), anchored at a token start so scans stay linear. */
@@ -1044,16 +1046,25 @@ const jsonTruncateFormat: winston.Logform.FormatWrap = winston.format(
         return obj.map((item) => truncateObject(item));
       }
 
-      // We know this is an object at this point
-      const objectRecord = obj as Record<string, unknown>;
-      const newObj: Record<string, unknown> = {};
-      Object.entries(objectRecord).forEach(([key, value]) => {
+      const objectRecord = obj as Record<string | symbol, unknown>;
+      const newObj: Record<string | symbol, unknown> = {};
+      // Only the log record carries transport symbols; nested values stay JSON-shaped.
+      const keys = obj === info ? Reflect.ownKeys(objectRecord) : Object.keys(objectRecord);
+      for (const key of keys) {
+        if (typeof key === 'symbol') {
+          newObj[key] = objectRecord[key];
+          continue;
+        }
+        if (!Object.prototype.propertyIsEnumerable.call(objectRecord, key)) {
+          continue;
+        }
+        const value = objectRecord[key];
         if (typeof value === 'string') {
           newObj[key] = truncateLongStrings(value, CONSOLE_JSON_STRING_LENGTH);
         } else {
           newObj[key] = truncateObject(value);
         }
-      });
+      }
       return newObj;
     };
 

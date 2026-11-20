@@ -43,7 +43,7 @@ function ShareSkill({ skill, disabled }: ShareSkillProps) {
           <Button
             variant="outline"
             size="icon"
-            className="size-9 border-border-medium"
+            className="border-border-medium size-9"
             aria-label={localize('com_ui_share')}
             disabled={disabled}
           >

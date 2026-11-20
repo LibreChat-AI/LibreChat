@@ -2,8 +2,10 @@ import type { TModelReasoning, TReasoningCapabilityMap } from './types';
 import type { SettingDefinition } from './generate';
 import {
   paramSettings,
+  agentParamSettings,
   resolveReasoningSetting,
   resolveReasoningSettingForTarget,
+  getReasoningParamDefinitions,
   isReasoningOverrideSupported,
   applyModelAwareDefaults,
   getModelReasoning,
@@ -13,8 +15,8 @@ import {
   isOpenRouterEffortSupported,
   resolveDropParamsUIKeys,
 } from './parameterSettings';
+import { ReasoningEffort, ReasoningParameterFormat, getSettingsKeys } from './schemas';
 import { BedrockProviders, EModelEndpoint, Providers } from './types';
-import { ReasoningEffort, ReasoningParameterFormat } from './schemas';
 
 const googleParams = paramSettings[EModelEndpoint.google] as SettingDefinition[];
 const anthropicParams = paramSettings[EModelEndpoint.anthropic] as SettingDefinition[];
@@ -27,6 +29,24 @@ const hasSetting = (params: SettingDefinition[], key: string) =>
   params.some((param) => param.key === key);
 
 describe('applyModelAwareDefaults', () => {
+  it.each([[googleParams], [agentParamSettings[EModelEndpoint.google] as SettingDefinition[]]])(
+    'offers Hydrogen controls in chat and Agents',
+    (settings) => {
+      const result = applyModelAwareDefaults(settings, EModelEndpoint.google, 'gemini-4-hydrogen');
+      expect(maxOut(result)?.default).toBe(65536);
+      expect(maxOut(result)?.range?.max).toBe(65536);
+      expect(result.find((setting) => setting.key === 'thinkingLevel')?.options).toEqual([
+        '',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+      ]);
+      for (const key of ['temperature', 'topP', 'topK', 'thinkingBudget']) {
+        expect(hasSetting(result, key)).toBe(false);
+      }
+    },
+  );
   it('resolves the Google maxOutputTokens default for current Gemini models', () => {
     const result = applyModelAwareDefaults(googleParams, EModelEndpoint.google, 'gemini-2.5-pro');
     expect(maxOut(result)?.default).toBe(65535);
@@ -315,7 +335,31 @@ describe('resolveReasoningSetting', () => {
   });
 });
 
+describe('Bedrock settings for a bare Claude model ID', () => {
+  const [combinedKey] = getSettingsKeys(EModelEndpoint.bedrock, 'claude-sonnet-4-6');
+  const anthropicKey = `${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}`;
+
+  it('gives the chat panel the Bedrock Anthropic parameters', () => {
+    expect(paramSettings[combinedKey]).toBeDefined();
+    expect(paramSettings[combinedKey]).toBe(paramSettings[anthropicKey]);
+  });
+
+  it('gives the agent builder the Bedrock Anthropic parameters', () => {
+    expect(agentParamSettings[combinedKey]).toBeDefined();
+    expect(agentParamSettings[combinedKey]).toBe(agentParamSettings[anthropicKey]);
+  });
+});
+
 describe('resolveReasoningSettingForTarget', () => {
+  it('resolves Claude reasoning for a bare Bedrock model ID', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.bedrock,
+        model: 'claude-sonnet-4-6',
+      })?.key,
+    ).toBe('effort');
+  });
+
   it('uses a custom-backed agent default parameter surface', () => {
     expect(
       resolveReasoningSettingForTarget({
@@ -362,6 +406,70 @@ describe('resolveReasoningSettingForTarget', () => {
       })?.key,
     ).toBe('reasoning_effort');
   });
+  describe('declared Azure deployment efforts', () => {
+    const azureConfig = { modelReasoningEfforts: { 'production-west': ['low', 'high'] } };
+    const resolveAzure = (
+      model: string,
+      options: Partial<Parameters<typeof resolveReasoningSettingForTarget>[0]> = {},
+    ) =>
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model,
+        paramDefinitions: getReasoningParamDefinitions(azureConfig, model),
+        ...options,
+      });
+
+    it('offers the declared efforts and Auto for an arbitrarily named deployment', () => {
+      expect(resolveAzure('production-west')).toMatchObject({
+        key: 'reasoning_effort',
+        options: [ReasoningEffort.unset, ReasoningEffort.low, ReasoningEffort.high],
+        enumMappings: expect.objectContaining({ [ReasoningEffort.high]: 'com_ui_high' }),
+      });
+    });
+
+    it('resolves the declared efforts for an agent on the deployment', () => {
+      expect(resolveAzure('production-west', { isAgent: true })?.options).toEqual([
+        ReasoningEffort.unset,
+        ReasoningEffort.low,
+        ReasoningEffort.high,
+      ]);
+    });
+
+    it('does not offer a control for a deployment without a declaration', () => {
+      expect(resolveAzure('production-chat')).toBeUndefined();
+    });
+
+    it.each(['constructor', 'toString', '__proto__'])(
+      'does not read an inherited property for a model named %s',
+      (model) => {
+        expect(getReasoningParamDefinitions(azureConfig, model)).toBeUndefined();
+        expect(resolveAzure(model)).toBeUndefined();
+      },
+    );
+
+    it('keeps a model spec lock over the declaration', () => {
+      expect(
+        resolveAzure('production-west', { blockedReasoningKeys: new Set(['reasoning_effort']) }),
+      ).toBeUndefined();
+    });
+
+    it('does not add a second Auto when the declaration lists it', () => {
+      expect(
+        getReasoningParamDefinitions(
+          { modelReasoningEfforts: { deployment: ['', 'low'] } },
+          'deployment',
+        ),
+      ).toEqual([{ key: 'reasoning_effort', options: ['', 'low'] }]);
+    });
+
+    it('keeps the endpoint definitions when the model declares nothing', () => {
+      const paramDefinitions = [{ key: 'effort' }];
+      expect(getReasoningParamDefinitions({ customParams: { paramDefinitions } }, 'model')).toBe(
+        paramDefinitions,
+      );
+    });
+  });
+
   it('honors an explicit reasoning format on a custom deployment', () => {
     expect(
       resolveReasoningSettingForTarget({

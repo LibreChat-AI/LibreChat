@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
 import { DropdownPopup, Skeleton } from '@librechat/client';
@@ -7,6 +7,7 @@ import { useGetAccessRolesQuery } from 'librechat-data-provider/react-query';
 import type { AccessRole } from 'librechat-data-provider';
 import type * as t from '~/common';
 import { cn, getRoleLocalizationKeys, RESOURCE_CONFIGS } from '~/utils';
+import { MenuContainerContext } from './container';
 import { useLocalize } from '~/hooks';
 
 interface AccessRolesPickerProps {
@@ -27,6 +28,7 @@ export default function AccessRolesPicker({
   className = '',
 }: AccessRolesPickerProps) {
   const localize = useLocalize();
+  const menuContainer = useContext(MenuContainerContext);
   const menuId = React.useId();
   const [isOpen, setIsOpen] = React.useState(false);
   const { data: accessRoles, isLoading: rolesLoading } = useGetAccessRolesQuery(resourceType);
@@ -64,7 +66,7 @@ export default function AccessRolesPicker({
       },
       render: (props) => (
         <button {...props}>
-          <div className="flex flex-col items-start gap-0.5 text-left">
+          <div className="flex flex-col items-start gap-0.5 text-start">
             <span className="text-text-primary font-medium">{localizedInfo.name}</span>
             <span className="text-text-secondary text-xs">{localizedInfo.description}</span>
           </div>
@@ -97,6 +99,8 @@ export default function AccessRolesPicker({
         }
         items={dropdownItems}
         className="w-[min(17.5rem,90vw)]"
+        portal={menuContainer != null}
+        portalElement={menuContainer}
       />
     </div>
   );

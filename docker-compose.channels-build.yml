@@ -1,0 +1,14 @@
+# Add after docker-compose.channels.yml to build both services from this checkout.
+services:
+  api:
+    image: librechat-channels-api:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+  channel-gateway:
+    image: librechat-channel-gateway:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: packages/channel-gateway/Dockerfile

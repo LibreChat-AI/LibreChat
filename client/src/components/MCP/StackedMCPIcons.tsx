@@ -16,12 +16,12 @@ const sizeConfig = {
   sm: {
     icon: 'h-[1.125rem] w-[1.125rem]',
     container: 'h-[1.375rem] w-[1.375rem]',
-    overlap: '-ml-2.5',
+    overlap: '-ms-2.5',
   },
   md: {
     icon: 'h-5 w-5',
     container: 'h-6 w-6',
-    overlap: '-ml-3',
+    overlap: '-ms-3',
   },
 };
 

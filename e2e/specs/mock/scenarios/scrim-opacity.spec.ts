@@ -4,15 +4,15 @@ import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/cl
 import { NEW_CHAT_PATH } from '../helpers';
 
 /**
- * The dialog scrims' opacity roles. OGDialog, AlertDialog and Dialog lay `surface-overlay` over the
- * page at `scrimOpacity`, `alertScrimOpacity` and `modalScrimOpacity`, which default to the 80%,
- * 90% and 65% the families always drew. ClickHouse takes Click UI's 0.75 for all three, and a
- * reference theme proves each family follows its own role. The probes carry the scrim classes
- * the three overlays compose, so only the roles style them.
+ * The dialog scrims' opacity roles. OGDialog and AlertDialog lay `surface-overlay` over the page at
+ * `scrimOpacity` and `alertScrimOpacity`, which default to the 80% and 90% the families always
+ * drew. ClickHouse takes Click UI's 0.75 for both, and a reference theme proves each family
+ * follows its own role. The probes carry the scrim classes the overlays compose, so only the
+ * roles style them.
  */
 
 type Mode = 'light' | 'dark';
-type Scrims = { dialog: string; alert: string; modal: string };
+type Scrims = { dialog: string; alert: string };
 
 const REFERENCE_THEME = {
   version: 1,
@@ -20,11 +20,11 @@ const REFERENCE_THEME = {
   modes: {
     light: {
       colors: { 'rgb-surface-overlay': '10 20 30' },
-      appearance: { scrimOpacity: '0.5', alertScrimOpacity: '0.6', modalScrimOpacity: '0.7' },
+      appearance: { scrimOpacity: '0.5', alertScrimOpacity: '0.6' },
     },
     dark: {
       colors: { 'rgb-surface-overlay': '10 20 30' },
-      appearance: { scrimOpacity: '0.5', alertScrimOpacity: '0.6', modalScrimOpacity: '0.7' },
+      appearance: { scrimOpacity: '0.5', alertScrimOpacity: '0.6' },
     },
   },
 } as const;
@@ -71,7 +71,6 @@ function scrims(page: Page): Promise<Scrims> {
     return {
       dialog: fill('bg-scrim'),
       alert: fill('bg-scrim-alert'),
-      modal: fill('bg-scrim-modal'),
     };
   });
 }
@@ -86,7 +85,6 @@ const CASES: Array<{ title: string; mode: Mode; definition?: { name: string }; e
       expected: {
         dialog: 'rgba(89, 89, 89, 0.8)',
         alert: 'rgba(89, 89, 89, 0.9)',
-        modal: 'rgba(89, 89, 89, 0.65)',
       },
     },
     {
@@ -96,7 +94,6 @@ const CASES: Array<{ title: string; mode: Mode; definition?: { name: string }; e
       expected: {
         dialog: 'rgba(0, 0, 0, 0.8)',
         alert: 'rgba(0, 0, 0, 0.9)',
-        modal: 'rgba(0, 0, 0, 0.65)',
       },
     },
     {
@@ -107,7 +104,6 @@ const CASES: Array<{ title: string; mode: Mode; definition?: { name: string }; e
       expected: {
         dialog: 'rgba(21, 21, 21, 0.75)',
         alert: 'rgba(21, 21, 21, 0.75)',
-        modal: 'rgba(21, 21, 21, 0.75)',
       },
     },
     {
@@ -118,7 +114,6 @@ const CASES: Array<{ title: string; mode: Mode; definition?: { name: string }; e
       expected: {
         dialog: 'rgba(96, 96, 96, 0.75)',
         alert: 'rgba(96, 96, 96, 0.75)',
-        modal: 'rgba(96, 96, 96, 0.75)',
       },
     },
     {
@@ -129,7 +124,6 @@ const CASES: Array<{ title: string; mode: Mode; definition?: { name: string }; e
       expected: {
         dialog: 'rgba(10, 20, 30, 0.5)',
         alert: 'rgba(10, 20, 30, 0.6)',
-        modal: 'rgba(10, 20, 30, 0.7)',
       },
     },
   ];

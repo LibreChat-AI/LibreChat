@@ -35,6 +35,7 @@ import type { CodeCapabilityConfigLoader } from '~/code/capabilities';
 import { supportsProgrammaticCodeExecution } from '~/code/capabilities';
 import { createContextProgrammaticBashTool } from '~/code/command';
 import { sanitizeGeminiSchema } from '~/mcp/zod';
+import { capturePersistedToolOptions } from '~/agents/options';
 
 export type { LCTool, LCToolRegistry, AllowedCaller, JsonSchemaType };
 
@@ -121,6 +122,7 @@ export function aliasMCPToolOptions(
   }
   for (const { name, aliasName } of aliases) {
     if (agentToolOptions[name] == null && agentToolOptions[aliasName] != null) {
+      capturePersistedToolOptions(agentToolOptions);
       agentToolOptions[name] = agentToolOptions[aliasName];
     }
   }
@@ -379,6 +381,23 @@ export function agentHasDeferredTools(toolRegistry: LCToolRegistry): boolean {
 }
 
 /**
+ * The event-driven `tool_search` definition. Its schema declares `mcp_server` as
+ * a string/array union, which `zod_to_gemini_parameters` rejects, so it is
+ * collapsed for Gemini/Vertex agents.
+ */
+export function createToolSearchDefinition(provider?: Providers | string): LCTool {
+  const isGoogle = provider === Providers.GOOGLE || provider === Providers.VERTEXAI;
+  const parameters = (isGoogle
+    ? sanitizeGeminiSchema(ToolSearchToolDefinition.schema as Record<string, unknown>)
+    : ToolSearchToolDefinition.schema) as unknown as LCTool['parameters'];
+  return {
+    name: ToolSearchToolDefinition.name,
+    description: ToolSearchToolDefinition.description,
+    parameters,
+  };
+}
+
+/**
  * Builds the tool registry from MCP tools and conditionally creates PTC and tool search tools.
  *
  * This function:
@@ -473,13 +492,7 @@ export async function buildToolClassification(
 
   /** Tool search uses local mode (no API key needed) */
   if (hasDeferredTools) {
-    /**
-     * The ToolSearch schema declares `mcp_server` as a string/array union, which
-     * `zod_to_gemini_parameters` rejects — collapse it for Gemini/Vertex agents.
-     */
-    const toolSearchParameters = (isGoogle
-      ? sanitizeGeminiSchema(ToolSearchToolDefinition.schema as Record<string, unknown>)
-      : ToolSearchToolDefinition.schema) as unknown as LCTool['parameters'];
+    const toolSearchDefinition = createToolSearchDefinition(provider);
 
     if (!definitionsOnly) {
       const toolSearchTool = createToolSearch({
@@ -487,17 +500,13 @@ export async function buildToolClassification(
         toolRegistry,
       });
       if (isGoogle) {
-        toolSearchTool.schema = toolSearchParameters as typeof toolSearchTool.schema;
+        toolSearchTool.schema = toolSearchDefinition.parameters as typeof toolSearchTool.schema;
       }
       additionalTools.push(toolSearchTool);
     }
 
     /** Add ToolSearch definition for event-driven mode */
-    toolDefinitions.push({
-      name: ToolSearchToolDefinition.name,
-      description: ToolSearchToolDefinition.description,
-      parameters: toolSearchParameters,
-    });
+    toolDefinitions.push(toolSearchDefinition);
     toolRegistry.set(ToolSearchToolDefinition.name, {
       name: ToolSearchToolDefinition.name,
       allowed_callers: ['direct'],

@@ -1,8 +1,8 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { probeStyle } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The ClickHouse theme sets the radius, mono and shadow scales as well as its colours, so the

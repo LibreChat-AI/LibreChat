@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures';
 
 /**
  * The SAML sign-in button draws a generic key glyph. It used to be filled black, which vanished

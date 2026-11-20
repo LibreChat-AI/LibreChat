@@ -61,10 +61,10 @@ export default function useAgentToolPermissions(
       return ephemeralAgent?.[EToolResources.file_search] ?? false;
     }
     // If agentId exists but agent not found, disallow
-    if (!selectedAgent) return false;
+    if (!selectedAgent && !agentData) return false;
     // Check if the agent has the file_search tool
     return tools?.includes(Tools.file_search) ?? false;
-  }, [agentId, selectedAgent, tools, ephemeralAgent]);
+  }, [agentId, selectedAgent, agentData, tools, ephemeralAgent]);
 
   const codeAllowedByAgent = useMemo(() => {
     // Check ephemeral agent settings
@@ -72,10 +72,10 @@ export default function useAgentToolPermissions(
       return ephemeralAgent?.[EToolResources.execute_code] ?? false;
     }
     // If agentId exists but agent not found, disallow
-    if (!selectedAgent) return false;
+    if (!selectedAgent && !agentData) return false;
     // Check if the agent has the execute_code tool
     return tools?.includes(Tools.execute_code) ?? false;
-  }, [agentId, selectedAgent, tools, ephemeralAgent]);
+  }, [agentId, selectedAgent, agentData, tools, ephemeralAgent]);
 
   const agent = useMemo(() => {
     if (selectedAgent == null) return agentData;

@@ -8,9 +8,11 @@ import {
   OGDialogContent,
 } from '@librechat/client';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
 import type { ConfigFieldDetail } from '~/common';
 import ServerInitializationSection from './ServerInitializationSection';
 import CustomUserVarsSection from './CustomUserVarsSection';
+import { getMCPDisplayStatus } from './mcpServerUtils';
 import { useLocalize } from '~/hooks';
 
 interface MCPConfigDialogProps {
@@ -23,6 +25,7 @@ interface MCPConfigDialogProps {
   onRevoke?: () => void;
   serverName: string;
   serverStatus?: MCPServerStatus;
+  view?: MCPConnectionView;
   conversationId?: string | null;
   storageContextKey?: string;
 }
@@ -36,10 +39,12 @@ export default function MCPConfigDialog({
   onRevoke,
   serverName,
   serverStatus,
+  view,
   conversationId,
   storageContextKey,
 }: MCPConfigDialogProps) {
   const localize = useLocalize();
+  const displayStatus = getMCPDisplayStatus(serverStatus, view);
 
   const hasFields = Object.keys(fieldsSchema).length > 0;
   const dialogTitle = hasFields
@@ -47,14 +52,14 @@ export default function MCPConfigDialog({
     : `${serverName} MCP Server`;
 
   const fullTitle = useMemo(() => {
-    if (!serverStatus) {
+    if (!displayStatus) {
       return localize('com_ui_mcp_dialog_title', {
         serverName,
         status: '',
       });
     }
 
-    const { connectionState, requiresOAuth } = serverStatus;
+    const { connectionState, requiresOAuth } = displayStatus;
     let statusText = '';
 
     if (connectionState === 'connecting') {
@@ -71,7 +76,7 @@ export default function MCPConfigDialog({
       serverName,
       status: statusText,
     });
-  }, [serverStatus, serverName, localize]);
+  }, [displayStatus, serverName, localize]);
 
   /**
    * Render status badge with unified color system:
@@ -82,16 +87,16 @@ export default function MCPConfigDialog({
    * - Red: Error
    */
   const renderStatusBadge = () => {
-    if (!serverStatus) {
+    if (!displayStatus) {
       return null;
     }
 
-    const { connectionState, requiresOAuth } = serverStatus;
+    const { connectionState, requiresOAuth } = displayStatus;
 
     // Connecting: blue (in progress)
     if (connectionState === 'connecting') {
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-info-subtle px-2 py-0.5 text-xs font-medium text-status-info">
+        <div className="bg-status-info-subtle text-status-info flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
           <Spinner className="size-3" />
           <span>{localize('com_ui_connecting')}</span>
         </div>
@@ -103,7 +108,7 @@ export default function MCPConfigDialog({
       if (requiresOAuth) {
         // Needs OAuth: amber (requires action)
         return (
-          <div className="flex items-center gap-2 rounded-full bg-status-warning-subtle px-2 py-0.5 text-xs font-medium text-status-warning">
+          <div className="bg-status-warning-subtle text-status-warning flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
             <KeyRound className="size-3" aria-hidden="true" />
             <span>{localize('com_nav_mcp_status_needs_auth')}</span>
           </div>
@@ -111,7 +116,7 @@ export default function MCPConfigDialog({
       }
       // Simply disconnected: gray (neutral)
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-neutral-subtle px-2 py-0.5 text-xs font-medium text-status-neutral">
+        <div className="bg-status-neutral-subtle text-status-neutral flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
           <PlugZap className="size-3" aria-hidden="true" />
           <span>{localize('com_nav_mcp_status_disconnected')}</span>
         </div>
@@ -121,7 +126,7 @@ export default function MCPConfigDialog({
     // Error: red
     if (connectionState === 'error') {
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-error-subtle px-2 py-0.5 text-xs font-medium text-status-error">
+        <div className="bg-status-error-subtle text-status-error flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
           <AlertTriangle className="size-3" aria-hidden="true" />
           <span>{localize('com_ui_error')}</span>
         </div>
@@ -131,8 +136,8 @@ export default function MCPConfigDialog({
     // Connected: green
     if (connectionState === 'connected') {
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-success-subtle px-2 py-0.5 text-xs font-medium text-status-success">
-          <div className="size-1.5 rounded-full bg-status-success" />
+        <div className="bg-status-success-subtle text-status-success flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
+          <div className="bg-status-success size-1.5 rounded-full" />
           <span>{localize('com_ui_active')}</span>
         </div>
       );

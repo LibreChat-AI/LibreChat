@@ -3,16 +3,21 @@ import { fieldBase, fieldEmbedded, fieldFlush, fieldInvalid, fieldFillTransparen
 import { cn } from '~/utils';
 import './Field.css';
 
-/** `document` is a long-form editor that reads like the text it will become. `flush` draws no
- *  border or ring because the surrounding frame owns the indicator, and `embedded` fills a row
- *  edge to edge. */
+/** `document` is a long-form editor that reads like the text it will become, `code` an editor
+ *  for raw text whose spacing matters, in a small monospace, and `note` a short free-text note.
+ *  `flush` draws no border or ring because the surrounding frame owns the indicator, and
+ *  `embedded` fills a row edge to edge. */
 const TEXTAREA_VARIANTS: Record<
-  'default' | 'transparent' | 'document' | 'flush' | 'embedded',
+  'default' | 'transparent' | 'document' | 'code' | 'note' | 'flush' | 'embedded',
   string
 > = {
   default: 'bg-surface-secondary',
   transparent: fieldFillTransparent,
   document: `${fieldFillTransparent} text-base leading-relaxed`,
+  code: 'bg-surface-secondary font-mono text-xs',
+  /** A short free-text note inside a dialog, such as a rating's extra feedback: the larger corner
+   *  and an even, tighter pad. */
+  note: 'bg-surface-secondary rounded-xl p-2',
   flush: fieldFlush,
   embedded: fieldEmbedded,
 };

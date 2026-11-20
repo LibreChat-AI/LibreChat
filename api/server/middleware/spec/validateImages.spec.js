@@ -317,7 +317,7 @@ describe('validateImageRequest middleware', () => {
             '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png?manual=true',
           ],
         },
-        { _id: 1, assistant_id: 1, endpoint: 1 },
+        { _id: 1, assistant_id: 1, endpoint: 1, user: 1 },
       );
     });
 

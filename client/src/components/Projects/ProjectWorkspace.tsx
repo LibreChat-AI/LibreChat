@@ -35,6 +35,7 @@ import {
 } from '~/data-provider';
 import ProjectInstructionsDialog from './ProjectInstructionsDialog';
 import { useElementSize, useLocalize, useNewConvo } from '~/hooks';
+import useDocumentDirection from '~/hooks/useDocumentDirection';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import ProjectDeleteDialog from './ProjectDeleteDialog';
@@ -46,6 +47,7 @@ import store from '~/store';
 
 type ChatSortField = 'updatedAt' | 'createdAt';
 
+const WORKSPACE_PANEL_IDS_RTL = ['project-chats', 'project-details'];
 const WORKSPACE_PANEL_IDS = ['project-details', 'project-chats'];
 const DETAILS_PANEL_IDS_WITH_FILES = ['project-instructions', 'project-files'];
 const DETAILS_PANEL_IDS = ['project-instructions'];
@@ -96,9 +98,11 @@ export default function ProjectWorkspace() {
   /** Panel sizes are a workspace-wide preference, so they persist per browser
    *  rather than per project; the files panel keys its own layout so hiding it
    *  (no RAG service) does not overwrite the split used when it is present. */
+  const direction = useDocumentDirection();
+  const reversed = direction === 'rtl';
   const workspaceLayout = useDefaultLayout({
     id: 'project-workspace-layout',
-    panelIds: WORKSPACE_PANEL_IDS,
+    panelIds: reversed ? WORKSPACE_PANEL_IDS_RTL : WORKSPACE_PANEL_IDS,
     storage: localStorage,
   });
   const detailsLayout = useDefaultLayout({
@@ -362,6 +366,76 @@ export default function ProjectWorkspace() {
     <ProjectResources key={project._id} project={project} />
   ) : null;
 
+  /** react-resizable-panels reads drag deltas physically, so under RTL the group
+   *  stays LTR and renders these in reverse, each panel restoring the document
+   *  direction for its content. */
+  const workspacePanels = [
+    <ResizablePanel
+      key="details"
+      id="project-details"
+      {...(reversed ? { dir: direction } : {})}
+      defaultSize="45"
+      minSize="25"
+      maxSize="70"
+      className="min-w-0"
+    >
+      <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 py-6 ps-4 md:ps-6">
+        <div className="pe-3">{detailsHeader}</div>
+        {/** The gutter before the workspace separator lives on each section rather than
+         *  this column, so the details group reaches the panel edge and its horizontal
+         *  separator overlaps the vertical one. Dragging that overlap resizes both
+         *  groups at once, which is what moves all three panels together. */}
+        <div ref={detailsGroupRef} className="min-h-0 flex-1">
+          <ResizablePanelGroup
+            orientation="vertical"
+            id="project-details-panels"
+            defaultLayout={detailsLayout.defaultLayout}
+            onLayoutChanged={detailsLayout.onLayoutChanged}
+            resizeTargetMinimumSize={RESIZE_TARGET_SIZE}
+            className="h-full"
+          >
+            <ResizablePanel
+              id="project-instructions"
+              defaultSize="55"
+              minSize={detailsPanelMinSize}
+              className="min-h-0"
+            >
+              <div className="h-full pe-3 pb-3">{instructionsSection}</div>
+            </ResizablePanel>
+            {filesSection != null && (
+              <>
+                <ResizableHandleAlt withHandle />
+                <ResizablePanel
+                  id="project-files"
+                  defaultSize="45"
+                  minSize={detailsPanelMinSize}
+                  className="min-h-0"
+                >
+                  <div className="h-full pe-3 pt-3">{filesSection}</div>
+                </ResizablePanel>
+              </>
+            )}
+          </ResizablePanelGroup>
+        </div>
+      </div>
+    </ResizablePanel>,
+    /* The separator binds to its neighbours when it mounts, so it remounts with the order;
+     * the panels keep their keys and their content. */
+    <ResizableHandleAlt key={`handle-${direction}`} withHandle />,
+    <ResizablePanel
+      key="chats"
+      id="project-chats"
+      {...(reversed ? { dir: direction } : {})}
+      defaultSize="55"
+      minSize="30"
+      className="min-w-0"
+    >
+      <div className="flex h-full min-h-0 min-w-0 flex-col py-6 ps-3 pe-4 md:pe-6">
+        {chatsSection}
+      </div>
+    </ResizablePanel>,
+  ];
+
   return (
     <main className="bg-surface-primary-alt text-text-primary flex h-full min-h-0 min-w-0 flex-col">
       <header className="border-border-light bg-surface-primary-alt sticky top-0 z-10 border-b">
@@ -372,16 +446,16 @@ export default function ProjectWorkspace() {
             variant="section-action"
             size="sm"
             onClick={() => navigate('/projects')}
-            className="-ml-1.5"
+            className="-ms-1.5"
           >
-            <ArrowLeft className="size-4" aria-hidden="true" />
+            <ArrowLeft className="size-4 rtl:-scale-x-100" aria-hidden="true" />
             {localize('com_ui_all_projects')}
           </Button>
           <Button
             type="button"
             size="sm"
             shape="round"
-            className="ml-auto shrink-0"
+            className="ms-auto shrink-0"
             variant="default"
             onClick={startProjectChat}
             aria-label={localize('com_ui_new_chat_in_project', { name: project.name })}
@@ -449,60 +523,9 @@ export default function ProjectWorkspace() {
           onLayoutChanged={workspaceLayout.onLayoutChanged}
           resizeTargetMinimumSize={RESIZE_TARGET_SIZE}
           className="min-h-0 flex-1"
+          {...(reversed ? { dir: 'ltr' } : {})}
         >
-          <ResizablePanel
-            id="project-details"
-            defaultSize="45"
-            minSize="25"
-            maxSize="70"
-            className="min-w-0"
-          >
-            <div className="flex h-full min-h-0 min-w-0 flex-col gap-4 py-6 pl-4 md:pl-6">
-              <div className="pr-3">{detailsHeader}</div>
-              {/** The gutter before the workspace separator lives on each section rather than
-               *  this column, so the details group reaches the panel edge and its horizontal
-               *  separator overlaps the vertical one. Dragging that overlap resizes both
-               *  groups at once, which is what moves all three panels together. */}
-              <div ref={detailsGroupRef} className="min-h-0 flex-1">
-                <ResizablePanelGroup
-                  orientation="vertical"
-                  id="project-details-panels"
-                  defaultLayout={detailsLayout.defaultLayout}
-                  onLayoutChanged={detailsLayout.onLayoutChanged}
-                  resizeTargetMinimumSize={RESIZE_TARGET_SIZE}
-                  className="h-full"
-                >
-                  <ResizablePanel
-                    id="project-instructions"
-                    defaultSize="55"
-                    minSize={detailsPanelMinSize}
-                    className="min-h-0"
-                  >
-                    <div className="h-full pr-3 pb-3">{instructionsSection}</div>
-                  </ResizablePanel>
-                  {filesSection != null && (
-                    <>
-                      <ResizableHandleAlt withHandle />
-                      <ResizablePanel
-                        id="project-files"
-                        defaultSize="45"
-                        minSize={detailsPanelMinSize}
-                        className="min-h-0"
-                      >
-                        <div className="h-full pt-3 pr-3">{filesSection}</div>
-                      </ResizablePanel>
-                    </>
-                  )}
-                </ResizablePanelGroup>
-              </div>
-            </div>
-          </ResizablePanel>
-          <ResizableHandleAlt withHandle />
-          <ResizablePanel id="project-chats" defaultSize="55" minSize="30" className="min-w-0">
-            <div className="flex h-full min-h-0 min-w-0 flex-col py-6 pr-4 pl-3 md:pr-6">
-              {chatsSection}
-            </div>
-          </ResizablePanel>
+          {reversed ? workspacePanels.reverse() : workspacePanels}
         </ResizablePanelGroup>
       )}
     </main>

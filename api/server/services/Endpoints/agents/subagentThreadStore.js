@@ -5,6 +5,7 @@ const {
   duplicateIoRedisClient,
   createIoRedisSubscriber,
   createSubagentThreadTaskStore,
+  createChildGenerationHost,
   createSubagentCompletionWakeupHandler,
   GenerationJobManager,
   RedisSubagentTaskControlTransport,
@@ -55,6 +56,8 @@ async function cancelUnroutedGeneration({ userId, tenantId, taskId }) {
 const subagentThreadTaskStore = createSubagentThreadTaskStore(
   {
     acquireSubagentThreadLease: db.acquireSubagentThreadLease,
+    appendSubagentContentBatch: db.appendSubagentContentBatch,
+    reconcileSubagentContent: db.reconcileSubagentContent,
     claimSubagentTaskResult: db.claimSubagentTaskResult,
     releaseSubagentTaskResultClaim: db.releaseSubagentTaskResultClaim,
     countActiveSubagentThreadLeases: db.countActiveSubagentThreadLeases,
@@ -78,6 +81,7 @@ const subagentThreadTaskStore = createSubagentThreadTaskStore(
     renewOwnerAdmission: db.renewSubagentAdmission,
     releaseOwnerAdmission: db.releaseSubagentAdmission,
     cancelUnroutedTask: cancelUnroutedGeneration,
+    childGenerations: createChildGenerationHost(GenerationJobManager),
     onTaskPrepared: completionWakeupHandler,
     onTaskSettled: (userId, conversationId, taskIds) =>
       expediteCompletionWakeups({ user: userId, conversationId, taskIds }),

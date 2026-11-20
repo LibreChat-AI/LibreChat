@@ -309,6 +309,108 @@ describe('createSubagentCompletionWakeupResolver', () => {
     expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
   });
 
+  describe('queued user turn precedence', () => {
+    const OWNER_ID = '507f1f77bcf86cd799439011';
+
+    function ownedEnvelope(): AgentContinueTriggerEnvelope {
+      const envelope = wakeupEnvelope();
+      return { ...envelope, principal: { ...envelope.principal, userId: OWNER_ID } };
+    }
+
+    it('defers without consuming an attempt or claiming the child result', async () => {
+      const { methods } = resolverMethods();
+      const hasPendingAgentQueuedTurn = jest.fn(async () => true);
+      const resolve = createSubagentCompletionWakeupResolver({
+        methods: { ...methods, hasPendingAgentQueuedTurn } as never,
+        getGenerationJob: async () => null,
+        now: () => NOW,
+      });
+
+      await expect(
+        resolve(ownedEnvelope(), { idempotencyKey: 'trigger_claim_1' } as never),
+      ).rejects.toMatchObject({
+        code: 'QUEUED_TURN_PENDING',
+        retryable: true,
+        deferWithoutAttempt: true,
+      });
+      expect(hasPendingAgentQueuedTurn).toHaveBeenCalledTimes(1);
+      expect(hasPendingAgentQueuedTurn).toHaveBeenCalledWith({
+        userId: OWNER_ID,
+        tenantId: 'tenant-1',
+        conversationId: 'conversation-1',
+        now: new Date(NOW),
+      });
+      expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
+    });
+
+    it('keeps conversation authorization ahead of the queued-turn deferral', async () => {
+      const { methods } = resolverMethods();
+      methods.getConvo.mockImplementation(async (_userId: string, conversationId: string) => ({
+        conversationId,
+        tenantId: 'tenant-2',
+      }));
+      const resolve = createSubagentCompletionWakeupResolver({
+        methods: { ...methods, hasPendingAgentQueuedTurn: async () => true } as never,
+        getGenerationJob: async () => null,
+      });
+
+      await expect(
+        resolve(ownedEnvelope(), { idempotencyKey: 'trigger_claim_1' } as never),
+      ).rejects.toMatchObject({ code: 'PARENT_NOT_FOUND', retryable: false });
+    });
+
+    it('does not consult queued turns for a replay of its own admitted continuation', async () => {
+      const { methods } = resolverMethods();
+      const hasPendingAgentQueuedTurn = jest.fn(async () => true);
+      const resolve = createSubagentCompletionWakeupResolver({
+        methods: { ...methods, hasPendingAgentQueuedTurn } as never,
+        getGenerationJob: async () => ({
+          status: 'running',
+          metadata: { idempotencyClientRequestId: 'trigger_claim_1' },
+        }),
+      });
+
+      await expect(
+        resolve(ownedEnvelope(), { idempotencyKey: 'trigger_claim_1' } as never),
+      ).resolves.toMatchObject({ status: 'ready' });
+      expect(hasPendingAgentQueuedTurn).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when no queued turn is pending', async () => {
+      const { methods } = resolverMethods();
+      const resolve = createSubagentCompletionWakeupResolver({
+        methods: { ...methods, hasPendingAgentQueuedTurn: async () => false } as never,
+        getGenerationJob: async () => null,
+      });
+
+      await expect(
+        resolve(ownedEnvelope(), { idempotencyKey: 'trigger_claim_1' } as never),
+      ).resolves.toMatchObject({ status: 'ready' });
+    });
+
+    it('defers rather than proceeding when queued-turn state cannot be read', async () => {
+      const { methods } = resolverMethods();
+      const resolve = createSubagentCompletionWakeupResolver({
+        methods: {
+          ...methods,
+          hasPendingAgentQueuedTurn: async () => {
+            throw new Error('queued turn read failed');
+          },
+        } as never,
+        getGenerationJob: async () => null,
+      });
+
+      await expect(
+        resolve(ownedEnvelope(), { idempotencyKey: 'trigger_claim_1' } as never),
+      ).rejects.toMatchObject({
+        code: 'QUEUED_TURN_STATE_UNAVAILABLE',
+        retryable: true,
+        deferWithoutAttempt: true,
+      });
+      expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
+    });
+  });
+
   it('lets a lost-receipt retry reach HTTP dedup for its own active continuation', async () => {
     const { methods } = resolverMethods();
     const resolve = createSubagentCompletionWakeupResolver({
@@ -1572,31 +1674,30 @@ describe('createSubagentCompletionWakeupResolver', () => {
   });
 });
 
-it('refuses a queued legacy scheduled wakeup after enrollment before claiming its result', async () => {
+it('refuses a queued scheduled wakeup once its schedule is gone, before claiming its result', async () => {
   const { methods } = resolverMethods();
-  const lookup = jest.fn(async () => ({
-    identity: {
-      scheduleId: 'schedule',
-      ownerId: 'user-1',
-      tenantId: 'tenant-1',
-      agentId: 'agent_parent_1',
-      invocationMode: 'delegated' as const,
-    },
-    enrolled: true,
-  }));
+  const identity = {
+    scheduleId: 'schedule',
+    ownerId: 'user-1',
+    tenantId: 'tenant-1',
+    agentId: 'agent_parent_1',
+    invocationMode: 'delegated' as const,
+  };
+  // Deleted, erased, or moved to another agent: there is nothing left for the turn to act for.
+  const lookup = jest.fn(async () => null);
   const prepare = createSubagentCompletionWakeupResolver({
     methods: methods as never,
     getGenerationJob: async () => null,
     getScheduleMCPCompletionState: lookup,
   });
   await expect(
-    prepare(wakeupEnvelope((await lookup()).identity), {
+    prepare(wakeupEnvelope(identity), {
       idempotencyKey: 'wakeup',
       attempt: 1,
       maxAttempts: 3,
     }),
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  expect(lookup).toHaveBeenCalledWith((await lookup()).identity);
+  expect(lookup).toHaveBeenCalledWith(identity);
   expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
 });
 

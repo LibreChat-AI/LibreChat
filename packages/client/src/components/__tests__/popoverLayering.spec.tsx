@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { HoverCard, HoverCardContent, HoverCardPortal, HoverCardTrigger } from '../HoverCard';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../Select';
 import { DialogLayer, OGDialog, OGDialogContent } from '../OriginalDialog';
+import Dropdown from '../Dropdown';
 
 /**
  * A portaled popover lands beside the dialog in the DOM, not inside it, so its
@@ -24,15 +24,21 @@ function zIndexOf(element: HTMLElement): number {
 
 function EnvironmentSelect() {
   return (
-    <Select open value="attached">
-      <SelectTrigger aria-label="Execution environment">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="attached">Attached VM</SelectItem>
-      </SelectContent>
-    </Select>
+    <Dropdown
+      value="attached"
+      onChange={() => undefined}
+      ariaLabel="Execution environment"
+      options={[{ value: 'attached', label: 'Attached VM' }]}
+    />
   );
+}
+
+/** The Ariakit select opens from its trigger rather than a controlled `open` prop. */
+async function openSelect() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole('combobox', { name: 'Execution environment' }));
+  });
+  return screen.findByRole('listbox');
 }
 
 function HelpHoverCard() {
@@ -47,7 +53,7 @@ function HelpHoverCard() {
 }
 
 describe('portaled popovers inside a dialog', () => {
-  it('opens a select above the dialog content it belongs to', () => {
+  it('opens a select above the dialog content it belongs to', async () => {
     render(
       <OGDialog open>
         <OGDialogContent>
@@ -56,23 +62,23 @@ describe('portaled popovers inside a dialog', () => {
       </OGDialog>,
     );
 
-    const listbox = screen.getByRole('listbox');
+    const listbox = await openSelect();
     expect(zIndexOf(listbox)).toBeGreaterThan(DIALOG_CONTENT_Z_INDEX);
-    expect(listbox).toHaveClass('pointer-events-auto');
+    expect(listbox).toHaveClass('[pointer-events:auto]');
   });
 
   /** The Settings dialog is a Headless UI panel at z-50, not an OGDialog, so it declares its own
    *  dialog level (berry-13/LibreChat#249). */
-  it('opens a select above a non-OGDialog panel that declares a dialog layer', () => {
+  it('opens a select above a non-OGDialog panel that declares a dialog layer', async () => {
     render(
       <DialogLayer>
         <EnvironmentSelect />
       </DialogLayer>,
     );
 
-    const listbox = screen.getByRole('listbox');
+    const listbox = await openSelect();
     expect(zIndexOf(listbox)).toBeGreaterThan(50);
-    expect(listbox).toHaveClass('pointer-events-auto');
+    expect(listbox).toHaveClass('[pointer-events:auto]');
   });
 
   it('opens a hover card above the dialog content it belongs to', () => {
@@ -90,14 +96,11 @@ describe('portaled popovers inside a dialog', () => {
   });
 
   /** Outside a dialog the CSS layer still decides, so a consumer that raises it
-   *  by class — `z-[999]` to clear the legacy `Dialog` — keeps that override.
+   *  by class keeps that override.
    *
-   *  Only the absence of OUR inline z-index is asserted. `pointer-events` is
-   *  Radix's to set out here: a select disables outside pointer events for its
-   *  own layer stack, and whether a sibling popover then reads `auto` depends
-   *  on whether the two share a copy of `react-dismissable-layer` — which is a
-   *  packaging fact, not this hook's contract. */
-  it('leaves the CSS layer alone outside any dialog', () => {
+   *  Only the absence of OUR inline z-index is asserted; the list keeps its
+   *  `z-40` class, which a consumer can still raise. */
+  it('leaves the CSS layer alone outside any dialog', async () => {
     render(
       <>
         <EnvironmentSelect />
@@ -105,11 +108,10 @@ describe('portaled popovers inside a dialog', () => {
       </>,
     );
 
-    const listbox = screen.getByRole('listbox');
+    const listbox = await openSelect();
     const card = screen.getByText('What stateful sessions do');
     expect(listbox.style.zIndex).toBe('');
     expect(listbox).toHaveClass('z-40');
-    expect(listbox).not.toHaveClass('pointer-events-auto');
     expect(card.style.zIndex).toBe('');
     expect(card).toHaveClass('z-50');
   });

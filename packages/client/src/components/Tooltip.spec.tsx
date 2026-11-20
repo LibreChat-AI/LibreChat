@@ -1,9 +1,85 @@
 import React from 'react';
 import '@testing-library/jest-dom';
+import DOMPurify from 'dompurify';
+import * as Ariakit from '@ariakit/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { TooltipAnchor } from './Tooltip';
 
+/** Counts the sanitizers built: the default export is both an instance and their factory. */
+jest.mock('dompurify', () => {
+  const actual = jest.requireActual('dompurify');
+  const factory = jest.fn((...args: unknown[]) => actual(...args));
+  return { __esModule: true, default: Object.assign(factory, actual) };
+});
+
 describe('TooltipAnchor', () => {
+  /** Message rows mount hundreds of anchors in one commit; an anchor that renders its provider
+   *  tree again once its own element attaches doubles the cost of that whole commit. */
+  describe('render cost', () => {
+    test.each(['top', 'right'] as const)(
+      'renders a %s anchor once on mount in a left-to-right layout',
+      (side) => {
+        const provider = jest.spyOn(Ariakit, 'TooltipProvider');
+        render(
+          <TooltipAnchor description="Once" aria-label="Once" side={side}>
+            <span>icon</span>
+          </TooltipAnchor>,
+        );
+
+        expect(screen.getByLabelText('Once')).toBeInTheDocument();
+        expect(provider).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    test('builds no sanitizer for plain descriptions, and one for every tooltip with markup', async () => {
+      const built = DOMPurify as unknown as jest.Mock;
+      built.mockClear();
+      const plain = render(
+        <>
+          <TooltipAnchor description="Copy" aria-label="Copy" />
+          <TooltipAnchor description="Edit" aria-label="Edit" />
+        </>,
+      );
+      expect(built).not.toHaveBeenCalled();
+      plain.unmount();
+
+      render(
+        <>
+          <TooltipAnchor description='<a href="/docs">Docs</a>' aria-label="Docs" enableHTML />
+          <TooltipAnchor description="<b>Bold</b><script>x</script>" aria-label="Bold" enableHTML />
+        </>,
+      );
+      /** The sanitizer is the module's, so this holds for the first markup this file renders. */
+      expect(built).toHaveBeenCalledTimes(1);
+
+      const anchor = screen.getByLabelText('Docs');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+      const tooltip = await screen.findByRole('tooltip', undefined, { timeout: 3000 });
+      const link = tooltip.querySelector('a');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+
+    test('opens its tooltip without rendering the anchor again', async () => {
+      const provider = jest.spyOn(Ariakit, 'TooltipProvider');
+      render(
+        <TooltipAnchor description="Opens" aria-label="Opens">
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      const anchor = screen.getByLabelText('Opens');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+
+      expect(await screen.findByRole('tooltip', undefined, { timeout: 3000 })).toHaveTextContent(
+        'Opens',
+      );
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('zIndex', () => {
     /** Lets a tooltip clear a host layer above the stylesheet's default (150). */
     test('applies the zIndex prop to the tooltip popup', async () => {

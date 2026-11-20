@@ -10,8 +10,8 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { AIMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import { DEFAULT_MCP_APP_OPERATION_LIMITS } from 'librechat-data-provider';
-import type { ScheduledMCPTarget, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
 import type { IScheduleRun, IUser } from '@librechat/data-schemas';
+import type { ScheduledMCPTarget } from 'librechat-data-provider';
 import type { IJobStoreV2, ScheduleProviderOwner } from '~/stream/interfaces/IJobStore';
 import type { ScheduledMCPBearerResult } from './authorization/contract';
 import type { MCPOAuthTokens } from '~/mcp/oauth/types';
@@ -956,6 +956,8 @@ it.each(['root', 'child'])(
   async (agentId) => {
     const f = await fixture();
     const provider = jest.fn(async () => 'Should not execute');
+    /** Set once the bearer is accepted: the agents no longer select the tool the owner allowed. */
+    let dropped = false;
     const server = await createOAuthMCPServer({ echoHandler: provider });
     const context = createMCPRequestContext();
     const manager = new MCPManager();
@@ -969,6 +971,7 @@ it.each(['root', 'child'])(
     let pending: Promise<unknown> | undefined;
     const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: async () => false,
+      isHiddenFromPrincipal: async () => false,
       resolveAllowlists: async () => ({
         allowedDomains: ['127.0.0.1'],
         allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -982,9 +985,6 @@ it.each(['root', 'child'])(
         requiresOAuth: false,
         source: 'yaml',
         headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
-      };
-      const policy: Record<string, ScheduledMCPReadOnlyPolicy> = {
-        Files: { tools: { echo: { effect: 'read_only', definitionSha256: '0'.repeat(64) } } },
       };
       const target: ScheduledMCPTarget = {
         resource: {
@@ -1006,20 +1006,31 @@ it.each(['root', 'child'])(
         definition,
         target.resource,
       );
-      target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools, policy.Files);
-      const resolveEnrollment = async () => structuredClone([target]);
+      target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
+      const resolveEnrollment = async () =>
+        structuredClone([
+          dropped
+            ? {
+                ...target,
+                permittedTools: target.permittedTools.map((selection) => ({
+                  ...selection,
+                  tools: ['other'],
+                })),
+              }
+            : target,
+        ]);
       const consent = createScheduleMCPConsentService({
         storage: f.methods,
         resolveEnrollment,
         getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
         canUse: async () => true,
-        checkToolPolicy: async () => true,
       });
       const offer = await consent.view(f.identity);
       await consent.confirm(f.identity, {
         offerDigest: offer.offer!.digest,
         expectedRevision: offer.revision,
         lifetimeHours: 1,
+        allow: { Files: ['echo'] },
       });
       const bearer = jest.fn(
         async (): Promise<ScheduledMCPBearerResult> => ({
@@ -1042,7 +1053,16 @@ it.each(['root', 'child'])(
       );
       await createScheduleMCPExecution({
         storage: f.methods,
-        loadAuthorization: async () => ({ authority: consent.authority, policy }),
+        /** Only the per-call check sees the change, after the bearer host has accepted. */
+        loadAuthorization: async () => ({
+          authority: {
+            ...consent.authority,
+            authorize: (request, options) => {
+              dropped = true;
+              return consent.authority.authorize(request, options);
+            },
+          },
+        }),
       }).attach(context, f.identity, 'invoke', true);
       server.issuedTokens.add('policy-only');
       server.tokenIssueTimes.set('policy-only', Date.now());
@@ -1494,6 +1514,7 @@ describe.each(['tool', 'App SDK read', 'App budget read'] as const)('%s admissio
       );
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -1684,6 +1705,7 @@ it.each(['reused caller', 'creating caller', 'SDK deadline'] as const)(
     const record = jest.fn(async () => true);
     const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: async () => false,
+      isHiddenFromPrincipal: async () => false,
       resolveAllowlists: async () => ({
         allowedDomains: ['127.0.0.1'],
         allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -1897,6 +1919,7 @@ describe.each(['preparation', 'initialization'] as const)('%s ownership', (phase
       const failures = jest.fn(async () => true);
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -2065,6 +2088,7 @@ describe.each(['authority', 'provider'] as const)('%s observation', (source) => 
       );
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -2099,6 +2123,7 @@ describe.each(['authority', 'provider'] as const)('%s observation', (source) => 
                   },
             authority: {
               lookupConsent: async () => ({ state: 'missing' }),
+              standing: async () => ({ state: 'authorized' }),
               authorize: async () =>
                 deny && source === 'authority'
                   ? { state: 'denied', failure: observedFailure }
@@ -2210,6 +2235,7 @@ it('keeps reused checkout ping cancellation local without dispatching after the 
   const failures = jest.fn(async () => true);
   const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
     isAppServerConfig: async () => false,
+    isHiddenFromPrincipal: async () => false,
     resolveAllowlists: async () => ({
       allowedDomains: ['127.0.0.1'],
       allowedAddresses: [`127.0.0.1:${server.port}`],

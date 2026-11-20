@@ -1,4 +1,8 @@
-import { LocalStorageKeys, TConversation } from 'librechat-data-provider';
+import { LocalStorageKeys } from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
+import { FILE_SEARCH_CHOICE_PREFIX, clearFileSearchChoices } from './choices';
+
+export const FILE_SEARCH_UPLOAD_PREFIX = 'file-search-upload:';
 
 export function getLocalStorageItems() {
   const items = {
@@ -31,10 +35,13 @@ export function getLocalStorageItems() {
  * on the way in, because a social sign-in returns through the silent refresh and never passes the
  * login mutation at all. */
 export function clearComposerDraftStorage() {
+  clearFileSearchChoices();
   Object.keys(localStorage).forEach((key) => {
     if (
       key.startsWith(LocalStorageKeys.FILES_DRAFT) ||
-      key.startsWith(LocalStorageKeys.TEXT_DRAFT)
+      key.startsWith(LocalStorageKeys.TEXT_DRAFT) ||
+      key.startsWith(FILE_SEARCH_UPLOAD_PREFIX) ||
+      key.startsWith(FILE_SEARCH_CHOICE_PREFIX)
     ) {
       localStorage.removeItem(key);
     }

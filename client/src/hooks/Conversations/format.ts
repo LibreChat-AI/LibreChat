@@ -1,8 +1,7 @@
+import { getActivityLabelPart, getActivityLabelText } from '@librechat/chat';
 import { ContentTypes, ToolCallTypes, stripOpaqueReasoning } from 'librechat-data-provider';
-
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { LocalizeFunction } from '~/common';
-import { getActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
 
 export type ExportFormat = 'text' | 'md';
 export type MessageContentExport = [] | [sender: string, text: string];

@@ -9,6 +9,7 @@ import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { ArtifactsProvider, EditorProvider } from '~/Providers';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
+import useDocumentDirection from '~/hooks/useDocumentDirection';
 import { useGetSharedStartupConfig } from '~/data-provider';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
@@ -129,6 +130,39 @@ export function ShareArtifactsContainer({
   const pane = paneContext != null ? <ShareArtifactsPanel contextValue={paneContext} /> : null;
   const overlay = paneContext != null ? <ShareArtifactsOverlay contextValue={paneContext} /> : null;
   const showDockedPanel = pane != null && !isUndocked && !isSmallScreen;
+  const direction = useDocumentDirection();
+  const reversed = direction === 'rtl';
+
+  /* react-resizable-panels reads drag deltas physically, so under RTL the group
+   * stays LTR and the panels render in reverse, each restoring the document
+   * direction for its content. Keys keep both panels mounted across the swap. */
+  const panels = [
+    <ResizablePanel
+      key="content"
+      defaultSize={`${showDockedPanel ? 100 - normalizedArtifactSize : 100}`}
+      minSize="35"
+      id="share-content"
+      {...(reversed ? { dir: direction } : {})}
+    >
+      {mainContent}
+    </ResizablePanel>,
+    /* The separator binds to its neighbours when it mounts, so it remounts with the order. */
+    showDockedPanel && (
+      <ResizableHandleAlt key={`handle-${direction}`} withHandle className="text-text-primary" />
+    ),
+    showDockedPanel && (
+      <ResizablePanel
+        key="artifacts"
+        defaultSize={`${normalizedArtifactSize}`}
+        minSize="20"
+        maxSize="60"
+        id="share-artifacts"
+        {...(reversed ? { dir: direction } : {})}
+      >
+        {pane}
+      </ResizablePanel>
+    ),
+  ];
 
   /* The transcript keeps one place in the tree through every state: React
    * cannot preserve it across a change of ancestry, so opening the pane,
@@ -142,25 +176,9 @@ export function ShareArtifactsContainer({
         orientation="horizontal"
         className="h-full w-full"
         onLayoutChanged={handleLayoutChanged}
+        {...(reversed ? { dir: 'ltr' } : {})}
       >
-        <ResizablePanel
-          defaultSize={`${showDockedPanel ? 100 - normalizedArtifactSize : 100}`}
-          minSize="35"
-          id="share-content"
-        >
-          {mainContent}
-        </ResizablePanel>
-        {showDockedPanel && <ResizableHandleAlt withHandle className="text-text-primary" />}
-        {showDockedPanel && (
-          <ResizablePanel
-            defaultSize={`${normalizedArtifactSize}`}
-            minSize="20"
-            maxSize="60"
-            id="share-artifacts"
-          >
-            {pane}
-          </ResizablePanel>
-        )}
+        {reversed ? panels.reverse() : panels}
       </ResizablePanelGroup>
       {pane != null && isUndocked && <UndockedArtifacts>{pane}</UndockedArtifacts>}
       {pane != null && !isUndocked && isSmallScreen && overlay}
@@ -178,7 +196,7 @@ interface ShareArtifactsPanelProps {
 function ShareArtifactsPanel({ contextValue }: ShareArtifactsPanelProps) {
   return (
     <ArtifactsProvider value={contextValue}>
-      <div className="border-border-light bg-surface-primary flex h-full w-full border-l shadow-2xl">
+      <div className="border-border-light bg-surface-primary flex h-full w-full border-s shadow-2xl">
         <Suspense fallback={null}>
           <Artifacts />
         </Suspense>
@@ -193,7 +211,7 @@ function ShareArtifactsPanel({ contextValue }: ShareArtifactsPanelProps) {
 function ShareArtifactsOverlay({ contextValue }: ShareArtifactsPanelProps) {
   return (
     <div
-      className="fixed inset-y-0 right-0 z-40 flex w-full max-w-full sm:max-w-[26.25rem]"
+      className="fixed inset-y-0 inset-e-0 z-40 flex w-full max-w-full sm:max-w-[26.25rem]"
       role="complementary"
       aria-label="Artifacts panel"
     >

@@ -9,26 +9,12 @@ import {
 } from 'librechat-data-provider';
 import type { UseFormRegister, UseFormHandleSubmit, UseFormSetValue } from 'react-hook-form';
 import type { SearchApiKeyFormData } from '~/hooks/Plugins/useAuthSearchTool';
-import InputSection, { type DropdownOption } from './InputSection';
+import type { DropdownOption } from './InputSection';
 import { useGetStartupConfig } from '~/data-provider';
+import InputSection from './InputSection';
 import { useLocalize } from '~/hooks';
 
-export default function ApiKeyDialog({
-  isOpen,
-  onSubmit,
-  onRevoke,
-  onOpenChange,
-  authTypes,
-  isToolAuthenticated,
-  register,
-  setValue,
-  handleSubmit,
-  triggerRef,
-  triggerRefs,
-  searchProvider,
-  scraperProvider,
-  rerankerType,
-}: {
+type ApiKeyDialogProps = {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (data: SearchApiKeyFormData) => void;
@@ -43,7 +29,40 @@ export default function ApiKeyDialog({
   searchProvider?: SearchProviders;
   scraperProvider?: ScraperProviders;
   rerankerType?: RerankerTypes;
-}) {
+};
+
+export default function ApiKeyDialog(props: ApiKeyDialogProps) {
+  const [hasOpened, setHasOpened] = useState(props.isOpen);
+
+  useEffect(() => {
+    if (props.isOpen) {
+      setHasOpened(true);
+    }
+  }, [props.isOpen]);
+
+  if (!props.isOpen && !hasOpened) {
+    return null;
+  }
+
+  return <ApiKeyDialogContent {...props} />;
+}
+
+function ApiKeyDialogContent({
+  isOpen,
+  onSubmit,
+  onRevoke,
+  onOpenChange,
+  authTypes,
+  isToolAuthenticated,
+  register,
+  setValue,
+  handleSubmit,
+  triggerRef,
+  triggerRefs,
+  searchProvider,
+  scraperProvider,
+  rerankerType,
+}: ApiKeyDialogProps) {
   const localize = useLocalize();
   const { data: config } = useGetStartupConfig();
 

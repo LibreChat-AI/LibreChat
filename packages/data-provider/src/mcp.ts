@@ -55,6 +55,11 @@ const OAuthOptionsBaseSchema = z.object({
   client_id: z.string().optional(),
   /** OAuth client secret (requires explicit authorization and token endpoints) */
   client_secret: z.string().optional(),
+  /**
+   * Masked preview of `client_secret`, set by the admin config API when it stores the secret
+   * encrypted. Read-only: writes to it are rejected, and it never reaches end users.
+   */
+  client_secretPreview: z.string().optional(),
   /** OAuth scopes to request */
   scope: z.string().optional(),
   /** OAuth redirect URI (defaults to /api/mcp/{serverName}/oauth/callback) */
@@ -170,6 +175,7 @@ const UserOAuthOptionsSchema = OAuthOptionsBaseSchema.omit({
   audience: true,
   forward_audience_on_refresh: true,
   send_resource_parameter: true,
+  client_secretPreview: true,
 })
   .extend({
     authorization_url: userOAuthEndpointUrlSchema.optional(),
@@ -193,6 +199,41 @@ export const MCP_SERVER_TITLE_PATTERN = new RegExp(
 );
 export const MCP_SERVER_TITLE_ERROR =
   'Title must start with a letter or number and can include spaces, hyphens, and apostrophes';
+
+const ToolSchemaScalarSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+const ToolSchemaTypeSchema = z.enum([
+  'string',
+  'number',
+  'integer',
+  'boolean',
+  'object',
+  'array',
+  'null',
+]);
+const ToolSchemaTypesSchema = z.union([ToolSchemaTypeSchema, z.array(ToolSchemaTypeSchema).min(1)]);
+const ToolSchemaEnumSchema = z.array(ToolSchemaScalarSchema).min(1);
+
+/**
+ * One input of a declared tool. Bounded rather than full JSON Schema: it only has to tell tool
+ * search and the model what to pass, and the server validates the real call after sign-in.
+ * Strict, so a keyword it cannot carry fails config validation instead of being dropped.
+ */
+const DeclaredToolPropertySchema = z
+  .object({
+    type: ToolSchemaTypesSchema.optional(),
+    description: z.string().optional(),
+    enum: ToolSchemaEnumSchema.optional(),
+    default: ToolSchemaScalarSchema.optional(),
+    items: z
+      .object({
+        type: ToolSchemaTypesSchema.optional(),
+        description: z.string().optional(),
+        enum: ToolSchemaEnumSchema.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 const BaseOptionsSchema = z.object({
   /** Display name for the MCP server */
@@ -253,6 +294,36 @@ const BaseOptionsSchema = z.object({
    */
   requiresOAuth: z.boolean().optional(),
   /**
+   * When an OAuth server asks the user to sign in:
+   * - `on_start` (default): when the conversation turn starts
+   * - `on_use`: when the agent first calls one of the server's tools, as long as every
+   *   tool the agent selected from it is deferred (`defer_loading`) and the server declares
+   *   an `oauthToolCatalog`
+   */
+  oauthPrompt: z.enum(['on_start', 'on_use']).optional(),
+  /**
+   * Tools an `oauthPrompt: on_use` server offers to tool search before the user signs in.
+   * Operator supplied, so no user's connection decides what other users' models read.
+   */
+  oauthToolCatalog: z
+    .array(
+      z
+        .object({
+          name: z.string().min(1),
+          description: z.string().optional(),
+          inputSchema: z
+            .object({
+              type: z.literal('object'),
+              properties: z.record(z.string(), DeclaredToolPropertySchema).optional(),
+              required: z.array(z.string()).optional(),
+            })
+            .strict()
+            .optional(),
+        })
+        .strict(),
+    )
+    .optional(),
+  /**
    * OAuth configuration for SSE and Streamable HTTP transports
    * - Optional: OAuth can be auto-discovered on 401 responses
    * - Pre-configured confidential clients must pin both OAuth endpoints
@@ -269,6 +340,11 @@ const BaseOptionsSchema = z.object({
     .object({
       /** API key value (only for admin-provided mode, stored encrypted) */
       key: z.string().optional(),
+      /**
+       * Masked preview of `key`, set by the admin config API when it stores the key encrypted.
+       * Read-only: writes to it are rejected, and it never reaches end users.
+       */
+      keyPreview: z.string().optional(),
       /** Whether key is provided by admin or each user */
       source: z.enum(['admin', 'user']),
       /** How to format the authorization header */
@@ -313,7 +389,14 @@ const ProxyUrlSchema = z
     },
   );
 
-const PROCESS_MCP_SERVER_FIELDS = new Set(['command', 'args', 'env', 'cwd', 'stderr']);
+/** Fields that make an MCP server process-backed (spawned by the server); only `librechat.yaml` may set them. */
+export const PROCESS_MCP_SERVER_FIELDS: ReadonlySet<string> = new Set([
+  'command',
+  'args',
+  'env',
+  'cwd',
+  'stderr',
+]);
 
 export function isProcessMCPServerField(field: string): boolean {
   return PROCESS_MCP_SERVER_FIELDS.has(field);
@@ -370,7 +453,8 @@ export const StdioOptionsSchema = BaseOptionsSchema.extend({
         processedEnv[key] = extractEnvVariable(value);
       }
       return processedEnv;
-    }),
+    })
+    .optional(),
   /**
    * How to handle stderr of the child process.
    * Accepts: 'pipe' | 'ignore' | 'inherit' | file descriptor number.
@@ -500,6 +584,8 @@ const omitServerManagedFields = <T extends z.ZodObject<z.ZodRawShape>>(schema: T
     chatMenu: true,
     serverInstructions: true,
     requiresOAuth: true,
+    oauthPrompt: true,
+    oauthToolCatalog: true,
     customUserVars: true,
     oauth_headers: true,
   });

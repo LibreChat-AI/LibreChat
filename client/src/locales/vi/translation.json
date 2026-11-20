@@ -54,7 +54,7 @@
   "com_agents_file_context_disabled": "Phải tạo Agent trước khi tải tệp lên cho File Context.",
   "com_agents_file_search_disabled": "Phải tạo Agent trước khi tải tệp lên cho Tìm kiếm Tệp.",
   "com_agents_file_search_info": "Khi được bật, Agent sẽ được thông báo về tên tệp chính xác được liệt kê bên dưới, cho phép agent truy xuất ngữ cảnh có liên quan từ các tệp này.",
-  "com_agents_instructions_placeholder": "\nCác hướng dẫn hệ thống mà agent sử dụng",
+  "com_agents_instructions_placeholder": "Các hướng dẫn hệ thống mà agent sử dụng",
   "com_agents_mcp_description_placeholder": "Giải thích tác dụng của nó trong một vài từ",
   "com_agents_mcp_icon_size": "Kích thước tối thiểu 128 x 128 px",
   "com_agents_mcp_name_placeholder": "Công cụ tùy chỉnh",
@@ -127,7 +127,7 @@
   "com_endpoint_anthropic_topk": "Top-k thay đổi cách mô hình chọn mã thông báo để xuất. Top-k là 1 có nghĩa là mã thông báo được chọn là phổ biến nhất trong tất cả các mã thông báo trong bảng từ vựng của mô hình (còn được gọi là giải mã tham lam), trong khi top-k là 3 có nghĩa là mã thông báo tiếp theo được chọn từ giữa 3 mã thông báo phổ biến nhất (sử dụng nhiệt độ).",
   "com_endpoint_anthropic_topp": "Top-p thay đổi cách mô hình chọn mã thông báo để xuất. Mã thông báo được chọn từ căn cứ có xác suất cao nhất đến thấp nhất cho đến khi tổng xác suất của chúng bằng giá trị top-p.",
   "com_endpoint_config_key": "Đặt Khóa API",
-  "com_endpoint_config_key_encryption": "Khóa của bạn sẽ được mã hóa và xóa vào lúc",
+  "com_endpoint_config_key_encryption": "Khóa hiện tại đã được mã hóa và sẽ bị xóa vào {{0}}",
   "com_endpoint_config_key_for": "Đặt Khóa API cho",
   "com_endpoint_config_key_google_need_to": "Bạn cần",
   "com_endpoint_config_key_google_service_account": "Tạo một Tài khoản Dịch vụ",
@@ -144,7 +144,7 @@
   "com_endpoint_default": "mặc định",
   "com_endpoint_default_blank": "mặc định: trống",
   "com_endpoint_default_with_num": "mặc định: {{0}}",
-  "com_endpoint_examples": " Đặt sẵn",
+  "com_endpoint_examples": "Đặt sẵn",
   "com_endpoint_export": "Xuất",
   "com_endpoint_frequency_penalty": "Hình phạt tần suất",
   "com_endpoint_google_custom_name_placeholder": "Đặt tên tùy chỉnh cho Google",
@@ -395,5 +395,6 @@
   "com_ui_x_selected": "{{0}} đã chọn",
   "com_ui_yes": "Đồng ý",
   "com_ui_zoom": "Phóng",
-  "com_warning_resubmit_unsupported": "Điểm cuối này không hỗ trợ việc gửi lại tin nhắn AI."
+  "com_warning_resubmit_unsupported": "Điểm cuối này không hỗ trợ việc gửi lại tin nhắn AI.",
+  "com_ui_feedback_tag_other_issue": "Vấn đề khác"
 }

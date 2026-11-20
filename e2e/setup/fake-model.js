@@ -9,12 +9,14 @@
  * without a live provider or a standalone HTTP mock server: responses are decided
  * from the conversation and the agents' advertised tools.
  */
+const sharp = require('sharp');
 const { FakeChatModel } = require('@librechat/agents');
 const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const { AIMessageChunk } = require('@langchain/core/messages');
 const { tryBindReplay } = require('./model-replay');
 const { runFileDeliveryResponses } = require('./run-files-model');
 const { createRunFileLifecycleResponses } = require('./run-files-lifecycle-model');
+const subagentHistory = require('../fixtures/subagent-history.cjs');
 
 const runFileLifecycle = createRunFileLifecycleResponses({
   findLastToolMessage,
@@ -33,6 +35,7 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
+const REPORT_CONTEXT_TOKENS_MARKER = 'E2E_REPORT_CONTEXT_TOKENS';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
@@ -55,6 +58,11 @@ const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
 const INTERRUPT_TOOL_REPLY_MARKER = 'E2E_INTERRUPT_TOOL_REPLY:';
 const MCP_APP_MARKER = 'E2E_MCP_APP:';
 const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
+/** `E2E_TOOL_LIMIT_PADDED:<spaces>`: call `padded_echo` on every model step, so the
+ *  turn ends at the agent's tool-call limit holding a result padded with that many
+ *  spaces in one unbroken run. */
+const TOOL_LIMIT_PADDED_MARKER = 'E2E_TOOL_LIMIT_PADDED:';
+const PADDED_ECHO_TOOL_NAME = 'padded_echo_mcp_e2e-memory';
 const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
 const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
 const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
@@ -107,7 +115,14 @@ const ASK_USER_QUESTIONS_MARKER = 'E2E_ASK_USER_QUESTIONS:';
 const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
+/** `<CODE>:<label>`: throws mid-stream the way LangChain classifies a provider failure, with a
+ *  gateway's explanation after the status code (the `BARE` variant carries the status alone). */
+const GATEWAY_ERROR_MARKER = 'E2E_GATEWAY_ERROR:';
+const BARE_GATEWAY_ERROR_MARKER = 'E2E_BARE_GATEWAY_ERROR:';
+const GATEWAY_ERROR_STATUS = { MODEL_RATE_LIMIT: 429, MODEL_NOT_FOUND: 404 };
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
+/** Display and inline math, so a spec can tell KaTeX rendered (it loads on first need). */
+const MATH_REPLY_MARKER = 'E2E_MATH_REPLY';
 const STREAMING_MARKDOWN_REPLY_MARKER = 'E2E_STREAMING_MARKDOWN_REPLY';
 const HIGHLIGHT_CODE_MARKER = 'E2E_HIGHLIGHT_CODE:';
 const STATEFUL_CODE_MARKER = 'E2E_STATEFUL_CODE:';
@@ -120,10 +135,15 @@ const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
+/** `E2E_FLUX_IMAGE:<generate|finetuned>:<polling|legacy|foreign>:<label>` calls the Flux tool. */
+const FLUX_IMAGE_MARKER = 'E2E_FLUX_IMAGE:';
+const FLUX_TOOL_NAME = 'flux';
+const INVALID_TOOL_ARGS_MARKER = 'E2E_INVALID_TOOL_ARGS:';
 const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
 const TOOL_APPROVAL_RESTRICTED_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
 const TOOL_APPROVAL_REWRITE_MARKER = 'E2E_TOOL_APPROVAL_REWRITE:';
 const DEFERRED_HITL_MARKER = 'E2E_DEFERRED_HITL:';
+const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
@@ -186,13 +206,16 @@ const BACKGROUND_TOOL_NAME = 'slow_echo_mcp_e2e-memory';
 const DEFERRED_HITL_TOOL_NAME = BACKGROUND_TOOL_NAME;
 const DEFERRED_HITL_CONTROL_TOOL_NAME = 'recall_fact_mcp_e2e-memory';
 const TOOL_SEARCH_NAME = 'tool_search';
+const DEFERRED_OAUTH_TOOL_NAME = 'echo_mcp_e2e-oauth-deferred';
 const ASK_USER_QUESTION_NAME = 'ask_user_question';
 const CHECK_BACKGROUND_TASK_TOOL_NAME = 'check_background_task';
 const APPROVAL_TOOL_NAME = 'approval_probe_mcp_e2e-memory';
+const WORK_ITEM_TOOL_NAME = 'create_work_item_mcp_e2e-memory';
 const APPROVAL_TOOL_CALL_PREFIX = 'call_e2e_approval_';
 const BACKGROUND_DISPATCH_TOOL_CALL_ID = 'call_e2e_background_dispatch';
 const BACKGROUND_COLLECT_TOOL_CALL_ID = 'call_e2e_background_collect';
 const EXECUTE_CODE_MARKER = 'E2E_EXECUTE_CODE:';
+const READ_THEN_BASH_MARKER = 'E2E_READ_THEN_BASH:';
 const EXEC_UPLOADED_MARKER = 'E2E_EXEC_UPLOADED:';
 const EXEC_PERSIST_MARKER = 'E2E_EXEC_PERSIST:';
 const FILE_SEARCH_MARKER = 'E2E_FILE_SEARCH:';
@@ -342,17 +365,43 @@ function collectToolDefinitions(agents) {
   return definitions;
 }
 
+/** Text a provider bills for one advertised tool: its name, description and JSON schema.
+ *  A zod schema (on a LangChain tool) is skipped, since serializing it reports the
+ *  validator's internals rather than the schema the provider receives. */
+function toolDefinitionText(name, definition) {
+  const schema = definition?.parameters ?? definition?.input_schema ?? definition?.schema;
+  const plainSchema =
+    schema != null && typeof schema === 'object' && typeof schema.safeParse !== 'function'
+      ? JSON.stringify(schema)
+      : '';
+  const description = typeof definition?.description === 'string' ? definition.description : '';
+  return `${name}${description}${plainSchema}`;
+}
+
 function collectToolNames(agents) {
   return new Set(collectToolDefinitions(agents).keys());
+}
+
+/**
+ * A subagent model override hands one graph's model to its children, so a child's stream
+ * arrives holding the parent graph. A foreground child runs under the parent's run id and
+ * ends inside the parent run. A detached child runs under its own id and outlives it: the
+ * parent's agent context is not the child's prompt, and the host drops it once the parent
+ * settles, so a view built from it would change with whichever of the two finished first.
+ */
+function ownsStream(graph, options, runManager) {
+  const runId = runManager?.metadata?.run_id ?? options?.metadata?.run_id;
+  return typeof runId !== 'string' || typeof graph?.runId !== 'string' || runId === graph.runId;
 }
 
 async function getStreamAgentView({ graph, messages, options, runManager }) {
   let agentId = runManager?.metadata?.agentId ?? options?.metadata?.agentId;
   let agentContext;
+  const agentContexts = ownsStream(graph, options, runManager) ? graph?.agentContexts : undefined;
   if (typeof agentId === 'string') {
-    agentContext = graph?.agentContexts?.get(agentId);
-  } else if (graph?.agentContexts?.size === 1) {
-    [agentId, agentContext] = graph.agentContexts.entries().next().value;
+    agentContext = agentContexts?.get(agentId);
+  } else if (agentContexts?.size === 1) {
+    [agentId, agentContext] = agentContexts.entries().next().value;
   }
   /**
    * Graph.attemptInvoke intentionally sends test override models the pruned
@@ -498,8 +547,9 @@ const SAMPLING_PARAM_KEYS = ['temperature', 'topP', 'topK', 'presencePenalty', '
 /**
  * Reports the provider request the primary agent resolved, before the fake
  * model replaced it: the model, which sampling params survived (top level or
- * `modelKwargs`), and the context budget left for input. Reads the graph's
- * agent context because the hook's `agents` are the unresolved agent configs.
+ * `modelKwargs`), the `reasoning_effort` it carries, and the context budget
+ * left for input. Reads the graph's agent context because the hook's `agents`
+ * are the unresolved agent configs.
  */
 function llmConfigReportResponses(graph) {
   const agent = graph?.agentContexts?.values().next().value;
@@ -511,9 +561,31 @@ function llmConfigReportResponses(graph) {
   const report = {
     model: clientOptions.model ?? clientOptions.modelName ?? null,
     sampling,
+    reasoningEffort: modelKwargs.reasoning_effort ?? null,
+    thinkingLevel: clientOptions.thinkingConfig?.thinkingLevel ?? null,
+    maxOutputTokens: clientOptions.maxOutputTokens ?? null,
     maxContextTokens: agent?.maxContextTokens ?? null,
   };
   return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
+}
+
+/**
+ * Reports the precomputed per-message token counts the primary agent prunes against, read
+ * before the fake model runs: the latest message's count and the total for the history.
+ */
+function contextTokensReportResponses(graph) {
+  const agent = graph?.agentContexts?.values().next().value;
+  const tokenMap = agent?.baseIndexTokenCountMap ?? agent?.indexTokenCountMap ?? {};
+  const indices = Object.keys(tokenMap)
+    .map(Number)
+    .filter((index) => Number.isInteger(index));
+  const latestIndex = indices.length > 0 ? Math.max(...indices) : null;
+  const report = {
+    provider: agent?.provider ?? null,
+    latest: latestIndex == null ? null : (tokenMap[latestIndex] ?? null),
+    total: indices.reduce((sum, index) => sum + (tokenMap[index] ?? 0), 0),
+  };
+  return { responses: [`E2E context tokens: ${JSON.stringify(report)}`] };
 }
 
 function collectSystemPromptText(messages) {
@@ -659,6 +731,13 @@ function replyResponses(text) {
     };
   }
 
+  if (text.includes(MATH_REPLY_MARKER)) {
+    return {
+      responses: [
+        ['E2E math reply:', '', '$$E = mc^2$$', '', 'Water is \\(\\ce{H2O}\\).'].join('\n'),
+      ],
+    };
+  }
   if (text.includes(MARKDOWN_REPLY_MARKER)) {
     return {
       responses: [
@@ -743,6 +822,19 @@ function replyResponses(text) {
     return {
       responses: [`E2E forced error prelude ${errorName}`],
       thrownError: `E2E forced stream error ${errorName}`,
+    };
+  }
+
+  const gatewayError =
+    getMarkerValue(text, GATEWAY_ERROR_MARKER) || getMarkerValue(text, BARE_GATEWAY_ERROR_MARKER);
+  if (gatewayError) {
+    const [code, label = ''] = gatewayError.split(':');
+    const explanation = text.includes(BARE_GATEWAY_ERROR_MARKER)
+      ? ''
+      : ` Gateway budget for ${label} is spent. Waiting will not help; ask an administrator for more.`;
+    return {
+      responses: [`E2E gateway error prelude ${label}`],
+      thrownError: `${GATEWAY_ERROR_STATUS[code] ?? 400}${explanation}\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/${code}/\n`,
     };
   }
 
@@ -1007,15 +1099,22 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       outputChars += typeof chunk.text === 'string' ? chunk.text.length : 0;
       yield chunk;
     }
-    const { messages: promptMessages } = await getStreamAgentView({
+    const { messages: promptMessages, toolDefinitions } = await getStreamAgentView({
       graph: this.graph,
       messages: messages ?? [],
       options,
       runManager,
     });
+    /** A provider bills the advertised tool definitions too. The context snapshot counts
+     *  them inside its instruction share and reconciles against this total, so leaving
+     *  them out would leave too little for the messages and the tool results they hold. */
+    let toolChars = 0;
+    for (const [name, definition] of toolDefinitions) {
+      toolChars += toolDefinitionText(name, definition).length;
+    }
     const inputChars = promptMessages.reduce(
       (sum, message) => sum + getContentText(message?.content).length,
-      0,
+      toolChars,
     );
     const input_tokens = Math.max(1, Math.ceil(inputChars / 4));
     const output_tokens = Math.max(1, Math.ceil(outputChars / 4));
@@ -1449,6 +1548,35 @@ function mcpAppResponses(label, toolNames) {
         type: 'tool_call',
       },
     ],
+  };
+}
+
+/** Never answers in text: each model step calls `padded_echo` again, so only the
+ *  agent's `recursion_limit` ends the turn, and the final step's result is the one
+ *  the save path counts as retained past the last context snapshot. */
+function toolLimitPaddedResponses(padSpaces, toolNames) {
+  if (!toolNames.has(PADDED_ECHO_TOOL_NAME)) {
+    return {
+      responses: [`E2E tool limit unavailable: ${PADDED_ECHO_TOOL_NAME} was not advertised.`],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      return {
+        response: '',
+        toolCalls: [
+          {
+            id: `call_e2e_tool_limit_padded_${invocation}`,
+            name: PADDED_ECHO_TOOL_NAME,
+            args: { text: `step ${invocation}`, pad_spaces: padSpaces },
+            type: 'tool_call',
+          },
+        ],
+      };
+    },
   };
 }
 
@@ -2285,6 +2413,33 @@ function runFilesResponses(text) {
   };
 }
 
+/** One turn whose first batch reads an attachment with read_file and whose next batch runs
+ *  bash_tool on it: a read_file batch must not take the lazily provisioned file from the
+ *  code call after it. The attachment is `<label>.csv`. */
+function readThenBashResponses(text) {
+  const label = getMarkerValue(text, READ_THEN_BASH_MARKER);
+  if (!label) return null;
+  const path = `/mnt/data/${label}.csv`;
+  const call = (phase, name, args) => ({
+    response: '',
+    toolCalls: [{ id: `call_e2e_read_then_bash_${phase}`, name, args, type: 'tool_call' }],
+  });
+  return {
+    responses: [''],
+    resolveInvocation: (messages) => {
+      if (!findLastToolMessage(messages, 'call_e2e_read_then_bash_read')) {
+        return call('read', 'read_file', { path });
+      }
+      if (!findLastToolMessage(messages, 'call_e2e_read_then_bash_bash')) {
+        return call('bash', 'bash_tool', {
+          command: `cat ${path}\n# ${READ_THEN_BASH_MARKER}${label}`,
+        });
+      }
+      return { response: `E2E read then bash complete: ${label}` };
+    },
+  };
+}
+
 function runFileVersionsResponses(text) {
   const marker = getMarkerValue(text, RUN_FILE_VERSIONS_MARKER);
   if (!marker) return null;
@@ -2511,6 +2666,115 @@ function subagentActivityResponses(text) {
         })),
       };
     },
+  };
+}
+
+/** Calls the work-item tool with a string where the schema declares an object or null,
+ *  then reports the tool result verbatim so a test can read what the model was told. */
+function invalidToolArgsResponses(label, toolNames) {
+  if (!toolNames.has(WORK_ITEM_TOOL_NAME)) {
+    return {
+      responses: [`E2E invalid args unavailable: ${WORK_ITEM_TOOL_NAME} was not advertised.`],
+    };
+  }
+  const toolCallId = `call_e2e_invalid_args_${label}`;
+  return {
+    responses: ['', ''],
+    toolCalls: [
+      {
+        id: toolCallId,
+        name: WORK_ITEM_TOOL_NAME,
+        args: {
+          project: 'e2e',
+          subject: `item-${label}`,
+          confirm: true,
+          custom_fields: `{"secret":"value-${label}"}`,
+        },
+        type: 'tool_call',
+      },
+    ],
+    resolveOnStream: (streamMessages) => {
+      const toolMessage = findLastToolMessage(streamMessages, toolCallId);
+      if (!toolMessage) {
+        return null;
+      }
+      return {
+        responses: [`E2E tool feedback ${label}: ${getContentText(toolMessage.content)}`],
+      };
+    },
+  };
+}
+
+/**
+ * Calls the real Flux tool against `e2e/setup/fake-flux-server.js`; the prompt tells that
+ * fake which BFL routing to simulate, and the tool's own polling decides where it reads.
+ */
+function fluxImageResponses(value, toolNames) {
+  if (!toolNames.has(FLUX_TOOL_NAME)) {
+    return { responses: [`E2E flux unavailable: ${FLUX_TOOL_NAME} was not advertised.`] };
+  }
+  const [action, mode, label] = value.split(':');
+  const finetuned = action === 'finetuned';
+  return {
+    responses: ['', `Flux image ready for ${label}.`],
+    resolveInvocation: async (messages) => {
+      if (mode !== 'large' && mode !== 'boundary') {
+        return null;
+      }
+      const result = findLastToolMessage(messages, `call_e2e_flux_${label}`);
+      if (!result) {
+        return null;
+      }
+      // OpenAI projects tool images into a following human message; Anthropic keeps them
+      // in the tool result. Inspect only model-visible content after this tool call.
+      const image = messages
+        .slice(messages.indexOf(result))
+        .flatMap((message) =>
+          Array.isArray(message.content)
+            ? message.content.filter((part) => part.type === 'image_url')
+            : [],
+        );
+      const failed = (reason) => ({
+        response: `Flux image budget failed for ${label}: ${reason}.`,
+      });
+      if (image.length !== 1) {
+        return failed(`image count ${image.length}`);
+      }
+      const match = /^data:image\/png;base64,([A-Za-z0-9+/]+=*)$/.exec(
+        image[0].image_url?.url ?? '',
+      );
+      if (!match || match[1].length > 5 * 1024 * 1024) {
+        return failed(`encoded bytes ${match?.[1]?.length ?? 'invalid URL'}`);
+      }
+      try {
+        const metadata = await sharp(Buffer.from(match[1], 'base64')).metadata();
+        const originalSize = mode === 'large' ? 2048 : 1200;
+        if (
+          !metadata.width ||
+          !metadata.height ||
+          metadata.width >= originalSize ||
+          metadata.height >= originalSize
+        ) {
+          return failed(`dimensions ${metadata.width}x${metadata.height}`);
+        }
+        return { response: `Flux image budget verified for ${label}.` };
+      } catch {
+        return failed('invalid image bytes');
+      }
+    },
+    toolCalls: [
+      {
+        id: `call_e2e_flux_${label}`,
+        name: FLUX_TOOL_NAME,
+        args: {
+          action: finetuned ? 'generate_finetuned' : 'generate',
+          prompt: `flux-e2e:${mode}:${label}`,
+          endpoint: finetuned ? '/v1/flux-pro-finetuned' : '/v1/flux-dev',
+          ...(finetuned ? { finetune_id: `ft-${label}` } : {}),
+        },
+        type: 'tool_call',
+      },
+    ],
   };
 }
 
@@ -3083,6 +3347,59 @@ function deferredHitlInvocationResponse({ graph, messages, options, runManager }
   };
 }
 
+/**
+ * An `oauthPrompt: on_use` server must not hold the turn for sign-in: the model runs first,
+ * discovers the server's deferred tool, and only its call asks the user to sign in.
+ */
+function deferredOAuthInvocationResponse(messages) {
+  const label = getMarkerValue(getLatestUserText(messages), DEFERRED_OAUTH_MARKER);
+  if (!label) {
+    return null;
+  }
+
+  const searchCallId = `call_e2e_deferred_oauth_search_${label}`;
+  const echoCallId = `call_e2e_deferred_oauth_echo_${label}`;
+  const echoResult = findToolMessage(messages, echoCallId);
+  if (echoResult) {
+    return {
+      response: `E2E deferred OAuth tool returned ${label}: ${getContentText(echoResult.content)}`,
+    };
+  }
+
+  const searchResult = findToolMessage(messages, searchCallId);
+  if (searchResult) {
+    const searchOutput = getContentText(searchResult.content);
+    if (!searchOutput.includes(DEFERRED_OAUTH_TOOL_NAME)) {
+      return {
+        response: `E2E deferred OAuth failed ${label}: ${TOOL_SEARCH_NAME} did not find ${DEFERRED_OAUTH_TOOL_NAME}`,
+      };
+    }
+    return {
+      response: '',
+      toolCalls: [
+        {
+          id: echoCallId,
+          name: DEFERRED_OAUTH_TOOL_NAME,
+          args: { text: label },
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
+
+  return {
+    response: '',
+    toolCalls: [
+      {
+        id: searchCallId,
+        name: TOOL_SEARCH_NAME,
+        args: { query: DEFERRED_OAUTH_TOOL_NAME, max_results: 1 },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function validateHandoffTool(route, tool, toolName) {
   const failures = [];
   const expectedDescription = route.description ?? `Transfer control to agent '${route.to}'`;
@@ -3475,6 +3792,13 @@ function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames)
 }
 
 function resolveResponses({ graph, messages, text, toolNames }) {
+  const history = subagentHistory.responsesForText(text, {
+    getLatestUserText,
+    messageType,
+    getContentText,
+  });
+  if (history) return history;
+
   const lifecycle = runFileLifecycle.responsesForText(text);
   if (lifecycle) return lifecycle;
 
@@ -3485,6 +3809,9 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   if (backgroundCompletion) {
     return backgroundCompletion;
   }
+
+  const readThenBash = readThenBashResponses(text);
+  if (readThenBash) return readThenBash;
 
   const runFileVersions = runFileVersionsResponses(text);
   if (runFileVersions) {
@@ -3521,6 +3848,16 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return approvalToolResponses(rewrittenApprovalLabel, toolNames, 'rewrite');
   }
 
+  const invalidArgsLabel = getMarkerValue(text, INVALID_TOOL_ARGS_MARKER);
+  if (invalidArgsLabel) {
+    return invalidToolArgsResponses(invalidArgsLabel, toolNames);
+  }
+
+  const fluxImage = getMarkerValue(text, FLUX_IMAGE_MARKER);
+  if (fluxImage) {
+    return fluxImageResponses(fluxImage, toolNames);
+  }
+
   const approvalLabel = getMarkerValue(text, TOOL_APPROVAL_MARKER);
   if (approvalLabel) {
     return approvalToolResponses(approvalLabel, toolNames);
@@ -3544,9 +3881,23 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
   }
 
+  if (text.includes('E2E_REPLICA_TOOL:')) {
+    const name = Array.from(toolNames).find((name) => name === 'status_ping_mcp_e2e-status');
+    return name
+      ? {
+          responses: ['', 'E2E replica tool finished'],
+          toolCalls: [{ id: `call_replica_${Date.now()}`, name, args: {}, type: 'tool_call' }],
+        }
+      : { responses: ['E2E replica tool unavailable'] };
+  }
   const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
   if (mcpAppLabel) {
     return mcpAppResponses(mcpAppLabel, toolNames);
+  }
+
+  const toolLimitPadded = getMarkerValue(text, TOOL_LIMIT_PADDED_MARKER);
+  if (toolLimitPadded) {
+    return toolLimitPaddedResponses(Number(toolLimitPadded) || 0, toolNames);
   }
 
   const mcpAppPhaseLabel = getMarkerValue(text, MCP_APP_PHASE_MARKER);
@@ -3659,6 +4010,10 @@ function resolveResponses({ graph, messages, text, toolNames }) {
 
   if (text.includes(REPORT_LLM_CONFIG_MARKER)) {
     return llmConfigReportResponses(graph);
+  }
+
+  if (text.includes(REPORT_CONTEXT_TOKENS_MARKER)) {
+    return contextTokensReportResponses(graph);
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {
@@ -3834,6 +4189,7 @@ module.exports = function fakeModelHook(run, context) {
         options: streamOptions,
         runManager,
       }) ??
+      deferredOAuthInvocationResponse(streamMessages) ??
       resolveInvocation?.(streamMessages, streamOptions, runManager) ??
       null,
     resolveOnStream: (streamMessages, streamOptions, runManager) =>

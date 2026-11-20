@@ -2,7 +2,7 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import type { TConversationPullRequest } from 'librechat-data-provider';
 import PullRequestRowMark from '../RowMark';
 
@@ -122,18 +122,15 @@ describe('PullRequestRowMark', () => {
           results: [{ conversationId: 'convo-1', error: { code: 'RATE_LIMITED' } }],
         }),
     ],
-  ])('says the lookup failed, with a retry, when %s', async (_label, respond) => {
+  ])('stays quiet before a pull request is known when %s', async (_label, respond) => {
     mockGetMany.mockImplementationOnce(respond);
-    renderMark();
-    const failed = await screen.findByTestId('convo-pull-request-failed');
-    expect(failed).toHaveAccessibleName('com_ui_pr_load_failed');
-    expect(screen.queryByTestId('convo-pull-request')).toBeNull();
-    mockGetMany.mockResolvedValue(answer('convo-1', pr));
-    fireEvent.focus(failed);
-    const retry = await screen.findByRole('button', { name: 'com_ui_retry' });
-    fireEvent.click(retry);
-    expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
-    expect(mockGetMany).toHaveBeenCalledTimes(2);
+    const { client } = renderMark();
+    await waitFor(() =>
+      expect(client.getQueryState(['conversationPullRequest', 'convo-1'])?.status).toBe('error'),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId('convo-pull-request-failed')).not.toBeInTheDocument(),
+    );
   });
 
   it.each([
@@ -152,7 +149,7 @@ describe('PullRequestRowMark', () => {
     expect(container.querySelector('[data-testid="convo-pull-request-failed"]')).toBeNull();
   });
 
-  it('shows the failure when a refresh fails after an empty answer was cached', async () => {
+  it('stays quiet when a refresh fails after an empty answer was cached', async () => {
     jest.useFakeTimers();
     try {
       mockGetMany
@@ -164,7 +161,7 @@ describe('PullRequestRowMark', () => {
       await jest.advanceTimersByTimeAsync(61_000);
       window.dispatchEvent(new Event('focus'));
       await jest.advanceTimersByTimeAsync(100);
-      expect(screen.getByTestId('convo-pull-request-failed')).toBeInTheDocument();
+      expect(screen.queryByTestId('convo-pull-request-failed')).not.toBeInTheDocument();
     } finally {
       jest.useRealTimers();
     }
@@ -172,12 +169,26 @@ describe('PullRequestRowMark', () => {
 
   it('keeps its spacing on the rendered mark, so an absent mark takes no room', async () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
-    const first = renderMark();
-    expect(await screen.findByTestId('convo-pull-request')).toHaveClass('me-1');
-    first.unmount();
-    mockGetMany.mockRejectedValueOnce(new Error('503'));
     renderMark();
-    expect(await screen.findByTestId('convo-pull-request-failed')).toHaveClass('me-1');
+    expect(await screen.findByTestId('convo-pull-request')).toHaveClass('me-1');
+  });
+
+  it('keeps a known pull request and offers a retry when its refresh fails', async () => {
+    mockGetMany.mockResolvedValueOnce(answer('convo-1', pr));
+    const { client } = renderMark();
+    fireEvent.click(await screen.findByTestId('convo-pull-request'));
+    await screen.findByTestId('pull-request-card');
+    mockGetMany.mockRejectedValueOnce(new Error('503'));
+    await act(async () => {
+      await client.refetchQueries();
+    });
+    expect(await screen.findByText('com_ui_pr_refresh_failed')).toBeInTheDocument();
+    expect(screen.getByTestId('pull-request-card')).toHaveTextContent(pr.title);
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    await waitFor(() =>
+      expect(screen.queryByText('com_ui_pr_refresh_failed')).not.toBeInTheDocument(),
+    );
   });
 
   it('falls back to the single route when the replica that answered has no batch route', async () => {
@@ -315,12 +326,14 @@ describe('PullRequestRowMark', () => {
     expect(onDescribed).not.toHaveBeenCalledWith(true);
   });
 
-  it('reports a description for a failed lookup too, since it renders the failure text', async () => {
+  it('does not describe a pull request that has never been discovered', async () => {
     const onDescribed = jest.fn();
     mockGetMany.mockRejectedValueOnce(new Error('503'));
-    renderMark({ onDescribed });
-    await screen.findByTestId('convo-pull-request-failed');
-    expect(onDescribed).toHaveBeenLastCalledWith(true);
+    const { client } = renderMark({ onDescribed });
+    await waitFor(() =>
+      expect(client.getQueryState(['conversationPullRequest', 'convo-1'])?.status).toBe('error'),
+    );
+    expect(onDescribed).not.toHaveBeenCalledWith(true);
   });
 
   it('writes what the colors say into text the row can announce', async () => {

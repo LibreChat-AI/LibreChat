@@ -313,6 +313,61 @@ describe('createSocialUser', () => {
     expect(getUserById).toHaveBeenCalledWith('newUser123');
   });
 
+  describe('under the config of the role the account is created with', () => {
+    const { getAppConfig } = require('~/server/services/Config');
+    const params = {
+      email: 'user@example.com',
+      avatarUrl: 'https://example.com/avatar.png',
+      provider: 'google',
+      providerKey: 'googleId',
+      providerId: 'google-sub-123',
+      username: 'user',
+      name: 'User',
+      emailVerified: true,
+      lookup: {
+        findUser: jest.fn(),
+        provider: 'google',
+        providerId: 'google-sub-123',
+        email: 'user@example.com',
+      },
+    };
+
+    afterEach(() => {
+      getAppConfig.mockResolvedValue({});
+    });
+
+    it("refuses a domain the USER role's list excludes before creating the account", async () => {
+      getAppConfig.mockImplementation(async (options) =>
+        options?.role === 'USER' ? { registration: { allowedDomains: ['other.example'] } } : {},
+      );
+
+      const login = createSocialUser(params);
+
+      await expect(login).rejects.toMatchObject({
+        code: ErrorTypes.AUTH_FAILED,
+        message: 'Email domain not allowed',
+      });
+      expect(createUserIfAbsent).not.toHaveBeenCalled();
+    });
+
+    it("stores the new account's avatar with that config's file strategy", async () => {
+      process.env.CDN_PROVIDER = FileSources.local;
+      const processAvatar = jest.fn().mockResolvedValue('https://cdn.example/avatar.png');
+      getStrategyFunctions.mockReturnValue({ processAvatar });
+      resizeAvatar.mockResolvedValue(Buffer.from('avatar'));
+      getAppConfig.mockImplementation(async (options) =>
+        options?.role === 'USER' ? { fileStrategy: FileSources.s3 } : {},
+      );
+
+      await createSocialUser(params);
+
+      expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.s3);
+      expect(updateUser).toHaveBeenCalledWith('newUser123', {
+        avatar: 'https://cdn.example/avatar.png',
+      });
+    });
+  });
+
   describe('concurrent first login', () => {
     const params = {
       email: 'user@example.com',

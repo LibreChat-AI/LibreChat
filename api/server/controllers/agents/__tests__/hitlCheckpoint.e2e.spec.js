@@ -33,6 +33,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   saveMessage: jest.fn(async (req, message) => message),
   getConvo: jest.fn(async () => null),
   getMessages: jest.fn(async () => []),
@@ -159,7 +160,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await GenerationJobManager.destroy();
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(() => {

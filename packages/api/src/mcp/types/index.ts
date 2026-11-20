@@ -149,6 +149,8 @@ export type FileSearchSource = {
 export type Artifacts =
   | {
       content?: FormattedContent[];
+      /** Original generated images for storage, separate from model-bound content. */
+      imageAttachments?: FormattedContent[];
       [Tools.ui_resources]?: {
         data: UIResource[];
       };
@@ -280,6 +282,11 @@ export interface UserConnectionContext {
   /** Cancels the connection's SDK requests when the caller itself is cancelled; previously only
    *  OAuth connections could carry a signal, leaving non-OAuth discovery uncancellable. */
   signal?: AbortSignal;
+  /**
+   * Nobody can sign in for this caller, as on the remote agent API. A sign-in prompt ends the
+   * caller's wait with `OAuthPromptUnattendedError`; see `guardUnattendedOAuth`.
+   */
+  unattended?: boolean;
   /** Immutable client capabilities requested by this caller. */
   capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
   /** Absolute epoch-ms bound on the whole connect-and-list operation. `connectionTimeout` bounds
@@ -330,6 +337,8 @@ export interface RequestScopedMCPConnectionStore {
 
 export interface OAuthStartOptions {
   expiresAt?: number;
+  /** Call after the prompt URL is durable, before awaiting authorization completion. */
+  onPublished?: () => void;
 }
 
 export type OAuthStartHandler = (authURL: string, options?: OAuthStartOptions) => Promise<void>;
@@ -350,6 +359,39 @@ export interface OAuthConnectionOptions extends UserConnectionContext {
 export interface MCPConnectionTarget {
   serverConfig: ParsedServerConfig;
   connectionOwner: 'operator' | 'principal';
+}
+
+/** The acting user a principal-scoped MCP decision is made for. */
+export interface MCPPrincipal {
+  userId: string;
+  role?: string;
+  /**
+   * The user's `idOnTheSource` as the request already loaded it, `null` for a local user.
+   * Supplied together with `role`, it lets the principal's config read skip a user lookup.
+   */
+  idOnTheSource?: string | null;
+}
+
+/** The acting user as the request loaded it, for principal-scoped registry lookups and checkout. */
+export interface MCPLookupUser {
+  id?: string;
+  role?: string;
+  idOnTheSource?: string | null;
+}
+
+/**
+ * How a principal-scoped registry lookup (one that names a user) treats the
+ * librechat.yaml servers that principal's resolved config hides.
+ *
+ * Hiding is an access boundary: the registry resolves the hidden set itself from
+ * a strict read of the principal's config, failing closed, and a principal-scoped
+ * lookup never returns a hidden server unless `includeHidden` opts out.
+ */
+export interface MCPServerLookupOptions {
+  /** Skip hiding, for cleanup that must still reach every server, such as token revocation. */
+  includeHidden?: boolean;
+  /** See {@link MCPPrincipal.idOnTheSource}; pass `req.user.idOnTheSource` when the caller has it. */
+  idOnTheSource?: string | null;
 }
 
 type MCPConnectionTargetInput =

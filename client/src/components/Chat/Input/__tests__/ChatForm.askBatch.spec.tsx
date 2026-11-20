@@ -132,7 +132,7 @@ describe('ChatForm behind a batch question', () => {
 
     const textarea = await screen.findByTestId('text-input');
     expect(textarea).toBeDisabled();
-    expect(textarea).toHaveClass('max-h-[3.25rem]');
+    expect(textarea).toHaveClass('max-h-13');
     expect(textarea).not.toHaveClass('max-h-[45vh]');
   }, 20000);
 
@@ -143,6 +143,6 @@ describe('ChatForm behind a batch question', () => {
     const textarea = await screen.findByTestId('text-input');
     expect(textarea).toBeEnabled();
     expect(textarea).toHaveClass('max-h-[45vh]');
-    expect(textarea).not.toHaveClass('max-h-[3.25rem]');
+    expect(textarea).not.toHaveClass('max-h-13');
   }, 20000);
 });

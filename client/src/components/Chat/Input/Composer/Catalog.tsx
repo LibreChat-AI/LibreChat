@@ -1,9 +1,9 @@
 import React, { useId, useRef, useMemo, useState, useEffect } from 'react';
 import {
-  Input,
   Label,
   Radio,
   OGDialog,
+  FilterInput,
   OGDialogTitle,
   OGDialogContent,
   OGDialogDescription,
@@ -132,7 +132,10 @@ function EntryGrid({
       selectedIds={selectedIds}
       onToggle={(item) => byKey.get(itemKey(item))?.onSelect()}
       view={view}
-      statusFor={(item) => byKey.get(itemKey(item))?.status}
+      statusFor={(item) => {
+        const status = byKey.get(itemKey(item))?.status;
+        return status?.label ? status : undefined;
+      }}
       favoriteKeys={favoriteKeys}
       onToggleFavorite={toggle}
       emptyKey={view === 'marketplace' || query !== '' ? 'com_ui_composer_no_results' : undefined}
@@ -181,12 +184,13 @@ export function CatalogContent({
         <div className="-ms-1 -me-5 min-h-0 flex-1 overflow-y-auto ps-1 pe-5">
           <div className="bg-surface-dialog sticky top-0 z-10 flex flex-wrap items-center gap-2 pt-1 pb-3">
             <div className="min-w-0 flex-1">
-              <Input
+              <FilterInput
                 type="search"
+                surface="dialog"
+                inputId={`${viewLabelId}-search`}
+                label={searchLabel}
                 value={search}
                 onChange={(event) => onSearchChange(event.target.value)}
-                placeholder={searchLabel}
-                aria-label={searchLabel}
               />
             </div>
             <Label id={viewLabelId} className="sr-only">

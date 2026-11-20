@@ -33,6 +33,11 @@ export type CodeBridgePairing = {
   expiresAt: string;
 };
 
+/** Command features a worker may negotiate; LibreChat only sends a feature's fields once advertised. */
+export type WorkspaceCommandFeature = 'detached';
+
+export const WORKSPACE_COMMAND_FEATURES: readonly WorkspaceCommandFeature[] = ['detached'];
+
 export type CodeBridgeWorkerStatus = {
   status: 'offline' | 'starting' | 'ready';
   leaseExpiresInMs?: number;
@@ -44,6 +49,8 @@ export type CodeBridgeWorkerStatus = {
   programmaticLanguages?: ['bash'];
   /** Negotiated edit features; unknown names are dropped. */
   editFileFeatures?: WorkspaceEditFileFeature[];
+  /** Negotiated command features; unknown names are dropped. */
+  commandFeatures?: WorkspaceCommandFeature[];
   maxCommandTimeoutMs?: number;
 };
 
@@ -245,31 +252,52 @@ function validStatusStringArray(value: unknown): value is string[] {
   );
 }
 
-function validWorkspaceOperations(value: unknown): value is CodeWorkspaceOperation[] {
-  return (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.length <= CODE_WORKSPACE_OPERATIONS.length &&
-    value.every((operation) =>
-      CODE_WORKSPACE_OPERATIONS.includes(operation as CodeWorkspaceOperation),
-    ) &&
-    new Set(value).size === value.length
+/** Bound on advertised operation names, known or not, so a status cannot carry an unbounded list. */
+const MAX_ADVERTISED_WORKSPACE_OPERATIONS = 64;
+const WORKSPACE_OPERATION_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+const KNOWN_WORKSPACE_OPERATIONS: ReadonlySet<string> = new Set(CODE_WORKSPACE_OPERATIONS);
+
+/**
+ * The operations this build knows from a well-formed advertised list, or undefined when the list
+ * itself is malformed. Workers gain operations before every LibreChat deployment knows them, so a
+ * well-formed name this build does not know is dropped rather than invalidating the worker.
+ */
+function knownWorkspaceOperations(value: unknown): CodeWorkspaceOperation[] | undefined {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_ADVERTISED_WORKSPACE_OPERATIONS ||
+    new Set(value).size !== value.length ||
+    !value.every(
+      (operation) => typeof operation === 'string' && WORKSPACE_OPERATION_NAME.test(operation),
+    )
+  ) {
+    return undefined;
+  }
+  return value.filter((operation): operation is CodeWorkspaceOperation =>
+    KNOWN_WORKSPACE_OPERATIONS.has(operation),
   );
 }
 
-function knownEditFileFeatures(value: unknown): WorkspaceEditFileFeature[] {
+/** A worker-level list must still offer at least one operation this build can use. */
+function validWorkspaceOperations(value: unknown): boolean {
+  return (knownWorkspaceOperations(value)?.length ?? 0) > 0;
+}
+
+function knownFeatures<T extends string>(known: readonly T[], value: unknown): T[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return WORKSPACE_EDIT_FILE_FEATURES.filter((feature) => value.includes(feature));
+  return known.filter((feature) => value.includes(feature));
 }
 
 function validWorkspaceCapabilities(value: unknown): value is {
   protocolVersion: 1;
-  operations: CodeWorkspaceOperation[];
-  workspaces: CodeWorkspaceDescriptor[];
+  /** Raw advertised names; read through `knownWorkspaceOperations`. */
+  operations: string[];
+  workspaces: Array<Omit<CodeWorkspaceDescriptor, 'operations'> & { operations?: string[] }>;
   programmaticLanguages?: unknown;
   editFileFeatures?: unknown;
+  commandFeatures?: unknown;
 } {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const capabilities = value as Record<string, unknown>;
@@ -282,7 +310,7 @@ function validWorkspaceCapabilities(value: unknown): value is {
   ) {
     return false;
   }
-  const operations = capabilities.operations;
+  const operations = knownWorkspaceOperations(capabilities.operations) ?? [];
   const ids = new Set<string>();
   return capabilities.workspaces.every((value) => {
     if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -319,9 +347,7 @@ function validWorkspaceCapabilities(value: unknown): value is {
           workspace.name.trim().length === 0 ||
           workspace.name.length > 128)) ||
       (workspace.operations !== undefined &&
-        (!validWorkspaceOperations(workspace.operations) ||
-          workspace.operations.length > operations.length ||
-          workspace.operations.some((operation) => !operations.includes(operation))))
+        !isWorkspaceOperationSubset(workspace.operations, operations))
     ) {
       return false;
     }
@@ -330,11 +356,34 @@ function validWorkspaceCapabilities(value: unknown): value is {
   });
 }
 
+/** A root may narrow the worker's known operations; one only it knows is dropped, not refused. */
+function isWorkspaceOperationSubset(
+  value: unknown,
+  workerOperations: readonly CodeWorkspaceOperation[],
+): boolean {
+  const known = knownWorkspaceOperations(value);
+  return known != null && known.every((operation) => workerOperations.includes(operation));
+}
+
+/**
+ * A worker whose workspace tools are all newer than this build is still a valid worker; it
+ * simply offers no workspace tools here, exactly like one that advertises none.
+ */
+function offersOnlyUnknownWorkspaceOperations(value: unknown): boolean {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const { operations } = value as { operations?: unknown };
+  return (
+    Array.isArray(operations) &&
+    operations.length > 0 &&
+    knownWorkspaceOperations(operations)?.length === 0
+  );
+}
+
 /** Keep the status endpoint readable during worker-first rolling upgrades.
  * Legacy capabilities remain non-selectable and are surfaced as an explicit
  * update-required state; they never regain an implicit `primary` binding. */
 function validLegacyWorkspaceCapabilities(value: unknown): value is {
-  operations: CodeWorkspaceOperation[];
+  operations: string[];
 } {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const capabilities = value as Record<string, unknown>;
@@ -430,7 +479,8 @@ export async function getCodeBridgeWorkerStatus({
     const validWorkspaceTools =
       capabilities?.workspaceTools == null ||
       validWorkspaceCapabilities(capabilities.workspaceTools) ||
-      validLegacyWorkspaceCapabilities(capabilities.workspaceTools);
+      validLegacyWorkspaceCapabilities(capabilities.workspaceTools) ||
+      offersOnlyUnknownWorkspaceOperations(capabilities.workspaceTools);
     if (
       status.protocolVersion !== 1 ||
       status.workerId !== workerId ||
@@ -455,15 +505,17 @@ export async function getCodeBridgeWorkerStatus({
     }
     let workspaceStatus: Pick<
       CodeBridgeWorkerStatus,
-      'operations' | 'workspaces' | 'programmaticLanguages' | 'editFileFeatures'
+      'operations' | 'workspaces' | 'programmaticLanguages' | 'editFileFeatures' | 'commandFeatures'
     > = {};
     if (validWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = {
-        operations: [...capabilities.workspaceTools.operations],
-        workspaces: capabilities.workspaceTools.workspaces.map((workspace) => ({
-          ...workspace,
-          ...(workspace.operations ? { operations: [...workspace.operations] } : {}),
-        })),
+        operations: knownWorkspaceOperations(capabilities.workspaceTools.operations) ?? [],
+        workspaces: capabilities.workspaceTools.workspaces.map(
+          ({ operations, ...workspace }): CodeWorkspaceDescriptor => ({
+            ...workspace,
+            ...(operations ? { operations: knownWorkspaceOperations(operations) ?? [] } : {}),
+          }),
+        ),
       };
       if (
         Array.isArray(capabilities.workspaceTools.programmaticLanguages) &&
@@ -474,12 +526,24 @@ export async function getCodeBridgeWorkerStatus({
       ) {
         workspaceStatus.programmaticLanguages = ['bash'];
       }
-      const editFileFeatures = knownEditFileFeatures(capabilities.workspaceTools.editFileFeatures);
+      const editFileFeatures = knownFeatures(
+        WORKSPACE_EDIT_FILE_FEATURES,
+        capabilities.workspaceTools.editFileFeatures,
+      );
       if (editFileFeatures.length > 0) {
         workspaceStatus.editFileFeatures = editFileFeatures;
       }
+      const commandFeatures = knownFeatures(
+        WORKSPACE_COMMAND_FEATURES,
+        capabilities.workspaceTools.commandFeatures,
+      );
+      if (commandFeatures.length > 0) {
+        workspaceStatus.commandFeatures = commandFeatures;
+      }
     } else if (validLegacyWorkspaceCapabilities(capabilities?.workspaceTools)) {
-      workspaceStatus = { operations: [...capabilities.workspaceTools.operations] };
+      workspaceStatus = {
+        operations: knownWorkspaceOperations(capabilities.workspaceTools.operations) ?? [],
+      };
     }
     return {
       status: workerStatus,

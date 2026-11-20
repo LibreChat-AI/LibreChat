@@ -1,7 +1,7 @@
 const { logger } = require('@librechat/data-schemas');
 const {
   getSafeErrorMetadata,
-  resolveStrictAppConfig,
+  loadStrictAppConfig,
   getAppConfigOptionsFromUser,
   createStreamKeepaliveLoader,
 } = require('@librechat/api');
@@ -29,10 +29,10 @@ const configMiddleware = async (req, res, next) => {
   }
 };
 
-/** The same resolution, without the fallback; `resolveStrictAppConfig` owns that choice. */
+/** Fail closed and reuse only a successful strict read for this request identity. */
 const strictConfigMiddleware = async (req, res, next) => {
   try {
-    req.config = await resolveStrictAppConfig(getAppConfig, req.user);
+    req.config = await loadStrictAppConfig(req, getAppConfig);
     next();
   } catch (error) {
     logger.error('Strict config middleware error:', {

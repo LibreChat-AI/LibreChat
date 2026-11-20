@@ -6,7 +6,7 @@ const { logger } = require('@librechat/data-schemas');
 const { tool } = require('@librechat/agents/langchain/tools');
 const { ContentTypes, EImageOutputType } = require('librechat-data-provider');
 const {
-  logAxiosError,
+  formatToolError,
   oaiToolkit,
   extractBaseURL,
   getProxyDispatcher,
@@ -180,10 +180,7 @@ function createOpenAIImageTools(fields = {}) {
           },
         );
       } catch (error) {
-        const message = '[image_gen_oai] Problem generating the image:';
-        logAxiosError({ error, message });
-        return returnValue(`Something went wrong when trying to generate the image. The OpenAI API may be unavailable:
-Error Message: ${error.message}`);
+        return returnValue(formatToolError(error, 'OpenAI image generation'));
       } finally {
         if (abortHandler && derivedSignal) {
           derivedSignal.removeEventListener('abort', abortHandler);
@@ -396,10 +393,7 @@ Error Message: ${error.message}`);
         ];
         return [textResponse, { content, file_ids }];
       } catch (error) {
-        const message = '[image_edit_oai] Problem editing the image:';
-        logAxiosError({ error, message });
-        return returnValue(`Something went wrong when trying to edit the image. The OpenAI API may be unavailable:
-Error Message: ${error.message || 'Unknown error'}`);
+        return returnValue(formatToolError(error, 'OpenAI image editing'));
       } finally {
         if (abortHandler && derivedSignal) {
           derivedSignal.removeEventListener('abort', abortHandler);

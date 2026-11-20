@@ -405,7 +405,7 @@ describe('ConnectedAccounts', () => {
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_pr_account_connected');
     await userEvent.click(trigger);
 
-    const dialog = await screen.findByRole('alertdialog');
+    const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent(
       'com_ui_pr_account_disconnect_title:com_ui_pr_provider_github',
     );
@@ -415,7 +415,7 @@ describe('ConnectedAccounts', () => {
     await userEvent.click(screen.getByRole('button', { name: 'com_ui_pr_account_disconnect' }));
 
     await waitFor(() => expect(mockDisconnect).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(invalidate).toHaveBeenCalledWith([QueryKeys.pullRequestConnection]);
     expect(invalidate).toHaveBeenCalledWith([QueryKeys.conversationPullRequest]);
     const connect = await screen.findByRole('button', { name: /com_ui_pr_account_connect_aria/ });
@@ -443,11 +443,11 @@ describe('ConnectedAccounts', () => {
     await userEvent.click(
       await screen.findByRole('button', { name: /com_ui_pr_account_disconnect_aria/ }),
     );
-    await screen.findByRole('alertdialog');
+    await screen.findByRole('dialog');
     mockGetConnection.mockResolvedValue({ configured: false, connected: false });
     await userEvent.click(screen.getByRole('button', { name: 'com_ui_pr_account_disconnect' }));
 
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.queryByRole('group')).toBeNull();
     await waitFor(() => expect(screen.getByRole('tabpanel')).toHaveFocus());
   });
@@ -482,13 +482,13 @@ describe('ConnectedAccounts', () => {
       await screen.findByRole('button', { name: 'com_ui_pr_account_disconnect' }),
     );
 
-    const cancel = screen.getByRole('button', { name: 'com_ui_cancel' });
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
     await waitFor(() => expect(cancel).toBeDisabled());
     await userEvent.keyboard('{Escape}');
-    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
 
     settle();
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   it('keeps the confirmation open with an error when disconnecting fails', async () => {
@@ -506,7 +506,7 @@ describe('ConnectedAccounts', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'com_ui_pr_account_disconnect_error',
     );
-    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
   it('closes the confirmation when a failed disconnect had ended the connection after all', async () => {
@@ -526,7 +526,7 @@ describe('ConnectedAccounts', () => {
     );
 
     await waitFor(() => expect(mockGetConnection.mock.calls.length).toBeGreaterThan(asked));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     const connect = await screen.findByRole('button', { name: /com_ui_pr_account_connect_aria/ });
     await waitFor(() => expect(connect).toHaveFocus());
     /** Pull requests follow the server's token now. */
@@ -552,8 +552,8 @@ describe('ConnectedAccounts', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'com_ui_pr_account_disconnect_error',
     );
-    await userEvent.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
     act(() => answer(connection(false)));
     const connect = await screen.findByRole('button', { name: /com_ui_pr_account_connect_aria/ });
@@ -577,7 +577,7 @@ describe('ConnectedAccounts', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'com_ui_pr_account_disconnect_error',
     );
-    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
   it('keeps the confirmation button named while the disconnect is in flight', async () => {
@@ -595,7 +595,7 @@ describe('ConnectedAccounts', () => {
     await waitFor(() => expect(confirm).toHaveAttribute('aria-busy', 'true'));
     expect(screen.getByRole('button', { name: 'com_ui_pr_account_disconnect' })).toBe(confirm);
     settle();
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   it('names the provider the server reports over a stale startup config', async () => {

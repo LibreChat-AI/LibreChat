@@ -4,6 +4,7 @@ import {
   QueryKeys,
   DEFAULT_HISTORY_CACHE_RECENT,
   DEFAULT_HISTORY_CACHE_TTL_MS,
+  DEFAULT_HISTORY_CACHE_MAX_BYTES,
 } from 'librechat-data-provider';
 import type { Query, QueryClient } from '@tanstack/react-query';
 
@@ -24,6 +25,8 @@ export type MessagesRetentionOptions = {
   recent?: number;
   /** How long a left conversation's history stays cached. */
   ttlMs?: number;
+  /** Aggregate estimated payload budget for histories kept during the grace period. */
+  maxBytes?: number;
 };
 
 type IdleHistory = {
@@ -66,6 +69,47 @@ const isUnobservedHistory = (query: Query): boolean =>
 
 const newestFirst = (a: IdleHistory, b: IdleHistory): number => b.leftAt - a.leftAt;
 
+/** Walk untyped cache payloads lazily: JSON.stringify would allocate another transcript.
+ *  Count UTF-16 strings and scalar slots, not engine-specific object/DOM overhead. */
+function estimatePayloadBytes(data: unknown, limit: number): number {
+  function* fields(value: object): Generator<unknown> {
+    for (const key in value) {
+      if (Object.hasOwn(value, key)) {
+        yield key;
+        yield Reflect.get(value, key);
+      }
+    }
+  }
+
+  const seen = new WeakSet<object>();
+  const stack: Iterator<unknown>[] = [[data].values()];
+  let bytes = 0;
+  while (stack.length > 0) {
+    const next = stack[stack.length - 1].next();
+    if (next.done) {
+      stack.pop();
+      continue;
+    }
+    const value = next.value;
+    if (typeof value === 'string') {
+      bytes += value.length * 2;
+    } else if (value != null && typeof value === 'object') {
+      if (seen.has(value)) {
+        continue;
+      }
+      seen.add(value);
+      bytes += 8;
+      stack.push(Array.isArray(value) ? value.values() : fields(value));
+    } else {
+      bytes += 8;
+    }
+    if (bytes > limit) {
+      return bytes;
+    }
+  }
+  return bytes;
+}
+
 /**
  * Releases the message histories of conversations the user has left, so long transcripts do
  * not pile up in memory across conversation switches. React Query's own `cacheTime` cannot
@@ -76,7 +120,7 @@ const newestFirst = (a: IdleHistory, b: IdleHistory): number => b.leftAt - a.lef
  *
  * A history is released once it has no observers, is not fetching, is neither pinned nor exempt,
  * and is either older than `ttlMs` since it was left or beyond the `recent` most recently left
- * conversations.
+ * conversations, or would exceed the aggregate payload budget.
  * Releases wait while any mutation is pending, since mutation callbacks write into these caches.
  * Returning to a released conversation mounts a fresh query, which fetches the history again.
  *
@@ -90,10 +134,12 @@ export function retainMessages(
     isExempt = () => false,
     recent = DEFAULT_HISTORY_CACHE_RECENT,
     ttlMs = DEFAULT_HISTORY_CACHE_TTL_MS,
+    maxBytes = DEFAULT_HISTORY_CACHE_MAX_BYTES,
   }: MessagesRetentionOptions,
 ): () => void {
   const cache = queryClient.getQueryCache();
   const leftAt = new Map<string, number>();
+  const payloadSizes = new WeakMap<Query, { data: object; writes: number; bytes: number }>();
   const previousDefaults = queryClient.getQueryDefaults([QueryKeys.messages]);
   queryClient.setQueryDefaults([QueryKeys.messages], { ...previousDefaults, cacheTime: Infinity });
   cache.findAll([QueryKeys.messages]).forEach((query) => {
@@ -152,19 +198,34 @@ export function retainMessages(
       schedule(PIN_RECHECK_MS);
       return false;
     });
+    let retainedBytes = 0;
     candidates.sort(newestFirst).forEach((entry, index) => {
+      releaseToolCallParts(entry.conversationId);
       const expiresAt = entry.leftAt + ttlMs;
-      if (index < recent && expiresAt > now) {
-        schedule(expiresAt - now);
-        return;
+      if (index < recent && expiresAt > now && maxBytes > 0) {
+        const data = entry.query.state.data;
+        let bytes = 0;
+        if (data != null && typeof data === 'object') {
+          const writes = entry.query.state.dataUpdateCount;
+          const cached = payloadSizes.get(entry.query);
+          bytes =
+            cached?.data === data && cached.writes === writes
+              ? cached.bytes
+              : estimatePayloadBytes(data, maxBytes);
+          payloadSizes.set(entry.query, { data, writes, bytes });
+        }
+        if (retainedBytes + bytes <= maxBytes) {
+          retainedBytes += bytes;
+          schedule(expiresAt - now);
+          return;
+        }
       }
       leftAt.delete(entry.conversationId);
       cache.remove(entry.query);
     });
   }
 
-  /** Full tool-call parts fetched for a conversation's previews leave with its history, so a
-   *  released conversation does not keep its largest content alive under another key. */
+  /** Full preview expansions are cheap to refetch and need not occupy the history grace. */
   const releaseToolCallParts = (conversationId: string) => {
     queryClient.removeQueries({
       queryKey: [QueryKeys.toolCallPart, conversationId],
@@ -175,6 +236,7 @@ export function retainMessages(
   const unsubscribe = cache.subscribe((event) => {
     if (
       event.type !== 'added' &&
+      event.type !== 'updated' &&
       event.type !== 'observerAdded' &&
       event.type !== 'observerRemoved' &&
       event.type !== 'removed'
@@ -185,8 +247,10 @@ export function retainMessages(
     if (conversationId == null) {
       return;
     }
-    if (event.type === 'added') {
-      schedule(RELEASE_SETTLE_MS);
+    if (event.type === 'added' || event.type === 'updated') {
+      if (event.type === 'added' || event.query.getObserversCount() === 0) {
+        schedule(RELEASE_SETTLE_MS);
+      }
       return;
     }
     if (event.type === 'removed') {

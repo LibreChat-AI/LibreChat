@@ -11,6 +11,7 @@ jest.mock('./utils', () => ({
   getFileStream: jest.fn(),
   getConfiguredFileSizeLimit: jest.fn(),
   isConfiguredProviderMediaType: jest.fn(),
+  skipMissingAttachment: jest.requireActual('./utils').skipMissingAttachment,
 }));
 
 jest.mock('./memoryGuard', () => ({
@@ -62,6 +63,22 @@ describe('encodeAndFormatVideos - provider formatting', () => {
         filename: file.filename,
         type: file.type,
       },
+    });
+  });
+
+  it.each([
+    ['the default', {}, 300_000],
+    ['the configured value', { timeouts: { fileFetchMs: 1_234 } }, 1_234],
+  ])('reads the stored file under timeouts.fileFetchMs, using %s', async (_name, config, ms) => {
+    await encodeAndFormatVideos(
+      { config } as unknown as ServerRequest,
+      [createMockFile()],
+      { provider: Providers.GOOGLE },
+      getStrategyFunctions,
+    );
+    expect(mockedGetFileStream.mock.calls[0][4]).toMatchObject({
+      timeout: ms,
+      timeoutErrorMessage: expect.stringContaining(`timeouts.fileFetchMs (${ms} ms)`),
     });
   });
 

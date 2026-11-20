@@ -79,7 +79,7 @@ export default function StatefulWorkspaceDefault() {
         aria-labelledby="default-stateful-workspace-label"
         aria-describedby="default-stateful-workspace-description"
         className="shrink-0"
-        sizeClasses="z-50 min-w-[18rem]"
+        minWidth="18rem"
         triggerClassName="w-full sm:w-[16rem]"
       />
     </div>

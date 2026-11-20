@@ -39,6 +39,38 @@ describe('summarizeBalance', () => {
     expect(summary.tone).toBe('normal');
   });
 
+  it('measures against the stored allotment after the configured amount changes', () => {
+    const summary = summarizeBalance(
+      refilling({
+        allotment: 40_000,
+        allottedAt: '2026-07-01T00:00:00.000Z',
+        refillAmount: 20_000,
+      }),
+    );
+    expect(summary.allotment).toBe(40_000);
+    expect(summary.usedPercent).toBe(69);
+    expect(summary.refillAmount).toBe(20_000);
+  });
+
+  it('falls back to the configured amount when no allotment is stored', () => {
+    expect(summarizeBalance(refilling({ allotment: 0 })).allotment).toBe(20_000);
+    expect(summarizeBalance(refilling({ allotment: 40_000 })).allotment).toBe(20_000);
+  });
+
+  it('ignores an allotment from before the last refill', () => {
+    const stale = refilling({ allotment: 40_000, allottedAt: '2026-06-24T00:00:00.000Z' });
+    expect(summarizeBalance(stale).allotment).toBe(20_000);
+  });
+
+  it('ignores an allotment it cannot place in a period', () => {
+    const unplaced = refilling({
+      allotment: 40_000,
+      allottedAt: '2026-07-01T00:00:00.000Z',
+      lastRefill: undefined,
+    });
+    expect(summarizeBalance(unplaced).allotment).toBe(20_000);
+  });
+
   it('reads 0% used when saved-up credits exceed the allotment', () => {
     const summary = summarizeBalance(refilling({ tokenCredits: 45_000 }));
     expect(summary.usedPercent).toBe(0);

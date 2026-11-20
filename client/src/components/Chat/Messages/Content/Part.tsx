@@ -1,5 +1,17 @@
 import { memo } from 'react';
-import { Part as ChatPart } from '@librechat/chat/components';
+import {
+  Part as ChatPart,
+  ToolCall,
+  ToolPreparation,
+  Container,
+  AskUserQuestionCall,
+} from '@librechat/chat/components';
+import {
+  isBashProgrammaticToolCall,
+  getAskUserQuestionPart,
+  getActivityLabelPart,
+  getActivityLabelText,
+} from '@librechat/chat';
 import {
   Tools,
   Constants,
@@ -36,28 +48,18 @@ import {
   SubagentCall,
   SteerPart,
 } from './Parts';
-import {
-  getCachedPreview,
-  getActivityLabelPart,
-  getActivityLabelText,
-  getPartKeyIndex,
-} from '~/utils';
+import { getCachedPreview, getPartKeyIndex } from '~/utils';
 import BackgroundTaskCall from './Parts/BackgroundTaskCall';
-import { getAskUserQuestionPart } from '~/utils/approval';
-import AskUserQuestionCall from './AskUserQuestionCall';
-import { isBashProgrammaticToolCall } from './routing';
 import { isError } from './ToolOutput/OutputRenderer';
-import { ToolPreparation } from './preparation';
 import { ErrorMessage } from './MessageContent';
 import AskUserQuestion from './AskUserQuestion';
 import RetrievalCall from './RetrievalCall';
 import ToolApproval from './ToolApproval';
 import AgentHandoff from './AgentHandoff';
 import CodeAnalyze from './CodeAnalyze';
-import Container from './Container';
 import WebSearch from './WebSearch';
-import ToolCall from './ToolCall';
 import Image from './Image';
+import './toolCallSlots';
 
 const isFailedImageCall = (
   output: string | null | undefined,
@@ -157,7 +159,6 @@ const renderFileAuthoring =
       initialProgress={toolCall.progress ?? 0.1}
       isSubmitting={isSubmitting}
       runStepStatus={toolCall.runStepStatus}
-      runStepDurationMs={toolCall.runStepDurationMs}
       attachments={attachments}
       hideAttachments={hideAttachments}
       onExpand={onToolExpand}
@@ -317,7 +318,6 @@ const tools: Record<string, ToolRenderer> = {
       initialProgress={toolCall.progress ?? 0.1}
       isSubmitting={isSubmitting}
       runStepStatus={toolCall.runStepStatus}
-      runStepDurationMs={toolCall.runStepDurationMs}
       attachments={attachments}
       hideAttachments={hideAttachments}
       onExpand={onToolExpand}

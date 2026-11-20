@@ -1,4 +1,6 @@
 const fs = require('fs');
+const { formatMessage } = require('@librechat/agents');
+const { dedupeDocumentNames, ContentTraversalLimitError } = require('@librechat/api');
 const path = require('path');
 const {
   EModelEndpoint,
@@ -58,6 +60,41 @@ it('strips server-private owner metadata from untrusted LibreChat imports', asyn
   expect(importBatchBuilder.messages[0].text).toBe('[EMAIL_1]');
   expect(importBatchBuilder.messages[0]).not.toHaveProperty('privateText');
   expect(importBatchBuilder.messages[0]).not.toHaveProperty('privacyRevision');
+});
+
+it.each([2000, 8000])('bounds replay of %i imported inline document blocks', async (count) => {
+  const content = Array.from({ length: count / 2 }, (_, index) => {
+    const name = 'a'.repeat(196) + index.toString(36).padStart(4, '0');
+    const document = { type: 'document', document: { name } };
+    return [document, structuredClone(document)];
+  }).flat();
+  const jsonData = {
+    conversationId: 'imported-documents',
+    title: 'Imported documents',
+    endpoint: EModelEndpoint.agents,
+    messages: [
+      {
+        messageId: 'source',
+        parentMessageId: Constants.NO_PARENT,
+        isCreatedByUser: false,
+        content,
+      },
+    ],
+  };
+  const builder = new ImportBatchBuilder('owner');
+  await getImporter(jsonData)(jsonData, 'owner', () => builder);
+  const imported = builder.messages[0];
+  expect(imported.content).toEqual(content);
+  const payload = [formatMessage({ message: imported })];
+
+  if (count === 8000) {
+    expect(() => dedupeDocumentNames(payload)).toThrow(ContentTraversalLimitError);
+  } else {
+    dedupeDocumentNames(payload);
+    const names = payload[0].content.map((part) => part.document.name.toLowerCase());
+    expect(new Set(names).size).toBe(count);
+  }
+  expect(imported.content).toEqual(content);
 });
 
 describe('importChatGptConvo', () => {

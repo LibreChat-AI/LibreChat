@@ -10,6 +10,7 @@ const {
   resolveInitializationProjectContext,
   initializeAgent,
   primeInvokedSkillsForProfiles,
+  createWorkspaceAttachmentPrimer,
   validateAgentModel,
   extractManualSkills,
   GenerationJobManager,
@@ -39,6 +40,7 @@ const {
   createLazyAgentHistoryResolver,
   resolveToolRoleGrants,
   createChatRunFileBindings,
+  createChatSdkFileSession,
   createAxiosInstance,
   getCodeApiAuthHeaders,
   getCodeExecutionBaseUrl,
@@ -70,6 +72,8 @@ const {
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_SUBAGENT_RUN_CONFIGS,
   isEphemeralAgentId,
+  resolveSpecUserToggle,
+  resolveSpecSkillsEnabled,
   resolveAllowedStatefulCodeEnvironments,
 } = require('librechat-data-provider');
 const {
@@ -100,9 +104,10 @@ const {
   provisionToCodeEnv,
   provisionToVectorDB,
   checkSessionsAlive,
+  digestFile,
 } = require('~/server/services/Files/provision');
 const { createProvisionFilesCallback } = require('~/server/services/Files/provisionCallback');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const AgentClient = require('~/server/controllers/agents/client');
 const { processAddedConvo } = require('./addedConvo');
@@ -117,6 +122,7 @@ const {
 } = require('./backgroundCompletion');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
+const { getFileStorage } = require('~/server/services/Files/operations');
 const { getAppConfig } = require('~/server/services/Config');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { encodeAndFormat } = require('~/server/services/Files/images/encode');
@@ -260,17 +266,7 @@ const initializeClientWithProvider = async ({
 
   /** @type {Array<UsageMetadata>} */
   const collectedUsage = [];
-  /**
-   * Vertex Gemini 3 thought signatures captured from `chat_model_end` events,
-   * keyed by `tool_call_id`. Persisted on
-   * `responseMessage.metadata.thoughtSignatures` so subsequent conversation
-   * turns can restore each signature onto the right reconstructed AIMessage's
-   * `additional_kwargs.signatures` and avoid 400s when resuming after a tool
-   * round-trip without a final text reply. Always allocated; capture path
-   * is a no-op for providers that don't emit signatures (OpenAI, Anthropic,
-   * Bedrock, etc.).
-   * @type {Record<string, string>}
-   */
+  /** @type {import('@librechat/api').GoogleThoughtSignatures} */
   const collectedThoughtSignatures = {};
   /** @type {ArtifactPromises} */
   const artifactPromises = [];
@@ -371,9 +367,10 @@ const initializeClientWithProvider = async ({
     }),
   );
   const primaryAgentPromise = endpointOption.agent;
-  const modelsConfigPromise = getModelsConfig(req);
-  const validatedPrimaryAgentPromise = Promise.all([primaryAgentPromise, modelsConfigPromise]).then(
-    async ([primaryAgent, modelsConfig]) => {
+  /** Each validation, including handoff and subagents, loads only its agent's provider models. */
+  const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
+  const validatedPrimaryAgentPromise = Promise.resolve(primaryAgentPromise).then(
+    async (primaryAgent) => {
       if (!primaryAgent) {
         throw new Error('Agent not found');
       }
@@ -381,7 +378,7 @@ const initializeClientWithProvider = async ({
       const validationResult = await validateAgentModel({
         req,
         res,
-        modelsConfig,
+        getEndpointModels,
         logViolation,
         agent: primaryAgent,
       });
@@ -389,7 +386,7 @@ const initializeClientWithProvider = async ({
         throw new Error(validationResult.error?.message);
       }
 
-      return { primaryAgent, modelsConfig };
+      return primaryAgent;
     },
   );
 
@@ -593,6 +590,21 @@ const initializeClientWithProvider = async ({
     }),
   };
 
+  const primeAttachments = createWorkspaceAttachmentPrimer({
+    toolContexts: agentToolContexts,
+    getProvisionFiles: () => toolExecuteOptions.provisionFiles,
+    deps: {
+      userId: req.user.id,
+      conversationId,
+      getAuthHeaders: (workerId) => getCodeApiAuthHeaders(req, workerId),
+      digestFile: (file, digestSignal) => digestFile({ req, file, signal: digestSignal }),
+      recordImport: db.recordFileWorkspaceImport,
+      codeApiMaxRetryWaitMs: appConfig?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+      timeoutMs: appConfig?.endpoints?.agents?.workspaceAttachments?.timeoutMs,
+      concurrency: appConfig?.endpoints?.agents?.workspaceAttachments?.concurrency,
+    },
+  });
+
   const summarizationOptions =
     appConfig?.summarization?.enabled === false ? { enabled: false } : { enabled: true };
 
@@ -642,7 +654,7 @@ const initializeClientWithProvider = async ({
     editableSkillIds,
     skillCreateAllowed,
     { skillStates, defaultActiveOnShare },
-    { primaryAgent, modelsConfig },
+    primaryAgent,
     requestConversation,
     chatProjectContext,
     toolRoleGrants,
@@ -737,10 +749,13 @@ const initializeClientWithProvider = async ({
     selectedModelSpec &&
     Object.hasOwn(selectedModelSpec, 'skills')
   ) {
-    if (selectedModelSpec.skills === true) {
-      primaryAgent.skills_enabled = true;
-      delete primaryAgent.skills;
-    } else if (selectedModelSpec.skills === false) {
+    /** The spec's `skills` config is the default the badge is seeded from; the
+     *  request's explicit toggle decides (`skills: false` stays a hard opt-out). */
+    const specSkillsEnabled = resolveSpecSkillsEnabled(
+      resolveSpecUserToggle(req.body?.ephemeralAgent?.skills, selectedModelSpec, 'skills'),
+      selectedModelSpec.skills,
+    );
+    if (!specSkillsEnabled) {
       primaryAgent.skills_enabled = false;
       primaryAgent.skills = [];
     } else if (Array.isArray(selectedModelSpec.skills)) {
@@ -748,9 +763,13 @@ const initializeClientWithProvider = async ({
         names: selectedModelSpec.skills,
         accessibleSkillIds,
         getSkillByName: skillDbMethods.getSkillByName,
+        appConfig,
       });
       primaryAgent.skills_enabled = true;
       primaryAgent.skills = resolvedSkillIds.map((id) => id.toString());
+    } else {
+      primaryAgent.skills_enabled = true;
+      delete primaryAgent.skills;
     }
   }
   const primaryScopedSkillIds = resolveAgentScopedSkillIds({
@@ -857,7 +876,7 @@ const initializeClientWithProvider = async ({
       agent_ids: primaryConfig.agent_ids,
       endpointOption,
       allowedProviders,
-      modelsConfig,
+      getEndpointModels,
       loadTools,
       requestFiles,
       conversationId,
@@ -958,7 +977,7 @@ const initializeClientWithProvider = async ({
     res,
     loadTools,
     logViolation,
-    modelsConfig,
+    getEndpointModels,
     requestFiles,
     agentConfigs,
     primaryAgent,
@@ -1364,7 +1383,7 @@ const initializeClientWithProvider = async ({
       throw new Error(`You no longer have access to subagent ${agentId}.`);
     }
     const validation = await waitForAbort(
-      validateAgentModel({ req, res, agent, modelsConfig, logViolation }),
+      validateAgentModel({ req, res, agent, getEndpointModels, logViolation }),
       context.signal,
     );
     throwIfAborted(context.signal);
@@ -1479,14 +1498,22 @@ const initializeClientWithProvider = async ({
     if (config.userMCPAuthMap) {
       Object.assign(userMCPAuthMap, config.userMCPAuthMap);
     }
+    const toolContext = buildAgentToolContext({ agent: routedAgent, config });
     subagentCodeRouting.attach(agentToolContexts, {
       agentId,
       context,
       placement,
       codeExecutionContext: config.codeExecutionContext,
-      toolContext: buildAgentToolContext({ agent: routedAgent, config }),
+      toolContext,
     });
     endpointTokenConfigByAgentId.set(agentId, config.endpointTokenConfig);
+    /** A routed execution keeps its own tool context, so provision against exactly that one. */
+    const ownToolContexts = new Map([[agentId, toolContext]]);
+    await primeAttachments([config], {
+      signal: context.signal,
+      toolContexts: ownToolContexts,
+      provisionFiles: createProvisionFilesCallback({ req, agentToolContexts: ownToolContexts }),
+    });
     return config;
   };
   const initializeLazySubagent = async ({
@@ -1839,6 +1866,7 @@ const initializeClientWithProvider = async ({
           },
           {
             completionWakeups: completionWakeupsEnabled,
+            requestScopedConnections: getMCPRequestContext(req, res),
             scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
           },
         )
@@ -1991,6 +2019,7 @@ const initializeClientWithProvider = async ({
     filterFiles: filterFilesByAgentAccess,
     listPublications: db.listRunArtifacts,
     provisioning: {
+      fileStorage: getFileStorage(),
       provisionToCodeEnv,
       provisionToVectorDB,
       updateFile: db.updateFile,
@@ -2029,6 +2058,7 @@ const initializeClientWithProvider = async ({
   toolExecuteOptions.provisionFiles = runFileBindings.wrapProvision(
     toolExecuteOptions.provisionFiles,
   );
+  await primeAttachments([primaryConfig, ...agentConfigs.values()], { signal });
 
   const eventHandlers = getDefaultHandlers({
     res,
@@ -2081,6 +2111,15 @@ const initializeClientWithProvider = async ({
     subagentAggregatorsByToolCallId,
     subagentTasks,
     runFiles: runFileBindings.session,
+    sdkFiles: createChatSdkFileSession({
+      audit: (event) => logger.warn('[agents:sdk-files]', event),
+      host: req.app?.locals?.sdkFileHost,
+      req,
+      getInputs: () => primaryConfig.currentRequestAttachments,
+      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId, { storageOnly: true }),
+      filterFiles: filterFilesByAgentAccess,
+      getStrategyFunctions,
+    }),
     /** Resolved endpoint token/pricing config so spending and cost reflect
      *  configured rates for custom-endpoint agents instead of defaults. */
     endpointTokenConfig: primaryConfig.endpointTokenConfig,
@@ -2121,7 +2160,7 @@ function createInitializeClient(dependencies = {}) {
       params.req,
       dependencies.resolveUpstreamTokenProvider,
       params.signal,
-      params.scheduledTokenContext,
+      params.executionContext,
     );
     return initializeWithScheduleMCPExecution(
       {
@@ -2131,8 +2170,9 @@ function createInitializeClient(dependencies = {}) {
           params.req,
           params.res,
         ),
-        restoredContext: params.scheduledTokenContext,
+        executionContext: params.executionContext,
         restoredJob: params.scheduleJobIdentity,
+        approvedToolCalls: params.approvedToolCalls,
       },
       () => require('~/server/services/Schedules/consent'),
       () =>
@@ -2140,7 +2180,7 @@ function createInitializeClient(dependencies = {}) {
           {
             req: params.req,
             context: getMCPRequestContext(params.req),
-            restoredContext: params.scheduledTokenContext,
+            executionContext: params.executionContext,
             host: dependencies.scheduledBearerHost,
             signal: params.signal,
             streamId: params.req._resumableStreamId,

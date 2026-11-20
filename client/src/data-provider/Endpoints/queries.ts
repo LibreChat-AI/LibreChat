@@ -26,20 +26,25 @@ export const useGetEndpointsQuery = <TData = t.TEndpointsConfig>(
 
 export const useTokenConfigQuery = (
   config?: UseQueryOptions<t.TTokenConfigMap>,
+  endpoint?: string,
 ): QueryObserverResult<t.TTokenConfigMap> => {
   const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
-  return useQuery<t.TTokenConfigMap>([QueryKeys.tokenConfig], () => dataService.getTokenConfig(), {
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    /** Refetch on mount only when stale — with `staleTime: Infinity` that's
-     *  exclusively after a user-key change invalidates `tokenConfig`, so a
-     *  settings change made while the gauge is unmounted is picked up on
-     *  return instead of serving the prior key's resolved config */
-    refetchOnMount: true,
-    ...config,
-    enabled: (config?.enabled ?? true) === true && queriesEnabled,
-  });
+  return useQuery<t.TTokenConfigMap>(
+    [QueryKeys.tokenConfig, endpoint],
+    () => dataService.getTokenConfig(endpoint),
+    {
+      staleTime: Infinity,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      /** Refetch on mount only when stale — with `staleTime: Infinity` that's
+       *  exclusively after a user-key change invalidates `tokenConfig`, so a
+       *  settings change made while the gauge is unmounted is picked up on
+       *  return instead of serving the prior key's resolved config */
+      refetchOnMount: true,
+      ...config,
+      enabled: (config?.enabled ?? true) === true && queriesEnabled,
+    },
+  );
 };
 
 /** Floor for the revalidation timer, so an entry that is about to expire cannot cause a request storm. */

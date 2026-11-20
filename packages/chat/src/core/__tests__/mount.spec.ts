@@ -55,6 +55,9 @@ describe('mountSubmission', () => {
     expect(host.cache.queueTitleGeneration).toHaveBeenCalledWith('c-9');
     expect(host.pane.replaceNewConversationUrl).toHaveBeenCalledWith('c-9');
     expect(host.cache.addOptimisticConversation).toHaveBeenCalledWith('c-9', newChat);
+    expect(
+      (host.cache.addOptimisticConversation as jest.Mock).mock.invocationCallOrder[0],
+    ).toBeLessThan((host.pane.replaceNewConversationUrl as jest.Mock).mock.invocationCallOrder[0]);
     expect(run.optimisticStreamIds.has('c-9')).toBe(true);
     expect(host.stream.reconnectToStream).toHaveBeenCalledTimes(1);
   });

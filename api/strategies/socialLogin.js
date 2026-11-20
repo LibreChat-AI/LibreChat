@@ -4,6 +4,7 @@ const {
   isEnabled,
   findSocialUser,
   isEmailDomainAllowed,
+  resolvePreAuthAppConfig,
   resolveAppConfigForUser,
 } = require('@librechat/api');
 const { createSocialUser, handleExistingUser } = require('./process');
@@ -19,7 +20,7 @@ const socialLogin =
         profile,
       });
 
-      const baseConfig = await getAppConfig({ baseOnly: true });
+      const baseConfig = await resolvePreAuthAppConfig(getAppConfig);
       if (!isEmailDomainAllowed(email, baseConfig?.registration?.allowedDomains)) {
         logger.error(
           `[${provider}Login] Authentication blocked - email domain not allowed [Email: ${email}]`,
@@ -34,7 +35,7 @@ const socialLogin =
       const lookup = { findUser, provider, providerId: id, email };
       const existingUser = await findSocialUser(lookup);
 
-      const appConfig = existingUser?.tenantId
+      const appConfig = existingUser
         ? await resolveAppConfigForUser(getAppConfig, existingUser)
         : baseConfig;
 
@@ -125,7 +126,6 @@ const socialLogin =
         username,
         name,
         emailVerified,
-        appConfig,
         lookup,
       });
       return passResult(newUser);

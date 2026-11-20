@@ -83,6 +83,7 @@ jest.mock('@librechat/api', () => {
     isEnabled: jest.fn(() => false),
     createRequiredTwoFactorGate: actualApi.createRequiredTwoFactorGate,
     createTermsAcceptanceGate: actualApi.createTermsAcceptanceGate,
+    createTermsRouteGate: actualApi.createTermsRouteGate,
     afterTermsGate: actualApi.afterTermsGate,
     clearCloudFrontCookies: jest.fn(),
     generateTwoFactorSetupToken: jest.fn(() => 'setup-token'),
@@ -985,6 +986,58 @@ describe('requireJwtAuth terms acceptance', () => {
   it('lets the write through when modalAcceptance is off', async () => {
     const { nextCalled } = await runWrite({ id: 'user-1', termsAccepted: false });
     expect(nextCalled).toBe(true);
+  });
+
+  describe('requireTermsAcceptanceOnRead', () => {
+    /** The chain a route that starts a flow mounts: authentication, then this gate. */
+    function runRead(user) {
+      const req = mockReq(user, { method: 'GET', baseUrl: '/api/mcp', path: '/a/oauth/initiate' });
+      const res = mockRes();
+      return new Promise((resolve) => {
+        res.json.mockImplementation(() => {
+          resolve({ res, nextCalled: false });
+          return res;
+        });
+        requireJwtAuth(req, res, () =>
+          requireJwtAuth.requireTermsAcceptanceOnRead(req, res, () =>
+            resolve({ res, nextCalled: true }),
+          ),
+        );
+      });
+    }
+
+    it('rejects a read from a user who has not accepted when modalAcceptance is on', async () => {
+      mockGetAppConfig = jest.fn(async () => termsConfig);
+      const { res, nextCalled } = await runRead({ id: 'user-1', termsAccepted: false });
+      expect(nextCalled).toBe(false);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ code: 'terms_not_accepted' }),
+      );
+    });
+
+    it('lets an accepted user read without resolving config', async () => {
+      mockGetAppConfig = jest.fn(async () => termsConfig);
+      const { nextCalled } = await runRead({ id: 'user-1', termsAccepted: true });
+      expect(nextCalled).toBe(true);
+      expect(mockGetAppConfig).not.toHaveBeenCalled();
+    });
+
+    it('lets the read through when modalAcceptance is off', async () => {
+      const { nextCalled } = await runRead({ id: 'user-1', termsAccepted: false });
+      expect(nextCalled).toBe(true);
+    });
+
+    it('leaves every other read to requireJwtAuth, which lets it through', async () => {
+      mockGetAppConfig = jest.fn(async () => termsConfig);
+      const req = mockReq({ id: 'user-1', termsAccepted: false }, { method: 'GET', path: '/a' });
+      const res = mockRes();
+      const nextCalled = await new Promise((resolve) => {
+        requireJwtAuth(req, res, () => resolve(true));
+      });
+      expect(nextCalled).toBe(true);
+      expect(res.status).not.toHaveBeenCalled();
+    });
   });
 });
 

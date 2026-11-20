@@ -1,9 +1,13 @@
 import { ContentTypes } from 'librechat-data-provider';
+import {
+  hasParallelLanes,
+  getActivityLabelPart,
+  getActivityLabelText,
+  isPhaseActivityLabel,
+} from '@librechat/chat';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TraceModel } from './model';
-import { getActivityLabelPart, getActivityLabelText, isPhaseActivityLabel } from '~/utils';
 import { isModelCall, isToolWork } from './model';
-import { hasParallelLanes } from '~/utils/lanes';
 
 const PREVIEW_LENGTH = 160;
 const ELLIPSIS = '…';

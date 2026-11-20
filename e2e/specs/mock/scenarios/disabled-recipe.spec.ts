@@ -61,4 +61,37 @@ test.describe('the disabled-recipe design rule', () => {
       rmSync(probePath, { force: true });
     }
   });
+  test('a spelled-out recipe under the same variants as the dim passes the design lint @scenario:a-spelled-out-recipe-under-the-same-variants-passes-the-design-lint', () => {
+    inOneProject();
+    test.setTimeout(180_000);
+
+    const probe = 'client/src/__disabled_recipe_spelled_probe__.tsx';
+    const probePath = join(repoRoot, probe);
+    const lint = (body: string): LintMessage[] => {
+      writeFileSync(probePath, `import { cn } from '@librechat/client';\n${body}`);
+      const result = run(ESLINT, ['--format', 'json', '--no-warn-ignored', '--', probe]);
+      const [report] = JSON.parse(result.stdout) as { messages: LintMessage[] }[];
+      return report.messages.filter((message) => message.ruleId === RULE);
+    };
+
+    try {
+      const shared = lint(
+        "export const A = () => <input className={cn('disabled:hover:opacity-50', 'theme-disabled:hover:opacity-100')} />;\n",
+      );
+      expect(shared, 'a recipe marker followed by a shared variant').toEqual([]);
+
+      const constant = lint(
+        "const faded = 'opacity-50 theme-disabled:opacity-100';\n" +
+          'export const A = ({ busy }: { busy: boolean }) => <input disabled={busy} className={cn(busy && faded)} />;\n',
+      );
+      expect(constant, 'a constant that spells its own recipe').toEqual([]);
+
+      const mismatched = lint(
+        "export const A = () => <input className={cn('disabled:opacity-50', 'md:theme-disabled:opacity-100')} />;\n",
+      );
+      expect(mismatched, 'a recipe under a variant the dim lacks').toHaveLength(1);
+    } finally {
+      rmSync(probePath, { force: true });
+    }
+  });
 });

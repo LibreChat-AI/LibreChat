@@ -87,6 +87,7 @@ jest.mock('~/hooks', () => ({
   useGetAgentsConfig: () => ({ agentsConfig: { capabilities: ['file_search'] } }),
   useHasAccess: () => mockCanUseFileSearch(),
   useAuthContext: () => ({ user: { id: 'user-1' } }),
+  useOnline: jest.requireActual('~/hooks/useOnline').default,
   useToolFavorites: () => ({ favoriteKeys: new Set(), toggle: jest.fn() }),
   useLocalize: () => (key: string, options?: { count?: number; name?: string }) => {
     const translations: Record<string, string> = {
@@ -237,7 +238,8 @@ describe('ProjectResources', () => {
       },
     });
     fireEvent.change(input, { target: { files: [new File(['d'], 'another-excess.txt')] } });
-    expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1);
+    /** Uploads run concurrently, so the second file starts while the first is still in flight. */
+    expect(mockUploadMutateAsync).toHaveBeenCalledTimes(2);
     expect(mockShowToast).toHaveBeenCalledTimes(2);
     expect(mockShowToast).toHaveBeenLastCalledWith(
       expect.objectContaining({ message: 'Could not add 1 selected file(s)' }),
@@ -245,11 +247,24 @@ describe('ProjectResources', () => {
     finishFirstUpload(uploadedFile);
     await waitFor(() => expect(mockAddMutateAsync).toHaveBeenCalledTimes(2));
     expect(mockUploadMutateAsync).toHaveBeenCalledTimes(2);
-    expect(mockAddMutateAsync.mock.calls.map(([payload]) => payload.file_id)).toEqual([
-      uploadedFile.file_id,
-      'second-canonical-id',
-    ]);
+    expect(mockAddMutateAsync.mock.calls.map(([payload]) => payload.file_id).sort()).toEqual(
+      [uploadedFile.file_id, 'second-canonical-id'].sort(),
+    );
   });
+
+  it.each(['Описание.md', '日本語.md', '100% done.md', 'a%20b.md'])(
+    'percent-encodes the multipart filename of %s for the upload route to decode',
+    async (filename) => {
+      mockUploadMutateAsync.mockResolvedValue(uploadedFile);
+      renderResources();
+      fireEvent.change(screen.getByTestId('project-upload-input'), {
+        target: { files: [new File(['x'], filename)] },
+      });
+      await waitFor(() => expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1));
+      const formData = mockUploadMutateAsync.mock.calls[0][0] as FormData;
+      expect((formData.get('file') as File).name).toBe(encodeURIComponent(filename));
+    },
+  );
 
   it('retries a failed association without uploading another binary', async () => {
     mockUploadMutateAsync.mockResolvedValue(uploadedFile);

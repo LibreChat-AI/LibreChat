@@ -19,6 +19,11 @@ import {
   isToolBlockedByApprovalPolicy,
   healToolApprovalPolicy,
 } from './policy';
+import {
+  assertToolOptionsWithinLimits,
+  retainToolOptionsLimits,
+  ToolOptionsLimitError,
+} from '../options';
 import { selectSkillPrimesForTurn, unionPrimeAllowedTools } from '~/agents/skills';
 import { isMCPAllPlaceholder, normalizeAgentToolKeys } from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
@@ -58,6 +63,21 @@ type AdmissionSurface = Pick<
 > & { readonly rawMcpServerNames?: readonly string[] };
 const admissionSurfaces = new WeakMap<object, AdmissionSurface>();
 
+// Charge full-name work before allocating aliases, across every lazy surface in one admission.
+const MAX_ADMISSION_NAME_WORK = 1024 * 1024;
+type AdmissionWork = (name: string, copies?: number) => void;
+
+function createAdmissionWork(): AdmissionWork {
+  let remaining = MAX_ADMISSION_NAME_WORK;
+  return (name, copies = 1) => {
+    const work = Math.max(1, name.length) * copies;
+    if (work > remaining) {
+      throw new ToolOptionsLimitError('Tool approval admission exceeds the safety work limit');
+    }
+    remaining -= work;
+  };
+}
+
 function readAdmissionSurface(
   agent: ToolApprovalAdmissionAgent,
 ): ToolApprovalAdmissionAgent & AdmissionSurface {
@@ -78,6 +98,7 @@ export function copyToolApprovalAdmissionMetadata<T extends object>(
   context: AdmissionProjectionContext = {},
 ): T {
   const surface = readAdmissionSurface(source);
+  assertToolOptionsWithinLimits(surface.tool_options);
   const selectedTools: string[] | undefined = surface.tools == null ? undefined : [];
   for (const tool of surface.tools ?? []) {
     const name = typeof tool === 'string' ? tool : tool.name;
@@ -105,19 +126,21 @@ export function copyToolApprovalAdmissionMetadata<T extends object>(
     toolOptions: surface.tool_options,
     rawServerNames: context.rawMcpServerNames ?? surface.rawMcpServerNames ?? [],
   });
+  const projectedOptions =
+    normalized.toolOptions &&
+    Object.fromEntries(
+      Object.entries(normalized.toolOptions)
+        .filter(
+          ([name]) =>
+            context.toolsAvailable !== false ||
+            isActionTool(name) ||
+            !name.includes(Constants.mcp_delimiter),
+        )
+        .map(([name, option]) => [name, { approval_mode: option.approval_mode }]),
+    );
+  if (projectedOptions) retainToolOptionsLimits(projectedOptions, normalized.toolOptions);
   admissionSurfaces.set(target, {
-    tool_options:
-      normalized.toolOptions &&
-      Object.fromEntries(
-        Object.entries(normalized.toolOptions)
-          .filter(
-            ([name]) =>
-              context.toolsAvailable !== false ||
-              isActionTool(name) ||
-              !name.includes(Constants.mcp_delimiter),
-          )
-          .map(([name, option]) => [name, { approval_mode: option.approval_mode }]),
-      ),
+    tool_options: projectedOptions,
     tools: normalized.tools,
     rawMcpServerNames: context.rawMcpServerNames?.slice() ?? surface.rawMcpServerNames,
     toolRegistry: surface.toolRegistry,
@@ -151,12 +174,18 @@ function literalHookNames(matcher?: string): string[] | undefined {
 }
 
 /** Possible catalog spellings are admission hints, never authorization aliases. */
-function unresolvedHookSpellings(name: string, rawServerNames: readonly string[]): string[] {
+function unresolvedHookSpellings(
+  name: string,
+  rawServerNames: readonly string[],
+  consume: AdmissionWork,
+): string[] {
+  consume(name, 1 + rawServerNames.length);
   if (isActionTool(name) || isMCPAllPlaceholder(name)) return [name];
   const aliases = buildServerNameAliases(rawServerNames);
   const known = [...rawServerNames, ...aliases.keys()];
   const spellings = new Set([name]);
   const add = (tool: string, server: string): void => {
+    consume(name);
     const raw = rawServerNames.includes(server) ? server : (aliases.get(server) ?? server);
     const normalized = normalizeServerName(raw);
     const suffixes =
@@ -169,9 +198,12 @@ function unresolvedHookSpellings(name: string, rawServerNames: readonly string[]
       const legacy = `${prefix}_${stripped}`;
       if (stripServerNamePrefix(legacy, normalized) === stripped) tools.add(legacy);
     }
-    for (const suffix of suffixes)
-      for (const candidate of tools)
+    for (const suffix of suffixes) {
+      for (const candidate of tools) {
+        consume(name);
         spellings.add(`${candidate}${Constants.mcp_delimiter}${suffix}`);
+      }
+    }
   };
   const [tool, server] = splitMCPToolKey(name, known);
   if (server != null && known.includes(server)) add(tool, server);
@@ -191,6 +223,7 @@ function createUnresolvedReviewMatcher(
   options: AgentToolOptions,
   policy: TToolApprovalPolicy | undefined,
   toolNames: ReadonlySet<string>,
+  consume: AdmissionWork,
   rawServerNames: readonly string[] = [],
 ): (name?: string) => boolean {
   const wildcardServers: string[] = [];
@@ -216,11 +249,13 @@ function createUnresolvedReviewMatcher(
     directNames.has(server) ? server : (serverAliases.get(server) ?? server);
   const key = (server: string, tool: string) => JSON.stringify([resolveServer(server), tool]);
   const visitParts = (name: string, visit: (tool: string, server: string) => boolean): boolean => {
+    consume(name, 1 + knownNames.length);
     const [tool, server] = splitMCPToolKey(name, knownNames);
     if (server && knownNameSet.has(server)) return visit(tool, server);
     // Without catalog knowledge either half may contain the delimiter. Keep possible boundaries.
     let delimiter = name.indexOf(Constants.mcp_delimiter);
     while (delimiter >= 0) {
+      consume(name);
       const suffix = name.slice(delimiter + Constants.mcp_delimiter.length);
       if (suffix && visit(name.slice(0, delimiter), suffix)) return true;
       delimiter = name.indexOf(Constants.mcp_delimiter, delimiter + Constants.mcp_delimiter.length);
@@ -239,6 +274,7 @@ function createUnresolvedReviewMatcher(
   const reviewServers = new Set<string>();
   let unknownCanAsk = false;
   for (const [name, option] of Object.entries(options)) {
+    consume(name);
     if (
       option.approval_mode == null ||
       option.approval_mode === 'allow' ||
@@ -348,6 +384,7 @@ export function canAgentGraphPause({
     return asksUserQuestion;
   }
 
+  const consume = createAdmissionWork();
   const approvalGraph = collectApprovalAgents(agents);
   const toolOwners = new Map<string, Set<string | undefined>>();
   const reviewGatedTools = new Set<string>();
@@ -371,13 +408,21 @@ export function canAgentGraphPause({
     const reachable = new Set<string>();
     for (const tool of surface.tools ?? []) {
       const name = typeof tool === 'string' ? tool : tool.name;
-      if (name) reachable.add(name);
+      if (name) {
+        consume(name);
+        reachable.add(name);
+      }
     }
     for (const name of surface.toolRegistry?.keys() ?? []) reachable.add(name);
     for (const definition of surface.toolDefinitions ?? []) {
       if (definition.name) reachable.add(definition.name);
     }
-    const options = { ...surface.tool_options };
+    // A closed empty surface cannot review a tool, regardless of unrelated persisted options.
+    const sourceOptions =
+      surface.tools != null && reachable.size === 0 ? undefined : surface.tool_options;
+    assertToolOptionsWithinLimits(sourceOptions);
+    const options = { ...sourceOptions };
+    retainToolOptionsLimits(options, sourceOptions);
     aliasMCPToolOptions(surface.mcpToolAliases ?? [], options);
     for (const name of reachable) {
       addToolName(name, agent.id);
@@ -386,6 +431,7 @@ export function canAgentGraphPause({
     }
     if (
       !unresolvedModeCanAsk &&
+      (surface.tools == null || reachable.size > 0) &&
       approvalGraph.lazyAgents.has(agent) &&
       surface.toolRegistry == null &&
       surface.toolDefinitions == null
@@ -394,6 +440,7 @@ export function canAgentGraphPause({
         options,
         buildEffectiveToolApprovalPolicy(policy, surface.mcpToolAliases ?? [], toolApprovalAllows),
         reachable,
+        consume,
         surface.rawMcpServerNames,
       );
       unresolvedModeCanAsk = surface.tools == null ? canAsk() : [...reachable].some(canAsk);
@@ -444,7 +491,7 @@ export function canAgentGraphPause({
       const spellings = (name: string): string[] => {
         let names = cache.get(name);
         if (!names) {
-          names = knownCatalog ? [name] : unresolvedHookSpellings(name, rawNames);
+          names = knownCatalog ? [name] : unresolvedHookSpellings(name, rawNames, consume);
           cache.set(name, names);
         }
         return names;

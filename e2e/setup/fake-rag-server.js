@@ -20,10 +20,14 @@
  * assert a file's bytes actually reached the RAG env, independent of the DB write.
  * `/__debug/reset` clears those recordings only; the stored embeds behind presence
  * checks persist like real vectors until `DELETE /documents` removes them.
+ *
+ * `POST /__debug/stall` with `{ stall: true }` records file_search queries but never
+ * answers them or `DELETE /documents`, standing in for a hung RAG API; reset or `{ stall: false }` clears it.
  */
 
 const http = require('http');
 const busboy = require('busboy');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = parseInt(process.env.E2E_RAG_API_PORT || '8791', 10);
 /** Mirrors ENTITY_EMBEDDINGS_PROBE_K in packages/api/src/files/rag.ts; file_search asks for 5. */
@@ -38,6 +42,7 @@ const queries = [];
 const probes = [];
 /** @type {Array<{ file_id: string; entity_id: string }>} */
 const stored = [];
+let stallQueries = false;
 /** @type {string[]} */
 const deleted = [];
 
@@ -107,6 +112,9 @@ async function handleQuery(req, res) {
   const entityId = body.entity_id || '';
   if (body.k !== PROBE_K) {
     queries.push({ file_id: body.file_id || '', query: body.query || '' });
+    if (stallQueries) {
+      return;
+    }
     sendJson(res, 200, []);
     return;
   }
@@ -133,6 +141,9 @@ async function handleQuery(req, res) {
 
 async function handleDeleteDocuments(req, res) {
   const body = await readJson(req);
+  if (stallQueries) {
+    return;
+  }
   if (Array.isArray(body)) {
     const ids = body.map(String);
     deleted.push(...ids);
@@ -161,7 +172,14 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (pathname === '/__debug/stall' && req.method === 'POST') {
+      stallQueries = (await readJson(req)).stall === true;
+      sendJson(res, 200, { ok: true, stall: stallQueries });
+      return;
+    }
+
     if (pathname === '/__debug/reset' && req.method === 'POST') {
+      stallQueries = false;
       embedded.length = 0;
       queries.length = 0;
       probes.length = 0;
@@ -195,6 +213,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
+keepIdleConnections(server);
 server.listen(PORT, HOST, () => {
   console.log(`[e2e] fake RAG API listening on http://${HOST}:${PORT}`);
 });

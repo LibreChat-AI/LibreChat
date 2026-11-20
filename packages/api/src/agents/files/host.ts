@@ -107,6 +107,7 @@ export function createRunFileHost<TContext extends RunFileToolContext>({
   audit?: RunFileSessionDeps['audit'];
   provisioning: Pick<
     ProvisionCallbackDeps,
+    | 'fileStorage'
     | 'provisionToCodeEnv'
     | 'provisionToVectorDB'
     | 'updateFile'

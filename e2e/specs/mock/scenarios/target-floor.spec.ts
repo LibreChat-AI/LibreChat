@@ -1,19 +1,15 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { NEW_CHAT_PATH, getAccessToken, requestJson } from '../helpers';
+import { NEW_CHAT_PATH } from '../helpers';
 import { probeStyle } from './style.helpers';
-import { openSidebar } from './sidebar';
 
 /**
- * WCAG 2.5.8's 24px target minimum reaches the Button's default and `sm` heights and the exported
- * Dialog's close button. The default theme keeps every size it drew; a stored theme naming a
+ * WCAG 2.5.8's 24px target minimum reaches the Button's default and `sm` heights and the OGDialog
+ * close button. The default theme keeps every size it drew; a stored theme naming a
  * smaller Button height still loads, and draws its Buttons at the floor.
  */
 
 type Mode = 'light' | 'dark';
-type CreatedAssistant = { id: string };
-
-const ASSISTANT_NAME = 'E2E dialog close target assistant';
 
 /** Button heights under the floor, which the theme validator has always accepted. */
 const SMALL_BUTTON_THEME = {
@@ -88,85 +84,47 @@ test.describe('target floor', () => {
     }
   });
 
-  test('the exported Dialog close button is a 24px target with its glyph in place @scenario:dialog-close-target', async ({
+  test('the OGDialog close button is a 24px target with its glyph inside it @scenario:ogdialog-close-target', async ({
     page,
   }) => {
-    test.setTimeout(90000);
-    await page.goto('/c/new', { timeout: 10000 });
-    const token = await getAccessToken(page);
-    const assistant = await requestJson<CreatedAssistant>(page, {
-      path: '/api/assistants/v2',
-      token,
-      method: 'POST',
-      body: { endpoint: 'assistants', model: 'gpt-4o-mini', name: ASSISTANT_NAME },
-    });
+    for (const mode of ['light', 'dark'] as const) {
+      const modePage = mode === 'light' ? page : await page.context().newPage();
+      await modePage.addInitScript((selected) => {
+        localStorage.setItem('color-theme', selected);
+      }, mode);
+      await modePage.goto('/agents/all', { timeout: 15000 });
+      await expect(modePage.locator('html')).toHaveClass(
+        mode === 'dark' ? /\bdark\b/ : /\blight\b/,
+      );
+      await modePage.getByRole('button', { name: 'Admin Settings' }).click();
+      const dialog = modePage.getByRole('dialog');
+      await expect(dialog).toBeVisible({ timeout: 15000 });
+      /** The dialog animates in, so its close control is only measurable once it settles. */
+      await dialog.evaluate((element) =>
+        Promise.all(
+          element.getAnimations({ subtree: true }).map((animation) => animation.finished),
+        ),
+      );
 
-    try {
-      for (const mode of ['light', 'dark'] as const) {
-        await page.addInitScript((selected) => {
-          localStorage.setItem('color-theme', selected);
-          localStorage.setItem('navVisible', 'true');
-        }, mode);
-        await page.goto('/c/new?endpoint=assistants&model=gpt-4o-mini', { timeout: 10000 });
-        await expect(page.locator('html')).toHaveClass(mode === 'dark' ? /\bdark\b/ : /\blight\b/);
-        await openSidebar(page);
-        const controlPanel = page.getByRole('button', { name: 'Control Panel' });
-        if (await controlPanel.isVisible()) {
-          await controlPanel.click();
-          await page.getByRole('menuitemcheckbox', { name: 'Assistant Builder' }).click();
-        } else {
-          /** The panel choice persists, so the second mode finds the builder already open and a
-           *  click would close it. */
-          const builder = page.getByRole('button', { name: 'Assistant Builder' }).first();
-          if ((await builder.getAttribute('aria-pressed')) !== 'true') {
-            await builder.click();
-          }
-        }
-        const picker = page.getByTestId('select-dropdown-button').first();
-        await expect(picker.getByText(ASSISTANT_NAME, { exact: true })).toBeVisible();
-
-        /** The delete control is the builder's only neutral button holding a destructive icon. */
-        await page
-          .locator('button.btn-neutral')
-          .filter({ has: page.locator('.text-text-destructive') })
-          .click();
-        const dialog = page.getByRole('dialog', { name: 'Delete Assistant' });
-        await expect(dialog).toBeVisible();
-        /** The dialog slides in, so its frame and glyph are only comparable once it settles. */
-        await dialog.evaluate((element) =>
-          Promise.all(
-            element.getAnimations({ subtree: true }).map((animation) => animation.finished),
-          ),
-        );
-
-        const close = dialog.getByRole('button', { name: 'Close' });
-        const [box, glyph, frame] = await Promise.all([
-          close.boundingBox(),
-          close.locator('svg').boundingBox(),
-          dialog.boundingBox(),
-        ]);
-        expect(box && glyph && frame).toBeTruthy();
-        if (!box || !glyph || !frame) {
-          return;
-        }
-        expect(box.width).toBeGreaterThanOrEqual(24);
-        expect(box.height).toBeGreaterThanOrEqual(24);
-        /** The 20px glyph stays where it drew before the floor: 1.6rem down, 1.5rem in. */
-        expect(glyph.width).toBeCloseTo(20, 0);
-        expect(glyph.y - frame.y).toBeCloseTo(25.6, 0);
-        expect(frame.x + frame.width - (glyph.x + glyph.width)).toBeCloseTo(24, 0);
-
-        await close.focus();
-        await page.keyboard.press('Enter');
-        await expect(dialog).toBeHidden();
+      const close = dialog.getByRole('button', { name: 'Close' });
+      const [box, glyph] = await Promise.all([
+        close.boundingBox(),
+        close.locator('svg').boundingBox(),
+      ]);
+      expect(box && glyph).toBeTruthy();
+      if (!box || !glyph) {
+        return;
       }
-    } finally {
-      await requestJson(page, {
-        path: `/api/assistants/v2/${encodeURIComponent(assistant.id)}?endpoint=assistants&model=gpt-4o-mini`,
-        token,
-        method: 'DELETE',
-        body: { endpoint: 'assistants' },
-      });
+      expect(box.width).toBeGreaterThanOrEqual(24);
+      expect(box.height).toBeGreaterThanOrEqual(24);
+      expect(glyph.x).toBeGreaterThanOrEqual(box.x - 0.5);
+      expect(glyph.y).toBeGreaterThanOrEqual(box.y - 0.5);
+      expect(glyph.x + glyph.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+      expect(glyph.y + glyph.height).toBeLessThanOrEqual(box.y + box.height + 0.5);
+
+      await close.focus();
+      await modePage.keyboard.press('Enter');
+      await expect(dialog).toBeHidden();
     }
   });
 });

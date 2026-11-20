@@ -8,7 +8,7 @@ const mockFetchNextPage = jest.fn();
 const mockUseNavScrolling = jest.fn((_options?: object) => ({
   containerRef: { current: null },
 }));
-const mockUseSkillsInfiniteQuery = jest.fn(() => ({
+const mockUseSkillsInfiniteQuery = jest.fn((_params?: object) => ({
   data: {
     pages: [{ skills: [], has_more: true, after: 'cursor-2' }],
   },
@@ -33,7 +33,7 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useSkillsInfiniteQuery: () => mockUseSkillsInfiniteQuery(),
+  useSkillsInfiniteQuery: (params?: object) => mockUseSkillsInfiniteQuery(params),
 }));
 
 jest.mock('~/components/ui', () => {
@@ -46,7 +46,10 @@ jest.mock('~/components/ui', () => {
   const Collapse = ({ open, children }: { open: boolean; children?: React.ReactNode }) => (
     <div aria-hidden={!open || undefined}>{children}</div>
   );
-  return { PanelContent, Collapse };
+  const { default: ListLoading } = jest.requireActual<typeof import('~/components/ui/ListLoading')>(
+    '~/components/ui/ListLoading',
+  );
+  return { PanelContent, Collapse, ListLoading };
 });
 
 jest.mock('../FilterSkills', () => ({
@@ -90,5 +93,37 @@ describe('SkillsSidePanel', () => {
     expect(mockUseNavScrolling).toHaveBeenLastCalledWith(
       expect.objectContaining({ enabled: true }),
     );
+  });
+
+  it('asks for a first page large enough to fill a tall panel', () => {
+    render(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+
+    expect(mockUseSkillsInfiniteQuery).toHaveBeenCalledWith(expect.objectContaining({ limit: 50 }));
+  });
+
+  it('shows the shared loading footer only while the next page loads', () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    mockUseSkillsInfiniteQuery.mockReturnValue({
+      data: { pages: [{ skills: [], has_more: true, after: 'cursor-2' }] },
+      isFetchingNextPage: true,
+      fetchNextPage: mockFetchNextPage,
+      isLoading: false,
+    });
+    rerender(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
   });
 });

@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import {
   conversationRow,
@@ -11,6 +10,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
+import { expect, test, unroute } from './fixtures';
 import { openSidebar } from './scenarios/sidebar';
 
 function uniqueLabel(prefix: string) {
@@ -124,7 +124,8 @@ test.describe('conversation management', () => {
       await page.keyboard.press('ArrowDown');
       await expect(menu.getByRole('menuitem').first()).toBeFocused();
       const expectedOptions = ['Pin'];
-      if (background) expectedOptions.push('Mark as unread');
+      /** A chat that is not the one on screen can be marked unread, and opened beside it. */
+      if (background) expectedOptions.push('Mark as unread', 'Open beside chat');
       expectedOptions.push('Rename', 'Archive', 'Delete');
       await expect(menu.getByRole('menuitem')).toHaveText(expectedOptions);
       await test.info().attach('running-chat-menu', {
@@ -203,7 +204,7 @@ test.describe('conversation management', () => {
     );
     release();
     await staleRead;
-    await page.unroute(pattern);
+    await unroute(page, pattern);
     await expect(conversationRow(page)).toContainText(renamedTitle);
     expect(
       (await sendMessageAndWaitForCompletion(page, replyPrompt(`${label}-next`))).ok(),
@@ -297,7 +298,10 @@ test.describe('conversation management', () => {
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
     const conversationUrl = page.url();
     await openSidebar(page);
-    await page.getByRole('link', { name: 'New chat', exact: true }).click();
+    await page
+      .locator('#mobile-drawer')
+      .getByRole('link', { name: 'New chat', exact: true })
+      .click();
     await expect(page).toHaveURL(/\/c\/new$/);
     await expect(page.locator('#mobile-drawer')).toHaveCSS('visibility', 'hidden');
     await openSidebar(page);

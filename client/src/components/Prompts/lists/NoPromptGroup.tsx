@@ -8,8 +8,8 @@ export default function NoPromptGroup() {
   return (
     <div className="relative min-h-full w-full px-4">
       <div className="absolute inset-0 flex items-center justify-center">
-        <div className="text-center font-bold text-text-primary">
-          <h1 className="text-lg font-bold text-text-primary md:text-2xl">
+        <div className="text-text-primary text-center font-bold">
+          <h1 className="text-text-primary text-lg font-bold md:text-2xl">
             {localize('com_ui_prompt_preview_not_shared')}
           </h1>
           <Button

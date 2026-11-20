@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   logger,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -19,12 +20,14 @@ import type {
   AgentTriggerExecutionHostDeps,
 } from './triggers/host';
 import type { AgentContinueTriggerEnvelope, AgentTriggerEnvelope } from './triggers/envelope';
+import type { SteerPromotionOutcome } from '~/stream/interfaces/IJobStore';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
 import type { AgentTriggerDeliveryFailure } from './triggers/engine';
 import { getAgentTriggerIdempotencyKey, parseAgentTriggerEnvelope } from './triggers/envelope';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
 import { createIdleRecoveryLoop } from './recovery';
+import { getSafeErrorMetadata } from '~/utils';
 
 export const AGENT_QUEUED_TURN_SOURCE = 'agent-queued-turn';
 const AGENT_QUEUED_TURN_EVENT = 'agent.queued-turn';
@@ -69,9 +72,25 @@ type QueuedTurnResolverMethods = AgentQueuedTurnMethods &
   Pick<ConversationMethods, 'getConvo'> &
   Pick<MessageMethods, 'getMessages'>;
 
+/** A promoted steer's terminal hand-off, repeated by its own admission. */
+export interface PromotedSteerHandoff {
+  conversationId: string;
+  steerId: string;
+  userId: string;
+  tenantId?: string;
+  generationCreatedAt: number;
+  queuedTurnId: string;
+}
+
+export type CompletePromotedSteerHandoff = (
+  input: PromotedSteerHandoff,
+) => Promise<SteerPromotionOutcome>;
+
 export interface AgentQueuedTurnResolverDeps {
   methods: QueuedTurnResolverMethods;
   getGenerationJob: (conversationId: string) => Promise<GenerationState | null>;
+  /** Settles a promoted steer's job-store hand-off before its turn may run. */
+  completeSteerHandoff?: CompletePromotedSteerHandoff;
   now?: () => number;
   claimBy?: string;
 }
@@ -122,6 +141,7 @@ export interface AgentQueuedTurnLifecycle {
 export interface AgentQueuedTurnLifecycleDeps {
   methods: QueuedTurnResolverMethods;
   getGenerationJob: AgentQueuedTurnResolverDeps['getGenerationJob'];
+  completeSteerHandoff?: CompletePromotedSteerHandoff;
   getGenerationAdmissionEvidence: GetGenerationAdmissionEvidence;
   enqueue: EnqueueAgentQueuedTurnDelivery;
   retireDelivery?: (
@@ -462,11 +482,86 @@ function deadClaim(
   });
 }
 
+/**
+ * A turn promoted from an unapplied steer runs only with positive proof that it
+ * owns the steer's words: the ownership mark on its own row, or a hand-off the
+ * job store confirms now (which completes one that a crash or a lost reply
+ * interrupted). A turn whose words were discarded or recovered elsewhere is
+ * cancelled. One whose ownership cannot be proven, because the job store's
+ * evidence expired or this host cannot ask it, is held for review instead of
+ * running, so the words never run twice. Returns `false` once the turn is
+ * settled without running.
+ */
+async function ownsPromotedSteer(
+  claim: AgentQueuedTurnClaim,
+  envelope: AgentContinueTriggerEnvelope,
+  methods: QueuedTurnResolverMethods,
+  completeSteerHandoff: CompletePromotedSteerHandoff | undefined,
+  now: () => number,
+): Promise<boolean> {
+  const source = claim.steerSource;
+  if (source == null || source.handoffAt != null) {
+    return true;
+  }
+  const scope = {
+    user: claim.user,
+    ...(claim.tenantId != null && { tenantId: claim.tenantId }),
+    conversationId: claim.conversationId,
+    queuedTurnId: claim.queuedTurnId,
+  };
+  let outcome: SteerPromotionOutcome | 'unavailable' = 'unavailable';
+  if (completeSteerHandoff != null) {
+    try {
+      outcome = await completeSteerHandoff({
+        conversationId: claim.conversationId,
+        steerId: source.steerId,
+        userId: claim.user.toString(),
+        ...(claim.tenantId != null && { tenantId: claim.tenantId }),
+        generationCreatedAt: source.generationCreatedAt,
+        queuedTurnId: claim.queuedTurnId,
+      });
+    } catch (error) {
+      await releaseClaim(methods, envelope, claim).catch(() => undefined);
+      /** This failure can be dead-lettered onto the row and shown to the user,
+       * so it carries a fixed message; the store's own error stays in the log. */
+      logger.warn('[agent-queued-turns] Promoted steer hand-off is unavailable', {
+        conversationId: claim.conversationId,
+        queuedTurnId: claim.queuedTurnId,
+        ...getSafeErrorMetadata(error),
+      });
+      throw executionError('The promoted steer hand-off is temporarily unavailable.', {
+        code: 'STEER_HANDOFF_UNAVAILABLE',
+        retryable: true,
+        deferWithoutAttempt: true,
+      });
+    }
+  }
+  if (outcome === 'promoted') {
+    /** Best effort: the job store just confirmed ownership, and a later replay
+     * of this admission asks it again while its receipt lasts. */
+    await methods.confirmAgentQueuedTurnSourceHandoff(scope).catch(() => false);
+    return true;
+  }
+  if (outcome === 'refused') {
+    await methods.cancelAgentQueuedTurn({ ...scope, settledAt: new Date(now()) });
+    return false;
+  }
+  await deadClaim(
+    methods,
+    envelope,
+    claim,
+    'STEER_HANDOFF_UNCONFIRMED',
+    'This follow-up could not be confirmed as the only copy of its message. Review it before sending it.',
+  );
+  return false;
+}
+
 /** Resolves one queued message into a fresh ordinary Agent turn. The durable
  * claim remains owned by the queue record until generation admission is known. */
 function createAgentQueuedTurnResolver({
   methods,
   getGenerationJob,
+  completeSteerHandoff,
   now = Date.now,
   claimBy = PROCESS_CLAIM_OWNER,
 }: AgentQueuedTurnResolverDeps): NonNullable<AgentTriggerExecutionHostDeps['prepareContinue']> {
@@ -547,6 +642,9 @@ function createAgentQueuedTurnResolver({
     }
 
     const claim = claimed.claim;
+    if (!(await ownsPromotedSteer(claim, envelope, methods, completeSteerHandoff, now))) {
+      return { status: 'settled' };
+    }
     let messages: IMessage[];
     try {
       messages = await methods.getMessages(
@@ -701,6 +799,36 @@ function createAgentQueuedTurnResolver({
   };
 }
 
+/**
+ * What a row needs from the worker that runs it, and the delivery identity
+ * that keeps a worker without it away. Each version includes the ones before:
+ * v2 carries the approval snapshot through admission, and v3 proves a promoted
+ * steer's ownership before running it. The version is part of the delivery
+ * key, so a replica that projects an older version can neither publish the
+ * row's reserved delivery nor claim it.
+ */
+function deliveryVersion(turn: Pick<AgentQueuedTurnRecord, 'codeApprovalMode' | 'steerSource'>): {
+  capability: string;
+  eventId: (queuedTurnId: string) => string;
+} {
+  if (turn.steerSource != null) {
+    return {
+      capability: AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
+      eventId: (queuedTurnId) => `${queuedTurnId}:v3`,
+    };
+  }
+  if (turn.codeApprovalMode != null) {
+    return {
+      capability: AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+      eventId: (queuedTurnId) => `${queuedTurnId}:v2`,
+    };
+  }
+  return {
+    capability: AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+    eventId: (queuedTurnId) => queuedTurnId,
+  };
+}
+
 function deliveryEnvelope(
   turn: Pick<
     AgentQueuedTurnRecord,
@@ -713,6 +841,7 @@ function deliveryEnvelope(
     | 'conversationId'
     | 'parentMessageId'
     | 'codeApprovalMode'
+    | 'steerSource'
   >,
 ) {
   const occurredAt = turn.createdAt.getTime();
@@ -726,7 +855,7 @@ function deliveryEnvelope(
       ...(turn.tenantId != null && { tenantId: turn.tenantId }),
     },
     event: {
-      id: turn.codeApprovalMode != null ? `${turn.queuedTurnId}:v2` : turn.queuedTurnId,
+      id: deliveryVersion(turn).eventId(turn.queuedTurnId),
       type: AGENT_QUEUED_TURN_EVENT,
       occurredAt,
       source: { id: AGENT_QUEUED_TURN_SOURCE, type: 'internal' },
@@ -785,10 +914,7 @@ function createAgentQueuedTurnScheduler({
        * A lane per durable row prevents a later published delivery from
        * blocking recovery of an earlier record-first outbox row. */
       orderingKey: `agent-queued-turn-delivery:${turn.queuedTurnId}`,
-      requiredWorkerCapability:
-        turn.codeApprovalMode != null
-          ? AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2
-          : AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+      requiredWorkerCapability: deliveryVersion(turn).capability,
     });
     if (receipt.deliveryKey !== deliveryKey) {
       throw new Error('The queued turn delivery identity changed during publication');
@@ -1072,6 +1198,7 @@ async function cancelAgentQueuedTurn(
 export function createAgentQueuedTurnLifecycle({
   methods,
   getGenerationJob,
+  completeSteerHandoff,
   getGenerationAdmissionEvidence,
   enqueue,
   retireDelivery,
@@ -1092,6 +1219,7 @@ export function createAgentQueuedTurnLifecycle({
     prepareContinue: createAgentQueuedTurnResolver({
       methods,
       getGenerationJob,
+      ...(completeSteerHandoff != null && { completeSteerHandoff }),
       ...(now != null && { now }),
       ...(claimBy != null && { claimBy }),
     }),

@@ -122,8 +122,10 @@ describe('Content Security Policy', () => {
     delete process.env.CSP_REPORT_ONLY;
     delete process.env.CSP_CONNECT_SRC_EXTRA;
     delete process.env.INDEX_CACHE_CONTROL;
-    await promisify(server.close).call(server);
-    await mongoServer.stop();
+    if (server) {
+      await promisify(server.close).call(server);
+    }
+    await mongoServer?.stop();
     await mongoose.disconnect();
   });
 
