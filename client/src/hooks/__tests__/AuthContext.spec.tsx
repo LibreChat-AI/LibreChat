@@ -8,6 +8,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { render, act, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
+  request,
   FileSources,
   roleDefaults,
   SystemRoles,
@@ -1699,6 +1700,67 @@ describe('AuthContextProvider — session check unavailable', () => {
       screen.queryByRole('heading', { name: "We couldn't verify your session" }),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId('consumer')).toHaveAttribute('data-authenticated', 'true');
+    jest.useRealTimers();
+  });
+});
+
+describe('AuthContextProvider — sign in again from Retry', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApiBaseUrl.mockReturnValue('');
+    getDefaultStore().set(authSessionUnavailableAtom, false);
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  const showRetry = () => {
+    renderProviderLive();
+    act(() => {
+      (mockRefreshMutate.mock.calls[0][1] as { onError: (error: unknown) => void }).onError({
+        response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } },
+      });
+    });
+    mockNavigate.mockClear();
+  };
+
+  it('opens the login page without a server call and leaves Retry', () => {
+    window.history.replaceState({}, '', '/c/convo-1');
+    showRetry();
+    const generationBefore = request.getAuthGeneration();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    expect(mockLogoutMutate).not.toHaveBeenCalled();
+    expect(mockRefreshMutate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('/login?redirect_to=%2Fc%2Fconvo-1');
+    expect(getDefaultStore().get(authSessionUnavailableAtom)).toBe(false);
+    expect(request.getAuthGeneration()).toBe(generationBefore + 1);
+    expect(
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('consumer')).toHaveAttribute('data-authenticated', 'false');
+  });
+
+  it('ignores a retry that settles after the user chose to sign in again', () => {
+    jest.useFakeTimers();
+    showRetry();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    act(() => {
+      (mockRefreshMutate.mock.calls[1][1] as { onSuccess: (data: unknown) => void }).onSuccess({
+        user: { id: 'user-1', role: 'USER' },
+        token: 'late-token',
+      });
+    });
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(screen.getByTestId('consumer')).toHaveAttribute('data-authenticated', 'false');
     jest.useRealTimers();
   });
 });
