@@ -7,11 +7,18 @@ export type DiscordGatewayStopReason =
   | 'identity'
   | 'checkpoint'
   | 'configuration'
+  | 'startup'
   | 'failed'
   | 'backpressure'
   | 'dispatch';
 
-/** Safe terminal classification; provider payloads and credentials never cross this boundary. */
+/**
+ * Safe terminal classification; provider payloads and credentials never cross this boundary.
+ * `fatal` selects the longer retry ladder, for a fault that repeating will not fix (a rejected
+ * token, a configuration or identity fault) or that can spend IDENTIFY budget on every attempt
+ * (`startup`: a session that did not reach READY in time, or was refused an IDENTIFY). The delay
+ * itself always comes from policy, never from the failure.
+ */
 export class DiscordGatewayFailure extends Error {
   readonly fatal: boolean;
   constructor(
@@ -19,7 +26,20 @@ export class DiscordGatewayFailure extends Error {
     readonly healthyForMs = 0,
   ) {
     super('Discord Gateway connection unavailable');
-    this.fatal = ['credentials', 'configuration', 'identity'].includes(reason);
+    this.fatal = ['credentials', 'configuration', 'identity', 'startup'].includes(reason);
+  }
+}
+
+export type DiscordIdentifyRefusalReason = 'exhausted' | 'invalid' | 'retry';
+
+/**
+ * An IDENTIFY the owner refused to let the SDK send: the session budget is spent or unreadable, or
+ * the shard has not answered its previous IDENTIFY. A budget that could not be read at all is not
+ * a refusal but an ordinary failure. The reason is a closed set and carries no detail.
+ */
+export class DiscordIdentifyRefusal extends Error {
+  constructor(readonly reason: DiscordIdentifyRefusalReason) {
+    super('Discord Gateway identify refused');
   }
 }
 

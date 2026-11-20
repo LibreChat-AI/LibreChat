@@ -557,14 +557,14 @@ describe('Discord Gateway observations', () => {
     expect(nativeOf(health)).toBe('failing');
   });
 
-  test('a credential stop fails the credential and the Gateway, a configuration stop only the Gateway', () => {
+  test('a credential stop fails the credential and the Gateway, any other held stop only the Gateway', () => {
     const credential = setup();
     credential.telemetry
       .application(owner(), { shards: 1 })
       .observe({ type: 'stop', reason: 'credentials' });
     expect(only(credential.health.snapshot().credentials)).toBe('failing');
     expect(nativeOf(credential.health)).toBe('failing');
-    for (const reason of ['configuration', 'identity'] as const) {
+    for (const reason of ['configuration', 'identity', 'startup'] as const) {
       const other = setup();
       other.telemetry.application(owner(), { shards: 1 }).observe({ type: 'stop', reason });
       expect(only(other.health.snapshot().credentials)).toBe('unknown');
@@ -603,7 +603,7 @@ describe('Discord Gateway observations', () => {
     },
   );
 
-  test.each(['credentials', 'configuration', 'identity'] as const)(
+  test.each(['credentials', 'configuration', 'identity', 'startup'] as const)(
     'the next READY recovers the Gateway after a %s stop of an application that stays owned',
     (reason) => {
       const { health, telemetry } = setup();
@@ -619,6 +619,18 @@ describe('Discord Gateway observations', () => {
       expect(only(health.snapshot().credentials)).toBe('healthy');
     },
   );
+
+  test('a startup stop is counted under its own reason and leaves the credential and permissions alone', async () => {
+    const { registry, health, telemetry } = setup();
+    const scope = telemetry.application(owner(), { shards: 1 });
+    scope.observe({ type: 'stop', reason: 'startup' });
+    const samples = await scrape(registry);
+    expect(value(samples, 'gateway_stop_total', { reason: 'startup' })).toBe(1);
+    expect(samples.some((sample) => sample.labels.reason === 'other')).toBe(false);
+    expect(nativeOf(health)).toBe('failing');
+    expect(only(health.snapshot().credentials)).toBe('unknown');
+    expect(only(health.snapshot().permissions)).toBe('unknown');
+  });
 
   test('heartbeats are observed in seconds and keep the shard live', async () => {
     const { registry, health, telemetry } = setup();

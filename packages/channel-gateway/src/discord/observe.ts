@@ -93,6 +93,7 @@ export const discordStopReasons = [
   'credentials',
   'configuration',
   'identity',
+  'startup',
   'checkpoint',
   'failed',
   'backpressure',
@@ -421,7 +422,8 @@ export function createDiscordTelemetry(options: {
             if (
               observation.reason === 'credentials' ||
               observation.reason === 'configuration' ||
-              observation.reason === 'identity'
+              observation.reason === 'identity' ||
+              observation.reason === 'startup'
             )
               entry?.fatal();
             // The owner outlives a failed session, so its shards stay down until the next one is READY.

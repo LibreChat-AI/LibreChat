@@ -50,7 +50,10 @@ export interface DiscordHealthEntry {
   /** Bot side outcomes only. An actor losing access is per user and never belongs here. */
   permission(result: 'ok' | 'denied'): void;
   native(signal: 'up' | 'ack' | 'closed' | 'gap', shardId: number): void;
-  /** A stop that holds the next session. Only the next READY or RESUMED, or a new revision, recovers it. */
+  /**
+   * A stop that holds the next session. It closes every shard, so each one needs its own READY or
+   * RESUMED. The first of them ends the hold, and a new revision also recovers it.
+   */
   fatal(): void;
 }
 
@@ -61,7 +64,7 @@ interface Observation {
 interface Shard {
   /** Last READY or RESUMED. Absent until the shard first connects. */
   upAt?: number;
-  /** A non-fatal close since the last READY or RESUMED. */
+  /** A close or a fatal stop since the last READY or RESUMED. */
   closed: boolean;
   ackAt?: number;
   gapAt?: number;
@@ -204,6 +207,8 @@ export class DiscordHealth {
       native: (signal, shardId) => this.signal(current, signal, shardId),
       fatal: () => {
         current.fatal = true;
+        // The next session replaces every shard, so none may keep the state of the one that ended.
+        for (const shard of current.sessions.values()) shard.closed = true;
       },
     };
   }

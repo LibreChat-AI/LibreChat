@@ -345,6 +345,71 @@ describe('Discord native Gateway health', () => {
     expect(level(health)).toBe('healthy');
   });
 
+  test('a fatal stop closes every shard, so one READY cannot make the application healthy', () => {
+    const health = create();
+    const entry = health.entry(owner(), { shards: 2 });
+    entry.native('up', 0);
+    entry.native('up', 1);
+    expect(level(health)).toBe('healthy');
+    entry.fatal();
+    expect(level(health)).toBe('failing');
+    // A late acknowledgement from the session that ended cannot recover a closed shard.
+    entry.native('ack', 1);
+    // The replacement session reaches READY on shard 0 only: shard 1 keeps nothing of the old one.
+    entry.native('up', 0);
+    expect(level(health)).toBe('degraded');
+    entry.native('ack', 1);
+    advance(stale + 1);
+    entry.native('ack', 0);
+    expect(level(health)).toBe('degraded');
+    entry.native('up', 1);
+    expect(level(health)).toBe('healthy');
+  });
+
+  test('after a fatal stop every shard still needs its own READY, even one that never connected', () => {
+    const health = create();
+    const entry = health.entry(owner(), { shards: 2 });
+    entry.native('up', 0);
+    entry.fatal();
+    entry.native('up', 0);
+    expect(level(health)).toBe('unknown');
+    entry.native('up', 1);
+    expect(level(health)).toBe('healthy');
+  });
+
+  test('a fatal stop changes only the native level, never the credential or permission levels', () => {
+    const health = create();
+    const entry = health.entry(owner(), { shards: 2 });
+    entry.credential('rejected');
+    entry.permission('denied');
+    entry.native('up', 0);
+    entry.native('up', 1);
+    const before = health.snapshot();
+    expect(before.credentials.failing).toBe(1);
+    expect(before.permissions.degraded).toBe(1);
+    entry.fatal();
+    const after = health.snapshot();
+    expect(after.credentials).toEqual(before.credentials);
+    expect(after.permissions).toEqual(before.permissions);
+    expect(after.native).toMatchObject({ failing: 1, healthy: 0, degraded: 0 });
+    entry.native('up', 0);
+    expect(health.snapshot().credentials).toEqual(before.credentials);
+    expect(health.snapshot().permissions).toEqual(before.permissions);
+  });
+
+  test('an ordinary close degrades only until that shard is up again, and an ack does not recover it', () => {
+    const health = create();
+    const entry = health.entry(owner(), { shards: 2 });
+    entry.native('up', 0);
+    entry.native('up', 1);
+    entry.native('closed', 1);
+    expect(level(health)).toBe('degraded');
+    entry.native('ack', 1);
+    expect(level(health)).toBe('degraded');
+    entry.native('up', 1);
+    expect(level(health)).toBe('healthy');
+  });
+
   test('the weakest shard decides, and an unreported shard keeps the application unknown', () => {
     const health = create();
     const entry = health.entry(owner(), { shards: 2 });

@@ -1,5 +1,5 @@
 # Optional release-matched application and stateless gateway.
-# Setup: https://www.librechat.ai/docs/features/agent_channels#docker-compose
+# Setup: https://www.librechat.ai/docs/features/discord_channels#docker-compose
 services:
   api:
     image: ghcr.io/librechat-ai/librechat:${LIBRECHAT_IMAGE_TAG:-latest}
