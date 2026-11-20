@@ -11,7 +11,7 @@ const {
 const {
   getProviderSessionAuthorizer,
   getBackchannelLogoutConfig,
-  preloadBackchannelLogoutConfig,
+  initializeBackchannelLogoutConfig,
   getProviderSessionClient,
   revokeProviderSession: revokeProviderSessionService,
   providerSessionAuthorizer,
@@ -30,7 +30,7 @@ const {
 module.exports = {
   getProviderSessionAuthorizer,
   getBackchannelLogoutConfig,
-  preloadBackchannelLogoutConfig,
+  initializeBackchannelLogoutConfig,
   getProviderSessionClient,
   revokeProviderSession: revokeProviderSessionService,
   providerSessionAuthorizer,

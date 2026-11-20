@@ -34,10 +34,12 @@ export interface CreateProviderSessionServiceOptions {
 
 export interface ProviderSessionService {
   getProviderSessionAuthorizer: () => ProviderSessionAuthorizer;
+  /** After `initializeBackchannelLogoutConfig()` resolves, returns the loaded value with no I/O
+   *  and cannot reject, so mode `'off'` has no failure path on a request. */
   getBackchannelLogoutConfig: () => Promise<ResolvedBackchannelLogoutConfig>;
-  /** Preloads the config at startup so the first request doesn't pay the load latency, swallowing
-   *  a failure so the lazy load inside `getProviderSessionAuthorizer()` can retry on demand. */
-  preloadBackchannelLogoutConfig: () => Promise<void>;
+  /** Loads the config before the server accepts requests. A failure rejects, so the server does
+   *  not start with an unknown mode, and no request falls back to a default. */
+  initializeBackchannelLogoutConfig: () => Promise<void>;
   /** `{ issuer, clientId }` for the configured OpenID provider, normalized the same way login
    *  does, or `null` when OpenID is not configured. */
   getProviderSessionClient: () => { issuer: string; clientId: string } | null;
@@ -77,13 +79,14 @@ export function createProviderSessionService({
     return authorizer;
   }
 
-  async function preloadBackchannelLogoutConfig(): Promise<void> {
+  async function initializeBackchannelLogoutConfig(): Promise<void> {
     try {
       await getBackchannelLogoutConfig();
     } catch (error) {
-      logger.error('[ProviderSession] Startup preload of openidBackchannelLogout config failed', {
+      logger.error('[ProviderSession] Startup load of openidBackchannelLogout config failed', {
         error,
       });
+      throw error;
     }
   }
 
@@ -120,7 +123,7 @@ export function createProviderSessionService({
   return {
     getProviderSessionAuthorizer,
     getBackchannelLogoutConfig,
-    preloadBackchannelLogoutConfig,
+    initializeBackchannelLogoutConfig,
     getProviderSessionClient,
     revokeProviderSession,
     providerSessionAuthorizer,
