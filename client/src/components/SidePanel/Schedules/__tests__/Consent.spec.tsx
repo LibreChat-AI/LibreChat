@@ -1122,3 +1122,74 @@ it('keeps persisted inspection and revocation when CREATE is removed, without of
     screen.queryByRole('button', { name: 'com_ui_schedule_consent_confirm' }),
   ).not.toBeInTheDocument();
 });
+
+describe('what the form says about asking first', () => {
+  const note = () => screen.queryByText('com_ui_schedule_consent_ask_note');
+
+  it('explains it where a run can pause and a tool can be set to ask', async () => {
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({ ...view, approval: true });
+    display();
+    await screen.findByRole('checkbox', { name: 'query' });
+    expect(note()).toBeVisible();
+  });
+
+  it('says nothing about it where a run cannot pause', async () => {
+    display();
+    await screen.findByRole('checkbox', { name: 'query' });
+    expect(note()).not.toBeInTheDocument();
+  });
+
+  it('says nothing about it while the whole agent is chosen, or with no tool that can ask', async () => {
+    const standing = {
+      ...view,
+      approval: true,
+      offer: { ...view.offer!, everything: true as const },
+    };
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(standing);
+    const { unmount } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Consent id="schedule" name="Digest" onOpenChange={jest.fn()} triggerRef={createRef()} />
+      </QueryClientProvider>,
+    );
+    const whole = await screen.findByRole('checkbox', {
+      name: 'com_ui_schedule_consent_everything',
+    });
+    expect(note()).not.toBeInTheDocument();
+    await userEvent.click(whole);
+    expect(note()).toBeVisible();
+    unmount();
+    // A selection of the whole server names no tool, and it cannot be asked about.
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+      ...view,
+      approval: true,
+      targets: [
+        { ...view.targets[0], permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }] },
+      ],
+    });
+    display();
+    await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_server_every' });
+    expect(note()).not.toBeInTheDocument();
+  });
+});
+
+it('renders no list of tools under a server that offers only the whole of itself', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [
+      { ...view.targets[0], permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }] },
+    ],
+  });
+  display();
+  const every = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_server_every',
+  });
+  const server = every.closest('fieldset');
+  expect(server).not.toBeNull();
+  expect(server!.querySelector('ul')).toBeNull();
+  // A server with named tools still lists them.
+  cleanup();
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  const query = await screen.findByRole('checkbox', { name: 'query' });
+  expect(query.closest('fieldset')!.querySelectorAll('li')).toHaveLength(2);
+});

@@ -371,6 +371,10 @@ export default function GrantTools({
     setOther,
     allowEverything,
   } = state;
+  /** A tool that can be set to "ask me first" is on offer: one named on a declared server. */
+  const askable = data.targets.some((target) =>
+    offeredTools(target).some((tool) => tool !== Constants.mcp_all),
+  );
   /** What the stored grant asks about, which a whole-agent confirmation keeps. */
   const kept = [...new Set(Object.values(data.asking).flat())].sort();
   /**
@@ -440,6 +444,11 @@ export default function GrantTools({
       {!choosing && data.everything && (
         <p className="text-text-secondary text-sm">
           {localize('com_ui_schedule_consent_everything_allowed')}
+        </p>
+      )}
+      {choosing && canAsk && !everything && askable && (
+        <p className="text-text-secondary text-sm">
+          {localize('com_ui_schedule_consent_ask_note')}
         </p>
       )}
       {!(choosing && everything) && (
@@ -683,72 +692,74 @@ function ToolChoice({
           </Label>
         </div>
       )}
-      <ul className="space-y-1 pl-6">
-        {named.map((tool) => {
-          const warned = changed.includes(tool);
-          const described = [
-            covered ? `${everyId}-label` : undefined,
-            warned ? `${groupId}-${tool}-changed` : undefined,
-          ].filter(Boolean);
-          return (
-            <li key={tool}>
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id={`${groupId}-${tool}`}
-                  checked={chosen.includes(tool)}
-                  disabled={disabled || covered}
-                  aria-labelledby={`${groupId}-${tool}-label`}
-                  aria-describedby={described.length > 0 ? described.join(' ') : undefined}
-                  onCheckedChange={(checked) =>
-                    onChange(
-                      checked === true
-                        ? offered.filter((name) => name === tool || chosen.includes(name))
-                        : chosen.filter((name) => name !== tool),
-                    )
-                  }
-                />
-                <Label
-                  id={`${groupId}-${tool}-label`}
-                  htmlFor={`${groupId}-${tool}`}
-                  className="text-xs break-all"
-                >
-                  {tool}
-                </Label>
-                {askable.includes(tool) && chosen.includes(tool) && (
-                  <span className="ml-auto flex shrink-0 items-center gap-2">
-                    <Checkbox
-                      id={`${groupId}-${tool}-ask`}
-                      checked={asking.includes(tool)}
-                      disabled={disabled}
-                      aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
-                      aria-describedby={askNoteId}
-                      onCheckedChange={(checked) =>
-                        onAskingChange(
-                          checked === true
-                            ? [...asking, tool]
-                            : asking.filter((name) => name !== tool),
-                        )
-                      }
-                    />
-                    <Label
-                      htmlFor={`${groupId}-${tool}-ask`}
-                      variant="secondary"
-                      className="text-xs"
-                    >
-                      {localize('com_ui_schedule_consent_ask_first')}
-                    </Label>
-                  </span>
+      {named.length > 0 && (
+        <ul className="space-y-1 pl-6">
+          {named.map((tool) => {
+            const warned = changed.includes(tool);
+            const described = [
+              covered ? `${everyId}-label` : undefined,
+              warned ? `${groupId}-${tool}-changed` : undefined,
+            ].filter(Boolean);
+            return (
+              <li key={tool}>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${groupId}-${tool}`}
+                    checked={chosen.includes(tool)}
+                    disabled={disabled || covered}
+                    aria-labelledby={`${groupId}-${tool}-label`}
+                    aria-describedby={described.length > 0 ? described.join(' ') : undefined}
+                    onCheckedChange={(checked) =>
+                      onChange(
+                        checked === true
+                          ? offered.filter((name) => name === tool || chosen.includes(name))
+                          : chosen.filter((name) => name !== tool),
+                      )
+                    }
+                  />
+                  <Label
+                    id={`${groupId}-${tool}-label`}
+                    htmlFor={`${groupId}-${tool}`}
+                    className="text-xs break-all"
+                  >
+                    {tool}
+                  </Label>
+                  {askable.includes(tool) && chosen.includes(tool) && (
+                    <span className="ml-auto flex shrink-0 items-center gap-2">
+                      <Checkbox
+                        id={`${groupId}-${tool}-ask`}
+                        checked={asking.includes(tool)}
+                        disabled={disabled}
+                        aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
+                        aria-describedby={askNoteId}
+                        onCheckedChange={(checked) =>
+                          onAskingChange(
+                            checked === true
+                              ? [...asking, tool]
+                              : asking.filter((name) => name !== tool),
+                          )
+                        }
+                      />
+                      <Label
+                        htmlFor={`${groupId}-${tool}-ask`}
+                        variant="secondary"
+                        className="text-xs"
+                      >
+                        {localize('com_ui_schedule_consent_ask_first')}
+                      </Label>
+                    </span>
+                  )}
+                </div>
+                {warned && (
+                  <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
+                    {localize('com_ui_schedule_consent_tool_changed')}
+                  </p>
                 )}
-              </div>
-              {warned && (
-                <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
-                  {localize('com_ui_schedule_consent_tool_changed')}
-                </p>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </fieldset>
   );
 }
