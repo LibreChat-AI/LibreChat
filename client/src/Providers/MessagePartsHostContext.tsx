@@ -39,7 +39,6 @@ import {
   getAppContentParts,
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
-import ToolIcon, { getToolIconType } from '~/components/Chat/Messages/Content/ToolOutput/ToolIcon';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import ToolCallInfo from '~/components/Chat/Messages/Content/ToolCallInfo';
@@ -155,9 +154,6 @@ function useAppToolCallChrome(): ToolCallChrome {
       logError: logToolCallError,
       renderProgress: (props) => <ProgressText {...props} />,
       renderInfo: (props) => <ToolCallInfo input={props.input} output={props.output} />,
-      renderIcon: ({ name, iconUrl, isAnimating }) => (
-        <ToolIcon type={getToolIconType(name)} iconUrl={iconUrl} isAnimating={isAnimating} />
-      ),
       renderAttachments: (attachments) => getToolCallAttachments()(attachments),
     }),
     [localize, mcpServerNames, mcpIconMap],

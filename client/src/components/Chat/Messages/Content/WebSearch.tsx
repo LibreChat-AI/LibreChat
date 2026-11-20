@@ -6,7 +6,6 @@ import {
   WebSearch as WebSearchPart,
 } from '@librechat/chat/components';
 import type { PartMetadata, TAttachment } from 'librechat-data-provider';
-import { FaviconImage } from '~/components/Web/SourceHovercard';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { useSearchContext } from '~/Providers';
 import './toolCallSlots';
@@ -47,9 +46,6 @@ export default function WebSearch({
       runStepStatus={runStepStatus}
       searchResults={searchResults}
       headerSlot={headerSlot}
-      renderFavicon={({ domain, className }) => (
-        <FaviconImage domain={domain} className={className ?? ''} />
-      )}
       renderStackedFavicons={({ sources, start }) => (
         <StackedFavicons sources={sources} start={start} />
       )}

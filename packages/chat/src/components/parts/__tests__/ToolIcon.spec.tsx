@@ -1,9 +1,5 @@
 import { Constants, actionDelimiter } from 'librechat-data-provider';
-import { getToolIconType } from '../ToolOutput/ToolIcon';
-
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-}));
+import { getToolIconType } from '../ToolIcon';
 
 describe('getToolIconType - ACTN-01: Action delimiter detection', () => {
   it('returns "action" for tool name containing actionDelimiter', () => {

@@ -58,6 +58,7 @@ jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   Button: ({ children, onClick, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
     <button onClick={onClick} {...props}>
       {children}

@@ -27,7 +27,6 @@ export type {
   ToolCallLocalize,
   ToolCallProgressProps,
   ToolCallInfoProps,
-  ToolCallIconProps,
 } from './react/host';
 export { emptyToolCallChrome } from './react/host';
 export {

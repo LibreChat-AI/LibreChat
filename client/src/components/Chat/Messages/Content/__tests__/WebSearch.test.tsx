@@ -65,9 +65,6 @@ jest.mock('~/utils/cn', () => ({
 }));
 
 jest.mock('~/components/Web/SourceHovercard', () => ({
-  FaviconImage: ({ domain }: { domain: string }) => (
-    <span data-testid="favicon" data-domain={domain} />
-  ),
   getCleanDomain: (url: string) => {
     try {
       return new URL(url).hostname.replace('www.', '');
@@ -564,7 +561,7 @@ describe('WebSearch', () => {
 
       const completedRow = screen.getByRole('button', { name: /Searched the web/ });
       const completedSlot = completedRow.firstElementChild;
-      expect(completedSlot).toContainElement(screen.getByTestId('favicon'));
+      expect(completedSlot?.querySelector('img[alt="example.com"]')).not.toBeNull();
       for (const token of ROW_GLYPH_SLOT.split(' ')) {
         expect(completedSlot).toHaveClass(token);
       }

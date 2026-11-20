@@ -1,6 +1,5 @@
 import { memo } from 'react';
-import { CustomIcon } from '@librechat/client';
-import { LangIcon } from '@librechat/chat/components';
+import { cn, CustomIcon } from '@librechat/client';
 import { Constants, isActionTool, splitToolCallName } from 'librechat-data-provider';
 import {
   Terminal,
@@ -19,9 +18,10 @@ import {
   Wrench,
   ListChecks,
 } from 'lucide-react';
-import { cn } from '~/utils';
+import type { ComponentType, NamedExoticComponent } from 'react';
+import LangIcon from './LangIcon';
 
-function BashIcon({ className }: { className?: string }) {
+function BashIcon({ className }: { className?: string }): React.JSX.Element {
   return <LangIcon lang="bash" className={className} />;
 }
 
@@ -44,7 +44,7 @@ export type ToolIconType =
   | 'action'
   | 'generic';
 
-const ICON_MAP: Record<ToolIconType, React.ComponentType<{ className?: string }>> = {
+const ICON_MAP: Record<ToolIconType, ComponentType<{ className?: string }>> = {
   mcp: Wrench,
   execute_code: Terminal,
   web_search: Globe,
@@ -128,14 +128,14 @@ export function getMCPServerName(toolName: string, knownServerNames?: readonly s
   return serverName ?? '';
 }
 
-interface ToolIconProps {
+export interface ToolIconProps {
   type: ToolIconType;
   iconUrl?: string;
   isAnimating?: boolean;
   className?: string;
 }
 
-export default memo(function ToolIcon({
+const ToolIcon: NamedExoticComponent<ToolIconProps> = memo(function ToolIcon({
   type,
   iconUrl,
   isAnimating = false,
@@ -167,3 +167,5 @@ export default memo(function ToolIcon({
     />
   );
 });
+
+export default ToolIcon;

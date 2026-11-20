@@ -241,11 +241,6 @@
       "count": 3
     }
   },
-  "client/src/components/Chat/Messages/Content/ToolOutput/ToolIcon.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
   "client/src/components/Chat/Messages/Content/UIResourceCarousel.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -1116,6 +1111,11 @@
   "client/src/utils/index.ts": {
     "design/disabled-recipe": {
       "count": 1
+    }
+  },
+  "packages/chat/src/components/parts/ToolIcon.tsx": {
+    "shadcn/no-restyle": {
+      "count": 3
     }
   },
   "packages/client/src/components/Badge.tsx": {

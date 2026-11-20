@@ -20,6 +20,7 @@ import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
 import { useFilesHost } from '../../react/files';
+import ToolIcon from './ToolIcon';
 
 export type RetrievalProgress = {
   phase: ToolCallPhase;
@@ -43,7 +44,6 @@ export type RetrievalCallProps = {
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
   renderProgress: (progress: RetrievalProgress) => ReactNode;
   renderOutput: (text: string) => ReactNode;
-  renderIcon: (props: { isAnimating: boolean }) => ReactNode;
 };
 
 function sortPagesByRelevance(pages: number[], pageRelevance: Record<number, number>): number[] {
@@ -381,7 +381,6 @@ export default function RetrievalCall({
   runStepDurationMs,
   renderProgress,
   renderOutput,
-  renderIcon,
 }: RetrievalCallProps): ReactNode {
   const isClosed = runStepStatus != null;
   const useKnownFiles = useFilesHost().useKnownFiles;
@@ -516,7 +515,7 @@ export default function RetrievalCall({
                 ? localize('com_ui_cancelled')
                 : (intent ?? localize('com_ui_retrieved_files')),
             durationMs: runStepDurationMs,
-            icon: renderIcon({ isAnimating: phase === 'running' }),
+            icon: <ToolIcon type="file_search" isAnimating={phase === 'running'} />,
             hasInput: hasExpandableContent,
             isExpanded: showOutput,
           })}

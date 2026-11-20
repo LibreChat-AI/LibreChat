@@ -89,7 +89,6 @@ function renderRetrieval({ files, onPreview, props }: Options = {}) {
           </button>
         )}
         renderOutput={(text) => <p>{text}</p>}
-        renderIcon={() => null}
         {...props}
       />
     </MessagePartsHostProvider>
