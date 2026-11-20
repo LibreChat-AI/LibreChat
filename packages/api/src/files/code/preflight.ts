@@ -137,14 +137,16 @@ type PrefetchAttempt =
  * the prefetch never holds more than the serial pass could. A file the
  * prefetch could not fetch, or fetched under a smaller cap than the serial
  * pass allows, is simply prepared again by that pass, which keeps its result
- * identical to a serial run.
+ * identical to a serial run. Before such a second download the pass releases
+ * the prefetched bytes of that file and every later one, so a retry never
+ * holds more than the serial pass would.
  */
 async function prefetchCodeOutputs(
   entries: readonly PreparedCodeOutputEntry[],
   input: PreflightCodeOutputBatchInput,
   limits: { readonly maxBytes: number; readonly fileSizeLimit: number },
   inspectContent: boolean,
-): Promise<ReadonlyArray<PrefetchAttempt | undefined>> {
+): Promise<Array<PrefetchAttempt | undefined>> {
   const attempts: Array<PrefetchAttempt | undefined> = new Array(entries.length);
   const slots = Math.min(CODE_OUTPUT_PREFLIGHT_CONCURRENCY, entries.length);
   const slotBytes = Math.min(limits.fileSizeLimit, Math.floor(limits.maxBytes / (slots * 2)));
@@ -249,6 +251,7 @@ export async function preflightCodeOutputBatch(
     } else if (attempt != null && transportBytes <= attempt.maxBytes) {
       throw attempt.error;
     }
+    prefetched.fill(undefined, index);
     return input.prepare({
       file: entry.file,
       sessionId: entry.sessionId,
