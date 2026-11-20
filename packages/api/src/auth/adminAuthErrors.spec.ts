@@ -64,7 +64,12 @@ describe('mapAdminRefreshError', () => {
     jest.restoreAllMocks();
   });
 
-  const endingCodes = ['invalid_grant', 'interaction_required', 'login_required', 'consent_required'];
+  const endingCodes = [
+    'invalid_grant',
+    'interaction_required',
+    'login_required',
+    'consent_required',
+  ];
   const misconfiguredCodes = [
     'invalid_client',
     'unauthorized_client',
@@ -77,16 +82,20 @@ describe('mapAdminRefreshError', () => {
 
   const rows: Array<[unknown, typeof ENDED]> = [
     ...endingCodes.flatMap((code) =>
-      confirmedStatuses.flatMap((status): Array<[unknown, typeof ENDED]> => [
-        [{ error: code, status }, ENDED],
-        [{ code, status }, ENDED],
-      ]),
+      confirmedStatuses.flatMap(
+        (status): Array<[unknown, typeof ENDED]> => [
+          [{ error: code, status }, ENDED],
+          [{ code, status }, ENDED],
+        ],
+      ),
     ),
     ...misconfiguredCodes.flatMap((code) =>
-      confirmedStatuses.flatMap((status): Array<[unknown, typeof ENDED]> => [
-        [{ error: code, status }, MISCONFIGURED],
-        [{ code, status }, MISCONFIGURED],
-      ]),
+      confirmedStatuses.flatMap(
+        (status): Array<[unknown, typeof ENDED]> => [
+          [{ error: code, status }, MISCONFIGURED],
+          [{ code, status }, MISCONFIGURED],
+        ],
+      ),
     ),
     ...[...endingCodes, ...misconfiguredCodes].flatMap((code) =>
       unconfirmedStatuses.map((status): [unknown, typeof ENDED] => [
