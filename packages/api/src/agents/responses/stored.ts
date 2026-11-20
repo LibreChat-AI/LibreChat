@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ContentTypes } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
-import type { Response, ResponseAccounting, OutputItem } from './types';
+import type { Response, ResponseAccounting, OutputItem, FunctionCallItem } from './types';
 import type { StoredResponseOutputLayout } from './foreground';
 import type { StoredResponseMessage } from './persistence';
 import {
@@ -10,9 +10,9 @@ import {
   createResponseAggregator,
   sendResponsesErrorResponse,
 } from './service';
+import { selectStoredResponse, pendingClientToolIds } from './persistence';
 import { createResponseAccountingCollector } from './accounting';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { selectStoredResponse } from './persistence';
 
 const count = z.number().int().nonnegative().safe();
 const totals = z.object({ input_tokens: count, output_tokens: count, total_tokens: count });
@@ -90,6 +90,7 @@ const receiptSchema = z.object({
         type: z.enum(['message', 'function_call', 'function_call_output']),
         callId: z.string().optional(),
         textParts: count.optional(),
+        pendingClientTool: z.boolean().optional(),
       }),
     )
     .optional(),
@@ -148,7 +149,7 @@ function output(message: SavedMessage): OutputItem[] {
       continue;
     }
     const parsed = toolPart.safeParse(part);
-    if (!parsed.success || parsed.data.tool_call.output == null) continue;
+    if (!parsed.success) continue;
     const call = parsed.data.tool_call;
     items.push({
       type: 'function_call',
@@ -158,6 +159,7 @@ function output(message: SavedMessage): OutputItem[] {
       arguments: typeof call.args === 'string' ? call.args : JSON.stringify(call.args ?? {}),
       status: 'completed',
     });
+    if (call.output == null) continue;
     items.push({
       type: 'function_call_output',
       id: `fco_${message.messageId}_${index}`,
@@ -175,6 +177,15 @@ function output(message: SavedMessage): OutputItem[] {
       content: [{ type: 'output_text', text: message.text, annotations: [], logprobs: [] }],
     });
   return items;
+}
+
+/** Only server-written terminal receipts can identify a resumable caller-tool batch. */
+export function storedClientToolCalls(message: SavedMessage): FunctionCallItem[] {
+  const pending = pendingClientToolIds(message);
+  if (pending.size === 0) return [];
+  return output(message).filter(
+    (item): item is FunctionCallItem => item.type === 'function_call' && pending.has(item.call_id),
+  );
 }
 
 /** Identity/layout receipts contain no output text; content still comes from the privacy projection. */

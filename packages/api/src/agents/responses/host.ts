@@ -27,6 +27,7 @@ import { createBackgroundResponseWorkerAuth, getBackgroundResponseWorkerRecord }
 import { createBackgroundResponseTransport, createResponseResumeTransport } from './transport';
 import { resolveImportRetentionFields, isTemporaryRecord } from '~/conversations/retention';
 import { createBackgroundResponseQueue, createResponseResumeQueue } from './queue';
+import { storedToolContinuationReference } from './continuation';
 import { createBackgroundResponseAuthority } from './authority';
 import { createBackgroundResponseService } from './background';
 import { createBackgroundResponseHttpHandlers } from './http';
@@ -190,9 +191,11 @@ export function createBackgroundResponsesHost(
       deliveryKey: queue.deliveryKey,
       authorize: (owner, agentId, keyId) => authorize(owner, agentId, keyId, user),
       resolveContinuation: async (owner, previous) => {
-        const continuation = await resolveResponseContinuation(previous, owner.userId, {
-          getMessage: deps.getMessage,
-        });
+        const continuation =
+          storedToolContinuationReference(req, owner, previous) ??
+          (await resolveResponseContinuation(previous, owner.userId, {
+            getMessage: deps.getMessage,
+          }));
         const stored = previous
           ? await deps.getConvoRetention(owner.userId, continuation.conversationId)
           : null;

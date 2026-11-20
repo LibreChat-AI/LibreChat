@@ -82,6 +82,7 @@ const {
   convertInputToMessages,
   extractResponseInputFileContent,
   validateResponseRequest,
+  responseClientToolNames,
   buildAggregatedResponse,
   buildResponsesUsage,
   createResponseAggregator,
@@ -1002,7 +1003,7 @@ const executeResponse = async (envelope, { req, res }) => {
       const toolSet = buildRunToolSet(
         primaryConfig,
         handoffAgentConfigs.values(),
-        undefined,
+        responseClientToolNames(previousMessages),
         allMessages,
         true,
       );

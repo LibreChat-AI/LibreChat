@@ -17,6 +17,8 @@ export { createBackgroundResponseService } from './background';
 export { createBackgroundResponsesHost } from './host';
 export { createInteractiveResponsesHost } from './interactive';
 export { createResponseExecutionRuntime } from './runtime';
+export { createStoredToolContinuation } from './continuation';
+export { responseClientToolNames } from './foreground';
 export { createResponseDecisionSubmission } from './decision';
 export { createResponseResumeValidation, createResponseResumeAdmission } from './resume';
 export { createBackgroundResponseAuthority } from './authority';
