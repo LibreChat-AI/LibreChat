@@ -23,6 +23,7 @@ import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { mapAttachments } from '../../core/attachments';
 import { useMessagePartsHost } from '../../react/host';
+import useServerIcons from '../../react/parts/icons';
 import useExpandCollapse from './useExpandCollapse';
 import { ASK_USER_QUESTION } from '../../core/ask';
 import StackedToolIcons from './StackedToolIcons';
@@ -97,17 +98,7 @@ export default function ToolCallGroup({
   const host = useMessagePartsHost();
   /** The host's preference, so an embedding host that turns smoothing off is honored. */
   const smoothStreaming = host.useSmoothStreaming();
-  const { mcpServerNames, mcpIconUrl } = host.useToolCallChrome();
-  const mcpIconMap = useMemo(() => {
-    const icons = new Map<string, string>();
-    for (const name of mcpServerNames) {
-      const url = mcpIconUrl(name);
-      if (url != null) {
-        icons.set(name, url);
-      }
-    }
-    return icons;
-  }, [mcpServerNames, mcpIconUrl]);
+  const { names: mcpServerNames, icons: mcpIconMap } = useServerIcons();
   const rootRef = useRef<HTMLDivElement | null>(null);
   useFoldParts(rootRef, parts);
   const headerRef = useRef<HTMLDivElement | null>(null);

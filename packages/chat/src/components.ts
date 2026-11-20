@@ -325,6 +325,8 @@ export {
 } from './components/parts/ToolIcon';
 export type { ToolIconType, ToolIconProps } from './components/parts/ToolIcon';
 export { default as StackedToolIcons } from './components/parts/StackedToolIcons';
+export { default as ActivityPhaseGroup } from './components/parts/ActivityPhaseGroup';
+export type { ActivityPhaseGroupProps } from './components/parts/ActivityPhaseGroup';
 export { default as ToolCallGroup } from './components/parts/ToolCallGroup';
 export type {
   ToolCallGroupProps,
