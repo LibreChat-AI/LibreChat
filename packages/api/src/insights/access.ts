@@ -51,7 +51,9 @@ const toChoice = (agent: AgentRecord): TInsightsAgent => ({
 const sortChoices = (agents: AgentRecord[]): TInsightsAgent[] =>
   agents.map(toChoice).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 
-function createAccessResolver(deps: InsightsAgentAccessDeps, includeEditableAgents: boolean) {
+export function createInsightsAccessResolver(
+  deps: InsightsAgentAccessDeps,
+): (user: InsightsAccessUser) => Promise<InsightsAccess> {
   return async (user: InsightsAccessUser): Promise<InsightsAccess> => {
     const tenantFilter = user.tenantId
       ? { tenantId: user.tenantId }
@@ -101,14 +103,12 @@ function createAccessResolver(deps: InsightsAgentAccessDeps, includeEditableAgen
         PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
         candidates,
       ),
-      includeEditableAgents
-        ? deps.findAccessibleResources(
-            privatePrincipals,
-            ResourceType.AGENT,
-            PermissionBits.VIEW | PermissionBits.EDIT,
-            candidates,
-          )
-        : Promise.resolve([]),
+      deps.findAccessibleResources(
+        privatePrincipals,
+        ResourceType.AGENT,
+        PermissionBits.VIEW | PermissionBits.EDIT,
+        candidates,
+      ),
     ]);
     const detailIds = new Set(detailResources.map(String));
     const editableIds = new Set(editableResources.map(String));
@@ -124,18 +124,4 @@ function createAccessResolver(deps: InsightsAgentAccessDeps, includeEditableAgen
     );
     return { agents: choices, detailAgentIds: detailAgentIds.sort() };
   };
-}
-
-export function createInsightsAccessResolver(
-  deps: InsightsAgentAccessDeps,
-): (user: InsightsAccessUser) => Promise<InsightsAccess> {
-  return createAccessResolver(deps, true);
-}
-
-export function createInsightsAgentAccessResolver(
-  deps: InsightsAgentAccessDeps,
-): (user: InsightsAccessUser) => Promise<TInsightsAgent[]> {
-  const resolveAccess = createAccessResolver(deps, false);
-  return async (user: InsightsAccessUser): Promise<TInsightsAgent[]> =>
-    (await resolveAccess(user)).agents;
 }

@@ -8,7 +8,7 @@ import {
   ResourceType,
 } from 'librechat-data-provider';
 import type { InsightsAccessUser, InsightsAgentAccessDeps } from './access';
-import { createInsightsAccessResolver, createInsightsAgentAccessResolver } from './access';
+import { createInsightsAccessResolver } from './access';
 
 let mongo: MongoMemoryServer;
 let models: ReturnType<typeof createModels>;
@@ -120,7 +120,7 @@ describe('Insights access with real ACLs and memberships', () => {
     expect(result.detailAgentIds).toEqual([]);
   });
 
-  it('preserves explicit Insights grants separately from editing grants and legacy route access', async () => {
+  it('preserves explicit Insights grants separately from editing grants', async () => {
     const inspected = await agent('a-insights-grant');
     const edited = await agent('b-editing-grant');
     await grant(
@@ -134,10 +134,6 @@ describe('Insights access with real ACLs and memberships', () => {
     const result = await resolve();
     expect(result.agents.map((entry) => entry.id)).toEqual([inspected.id, edited.id]);
     expect(result.detailAgentIds).toEqual([inspected.id]);
-    const legacy = await withinTenant('tenant-a', () =>
-      createInsightsAgentAccessResolver(deps)(actor),
-    );
-    expect(legacy.map((entry) => entry.id)).toEqual([inspected.id]);
   });
 
   it('does not grant statistics for viewer or public access alone', async () => {
