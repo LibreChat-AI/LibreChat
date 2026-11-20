@@ -357,7 +357,7 @@ async function createHarness(options = {}) {
       'mongo:8.0.20',
       '--bind_ip_all',
     );
-    const mongoURI = `mongodb://127.0.0.1:${mongoPort}/${database}?serverSelectionTimeoutMS=2000&socketTimeoutMS=2000`;
+    const mongoURI = `mongodb://127.0.0.1:${mongoPort}/${database}?serverSelectionTimeoutMS=2000`;
     mongo = new MongoClient(mongoURI);
     await until(async () => {
       try {
