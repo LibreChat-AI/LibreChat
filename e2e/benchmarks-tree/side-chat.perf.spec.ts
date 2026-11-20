@@ -27,17 +27,25 @@ import { openChatHistory } from '../specs/mock/scenarios/sidebar';
  * Built client (production timings; the render counts need no names):
  *   npx playwright test -c e2e/playwright.config.tree-perf-prod.ts side-chat
  *
- * `SIDE_CHAT_PERF_TURNS` sizes the main conversation. The numbers are printed; nothing is
- * asserted.
+ * `SIDE_CHAT_PERF_TURNS` sizes the main conversation. `SIDE_CHAT_PERF_NAMES=<n>` also prints the
+ * `n` components rendered most in each part of the page, which reads best against a client
+ * built with its names kept (`npx vite build --minify false` in `client`). The numbers are
+ * printed; nothing is asserted.
  */
 
 const TURNS = Number(process.env.SIDE_CHAT_PERF_TURNS) || 12;
+const NAMES = Number(process.env.SIDE_CHAT_PERF_NAMES) || 0;
 const TYPED = 'The quick brown fox jumps over the lazy dog again';
 const SLOW_REPLY_LAST_CHUNK = 'chunk-159';
 const ZONES = ['main', 'side', 'nav', 'shell'] as const;
 
 type Zone = (typeof ZONES)[number];
-type Renders = { commits: number; zones: Record<Zone, number>; keys: number[] };
+type Renders = {
+  commits: number;
+  zones: Record<Zone, number>;
+  keys: number[];
+  names: Record<string, number>;
+};
 
 declare global {
   interface Window {
@@ -68,11 +76,32 @@ function installRenderProbe(): void {
     child: Fiber | null;
     sibling: Fiber | null;
     stateNode: unknown;
+    type: unknown;
+    elementType: unknown;
   };
+  type Named = { displayName?: string; name?: string; render?: Named; type?: Named };
   const COMPONENT_TAGS = new Set([0, 1, 11, 14, 15]);
   const HOST = 5;
   const PERFORMED_WORK = 1;
-  const state: Renders = { commits: 0, zones: { main: 0, side: 0, nav: 0, shell: 0 }, keys: [] };
+  const state: Renders = {
+    commits: 0,
+    zones: { main: 0, side: 0, nav: 0, shell: 0 },
+    keys: [],
+    names: {},
+  };
+  /** What the component is called, where the build kept its name. */
+  const nameOf = (fiber: Fiber): string => {
+    const type = (fiber.elementType ?? fiber.type) as Named | null;
+    const inner = type?.render ?? type?.type;
+    return (
+      type?.displayName ??
+      type?.name ??
+      inner?.displayName ??
+      inner?.name ??
+      inner?.render?.name ??
+      '?'
+    );
+  };
 
   const zoneOf = (element: Element, zone: Zone): Zone => {
     if (element.getAttribute('aria-label') === 'Side chat') {
@@ -100,6 +129,8 @@ function installRenderProbe(): void {
       const rendered = fiber.alternate == null || (fiber.flags & PERFORMED_WORK) !== 0;
       if (rendered && COMPONENT_TAGS.has(fiber.tag)) {
         state.zones[here] += 1;
+        const key = `${here}:${nameOf(fiber)}`;
+        state.names[key] = (state.names[key] ?? 0) + 1;
       }
       if (fiber.alternate == null || fiber.child !== fiber.alternate.child) {
         walk(fiber.child, here);
@@ -150,6 +181,7 @@ async function resetRenders(page: Page): Promise<void> {
     const state = window.__SIDE_CHAT_PERF__;
     state.commits = 0;
     state.keys.length = 0;
+    state.names = {};
     for (const zone of Object.keys(state.zones) as Array<keyof typeof state.zones>) {
       state.zones[zone] = 0;
     }
@@ -161,7 +193,20 @@ const readRenders = (page: Page): Promise<Renders> =>
     commits: window.__SIDE_CHAT_PERF__.commits,
     zones: { ...window.__SIDE_CHAT_PERF__.zones },
     keys: [...window.__SIDE_CHAT_PERF__.keys],
+    names: { ...window.__SIDE_CHAT_PERF__.names },
   }));
+
+/** The components rendered most in each part of the page, for a build that kept their names. */
+function formatNames({ names }: Renders): string[] {
+  return ZONES.map((zone) => {
+    const top = Object.entries(names)
+      .filter(([key]) => key.startsWith(`${zone}:`))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, NAMES)
+      .map(([key, count]) => `${key.slice(zone.length + 1)}×${count}`);
+    return `${''.padEnd(34)} ${zone.padEnd(5)} ${top.join(' ')}`;
+  }).filter((line) => line.trim().includes(' '));
+}
 
 function formatRenders({ commits, zones, keys }: Renders): string {
   const sorted = [...keys].sort((a, b) => a - b);
@@ -188,7 +233,11 @@ test('what a conversation open beside the chat costs the chat on screen', async 
     await run();
     const phase = await probe.finish();
     console.log(formatBrowserPhase(name.padEnd(34), phase));
-    console.log(`${''.padEnd(34)} ${formatRenders(await readRenders(page))}`);
+    const renders = await readRenders(page);
+    console.log(`${''.padEnd(34)} ${formatRenders(renders)}`);
+    if (NAMES > 0) {
+      console.log(formatNames(renders).join('\n'));
+    }
   };
 
   /** The conversation that opens beside, then the main one with some history. */
@@ -208,13 +257,14 @@ test('what a conversation open beside the chat costs the chat on screen', async 
   await expect(mainRows).toHaveCount(TURNS * 2, { timeout: 30_000 });
 
   const idle = () => page.waitForTimeout(8_000);
-  const typeInMain = async () => {
-    await mainBox.click();
+  const typeIn = (box: typeof mainBox) => async () => {
+    await box.click();
     await page.keyboard.type(TYPED, { delay: 25 });
     await page.keyboard.press('ControlOrMeta+a');
     await page.keyboard.press('Backspace');
     await page.waitForTimeout(300);
   };
+  const typeInMain = typeIn(mainBox);
   let sent = 0;
   /** Starts a slow reply from a composer and resolves once its first words are on screen. */
   const startStream = async (box: typeof mainBox, rows: typeof mainRows) => {
@@ -260,6 +310,7 @@ test('what a conversation open beside the chat costs the chat on screen', async 
   const sideRows = sideChat.locator('.message-render');
 
   await mainPhases('open');
+  await measure('open: typing in side', typeIn(sideBox));
 
   await measure('open: side streams, main idle', async () => {
     await startStream(sideBox, sideRows);
