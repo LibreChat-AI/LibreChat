@@ -231,10 +231,7 @@ describe('OAuth rejection redirects', () => {
     ['auth_banned', 'Your account has been temporarily banned due to violations of our service.'],
     ['auth_failed', 'Authentication failed. Please check your login method and try again.'],
     ['OPENID_SESSION_ENDED', 'Your sign-in session ended or expired. Please sign in again.'],
-    [
-      'AUTH_SESSION_CHECK_UNAVAILABLE',
-      "We couldn't verify your session just now. Your current session is unaffected; try again in a moment.",
-    ],
+    ['AUTH_SESSION_CHECK_UNAVAILABLE', "We couldn't complete your sign-in. Please try again."],
   ])('surfaces a localized toast for %s and clears the query', async (code, message) => {
     enterAt(`?redirect=false&error=${code}`);
 
