@@ -158,6 +158,7 @@ const {
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
   assertAgentAttachmentLimits,
+  partitionRequestAttachments,
   assertAgentAttachmentTopology,
   collectHistoricalAttachmentIds,
   admitSteerAttachmentHistory,
@@ -551,9 +552,13 @@ class AgentClient extends BaseClient {
     const compatibleCurrentAttachments =
       this.getModelBoundAttachmentsForEndpoint(currentAttachments);
     this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      historicalAttachments,
+    const { named, primed } = partitionRequestAttachments(
       currentAttachments,
+      this.options.currentRequestAttachments,
+    );
+    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
+      [...historicalAttachments, ...primed],
+      named,
     );
     const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
     const sharedAttachmentIds = collectFileIds(sharedAttachments);

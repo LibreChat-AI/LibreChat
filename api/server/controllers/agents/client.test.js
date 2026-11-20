@@ -7088,6 +7088,80 @@ describe('AgentClient - titleConvo', () => {
       expect(client.processAttachments).not.toHaveBeenCalled();
     });
 
+    /** A file can be sent to the model and placed in the code environment at once (a screenshot
+     *  in a chat whose agent runs code). Agent setup primes every such file of the thread again
+     *  on each turn and hands it over with the request's own, so being in that list does not
+     *  make a file new: ten earlier screenshots and one new one is one new file. */
+    describe('earlier files that agent setup primed again', () => {
+      const screenshot = (id) => ({
+        ...makeUploadedFile(id, `${id}.png`, 'image/png'),
+        llmDeliveryPath: 'provider',
+        metadata: { codeEnvRef: { kind: 'user', id: 'user-123', file_id: `env-${id}` } },
+      });
+      const earlier = Array.from({ length: 10 }, (_, index) => screenshot(`earlier-${index}`));
+      const fresh = screenshot('fresh');
+      const thread = () =>
+        earlier.map((file, index) => ({
+          messageId: `msg-${index}`,
+          isCreatedByUser: true,
+          files: [{ file_id: file.file_id }],
+        }));
+
+      beforeEach(() => {
+        client.options.resendFiles = true;
+        mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 10 } } };
+        require('~/models').getFiles.mockResolvedValue(earlier);
+        client.addFileContextToMessage = jest.fn();
+        client.processAttachments = jest.fn(async (_message, files) => files);
+      });
+
+      it('does not count them toward the limit on files new to the turn', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh];
+
+        await expect(client.addPreviousAttachments(thread())).resolves.toHaveLength(10);
+        expect(client.turnHistoricalAttachmentIds).toEqual(
+          new Set(earlier.map(({ file_id }) => file_id)),
+        );
+        /** Handed over with the request's files, they are sent with it and not replayed twice. */
+        expect(client.processAttachments).not.toHaveBeenCalled();
+      });
+
+      it('still counts an earlier file the request names again', async () => {
+        mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh, earlier[0]];
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+          limitType: 'count',
+          observed: 2,
+        });
+      });
+
+      it('refuses a turn whose own files are too many, whatever came before', async () => {
+        const many = Array.from({ length: 11 }, (_, index) => screenshot(`fresh-${index}`));
+        client.options.attachments = [...many, ...earlier];
+        client.options.currentRequestAttachments = many;
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          limitType: 'count',
+          observed: 11,
+          limit: 10,
+        });
+      });
+
+      it('counts as before for a caller that does not say which files the request named', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        delete client.options.currentRequestAttachments;
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          limitType: 'count',
+          observed: 11,
+        });
+      });
+    });
+
     it('rejects combined historical and scoped bytes before history is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
