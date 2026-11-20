@@ -1233,6 +1233,45 @@ describe.each(['record', 'enforce'] as const)(
       ).toBeNull();
     });
 
+    it('(c) denies a second retry with the spent token after the denial deleted the bridge', async () => {
+      const R0 = 'refresh-shared-second-retry';
+      const { bridgeService, flights, ref } = await setup(R0, { publishBrowserLogin: false });
+      /** The refreshed id_token carries no `sid`, so only the binding ties a grant result to the
+       *  provider session. */
+      const grant = jest.fn(async (presented: string) => ({
+        access_token: `at-${presented}`,
+        refresh_token: `${presented}-r`,
+        claims: () => ({ sub: 'sub-1', iss: ISSUER }),
+      }));
+      const run = () =>
+        runAdminRefresh({
+          refreshToken: R0,
+          config,
+          bridgeService,
+          userId: ADMIN_USER_ID,
+          grant,
+          flightDeps: makeRealGrantDeps(flights, bridgeService),
+        });
+      expect((await run()).status).toBe(200);
+
+      await methods.revokeProviderSession({
+        issuer: ref.issuer,
+        clientId: ref.clientId,
+        sid: ref.sid,
+        expiresAt: future(),
+        now: new Date(),
+      });
+      const firstRetry = await run();
+      const secondRetry = await run();
+
+      expect(firstRetry.status).toBe(401);
+      expect(firstRetry.body.error_code).toBe('OPENID_SESSION_ENDED');
+      expect(secondRetry.status).toBe(401);
+      expect(secondRetry.body.error_code).toBe('OPENID_SESSION_ENDED');
+      expect(secondRetry.body).not.toHaveProperty('token');
+      expect(grant).toHaveBeenCalledTimes(1);
+    });
+
     it('(d) lets a browser retry with R0 recover through the bridge after the admin rotated R0', async () => {
       const R0 = 'refresh-shared-d';
       const { bridgeService, flights, grant, run } = await setup(R0, {
@@ -1374,3 +1413,27 @@ describe.each(['record', 'enforce'] as const)(
     });
   },
 );
+
+describe("admin refresh retries in mode 'off'", () => {
+  it('does not deny a retry with the spent token, because no binding is read', async () => {
+    const bridgeService = await makeBridgeService();
+    const flights = makeRealFlightService();
+    const R0 = 'refresh-off-retry';
+    const grant = makeGrant();
+    const run = () =>
+      runAdminRefresh({
+        refreshToken: R0,
+        config: makeConfig('off'),
+        bridgeService,
+        userId: ADMIN_USER_ID,
+        grant,
+        flightDeps: makeRealGrantDeps(flights, bridgeService),
+      });
+
+    const first = await run();
+    const retry = await run();
+
+    expect(first.status).toBe(200);
+    expect(retry.status).toBe(200);
+  });
+});

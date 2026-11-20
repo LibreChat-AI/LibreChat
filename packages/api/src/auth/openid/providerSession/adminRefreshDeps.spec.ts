@@ -202,6 +202,46 @@ describe('prepareAdminOpenIdRefresh', () => {
 
     expect(input.findProviderSessionBinding).toHaveBeenCalledTimes(1);
   });
+  it.each(['record', 'enforce'] as const)(
+    'reports unbound in %s mode when neither a Session row nor a bridge binds the token',
+    async (mode) => {
+      const input = makeBuildInput(mode);
+      input.authorizer.preCheck.mockResolvedValue({ ok: true });
+      input.getRefreshTokenBridge.mockResolvedValue(null);
+
+      const result = await prepareAdminOpenIdRefresh('refresh-token', input, { userId: 'user-1' });
+
+      expect(result.unbound).toBe(true);
+    },
+  );
+
+  it('reports bound when a Session row binds the token, even without a provider session', async () => {
+    const input = makeBuildInput('record');
+    input.authorizer.preCheck.mockResolvedValue({ ok: true });
+    input.findProviderSessionBinding.mockResolvedValue({ userId: 'user-1', providerSession: null });
+    input.getRefreshTokenBridge.mockResolvedValue(null);
+
+    const result = await prepareAdminOpenIdRefresh('refresh-token', input);
+
+    expect(result.unbound).toBe(false);
+  });
+
+  it('reports bound when only a recovered bridge binds the token', async () => {
+    const input = makeBuildInput('record');
+    input.authorizer.preCheck.mockResolvedValue({ ok: true });
+    input.getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh' });
+
+    const result = await prepareAdminOpenIdRefresh('refresh-token', input, { userId: 'user-1' });
+
+    expect(result.bridged).toBe(true);
+    expect(result.unbound).toBe(false);
+  });
+
+  it("reports bound in mode 'off', where no binding is read", async () => {
+    const result = await prepareAdminOpenIdRefresh('refresh-token', makeBuildInput('off'));
+
+    expect(result.unbound).toBe(false);
+  });
 });
 
 describe('runAdminOpenIdRefreshGrant', () => {
@@ -225,7 +265,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: false },
+      { bridged: false, unbound: false },
       deps,
     );
 
@@ -240,7 +280,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       {},
     );
 
@@ -259,7 +299,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: undefined },
+      { bridged: true, unbound: false, identity: undefined },
       deps,
     );
 
@@ -279,7 +319,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -299,7 +339,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -321,7 +361,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -353,7 +393,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1', tenantId: 'tenant-a' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1', tenantId: 'tenant-a' } },
       deps,
     );
 
@@ -396,7 +436,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -422,7 +462,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -432,6 +472,56 @@ describe('runAdminOpenIdRefreshGrant', () => {
     expect(result.access_token).toBe('winner-access');
     expect(result.refresh_token).toBe('winner-refresh');
     expect(result.claims()).toEqual(resolvedClaims);
+  });
+
+  it('denies an unbound request that loses the admin grant flight, without waiting for it', async () => {
+    const grant = jest.fn();
+    const deps = {
+      createAdminRefreshGrantFlightKey: jest.fn().mockReturnValue('grant-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: false, ownerId: 'owner-2' }),
+      withOpenIDRefreshFlightLease: jest.fn(),
+      waitForOpenIDRefreshFlight: jest.fn().mockResolvedValue({
+        access_token: 'recorded-access',
+        refresh_token: 'recorded-refresh',
+        __identityClaims: { sub: 'idp-sub' },
+      }),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: false, unbound: true, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED', status: 401 });
+    expect(grant).not.toHaveBeenCalled();
+    expect(deps.waitForOpenIDRefreshFlight).not.toHaveBeenCalled();
+  });
+
+  it('lets an unbound request that owns the admin grant flight run the grant', async () => {
+    const grant = jest.fn().mockResolvedValue(makeTokenset());
+    const deps = {
+      createAdminRefreshGrantFlightKey: jest.fn().mockReturnValue('grant-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease: jest
+        .fn()
+        .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() })),
+    };
+
+    const result = await runAdminOpenIdRefreshGrant(
+      grant,
+      'presented-token',
+      { bridged: false, unbound: true, identity: { userId: 'user-1' } },
+      deps,
+    );
+
+    expect(grant).toHaveBeenCalledTimes(1);
+    expect(result.refresh_token).toBe('rotated-refresh');
   });
 
   it('treats a missing waitForOpenIDRefreshFlight as unresolved and throws ProviderSessionUnavailableError', async () => {
@@ -448,7 +538,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: true, identity: { userId: 'user-1' } },
+        { bridged: true, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toMatchObject({
@@ -473,7 +563,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: true, identity: { userId: 'user-1' } },
+        { bridged: true, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toMatchObject({
@@ -495,7 +585,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: true, identity: { userId: 'user-1' } },
+        { bridged: true, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toMatchObject({
@@ -520,7 +610,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: true, identity: { userId: 'user-1' } },
+        { bridged: true, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toMatchObject({
@@ -544,7 +634,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: true, identity: { userId: 'user-1' } },
+        { bridged: true, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toMatchObject({
@@ -575,7 +665,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -614,7 +704,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -642,7 +732,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -677,7 +767,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
     const result = await runAdminOpenIdRefreshGrant(
       grant,
       'presented-token',
-      { bridged: true, identity: { userId: 'user-1' } },
+      { bridged: true, unbound: false, identity: { userId: 'user-1' } },
       deps,
     );
 
@@ -707,7 +797,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: true, identity: { userId: 'user-1' } },
+        { bridged: true, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toBe(grantError);
@@ -731,7 +821,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: false, identity: { userId: 'user-1' } },
+        { bridged: false, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toBe(grantError);
@@ -760,7 +850,7 @@ describe('runAdminOpenIdRefreshGrant', () => {
       runAdminOpenIdRefreshGrant(
         grant,
         'presented-token',
-        { bridged: false, identity: { userId: 'user-1' } },
+        { bridged: false, unbound: false, identity: { userId: 'user-1' } },
         deps,
       ),
     ).rejects.toBe(grantError);
