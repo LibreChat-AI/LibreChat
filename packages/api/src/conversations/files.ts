@@ -193,6 +193,43 @@ export function withoutExcludedFiles<T extends MessageFileRefs>(
   return changed ? kept : messages;
 }
 
+/** A stored message with every file reference a turn that resends none of them would read. */
+function withoutAnyRefs<T extends MessageFileRefs>(message: T): T {
+  const { files: _files, attachments: _attachments, ...rest } = message;
+  if (!Array.isArray(rest.content)) {
+    return rest as T;
+  }
+  const content = rest.content.map((part) => {
+    if (part == null || typeof part !== 'object') {
+      return part;
+    }
+    const {
+      file: _file,
+      files: _partFiles,
+      image_file: _image,
+      file_id: _fileId,
+      ...kept
+    } = part as LocatorPart;
+    return kept as ContentPart;
+  });
+  return { ...rest, content } as T;
+}
+
+/**
+ * The stored messages as this turn refers to their files, which is what the model-bound guard
+ * checks the turn against: with no file reference at all when the endpoint does not send earlier
+ * files again, and otherwise with every reference but those to files the conversation leaves out.
+ */
+export function withoutUnsentFiles<T extends MessageFileRefs>(
+  messages: readonly T[],
+  { resendFiles, excluded }: { resendFiles?: boolean; excluded?: Excluded },
+): readonly T[] {
+  if (resendFiles === false) {
+    return messages.map(withoutAnyRefs);
+  }
+  return withoutExcludedFiles(messages, excluded);
+}
+
 export interface HistoricalReplayScope {
   fileIds: string[];
   steerFileIds: string[];

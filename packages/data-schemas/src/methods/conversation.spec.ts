@@ -1531,6 +1531,40 @@ describe('Conversation Operations', () => {
         );
       });
 
+      it('gives ids already on the list no room of their own, so a repeat still lands', async () => {
+        const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
+        const fullId = await seedConvo('user123', full);
+        const roomy = await seedConvo('user123', full.slice(0, MAX_EXCLUDED_FILES - 1));
+
+        const repeat = await methods.setConvoFileExclusion('user123', fullId, ['file-0'], true);
+        const overlap = await methods.setConvoFileExclusion(
+          'user123',
+          roomy,
+          ['file-0', 'one-more'],
+          true,
+        );
+        const wholeListAgain = await methods.setConvoFileExclusion('user123', fullId, full, true);
+
+        expect(repeat.ok && repeat.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(overlap.ok && overlap.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(wholeListAgain.ok && wholeListAgain.value).toHaveLength(MAX_EXCLUDED_FILES);
+      });
+
+      it('refuses more ids than the list can hold whatever is stored', async () => {
+        const conversationId = await seedConvo();
+        const tooMany = Array.from({ length: MAX_EXCLUDED_FILES + 1 }, (_, index) => `f-${index}`);
+
+        const result = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          tooMany,
+          true,
+        );
+
+        expect(result).toEqual({ ok: false, error: { code: 'limit_exceeded' } });
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual([]);
+      });
+
       it('lets a full list shrink', async () => {
         const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
         const conversationId = await seedConvo('user123', full);
