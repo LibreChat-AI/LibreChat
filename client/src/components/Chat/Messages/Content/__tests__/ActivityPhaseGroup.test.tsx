@@ -3,12 +3,15 @@ import fs from 'fs';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { PhaseLabel as PackagePhaseLabel, FOLD_EASING } from '@librechat/chat/components';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES, useFailedReveal } from '@librechat/chat/components';
+import {
+  PhaseLabel as PackagePhaseLabel,
+  FOLD_EASING,
+  foldHolds,
+} from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import ActivityPhaseGroup, { PhaseLabel } from '../ActivityPhaseGroup';
 import { MessageSurfaceContext } from '../../ui/surface';
-import { foldHolds } from '../fold';
 
 const mockUseSmoothStreaming = jest.fn(() => true);
 const mockScheduleLayoutReconcile = jest.fn((_target: HTMLElement | null) => jest.fn());

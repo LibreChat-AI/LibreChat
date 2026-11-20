@@ -36,6 +36,9 @@ import {
   getSpanIconNames,
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
+  useFoldParts,
+  SearchVerticals,
+  HeaderActionSlotContext,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { RailHover } from '@librechat/chat/components';
@@ -46,13 +49,10 @@ import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
-import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
 import { AttachmentGroup } from './Parts';
-import SearchVerticals from './verticals';
-import { useFoldParts } from './fold';
 import { cn } from '~/utils';
 
 export { PhaseLabel } from '@librechat/chat/components';

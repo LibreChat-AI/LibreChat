@@ -1,5 +1,5 @@
+import { foldHolds } from '@librechat/chat/components';
 import type { TaskRow } from './rows';
-import { foldHolds } from '~/components/Chat/Messages/Content/fold';
 
 const HIDDEN = '[inert], [hidden], [aria-hidden="true"]';
 

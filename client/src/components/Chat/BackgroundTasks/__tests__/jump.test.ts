@@ -1,8 +1,8 @@
 import { waitFor } from '@testing-library/react';
 import { ContentTypes } from 'librechat-data-provider';
+import { recordFold } from '@librechat/chat/components';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { TaskRow } from '../rows';
-import { recordFold } from '~/components/Chat/Messages/Content/fold';
 import { visitTaskTarget } from '../jump';
 
 const call = (id: string): TMessageContentParts =>
