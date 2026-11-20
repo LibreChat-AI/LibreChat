@@ -703,7 +703,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         },
       ]),
       Message.aggregate<ReplyOutcome>([
-        ...messageScope(messageMatch, agentIds),
+        ...messagePipeline,
         {
           $project: {
             _id: 0,
@@ -717,7 +717,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         // Filtering replies in the first stage makes MongoDB pick the model index instead.
         { $match: { outcome: { $ne: null } } },
       ]),
-      agentIds.length > 0
+      agentIds.length === 1
         ? getSavedVersions(mongoose, agentIds, options.tenantId)
         : Promise.resolve(undefined),
     ]);
@@ -795,39 +795,14 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const replyKey = ({ conversationId, user, messageId }: ReplyIdentity) =>
       JSON.stringify([conversationId, user, messageId]);
     const replyModels = new Map(replyModelRows.map((row) => [replyKey(row._id), row.model]));
-    const assigned = emptyModel(null);
     for (const reply of replyRows) {
-      const key = replyKey(reply);
-      if (!replyModels.has(key)) continue;
-      for (const target of [modelRow(replyModels.get(key)), assigned]) {
-        target.responses += 1;
-        if (reply.outcome === 'completed') target.completedResponses += 1;
-        if (reply.outcome === 'failed') target.failedResponses += 1;
-        if (reply.outcome === 'interrupted') target.interruptedResponses += 1;
-        if (reply.rating === 'thumbsUp') target.thumbsUp += 1;
-        if (reply.rating === 'thumbsDown') target.thumbsDown += 1;
-      }
-    }
-    /** Replies without a completion usage row stay countable, so models add up to the totals. */
-    const unassigned = {
-      responses: Math.max(0, summary.totalResponses - assigned.responses),
-      completedResponses: Math.max(0, summary.completedResponses - assigned.completedResponses),
-      failedResponses: Math.max(0, summary.failedResponses - assigned.failedResponses),
-      interruptedResponses: Math.max(
-        0,
-        summary.interruptedResponses - assigned.interruptedResponses,
-      ),
-      thumbsUp: Math.max(0, summary.feedback.thumbsUp - assigned.thumbsUp),
-      thumbsDown: Math.max(0, summary.feedback.thumbsDown - assigned.thumbsDown),
-    };
-    if (Object.values(unassigned).some((count) => count > 0)) {
-      const unknown = modelRow(null);
-      unknown.responses += unassigned.responses;
-      unknown.completedResponses += unassigned.completedResponses;
-      unknown.failedResponses += unassigned.failedResponses;
-      unknown.interruptedResponses += unassigned.interruptedResponses;
-      unknown.thumbsUp += unassigned.thumbsUp;
-      unknown.thumbsDown += unassigned.thumbsDown;
+      const target = modelRow(replyModels.get(replyKey(reply)));
+      target.responses += 1;
+      if (reply.outcome === 'completed') target.completedResponses += 1;
+      if (reply.outcome === 'failed') target.failedResponses += 1;
+      if (reply.outcome === 'interrupted') target.interruptedResponses += 1;
+      if (reply.rating === 'thumbsUp') target.thumbsUp += 1;
+      if (reply.rating === 'thumbsDown') target.thumbsDown += 1;
     }
     for (const row of dailyUsers) addDay(days, row.date).users = row.users;
     const totalConversations = summary.totalConversations;

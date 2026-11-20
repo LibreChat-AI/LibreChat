@@ -195,13 +195,11 @@ describe('Insights methods', () => {
       [],
     );
     findAgent.mockClear();
-    const combined = await methods.getInsights({ ...options, agentIds: ['agent-a', 'agent-b'] });
-    expect(combined.agentVersions).toEqual(result.agentVersions);
-    expect(findAgent).toHaveBeenCalledTimes(1);
-    findAgent.mockClear();
-    expect(await methods.getInsights({ ...options, agentIds: [] })).not.toHaveProperty(
-      'agentVersions',
-    );
+    for (const agentIds of [['agent-a', 'agent-b'], []]) {
+      expect(await methods.getInsights({ ...options, agentIds })).not.toHaveProperty(
+        'agentVersions',
+      );
+    }
     expect(findAgent).not.toHaveBeenCalled();
   });
 
