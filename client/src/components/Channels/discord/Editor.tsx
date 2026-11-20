@@ -4,7 +4,6 @@ import { channelSnowflakeSchema } from 'librechat-data-provider';
 import {
   Alert,
   Button,
-  Chip,
   Input,
   Label,
   OGDialog,
@@ -12,9 +11,9 @@ import {
   SecretInput,
   Spinner,
 } from '@librechat/client';
-import type { FormEvent, ReactNode } from 'react';
-import type { UseFormReturn } from 'react-hook-form';
 import type { DiscordApplication } from 'librechat-data-provider';
+import type { UseFormReturn } from 'react-hook-form';
+import type { FormEvent, ReactNode } from 'react';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
 
@@ -73,7 +72,6 @@ export default function Editor({
           <p className="text-text-secondary text-sm">{localize('com_ui_discord_credentials')}</p>
           {order.map((field) => {
             const secret = field === 'botToken' || field === 'clientSecret';
-            const statusText = localize(editing ? 'com_ui_set' : 'com_ui_unset');
             const props = {
               id: `${id}-${field}`,
               autoComplete: secret ? 'new-password' : 'off',
@@ -90,25 +88,17 @@ export default function Editor({
             };
             return (
               <div key={field} className="space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor={`${id}-${field}`}>
-                    {localize(labels[field])}
-                    {field === 'name' && (
-                      <>
-                        {' '}
-                        <span className="text-text-secondary text-xs">
-                          {localize('com_ui_optional')}
-                        </span>
-                      </>
-                    )}
-                    {secret && <span className="sr-only"> ({statusText})</span>}
-                  </Label>
-                  {secret && (
-                    <Chip tone={editing ? 'success' : 'neutral'} aria-hidden="true">
-                      {statusText}
-                    </Chip>
+                <Label htmlFor={`${id}-${field}`}>
+                  {localize(labels[field])}
+                  {field === 'name' && (
+                    <>
+                      {' '}
+                      <span className="text-text-secondary text-xs">
+                        {localize('com_ui_optional')}
+                      </span>
+                    </>
                   )}
-                </div>
+                </Label>
                 {secret ? (
                   <SecretInput
                     {...props}

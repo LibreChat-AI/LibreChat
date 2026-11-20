@@ -1917,7 +1917,7 @@ test('adds an application in a dialog with write-only secret controls and the po
   expect(within(dialog).getByLabelText(/^com_ui_name/)).toHaveTextContent('');
   expect(within(dialog).getByText('com_ui_optional')).toBeVisible();
   expect(within(dialog).getByLabelText('com_ui_discord_application_id')).toBeEnabled();
-  expect(within(dialog).getAllByText('com_ui_unset')).toHaveLength(2);
+  expect(within(dialog).queryByText('com_ui_unset')).toBeNull();
   expect(within(dialog).queryByText('com_ui_discord_rotation')).toBeNull();
   expect(
     within(dialog).getByRole('link', { name: 'com_ui_discord_developer_portal' }),
@@ -1928,7 +1928,7 @@ test('adds an application in a dialog with write-only secret controls and the po
   );
 });
 
-test('edits an application with its identity fixed and each secret marked as set', async () => {
+test('edits an application with its identity fixed and a keep-current hint on each secret', async () => {
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
   const dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_app_rotate' });
@@ -1936,7 +1936,7 @@ test('edits an application with its identity fixed and each secret marked as set
   expect(within(dialog).getByLabelText('com_ui_discord_application_id')).toHaveValue(
     app.applicationId,
   );
-  expect(within(dialog).getAllByText('com_ui_set')).toHaveLength(2);
+  expect(within(dialog).queryByText('com_ui_set')).toBeNull();
   expect(within(dialog).getAllByText('com_ui_discord_rotation')).toHaveLength(2);
   expect(within(dialog).getByLabelText(/^com_ui_name/)).toHaveValue('Engineering');
 });
