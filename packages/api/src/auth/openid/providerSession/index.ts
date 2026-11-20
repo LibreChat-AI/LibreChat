@@ -6,3 +6,4 @@ export * from './callback';
 export * from './adminRefreshDeps';
 export * from './binding';
 export * from './service';
+export * from './adminRefresh';

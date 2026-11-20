@@ -5,7 +5,6 @@ import { createMethods, createModels } from '@librechat/data-schemas';
 import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type {
-  AdminOpenIdRefreshPrepareResult,
   AdminRefreshGrantDeps,
   BuildAdminRefreshProviderSessionDepsInput,
 } from './adminRefreshDeps';
@@ -15,18 +14,15 @@ import type { RefreshTokenBridgeDeps } from '~/auth/openid/bridge';
 import type { ResolvedBackchannelLogoutConfig } from './config';
 import type { TokenResult } from '~/auth/openid/flight';
 import type { RefreshTokenset } from '~/auth/refresh';
-import { prepareAdminOpenIdRefresh, runAdminOpenIdRefreshGrant } from './adminRefreshDeps';
 import { createOpenIDRefreshRecoveryService } from '~/auth/openid/recovery';
 import { createOpenIDRefreshFlightService } from '~/auth/openid/flight';
 import { createRefreshTokenBridgeService } from '~/auth/openid/bridge';
 import { createRefreshTokenBridgeIdentity } from '~/utils/identity';
 import { createProviderSessionAuthorizer } from './authorize';
-import { mapAdminAuthError } from '~/auth/adminAuthErrors';
-import { applyAdminRefresh } from '~/auth/refresh';
+import { refreshAdminOpenIdSession } from './adminRefresh';
 
 /**
- * End-to-end coverage for the admin refresh recovery sequence
- * (`prepareAdminOpenIdRefresh` -> `runAdminOpenIdRefreshGrant` -> `applyAdminRefresh`) against a
+ * End-to-end coverage for the admin refresh sequence (`refreshAdminOpenIdSession`) against a
  * real database, in both `record` and `enforce` mode. Only the IdP grant is mocked. Covers:
  *   - the bridge-before-missing-session-denial ordering: a retry that presents a refresh token a
  *     prior rotation already replaced must recover through the refresh-token bridge instead of
@@ -217,11 +213,10 @@ type RunOutcome = {
   status: number;
   body: Record<string, unknown>;
   depsInput: BuildAdminRefreshProviderSessionDepsInput;
-  prepared?: AdminOpenIdRefreshPrepareResult;
 };
 
-/** Replicates the `/api/admin/oauth/refresh` route handler's exact sequence:
- *  `prepareAdminOpenIdRefresh` -> `runAdminOpenIdRefreshGrant` -> `applyAdminRefresh`. */
+/** Calls `refreshAdminOpenIdSession`, the function the `/api/admin/oauth/refresh` route calls,
+ *  and returns the status and body the route sends. */
 async function runAdminRefresh(args: {
   refreshToken: string;
   config: ResolvedBackchannelLogoutConfig;
@@ -233,38 +228,18 @@ async function runAdminRefresh(args: {
   depsOverrides?: Partial<BuildAdminRefreshProviderSessionDepsInput>;
 }): Promise<RunOutcome> {
   const depsInput = buildDepsInput(args.config, args.bridgeService, args.depsOverrides);
-
-  let prepared: AdminOpenIdRefreshPrepareResult;
-  try {
-    prepared = await prepareAdminOpenIdRefresh(args.refreshToken, depsInput, {
-      expectedIssuer: ISSUER,
+  const outcome = await refreshAdminOpenIdSession(
+    {
+      refreshToken: args.refreshToken,
       userId: args.userId,
       tenantId: args.tenantId,
-    });
-  } catch (error) {
-    const mapped = mapAdminAuthError(error);
-    if (!mapped) throw error;
-    return { status: mapped.status, body: mapped.body, depsInput };
-  }
-
-  let tokenset: RefreshTokenset;
-  try {
-    tokenset = await runAdminOpenIdRefreshGrant(
-      () => args.grant(prepared.grantRefreshToken),
-      args.refreshToken,
-      prepared,
-      args.flightDeps ?? {},
-    );
-  } catch (error) {
-    const mapped = mapAdminAuthError(error);
-    if (!mapped) throw error;
-    return { status: mapped.status, body: mapped.body, depsInput, prepared };
-  }
-
-  try {
-    const result = await applyAdminRefresh(
-      tokenset,
-      {
+      expectedIssuer: ISSUER,
+    },
+    {
+      grant: args.grant,
+      providerSession: depsInput,
+      flight: args.flightDeps ?? {},
+      user: {
         findUsers: jest.fn().mockResolvedValue([]),
         getUserById: async (id: string) => {
           if (id === ADMIN_USER_ID) return testUser;
@@ -275,29 +250,17 @@ async function runAdminRefresh(args: {
           token: `minted-${ts.refresh_token}`,
           expiresAt: Date.now() + 100_000,
         }),
-        ...prepared.providerSessionDeps,
       },
-      {
-        userId: args.userId,
-        previousRefreshToken: args.refreshToken,
-        grantRefreshToken: prepared.grantRefreshToken,
-        expectedIssuer: ISSUER,
-        tenantId: args.tenantId,
-        boundProviderSession: prepared.binding.ref,
-        bridgeIdentity: prepared.identity,
-      },
-    );
-    return {
-      status: 200,
-      body: result as unknown as Record<string, unknown>,
-      depsInput,
-      prepared,
-    };
-  } catch (error) {
-    const mapped = mapAdminAuthError(error);
-    if (!mapped) throw error;
-    return { status: mapped.status, body: mapped.body, depsInput, prepared };
+    },
+  );
+  if (!outcome.ok) {
+    return { status: outcome.error.status, body: outcome.error.body, depsInput };
   }
+  return {
+    status: 200,
+    body: outcome.value as unknown as Record<string, unknown>,
+    depsInput,
+  };
 }
 
 /** A faithful-enough in-memory fake of the flight-coordination deps: tracks one in-flight grant
@@ -1190,7 +1153,7 @@ describe.each(['record', 'enforce'] as const)(
           flightDeps: makeRealGrantDeps(flights, bridgeService),
         });
 
-      await expect(run()).rejects.toThrow('IdP unavailable');
+      expect((await run()).status).toBe(503);
       const startedAt = Date.now();
       const retry = await run();
 
