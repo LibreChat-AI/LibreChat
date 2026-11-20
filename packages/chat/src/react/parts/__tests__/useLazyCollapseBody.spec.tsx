@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import useLazyCollapseBody from '../useLazyCollapseBody';
 
 const TOGGLE_LABEL = 'toggle';
@@ -63,6 +63,68 @@ describe('useLazyCollapseBody', () => {
 
     fireEvent.transitionEnd(screen.getByTestId('panel'));
     expect(screen.queryByTestId('body')).not.toBeInTheDocument();
+  });
+
+  describe('when no transition ends', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    /** Opened and closed inside one frame: the panel never left its collapsed size, so
+     *  nothing transitions and the event the release waits on never comes. */
+    it('releases the body of a panel closed before its opening began', () => {
+      render(<Disclosure initialExpanded={false} />);
+      const toggle = screen.getByRole('button');
+      fireEvent.click(toggle);
+      fireEvent.click(toggle);
+      expect(screen.getByTestId('body')).toBeInTheDocument();
+
+      act(() => {
+        jest.advanceTimersByTime(600);
+      });
+      expect(screen.queryByTestId('body')).not.toBeInTheDocument();
+    });
+
+    it('sets no timer for a panel that was never opened', () => {
+      const timers = jest.spyOn(globalThis, 'setTimeout');
+      render(<Disclosure initialExpanded={false} />);
+      expect(timers).not.toHaveBeenCalled();
+      timers.mockRestore();
+    });
+
+    it('keeps the body of a panel opened again before the wait is over', () => {
+      render(<Disclosure initialExpanded={false} />);
+      const toggle = screen.getByRole('button');
+      fireEvent.click(toggle);
+      fireEvent.click(toggle);
+      act(() => {
+        jest.advanceTimersByTime(200);
+      });
+      fireEvent.click(toggle);
+
+      act(() => {
+        jest.advanceTimersByTime(600);
+      });
+      expect(screen.getByTestId('body')).toBeInTheDocument();
+    });
+
+    it('holds a retained body until retention clears', () => {
+      const view = render(<Disclosure initialExpanded={false} retainBody />);
+      const toggle = screen.getByRole('button');
+      fireEvent.click(toggle);
+      fireEvent.click(toggle);
+      act(() => {
+        jest.advanceTimersByTime(600);
+      });
+      expect(screen.getByTestId('body')).toBeInTheDocument();
+
+      view.rerender(<Disclosure initialExpanded={false} retainBody={false} />);
+      expect(screen.queryByTestId('body')).not.toBeInTheDocument();
+    });
   });
 
   it('ignores transition events bubbling from descendants', () => {
