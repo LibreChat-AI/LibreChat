@@ -10,8 +10,9 @@ export type ScheduleMCPCompletionLookup = ScheduleMethods['getScheduleMCPComplet
  * Who a background task's completion turn acts for: the schedule that started the task, while
  * it still exists and still runs the same agent. The turn is another run of that agent, and
  * runs under whatever the schedule's owner allows when it starts: the grant the schedule
- * holds then, checked live like any run's, or none. It inherits nothing from the run that
- * started the task.
+ * holds then, checked live like any run's, or none. From the run that started the task it
+ * inherits one thing, which the run host puts back: the MCP servers that run's occurrence
+ * went without.
  */
 export async function resolveScheduleMCPCompletion(
   scope: { ownerId: string; tenantId: string | null; scheduleMCPIdentity?: unknown },

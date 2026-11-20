@@ -280,6 +280,14 @@ export type ScheduleMethods = {
     scheduleId: string,
     scheduledFor: string | Date,
   ) => Promise<ScheduleMCPOutcome[]>;
+  /**
+   * The MCP outcomes of the occurrence that started a conversation, for the schedule and
+   * owner named; empty when no such run is on record or it holds none.
+   */
+  getScheduleConversationMCP: (
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ) => Promise<ScheduleMCPOutcome[]>;
   reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<StartedRunReservation>;
   getCapacityOccupancy: () => Promise<{ takenSlots: number[]; unslotted: number }>;
   requestRunAbort: (
@@ -933,6 +941,30 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
   ): Promise<ScheduleMCPOutcome[]> {
     const run = await ScheduleRun()
       .findOne({ scheduleId, scheduledFor: new Date(scheduledFor) })
+      .select('mcp')
+      .lean<{ mcp?: ScheduleMCPOutcome[] } | null>();
+    return run?.mcp ?? [];
+  }
+
+  /**
+   * The same outcomes, found by the conversation the occurrence started. Each occurrence
+   * starts a conversation of its own, so a later turn there (a background task or a
+   * subagent reporting back) is tied to its occurrence by where it runs. The schedule and
+   * its owner are part of the match: a conversation alone names no run of theirs. Should a
+   * conversation ever hold more than one run, the latest stands.
+   */
+  async function getScheduleConversationMCP(
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await ScheduleRun()
+      .findOne({
+        user: scope.ownerId,
+        tenantId: scope.tenantId,
+        conversationId,
+        scheduleId: scope.scheduleId,
+      })
+      .sort({ firedAt: -1 })
       .select('mcp')
       .lean<{ mcp?: ScheduleMCPOutcome[] } | null>();
     return run?.mcp ?? [];
@@ -2363,6 +2395,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     persistResolvedProject,
     getScheduleRunProject,
     getScheduleRunMCP,
+    getScheduleConversationMCP,
     getScheduleRunAbortState,
     getScheduleMCPCompletionState,
     recordMCPToolAuthFailure,

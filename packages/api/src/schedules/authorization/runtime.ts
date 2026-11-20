@@ -44,6 +44,11 @@ export function createScheduleMCPRuntimeHost(
         scheduleId: string,
         scheduledFor: string | Date,
       ) => Promise<ScheduleMCPOutcome[]>;
+      /** The same, for the occurrence that started a conversation. */
+      getScheduleConversationMCP: (
+        scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+        conversationId: string,
+      ) => Promise<ScheduleMCPOutcome[]>;
     };
   },
 ): {
@@ -60,6 +65,8 @@ export function createScheduleMCPRuntimeHost(
       scheduledFor?: string | Date;
       scheduleManual?: boolean;
       scheduleMCPCompletion?: ScheduledMCPIdentity;
+      /** The conversation the saved job ran in. */
+      conversationId?: string;
     };
     /** Tool calls the owner approved in the request that resumes this run. */
     approvedToolCalls?: readonly string[];
@@ -160,6 +167,19 @@ export function createScheduleMCPRuntimeHost(
           if (!identity) return;
           if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
             throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          // The turn reports on a task one occurrence started, in the conversation that
+          // occurrence started, and is a request of its own: neither that occurrence's
+          // trigger nor its saved job. The servers the occurrence went without are read from
+          // its run row, found by the conversation, so the turn goes without them too and
+          // does not stop to ask for a sign-in nobody is there to give. The conversation is
+          // the signed host's, or the saved job's when the turn is resumed.
+          const conversationId =
+            completion !== undefined ? restoredJob?.conversationId : req.body?.conversationId;
+          if (typeof conversationId === 'string' && conversationId !== '')
+            restoreSkippedMCPServers(
+              req,
+              await deps.methods.getScheduleConversationMCP(identity, conversationId),
+            );
           // Resolved afresh: the turn runs under the grant the schedule holds now, if any.
           // A resumed turn carries the approvals its owner gave while it was paused.
           await execution.attach(
