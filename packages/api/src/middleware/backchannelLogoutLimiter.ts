@@ -13,6 +13,8 @@ export interface CreateBackchannelLogoutLimiterDeps {
   limiterCache: (prefix: string) => RedisStore | undefined;
 }
 
+/** Counts only rejected requests (status 400 or more): a provider sends every notification from
+ *  a small set of addresses, so counting valid deliveries would limit a mass sign-out. */
 function buildLimiter(
   deps: Pick<CreateBackchannelLogoutLimiterDeps, 'removePorts' | 'limiterCache'>,
   config: BackchannelLogoutLimiterConfig,
@@ -20,6 +22,7 @@ function buildLimiter(
   return rateLimit({
     windowMs: config.rateLimit.windowMs,
     max: config.rateLimit.max,
+    skipSuccessfulRequests: true,
     keyGenerator: deps.removePorts as (req: Request) => string,
     store: deps.limiterCache('backchannel_logout_limiter'),
   });
