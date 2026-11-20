@@ -759,6 +759,7 @@ const primeFiles = async (options) => {
     files: dbFiles,
     privateFileIds: agentResourceIds,
     routeKey: executionRouteKey,
+    identity: { userId: req?.user?.id, agentId, agentResources: tool_resources },
     getFileInfo: (ref) => getSessionFileInfo(ref, req, codeApiRoute, signal),
     concurrency: uploadOptions.concurrency,
     signal,

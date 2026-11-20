@@ -28,7 +28,9 @@ import { primeResources } from '~/agents/resources';
 import { createProvisionService } from './service';
 
 jest.mock('~/auth/codeapi', () => ({
-  getCodeApiAuthHeaders: jest.fn(async () => ({})),
+  getCodeApiAuthHeaders: jest.fn(async (req?: { user?: { id?: string } }) => ({
+    Authorization: `Bearer ${req?.user?.id}`,
+  })),
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -70,9 +72,19 @@ function parseMultipart(body: Buffer, contentType: string): MultipartPart[] {
   return parts;
 }
 
-/** A Code API stand-in: object storage that reports MD5 entity tags, and a counting limiter. */
+/**
+ * A Code API stand-in: object storage that reports MD5 entity tags, a counting limiter, and
+ * the service's storage session keys. A `user` session belongs to whoever is authenticated,
+ * whatever `id` the request names; an `agent` session belongs to the agent id alone.
+ */
 function createCodeApiFixture() {
   const objects = new Map<string, StoredObject>();
+  const owners = new Map<string, string>();
+  const sessionKey = (
+    kind: string | null | undefined,
+    id: string | null | undefined,
+    authorization: string | undefined,
+  ) => (kind === 'agent' ? `agent:${id}` : `user:${authorization?.replace(/^Bearer /, '')}`);
   const uploads: Array<{ path: string; files: string[]; status: number; bytes: number }> = [];
   const probes: string[] = [];
   const state = {
@@ -112,10 +124,12 @@ function createCodeApiFixture() {
           { 'Retry-After': String(state.retryAfterSeconds) },
         );
       }
-      const files = parseMultipart(body, request.headers['content-type']!).filter(
-        (part) => part.name === 'file',
-      );
+      const parts = parseMultipart(body, request.headers['content-type']!);
+      const field = (name: string) =>
+        parts.find((part) => part.name === name)?.content.toString('utf8');
+      const files = parts.filter((part) => part.name === 'file');
       const session = `session-${++state.sessions}`;
+      owners.set(session, sessionKey(field('kind'), field('id'), request.headers.authorization));
       const results = files.map((part) => {
         const filename = part.filename!;
         if (state.rejectNames.has(filename)) {
@@ -149,9 +163,17 @@ function createCodeApiFixture() {
         failed,
       });
     }
+    const authorized = (session: string) =>
+      owners.get(session) ===
+      sessionKey(
+        url.searchParams.get('kind'),
+        url.searchParams.get('id'),
+        request.headers.authorization,
+      );
     const metadata = /^\/v1\/sessions\/([^/]+)\/objects\/([^/]+)$/.exec(url.pathname);
     if (request.method === 'GET' && metadata) {
       probes.push(url.pathname);
+      if (!authorized(metadata[1])) return send(403, { error: 'Unauthorized' });
       const key = `${metadata[1]}/${metadata[2]}`;
       const object = objects.get(key);
       if (!object) return send(404, { error: 'File not found' });
@@ -160,6 +182,7 @@ function createCodeApiFixture() {
     const listing = /^\/v1\/files\/([^/]+)$/.exec(url.pathname);
     if (request.method === 'GET' && listing) {
       probes.push(url.pathname);
+      if (!authorized(listing[1])) return send(403, { error: 'Unauthorized' });
       if (state.failListings) return send(500, { error: 'Error fetching file information' });
       const prefix = `${listing[1]}/`;
       return send(
@@ -171,7 +194,7 @@ function createCodeApiFixture() {
     }
     return send(404, {});
   });
-  return { server, objects, uploads, probes, state };
+  return { server, objects, owners, uploads, probes, state };
 }
 
 describe('generated-file snapshots in the code environment', () => {
@@ -203,6 +226,7 @@ describe('generated-file snapshots in the code environment', () => {
         ? {
             /* The single-file transport lives in the api workspace; this mirrors it. */
             handleFileUpload: async ({
+              req: uploader,
               stream,
               filename,
               kind,
@@ -221,7 +245,10 @@ describe('generated-file snapshots in the code environment', () => {
                     `${(codeApiBaseUrl as string | undefined) ?? baseURL}/upload`,
                     form,
                     {
-                      headers: form.getHeaders(),
+                      headers: {
+                        ...form.getHeaders(),
+                        Authorization: `Bearer ${(uploader as ServerRequest).user?.id}`,
+                      },
                     },
                   ),
               );
@@ -299,15 +326,16 @@ describe('generated-file snapshots in the code environment', () => {
       addFile(`edit-${index}.png`, `image bytes ${index}`),
     );
 
-  const getFileInfo = (ref: CodeEnvRef) =>
+  const getFileInfoAs = (userId: string) => (ref: CodeEnvRef) =>
     getCodeFileInfo({
       ref,
       req,
       route: { baseUrl: baseURL },
       request,
       getBaseURL: () => baseURL,
-      getAuthHeaders: async () => ({}),
+      getAuthHeaders: async () => ({ Authorization: `Bearer ${userId}` }),
     });
+  const getFileInfo = getFileInfoAs(USER);
 
   /**
    * One turn that uses the code tool: resource priming decides what is queued, the first code
@@ -363,6 +391,7 @@ describe('generated-file snapshots in the code environment', () => {
     const { selected } = await selectCodeFiles({
       files: [...records.values()].map((record) => structuredClone(record)),
       routeKey,
+      identity: { userId: USER, agentId: 'agent' },
       getFileInfo,
     });
     const mounted = new Map<string, Buffer | undefined>();
@@ -398,6 +427,7 @@ describe('generated-file snapshots in the code environment', () => {
     stored = new Map();
     recovery = createFileProvisionRecovery();
     fixture.objects.clear();
+    fixture.owners.clear();
     fixture.uploads.length = 0;
     fixture.probes.length = 0;
     fixture.state.refuse = 0;
@@ -713,6 +743,67 @@ describe('generated-file snapshots in the code environment', () => {
       const object = fixture.objects.get(`${ref.storage_session_id}/${ref.file_id}`)!;
       expect(object.bytes.equals(stored.get(file.filepath)!)).toBe(true);
     }
+  });
+
+  it("does not mount another user's upload, which the Code API would not answer for either", async () => {
+    const [file] = snapshots(1);
+    await turn();
+    const receipt = records.get(file.file_id)!.metadata!.codeEnvRefs!.default!;
+    expect(receipt).toMatchObject({ kind: 'user', id: USER });
+    await expect(getFileInfoAs('user2')(receipt)).resolves.toBeNull();
+
+    const probes = fixture.probes.length;
+    const { selected } = await selectCodeFiles({
+      files: [structuredClone(records.get(file.file_id)!)],
+      routeKey: 'default',
+      identity: { userId: 'user2', agentId: 'agent' },
+      getFileInfo: getFileInfoAs('user2'),
+    });
+    expect(fixture.probes).toHaveLength(probes);
+    expect(selected[0]).toMatchObject({ ref: undefined, isActive: false });
+    expect(selected[0].sourceRef).toEqual({ kind: 'user', id: 'user2' });
+  });
+
+  it('does not mount an upload filed under another agent, although the Code API answers for it', async () => {
+    const [file] = snapshots(1);
+    const [uploaded] = await service.provisionBatchToCodeEnv({
+      req,
+      entity_id: 'agent-other',
+      route: { baseUrl: baseURL },
+      files: [{ file }],
+    });
+    if (uploaded.status !== 'fulfilled') throw uploaded.reason;
+    const receipt = uploaded.value.refUpdate.ref;
+    records.get(file.file_id)!.metadata = { ...file.metadata, ...uploaded.value.referenceSet };
+    expect(receipt).toMatchObject({ kind: 'agent', id: 'agent-other' });
+    /* An agent session key has no user in it, so any user of the deployment may read it. */
+    await expect(getFileInfoAs('user2')(receipt)).resolves.toMatchObject({
+      etag: receipt.content!.md5,
+      size: receipt.content!.bytes,
+    });
+
+    const probes = fixture.probes.length;
+    const { selected } = await selectCodeFiles({
+      files: [structuredClone(records.get(file.file_id)!)],
+      routeKey: 'default',
+      identity: { userId: 'user2', agentId: 'agent' },
+      getFileInfo: getFileInfoAs('user2'),
+    });
+    expect(fixture.probes).toHaveLength(probes);
+    expect(selected[0]).toMatchObject({ ref: undefined, isActive: false });
+    expect(selected[0].sourceRef).toEqual({ kind: 'user', id: 'user2' });
+
+    /* Resource priming refuses it by the same rule, so the turn files its own upload. */
+    const next = await turn();
+    expect(next.error).toBeUndefined();
+    expect(next.queued).toEqual([file.file_id]);
+    expect(next.uploads.map(({ path }) => path)).toEqual(['/v1/upload/batch']);
+    expect(records.get(file.file_id)!.metadata!.codeEnvRefs!.default).toMatchObject({
+      kind: 'user',
+      id: USER,
+    });
+    expectStoredBytes(next.mounted, [file]);
+    expect((await turn()).uploads).toEqual([]);
   });
 
   it('leaves an attached file on its existing liveness rule and batches it with snapshots', async () => {
