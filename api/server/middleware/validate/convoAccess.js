@@ -1,4 +1,4 @@
-const { isEnabled } = require('@librechat/api');
+const { isEnabled, isStableContextEnabled } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { Constants, ViolationTypes, Time } = require('librechat-data-provider');
 const denyRequest = require('~/server/middleware/denyRequest');
@@ -61,7 +61,11 @@ const validateConvoAccess = async (req, res, next) => {
     /** One read serves the subagent guard, agent initialization, and the first save via
      *  `req.resolvedConversation`. `messages` is the only unbounded field and no consumer
      *  reads it, so it stays excluded — ownership is not yet known at this point. */
-    const conversation = await searchConversation(conversationId, '-messages');
+    const conversation = await searchConversation(
+      conversationId,
+      /** The turn context anchor is read with the conversation instead of in a read of its own. */
+      isStableContextEnabled(req.config) ? '-messages +contextAnchor' : '-messages',
+    );
 
     if (!conversation) {
       req.resolvedConversation = null;

@@ -25,6 +25,7 @@ const {
   getCodeFileLocation,
   getMissingCustomUserVars,
   buildWebSearchDynamicContext,
+  getPromptTime,
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
   getReplayablePendingMCPOAuthStarts,
@@ -1494,7 +1495,9 @@ async function loadToolDefinitionsWrapper({
 
   if (hasWebSearch) {
     toolContextMap[Tools.web_search] = buildWebSearchContext();
-    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext(req.turnStartedAt);
+    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext(
+      getPromptTime(req.config, req),
+    );
   }
 
   /**
