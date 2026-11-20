@@ -8,7 +8,6 @@ import type {
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
-import type { ToolCallPhase } from '../core/parts/toolCallPhase';
 
 /** The message a part renders in, as its host reports it. */
 export type MessagePartMessage = {
@@ -77,27 +76,9 @@ export type MessagePartsShare = {
 /** Strings a tool call card asks the host to resolve. Values fill `{0}`-style placeholders. */
 export type ToolCallLocalize = (key: string, values?: Record<string, string | number>) => string;
 
-/** What the app's progress row draws for one tool call. */
-export type ToolCallProgressProps = {
-  phase: ToolCallPhase;
-  onClick: () => void;
-  inProgressText: string;
-  authText?: string;
-  finishedText: string;
-  subtitle?: string;
-  durationMs?: number;
-  toolPreparationDurationMs?: number;
-  toolExecutionDurationMs?: number;
-  phaseStartAt?: number;
-  phaseStepId?: string;
-  icon: ReactNode;
-  hasInput: boolean;
-  isExpanded: boolean;
-};
-
 /**
- * App services and renderers for a generic tool call card. The progress row and attachment
- * stack stay in the app because other cards still share them.
+ * App services for a generic tool call card, and its one renderer: the attachment stack stays
+ * in the app because other cards still share it.
  */
 export type ToolCallChrome = {
   localize: ToolCallLocalize;
@@ -110,7 +91,6 @@ export type ToolCallChrome = {
   /** Opens a URL in a new tab. Called synchronously inside the sign-in click. */
   openUrl: (url: string) => void;
   logError: (message: string, error?: unknown) => void;
-  renderProgress: (props: ToolCallProgressProps) => ReactNode;
   renderAttachments: (attachments: TAttachment[]) => ReactNode;
 };
 
@@ -122,7 +102,6 @@ const emptyChrome: ToolCallChrome = {
   bindActionOAuth: () => Promise.resolve(undefined),
   openUrl: () => undefined,
   logError: () => undefined,
-  renderProgress: () => null,
   renderAttachments: () => null,
 };
 

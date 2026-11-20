@@ -16,6 +16,26 @@ import { MessagePartsHostProvider } from '../../../react/host';
 import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 
+jest.mock('../ProgressText', () => ({
+  __esModule: true,
+  default: ({
+    onClick,
+    inProgressText,
+    finishedText,
+    subtitle,
+  }: {
+    onClick?: () => void;
+    inProgressText?: string;
+    finishedText?: string;
+    subtitle?: string;
+  }) => (
+    <div data-testid="progress-text" onClick={onClick}>
+      {finishedText || inProgressText}
+      {subtitle ? <span data-testid="subtitle">{subtitle}</span> : null}
+    </div>
+  ),
+}));
+
 jest.mock('../ToolCallInfo', () => ({
   __esModule: true,
   default: (props: { input: string; output?: string | null }) => (
@@ -48,25 +68,6 @@ function openUrl(url: string): void {
   link.remove();
 }
 
-function ProgressStub({
-  onClick,
-  inProgressText,
-  finishedText,
-  subtitle,
-}: {
-  onClick?: () => void;
-  inProgressText?: string;
-  finishedText?: string;
-  subtitle?: string;
-}) {
-  return (
-    <div data-testid="progress-text" onClick={onClick}>
-      {finishedText || inProgressText}
-      {subtitle ? <span data-testid="subtitle">{subtitle}</span> : null}
-    </div>
-  );
-}
-
 function AttachmentStub({ attachments }: { attachments?: unknown }) {
   return <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>;
 }
@@ -79,7 +80,6 @@ const chrome: ToolCallChrome = {
   bindActionOAuth,
   openUrl,
   logError,
-  renderProgress: (props) => <ProgressStub {...props} />,
   renderAttachments: (attachments) => <AttachmentStub attachments={attachments} />,
 };
 

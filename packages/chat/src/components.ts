@@ -339,7 +339,7 @@ export type { OutputRendererProps, OutputSegment } from './components/parts/Outp
 export { default as ToolCallInfo } from './components/parts/ToolCallInfo';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
 export { default as RetrievalCall } from './components/parts/Retrieval';
-export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
+export type { RetrievalCallProps } from './components/parts/Retrieval';
 export {
   bySalience,
   byEntrySalience,

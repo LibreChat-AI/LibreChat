@@ -31,6 +31,7 @@ import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
 import { useFailedReveal } from './reveal';
 import ToolCallInfo from './ToolCallInfo';
+import ProgressText from './ProgressText';
 import { TOOL_ROW_CLASSES } from './rows';
 import { ToolAuthWarning } from './auth';
 
@@ -85,7 +86,6 @@ export default function ToolCall({
     bindActionOAuth,
     openUrl,
     logError,
-    renderProgress,
     renderAttachments,
   } = useMessagePartsHost().useToolCallChrome();
   const [oauthError, setOAuthError] = useState<string | null>(null);
@@ -463,31 +463,32 @@ export default function ToolCall({
           data-task-tool-call={toolCallId}
           data-task-step={stepId}
         >
-          {renderProgress({
-            phase,
-            onClick: handleToggleInfo,
-            inProgressText,
-            authText:
+          <ProgressText
+            phase={phase}
+            onClick={handleToggleInfo}
+            inProgressText={inProgressText}
+            authText={
               phase === 'running' && authDomain.length > 0
                 ? localize('com_ui_requires_auth')
-                : undefined,
-            finishedText: getFinishedText(),
-            subtitle,
-            durationMs: runStepDurationMs,
-            toolPreparationDurationMs,
-            toolExecutionDurationMs,
-            phaseStartAt: toolDispatchedAt ?? toolPreparationStartedAt,
-            phaseStepId: stepId,
-            icon: (
+                : undefined
+            }
+            finishedText={getFinishedText()}
+            subtitle={subtitle}
+            durationMs={runStepDurationMs}
+            toolPreparationDurationMs={toolPreparationDurationMs}
+            toolExecutionDurationMs={toolExecutionDurationMs}
+            phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
+            phaseStepId={stepId}
+            icon={
               <ToolIcon
                 type={getToolIconType(name)}
                 iconUrl={mcpIconUrl}
                 isAnimating={phase === 'running'}
               />
-            ),
-            hasInput: hasInfo,
-            isExpanded: showInfo,
-          })}
+            }
+            hasInput={hasInfo}
+            isExpanded={showInfo}
+          />
         </div>
       )}
       <div
