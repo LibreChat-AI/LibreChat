@@ -4769,6 +4769,49 @@ describe('ToolService - Action Capability Gating', () => {
       expectBothActionsResolved(mockCreateActionTool.mock.calls);
     });
 
+    it('loadAgentTools starts every action domain check before any resolves and keeps tool order', async () => {
+      mockLoadActionSets.mockResolvedValue([actionA, actionB]);
+      const releases = [];
+      mockDomainParser.mockImplementation(
+        () => new Promise((resolve) => releases.push(() => resolve(ENCODED_DOMAIN))),
+      );
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.actions];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const pending = loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_collision', tools: [toolNameA, toolNameB] },
+        definitionsOnly: false,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockDomainParser).toHaveBeenCalledTimes(2);
+      releases.forEach((release) => release());
+      await pending;
+
+      expect(mockCreateActionTool).toHaveBeenCalledTimes(2);
+      expectBothActionsResolved(mockCreateActionTool.mock.calls);
+    });
+
+    it('loadAgentTools rejects when an action domain check throws', async () => {
+      mockLoadActionSets.mockResolvedValue([actionA, actionB]);
+      mockDomainParser.mockRejectedValue(new Error('dns failure'));
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.actions];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await expect(
+        loadAgentTools({
+          req,
+          res: {},
+          agent: { id: 'agent_collision', tools: [toolNameA, toolNameB] },
+          definitionsOnly: false,
+        }),
+      ).rejects.toThrow('dns failure');
+      expect(mockCreateActionTool).not.toHaveBeenCalled();
+    });
+
     it('loadAgentTools is order-invariant for two actions sharing a hostname', async () => {
       // Reverse the actionSets order — what used to flip the "winner" of
       // the encoded-domain Map overwrite must now make zero observable
