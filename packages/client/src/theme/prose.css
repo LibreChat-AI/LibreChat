@@ -809,3 +809,16 @@ html:not(.high-contrast) .markdown :is(th, td):last-child {
 .markdown li::marker {
   color: currentColor;
 }
+
+/**
+ * Message body typography for the package's message text, steers and queued turns, following the
+ * chat font setting. A message carries `markdown prose message-content`, three single classes
+ * that tie on specificity, so this rule has to come after theirs to set the line height and the
+ * width a message is read at.
+ */
+.message-content {
+  font-size: var(--markdown-font-size, var(--font-size-base, 1rem));
+  line-height: 1.6;
+  /* `.prose` sets max-width: 65ch; fill the message column instead. */
+  max-width: none;
+}
