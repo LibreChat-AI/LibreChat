@@ -9,7 +9,7 @@ import { openSidebar } from './sidebar';
 const userEmail = getE2EUser().email;
 
 /** The row's own highlight, not its `hover:` variant, which every idle row carries. */
-const ACTIVE = /(^|\s)bg-surface-active-alt(\s|$)/;
+const ACTIVE = /(^|\s)bg-surface-nav-selected(\s|$)/;
 
 const row = (page: Page, title: string) =>
   page.getByTestId('convo-item').filter({ hasText: title }).filter({ visible: true }).first();

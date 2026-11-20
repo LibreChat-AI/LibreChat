@@ -1,18 +1,20 @@
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
+import { bindingDisplayString, bindingToString } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, act, cleanup, renderHook, fireEvent, screen } from '@testing-library/react';
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
 import type * as ReasoningModule from '~/components/Chat/Input/Reasoning';
+import type { ShortcutActionId } from './useKeyboardShortcuts';
+import type { ShortcutOverride } from '~/store/misc';
 import useKeyboardShortcuts, {
+  isMac,
   isOverridden,
-  effectiveBinding,
+  resolveShortcutBindings,
   useShortcutHint,
   useShortcutActions,
-  getShortcutDisplay,
-  getShortcutAriaKey,
   useShortcutDisplay,
   useShortcutAriaKey,
 } from './useKeyboardShortcuts';
@@ -22,6 +24,7 @@ import store from '~/store';
 
 /** `copy-to-clipboard` exports a single callable: `copy(text, options?)`. */
 const mockCopy = jest.fn((_text: string, _options?: { format?: string }) => true);
+const mockReachRow = jest.fn((_row?: Element | null) => undefined);
 
 jest.mock('~/components/Chat/Input/Reasoning', () => ({
   __esModule: true,
@@ -47,12 +50,15 @@ jest.mock('~/data-provider/Endpoints/queries', () => ({
 jest.mock('~/Providers', () => ({
   useChatContext: () => ({
     conversation: { conversationId: 'test-convo', endpoint: 'openAI', model: 'gpt-4o' },
+    latestMessageId: undefined,
+    getMessages: () => [],
   }),
 }));
 
-jest.mock('~/hooks/Generic/useReducedMotion', () => ({
-  __esModule: true,
-  default: () => true,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useReducedMotion: () => true,
+  reachRow: (row?: Element | null) => mockReachRow(row),
 }));
 
 jest.mock('copy-to-clipboard', () => ({
@@ -124,6 +130,7 @@ beforeEach(() => {
   queryClient = new QueryClient();
   window.localStorage.clear();
   mockCopy.mockClear();
+  mockReachRow.mockReset();
 });
 
 afterEach(() => {
@@ -221,47 +228,46 @@ function appendPortalFocus(paneIndex: number, tag: 'button' | 'input' = 'button'
 }
 
 describe('binding resolution helpers', () => {
+  const bindingFor = (id: ShortcutActionId, overrides: Record<string, ShortcutOverride> = {}) =>
+    resolveShortcutBindings(overrides).get(id) ?? null;
+  const displayFor = (id: ShortcutActionId, overrides: Record<string, ShortcutOverride> = {}) => {
+    const binding = bindingFor(id, overrides);
+    return binding ? bindingDisplayString(binding, isMac) : '';
+  };
+  const ariaFor = (id: ShortcutActionId, overrides: Record<string, ShortcutOverride> = {}) => {
+    const binding = bindingFor(id, overrides);
+    return binding ? (bindingToString(binding) ?? '') : '';
+  };
+
   it('falls back to the default binding when there is no override', () => {
-    const binding = effectiveBinding('newChat');
-    expect(binding).toMatchObject({ ctrl: true, shift: true, key: 'O' });
-    expect(getShortcutDisplay('newChat')).toBe('Ctrl+Shift+O');
-    expect(getShortcutAriaKey('newChat')).toBe('Control+Shift+O');
+    expect(bindingFor('newChat')).toMatchObject({ ctrl: true, shift: true, key: 'O' });
+    expect(displayFor('newChat')).toBe('Ctrl+Shift+O');
+    expect(ariaFor('newChat')).toBe('Control+Shift+O');
   });
 
-  it('honors a stored custom binding for the current platform', () => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ newChat: { mac: 'Meta+Shift+P', other: 'Control+Shift+P' } }),
-    );
-    expect(effectiveBinding('newChat')).toMatchObject({ ctrl: true, shift: true, key: 'P' });
-    expect(getShortcutAriaKey('newChat')).toBe('Control+Shift+P');
+  it('honors a custom binding for the current platform', () => {
+    const overrides = { newChat: { mac: 'Meta+Shift+P', other: 'Control+Shift+P' } };
+    expect(bindingFor('newChat', overrides)).toMatchObject({ ctrl: true, shift: true, key: 'P' });
+    expect(ariaFor('newChat', overrides)).toBe('Control+Shift+P');
   });
 
   it('treats a null platform override as an unbound shortcut', () => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ newChat: { mac: null, other: null } }),
-    );
-    expect(effectiveBinding('newChat')).toBeNull();
-    expect(getShortcutDisplay('newChat')).toBe('');
+    const overrides = { newChat: { mac: null, other: null } };
+    expect(bindingFor('newChat', overrides)).toBeNull();
+    expect(displayFor('newChat', overrides)).toBe('');
   });
 
   it('keeps a persisted custom chord when a new default later claims the same keys', () => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        toggleSidebar: { mac: 'Meta+Shift+.', other: 'Control+Shift+.' },
-      }),
-    );
+    const overrides = { toggleSidebar: { mac: 'Meta+Shift+.', other: 'Control+Shift+.' } };
 
-    expect(effectiveBinding('toggleSidebar')).toMatchObject({
+    expect(bindingFor('toggleSidebar', overrides)).toMatchObject({
       ctrl: true,
       shift: true,
       key: '.',
     });
-    expect(effectiveBinding('escalateSteer')).toBeNull();
-    expect(getShortcutDisplay('escalateSteer')).toBe('');
-    expect(getShortcutAriaKey('escalateSteer')).toBe('');
+    expect(bindingFor('escalateSteer', overrides)).toBeNull();
+    expect(displayFor('escalateSteer', overrides)).toBe('');
+    expect(ariaFor('escalateSteer', overrides)).toBe('');
   });
 
   it("does not treat an other-platform edit's copied default as a custom claim", () => {
@@ -270,12 +276,12 @@ describe('binding resolution helpers', () => {
       toggleSidebar: { mac: 'Meta+Shift+O', other: 'Control+Shift+O' },
     };
 
-    expect(effectiveBinding('toggleSidebar', overrides)).toMatchObject({
+    expect(bindingFor('toggleSidebar', overrides)).toMatchObject({
       ctrl: true,
       shift: true,
       key: 'O',
     });
-    expect(effectiveBinding('newChat', overrides)).toBeNull();
+    expect(bindingFor('newChat', overrides)).toBeNull();
   });
 
   it('detects whether an override diverges from the default', () => {
@@ -580,6 +586,32 @@ describe('clipboard shortcuts', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it('copies the last response from a row that had not mounted its toolbar yet', () => {
+    const earlierCopy = jest.fn();
+    const lastCopy = jest.fn();
+    renderHarness();
+    appendResponseCopyButton(earlierCopy);
+    /** A long thread leaves the toolbar out of a row the reader has not been near. */
+    const row = document.createElement('div');
+    row.className = 'message-render';
+    const turn = document.createElement('div');
+    turn.className = 'agent-turn';
+    row.appendChild(turn);
+    document.body.appendChild(row);
+    mockReachRow.mockImplementation((reached) => {
+      const button = document.createElement('button');
+      button.dataset.testid = 'copy-response-button';
+      button.addEventListener('click', lastCopy);
+      reached?.appendChild(button);
+    });
+
+    dispatchKey({ key: ';', ctrlKey: true, shiftKey: true });
+
+    expect(mockReachRow).toHaveBeenCalledWith(row);
+    expect(earlierCopy).not.toHaveBeenCalled();
+    expect(lastCopy).toHaveBeenCalledTimes(1);
+  });
+
   it('copies the last code block through the clipboard fallback helper', () => {
     renderHarness();
     appendCodeBlock('const x = 1;');
@@ -728,7 +760,7 @@ describe('stop generating shortcut', () => {
     const second = appendComposerForm();
     first.form.dataset.chatPane = '0';
     second.form.dataset.chatPane = '1';
-    fireEvent.click(screen.getByRole('button', { name: /Reasoning for next message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Thinking / }));
 
     for (const role of ['spinbutton', 'slider']) {
       const control = screen.getByRole(role);
@@ -939,6 +971,32 @@ describe('composer submit shortcuts', () => {
 
     expect(sendClick).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('sends from the composer of the pane holding focus, not the first on the page', () => {
+    bindSubmitMessage('Alt+Enter');
+    renderHarness();
+    const pane = (index: number) => {
+      const element = document.createElement('div');
+      element.dataset.chatPane = String(index);
+      const onClick = jest.fn();
+      const send = document.createElement('button');
+      send.dataset.testid = 'send-button';
+      send.addEventListener('click', onClick);
+      const control = document.createElement('button');
+      element.append(send, control);
+      document.body.appendChild(element);
+      return { onClick, control };
+    };
+    const main = pane(0);
+    const beside = pane(3);
+    beside.control.focus();
+
+    const event = dispatchKey({ key: 'Enter', altKey: true }, beside.control);
+
+    expect(beside.onClick).toHaveBeenCalledTimes(1);
+    expect(main.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it('runs a custom Alt+Enter submit binding outside the composer', () => {

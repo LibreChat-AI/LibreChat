@@ -47,7 +47,7 @@ describe('IconButton', () => {
 
   it('keeps submit glyphs contrasted against the theme fill', () => {
     render(
-      <IconButton label="Stop" variant="submit" size="theme" shape="theme">
+      <IconButton label="Stop" variant="submit" size="theme" shape="composer">
         stop
       </IconButton>,
     );
@@ -55,6 +55,18 @@ describe('IconButton', () => {
     const button = screen.getByRole('button', { name: 'Stop' });
     expect(button).toHaveClass('bg-surface-inverted', 'text-text-inverted');
     expect(button).not.toHaveClass('text-text-primary', 'bg-text-primary');
+  });
+
+  it('takes the composer action corner for the submit slot, not the round control corner', () => {
+    render(
+      <IconButton label="Send" variant="submit" size="theme" shape="composer">
+        send
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Send' });
+    expect(button).toHaveClass('rounded-theme-composer-action');
+    expect(button).not.toHaveClass('rounded-theme-control-round');
   });
 
   it('provides a theme-aware primary action', () => {

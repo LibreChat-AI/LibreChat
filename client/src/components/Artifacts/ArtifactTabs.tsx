@@ -7,6 +7,7 @@ import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { MermaidRenderer } from '~/components/Messages/Content/Mermaid/Mermaid';
 import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
 import { useArtifactCode } from '~/Providers/EditorContext';
+import { normalizeArtifactType } from '~/utils/artifacts';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useLocalize } from '~/hooks';
@@ -85,7 +86,7 @@ function MermaidArtifactTabs({
 }
 
 export default function ArtifactTabs(props: ArtifactTabsProps) {
-  if (props.artifact.type === MERMAID_ARTIFACT_TYPE) {
+  if (normalizeArtifactType(props.artifact.type ?? '') === MERMAID_ARTIFACT_TYPE) {
     return (
       <MermaidArtifactTabs
         artifact={props.artifact}

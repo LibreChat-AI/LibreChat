@@ -42,7 +42,7 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({ className = '' }) =
   const trigger = (
     <Ariakit.MenuButton
       className={cn(
-        'relative inline-flex h-9 items-center justify-between rounded-xl border border-border-medium bg-transparent px-3 text-sm text-text-primary transition-all duration-200 ease-in-out hover:bg-surface-hover hover:text-text-primary focus:ring-2 focus:ring-ring-primary',
+        'border-border-medium text-text-primary hover:bg-surface-hover hover:text-text-primary focus:ring-ring-primary relative inline-flex h-9 items-center justify-between rounded-xl border bg-transparent px-3 text-sm transition-all duration-200 ease-in-out focus:ring-2',
         'gap-2 sm:w-fit',
         className,
       )}

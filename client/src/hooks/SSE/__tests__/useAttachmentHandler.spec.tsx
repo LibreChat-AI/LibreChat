@@ -14,10 +14,11 @@
  * unrelated citations both show up.
  */
 
+import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
-import { RecoilRoot, useRecoilValue } from 'recoil';
 import { QueryClient } from '@tanstack/react-query';
 import { renderHook, act } from '@testing-library/react';
+import { Provider as JotaiProvider, useAtomValue } from 'jotai';
 import type {
   TFile,
   TAttachment,
@@ -25,12 +26,16 @@ import type {
   TAttachmentMetadata,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 import useAttachmentHandler from '../useAttachmentHandler';
-import store from '~/store';
 
 type AttachmentFixture = TFile & TAttachmentMetadata;
 
-const wrapper = ({ children }: { children: ReactNode }) => <RecoilRoot>{children}</RecoilRoot>;
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <RecoilRoot>
+    <JotaiProvider>{children}</JotaiProvider>
+  </RecoilRoot>
+);
 
 const submission = {} as EventSubmission;
 const messageId = 'msg-1';
@@ -70,7 +75,7 @@ function setup() {
   const { result } = renderHook(
     () => {
       const handler = useAttachmentHandler(queryClient);
-      const map = useRecoilValue(store.messageAttachmentsMap);
+      const map = useAtomValue(messageAttachmentsMapAtom);
       ref.current = map;
       return handler;
     },
@@ -363,7 +368,7 @@ describe('useAttachmentHandler upsert-by-file_id', () => {
       const { result } = renderHook(
         () => {
           const handler = useAttachmentHandler(queryClient);
-          const map = useRecoilValue(store.messageAttachmentsMap);
+          const map = useAtomValue(messageAttachmentsMapAtom);
           ref.current = map;
           return handler;
         },

@@ -96,7 +96,7 @@ export const InputCombobox: React.FC<ComboboxProps> = ({
             value={isOptionObject(option) ? `${option.value ?? ''}` : option}
           >
             {isOptionObject(option) && option.icon != null && (
-              <span className="mr-2 shrink-0">{option.icon}</span>
+              <span className="me-2 shrink-0">{option.icon}</span>
             )}
             {isOptionObject(option) ? option.label : option}
           </Ariakit.ComboboxItem>

@@ -4,12 +4,14 @@ import { AnthropicClientOptions } from '@librechat/agents';
 import {
   THINKING_BINDING_BETA,
   THINKING_DISPLAY_UPDATES_BETA,
+  VERTEX_PATH_SEGMENT_PATTERN,
   requestsThinkingDisplayUpdates,
   clampOutputConfigEffort,
   omitsSamplingParameters,
   bindsThinkingBlocks,
   isThinkingOffConfig,
   anthropicSettings,
+  tConversationSchema,
   removeNullishValues,
   ThinkingDisplay,
   AuthKeys,
@@ -206,6 +208,7 @@ function getLLMConfig(
       mergedOptions.maxOutputTokens || anthropicSettings.maxOutputTokens.reset(mergedOptions.model),
     clientOptions: {},
     invocationKwargs: {
+      ...options.inferenceParameters,
       metadata: {
         user_id: mergedOptions.user,
       },
@@ -222,6 +225,9 @@ function getLLMConfig(
       requestOptions.model ?? '',
       options.vertexConfig,
     );
+    if (deploymentName !== '' && !VERTEX_PATH_SEGMENT_PATTERN.test(deploymentName)) {
+      throw new Error('The Vertex AI deployment name for this model is not a valid model ID.');
+    }
     requestOptions.model = deploymentName;
 
     requestOptions.createClient = () =>
@@ -323,11 +329,20 @@ function getLLMConfig(
         continue;
       }
 
+      if (requestOptions.invocationKwargs?.[key] !== undefined) {
+        continue;
+      }
       if (knownAnthropicParams.has(key)) {
         /** Route known Anthropic params to requestOptions only if undefined */
         applyDefaultParams(requestOptions as Record<string, unknown>, { [key]: value });
+      } else if (
+        options.inferenceParameters != null &&
+        !Object.prototype.hasOwnProperty.call(tConversationSchema.shape, key)
+      ) {
+        const kwargs = requestOptions.invocationKwargs ?? {};
+        applyDefaultParams(kwargs, { [key]: value });
+        requestOptions.invocationKwargs = kwargs;
       }
-      /** Leave other params for transform to handle - they might be OpenAI params */
     }
   }
 
@@ -344,9 +359,16 @@ function getLLMConfig(
 
       if (knownAnthropicParams.has(key)) {
         /** Route known Anthropic params to requestOptions */
+        if (requestOptions.invocationKwargs) {
+          delete requestOptions.invocationKwargs[key];
+        }
         (requestOptions as Record<string, unknown>)[key] = value;
+      } else if (
+        options.inferenceParameters != null &&
+        !Object.prototype.hasOwnProperty.call(tConversationSchema.shape, key)
+      ) {
+        requestOptions.invocationKwargs = { ...requestOptions.invocationKwargs, [key]: value };
       }
-      /** Leave other params for transform to handle - they might be OpenAI params */
     }
   }
 

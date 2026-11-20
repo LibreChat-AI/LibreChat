@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { SESSION_HINT_COOKIE, themeOwnerKey, formatSessionHint } from 'librechat-data-provider';
 import type { Request, Response, NextFunction } from 'express';
 import { getOAuthCallbackUrl } from './url';
 import { isEnabled } from '~/utils/common';
@@ -71,8 +72,65 @@ export function setRefreshTokenCookie(res: Response, refreshToken: string, expir
   });
 }
 
+export interface SessionHintOwner {
+  userId?: string | { toString(): string } | null;
+  tenantId?: string | null;
+}
+
+/**
+ * Names the session's owner and expiry where the page can read them before the app runs, so a
+ * replay of something the owner cached skips a session that ended or belongs to someone else.
+ * A session with no known user clears it rather than leaving a previous owner's hint behind.
+ */
+export function setSessionHintCookie(
+  res: Response,
+  expires: Date,
+  { userId, tenantId }: SessionHintOwner,
+): void {
+  if (!userId) {
+    res.clearCookie(SESSION_HINT_COOKIE);
+    return;
+  }
+  const owner = themeOwnerKey(userId.toString(), tenantId);
+  res.cookie(SESSION_HINT_COOKIE, formatSessionHint({ expires: expires.getTime(), owner }), {
+    expires,
+    secure: shouldUseSecureCookie(),
+    sameSite: 'strict',
+  });
+}
+
+export interface LocalSessionCookieOptions extends SessionHintOwner {
+  refreshToken: string;
+  expires: Date;
+}
+
+/**
+ * Issues the cookies of a LibreChat-managed session together: the refresh token, its provider
+ * marker and the readable hint naming the owner, so all three share one expiry and owner.
+ */
+export function setLocalSessionCookies(
+  res: Response,
+  { refreshToken, expires, userId, tenantId }: LocalSessionCookieOptions,
+): void {
+  setRefreshTokenCookie(res, refreshToken, expires);
+  res.cookie(TOKEN_PROVIDER_COOKIE, 'librechat', {
+    expires,
+    httpOnly: true,
+    secure: shouldUseSecureCookie(),
+    sameSite: 'strict',
+  });
+  setSessionHintCookie(res, expires, { userId, tenantId });
+}
+
+/** Retires the readable session hint when a request proves there is no session to vouch for. */
+export function clearSessionHintCookie(res: Response): void {
+  res.clearCookie(SESSION_HINT_COOKIE);
+}
+
 export interface OpenIDMarkerCookieOptions {
   userId?: string | null;
+  /** Names the session's owner in the readable session hint alongside `userId`. */
+  tenantId?: string | null;
   expires: Date;
   refreshExpiryMs: number;
   reuseTokens?: boolean;
@@ -84,6 +142,7 @@ export function setOpenIDMarkerCookies(
   res: Response,
   {
     userId,
+    tenantId,
     expires,
     refreshExpiryMs,
     reuseTokens = isEnabled(process.env.OPENID_REUSE_TOKENS),
@@ -98,6 +157,7 @@ export function setOpenIDMarkerCookies(
   };
 
   res.cookie(TOKEN_PROVIDER_COOKIE, 'openid', cookieOptions);
+  setSessionHintCookie(res, expires, { userId, tenantId });
 
   if (!userId || !reuseTokens) {
     return;
@@ -148,13 +208,19 @@ function getOAuthCookiePath(cookiePath: string): string {
   }
 }
 
-/** Sets a SameSite=Lax CSRF cookie bound to a specific OAuth flow */
-export function setOAuthCsrfCookie(res: Response, flowId: string, cookiePath: string): void {
+/** Sets a SameSite=Lax CSRF cookie bound to a specific OAuth flow. `maxAge` follows the flow's own
+ *  approval window when it has one, so the cookie lives as long as the state it binds. */
+export function setOAuthCsrfCookie(
+  res: Response,
+  flowId: string,
+  cookiePath: string,
+  maxAge: number = OAUTH_CSRF_MAX_AGE,
+): void {
   res.cookie(OAUTH_CSRF_COOKIE, generateOAuthCsrfToken(flowId), {
     httpOnly: true,
     secure: shouldUseSecureCookie(),
     sameSite: 'lax',
-    maxAge: OAUTH_CSRF_MAX_AGE,
+    maxAge,
     path: getOAuthCookiePath(cookiePath),
   });
 }

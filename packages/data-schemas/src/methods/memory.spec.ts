@@ -31,7 +31,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -237,6 +237,20 @@ describe('memory partitions', () => {
       agentId,
     });
     expect(created.ok).toBe(true);
+  });
+
+  it('createMemory never overwrites an existing entry and stores one document per key', async () => {
+    await methods.createMemory({ userId, key: 'context', value: 'original', tokenCount: 1 });
+    const results = await Promise.allSettled([
+      methods.createMemory({ userId, key: 'context', value: 'dupe 1', tokenCount: 9 }),
+      methods.createMemory({ userId, key: 'context', value: 'dupe 2', tokenCount: 9 }),
+    ]);
+
+    expect(results.every((result) => result.status === 'rejected')).toBe(true);
+    const stored = await MemoryEntry.find({ userId, key: 'context' }).lean();
+    expect(stored).toHaveLength(1);
+    expect(stored[0].value).toBe('original');
+    expect(stored[0].tokenCount).toBe(1);
   });
 
   it('formats memories per partition with partition-scoped totals', async () => {

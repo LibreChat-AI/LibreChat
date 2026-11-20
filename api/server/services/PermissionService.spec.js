@@ -10,7 +10,6 @@ const {
 } = require('librechat-data-provider');
 const {
   bulkUpdateResourcePermissions,
-  restoreInsightsPermissionChanges,
   syncUserEntraGroupMemberships,
   getEffectivePermissions,
   findAccessibleResources,
@@ -33,6 +32,7 @@ jest.mock('@librechat/data-schemas', () => ({
 // Mock GraphApiService to prevent config loading issues
 jest.mock('~/server/services/GraphApiService', () => ({
   entraIdPrincipalFeatureEnabled: jest.fn().mockReturnValue(false),
+  createGraphClient: jest.fn(),
   getUserOwnedEntraGroups: jest.fn().mockResolvedValue([]),
   getUserEntraGroups: jest.fn().mockResolvedValue([]),
   getEntraGroupDetailsBatch: jest.fn().mockResolvedValue([]),
@@ -74,7 +74,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -304,13 +304,33 @@ describe('PermissionService', () => {
         idOnTheSource: 'directory-user-id',
       });
 
-      const principalId = await ensurePrincipalExists({
-        type: PrincipalType.USER,
-        name: directoryUser.name,
-        email: directoryUser.email,
-        source: 'entra',
-        idOnTheSource: directoryUser.idOnTheSource,
+      require('~/server/services/GraphApiService').createGraphClient.mockResolvedValue({
+        api: () => ({
+          options() {
+            return this;
+          },
+          middlewareOptions() {
+            return this;
+          },
+          select: () => ({
+            get: async () => ({
+              id: 'directory-user-id',
+              displayName: 'Trusted User',
+              mail: 'acl-principal-directory-user@example.com',
+            }),
+          }),
+        }),
       });
+      const principalId = await ensurePrincipalExists(
+        {
+          type: PrincipalType.USER,
+          name: directoryUser.name,
+          email: directoryUser.email,
+          source: 'entra',
+          idOnTheSource: directoryUser.idOnTheSource,
+        },
+        { accessToken: 'test-token', sub: 'test-subject' },
+      );
 
       expect(principalId).toBe(directoryUser._id.toString());
     });
@@ -322,13 +342,33 @@ describe('PermissionService', () => {
         provider: 'local',
       });
 
-      const principalId = await ensurePrincipalExists({
-        type: PrincipalType.USER,
-        name: existingUser.name,
-        email: existingUser.email,
-        source: 'entra',
-        idOnTheSource: 'unlinked-directory-id',
+      require('~/server/services/GraphApiService').createGraphClient.mockResolvedValue({
+        api: () => ({
+          options() {
+            return this;
+          },
+          middlewareOptions() {
+            return this;
+          },
+          select: () => ({
+            get: async () => ({
+              id: 'unlinked-directory-id',
+              displayName: 'Trusted User',
+              mail: 'acl-principal-existing-user@example.com',
+            }),
+          }),
+        }),
       });
+      const principalId = await ensurePrincipalExists(
+        {
+          type: PrincipalType.USER,
+          name: existingUser.name,
+          email: existingUser.email,
+          source: 'entra',
+          idOnTheSource: 'unlinked-directory-id',
+        },
+        { accessToken: 'test-token', sub: 'test-subject' },
+      );
 
       const unchangedUser = await User.findById(existingUser._id).lean();
       expect(principalId).toBe(existingUser._id.toString());
@@ -1106,260 +1146,6 @@ describe('PermissionService', () => {
         expect(entry.permBits & PermissionBits.VIEW_INSIGHTS).toBe(expectedInsights);
       },
     );
-
-    test('removes a stale-read upsert after a concurrent deletion and audit failure', async () => {
-      const originalBulkWriteAclEntries = AclEntry.bulkWrite.bind(AclEntry);
-      const bulkWriteSpy = jest
-        .spyOn(AclEntry, 'bulkWrite')
-        .mockImplementationOnce(async (...args) => {
-          await AclEntry.deleteOne({
-            principalType: PrincipalType.USER,
-            principalId: userId,
-            resourceType: ResourceType.AGENT,
-            resourceId,
-          });
-          return originalBulkWriteAclEntries(...args);
-        });
-
-      let result;
-      try {
-        result = await bulkUpdateResourcePermissions({
-          resourceType: ResourceType.AGENT,
-          resourceId,
-          updatedPrincipals: [
-            {
-              type: PrincipalType.USER,
-              id: userId,
-              accessRoleId: AccessRoleIds.AGENT_EDITOR,
-              viewInsights: true,
-            },
-          ],
-          grantedBy: grantedById,
-        });
-      } finally {
-        bulkWriteSpy.mockRestore();
-      }
-
-      expect(result.insightsChanges[0].previousEntry).toBeNull();
-      await restoreInsightsPermissionChanges({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        changes: result.insightsChanges,
-      });
-
-      await expect(
-        AclEntry.exists({
-          principalType: PrincipalType.USER,
-          principalId: userId,
-          resourceType: ResourceType.AGENT,
-          resourceId,
-        }),
-      ).resolves.toBeNull();
-    });
-
-    test('restores the prior ACL document after an Insights audit failure', async () => {
-      const before = await AclEntry.findOne({
-        principalType: PrincipalType.USER,
-        principalId: userId,
-        resourceType: ResourceType.AGENT,
-        resourceId,
-      }).lean();
-      const result = await bulkUpdateResourcePermissions({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        updatedPrincipals: [
-          {
-            type: PrincipalType.USER,
-            id: userId,
-            accessRoleId: AccessRoleIds.AGENT_EDITOR,
-            viewInsights: true,
-          },
-        ],
-        grantedBy: grantedById,
-      });
-
-      await restoreInsightsPermissionChanges({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        changes: result.insightsChanges,
-      });
-
-      const restored = await AclEntry.findById(before._id).lean();
-      expect(restored).toEqual(before);
-    });
-
-    test('does not overwrite or resurrect an ACL document changed after the audited update', async () => {
-      const result = await bulkUpdateResourcePermissions({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        updatedPrincipals: [
-          {
-            type: PrincipalType.USER,
-            id: userId,
-            accessRoleId: AccessRoleIds.AGENT_EDITOR,
-            viewInsights: true,
-          },
-        ],
-        grantedBy: grantedById,
-      });
-      const change = result.insightsChanges[0];
-      const ownerRole = await findRoleByIdentifier(AccessRoleIds.AGENT_OWNER);
-      const newerGrantedAt = new Date(change.writtenEntry.grantedAt.getTime() + 1000);
-
-      await AclEntry.updateOne(
-        { _id: change.previousEntry._id },
-        {
-          $set: {
-            permBits: ownerRole.permBits,
-            roleId: ownerRole._id,
-            grantedBy: otherUserId,
-            grantedAt: newerGrantedAt,
-          },
-        },
-      );
-      await restoreInsightsPermissionChanges({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        changes: result.insightsChanges,
-      });
-
-      let current = await AclEntry.findById(change.previousEntry._id).lean();
-      expect(current.permBits).toBe(ownerRole.permBits);
-      expect(current.grantedAt).toEqual(newerGrantedAt);
-
-      await AclEntry.deleteOne({ _id: change.previousEntry._id });
-      await restoreInsightsPermissionChanges({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        changes: result.insightsChanges,
-      });
-
-      current = await AclEntry.findById(change.previousEntry._id).lean();
-      expect(current).toBeNull();
-    });
-
-    test('removes a new ACL document after an Insights audit failure', async () => {
-      const result = await bulkUpdateResourcePermissions({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        updatedPrincipals: [
-          {
-            type: PrincipalType.USER,
-            id: otherUserId,
-            accessRoleId: AccessRoleIds.AGENT_VIEWER,
-            viewInsights: true,
-          },
-        ],
-        grantedBy: grantedById,
-      });
-
-      await restoreInsightsPermissionChanges({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        changes: result.insightsChanges,
-      });
-
-      await expect(
-        AclEntry.exists({
-          principalType: PrincipalType.USER,
-          principalId: otherUserId,
-          resourceType: ResourceType.AGENT,
-          resourceId,
-        }),
-      ).resolves.toBeNull();
-    });
-
-    test('does not remove a new ACL document changed after the audited insert', async () => {
-      const result = await bulkUpdateResourcePermissions({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        updatedPrincipals: [
-          {
-            type: PrincipalType.USER,
-            id: otherUserId,
-            accessRoleId: AccessRoleIds.AGENT_VIEWER,
-            viewInsights: true,
-          },
-        ],
-        grantedBy: grantedById,
-      });
-      const change = result.insightsChanges[0];
-      const editorRole = await findRoleByIdentifier(AccessRoleIds.AGENT_EDITOR);
-      const newerGrantedAt = new Date(change.writtenEntry.grantedAt.getTime() + 1000);
-
-      await AclEntry.updateOne(
-        {
-          principalType: PrincipalType.USER,
-          principalId: otherUserId,
-          resourceType: ResourceType.AGENT,
-          resourceId,
-        },
-        {
-          $set: {
-            permBits: editorRole.permBits,
-            roleId: editorRole._id,
-            grantedAt: newerGrantedAt,
-          },
-        },
-      );
-      await restoreInsightsPermissionChanges({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        changes: result.insightsChanges,
-      });
-
-      const current = await AclEntry.findOne({
-        principalType: PrincipalType.USER,
-        principalId: otherUserId,
-        resourceType: ResourceType.AGENT,
-        resourceId,
-      }).lean();
-      expect(current.permBits).toBe(editorRole.permBits);
-      expect(current.grantedAt).toEqual(newerGrantedAt);
-    });
-
-    test('does not replace a newer ACL grant when restoring an audited deletion', async () => {
-      await AclEntry.updateOne(
-        {
-          principalType: PrincipalType.USER,
-          principalId: userId,
-          resourceType: ResourceType.AGENT,
-          resourceId,
-        },
-        { $bit: { permBits: { or: PermissionBits.VIEW_INSIGHTS } } },
-      );
-      const result = await bulkUpdateResourcePermissions({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        revokedPrincipals: [{ type: PrincipalType.USER, id: userId }],
-        grantedBy: grantedById,
-      });
-
-      await grantPermission({
-        principalType: PrincipalType.USER,
-        principalId: userId,
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        accessRoleId: AccessRoleIds.AGENT_EDITOR,
-        grantedBy: otherUserId,
-      });
-      await restoreInsightsPermissionChanges({
-        resourceType: ResourceType.AGENT,
-        resourceId,
-        changes: result.insightsChanges,
-      });
-
-      const entries = await AclEntry.find({
-        principalType: PrincipalType.USER,
-        principalId: userId,
-        resourceType: ResourceType.AGENT,
-        resourceId,
-      })
-        .populate('roleId', 'accessRoleId')
-        .lean();
-      expect(entries).toHaveLength(1);
-      expect(entries[0].roleId.accessRoleId).toBe(AccessRoleIds.AGENT_EDITOR);
-    });
 
     test('should revoke specified permissions', async () => {
       const revokedPrincipals = [

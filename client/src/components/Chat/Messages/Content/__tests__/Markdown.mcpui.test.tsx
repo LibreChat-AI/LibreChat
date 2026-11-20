@@ -40,7 +40,7 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
     jest.clearAllMocks();
   });
 
-  it('renders two legacy UI resources for markers with resource IDs across separate attachments', () => {
+  it('renders two legacy UI resources for markers with resource IDs across separate attachments', async () => {
     // Two tool responses, each produced one ui_resources attachment
     const paris = {
       resourceId: 'abc123',
@@ -72,7 +72,7 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
 
     renderMarkdown(content);
 
-    const renderers = screen.getAllByTestId('ui-resource-renderer');
+    const renderers = await screen.findAllByTestId('ui-resource-renderer');
     expect(renderers).toHaveLength(2);
     expect(renderers[0]).toHaveAttribute('data-resource-uri', 'ui://weather/paris');
     expect(renderers[1]).toHaveAttribute('data-resource-uri', 'ui://weather/nyc');

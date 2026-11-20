@@ -99,6 +99,20 @@ describe('uploadEventStream', () => {
     });
   });
 
+  it('keeps the stable response code of a pre-stream refusal', async () => {
+    authenticatedFetch.mockResolvedValue(
+      new Response('{"code":"terms_not_accepted","message":"Accept the terms"}', {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(uploadEventStream('/api/files', createFormData())).rejects.toMatchObject({
+      code: 403,
+      response: { data: { code: 'terms_not_accepted', message: 'Accept the terms' } },
+    });
+  });
+
   it('cancels a stalled stream when heartbeats stop', async () => {
     jest.useFakeTimers();
     try {

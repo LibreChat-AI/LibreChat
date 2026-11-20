@@ -1,5 +1,5 @@
-import { AccessRoleIds, ResourceType, PermissionBits } from 'librechat-data-provider';
-import type { Model, Types, DeleteResult } from 'mongoose';
+import { AccessRoleIds, ResourceType } from 'librechat-data-provider';
+import type { Model, Types, ClientSession, DeleteResult } from 'mongoose';
 import type { IAccessRole } from '~/types';
 import { getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { RoleBits } from '~/common';
@@ -11,19 +11,15 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
     updateData: Partial<IAccessRole>,
   ) => Promise<IAccessRole | null>;
   deleteRole: (accessRoleId: string | Types.ObjectId) => Promise<DeleteResult>;
-  getAllRoles: () => Promise<IAccessRole[]>;
-  findRoleById: (roleId: string | Types.ObjectId) => Promise<IAccessRole | null>;
   seedDefaultRoles: () => Promise<Record<string, IAccessRole>>;
-  findRoleByIdentifier: (accessRoleId: string | Types.ObjectId) => Promise<IAccessRole | null>;
-  getRoleForPermissions: (
-    resourceType: string,
-    permBits: PermissionBits | RoleBits,
+  findRoleByIdentifier: (
+    accessRoleId: string | Types.ObjectId,
+    session?: ClientSession,
   ) => Promise<IAccessRole | null>;
-  findRoleByPermissions: (
+  findRolesByResourceType: (
     resourceType: string,
-    permBits: PermissionBits | RoleBits,
-  ) => Promise<IAccessRole | null>;
-  findRolesByResourceType: (resourceType: string) => Promise<IAccessRole[]>;
+    session?: ClientSession,
+  ) => Promise<IAccessRole[]>;
 } {
   /** True inside a tenant's own context; false with no context or a system one. */
   function inTenantScope(): boolean {
@@ -51,7 +47,7 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
    *
    * The unique index on `(accessRoleId, tenantId)` makes the substitution unambiguous.
    */
-  async function visibleTenantRoles(): Promise<IAccessRole[]> {
+  async function visibleTenantRoles(session?: ClientSession): Promise<IAccessRole[]> {
     const tenantId = getTenantId();
     const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
 
@@ -59,6 +55,8 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
      * query inside it. MongoDB's null match includes absent tenantId fields. */
     const roles = await runAsSystem(async () =>
       AccessRole.find({ tenantId: { $in: [tenantId, null] } })
+        .session(session ?? null)
+        .read('primary')
         .lean<IAccessRole[]>()
         .exec(),
     );
@@ -74,28 +72,23 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
-   * Find an access role by its ID
-   * @param roleId - The role ID
-   * @returns The role document or null if not found
-   */
-  async function findRoleById(roleId: string | Types.ObjectId): Promise<IAccessRole | null> {
-    const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
-    return await AccessRole.findById(roleId).lean<IAccessRole>();
-  }
-
-  /**
    * Find an access role by its unique identifier
    * @param accessRoleId - The unique identifier (e.g., "agent_viewer")
    * @returns The role document or null if not found
    */
   async function findRoleByIdentifier(
     accessRoleId: string | Types.ObjectId,
+    session?: ClientSession,
   ): Promise<IAccessRole | null> {
     const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
     if (!inTenantScope()) {
-      return await AccessRole.findOne({ accessRoleId }).lean<IAccessRole>().exec();
+      return await AccessRole.findOne({ accessRoleId })
+        .session(session ?? null)
+        .read('primary')
+        .lean<IAccessRole>()
+        .exec();
     }
-    const roles = await visibleTenantRoles();
+    const roles = await visibleTenantRoles(session);
     return roles.find((role) => String(role.accessRoleId) === String(accessRoleId)) ?? null;
   }
 
@@ -108,37 +101,24 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
    * @param resourceType - The type of resource ('agent', 'project', 'file')
    * @returns Array of role documents
    */
-  async function findRolesByResourceType(resourceType: string): Promise<IAccessRole[]> {
+  async function findRolesByResourceType(
+    resourceType: string,
+    session?: ClientSession,
+  ): Promise<IAccessRole[]> {
     const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
     if (!inTenantScope()) {
-      return await AccessRole.find({ resourceType }).lean<IAccessRole[]>().exec();
+      return await AccessRole.find({ resourceType })
+        .session(session ?? null)
+        .read('primary')
+        .lean<IAccessRole[]>()
+        .exec();
     }
     /** Filtered after the merge, so a tenant copy that moves an identifier to another
      * resource type withdraws the global row from this list instead of leaving it
      * visible — and callers such as `bulkUpdatePermissions`, which key this result by
      * `accessRoleId`, cannot grant bits the tenant has superseded. */
-    const roles = await visibleTenantRoles();
+    const roles = await visibleTenantRoles(session);
     return roles.filter((role) => role.resourceType === resourceType);
-  }
-
-  /**
-   * Find an access role by resource type and permission bits
-   * @param resourceType - The type of resource
-   * @param permBits - The permission bits (use PermissionBits or RoleBits enum)
-   * @returns The role document or null if not found
-   */
-  async function findRoleByPermissions(
-    resourceType: string,
-    permBits: PermissionBits | RoleBits,
-  ): Promise<IAccessRole | null> {
-    const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
-    if (!inTenantScope()) {
-      return await AccessRole.findOne({ resourceType, permBits }).lean<IAccessRole>().exec();
-    }
-    /** Selected from the visible set rather than queried directly, so a global role
-     * whose identifier the tenant has redefined cannot match on its superseded bits. */
-    const roles = await findRolesByResourceType(resourceType);
-    return roles.find((role) => role.permBits === permBits) ?? null;
   }
 
   /**
@@ -177,15 +157,6 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
   async function deleteRole(accessRoleId: string | Types.ObjectId): Promise<DeleteResult> {
     const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
     return await AccessRole.deleteOne({ accessRoleId });
-  }
-
-  /**
-   * Get all predefined roles
-   * @returns Array of all role documents
-   */
-  async function getAllRoles(): Promise<IAccessRole[]> {
-    const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
-    return await AccessRole.find().lean<IAccessRole[]>();
   }
 
   /**
@@ -354,43 +325,12 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
     return result;
   }
 
-  /**
-   * Helper to get the appropriate role for a set of permissions
-   * @param resourceType - The type of resource
-   * @param permBits - The permission bits
-   * @returns The matching role or null if none found
-   */
-  async function getRoleForPermissions(
-    resourceType: string,
-    permBits: PermissionBits | RoleBits,
-  ): Promise<IAccessRole | null> {
-    /** Both matches come from the one visible set, so an exact hit on a global role
-     * the tenant has redefined cannot win over the tenant's own definition. */
-    const roles = await findRolesByResourceType(resourceType);
-
-    const exactMatch = roles.find((role) => role.permBits === permBits);
-    if (exactMatch) {
-      return exactMatch;
-    }
-
-    /** If no exact match, the closest role without exceeding permissions */
-    return (
-      [...roles]
-        .sort((a, b) => b.permBits - a.permBits)
-        .find((role) => (role.permBits & permBits) === role.permBits) || null
-    );
-  }
-
   return {
     createRole,
     updateRole,
     deleteRole,
-    getAllRoles,
-    findRoleById,
     seedDefaultRoles,
     findRoleByIdentifier,
-    getRoleForPermissions,
-    findRoleByPermissions,
     findRolesByResourceType,
   };
 }

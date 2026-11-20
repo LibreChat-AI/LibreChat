@@ -152,7 +152,7 @@ export default function LocalizedDateRangePicker({
       <Popover.Trigger asChild>
         <Button variant="outline" className="w-full min-w-0 justify-start px-3">
           <CalendarDays className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate text-left">{formattedRange}</span>
+          <span className="min-w-0 flex-1 truncate text-start">{formattedRange}</span>
           <ChevronDown className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         </Button>
       </Popover.Trigger>
@@ -160,7 +160,7 @@ export default function LocalizedDateRangePicker({
         <Popover.Content
           align="end"
           sideOffset={6}
-          className="border-border-light bg-surface-primary text-text-primary z-50 w-[20rem] max-w-[calc(100vw-2rem)] rounded-lg border p-4 shadow-lg"
+          className="border-border-light bg-surface-primary text-text-primary rounded-theme-compact-panel z-50 w-[20rem] max-w-[calc(100vw-2rem)] border p-4 shadow-lg"
         >
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

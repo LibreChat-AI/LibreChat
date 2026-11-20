@@ -3,6 +3,7 @@ import type { logger } from '@librechat/data-schemas';
 import type axios from 'axios';
 import type { FileCitationSelectionConfig, selectFileCitationSources } from '../citations';
 import type { logAxiosError } from '~/utils/axios';
+import { getOutboundTimeoutMs, outboundRequestBudget } from '~/utils/timeouts';
 
 type SearchFile = { file_id: string; fromAgent?: boolean };
 type FileSearchResult = [
@@ -33,7 +34,10 @@ interface SearchOptions {
   files: readonly SearchFile[];
   entity_id?: string;
   fileCitations: boolean;
-  appConfig?: { endpoints?: Partial<Record<EModelEndpoint, FileCitationSelectionConfig>> };
+  appConfig?: {
+    endpoints?: Partial<Record<EModelEndpoint, FileCitationSelectionConfig>>;
+    timeouts?: { ragMs?: number };
+  };
   ragApiUrl?: string;
   httpClient: Pick<typeof axios, 'post'>;
   generateShortLivedToken: (userId: string) => string;
@@ -83,6 +87,7 @@ export async function executeFileSearchQuery({
     return body;
   };
 
+  const timeout = getOutboundTimeoutMs(appConfig, 'ragMs');
   const queryPromises = files.map((file) =>
     httpClient
       .post<SearchResults>(`${ragApiUrl}/query`, createQueryBody(file), {
@@ -90,6 +95,7 @@ export async function executeFileSearchQuery({
           Authorization: `Bearer ${jwtToken}`,
           'Content-Type': 'application/json',
         },
+        ...outboundRequestBudget(timeout, 'ragMs'),
       })
       .then((result) => ({ data: result.data, file_id: file.file_id }))
       .catch((error) => {

@@ -1,6 +1,15 @@
 import { GraphEvents } from '@librechat/agents';
-import { ContentTypes, StepTypes } from 'librechat-data-provider';
+import {
+  StepTypes,
+  ContentTypes,
+  stripOpaqueReasoning,
+  flushOpaqueReasoning,
+  advanceOpaqueReasoning,
+  trimTruncatedReasoning,
+  OPAQUE_REASONING_START,
+} from 'librechat-data-provider';
 import type { EventHandler, HookCallback, HookInputByEvent } from '@librechat/agents';
+import type { OpaqueReasoningCursor } from 'librechat-data-provider';
 import type { LooseContentPart } from '~/agents/activityLabels/wiring';
 import { stringifyActivityEvidence } from '~/agents/activityLabels/runtime';
 
@@ -26,6 +35,11 @@ export interface ActivityPhaseEntry {
 
 export type TrackedActivity = ActivityPhaseEntry & {
   startIndex: number;
+  /** Prompt evidence: the reasoning behind `thinkingExcerpts`, classified while
+   *  it streamed so encoded payloads never reach it. `thinkingExcerpts` keep the
+   *  raw text because anchoring matches it against THINK parts. Absent on
+   *  activities from older snapshots, whose excerpts are stripped instead. */
+  readableExcerpts?: string[];
   /** A prior boundary can retain only the materialized tail of a straddling batch. */
   partitionStartIndex?: number;
   /** Anchor-only activities keep position and status but carry no prompt evidence. */
@@ -74,6 +88,8 @@ export interface ActivityPhaseSnapshot {
   pendingReasoning: Array<{
     key: string;
     text: string;
+    readable?: string;
+    cursor?: OpaqueReasoningCursor;
     agentId?: string;
     startIndex?: number;
   }>;
@@ -194,6 +210,22 @@ function deltaText(data: unknown, key: 'text' | 'think'): string {
     parts = [raw];
   }
   return parts.map((part) => textValue((part as DeltaPart | null)?.[key])).join('');
+}
+
+/** Prompt evidence only: anchors keep the raw excerpt so positions still resolve. */
+function withReadableReasoning(
+  activity: ActivityPhaseEntry & Pick<TrackedActivity, 'readableExcerpts'>,
+): ActivityPhaseEntry {
+  const { thinkingExcerpts, readableExcerpts, ...rest } = activity;
+  if (thinkingExcerpts == null && readableExcerpts == null) {
+    return rest;
+  }
+  const readable = (
+    readableExcerpts ?? (thinkingExcerpts ?? []).map((excerpt) => stripOpaqueReasoning(excerpt))
+  )
+    .map((excerpt) => excerpt.trim())
+    .filter((excerpt) => excerpt.length > 0);
+  return readable.length > 0 ? { ...rest, thinkingExcerpts: readable } : rest;
 }
 
 function buildSignal(signal?: AbortSignal): AbortSignal {
@@ -428,7 +460,22 @@ export function createAssistantPhaseStampingHandlers(
   return wrapped;
 }
 
-type PendingReasoning = { text: string; agentId?: string; startIndex?: number };
+type PendingReasoning = {
+  /** Raw rolling window, matched against THINK parts to anchor the activity. */
+  text: string;
+  /** Rolling window of the same reasoning with encoded payloads removed. */
+  readable: string;
+  cursor: OpaqueReasoningCursor;
+  agentId?: string;
+  startIndex?: number;
+};
+
+/** Readable evidence for a finished reasoning lane; its undecided tail settles here. */
+function readableExcerpt(reasoning: PendingReasoning): string {
+  return `${reasoning.readable}${flushOpaqueReasoning(reasoning.cursor)}`
+    .trim()
+    .slice(0, MAX_EXCERPT_CHARS);
+}
 
 /** One side of a boundary split. Every piece of run state that a phase can
  *  own appears here, so adding tracked state without partitioning it is a
@@ -565,6 +612,7 @@ function boundedAnchor(activity: TrackedActivity): TrackedActivity {
      *  child-label slot are deliberately not carried. */
     label: undefined,
     entries: undefined,
+    readableExcerpts: undefined,
     childLabelIndex: undefined,
   };
   return fields;
@@ -605,6 +653,7 @@ function mergeAnchors(earlier: TrackedActivity, later: TrackedActivity): Tracked
     mergedAgentIds: foldedAgentIds(earlier, later),
     label: undefined,
     entries: undefined,
+    readableExcerpts: undefined,
     childLabelIndex: undefined,
   };
   return fields;
@@ -844,35 +893,55 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
   let assistantContext: AssistantContextEntry[] = (initialSnapshot?.assistantContext ?? [])
     .slice(-MAX_CONTEXT_ITEMS)
     .map((entry) => (typeof entry === 'string' ? { text: entry } : { ...entry }));
-  const pendingReasoning = new Map<string, { text: string; agentId?: string; startIndex?: number }>(
-    (initialSnapshot?.pendingReasoning ?? []).map(({ key, text, agentId, startIndex }) => {
-      const boundedText = text.slice(-MAX_EXCERPT_CHARS);
-      const needle = boundedText.trim().slice(0, REASONING_ANCHOR_CHARS);
-      const rebasedStartIndex = needle ? findReasoningStart(content, boundedText, startIndex) : -1;
-      /** The anchor is a prefix, so two lanes can share it. Binding to the
-       *  first match would replay a still-pending lane on the earlier side of
-       *  a boundary and delete it; an ambiguous anchor is no anchor. */
-      const matchingReasoningParts =
-        needle.length > 0
-          ? definedPartIndices(content).filter(
-              (index) =>
-                content[index]?.type === ContentTypes.THINK &&
-                textValue(content[index]?.think).includes(needle),
-            ).length
-          : 0;
-      const hasMaterializedReasoning =
-        matchingReasoningParts === 1 &&
-        content[rebasedStartIndex]?.type === ContentTypes.THINK &&
-        textValue(content[rebasedStartIndex]?.think).includes(needle);
-      return [
-        key,
-        {
-          text: boundedText,
-          ...(agentId != null && { agentId }),
-          ...(hasMaterializedReasoning && { startIndex: rebasedStartIndex }),
-        },
-      ] as const;
-    }),
+  const pendingReasoning = new Map<string, PendingReasoning>(
+    (initialSnapshot?.pendingReasoning ?? []).map(
+      ({ key, text, readable, cursor, agentId, startIndex }) => {
+        const boundedText = text.slice(-MAX_EXCERPT_CHARS);
+        const needle = boundedText.trim().slice(0, REASONING_ANCHOR_CHARS);
+        const rebasedStartIndex = needle
+          ? findReasoningStart(content, boundedText, startIndex)
+          : -1;
+        /** The anchor is a prefix, so two lanes can share it. Binding to the
+         *  first match would replay a still-pending lane on the earlier side of
+         *  a boundary and delete it; an ambiguous anchor is no anchor. */
+        const matchingReasoningParts =
+          needle.length > 0
+            ? definedPartIndices(content).filter(
+                (index) =>
+                  content[index]?.type === ContentTypes.THINK &&
+                  textValue(content[index]?.think).includes(needle),
+              ).length
+            : 0;
+        const hasMaterializedReasoning =
+          matchingReasoningParts === 1 &&
+          content[rebasedStartIndex]?.type === ContentTypes.THINK &&
+          textValue(content[rebasedStartIndex]?.think).includes(needle);
+        /** Older snapshots kept only the raw window. Replaying it through the
+         *  stream filter keeps a payload prefix that was still undecided at the
+         *  snapshot in the cursor, where the continuation can classify it; a
+         *  full window may have been cut inside a payload, so its leading run
+         *  is dropped. */
+        const classified =
+          readable != null && cursor != null
+            ? { readable, cursor }
+            : advanceOpaqueReasoning(
+                OPAQUE_REASONING_START,
+                text.length > MAX_EXCERPT_CHARS || boundedText.length === MAX_EXCERPT_CHARS
+                  ? trimTruncatedReasoning(boundedText)
+                  : boundedText,
+              );
+        return [
+          key,
+          {
+            text: boundedText,
+            readable: classified.readable,
+            cursor: classified.cursor,
+            ...(agentId != null && { agentId }),
+            ...(hasMaterializedReasoning && { startIndex: rebasedStartIndex }),
+          },
+        ] as const;
+      },
+    ),
   );
   const reasoningStepKeys = new Map<string, string>();
   const stepKinds = new Map<
@@ -1012,15 +1081,15 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
     pendingReasoning: [...pendingReasoning].map(([key, reasoning]) => ({
       key,
       text: reasoning.text.slice(-MAX_EXCERPT_CHARS),
+      readable: reasoning.readable,
+      cursor: reasoning.cursor,
       ...(reasoning.agentId != null && { agentId: reasoning.agentId }),
       ...(reasoning.startIndex != null && { startIndex: reasoning.startIndex }),
     })),
   });
 
   const addPendingReasoning = (onlyKey?: string) => {
-    let selected = [...pendingReasoning.entries()] as Array<
-      readonly [string, { text: string; agentId?: string; startIndex?: number }]
-    >;
+    let selected = [...pendingReasoning.entries()] as Array<readonly [string, PendingReasoning]>;
     if (onlyKey != null) {
       const reasoning = pendingReasoning.get(onlyKey);
       selected = reasoning == null ? [] : [[onlyKey, reasoning] as const];
@@ -1029,8 +1098,10 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
       const text = reasoning.text.trim();
       if (text) {
         const parts = deps.getContentParts();
+        const readable = readableExcerpt(reasoning);
         trackActivity({
           thinkingExcerpts: [text.slice(0, MAX_EXCERPT_CHARS)],
+          readableExcerpts: readable ? [readable] : [],
           ...(reasoning.agentId != null && { agentId: reasoning.agentId }),
           status: 'success',
           startIndex: findReasoningStart(parts, text, reasoning.startIndex),
@@ -1077,11 +1148,13 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
               .find(matchesToolIds);
           }
           if (!matchesToolIds(child)) {
-            return activity;
+            return withReadableReasoning(activity);
           }
           const label =
             child?.pending !== true ? textValue(child?.[ContentTypes.ACTIVITY_LABEL]).trim() : '';
-          return label ? { ...activity, label, entries: undefined } : activity;
+          return withReadableReasoning(
+            label ? { ...activity, label, entries: undefined } : activity,
+          );
         },
       );
   };
@@ -1358,7 +1431,9 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
      *  material agent transition. `input.agentId` above still excludes nested
      *  subagent internals. */
     const reasoningKey = input.executingAgentId ?? 'root';
-    const reasoning = pendingReasoning.get(reasoningKey)?.text.trim();
+    const pendingLane = pendingReasoning.get(reasoningKey);
+    const reasoning = pendingLane?.text.trim();
+    const readableReasoning = pendingLane != null ? readableExcerpt(pendingLane) : '';
     let trackedEntries = input.entries;
     let ids = new Set(trackedEntries.map((entry) => entry.toolUseId));
     const parts = deps.getContentParts();
@@ -1443,7 +1518,12 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
     const awaitingMaterialization = batchStartIndex == null;
     trackActivity({
       entries,
-      ...(reasoning ? { thinkingExcerpts: [reasoning.slice(0, MAX_EXCERPT_CHARS)] } : {}),
+      ...(reasoning
+        ? {
+            thinkingExcerpts: [reasoning.slice(0, MAX_EXCERPT_CHARS)],
+            readableExcerpts: readableReasoning ? [readableReasoning] : [],
+          }
+        : {}),
       ...(input.executingAgentId != null && { agentId: input.executingAgentId }),
       status: activityStatus,
       startIndex: trackedStartIndex,
@@ -1492,6 +1572,8 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
                 const startIndex = deps.getStepIndex?.(step.id);
                 pendingReasoning.set(reasoningKey, {
                   text: '',
+                  readable: '',
+                  cursor: OPAQUE_REASONING_START,
                   ...(step.agentId != null && { agentId: step.agentId }),
                   ...(startIndex != null && { startIndex }),
                 });
@@ -1584,9 +1666,13 @@ export function createActivityPhaseWiring(deps: ActivityPhaseHostDeps): Activity
           const reasoningKey = id ? reasoningStepKeys.get(id) : undefined;
           const reasoning = reasoningKey ? pendingReasoning.get(reasoningKey) : undefined;
           if (reasoning != null) {
-            reasoning.text = `${reasoning.text}${deltaText(data, 'think')}`.slice(
-              -MAX_EXCERPT_CHARS,
-            );
+            const think = deltaText(data, 'think');
+            reasoning.text = `${reasoning.text}${think}`.slice(-MAX_EXCERPT_CHARS);
+            /** Classified before bounding: a window can cut a payload into a
+             *  fragment too short to recognize, so evidence never comes from it. */
+            const next = advanceOpaqueReasoning(reasoning.cursor, think);
+            reasoning.cursor = next.cursor;
+            reasoning.readable = `${reasoning.readable}${next.readable}`.slice(-MAX_EXCERPT_CHARS);
           }
           return reasoningHandler.handle(event, data, metadata, graph);
         },

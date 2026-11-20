@@ -1,5 +1,7 @@
-import { logger } from '@librechat/data-schemas';
+import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { logger, createModels, createMethods } from '@librechat/data-schemas';
 import type { SchedulesServiceDeps } from './service';
 import {
   createSchedulesService,
@@ -328,6 +330,101 @@ describe('balance initialization', () => {
     expect(update.set).toMatchObject({ autoRefillEnabled: true });
     expect(update.set).not.toHaveProperty('tokenCredits');
     expect(update.setOnInsert).toEqual({});
+  });
+});
+
+describe('terms acceptance at fire', () => {
+  const termsConfig = (modalAcceptance: boolean) =>
+    ({ interfaceConfig: { termsOfService: { modalAcceptance } } }) as unknown as Awaited<
+      ReturnType<SchedulesServiceDeps['getAppConfig']>
+    >;
+
+  function serviceWithOwner(
+    owner: Record<string, unknown> | null,
+    getAppConfig: jest.Mock = jest.fn(async () => termsConfig(true)),
+  ) {
+    const service = createSchedulesService({
+      methods: {} as unknown as SchedulesServiceDeps['methods'],
+      getAppConfig: getAppConfig as unknown as SchedulesServiceDeps['getAppConfig'],
+      findUserById: jest.fn(async () => owner),
+      findBalance: jest.fn(async () => null),
+      upsertBalance: jest.fn(async () => null),
+      initializeNullBalance: jest.fn(async () => null),
+      preflightMCP: jest.fn().mockResolvedValue([]),
+      resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+      getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
+      isUserDeleting: jest.fn(async () => false),
+      enqueueAgentTrigger: jest.fn(async () => undefined),
+      getTriggerDelivery: jest.fn(async () => null),
+    } as unknown as SchedulesServiceDeps);
+    return { service, getAppConfig };
+  }
+
+  const owner = (termsAccepted?: boolean) => ({
+    _id: 'user-1',
+    tenantId: 't1',
+    role: 'USER',
+    ...(termsAccepted === undefined ? {} : { termsAccepted }),
+  });
+
+  /** The reads the fire path makes: the owner row first, then the check on its context. */
+  async function isBlocked(service: ReturnType<typeof createSchedulesService>) {
+    const context = await service.engineDeps.getUserContext('user-1');
+    return service.engineDeps.isTermsBlocked(context as NonNullable<typeof context>);
+  }
+
+  it('carries the owner acceptance flag into the user context', async () => {
+    const { service } = serviceWithOwner(owner(false));
+
+    await expect(service.engineDeps.getUserContext('user-1')).resolves.toEqual({
+      id: 'user-1',
+      tenantId: 't1',
+      role: 'USER',
+      termsAccepted: false,
+    });
+  });
+
+  it('blocks an owner who has not accepted when the effective config requires acceptance', async () => {
+    const { service, getAppConfig } = serviceWithOwner(owner(false));
+
+    await expect(isBlocked(service)).resolves.toBe(true);
+    // The owner's own role and tenant select the config, as the HTTP gate resolves it.
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1', role: 'USER', tenantId: 't1', failClosed: true }),
+    );
+  });
+
+  it('treats an owner row that has no acceptance flag as not accepted', async () => {
+    const { service } = serviceWithOwner(owner());
+
+    await expect(isBlocked(service)).resolves.toBe(true);
+  });
+
+  it('lets an owner who accepted through without reading the config', async () => {
+    const { service, getAppConfig } = serviceWithOwner(owner(true));
+
+    await expect(isBlocked(service)).resolves.toBe(false);
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it('does not block when the effective config does not require acceptance', async () => {
+    const { service } = serviceWithOwner(
+      owner(false),
+      jest.fn(async () => termsConfig(false)),
+    );
+
+    await expect(isBlocked(service)).resolves.toBe(false);
+  });
+
+  it('fails closed when the effective config cannot be resolved', async () => {
+    const { service } = serviceWithOwner(
+      owner(false),
+      jest.fn(async () => {
+        throw new Error('override lookup failed');
+      }),
+    );
+
+    await expect(isBlocked(service)).rejects.toThrow('override lookup failed');
   });
 });
 
@@ -2742,4 +2839,88 @@ it('interrupts an A3 admission wait at shutdown without a model-visible policy r
     await outcome;
     signal.mockRestore();
   }
+});
+
+describe('scheduled reset policy synchronization', () => {
+  let mongo: MongoMemoryServer;
+  beforeAll(async () => {
+    mongo = await MongoMemoryServer.create();
+    createModels(mongoose);
+    await mongoose.connect(mongo.getUri());
+  });
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mongo?.stop();
+  });
+  beforeEach(async () => {
+    await mongoose.connection.dropDatabase();
+  });
+
+  it.each([
+    ['increased', 2000, true],
+    ['decreased', 400, true],
+    ['unchanged', 1000, true],
+    ['disabled', 1000, false],
+  ])(
+    'applies the %s policy before resetting a scheduled balance',
+    async (_case, refillAmount, autoRefillEnabled) => {
+      const user = new mongoose.Types.ObjectId();
+      const lastRefill = new Date('2020-01-01');
+      await mongoose.models.Balance.create({
+        user,
+        tokenCredits: 500,
+        autoRefillEnabled: true,
+        refillMode: 'reset',
+        refillAmount: 1000,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        lastRefill,
+        reservations: [{ id: 'held', amount: 450, expiresAt: new Date(Date.now() + 60_000) }],
+        reservedCredits: 450,
+      });
+      const db = createMethods(mongoose);
+      const findBalance: SchedulesServiceDeps['findBalance'] = (userId, options) =>
+        db.findBalanceByUser(userId, { includeReservedCredits: true, ...options });
+      const service = createSchedulesService({
+        methods: {} as SchedulesServiceDeps['methods'],
+        getAppConfig: async () =>
+          ({
+            balance: {
+              enabled: true,
+              startBalance: 1000,
+              autoRefillEnabled,
+              refillMode: 'reset',
+              refillAmount,
+              refillIntervalValue: 1,
+              refillIntervalUnit: 'weeks',
+            },
+          }) as Awaited<ReturnType<SchedulesServiceDeps['getAppConfig']>>,
+        findBalance,
+        upsertBalance: (userId, { set, setOnInsert }) =>
+          db.upsertBalanceFields(userId, set, setOnInsert),
+        initializeNullBalance: jest.fn(async () => null),
+        findUserById: jest.fn(async () => null),
+        preflightMCP: jest.fn().mockResolvedValue([]),
+        resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+        getChatProject: jest.fn(async () => null),
+        isUserDeleting: jest.fn(async () => false),
+        enqueueAgentTrigger: jest.fn(async () => undefined),
+        getTriggerDelivery: jest.fn(async () => null),
+      });
+      await expect(service.engineDeps.isOutOfBalance({ id: user.toString() })).resolves.toBe(
+        autoRefillEnabled && refillAmount <= 450,
+      );
+      const record = await db.findBalanceByUser(user.toString());
+      expect(record?.tokenCredits).toBe(autoRefillEnabled ? refillAmount : 500);
+      expect(record?.lastRefill).toEqual(autoRefillEnabled ? expect.any(Date) : lastRefill);
+      const ledger = await mongoose.models.Transaction.find({
+        user,
+        context: 'balanceReset',
+      }).lean();
+      expect(ledger).toHaveLength(autoRefillEnabled ? 1 : 0);
+      if (autoRefillEnabled) {
+        expect(ledger[0].rawAmount).toBe(refillAmount - 500);
+      }
+    },
+  );
 });

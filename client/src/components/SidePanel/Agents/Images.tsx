@@ -40,16 +40,12 @@ export const AgentAvatarRender = ({ url }: { url?: string }) => {
     <div className="relative h-full w-full overflow-hidden rounded-full">
       <img
         src={url}
-        className="bg-avatar-placeholder h-full w-full rounded-full object-cover"
+        className={`bg-avatar-placeholder h-full w-full rounded-full object-cover transition-opacity duration-200 ease-in-out ${isLoaded ? 'opacity-100' : 'opacity-0'}`}
         alt="Agent avatar"
         loading="lazy"
         key={url}
         onLoad={() => setIsLoaded(true)}
         onError={() => setIsLoaded(false)}
-        style={{
-          opacity: isLoaded ? 1 : 0,
-          transition: 'opacity 0.2s ease-in-out',
-        }}
       />
       {!isLoaded && <Skeleton className="absolute inset-0 rounded-full" aria-hidden="true" />}
     </div>
@@ -120,7 +116,7 @@ export function AvatarMenu({
         accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/gif,.gif,image/webp,.webp"
         multiple={false}
         type="file"
-        style={{ display: 'none' }}
+        className="hidden"
         onChange={(event) => {
           handleFileChange(event);
           if (fileInputRef.current) {

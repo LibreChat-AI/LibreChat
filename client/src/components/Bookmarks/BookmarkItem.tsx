@@ -25,11 +25,6 @@ const BookmarkItem: FC<MenuItemProps> = ({ tag, selected, handleSubmit, icon, ..
     setIsLoading(false);
   };
 
-  const breakWordStyle: React.CSSProperties = {
-    wordBreak: 'break-word',
-    overflowWrap: 'anywhere',
-  };
-
   const renderIcon = () => {
     if (icon != null) {
       return icon;
@@ -57,7 +52,7 @@ const BookmarkItem: FC<MenuItemProps> = ({ tag, selected, handleSubmit, icon, ..
       <div className="flex grow items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {renderIcon()}
-          <div style={breakWordStyle}>{tag}</div>
+          <div className="wrap-anywhere">{tag}</div>
         </div>
       </div>
     </MenuItem>

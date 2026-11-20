@@ -17,7 +17,10 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
     <table className="w-full text-sm">
       <thead>
         {table.getHeaderGroups().map((headerGroup, i) => (
-          <tr key={i} className="border-border-light text-text-tertiary border-b text-left text-xs">
+          <tr
+            key={i}
+            className="border-border-light text-text-tertiary border-b text-start text-xs"
+          >
             {headerGroup.headers.map((header, j) => (
               <th key={j} className="py-1 font-normal">
                 {header.isPlaceholder

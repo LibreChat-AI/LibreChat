@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process';
 import { Tools } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
+import { spawn, spawnSync } from 'node:child_process';
 import { BashExecutionToolDefinition, ReadFileToolDefinition } from '@librechat/agents';
 import type { HookEvent, HookOutput, ToolDecision, StopDecision } from '@librechat/agents';
 import type { PluginHookExecutor, PluginHookExecutionRequest } from './runtime';
@@ -268,6 +268,25 @@ export const commandExecutorCapabilities: PluginHookCapabilities = {
   supportsHandler: ({ handler }) => getShellHandlerIssue(handler),
   sessionLifecycle: true,
 };
+
+/** Startup probe only; unavailable shells must not disable registered guards. */
+export function getCommandShellIssue(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const executable = process.platform === 'win32' ? 'powershell.exe' : 'bash';
+  const argv =
+    process.platform === 'win32'
+      ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0']
+      : ['--version'];
+  const result = spawnSync(executable, argv, {
+    env,
+    stdio: 'ignore',
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  if (result.error !== undefined || result.status !== 0) {
+    return `The plugin hook shell "${executable}" could not start; install it and make it available on PATH. Blocking hooks will fail closed`;
+  }
+  return undefined;
+}
 
 export interface CommandExecutorOptions {
   /** Filesystem-resolved plugin root; becomes the command's cwd and `PLUGIN_ROOT`. */
@@ -611,8 +630,9 @@ function parseCompletion(
  * process, mirroring Claude Code's contract: the event payload arrives as
  * JSON on stdin, exit 0 with JSON stdout returns a (sanitized) hook output,
  * exit 2 blocks with stderr as the reason, and any other exit is logged and
- * ignored. Commands run from the plugin root with a minimal allowlisted
- * environment plus `PLUGIN_ROOT`/`PLUGIN_DATA`.
+ * ignored. Failure to start denies decision-bearing events; observation-only
+ * events and cancellation remain nonblocking. Commands run from the plugin
+ * root with a minimal allowlisted environment plus `PLUGIN_ROOT`/`PLUGIN_DATA`.
  *
  * SECURITY: deployment plugins are operator-installed code, the same trust
  * level as `toolApproval.hooks` modules. Execution is additionally gated on
@@ -660,7 +680,10 @@ export function createCommandExecutor(options: CommandExecutorOptions): PluginHo
           `[pluginHooks] ${request.pluginId} ${request.sourceEvent}: command failed to run`,
           error,
         );
-        return {};
+        const decision = EVENT_TRAITS[request.targetEvent].exitTwo;
+        return decision === 'prevent'
+          ? {}
+          : { decision, reason: 'Plugin hook command could not start' };
       }
     },
   };

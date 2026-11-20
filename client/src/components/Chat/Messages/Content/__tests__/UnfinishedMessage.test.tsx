@@ -9,19 +9,14 @@ jest.mock('~/hooks', () => ({
 }));
 
 /** `Container` reads message context for sequential-agent layout; not under test. */
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ToolCallLimitNotice: () => <div data-testid="tool-call-limit-notice" />,
 }));
-
 jest.mock('~/components/Messages/Content/Error', () => ({
   __esModule: true,
   default: ({ text }: { text: string }) => <span>{text}</span>,
-}));
-
-jest.mock('../ToolCallLimitNotice', () => ({
-  __esModule: true,
-  default: () => <div data-testid="tool-call-limit-notice" />,
 }));
 
 /** `Constants` is a heterogeneous enum, so its members are not directly

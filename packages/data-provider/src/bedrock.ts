@@ -138,9 +138,13 @@ export const THINKING_BLOCK_BINDING = {
   prefix_mismatch_behavior: 'drop_block',
 } as const;
 
-/** Models whose thinking blocks are bound to the conversation prefix (Opus 5.5+, Sonnet 5.5+, Fable/Mythos). */
+/** Models whose thinking blocks are bound to the conversation prefix (Opus 5.5+, Sonnet 5.5+, Haiku 5.5+, Fable/Mythos). */
 export function bindsThinkingBlocks(model: string): boolean {
-  return hasAlwaysOnThinking(model) || hasBetweenToolsThinkingFloor(model);
+  return (
+    hasAlwaysOnThinking(model) ||
+    hasBetweenToolsThinkingFloor(model) ||
+    hasAdaptiveHaikuThinking(model)
+  );
 }
 
 export const BETWEEN_TOOLS_THINKING = { type: 'between_tools' } as const;
@@ -181,17 +185,46 @@ function parseSonnetVersion(model: string): ClaudeVersion | null {
   return null;
 }
 
+/** Extracts haiku major/minor version from both naming formats. */
+function parseHaikuVersion(model: string): ClaudeVersion | null {
+  const nameFirst = model.match(/claude-haiku[-.]?(\d+)(?:[-.](\d{1,2})(?!\d))?/);
+  if (nameFirst) {
+    return {
+      major: parseInt(nameFirst[1], 10),
+      minor: nameFirst[2] != null ? parseInt(nameFirst[2], 10) : 0,
+    };
+  }
+  const numFirst = model.match(/claude-(\d+)(?:[-.](\d{1,2})(?!\d))?-haiku/);
+  if (numFirst) {
+    return {
+      major: parseInt(numFirst[1], 10),
+      minor: numFirst[2] != null ? parseInt(numFirst[2], 10) : 0,
+    };
+  }
+  return null;
+}
+
+/**
+ * Haiku 5.5 and later run adaptive thinking on by default, bound to the
+ * conversation prefix, and reject budgets and sampling parameters. Unlike
+ * Sonnet 5.5 they still accept an explicit `disabled`, at effort `high` or below.
+ */
+export function hasAdaptiveHaikuThinking(model: string): boolean {
+  return isAtLeast(parseHaikuVersion(model), 5, 5);
+}
+
 /**
  * Mythos-class detection (Claude Fable / Mythos) lives in `schemas.ts` as
  * `isMythosClassModel` — the single source of truth for the family names.
  * The helpers below OR it in alongside the `opus`/`sonnet` version parsers.
  */
 
-/** Checks if a model supports adaptive thinking (Opus 4.6+, Sonnet 4.6+, Fable/Mythos) */
+/** Checks if a model supports adaptive thinking (Opus 4.6+, Sonnet 4.6+, Haiku 5.5+, Fable/Mythos) */
 export function supportsAdaptiveThinking(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 4, 6) ||
     isAtLeast(parseSonnetVersion(model), 4, 6) ||
+    hasAdaptiveHaikuThinking(model) ||
     s.isMythosClassModel(model)
   );
 }
@@ -210,6 +243,7 @@ export function omitsThinkingByDefault(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 4, 7) ||
     isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    hasAdaptiveHaikuThinking(model) ||
     s.isMythosClassModel(model)
   );
 }
@@ -218,6 +252,7 @@ export function omitsSamplingParameters(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 4, 7) ||
     isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    hasAdaptiveHaikuThinking(model) ||
     s.isMythosClassModel(model)
   );
 }
@@ -226,7 +261,7 @@ export function omitsSamplingParameters(model: string): boolean {
  * Whether disabling thinking requires sending an explicit `{ type: 'disabled' }`
  * config rather than simply omitting the `thinking` field.
  *
- * Sonnet 5 and Opus 5 treat an omitted `thinking` field as adaptive thinking ON
+ * Sonnet 5, Opus 5 and Haiku 5.5+ treat an omitted `thinking` field as adaptive thinking ON
  * by default, so honoring a user who turns thinking off means sending the
  * disabled config explicitly. Opus 4.7/4.8 run without thinking when the field
  * is omitted, and Fable/Mythos, Opus 5.5+ and Sonnet 5.5+ reject an explicit
@@ -239,7 +274,11 @@ export function requiresExplicitThinkingDisabled(model: string): boolean {
   if (hasAlwaysOnThinking(model) || hasBetweenToolsThinkingFloor(model)) {
     return false;
   }
-  return isAtLeast(parseSonnetVersion(model), 5, 0) || isAtLeast(parseOpusVersion(model), 5, 0);
+  return (
+    isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    isAtLeast(parseOpusVersion(model), 5, 0) ||
+    hasAdaptiveHaikuThinking(model)
+  );
 }
 
 /** Effort levels Opus 5 rejects while thinking is explicitly disabled. */
@@ -254,8 +293,9 @@ const EFFORTS_REJECTED_WHEN_THINKING_DISABLED = new Set<string>([
  * Opus 5 rejects `xhigh`/`max` in that combination with a 400: "output_config
  * .effort 'xhigh' is not supported when thinking is disabled on this model. Use
  * effort 'high' or below, or enable thinking." Sonnet 5.5+ returns the same
- * error for `between_tools`. Opus 4.7/4.8, Sonnet 5, and Sonnet 4.6 accept
- * every effort level they otherwise support with thinking off. Always-on
+ * error for `between_tools`, and Haiku 5.5+ for `disabled`. Opus 4.7/4.8,
+ * Sonnet 5, and Sonnet 4.6 accept every effort level they otherwise support
+ * with thinking off. Always-on
  * models cannot turn thinking off, so the cap never applies to them.
  */
 export function capsEffortWhenThinkingDisabled(model: string): boolean {
@@ -265,7 +305,7 @@ export function capsEffortWhenThinkingDisabled(model: string): boolean {
   if (hasBetweenToolsThinkingFloor(model)) {
     return true;
   }
-  return isAtLeast(parseOpusVersion(model), 5, 0);
+  return isAtLeast(parseOpusVersion(model), 5, 0) || hasAdaptiveHaikuThinking(model);
 }
 
 /**
@@ -303,14 +343,6 @@ export function clampOutputConfigEffort(model: string, outputConfig: unknown): v
   outputConfig.effort = clampEffortForDisabledThinking(model, outputConfig.effort);
 }
 
-/** Whether a resolved thinking config is an explicit `{ type: 'disabled' }`. */
-export function isThinkingDisabled(thinking: unknown): boolean {
-  if (typeof thinking !== 'object' || thinking === null || !('type' in thinking)) {
-    return false;
-  }
-  return thinking.type === 'disabled';
-}
-
 /** Whether a resolved thinking config asks for mid-thinking display updates (beta-gated). */
 export function requestsThinkingDisplayUpdates(thinking: unknown): boolean {
   if (typeof thinking !== 'object' || thinking === null || !('display' in thinking)) {
@@ -331,20 +363,22 @@ export function isThinkingOffConfig(thinking: unknown): boolean {
   return thinking.type === 'disabled' || thinking.type === 'between_tools';
 }
 
-/** Checks if a model has a 1M context window (Sonnet 4.6+, Opus 4.6+, Opus 5+, Fable/Mythos) */
+/** Checks if a model has a 1M context window (Sonnet 4.6+, Opus 4.6+, Opus 5+, Haiku 5.5+, Fable/Mythos) */
 export function supportsContext1m(model: string): boolean {
   return (
     isAtLeast(parseSonnetVersion(model), 4, 6) ||
     isAtLeast(parseOpusVersion(model), 4, 6) ||
+    hasAdaptiveHaikuThinking(model) ||
     s.isMythosClassModel(model)
   );
 }
 
-/** Opus 5.5+, Sonnet 5.5+ and Fable/Mythos emit up to 128k output tokens. */
+/** Opus 5.5+, Sonnet 5.5+, Haiku 5.5+ and Fable/Mythos emit up to 128k output tokens. */
 export function supportsOutput128k(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 5, 5) ||
     isAtLeast(parseSonnetVersion(model), 5, 5) ||
+    hasAdaptiveHaikuThinking(model) ||
     s.isMythosClassModel(model)
   );
 }

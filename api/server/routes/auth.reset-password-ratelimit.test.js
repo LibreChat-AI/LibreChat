@@ -7,6 +7,7 @@ const mockValidatePasswordReset = jest.fn((req, res, next) => next());
 const mockResetPasswordController = jest.fn((req, res) => res.status(204).end());
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   limiterCache: jest.fn(),
   createTwoFactorManagementLimiter: jest.fn(() => (req, res, next) => next()),
   createSetBalanceConfig: jest.fn(() => (req, res, next) => next()),
@@ -38,6 +39,7 @@ jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   confirm2FASetupWithTempToken: jest.fn((req, res) => res.status(204).end()),
   acknowledge2FASetup: jest.fn((req, res) => res.status(204).end()),
   finalize2FASetup: jest.fn((req, res) => res.status(204).end()),
+  cancel2FASetup: jest.fn((req, res) => res.status(204).end()),
 }));
 
 jest.mock('~/server/controllers/auth/PasskeyController', () => ({

@@ -23,6 +23,7 @@ import {
   supportsPromptCache,
   supportsContext1m,
   hasAlwaysOnThinking,
+  hasAdaptiveHaikuThinking,
   hasBetweenToolsThinkingFloor,
   supportsOutput128k,
   BEDROCK_FINE_GRAINED_TOOL_STREAMING_BETA,
@@ -569,6 +570,62 @@ describe('Sonnet 5.5 model gates', () => {
   });
 });
 
+describe('Haiku 5.5 model gates', () => {
+  const ids = [
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ];
+
+  test.each(ids)('%s is detected across every family gate', (model) => {
+    expect(hasAdaptiveHaikuThinking(model)).toBe(true);
+    expect(hasAlwaysOnThinking(model)).toBe(false);
+    expect(hasBetweenToolsThinkingFloor(model)).toBe(false);
+    expect(bindsThinkingBlocks(model)).toBe(true);
+    expect(supportsAdaptiveThinking(model)).toBe(true);
+    expect(omitsThinkingByDefault(model)).toBe(true);
+    expect(omitsSamplingParameters(model)).toBe(true);
+    expect(supportsPromptCache(model)).toBe(true);
+    expect(supportsContext1m(model)).toBe(true);
+    expect(supportsOutput128k(model)).toBe(true);
+    expect(requiresExplicitThinkingDisabled(model)).toBe(true);
+    expect(capsEffortWhenThinkingDisabled(model)).toBe(true);
+    expect(resolveThinkingOffConfig(model)).toEqual({ type: 'disabled' });
+    expect(resolveThinkingDisplay(model)).toBe('summarized');
+  });
+
+  test.each(['claude-haiku-5-6', 'claude-haiku-6', 'claude-6-haiku'])(
+    'later Haiku release %s inherits the 5.5 contract',
+    (model) => {
+      expect(hasAdaptiveHaikuThinking(model)).toBe(true);
+      expect(supportsAdaptiveThinking(model)).toBe(true);
+      expect(bindsThinkingBlocks(model)).toBe(true);
+    },
+  );
+
+  test.each([
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
+    'global.anthropic.claude-haiku-4-5-20251001-v1:0',
+    'claude-3-5-haiku-20241022',
+    'claude-haiku-5-20260101',
+  ])('leaves %s on the legacy budget path', (model) => {
+    expect(hasAdaptiveHaikuThinking(model)).toBe(false);
+    expect(supportsAdaptiveThinking(model)).toBe(false);
+    expect(bindsThinkingBlocks(model)).toBe(false);
+    expect(omitsSamplingParameters(model)).toBe(false);
+    expect(supportsContext1m(model)).toBe(false);
+    expect(resolveThinkingOffConfig(model)).toBeUndefined();
+  });
+
+  test('clamps xhigh and max to high while thinking is disabled', () => {
+    expect(clampEffortForDisabledThinking('claude-haiku-5-5', 'xhigh')).toBe('high');
+    expect(clampEffortForDisabledThinking('claude-haiku-5-5', 'max')).toBe('high');
+    expect(clampEffortForDisabledThinking('claude-haiku-5-5', 'medium')).toBe('medium');
+  });
+});
+
 describe('always-on thinking gates', () => {
   test.each([
     'claude-opus-5-5',
@@ -610,6 +667,39 @@ describe('always-on thinking gates', () => {
 });
 
 describe('bedrockInputParser', () => {
+  test('sends bound adaptive thinking for Haiku 5.5 and drops the legacy budget', () => {
+    const result = bedrockInputParser.parse({
+      model: 'global.anthropic.claude-haiku-5-5',
+      thinking: true,
+      thinkingBudget: 4000,
+      effort: 'low',
+    }) as Record<string, unknown>;
+    const additionalFields = result.additionalModelRequestFields as Record<string, unknown>;
+
+    expect(additionalFields.thinking).toEqual({
+      type: 'adaptive',
+      display: 'summarized',
+      block_binding: { prefix_mismatch_behavior: 'drop_block' },
+    });
+    expect(additionalFields.output_config).toEqual({ effort: 'low' });
+    expect(additionalFields).not.toHaveProperty('thinkingBudget');
+    expect(additionalFields.anthropic_beta).toEqual(['thinking-binding-controls-2026-08-01']);
+  });
+
+  test('maps Haiku 5.5 thinking off to an explicit disabled config and caps effort', () => {
+    const result = bedrockInputParser.parse({
+      model: 'global.anthropic.claude-haiku-5-5',
+      thinking: false,
+      thinkingDisplay: 'summarized',
+      effort: 'max',
+    }) as Record<string, unknown>;
+    const additionalFields = result.additionalModelRequestFields as Record<string, unknown>;
+
+    expect(additionalFields.thinking).toEqual({ type: 'disabled' });
+    expect(additionalFields.output_config).toEqual({ effort: 'high' });
+    expect(additionalFields).not.toHaveProperty('thinkingDisplay');
+  });
+
   test('maps Sonnet 5.5 thinking off to between_tools and caps effort', () => {
     const result = bedrockInputParser.parse({
       model: 'global.anthropic.claude-sonnet-5-5',
@@ -972,9 +1062,9 @@ describe('bedrockInputParser', () => {
       expect(amrf?.anthropic_beta).toEqual(['context-1m-2025-08-07']);
     });
 
-    test('should match anthropic.claude-haiku-6 model without context beta header', () => {
+    test('should match anthropic.claude-haiku-4-5 model without context beta header', () => {
       const input = {
-        model: 'anthropic.claude-haiku-6',
+        model: 'anthropic.claude-haiku-4-5',
       };
       const result = bedrockInputParser.parse(input) as Record<string, unknown>;
       const additionalFields = result.additionalModelRequestFields as Record<string, unknown>;

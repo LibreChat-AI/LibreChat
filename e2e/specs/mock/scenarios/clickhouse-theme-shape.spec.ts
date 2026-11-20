@@ -1,8 +1,8 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { probeStyle } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The ClickHouse theme sets the radius, mono and shadow scales as well as its colours, so the
@@ -80,8 +80,8 @@ async function expectClickUiShape(page: Page, menu: Locator) {
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
   const alpha = SHADOW_ALPHA[await resolvedMode(page)];
 
-  /** Click UI's `radii.2`; LibreChat's own `rounded-2xl` is twice that. */
-  await expect(menu).toHaveCSS('border-radius', '8px');
+  /** Click UI's `genericMenu.panel.radii.all`, the popover role's ClickHouse value. */
+  await expect(menu).toHaveCSS('border-radius', '4px');
   const shadow = await menu.evaluate((node) => getComputedStyle(node).boxShadow);
   expect(shadow).toContain(`rgba(21, 21, 21, ${alpha}) 0px 4px 6px -1px`);
   expect(shadow).toContain(`rgba(21, 21, 21, ${alpha}) 0px 2px 4px -1px`);

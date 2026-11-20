@@ -172,6 +172,71 @@ describe('buildLangfuseConfig', () => {
     });
   });
 
+  it('does not trace a temporary chat to any destination', async () => {
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    process.env.LANGFUSE_FANOUT_ENABLED = 'true';
+    process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://collector-from-env:4318';
+    const { encryptV3 } = await import('@librechat/data-schemas');
+    const { buildLangfuseConfig } = await import('./config');
+
+    expect(
+      buildLangfuseConfig({
+        runId: 'run-1',
+        tenantId: 'tenant-1',
+        isTemporary: true,
+        appConfig: {
+          langfuse: {
+            enabled: true,
+            publicKey: 'pk-tenant-1',
+            secretKey: encryptV3('sk-tenant-1'),
+            destination: 'us',
+          },
+        } as unknown as AppConfig,
+      }),
+    ).toEqual({
+      deterministicTraceId: true,
+      enabled: false,
+      metadata: { 'librechat.tenant.id': 'tenant-1' },
+      tags: ['tenant:tenant-1'],
+    });
+  });
+
+  it('does not trace a run when retention forces every chat temporary', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    const { buildLangfuseConfig } = await import('./config');
+
+    expect(
+      buildLangfuseConfig({
+        runId: 'run-1',
+        appConfig: { interfaceConfig: { retentionMode: 'ephemeral' } } as unknown as AppConfig,
+      }),
+    ).toMatchObject({ enabled: false });
+  });
+
+  it('traces a temporary chat when the deployment opts in', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    process.env.LANGFUSE_BASE_URL = 'https://env.langfuse.example';
+    const { buildLangfuseConfig } = await import('./config');
+
+    expect(
+      buildLangfuseConfig({
+        runId: 'run-1',
+        isTemporary: true,
+        appConfig: { langfuse: { trace: { temporaryChats: true } } } as unknown as AppConfig,
+      }),
+    ).toEqual({
+      deterministicTraceId: true,
+      publicKey: 'pk-env',
+      secretKey: 'sk-env',
+      baseUrl: 'https://env.langfuse.example',
+    });
+  });
+
   it('does not trace a disabled stored connection in single-tenant mode', async () => {
     delete process.env.TENANT_ISOLATION_STRICT;
     const { encryptV3 } = await import('@librechat/data-schemas');

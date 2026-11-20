@@ -20,14 +20,68 @@ export const disabledFillClasses =
  */
 export const disabledInkClasses =
   'theme-disabled:text-text-disabled theme-disabled:opacity-100 theme-disabled:[&_*]:text-text-disabled';
+/**
+ * Reveal-on-hover for a control that shares a chat message's footer with its hover actions.
+ *
+ * Pointer devices fade it out until the row (the nearest `group`) is hovered or keyboard
+ * focus lands inside it. Touch devices, which cannot hover, keep it visible.
+ *
+ * The focus half is `:focus-visible`, not `:focus-within`: clicking a tool card or an
+ * expand toggle in the message body leaves focus parked there, and `:focus-within`
+ * would hold the whole footer open with the pointer nowhere near the row. An action
+ * that opens a surface keeps the toolbar up through the `message-hover` button's
+ * `data-hover-active` instead.
+ *
+ * That focus half reads
+ * `:is(:focus-visible, :has(:focus-visible:not(:is(input, textarea, [contenteditable]))))`
+ * on the row, and both halves earn their keep:
+ *
+ * - The row itself has to be tested, not only its descendants. `MessageNav` moves the
+ *   reader by setting `tabindex="-1"` on the row and focusing it, and `:has()` never
+ *   matches its own subject, so a plain `:has(:focus-visible)` leaves a focused row
+ *   showing its focus ring with its metadata and its actions still hidden.
+ * - Text-entry controls are excluded from the descendant half, because they match
+ *   `:focus-visible` even when a mouse clicks them. `ToolApproval` and
+ *   `AskUserQuestion` both render textareas inside a row, and without the exclusion
+ *   clicking one pins the row open with the pointer somewhere else entirely. Every
+ *   toolbar action is a button, so a keyboard user still never focuses a hidden one.
+ *
+ * The descendant half is the `grouped-keyboard-focus` variant from `tokens.css`, not Tailwind's
+ * `group-has-[…]`. Both match the same elements; `group-has` writes the rule so that a browser
+ * has to re-style the row's whole subtree whenever anything under the row changes, and this
+ * recipe sits on every toolbar button of every message.
+ *
+ * The two halves stay two variants on purpose. Folding them into a single
+ * `group-[&:is(...)]` makes Tailwind emit a bare `.group$ { opacity: 1 }` rule, which
+ * lightningcss rejects and which fails the production CSS build while leaving `jest`
+ * and `tsc` perfectly green.
+ *
+ * The transition is opacity only: the hover tint snaps, it does not fade, and `cn` merges the
+ * whole `transition-*` group so this replaces the `transition-none` the toolbar buttons carry.
+ */
+export const revealOnRowHoverClasses =
+  'transition-opacity duration-theme-normal ease-out group-hover:opacity-100 group-focus-visible:opacity-100 grouped-keyboard-focus:opacity-100 motion-reduce:transition-none no-touch:opacity-0';
+
 export const peerDisabledInkClasses =
   'peer-theme-disabled:text-text-disabled peer-theme-disabled:opacity-100 peer-theme-disabled:[&_svg]:text-text-disabled';
 
 /** The same recipe for a wrapper around the disabled control rather than the control itself; the
- *  control inherits the ink and shows the fill through its transparent background, and the
- *  wrapper's own parts (OTP slots) take the disabled edge and ink. */
+ *  control inherits the ink and shows the fill through its transparent background. */
 export const disabledWithinFillClasses =
-  'theme-disabled-within:border-border-disabled theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-within:opacity-100 theme-disabled-within:[&_*]:border-border-disabled theme-disabled-within:[&_*]:text-text-disabled';
+  'theme-disabled-within:border-border-disabled theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-within:opacity-100';
+
+/**
+ * The disabled edge and ink for that wrapper's own parts (OTP slots, a card's title and tile),
+ * which set colors of their own and so do not inherit the wrapper's. Added by the component
+ * while its control is disabled: `cn(…, disabled && disabledWithinPartsClasses)`.
+ *
+ * Not a `theme-disabled-within:[&_*]:` utility, which reads the same and costs the page its
+ * frame budget: that is `:has(:disabled) *`, and a `:has()` whose subject is every descendant
+ * makes each `disabled` flip in the document re-style the entire subtree of every `:has()`
+ * anchor above it. See the variants in `tokens.css`.
+ */
+export const disabledWithinPartsClasses =
+  'theme-disabled-fill:[&_*]:border-border-disabled theme-disabled-fill:[&_*]:text-text-disabled';
 
 export const MIN_UI_SCALE = 0.5;
 export const MAX_UI_SCALE = 1.5;

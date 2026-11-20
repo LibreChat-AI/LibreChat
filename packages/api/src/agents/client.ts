@@ -10,6 +10,7 @@ import {
   getTokenCountForMessage,
   estimateOpenAIImageTokens,
   estimateAnthropicImageTokens,
+  estimateTimedMediaBlockTokens,
   markTokenCounterCacheCompatible,
 } from '@librechat/agents';
 import type { MessageContentComplex, TokenCounter } from '@librechat/agents';
@@ -17,8 +18,8 @@ import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import Tokenizer, { getExactCountWork } from '~/utils/tokenizer';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
-import Tokenizer from '~/utils/tokenizer';
 
 export const omitTitleOptions: Set<string> = new Set([
   'stream',
@@ -80,6 +81,7 @@ type ContentBlock = {
   source?: { type?: string; data?: string; media_type?: string; content?: unknown[] };
   source_type?: string;
   mime_type?: string;
+  mimeType?: string;
   data?: string;
   text?: string;
   tool_call?: { id?: string; name?: string; args?: string; output?: string };
@@ -301,32 +303,42 @@ function estimateDocumentBlockTokens(
 }
 
 /**
- * Estimates token cost for image and document blocks in a message's
- * content array. Covers: image_url, image, image_file, document, file.
+ * Google/Vertex native media blocks (`{ type: 'media', mimeType, data | fileUri }`), as built by
+ * the file encoders and YouTube links. Mirrors the agents SDK's media accounting so these blocks
+ * are not skipped by the precomputed context budget.
  */
-export function estimateMediaTokensForMessage(
-  content: unknown,
+function estimateMediaBlockTokens(
+  block: ContentBlock,
   isClaude: boolean,
-  getTokenCount?: (text: string) => number,
+  countTokens: (text: string) => number,
 ): number {
-  if (!Array.isArray(content)) {
-    return 0;
+  const mime = (block.mimeType ?? block.mime_type ?? '').split(';')[0].trim().toLowerCase();
+  const data = typeof block.data === 'string' && block.data.length > 0 ? block.data : undefined;
+
+  if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+    const timed = estimateTimedMediaBlockTokens({ ...block, mimeType: mime });
+    return Math.ceil(timed * IMAGE_TOKEN_SAFETY_MARGIN);
   }
-  let tokens = 0;
-  for (const block of content as ContentBlock[]) {
-    if (block == null || typeof block !== 'object' || typeof block.type !== 'string') {
-      continue;
-    }
-    const type = block.type;
-    if (type === 'image_url' || type === 'image' || type === 'image_file') {
-      tokens += estimateImageBlockTokens(block, isClaude);
-      continue;
-    }
-    if (type === 'document' || type === 'file') {
-      tokens += estimateDocumentBlockTokens(block, isClaude, getTokenCount);
-    }
+  if (data == null) {
+    return mime.startsWith('image/') ? 1024 : URL_DOCUMENT_FALLBACK_TOKENS;
   }
-  return tokens;
+  if (mime.startsWith('image/')) {
+    return estimateImageDataTokens(data, isClaude);
+  }
+  if (mime === 'application/pdf') {
+    const comma = data.startsWith('data:') ? data.indexOf(',') : -1;
+    return estimateDocumentBlockTokens(
+      {
+        type: 'file',
+        source_type: 'base64',
+        mime_type: mime,
+        data: comma >= 0 ? data.slice(comma + 1) : data,
+      },
+      isClaude,
+      countTokens,
+    );
+  }
+  return Math.max(URL_DOCUMENT_FALLBACK_TOKENS, data.length);
 }
 
 /**
@@ -375,6 +387,11 @@ export function countFormattedMessageTokens(
 
         if (type === 'document' || type === 'file') {
           numTokens += estimateDocumentBlockTokens(block, isClaude, countTokens);
+          continue;
+        }
+
+        if (type === 'media') {
+          numTokens += estimateMediaBlockTokens(block, isClaude, countTokens);
           continue;
         }
 
@@ -441,9 +458,12 @@ export function countFormattedMessageTokens(
  * exact provider accounting, so it errs low rather than overstating the context.
  * Non-string outputs are skipped, matching {@link countFormattedMessageTokens}.
  *
- * `maxCountChars` bounds the tokenization this turn may cost — one call can request
- * several tools, so the budget spans all their results — and `countExact` returns
- * `undefined` for content it cannot count exactly. Either limit withdraws the whole
+ * `maxCountChars` bounds the tokenization this turn may cost (one call can request
+ * several tools, so the budget spans all their results). It is spent in UTF-8 bytes'
+ * worth of merge work ({@link getExactCountWork}), not characters: one long unbroken
+ * run costs the square of its byte length, so 200 KB of whitespace from a scraped page or
+ * a program's output cannot block the event loop for seconds under a budget sized
+ * for prose. `countExact` returns `undefined` for content it cannot count exactly. Either limit withdraws the whole
  * figure: a turn whose gauge is missing the retained result is better than one
  * whose exact figures absorbed a guess. The Claude framing correction is applied,
  * matching the counter that produced the snapshot.
@@ -465,7 +485,7 @@ export function countRetainedToolTokens({
     return 0;
   }
   let tokens = 0;
-  let charactersCounted = 0;
+  let workCounted = 0;
   for (const candidate of contentParts) {
     const part = candidate as ContentBlock | null | undefined;
     if (part == null || part.type !== ContentTypes.TOOL_CALL) {
@@ -478,8 +498,17 @@ export function countRetainedToolTokens({
     if (typeof output !== 'string' || output.length === 0) {
       continue;
     }
-    charactersCounted += output.length;
-    if (charactersCounted > maxCountChars) {
+    /** Work is never below length, so oversized output is refused before any scan,
+     *  and the scan itself stops at the remaining budget. */
+    const remaining = maxCountChars - workCounted;
+    if (output.length > remaining) {
+      return undefined;
+    }
+    workCounted += getExactCountWork(output, {
+      limit: remaining,
+      encoding: isClaude ? 'claude' : 'o200k_base',
+    });
+    if (workCounted > maxCountChars) {
       return undefined;
     }
     const counted = countExact(output);
@@ -508,14 +537,6 @@ export function collectToolCallIds(
     }
   }
   return ids;
-}
-
-export function createTokenCounter(
-  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
-): TokenCounter {
-  return createMessageTokenCounter(encoding, (text: string) =>
-    Tokenizer.getTokenCount(text, encoding),
-  );
 }
 
 function createMessageTokenCounter(

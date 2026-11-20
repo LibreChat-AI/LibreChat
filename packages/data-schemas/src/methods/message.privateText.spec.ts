@@ -288,75 +288,62 @@ it('strips private fields from bulk copies, including overwrites of protected ro
   });
 });
 
-it.each([
-  'updateMessage',
-  'updateMessageWithProvenance',
-  'updateMessageText',
-  'saveMessage',
-  'recordMessage',
-])('removes stored private text atomically when %s rewrites text', async (method) => {
-  await tenant('tenant-a', async () => {
-    const conversationId = uuid();
-    const messageId = uuid();
-    await methods.saveMessage(
-      { userId: 'owner' },
-      { conversationId, messageId, text: '[EMAIL_1]', isCreatedByUser: true },
-      { privateText: { envelope: 'v1:owner', revision: 'original' } },
-    );
-    if (method === 'updateMessage' || method === 'updateMessageWithProvenance') {
-      const updated = await methods.updateMessage('owner', {
-        messageId,
-        text: 'clean edited',
-        ...(method === 'updateMessageWithProvenance' && { userSubmittedPaths: ['/text'] }),
-      });
-      expect(updated).not.toHaveProperty('privacyRevision');
-    } else if (method === 'updateMessageText') {
-      await methods.updateMessageText('owner', { messageId, text: 'clean edited' });
-    } else if (method === 'recordMessage') {
-      await methods.recordMessage({
-        user: 'owner',
-        conversationId,
-        messageId,
-        text: 'clean edited',
-        isCreatedByUser: true,
-      });
-    } else {
+it.each(['updateMessage', 'updateMessageWithProvenance', 'saveMessage'])(
+  'removes stored private text atomically when %s rewrites text',
+  async (method) => {
+    await tenant('tenant-a', async () => {
+      const conversationId = uuid();
+      const messageId = uuid();
       await methods.saveMessage(
         { userId: 'owner' },
-        {
-          conversationId,
+        { conversationId, messageId, text: '[EMAIL_1]', isCreatedByUser: true },
+        { privateText: { envelope: 'v1:owner', revision: 'original' } },
+      );
+      if (method === 'updateMessage' || method === 'updateMessageWithProvenance') {
+        const updated = await methods.updateMessage('owner', {
           messageId,
           text: 'clean edited',
-          isCreatedByUser: true,
-        },
-      );
-    }
-    const stored = await mongoose.models.Message.findOne({ conversationId, messageId })
-      .select('+privateText')
-      .lean();
-    expect(stored).toMatchObject({ text: 'clean edited' });
-    expect(stored).not.toHaveProperty('privateText');
-    expect(stored).not.toHaveProperty('privacyRevision');
-    expect(
-      await methods.getPrivateMessageTexts({
-        userId: 'owner',
-        tenantId: 'tenant-a',
-        conversationId,
-        messageIds: [messageId],
-      }),
-    ).toEqual([]);
-    expect(
-      await methods.hasPersistedPrivateText({
-        userId: 'owner',
-        tenantId: 'tenant-a',
-        conversationId,
-        messageId,
-        text: '[EMAIL_1]',
-        privacyRevision: 'turn',
-      }),
-    ).toBe(false);
-  });
-});
+          ...(method === 'updateMessageWithProvenance' && { userSubmittedPaths: ['/text'] }),
+        });
+        expect(updated).not.toHaveProperty('privacyRevision');
+      } else {
+        await methods.saveMessage(
+          { userId: 'owner' },
+          {
+            conversationId,
+            messageId,
+            text: 'clean edited',
+            isCreatedByUser: true,
+          },
+        );
+      }
+      const stored = await mongoose.models.Message.findOne({ conversationId, messageId })
+        .select('+privateText')
+        .lean();
+      expect(stored).toMatchObject({ text: 'clean edited' });
+      expect(stored).not.toHaveProperty('privateText');
+      expect(stored).not.toHaveProperty('privacyRevision');
+      expect(
+        await methods.getPrivateMessageTexts({
+          userId: 'owner',
+          tenantId: 'tenant-a',
+          conversationId,
+          messageIds: [messageId],
+        }),
+      ).toEqual([]);
+      expect(
+        await methods.hasPersistedPrivateText({
+          userId: 'owner',
+          tenantId: 'tenant-a',
+          conversationId,
+          messageId,
+          text: '[EMAIL_1]',
+          privacyRevision: 'turn',
+        }),
+      ).toBe(false);
+    });
+  },
+);
 
 it('persists native-copy token provenance only from metadata and clears it on canonical edits', async () => {
   const token = `[EMAIL_1_${'a'.repeat(32)}]`;
@@ -391,14 +378,14 @@ it('persists native-copy token provenance only from metadata and clears it on ca
         (await methods.getMessages({ messageId, user: 'owner' }, select))[0],
       ).not.toHaveProperty('privateTextTokens');
     }
-    await methods.updateMessageText('owner', { messageId, text: 'Clean edit' });
+    await methods.updateMessage('owner', { messageId, text: 'Clean edit' });
     expect(
       (await methods.getMessages({ messageId, user: 'owner' }, '+privateTextTokens'))[0],
     ).not.toHaveProperty('privateTextTokens');
   });
 });
 
-it.each(['saveMessage', 'recordMessage', 'updateMessage', 'bulkSaveMessages'] as const)(
+it.each(['saveMessage', 'updateMessage', 'bulkSaveMessages'] as const)(
   'clears native-copy provenance when %s overwrites canonical text',
   async (writer) => {
     const token = `[EMAIL_1_${'a'.repeat(32)}]`;
@@ -419,8 +406,6 @@ it.each(['saveMessage', 'recordMessage', 'updateMessage', 'bulkSaveMessages'] as
       };
       if (writer === 'saveMessage') {
         await methods.saveMessage({ userId: 'owner' }, edited);
-      } else if (writer === 'recordMessage') {
-        await methods.recordMessage({ user: 'owner', ...edited });
       } else if (writer === 'updateMessage') {
         await methods.updateMessage('owner', edited);
       } else {

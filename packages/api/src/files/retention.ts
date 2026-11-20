@@ -30,6 +30,8 @@ export type RetentionRequest = {
   };
   config?: {
     interfaceConfig?: InterfaceConfig;
+    /** Kept so storage strategies can delete files for a request reduced to its retention inputs. */
+    paths?: Record<string, string>;
   };
 };
 
@@ -304,6 +306,7 @@ export const createMinimalRetentionRequest = (
     },
     config: {
       interfaceConfig: req.config?.interfaceConfig,
+      paths: req.config?.paths,
     },
   };
 };

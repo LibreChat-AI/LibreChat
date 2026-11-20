@@ -89,13 +89,11 @@ const SearchBar: React.FC<SearchBarProps> = ({ value, onSearch, className = '' }
       {/* Show clear button only when search has value - Google style */}
       {searchTerm && (
         <Button
-          variant="ghost"
+          variant="quiet"
           size="icon-sm"
           type="button"
           onClick={handleClear}
-          /* `ghost` only colours its hover state, so the glyph would inherit the
-             document's colour and disappear against a dark surface. */
-          className="text-text-secondary absolute end-0.5 top-1/2 -translate-y-1/2 rounded-md transition-none"
+          className="absolute end-0.5 top-1/2 -translate-y-1/2 rounded-md transition-none"
           aria-label={localize('com_agents_clear_search')}
         >
           <X className="size-4" aria-hidden="true" />

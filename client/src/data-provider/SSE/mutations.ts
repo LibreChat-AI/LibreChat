@@ -1,35 +1,11 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
-import type { Agents, TMessage, TEphemeralAgent, TPendingSteer } from 'librechat-data-provider';
+import type { Agents, TMessage, TEphemeralAgent, CodeApprovalMode } from 'librechat-data-provider';
+import type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
-export interface AbortStreamParams {
-  /** The stream ID to abort (if known) */
-  streamId?: string;
-  /** The conversation ID to abort (backend will look up the job) */
-  conversationId?: string;
-  /** Exact generation epoch returned by start/status. Prevents a stale tab
-   * from aborting a newer turn that reused the conversation-scoped stream id. */
-  generationCreatedAt?: number;
-}
-
-export interface AbortStreamResponse {
-  generationProtocolVersion?: number;
-  success: boolean;
-  aborted?: string;
-  /** Stop lost to an ordinary terminal transition; no abort FINAL was emitted. */
-  settled?: boolean;
-  code?: 'RUN_ALREADY_SETTLED' | string;
-  streamId?: string;
-  terminalStatus?: 'complete' | 'error' | 'aborted';
-  error?: string;
-  /** The worker stopped, but its terminal state could not be made durable.
-   * The client must not infer a safe queue-drain boundary from this ACK. */
-  persistenceFailed?: boolean;
-  /** Steers that never reached an injection boundary; restored as queued chips. */
-  pendingSteers?: TPendingSteer[];
-}
+export type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
 
 /**
  * Abort an ongoing generation stream.
@@ -67,8 +43,10 @@ export function useAbortStreamMutation() {
  */
 export interface ResumeAgentFields {
   conversationId: string;
-  /** Exact paused generation being resumed. */
-  generationCreatedAt: number;
+  /** Exact paused generation being resumed. Optional: when the client has not
+   *  observed the epoch, the server resolves against its authoritative job and
+   *  still fences on `actionId`. */
+  generationCreatedAt?: number;
   endpoint?: EModelEndpoint | string | null;
   endpointType?: EModelEndpoint | string | null;
   agent_id?: string | null;
@@ -184,6 +162,11 @@ export interface SteerMessageParams {
    * `preempt: false`, which relabels the chip instead of erroring.
    */
   preempt?: boolean;
+  /** Lets the server promote this steer to a durable queued turn if the run ends
+   *  without applying it; the FINAL event then reports it in `promotedSteers`. */
+  promoteLeftover?: boolean;
+  /** Sent with `promoteLeftover`: the code approval mode a promoted turn starts under. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Successful steer ACK: the server queued the message for mid-run injection. */

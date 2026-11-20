@@ -49,7 +49,9 @@ it('encodes canonical storage keys through the built package and the existing CJ
 
   const result = await encodeAndFormat(req, [file], { endpoint: 'openai' });
 
-  expect(getDownloadStream).toHaveBeenCalledWith(req, file.storageKey);
+  expect(getDownloadStream).toHaveBeenCalledWith(req, file.storageKey, {
+    signal: expect.any(AbortSignal),
+  });
   expect(prepareImagePayload).not.toHaveBeenCalled();
   expect(result.image_urls).toEqual([
     {

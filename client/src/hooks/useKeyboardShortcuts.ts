@@ -3,10 +3,9 @@ import { useSetAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { useToastContext } from '@librechat/client';
 import { useMatch, useNavigate } from 'react-router-dom';
+import { reachRow, useIsSubmitting } from '@librechat/chat/react';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 import { PermissionTypes, Permissions, isForcedTemporaryRetention } from 'librechat-data-provider';
-import type { ShortcutBinding } from '~/utils/shortcuts';
-import type { ShortcutOverride } from '~/store/misc';
 import {
   bindingDisplayString,
   bindingFromEvent,
@@ -14,18 +13,19 @@ import {
   bindingToString,
   isMacPlatform,
   parseBinding,
-} from '~/utils/shortcuts';
+  getFocusedChatPane,
+} from '@librechat/chat';
+import type { ShortcutBinding } from '@librechat/chat';
+import type { ShortcutOverride } from '~/store/misc';
 import { useArchiveConvoMutation, useGetStartupConfig } from '~/data-provider';
 import { mainTextareaId, NotificationSeverity } from '~/common';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { showFilesDialogAtom } from '~/store/filesDialog';
+import useNewChat from '~/hooks/Conversations/useNewChat';
 import { useHasAccess, useLocalize } from '~/hooks';
-import { getFocusedChatPane } from '~/utils/pane';
-import useNewChat from '~/hooks/Chat/useNewChat';
 import store from '~/store';
 
 const isMac = isMacPlatform;
-const CUSTOM_STORAGE_KEY = 'customKeyboardShortcuts';
 
 export type ShortcutDefinition = {
   labelKey: string;
@@ -412,6 +412,18 @@ function clickElement(selector: string): boolean {
   return false;
 }
 
+/**
+ * The last turn matching `selector`, with its toolbar in the document. A long thread leaves the
+ * toolbar out of a row until the row has been near the viewport, and a shortcut reaches the
+ * thread's last turns from wherever the reader is.
+ */
+function lastTurn(selector: string): Element | null {
+  const turns = document.querySelectorAll(selector);
+  const turn = turns.length > 0 ? turns[turns.length - 1] : null;
+  reachRow(turn?.closest('.message-render'));
+  return turn;
+}
+
 function clickLastElement(selector: string): boolean {
   const elements = document.querySelectorAll<HTMLElement>(selector);
   return clickTarget(elements[elements.length - 1]);
@@ -486,49 +498,6 @@ export function resolveShortcutBindings(
   return resolved;
 }
 
-function readOverridesFromStorage(): Record<string, ShortcutOverride> {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-  try {
-    const raw = window.localStorage.getItem(CUSTOM_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-export function effectiveBinding(
-  actionId: ShortcutActionId,
-  overrides?: Record<string, ShortcutOverride>,
-): ShortcutBinding | null {
-  const map = overrides ?? readOverridesFromStorage();
-  return resolveShortcutBindings(map).get(actionId) ?? null;
-}
-
-export function getShortcutDisplay(actionId: ShortcutActionId): string {
-  const binding = effectiveBinding(actionId);
-  if (!binding) {
-    return '';
-  }
-  return bindingDisplayString(binding, isMac);
-}
-
-export function getShortcutAriaKey(actionId: ShortcutActionId): string {
-  const binding = effectiveBinding(actionId);
-  if (!binding) {
-    return '';
-  }
-  return bindingToString(binding) ?? '';
-}
-
-export function getShortcutHint(actionId: ShortcutActionId, label: string): string {
-  const display = getShortcutDisplay(actionId);
-  return display ? `${label} (${display})` : label;
-}
-
 export function isOverridden(actionId: ShortcutActionId, override?: ShortcutOverride): boolean {
   if (!override) return false;
   const platformValue = isMac ? override.mac : override.other;
@@ -545,7 +514,7 @@ export function useShortcutActions(): ShortcutAction[] {
   const routeMatch = useMatch('/c/:conversationId');
   const routeConvoId = routeMatch?.params.conversationId ?? null;
   const conversation = useRecoilValue(store.conversationByIndex(0));
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
+  const isSubmitting = useIsSubmitting(0);
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
   const { setSidebarOpen, toggleSidebar } = useSidebarToggle();
   const setShowShortcutsDialog = useSetRecoilState(store.showShortcutsDialog);
@@ -635,6 +604,7 @@ export function useShortcutActions(): ShortcutAction[] {
   }, [sidebarExpanded, setSidebarOpen]);
 
   const handleCopyLastResponse = useCallback(() => {
+    lastTurn('.agent-turn');
     return clickLastElement('[data-testid="copy-response-button"]');
   }, []);
 
@@ -699,11 +669,10 @@ export function useShortcutActions(): ShortcutAction[] {
   }, []);
 
   const handleEditLastMessage = useCallback(() => {
-    const userTurns = document.querySelectorAll('.user-turn');
-    if (userTurns.length === 0) {
+    const last = lastTurn('.user-turn');
+    if (!last) {
       return false;
     }
-    const last = userTurns[userTurns.length - 1];
     const editBtn = last.querySelector<HTMLButtonElement>('button[id^="edit-"]');
     if (!editBtn) {
       return false;
@@ -850,8 +819,10 @@ export function useShortcutActions(): ShortcutAction[] {
     return true;
   }, [conversation?.conversationId, conversation?.title, routeConvoId, setDeleteTarget]);
 
+  /** The composer of the pane holding focus, as stop and upload resolve theirs. */
   const handleSubmitMessage = useCallback(() => {
-    const btn = document.querySelector<HTMLButtonElement>('[data-testid="send-button"]');
+    const scope: ParentNode = getFocusedChatPane() ?? document;
+    const btn = scope.querySelector<HTMLButtonElement>('[data-testid="send-button"]');
     return clickTarget(btn);
   }, []);
 

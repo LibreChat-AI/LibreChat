@@ -8,22 +8,23 @@ import {
 } from './recovery';
 
 describe('two-factor credential generation', () => {
-  it.each([undefined, 'legacy', 'invalid'])(
-    'keeps issuance compatible before activation: %s',
+  it.each(['legacy'])('issues legacy codes only on explicit opt-out: %s', async (format) => {
+    const { plainCodes, codeObjects } = await createBackupCodeGenerator(format)(2);
+    plainCodes.forEach((code, index) => {
+      expect(code).toMatch(/^[a-f0-9]{8}$/);
+      expect(codeObjects[index].codeHash).toBe(createHash('sha256').update(code).digest('hex'));
+    });
+  });
+
+  it.each([undefined, 'strong', 'invalid'])(
+    'issues strong codes by default: %s',
     async (format) => {
-      const { plainCodes, codeObjects } = await createBackupCodeGenerator(format)(2);
-      plainCodes.forEach((code, index) => {
-        expect(code).toMatch(/^[a-f0-9]{8}$/);
-        expect(codeObjects[index].codeHash).toBe(createHash('sha256').update(code).digest('hex'));
-      });
+      const { plainCodes, codeObjects } = await createBackupCodeGenerator(format)(1);
+      expect(plainCodes[0]).toHaveLength(32);
+      expect(codeObjects[0].codeHash).toMatch(/^sha256:[a-f0-9]{32}:[a-f0-9]{64}$/);
+      expect(matchesBackupCode(plainCodes[0], codeObjects[0].codeHash)).toBe(true);
     },
   );
-
-  it('activates strong issuance only when explicitly configured', async () => {
-    const { plainCodes, codeObjects } = await createBackupCodeGenerator('strong')(1);
-    expect(plainCodes[0]).toHaveLength(32);
-    expect(matchesBackupCode(plainCodes[0], codeObjects[0].codeHash)).toBe(true);
-  });
   it('generates a 160-bit Base32 TOTP secret', () => {
     expect(generateTOTPSecret()).toMatch(/^[A-Z2-7]{32}$/);
     expect(generateTOTPSecret()).not.toBe(generateTOTPSecret());

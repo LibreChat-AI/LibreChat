@@ -43,8 +43,8 @@ module.exports = createMCPAppsController({
     return resolveMCPAppCspLimits(appConfig?.mcpAppSandbox);
   },
   ensureConfigServers: (mcpConfig) => getMCPServersRegistry().ensureConfigServers(mcpConfig),
-  getAllServerConfigs: (userId, configServers, role) =>
-    getMCPServersRegistry().getAllServerConfigs(userId, configServers, role),
+  getServerConfig: (serverName, userId, configServers, role) =>
+    getMCPServersRegistry().getServerConfig(serverName, userId, configServers, role),
   recoverServerConfig: (serverName, config, userId) =>
     getMCPServersRegistry().recoverServerConfig(serverName, config, userId),
   isAppServerConfig: (serverName, config) =>

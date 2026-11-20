@@ -1,6 +1,5 @@
-const bcrypt = require('bcryptjs');
 const { CacheKeys } = require('librechat-data-provider');
-const { createPasskeyHandlers } = require('@librechat/api');
+const { createPasskeyHandlers, compareSecret } = require('@librechat/api');
 const { checkBan } = require('~/server/middleware');
 const { getLogStores } = require('~/cache');
 const { getAppConfig } = require('~/server/services/Config/app');
@@ -8,7 +7,7 @@ const db = require('~/models');
 
 module.exports = createPasskeyHandlers({
   checkBan,
-  compare: bcrypt.compare,
+  compare: compareSecret,
   getChallengeCache: () => getLogStores(CacheKeys.PASSKEY_CHALLENGE),
   getAppConfig,
   getUserById: db.getUserById,
@@ -20,4 +19,5 @@ module.exports = createPasskeyHandlers({
   findPasskeysByUser: db.findPasskeysByUser,
   countPasskeysByUser: db.countPasskeysByUser,
   findPasskeyByCredentialId: db.findPasskeyByCredentialId,
+  recordAuditEntry: db.recordAuditEntry,
 });

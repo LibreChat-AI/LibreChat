@@ -114,7 +114,7 @@ export default function MemoryCardActions({ memory }: MemoryCardActionsProps) {
           title={localize('com_ui_delete_memory')}
           className="w-11/12 max-w-lg"
           main={
-            <Label className="block text-left text-sm font-medium">
+            <Label className="block text-start text-sm font-medium">
               {/* The key is the user's: it breaks anywhere, so a long one wraps inside
                   the dialog instead of setting its width. */}
               <Trans

@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { JSX } from 'react/jsx-runtime';
 import { CircleHelpIcon, InfoIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { HoverCard, HoverCardTrigger, HoverCardPortal, HoverCardContent } from './HoverCard';
+/* Relative: client/tsconfig.json also compiles this file, where `~` is the app's own src. */
+import { resolveSide } from '../utils/direction';
 import { ESide } from '~/common';
 
 type InfoHoverCardProps = {
@@ -21,12 +23,14 @@ const InfoHoverCard = ({
   children,
 }: InfoHoverCardProps): JSX.Element => {
   const [isOpen, setIsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const Icon = icon === 'info' ? InfoIcon : CircleHelpIcon;
 
   return (
     <HoverCard openDelay={50} open={isOpen} onOpenChange={setIsOpen}>
       <HoverCardTrigger asChild>
         <button
+          ref={triggerRef}
           type="button"
           className="focus-visible:ring-focus-control inline-flex cursor-help items-center justify-center rounded-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden"
           onFocus={() => setIsOpen(true)}
@@ -37,7 +41,10 @@ const InfoHoverCard = ({
         </button>
       </HoverCardTrigger>
       <HoverCardPortal>
-        <HoverCardContent side={side} className="z-[999] w-80">
+        <HoverCardContent
+          side={side && resolveSide(side, triggerRef.current)}
+          className="z-[999] w-80"
+        >
           <div className="max-h-[80vh] space-y-2 overflow-y-auto">
             <span className="text-text-secondary text-sm">{text}</span>
           </div>

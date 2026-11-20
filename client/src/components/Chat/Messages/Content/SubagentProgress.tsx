@@ -1,13 +1,14 @@
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getToolDisplayLabel } from '@librechat/chat';
 import type {
   SubagentDigest,
   SubagentDigestNode,
   SubagentDigestStatus,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { cn, getToolDisplayLabel, getRunStepDurationLabels } from '~/utils';
 import { ToolIcon, getToolIconType } from './ToolOutput';
+import { cn, getRunStepDurationLabels } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 export type DigestTreeNode = { node: SubagentDigestNode; children: DigestTreeNode[] };
@@ -161,7 +162,7 @@ function DigestBranch({
   return (
     <li className="min-w-0">
       <details open={isOnPath(entry.node.path, active)} className="group">
-        <summary className="focus-visible:ring-border-heavy flex min-w-0 cursor-pointer items-center rounded py-0.5 focus-visible:ring-2 focus-visible:outline-none">
+        <summary className="focus-visible:ring-focus-subtle flex min-w-0 cursor-pointer items-center rounded py-0.5 focus-visible:ring-2 focus-visible:outline-none">
           <NodeRow node={entry.node} serverNames={serverNames} />
         </summary>
         <ul className="border-border-light ms-1.5 border-s ps-2">
@@ -196,7 +197,7 @@ const SubagentProgress = memo(function SubagentProgress({
   const tree = useMemo(() => buildDigestTree(digest.nodes), [digest.nodes]);
   const active = digest.active ?? digest.nodes[digest.nodes.length - 1]?.path;
   return (
-    <div className="border-border-light mt-3 border-t pt-2.5" data-testid="subagent-progress">
+    <div className="border-border-inset mt-3 border-t pt-2.5" data-testid="subagent-progress">
       <div className="text-text-secondary mb-1.5 flex items-center gap-2 text-xs font-medium">
         <span>{localize('com_ui_subagent_progress')}</span>
         <span className="text-text-tertiary font-normal tabular-nums">

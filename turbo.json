@@ -70,6 +70,17 @@
       ],
       "outputs": ["dist/**"],
       "env": ["NODE_ENV", "VITE_ENABLE_LOGGER", "VITE_LOGGER_FILTER"]
+    },
+    "@librechat/chat#build": {
+      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/client#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/__tests__/**",
+        "!**/__mocks__/**",
+        "!**/*.test.*",
+        "!**/*.spec.*"
+      ],
+      "outputs": ["dist/**"]
     }
   }
 }

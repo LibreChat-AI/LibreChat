@@ -229,4 +229,18 @@ describe('Spinner', () => {
 
     expect(container.querySelector('svg')).not.toBeNull();
   });
+
+  it('follows the surrounding ink by default and pins a text role on request', () => {
+    const { container, rerender } = render(<Spinner />);
+    const svg = () => container.querySelector('svg');
+
+    expect(svg()).not.toHaveClass('text-text-primary');
+    expect(svg()).not.toHaveClass('text-text-secondary');
+
+    rerender(<Spinner tone="primary" />);
+    expect(svg()).toHaveClass('text-text-primary');
+
+    rerender(<Spinner tone="secondary" />);
+    expect(svg()).toHaveClass('text-text-secondary');
+  });
 });

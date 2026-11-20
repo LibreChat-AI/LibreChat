@@ -13,6 +13,7 @@ import {
 import type { TConversation, TMessage, GroupedConversations } from 'librechat-data-provider';
 import type { InvalidateQueryFilters } from '@tanstack/react-query';
 import type { InfiniteData, Query } from '@tanstack/react-query';
+import type { ConvoTitleState } from '@librechat/chat';
 import { isTemporaryConversation } from './conversation';
 import { getSessionPrincipal } from './session';
 
@@ -499,78 +500,6 @@ export function findConversationInInfinite(
   return undefined;
 }
 
-export function updateInfiniteConvoPage(
-  data: InfiniteData<ConversationCursorData> | undefined,
-  conversationId: string,
-  updater: (c: TConversation) => TConversation,
-): InfiniteData<ConversationCursorData> | undefined {
-  if (!data) {
-    return data;
-  }
-  return {
-    ...data,
-    pages: data.pages.map((page) => ({
-      ...page,
-      conversations: page.conversations.map((c) =>
-        c.conversationId === conversationId ? updater(c) : c,
-      ),
-    })),
-  };
-}
-
-export function addConversationToInfinitePages(
-  data: InfiniteData<ConversationCursorData> | undefined,
-  newConversation: TConversation,
-): InfiniteData<ConversationCursorData> {
-  if (!data) {
-    return {
-      pageParams: [undefined],
-      pages: [{ conversations: [newConversation], nextCursor: null }],
-    };
-  }
-  return {
-    ...data,
-    pages: [
-      { ...data.pages[0], conversations: [newConversation, ...data.pages[0].conversations] },
-      ...data.pages.slice(1),
-    ],
-  };
-}
-
-export function addConversationToAllConversationsQueries(
-  queryClient: QueryClient,
-  newConversation: TConversation,
-) {
-  for (const query of findConversationListQueries(queryClient)) {
-    const verdict = conversationInsertVerdict(query.queryKey, newConversation);
-    if (verdict === 'skip') {
-      continue;
-    }
-    if (verdict === 'refetch') {
-      queryClient.invalidateQueries({ queryKey: query.queryKey, refetchType: 'active' });
-      continue;
-    }
-    queryClient.setQueryData<InfiniteData<ConversationCursorData>>(query.queryKey, (old) => {
-      if (
-        !old ||
-        old.pages[0].conversations.some((c) => c.conversationId === newConversation.conversationId)
-      ) {
-        return old;
-      }
-      return {
-        ...old,
-        pages: [
-          {
-            ...old.pages[0],
-            conversations: [newConversation, ...old.pages[0].conversations],
-          },
-          ...old.pages.slice(1),
-        ],
-      };
-    });
-  }
-}
-
 export function removeConvoFromInfinitePages(
   data: InfiniteData<ConversationCursorData> | undefined,
   conversationId: string,
@@ -587,61 +516,6 @@ export function removeConvoFromInfinitePages(
       }))
       .filter((page) => page.conversations.length > 0),
   };
-}
-
-// Used for partial update (e.g., title, etc.), updating AND possibly bumping to front of visible convos
-export function updateConvoFieldsInfinite(
-  data: InfiniteData<ConversationCursorData> | undefined,
-  updatedConversation: Partial<TConversation> & { conversationId: string },
-  keepPosition = false,
-): InfiniteData<ConversationCursorData> | undefined {
-  if (!data) {
-    return data;
-  }
-  let found: TConversation | undefined;
-  let pageIdx = -1,
-    convoIdx = -1;
-  for (let i = 0; i < data.pages.length; ++i) {
-    const idx = data.pages[i].conversations.findIndex(
-      (c) => c.conversationId === updatedConversation.conversationId,
-    );
-    if (idx !== -1) {
-      pageIdx = i;
-      convoIdx = idx;
-      found = data.pages[i].conversations[idx];
-      break;
-    }
-  }
-  if (!found) {
-    return data;
-  }
-
-  if (keepPosition) {
-    return {
-      ...data,
-      pages: data.pages.map((page, pi) =>
-        pi === pageIdx
-          ? {
-              ...page,
-              conversations: page.conversations.map((c, ci) =>
-                ci === convoIdx ? { ...c, ...updatedConversation } : c,
-              ),
-            }
-          : page,
-      ),
-    };
-  } else {
-    const patched = { ...found, ...updatedConversation, updatedAt: new Date().toISOString() };
-    const pages = data.pages.map((page) => ({
-      ...page,
-      conversations: page.conversations.filter((c) => c.conversationId !== patched.conversationId),
-    }));
-
-    pages[0].conversations = [patched, ...pages[0].conversations];
-
-    const finalPages = pages.filter((page) => page.conversations.length > 0);
-    return { ...data, pages: finalPages };
-  }
 }
 
 export function storeEndpointSettings(conversation: TConversation | null) {
@@ -1078,6 +952,29 @@ export function markServerFetchedReply(
   markReplyProof(queryClient, conversationId, lastResponseAt, 'server', messages);
 }
 
+/**
+ * Proves a history fetched before its conversation record was cached, as a URL load's prefetch
+ * is. Such a fetch had no reply stamp to capture, so the proof comes from the content instead:
+ * the history must hold the exact reply the record names. A reply newer than the fetch names a
+ * message the history lacks, so it stays unproven and the seen check loads it.
+ */
+export function proveFetchedReplyByIdentity(
+  queryClient: QueryClient,
+  conversationId: string,
+  messages: TMessage[],
+): boolean {
+  const convo = findConvoInAllQueries(queryClient, conversationId);
+  const { lastResponseAt, lastResponseMessageId } = convo ?? {};
+  if (!lastResponseAt || !lastResponseMessageId || convo?.lastResponseIsManual === true) {
+    return false;
+  }
+  if (!messages.some((message) => message.messageId === lastResponseMessageId)) {
+    return false;
+  }
+  markServerFetchedReply(queryClient, conversationId, lastResponseAt, messages);
+  return true;
+}
+
 function hasReplyProof(
   queryClient: QueryClient,
   conversationId: string,
@@ -1111,15 +1008,31 @@ export function hasServerFetchedReply(
   conversationId: string,
   lastResponseAt: string,
 ): boolean {
+  const query = queryClient.getQueryCache().find([QueryKeys.messages, conversationId]);
+  if (query) reconcileMessagesReply(queryClient, query);
   return hasReplyProof(queryClient, conversationId, lastResponseAt, 'server');
 }
 type MessagesReplyFetch = {
-  stamp: string;
+  stamp: string | undefined;
   acceptedServerResult: boolean;
 };
 
 const messagesReplyFetches = new WeakMap<Query, MessagesReplyFetch>();
 const messagesReplyTracking = new WeakSet<QueryClient>();
+const eligibleMessagesReplies = new WeakSet<Query>();
+
+function reconcileMessagesReply(queryClient: QueryClient, query: Query): void {
+  if (!eligibleMessagesReplies.has(query) || query.state.isInvalidated) {
+    return;
+  }
+  const messages = query.state.data;
+  if (
+    Array.isArray(messages) &&
+    proveFetchedReplyByIdentity(queryClient, query.queryKey[1] as string, messages as TMessage[])
+  ) {
+    eligibleMessagesReplies.delete(query);
+  }
+}
 
 function trackMessagesReplyFetches(queryClient: QueryClient): void {
   if (messagesReplyTracking.has(queryClient)) {
@@ -1127,55 +1040,68 @@ function trackMessagesReplyFetches(queryClient: QueryClient): void {
   }
   messagesReplyTracking.add(queryClient);
   queryClient.getQueryCache().subscribe((event) => {
-    if (event.type !== 'updated' || event.query.queryKey[0] !== QueryKeys.messages) {
+    const root = event.query.queryKey[0];
+    if (root !== QueryKeys.messages) {
+      if (
+        event.type === 'updated' &&
+        event.action.type === 'success' &&
+        (root === QueryKeys.conversation || root === QueryKeys.runningConversation)
+      ) {
+        const query = queryClient
+          .getQueryCache()
+          .find([QueryKeys.messages, event.query.queryKey[1]]);
+        if (query) reconcileMessagesReply(queryClient, query);
+      }
       return;
     }
-    const action = event.action;
-    const pending = messagesReplyFetches.get(event.query);
-    if (pending == null) {
-      return;
-    }
-    if (action.type === 'error') {
+    if (event.type === 'removed') {
       messagesReplyFetches.delete(event.query);
+      eligibleMessagesReplies.delete(event.query);
       return;
     }
-    if (action.type !== 'success' || action.manual === true) {
-      pending.acceptedServerResult = false;
+    if (event.type !== 'updated') {
       return;
     }
+    eligibleMessagesReplies.delete(event.query);
+    const pending = messagesReplyFetches.get(event.query);
     messagesReplyFetches.delete(event.query);
-    if (!pending.acceptedServerResult) {
+    const action = event.action;
+    if (action.type !== 'success' || action.manual === true || !pending?.acceptedServerResult) {
       return;
     }
     const committedMessages = event.query.state.data;
-    if (Array.isArray(committedMessages)) {
+    if (!Array.isArray(committedMessages)) {
+      return;
+    }
+    if (pending.stamp != null) {
       markServerFetchedReply(
         queryClient,
         event.query.queryKey[1] as string,
         pending.stamp,
         committedMessages as TMessage[],
       );
+      return;
     }
+    eligibleMessagesReplies.add(event.query);
+    reconcileMessagesReply(queryClient, event.query);
   });
 }
 
 /**
- * Captures the list reply stamp before a messages request crosses its loading gate. The returned
- * request record is weakly tied to the query so an abandoned conversation cannot retain history.
+ * Captures the reply stamp when known. An accepted unstamped fetch remains eligible for identity
+ * proof when its record arrives; query ownership keeps abandoned histories collectible.
  */
 export function beginMessagesReplyFetch(
   queryClient: QueryClient,
   conversationId: string,
   stamp: string | undefined,
 ): MessagesReplyFetch | undefined {
-  if (stamp == null) {
-    return undefined;
-  }
   trackMessagesReplyFetches(queryClient);
   const query = queryClient.getQueryCache().find([QueryKeys.messages, conversationId]);
   if (query == null) {
     return undefined;
   }
+  eligibleMessagesReplies.delete(query);
   const request: MessagesReplyFetch = { stamp, acceptedServerResult: false };
   messagesReplyFetches.set(query, request);
   return request;
@@ -1593,7 +1519,7 @@ export function findConvoInAllQueries(
   )?.convo;
 }
 
-export type ConvoTitleState = Pick<TConversation, 'title' | 'titleSetByUser' | 'titleRevision'>;
+export type { ConvoTitleState };
 
 /** Manual revisions are monotonic even when reply snapshots or request order disagree. */
 export function findManualConvoTitleInAllQueries(

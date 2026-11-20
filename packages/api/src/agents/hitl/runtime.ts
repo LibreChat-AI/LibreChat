@@ -110,7 +110,10 @@ export function buildHITLRunWiring(
   registry.register('PreToolUse', {
     hooks: [
       withNormalizedEdits(async (input, signal) =>
-        createToolPolicyHook(mapToolApprovalPolicy(activePolicy) ?? {})(input, signal),
+        createToolPolicyHook(mapToolApprovalPolicy(activePolicy, input.toolName) ?? {})(
+          input,
+          signal,
+        ),
       ),
     ],
   });

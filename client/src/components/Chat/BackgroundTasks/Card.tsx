@@ -1,33 +1,13 @@
 import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Square } from 'lucide-react';
-import { Spinner, TooltipAnchor } from '@librechat/client';
-import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
-import type { TranslationKeys } from '~/hooks/useLocalize';
-import { getRunStepDurationLabels, getToolDisplayLabel, cn } from '~/utils';
+import { getToolDisplayLabel } from '@librechat/chat';
+import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
+import { Shimmer, Spinner, IconButton, TooltipAnchor } from '@librechat/client';
+import type { TaskRow } from './rows';
+import { DELIVERY_CLASSES, DELIVERY_KEYS, STATUS_CLASSES, STATUS_KEYS } from './labels';
+import { getRunStepDurationLabels, cn } from '~/utils';
+import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
-
-const STATUS_KEYS: Record<TaskRowStatus, TranslationKeys> = {
-  running: 'com_ui_background_tasks_running',
-  stopping: 'com_ui_background_tasks_stopping',
-  completed: 'com_ui_background_tasks_completed',
-  error: 'com_ui_failed',
-  cancelled: 'com_ui_cancelled',
-};
-
-const STATUS_CLASSES: Partial<Record<TaskRowStatus, string>> = {
-  error: 'text-status-error',
-  cancelled: 'text-status-warning',
-};
-
-const DELIVERY_KEYS: Record<TaskRowDelivery, TranslationKeys> = {
-  pending: 'com_ui_background_tasks_result_pending',
-  failed: 'com_ui_background_tasks_result_undelivered',
-};
-
-const DELIVERY_CLASSES: Partial<Record<TaskRowDelivery, string>> = {
-  failed: 'text-status-warning',
-};
 
 function TaskCard({
   row,
@@ -36,6 +16,7 @@ function TaskCard({
   isStopping,
   onStop,
   portalElement,
+  onJump,
 }: {
   row: TaskRow;
   now: number;
@@ -43,11 +24,14 @@ function TaskCard({
   isStopping: boolean;
   onStop: (row: TaskRow) => void;
   portalElement: HTMLElement | null;
+  onJump: (row: TaskRow) => boolean;
 }) {
   const localize = useLocalize();
   const { i18n } = useTranslation();
   const detailId = useId();
   const [open, setOpen] = useState(false);
+  const [visited, setVisited] = useState(false);
+  const [jumpUnavailable, setJumpUnavailable] = useState(false);
   const active = row.status === 'running' || row.status === 'stopping';
   const kindLabel =
     row.kind === 'subagent'
@@ -61,6 +45,11 @@ function TaskCard({
       : undefined;
   const stopLabel = localize('com_ui_background_tasks_stop');
   const expandable = row.detail != null;
+  const openLabel = localize(
+    row.kind === 'subagent'
+      ? 'com_ui_background_tasks_open_subagent'
+      : 'com_ui_background_tasks_go_to_tool',
+  );
 
   return (
     <li className="bg-surface-tertiary rounded-lg px-3 py-2" data-testid="background-task-row">
@@ -71,10 +60,15 @@ function TaskCard({
               type="button"
               aria-expanded={open}
               aria-controls={detailId}
-              onClick={() => setOpen((value) => !value)}
-              className="text-text-primary focus-visible:ring-ring-primary flex max-w-full items-start gap-1 rounded text-left text-sm focus-visible:ring-2 focus-visible:outline-none"
+              onClick={() => {
+                setVisited(true);
+                setOpen((value) => !value);
+              }}
+              className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-start text-sm focus-visible:ring-2 focus-visible:outline-none"
             >
-              <span className="line-clamp-2 break-words">{title}</span>
+              <span className="line-clamp-2 break-words">
+                <Shimmer active={active}>{title}</Shimmer>
+              </span>
               <ChevronDown
                 aria-hidden="true"
                 className={cn(
@@ -84,7 +78,9 @@ function TaskCard({
               />
             </button>
           ) : (
-            <p className="text-text-primary line-clamp-2 text-sm break-words">{title}</p>
+            <p className="text-text-primary line-clamp-2 text-sm break-words">
+              <Shimmer active={active}>{title}</Shimmer>
+            </p>
           )}
           <p className="text-text-secondary mt-0.5 flex items-center gap-2 text-xs">
             {title !== kindLabel && <span className="font-medium">{kindLabel}</span>}
@@ -112,32 +108,62 @@ function TaskCard({
             )}
           </p>
         </div>
+        <TooltipAnchor
+          description={openLabel}
+          portalElement={portalElement}
+          render={
+            <IconButton
+              variant="ghost"
+              size="xs"
+              shape="inset"
+              label={`${openLabel}: ${title}`}
+              onClick={() => setJumpUnavailable(!onJump(row))}
+            >
+              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+            </IconButton>
+          }
+        />
         {row.status === 'running' && canStop && (
           <TooltipAnchor
             description={stopLabel}
             portalElement={portalElement}
             render={
-              <button
+              <IconButton
                 type="button"
-                aria-label={`${stopLabel}: ${title}`}
+                variant="primary"
+                size="xs"
+                shape="inset"
+                label={`${stopLabel}: ${title}`}
                 disabled={isStopping}
                 onClick={() => onStop(row)}
-                className="border-border-medium text-text-primary hover:bg-surface-hover focus-visible:ring-ring-primary flex size-7 shrink-0 items-center justify-center rounded-md border focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
               >
-                <Square className="size-3" aria-hidden="true" />
-              </button>
+                <Square className="size-3 fill-current" aria-hidden="true" />
+              </IconButton>
             }
           />
         )}
         {row.status === 'stopping' && <Spinner className="size-4 shrink-0" />}
       </div>
-      {expandable && open && (
-        <pre
-          id={detailId}
-          className="bg-surface-primary text-text-primary mt-2 max-h-48 overflow-auto rounded-md p-2 font-mono text-xs break-words whitespace-pre-wrap"
-        >
-          {row.detail}
-        </pre>
+      {expandable && (
+        <Collapse open={open}>
+          {visited && (
+            <pre
+              id={detailId}
+              className="bg-surface-primary text-text-primary mt-2 max-h-48 overflow-auto rounded-md p-2 font-mono text-xs break-words whitespace-pre-wrap"
+            >
+              {row.detail}
+            </pre>
+          )}
+        </Collapse>
+      )}
+      {jumpUnavailable && (
+        <p role="status" className="text-text-secondary mt-1 text-xs">
+          {localize(
+            row.kind === 'subagent'
+              ? 'com_ui_background_tasks_subagent_unavailable'
+              : 'com_ui_background_tasks_tool_unavailable',
+          )}
+        </p>
       )}
     </li>
   );

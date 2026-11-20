@@ -1,5 +1,4 @@
 const { nanoid } = require('nanoid');
-const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
@@ -8,11 +7,12 @@ const {
   PermissionBits,
   hasPermissions,
   AgentCapabilities,
-  ContentTypes,
 } = require('librechat-data-provider');
 const {
   createRun,
   applyContextToAgent,
+  createRemoteExecutionContext,
+  getRemoteRunKeyId,
   buildInitialToolSessions,
   buildRunToolSet,
   stampMcpServerIdentities,
@@ -29,6 +29,7 @@ const {
   createSafeUser,
   initializeAgent,
   loadSkillStates,
+  loadSkillAccess,
   getBalanceConfig,
   injectSkillPrimes,
   extractManualSkills,
@@ -39,7 +40,6 @@ const {
   resolveSubagentGraphs,
   inspectContent,
   extractAgentContent,
-  extractFileContent,
   extractMessageContent,
   extractModelParameterContent,
   extractSkillContent,
@@ -55,6 +55,7 @@ const {
   assertModelBoundContent,
   reportLocatorTraversalFailure,
   hasModelBoundContentProtection,
+  createApiModelCallbacks,
   isContentFilterError,
   getSafeErrorMetadata,
   getUserFacingProviderError,
@@ -65,8 +66,16 @@ const {
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
   // Responses API
+  buildResponseInputChain,
+  loadForegroundResponseHistory,
+  createResponseTurn,
+  createStoredForegroundResponseReader,
+  createResponseAccountingSnapshot,
+  withResponsePersistenceErrors,
+  createResponseExecutionRuntime,
+  GenerationJobManager,
+  getPluginHookSource,
   writeDone,
-  buildResponse,
   generateResponseId,
   isValidationFailure,
   emitResponseCreated,
@@ -75,6 +84,7 @@ const {
   setupStreamingResponse,
   emitResponseInProgress,
   convertInputToMessages,
+  extractResponseInputFileContent,
   validateResponseRequest,
   buildAggregatedResponse,
   buildResponsesUsage,
@@ -92,10 +102,11 @@ const {
   resolveToolRoleGrants,
   resolveApiConversationProject,
   resolveAdmittedCodeEnvironmentDecision,
-  resolvePersistableCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
   announceReply,
-  getConversationWriteContext,
+  isTemporaryTurn,
+  getModelEndUsage,
+  hasEntityEmbeddings,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -127,7 +138,7 @@ const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/
 const {
   getLinkedInstructionsResolver,
 } = require('~/server/services/Endpoints/agents/linkedInstructions');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
 const { resolveConversationTitle } = require('~/server/services/Endpoints/titlePolicy');
@@ -179,7 +190,15 @@ function handleExecutionError({ error, res, appConfig }) {
  * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader({ req, res, signal, definitionsOnly = true }) {
+function createToolLoader({
+  req,
+  res,
+  signal,
+  definitionsOnly = true,
+  streamId = null,
+  jobCreatedAt,
+  unattended,
+}) {
   return async function loadTools({
     tools,
     model,
@@ -189,6 +208,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
     tool_resources,
     requestBody,
     codeExecutionContext,
+    attachedEnvironmentOptOut,
     accessibleMcpServerNames,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
@@ -201,10 +221,13 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         requestBody,
         tool_resources,
         codeExecutionContext,
+        attachedEnvironmentOptOut,
         agentResourceType: ResourceType.REMOTE_AGENT,
         definitionsOnly,
         accessibleMcpServerNames,
-        streamId: null,
+        streamId,
+        jobCreatedAt,
+        unattended,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -263,26 +286,7 @@ function extractResponseRequestContent(request, messageFragments) {
     ...messageFragments,
   ];
 
-  if (Array.isArray(request.input)) {
-    for (const item of request.input) {
-      if (item?.type !== 'message' || !Array.isArray(item.content)) {
-        continue;
-      }
-      for (const part of item.content) {
-        if (part?.type === 'input_file') {
-          fragments.push(...extractFileContent({ name: part.filename }));
-          continue;
-        }
-        if (
-          part?.type === 'input_image' &&
-          typeof part.image_url === 'string' &&
-          !part.image_url.startsWith('data:')
-        ) {
-          fragments.push(...extractFileContent({ uri: part.image_url }));
-        }
-      }
-    }
-  }
+  fragments.push(...extractResponseInputFileContent(request.input));
 
   for (const tool of request.tools ?? []) {
     if (tool?.type !== 'function') {
@@ -332,185 +336,10 @@ function extractResponseRequestContent(request, messageFragments) {
  * @param {string} userId - The user ID
  * @returns {Promise<Array>} Messages from the conversation
  */
-async function loadPreviousMessages(conversationId, userId) {
-  try {
-    const messages = await db.getMessages({ conversationId, user: userId });
-    if (!messages || messages.length === 0) {
-      return [];
-    }
-
-    // Convert stored messages to internal format
-    return messages.map((msg) => {
-      let text;
-      if (typeof msg.text === 'string') {
-        text = msg.text;
-      } else if (msg.text != null) {
-        text = String(msg.text);
-      }
-      const internalMsg = {
-        role: msg.isCreatedByUser ? 'user' : 'assistant',
-        content: Array.isArray(msg.content) ? msg.content : (text ?? ''),
-        messageId: msg.messageId,
-        isCreatedByUser: msg.isCreatedByUser === true,
-        ...(text !== undefined && { text }),
-        ...(typeof msg.isUserSubmitted === 'boolean' && {
-          isUserSubmitted: msg.isUserSubmitted,
-        }),
-        ...(Array.isArray(msg.userSubmittedPaths) && {
-          userSubmittedPaths: msg.userSubmittedPaths,
-        }),
-        ...(Array.isArray(msg.userSubmittedMessageFieldPaths) && {
-          userSubmittedMessageFieldPaths: msg.userSubmittedMessageFieldPaths,
-        }),
-      };
-
-      return internalMsg;
-    });
-  } catch (error) {
-    logger.error('[Responses API] Error loading previous messages:', getSafeErrorMetadata(error));
-    return [];
-  }
-}
-
-/**
- * Save input messages to database
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {Array} inputMessages - Internal format messages
- * @param {string} agentId
- * @returns {Promise<void>}
- */
-async function saveInputMessages(req, conversationId, inputMessages, agentId) {
-  for (const msg of inputMessages) {
-    if (msg.role === 'user') {
-      await db.saveMessage(
-        getConversationWriteContext(req),
-        {
-          messageId: msg.messageId || nanoid(),
-          conversationId,
-          parentMessageId: null,
-          isCreatedByUser: true,
-          text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-          sender: 'User',
-          endpoint: EModelEndpoint.agents,
-          model: agentId,
-        },
-        { context: 'Responses API - save user input' },
-      );
-    }
-  }
-}
-
-/**
- * Save response output to database
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {string} responseId
- * @param {import('@librechat/api').Response} response
- * @param {string} agentId
- * @param {number | undefined} visibleOutputTokens
- * @returns {Promise<void>}
- */
-async function saveResponseOutput(
-  req,
-  conversationId,
-  responseId,
-  response,
-  agentId,
-  visibleOutputTokens,
-  contentParts,
-) {
-  // Extract text content from output items
-  let responseText = '';
-  for (const item of response.output) {
-    if (item.type === 'message' && item.content) {
-      for (const part of item.content) {
-        if (part.type === 'output_text' && part.text) {
-          responseText += part.text;
-        }
-      }
-    }
-  }
-
-  const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
-
-  // Save the assistant message
-  return db.saveMessage(
-    getConversationWriteContext(req),
-    {
-      messageId: responseId,
-      conversationId,
-      parentMessageId: null,
-      isCreatedByUser: false,
-      ...langfuseTraceFields,
-      text: responseText,
-      ...(Array.isArray(contentParts) && contentParts.length > 0 && { content: contentParts }),
-      sender: 'Agent',
-      endpoint: EModelEndpoint.agents,
-      model: agentId,
-      finish_reason: response.status === 'completed' ? 'stop' : response.status,
-      tokenCount: visibleOutputTokens ?? response.usage?.output_tokens,
-    },
-    { context: 'Responses API - save assistant response' },
-  );
-}
-
-/**
- * Builds LibreChat content parts for a stored Responses turn and stamps MCP
- * server identities so chat-UI continuation can resolve delimiter-bearing names.
- * @param {{ text?: string, toolCalls?: Iterable<{ id?: string, call_id?: string, name?: string, arguments?: string }>, roots: object[] }} params
- */
-function buildStampedResponseContentParts({ text, toolCalls, roots }) {
-  const contentParts = [];
-  for (const tc of toolCalls ?? []) {
-    if (tc == null || typeof tc.name !== 'string') {
-      continue;
-    }
-    contentParts.push({
-      type: ContentTypes.TOOL_CALL,
-      tool_call: {
-        id: tc.id ?? tc.call_id,
-        name: tc.name,
-        args: typeof tc.arguments === 'string' ? tc.arguments : '',
-      },
-    });
-  }
-  if (typeof text === 'string' && text.length > 0) {
-    contentParts.push({ type: ContentTypes.TEXT, text });
-  }
-  stampMcpServerIdentities({ contentParts, roots });
-  return contentParts;
-}
-
-/**
- * Save or update conversation
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {string} agentId
- * @param {object} agent
- * @param {import('@librechat/api').ConversationCodeEnvironmentDecision} codeEnvironmentDecision
- * @returns {Promise<void>}
- */
-async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
-  const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
-  await db.saveConvo(
-    getConversationWriteContext(req),
-    {
-      conversationId,
-      endpoint: EModelEndpoint.agents,
-      agent_id: agentId,
-      ...resolvePersistableCodeEnvironmentDecision({
-        conversationId,
-        decision: codeEnvironmentDecision,
-        conversation: req.resolvedConversation,
-      }),
-      ...(title != null && { title }),
-      model: agent?.model,
-    },
-    {
-      context: 'Responses API - save conversation',
-      initialAgentId: agent?.id === agentId ? agentId : null,
-    },
+async function loadPreviousMessages(conversationId, userId, previousResponseId) {
+  return loadForegroundResponseHistory(
+    { conversationId, userId, previousResponseId },
+    { getMessages: db.getMessages },
   );
 }
 
@@ -519,29 +348,6 @@ async function saveConversation(req, conversationId, agentId, agent, codeEnviron
  * @param {Array} messages - Stored messages
  * @returns {Array} Output items
  */
-function convertMessagesToOutputItems(messages) {
-  const output = [];
-
-  for (const msg of messages) {
-    if (!msg.isCreatedByUser) {
-      output.push({
-        type: 'message',
-        id: msg.messageId,
-        role: 'assistant',
-        status: 'completed',
-        content: [
-          {
-            type: 'output_text',
-            text: msg.text || '',
-            annotations: [],
-          },
-        ],
-      });
-    }
-  }
-
-  return output;
-}
 
 /**
  * Runs a validated Responses envelope in the current process.
@@ -648,7 +454,22 @@ const executeResponse = async (envelope, { req, res }) => {
   }
 
   // Generate IDs
-  const responseId = generateResponseId();
+  const responseRuntime = createResponseExecutionRuntime(req, res, {
+    getMessage: db.getMessage,
+    generateResponseId,
+    jobs: GenerationJobManager,
+    pluginHookSource: getPluginHookSource(),
+    toolApprovalStorage: db,
+    addConvoToolApprovalAllows: db.addConvoToolApprovalAllows,
+  });
+  const responseId = responseRuntime.responseId;
+  const executionContext = createRemoteExecutionContext({
+    principal,
+    agentId: request.model,
+    protocol: 'responses',
+    background: responseRuntime.background,
+    keyId: getRemoteRunKeyId(req),
+  });
   const terminalRunError = createTerminalRunErrorObserver({
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     logger,
@@ -665,31 +486,28 @@ const executeResponse = async (envelope, { req, res }) => {
     `[Responses API] Request ${responseId} started for agent ${agentId}, stream: ${isStreaming}`,
   );
 
-  const conversationId = request.previous_response_id ?? uuidv4();
+  const { conversationId, parentMessageId: previousMessageId } =
+    await responseRuntime.resolveContinuation(envelope);
+  const turn = createResponseTurn({
+    runtime: responseRuntime,
+    context,
+    requestedStore: request.store,
+    logger,
+  });
   /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
   const artifactPromises = [];
   let artifactWritesCovered = false;
   return executeAgentRun({
+    captureTerminalOutcome: true,
     envelope,
     runId: responseId,
     conversationId,
-    connection: {
-      isClosed: () => res.destroyed === true && res.writableEnded !== true,
-      onClose: (listener) => {
-        const abortOnResponseClose = () => {
-          if (res.writableEnded !== true) {
-            logger.debug('[Responses API] Client disconnected, aborting');
-            listener();
-          }
-        };
-        res.once('close', abortOnResponseClose);
-        return () => res.off('close', abortOnResponseClose);
-      },
-    },
+    connection: responseRuntime.connection,
+    ...turn.hooks,
     /** Conversation delete-all uses the shared owner-admission fence. Remote
      * execution must observe it after durable enrollment and before provider work. */
     isPrincipalActive: db.isSubagentOwnerAdmissible,
-    beforeSettle: (execution) => {
+    beforeSettle: (execution, error) => {
       if (!artifactWritesCovered && artifactPromises.length > 0) {
         execution.track(
           waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
@@ -700,9 +518,7 @@ const executeResponse = async (envelope, { req, res }) => {
           }),
         );
       }
-    },
-    onSettlementError: (error) => {
-      logger.error('[Responses API] Failed to settle execution:', getSafeErrorMetadata(error));
+      turn.beforeSettle(execution, error);
     },
     handleExecutionError: (error, signal) => {
       terminalRunError.log(error, signal);
@@ -718,7 +534,7 @@ const executeResponse = async (envelope, { req, res }) => {
           {
             userId: principal.userId,
             tenantId: principal.tenantId,
-            conversationId: request.previous_response_id,
+            conversationId,
             rejectSubagentThread: true,
           },
           {
@@ -783,7 +599,6 @@ const executeResponse = async (envelope, { req, res }) => {
         chatProjectContext: req.chatProjectContext,
       });
 
-      const parentMessageId = null;
       const mcpRequestBody = createMCPRuntimeRequestBody({
         messageId: responseId,
         conversationId,
@@ -796,8 +611,12 @@ const executeResponse = async (envelope, { req, res }) => {
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
       const previousMessages = request.previous_response_id
-        ? await loadPreviousMessages(request.previous_response_id, principal.userId)
+        ? await loadPreviousMessages(conversationId, principal.userId, previousMessageId)
         : [];
+      const inputChain = responseRuntime.inputChain(
+        buildResponseInputChain(inputMessages, previousMessageId, previousMessages),
+      );
+      const parentMessageId = inputChain.parentMessageId;
       if (request.previous_response_id) {
         assertModelBoundContent({
           onTraversalFailure: reportLocatorTraversalFailure,
@@ -810,8 +629,23 @@ const executeResponse = async (envelope, { req, res }) => {
       // Build allowed providers set
       const allowedProviders = new Set(agentsEConfig?.allowedProviders);
 
+      // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
+      // the MCP servers and tools its owner granted that key for this agent.
+      await require('~/server/services/ApiKeys/grants').prepare({
+        req,
+        res,
+        executionContext,
+        signal: execution.signal,
+      });
+
       // Create tool loader
-      const loadTools = createToolLoader({ req, res, signal: execution.signal });
+      const loadTools = createToolLoader({
+        req,
+        res,
+        signal: execution.signal,
+        ...responseRuntime.toolContext(execution),
+        unattended: executionContext.unattended,
+      });
       const skillDbMethods = getSkillDbMethods();
 
       // Initialize the agent first to check for disableStreaming
@@ -833,6 +667,8 @@ const executeResponse = async (envelope, { req, res }) => {
         getUserCodeFiles: db.getUserCodeFiles,
         getDeferredProvisionFiles: db.getDeferredProvisionFiles,
         checkSessionsAlive,
+        adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
         loadCodeApiKey,
         getToolFilesByIds: db.getToolFilesByIds,
         getCodeGeneratedFiles: db.getCodeGeneratedFiles,
@@ -880,27 +716,14 @@ const executeResponse = async (envelope, { req, res }) => {
       const resolveLinkedInstructions = getLinkedInstructionsResolver();
       const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
       const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-      const accessibleSkillIds = skillsCapabilityEnabled
-        ? withDeploymentSkillIds(
-            await findAccessibleResources({
-              userId: principal.userId,
-              role: principal.role,
-              resourceType: ResourceType.SKILL,
-              requiredPermissions: PermissionBits.VIEW,
-            }),
-          )
-        : [];
-      const editableSkillIds = skillsCapabilityEnabled
-        ? await findAccessibleResources({
-            userId: principal.userId,
-            role: principal.role,
-            resourceType: ResourceType.SKILL,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : [];
-      const skillCreateAllowed = skillsCapabilityEnabled
-        ? await getSkillToolDeps().canCreateSkill({ req })
-        : false;
+      const { accessibleSkillIds, editableSkillIds, skillCreateAllowed } = await loadSkillAccess(
+        { enabled: skillsCapabilityEnabled, userId: principal.userId, role: principal.role },
+        {
+          findAccessibleResources,
+          withDeploymentSkillIds,
+          canCreateSkill: () => getSkillToolDeps().canCreateSkill({ req }),
+        },
+      );
 
       const { skillStates, defaultActiveOnShare } = await loadSkillStates({
         userId: principal.userId,
@@ -990,7 +813,6 @@ const executeResponse = async (envelope, { req, res }) => {
         primaryConfig.subagents?.enabled === true &&
         (primaryConfig.subagents.graphs?.length ?? 0) > 0;
       if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
-        const modelsConfig = await getModelsConfig(req);
         const discoveryParams = {
           req,
           res,
@@ -998,7 +820,7 @@ const executeResponse = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          modelsConfig,
+          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
           loadTools,
           requestFiles: [],
           conversationId,
@@ -1146,6 +968,7 @@ const executeResponse = async (envelope, { req, res }) => {
             logger,
             mcpManager,
             configServers,
+            user: req.user,
             sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
               .filter(Boolean)
               .join('\n\n'),
@@ -1187,6 +1010,12 @@ const executeResponse = async (envelope, { req, res }) => {
         roots: identityRoots,
       });
       const resolveMcpServerName = createMcpServerNameResolver(agentToolContexts);
+      const persistStampedMessage = (ctx, msg, opts) => {
+        if (Array.isArray(msg?.content)) {
+          stampMcpServerIdentities({ contentParts: msg.content, roots: identityRoots });
+        }
+        return db.saveMessage(ctx, msg, opts);
+      };
 
       const toolSet = buildRunToolSet(
         primaryConfig,
@@ -1235,6 +1064,7 @@ const executeResponse = async (envelope, { req, res }) => {
         }
       }
 
+      const modelBoundFiles = collectModelBoundAgentFiles(modelBoundAgents);
       assertModelBoundContent({
         onTraversalFailure: reportLocatorTraversalFailure,
         filters: appConfig?.filters,
@@ -1242,7 +1072,7 @@ const executeResponse = async (envelope, { req, res }) => {
         submittedMessages: inputMessages,
         agents: modelBoundAgents,
         skills: [...(manualSkillPrimes ?? []), ...(alwaysApplySkillPrimes ?? [])],
-        files: collectModelBoundAgentFiles(modelBoundAgents),
+        files: modelBoundFiles,
       });
 
       /* Stable for the turn: the primary prime list is fixed once
@@ -1255,6 +1085,19 @@ const executeResponse = async (envelope, { req, res }) => {
       // Create tracker for streaming or aggregator for non-streaming
       const tracker = actuallyStreaming ? createResponseTracker() : null;
       const aggregator = actuallyStreaming ? null : createResponseAggregator();
+      responseRuntime.seedAggregator(aggregator);
+
+      const collectedUsage = [];
+      const snapshotAccounting = createResponseAccountingSnapshot({
+        collectedUsage,
+        emittedUsage: [],
+        billingEnabled: getTransactionsConfig(appConfig)?.enabled === true,
+        billing: {
+          pricing: { getMultiplier: db.getMultiplier, getCacheMultiplier: db.getCacheMultiplier },
+          getValueKey: db.getValueKey,
+          resolveEndpointTokenConfig,
+        },
+      });
 
       // Set up response for streaming
       if (actuallyStreaming) {
@@ -1278,11 +1121,12 @@ const executeResponse = async (envelope, { req, res }) => {
         const {
           handlers: responsesHandlers,
           finalizeStream,
+          prepareStreamResponse,
+          failStream,
           emitClientToolDeferral,
         } = createResponsesEventHandlers(handlerConfig);
 
         // Collect usage for balance tracking
-        const collectedUsage = [];
 
         // Artifact promises for processing tool outputs
         // Use Responses API-specific callback that emits librechat:attachment events
@@ -1314,8 +1158,10 @@ const executeResponse = async (envelope, { req, res }) => {
             const ctx =
               agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
             const result = await loadToolsForExecution({
+              ...responseRuntime.toolContext(execution),
               req,
               res,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
@@ -1367,7 +1213,7 @@ const executeResponse = async (envelope, { req, res }) => {
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
               responsesHandlers.on_chat_model_end.handle(event, data);
-              const usage = data?.output?.usage_metadata;
+              const usage = getModelEndUsage(data?.output);
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1376,7 +1222,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
           on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
-          on_run_step_completed: { handle: () => {} },
+          on_run_step_completed: responsesHandlers.on_run_step_completed,
           on_chain_stream: { handle: () => {} },
           on_chain_end: { handle: () => {} },
           on_agent_update: { handle: () => {} },
@@ -1398,8 +1244,10 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          sdkModelHost: req?.app?.locals?.sdkModelHost,
+          ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
-          messages: formattedMessages,
+          messages: responseRuntime.graphMessages(formattedMessages),
           indexTokenCountMap,
           initialSummary,
           runId: responseId,
@@ -1412,7 +1260,14 @@ const executeResponse = async (envelope, { req, res }) => {
           user: { ...createSafeUser(req.user), id: userId },
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
-          modelCallbacks: [terminalRunError.modelCallback],
+          isTemporary: isTemporaryTurn(req),
+          modelCallbacks: createApiModelCallbacks({
+            appConfig,
+            terminalRunError,
+            onTraversalFailure: reportLocatorTraversalFailure,
+            storedMessages: previousMessages,
+            resolvedFiles: modelBoundFiles,
+          }),
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
@@ -1439,7 +1294,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        await run.processStream({ messages: formattedMessages }, config, {
+        await responseRuntime.processRun(run, { messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
               logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
@@ -1483,57 +1338,39 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const usage = buildResponsesUsage(collectedUsage);
 
-        // Finalize the stream
-        finalizeStream(usage);
-        res.end();
-
-        const duration = Date.now() - requestStartTime;
-        logger.debug(
-          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
+        const accountingSnapshot = snapshotAccounting();
+        const finalResponse = prepareStreamResponse(usage, accountingSnapshot);
+        await turn.stage(
+          {
+            run,
+            execution,
+            agents: runAgents,
+            request: req,
+            response: finalResponse,
+            conversationId,
+            agentId,
+            agent,
+            codeEnvironmentDecision,
+            messages: inputChain.messages,
+            parentMessageId,
+            visibleOutputTokens: tracker.usage.outputTokens,
+            transport: {
+              type: 'stream',
+              response: res,
+              finalize: finalizeStream,
+              fail: failStream,
+            },
+          },
+          {
+            saveConvo: db.saveConvo,
+            saveMessage: persistStampedMessage,
+            announceReply: announceReply.bind(null, db),
+            resolveTitle: resolveConversationTitle,
+            traceFields: getLangfuseTraceMessageFields,
+          },
         );
 
-        // Save to database if store: true
-        if (request.store === true) {
-          try {
-            // Save conversation
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            // Save input messages
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            // Build response for saving (use tracker with buildResponse for streaming)
-            const finalResponse = buildResponse(context, tracker, 'completed');
-            const stampedContent = buildStampedResponseContentParts({
-              text: tracker?.accumulatedText,
-              toolCalls: tracker?.functionCalls?.values?.() ?? [],
-              roots: identityRoots,
-            });
-            const savedResponse = await saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              finalResponse,
-              agentId,
-              tracker.usage.outputTokens,
-              stampedContent,
-            );
-            await announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: savedResponse,
-              context: 'Responses API - announce stored reply',
-            });
-
-            logger.debug(
-              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-            );
-          } catch (saveError) {
-            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
-          }
-        }
-
-        // The HTTP response is complete, while destructive cleanup still waits for artifacts.
+        // Register artifact writes before the host drains and publishes the terminal response.
         if (artifactPromises.length > 0) {
           execution.track(
             waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
@@ -1549,13 +1386,12 @@ const executeResponse = async (envelope, { req, res }) => {
         const aggregatorHandlers = createAggregatorEventHandlers(aggregator);
 
         // Collect usage for balance tracking
-        const collectedUsage = [];
 
         const toolEndCallback = createToolEndCallback({
           req,
           res,
           artifactPromises,
-          streamId: null,
+          ...responseRuntime.toolContext(execution),
         });
 
         const toolExecuteOptions = {
@@ -1578,8 +1414,10 @@ const executeResponse = async (envelope, { req, res }) => {
             const ctx =
               agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
             const result = await loadToolsForExecution({
+              ...responseRuntime.toolContext(execution),
               req,
               res,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
@@ -1630,7 +1468,7 @@ const executeResponse = async (envelope, { req, res }) => {
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
               aggregatorHandlers.on_chat_model_end.handle(event, data);
-              const usage = data?.output?.usage_metadata;
+              const usage = getModelEndUsage(data?.output);
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1639,7 +1477,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
           on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
-          on_run_step_completed: { handle: () => {} },
+          on_run_step_completed: aggregatorHandlers.on_run_step_completed,
           on_chain_stream: { handle: () => {} },
           on_chain_end: { handle: () => {} },
           on_agent_update: { handle: () => {} },
@@ -1658,8 +1496,10 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          sdkModelHost: req?.app?.locals?.sdkModelHost,
+          ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
-          messages: formattedMessages,
+          messages: responseRuntime.graphMessages(formattedMessages),
           indexTokenCountMap,
           initialSummary,
           runId: responseId,
@@ -1672,7 +1512,14 @@ const executeResponse = async (envelope, { req, res }) => {
           user: { ...createSafeUser(req.user), id: userId },
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
-          modelCallbacks: [terminalRunError.modelCallback],
+          isTemporary: isTemporaryTurn(req),
+          modelCallbacks: createApiModelCallbacks({
+            appConfig,
+            terminalRunError,
+            onTraversalFailure: reportLocatorTraversalFailure,
+            storedMessages: previousMessages,
+            resolvedFiles: modelBoundFiles,
+          }),
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
@@ -1698,7 +1545,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        await run.processStream({ messages: formattedMessages }, config, {
+        await responseRuntime.processRun(run, { messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
               logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
@@ -1756,45 +1603,32 @@ const executeResponse = async (envelope, { req, res }) => {
           context,
           aggregator,
           buildResponsesUsage(collectedUsage),
+          snapshotAccounting(),
         );
-
-        if (request.store === true) {
-          try {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            const stampedContent = buildStampedResponseContentParts({
-              text: typeof aggregator?.getText === 'function' ? aggregator.getText() : '',
-              toolCalls: aggregator?.toolCalls?.values?.() ?? [],
-              roots: identityRoots,
-            });
-            const savedResponse = await saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              response,
-              agentId,
-              aggregator.usage.outputTokens,
-              stampedContent,
-            );
-            await announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: savedResponse,
-              context: 'Responses API - announce stored reply',
-            });
-
-            logger.debug(
-              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-            );
-          } catch (saveError) {
-            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
-          }
-        }
-
-        res.json(response);
+        await turn.stage(
+          {
+            run,
+            execution,
+            agents: runAgents,
+            request: req,
+            response: response,
+            conversationId,
+            agentId,
+            agent,
+            codeEnvironmentDecision,
+            messages: inputChain.messages,
+            parentMessageId,
+            visibleOutputTokens: aggregator.usage.outputTokens,
+            transport: { type: 'json', response: res },
+          },
+          {
+            saveConvo: db.saveConvo,
+            saveMessage: persistStampedMessage,
+            announceReply: announceReply.bind(null, db),
+            resolveTitle: resolveConversationTitle,
+            traceFields: getLangfuseTraceMessageFields,
+          },
+        );
 
         const duration = Date.now() - requestStartTime;
         logger.debug(
@@ -1868,7 +1702,7 @@ const listModels = async (req, res) => {
     // Get the accessible agents
     let agents = [];
     if (accessibleAgentIds.length > 0) {
-      agents = await db.getAgents({ _id: { $in: accessibleAgentIds } });
+      agents = await db.getAgentModelSummaries(accessibleAgentIds);
     }
 
     // Convert to models format
@@ -1907,104 +1741,15 @@ const listModels = async (req, res) => {
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  */
-const getResponse = async (req, res) => {
-  try {
-    const responseId = req.params.id;
-    const userId = req.user?.id;
-
-    if (!responseId) {
-      return sendResponsesErrorResponse(res, 400, 'Response ID is required');
-    }
-
-    // The responseId could be either the response ID or the conversation ID
-    // Try to find a conversation with this ID
-    const conversation = await db.getConvo(userId, responseId);
-
-    if (!conversation) {
-      return sendResponsesErrorResponse(
-        res,
-        404,
-        `Response not found: ${responseId}`,
-        'not_found',
-        'response_not_found',
-      );
-    }
-
-    // Load messages for this conversation
-    const messages = await db.getMessages({ conversationId: responseId, user: userId });
-
-    if (!messages || messages.length === 0) {
-      return sendResponsesErrorResponse(
-        res,
-        404,
-        `No messages found for response: ${responseId}`,
-        'not_found',
-        'response_not_found',
-      );
-    }
-
-    // Convert messages to Open Responses output format
-    const output = convertMessagesToOutputItems(messages);
-
-    // Find the last assistant message for usage info
-    const lastAssistantMessage = messages.filter((m) => !m.isCreatedByUser).pop();
-
-    // Build the response object
-    const response = {
-      id: responseId,
-      object: 'response',
-      created_at: Math.floor(new Date(conversation.createdAt || Date.now()).getTime() / 1000),
-      completed_at: Math.floor(new Date(conversation.updatedAt || Date.now()).getTime() / 1000),
-      status: 'completed',
-      incomplete_details: null,
-      model: conversation.agentId || conversation.model || 'unknown',
-      previous_response_id: null,
-      instructions: null,
-      output,
-      error: null,
-      tools: [],
-      tool_choice: 'auto',
-      truncation: 'disabled',
-      parallel_tool_calls: true,
-      text: { format: { type: 'text' } },
-      temperature: 1,
-      top_p: 1,
-      presence_penalty: 0,
-      frequency_penalty: 0,
-      top_logprobs: null,
-      reasoning: null,
-      user: userId,
-      usage: lastAssistantMessage?.tokenCount
-        ? {
-            input_tokens: 0,
-            output_tokens: lastAssistantMessage.tokenCount,
-            total_tokens: lastAssistantMessage.tokenCount,
-          }
-        : null,
-      max_output_tokens: null,
-      max_tool_calls: null,
-      store: true,
-      background: false,
-      service_tier: 'default',
-      metadata: {},
-      safety_identifier: null,
-      prompt_cache_key: null,
-    };
-
-    res.json(response);
-  } catch (error) {
-    logger.error('[Responses API] Error getting response:', getSafeErrorMetadata(error));
-    sendResponsesErrorResponse(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Failed to get response',
-      'server_error',
-    );
-  }
-};
+const getResponse = createStoredForegroundResponseReader({
+  getMessage: db.getMessage,
+  getMessages: db.getMessages,
+  getConvo: db.getConvo,
+  logger,
+});
 
 module.exports = {
-  createResponse,
+  createResponse: withResponsePersistenceErrors(createResponse),
   getResponse,
   listModels,
 };

@@ -355,10 +355,6 @@ export class DeploymentSkillRegistry {
 let registry = new DeploymentSkillRegistry(null, []);
 const warnedDeploymentNameCollisions = new Set<string>();
 
-export function getDeploymentSkillRegistry(): DeploymentSkillRegistry {
-  return registry;
-}
-
 export function getDeploymentSkillIds(): Types.ObjectId[] {
   return registry.ids();
 }
@@ -390,23 +386,16 @@ export function getDeploymentSkillById(id: SkillId): DeploymentSkill | null {
   return registry.getById(id);
 }
 
-export function isDeploymentSkillFilePath(filepath: string): boolean {
-  return registry.hasFilePath(filepath);
-}
-
 export async function getDeploymentSkillDownloadStream(
   filepath: string,
 ): Promise<NodeJS.ReadableStream> {
   if (!registry.hasFilePath(filepath)) {
     throw new Error('Deployment skill file is not registered');
   }
-  return fs.createReadStream(filepath);
-}
-
-export function updateDeploymentSkillFileCodeEnvRefs(
-  updates: Array<{ skillId: SkillId; relativePath: string; codeEnvRef: CodeEnvRef }>,
-): Array<{ skillId: SkillId; relativePath: string; codeEnvRef: CodeEnvRef }> {
-  return registry.updateFileCodeEnvRefs(updates);
+  /* The registry outlives the files it lists, and `fs.createReadStream` only reports a
+   * missing path as a stream error once a consumer is reading. Opening first rejects here. */
+  const handle = await fs.promises.open(filepath, 'r');
+  return handle.createReadStream();
 }
 
 export function resolveDeploymentSkillDirectory(

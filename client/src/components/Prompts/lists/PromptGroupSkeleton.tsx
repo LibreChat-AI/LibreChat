@@ -1,6 +1,6 @@
 import { Skeleton } from '@librechat/client';
 
-/** Mirrors ListCard's stacked name and one-liner */
+/** Mirrors the stacked name and one-liner of a prompt group row */
 export default function PromptGroupSkeleton({ count = 5 }: { count?: number }) {
   return (
     <div aria-hidden="true">

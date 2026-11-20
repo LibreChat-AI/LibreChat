@@ -1,7 +1,5 @@
 import { z } from 'zod';
-import { URL } from 'url';
 import _axios from 'axios';
-import crypto from 'crypto';
 import { load } from 'js-yaml';
 import type { OpenAPIV3 } from 'openapi-types';
 import type { ActionMetadata, ActionMetadataRuntime } from './types/agents';
@@ -45,10 +43,6 @@ type MediaTypeObject =
 type RequestBodyObject = Omit<OpenAPIV3.RequestBodyObject, 'content'> & {
   content: MediaTypeObject;
 };
-
-export function sha1(input: string) {
-  return crypto.createHash('sha1').update(input).digest('hex');
-}
 
 export function createURL(domain: string, path: string) {
   const cleanDomain = domain.replace(/\/$/, '');
@@ -167,10 +161,29 @@ class RequestConfig {
   ) {}
 }
 
+/**
+ * The abort signal for one action call: `timeout` alone only fires on an idle socket, so a
+ * deadline signal caps the whole exchange, combined with the caller's own `signal`.
+ */
+function requestSignal(
+  timeout?: number,
+  signal?: AbortSignal,
+): { signal?: AbortSignal; timeoutErrorMessage?: string } {
+  if (timeout == null) {
+    return signal ? { signal } : {};
+  }
+  /** Same wording as `outboundTimeoutMessage` in `@librechat/api`, which recognizes it. */
+  const message = `Exceeded timeouts.actionsMs (${timeout} ms); raise it in librechat.yaml if this upstream is legitimately slow`;
+  const deadline = AbortSignal.timeout(timeout);
+  return {
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+    timeoutErrorMessage: message,
+  };
+}
+
 class RequestExecutor {
   path: string;
   params?: Record<string, unknown>;
-  private operationHash?: string;
   private authHeaders: Record<string, string> = {};
   private authToken?: string;
 
@@ -179,7 +192,6 @@ class RequestExecutor {
   }
 
   setParams(params: Record<string, unknown>) {
-    this.operationHash = sha1(JSON.stringify(params));
     this.params = { ...params } as Record<string, unknown>;
     if (this.config.parameterLocations) {
       //Substituting “Path” Parameters:
@@ -283,7 +295,14 @@ class RequestExecutor {
     return this;
   }
 
-  async execute(options?: { httpAgent?: unknown; httpsAgent?: unknown }) {
+  async execute(options?: {
+    httpAgent?: unknown;
+    httpsAgent?: unknown;
+    /** Milliseconds before the request is abandoned; unset waits indefinitely. */
+    timeout?: number;
+    /** Aborts the request, for example when the run that called the action is stopped. */
+    signal?: AbortSignal;
+  }) {
     const url = createURL(this.config.domain, this.path);
     const headers: Record<string, string> = {
       ...this.authHeaders,
@@ -309,6 +328,8 @@ class RequestExecutor {
       validateStatus: (status) => status >= 200 && status < 400,
       ...(options?.httpAgent != null ? { httpAgent: options.httpAgent } : {}),
       ...(options?.httpsAgent != null ? { httpsAgent: options.httpsAgent } : {}),
+      ...(options?.timeout != null ? { timeout: options.timeout } : {}),
+      ...requestSignal(options?.timeout, options?.signal),
     });
 
     // Initialize separate containers for query and body parameters.

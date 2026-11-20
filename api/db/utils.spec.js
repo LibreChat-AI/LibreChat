@@ -16,7 +16,7 @@ describe('batchResetMeiliFlags', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
 
     // Restore original env variables
     if (ORIGINAL_BATCH_SIZE !== undefined) {

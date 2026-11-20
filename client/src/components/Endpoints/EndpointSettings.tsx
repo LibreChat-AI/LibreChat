@@ -1,8 +1,8 @@
 import { useRecoilValue } from 'recoil';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import { getEndpointField, SettingsViews } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { TSettingsProps } from '~/common';
+import { useModelCatalog } from '~/data-provider/Endpoints/models';
 import { useGetEndpointsQuery } from '~/data-provider';
 import { getSettings } from './Settings';
 import { cn } from '~/utils';
@@ -14,7 +14,10 @@ export default function Settings({
   isPreset = false,
   className = '',
 }: TSettingsProps) {
-  const modelsQuery = useGetModelsQuery();
+  const modelsQuery = useModelCatalog(undefined, {
+    eager: true,
+    endpoints: [conversation?.endpoint ?? ''],
+  });
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const currentSettingsView = useRecoilValue(store.currentSettingsView);
   const endpointType = getEndpointField(endpointsConfig, conversation?.endpoint ?? '', 'type');

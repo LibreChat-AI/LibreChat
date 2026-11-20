@@ -1,7 +1,11 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
+import { getLoadedRehypeModules, loadRehypeModules } from '../rehype';
 import MarkdownBlocks from '../MarkdownBlocks';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 /**
  * Mermaid fences do not consume a code-block index, so before they carried
@@ -30,7 +34,7 @@ const view = (content: string, streaming: boolean) => (
     content={content}
     streaming={streaming}
     remarkPlugins={getRemarkPlugins()}
-    rehypePlugins={getRehypePlugins()}
+    rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
     components={getMarkdownComponents()}
   />
 );

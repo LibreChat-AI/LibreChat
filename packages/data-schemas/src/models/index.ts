@@ -1,4 +1,10 @@
+import {
+  createChannelReplyModel,
+  createChannelFeedbackEventModel,
+  createChannelFeedbackModel,
+} from './channelFeedback';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
+import { createChannelRunModel, createChannelLaneModel } from './channelRun';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
 import { getTenantIndexMigrationHint } from '~/migrations/tenantIndexes';
@@ -8,10 +14,18 @@ import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
+import { createSkillUploadIntentModel } from './skillUploadIntent';
+import { createSubagentContentModel } from './subagentContent';
+import { createChannelIdentityModel } from './channelIdentity';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createCodeEnvironmentModel } from './codeEnvironment';
+import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
+import { createResponseScopeModel } from './responseScope';
+import { createChannelScopeModel } from './channelScope';
+import { createResourceLockModel } from './resourceLock';
+import { createStoredResponseModel } from './response';
 import { createChatProjectModel } from './chatProject';
 import { createAgentApiKeyModel } from './agentApiKey';
 import { createTransactionModel } from './transaction';
@@ -21,6 +35,7 @@ import { createPluginAuthModel } from './pluginAuth';
 import { createSharedLinkModel } from './sharedLink';
 import { createAccessRoleModel } from './accessRole';
 import { createToolFavoriteModel } from './favorite';
+import { createAgentChannelModel } from './channel';
 import { createMCPServerModel } from './mcpServer';
 import { createAssistantModel } from './assistant';
 import { createSkillFileModel } from './skillFile';
@@ -28,6 +43,7 @@ import { createConversationModel } from './convo';
 import { createToolCallModel } from './toolCall';
 import { createAclEntryModel } from './aclEntry';
 import { createAuditLogModel } from './auditLog';
+import { createMCPNameModel } from './mcpName';
 import { createSessionModel } from './session';
 import { createPasskeyModel } from './passkey';
 import { createBalanceModel } from './balance';
@@ -53,6 +69,8 @@ import logger from '~/config/winston';
  */
 export function createModels(mongoose: typeof import('mongoose')): {
   User: ReturnType<typeof createUserModel>;
+  StoredResponse: ReturnType<typeof createStoredResponseModel>;
+  ResponseScope: ReturnType<typeof createResponseScopeModel>;
   ToolApprovalGrant: ReturnType<typeof createToolApprovalGrantModel>;
   Token: ReturnType<typeof createTokenModel>;
   Session: ReturnType<typeof createSessionModel>;
@@ -62,9 +80,19 @@ export function createModels(mongoose: typeof import('mongoose')): {
   ChatProject: ReturnType<typeof createChatProjectModel>;
   CodeEnvironment: ReturnType<typeof createCodeEnvironmentModel>;
   Message: ReturnType<typeof createMessageModel>;
+  SubagentContent: ReturnType<typeof createSubagentContentModel>;
   Agent: ReturnType<typeof createAgentModel>;
   AgentApiKey: ReturnType<typeof createAgentApiKeyModel>;
+  AgentChannel: ReturnType<typeof createAgentChannelModel>;
+  ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
+  ChannelScope: ReturnType<typeof createChannelScopeModel>;
+  ChannelRun: ReturnType<typeof createChannelRunModel>;
+  ChannelLane: ReturnType<typeof createChannelLaneModel>;
+  ChannelReply: ReturnType<typeof createChannelReplyModel>;
+  ChannelFeedbackEvent: ReturnType<typeof createChannelFeedbackEventModel>;
+  ChannelFeedback: ReturnType<typeof createChannelFeedbackModel>;
   AgentCategory: ReturnType<typeof createAgentCategoryModel>;
+  MCPName: ReturnType<typeof createMCPNameModel>;
   MCPServer: ReturnType<typeof createMCPServerModel>;
   Role: ReturnType<typeof createRoleModel>;
   Action: ReturnType<typeof createActionModel>;
@@ -79,6 +107,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   PromptGroup: ReturnType<typeof createPromptGroupModel>;
   Skill: ReturnType<typeof createSkillModel>;
   SkillFile: ReturnType<typeof createSkillFileModel>;
+  SkillDeletion: ReturnType<typeof createSkillDeletionModel>;
+  SkillUploadIntent: ReturnType<typeof createSkillUploadIntentModel>;
   SkillSyncCredential: ReturnType<typeof createSkillSyncCredentialModel>;
   SkillSyncStatus: ReturnType<typeof createSkillSyncStatusModel>;
   ConversationTag: ReturnType<typeof createConversationTagModel>;
@@ -101,9 +131,12 @@ export function createModels(mongoose: typeof import('mongoose')): {
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
   OpenIDRefreshFlight: ReturnType<typeof createOpenIDRefreshFlightModel>;
+  ResourceLock: ReturnType<typeof createResourceLockModel>;
 } {
   const models = {
     User: createUserModel(mongoose),
+    StoredResponse: createStoredResponseModel(mongoose),
+    ResponseScope: createResponseScopeModel(mongoose),
     ToolApprovalGrant: createToolApprovalGrantModel(mongoose),
     Token: createTokenModel(mongoose),
     Session: createSessionModel(mongoose),
@@ -113,9 +146,19 @@ export function createModels(mongoose: typeof import('mongoose')): {
     ChatProject: createChatProjectModel(mongoose),
     CodeEnvironment: createCodeEnvironmentModel(mongoose),
     Message: createMessageModel(mongoose),
+    SubagentContent: createSubagentContentModel(mongoose),
     Agent: createAgentModel(mongoose),
     AgentApiKey: createAgentApiKeyModel(mongoose),
+    AgentChannel: createAgentChannelModel(mongoose),
+    ChannelIdentity: createChannelIdentityModel(mongoose),
+    ChannelScope: createChannelScopeModel(mongoose),
+    ChannelRun: createChannelRunModel(mongoose),
+    ChannelLane: createChannelLaneModel(mongoose),
+    ChannelReply: createChannelReplyModel(mongoose),
+    ChannelFeedbackEvent: createChannelFeedbackEventModel(mongoose),
+    ChannelFeedback: createChannelFeedbackModel(mongoose),
     AgentCategory: createAgentCategoryModel(mongoose),
+    MCPName: createMCPNameModel(mongoose),
     MCPServer: createMCPServerModel(mongoose),
     Role: createRoleModel(mongoose),
     Action: createActionModel(mongoose),
@@ -130,6 +173,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     PromptGroup: createPromptGroupModel(mongoose),
     Skill: createSkillModel(mongoose),
     SkillFile: createSkillFileModel(mongoose),
+    SkillDeletion: createSkillDeletionModel(mongoose),
+    SkillUploadIntent: createSkillUploadIntentModel(mongoose),
     SkillSyncCredential: createSkillSyncCredentialModel(mongoose),
     SkillSyncStatus: createSkillSyncStatusModel(mongoose),
     ConversationTag: createConversationTagModel(mongoose),
@@ -152,6 +197,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),
     OpenIDRefreshFlight: createOpenIDRefreshFlightModel(mongoose),
+    ResourceLock: createResourceLockModel(mongoose),
   };
   /**
    * Background index builds fail silently unless an 'index' listener is

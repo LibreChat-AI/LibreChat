@@ -81,7 +81,8 @@ async function migrateSharedLinkPermissions({
     const totalLinks = await SharedLink.countDocuments({});
     logger.info(`Found ${totalLinks} SharedLink documents total`);
 
-    if (totalLinks === 0) {
+    // Dry run still reports a zeroed summary so the CLI can print it.
+    if (totalLinks === 0 && !dryRun) {
       logger.info('No SharedLink documents to migrate');
       return { migrated: 0, errors: 0, skipped: 0, dryRun };
     }

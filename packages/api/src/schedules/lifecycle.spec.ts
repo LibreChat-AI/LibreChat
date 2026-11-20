@@ -1,9 +1,10 @@
 import type { SchedulesServiceDeps } from './service';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { buildPendingAction } from '~/agents/hitl/policy';
 import { ScheduledMCPBearerError } from './bearer';
 
 const scheduledFor = '2026-10-01T00:00:00.000Z';

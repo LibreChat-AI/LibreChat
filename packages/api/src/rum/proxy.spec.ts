@@ -255,7 +255,7 @@ describe('RUM proxy configuration', () => {
     const res = makeResponse();
 
     await proxyRumRequest(
-      { path: '/v1/logs', body: Buffer.from('payload'), headers: PROTOBUF_HEADERS } as never,
+      { path: '/v1/logs', body: Buffer.from([10, 0]), headers: PROTOBUF_HEADERS } as never,
       res as never,
     );
 
@@ -391,6 +391,8 @@ describe('RUM proxy upstream HTTP contract', () => {
 
   beforeEach(async () => {
     process.env = { ...originalEnv };
+    process.env.RUM_ENABLED = 'true';
+    process.env.RUM_SESSION_REPLAY_ENABLED = 'true';
     jest.mocked(recordRumProxyRequest).mockClear();
     collector = createServer();
     await new Promise<void>((resolve) => collector.listen(0, '127.0.0.1', resolve));
@@ -416,6 +418,85 @@ describe('RUM proxy upstream HTTP contract', () => {
     app.post('/v1/:signal', (req, res) => proxyRumRequest(req, res, authorization));
     return app;
   }
+
+  it('drops stale replay batches without collector acknowledgement while ordinary logs stay enabled', async () => {
+    process.env.RUM_SESSION_REPLAY_ENABLED = 'false';
+    process.env.RUM_CLIENT_LOGS = 'true';
+    const collectorRequest = jest.fn();
+    collector.on('request', collectorRequest);
+    const response = await request(createProxy())
+      .post('/v1/logs')
+      .send({
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    attributes: [{ key: 'rr-web.event', value: { intValue: '2' } }],
+                    body: { stringValue: 'private-recording' },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+    expect(response.status).toBe(204);
+    expect(response.headers[RUM_COLLECTOR_ACK_HEADER]).toBeUndefined();
+    expect(collectorRequest).not.toHaveBeenCalled();
+    expect(recordRumProxyRequest).toHaveBeenCalledWith('logs', 'replay_disabled');
+  });
+
+  it('strips replay records from a mixed batch before contacting the collector', async () => {
+    process.env.RUM_SESSION_REPLAY_ENABLED = 'false';
+    process.env.RUM_CONSOLE_CAPTURE = 'true';
+    let received = '';
+    collector.on('request', (req, res) => {
+      req.on('data', (chunk: Buffer) => {
+        received += chunk.toString();
+      });
+      req.on('end', () => {
+        res.writeHead(202);
+        res.end();
+      });
+    });
+    const response = await request(createProxy())
+      .post('/v1/logs')
+      .send({
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  { body: { stringValue: 'ordinary-error' } },
+                  {
+                    attributes: [{ key: 'rr-web.event', value: { intValue: '2' } }],
+                    body: { stringValue: 'private-recording' },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+    expect(response.status).toBe(202);
+    expect(received).toContain('ordinary-error');
+    expect(received).not.toContain('private-recording');
+    expect(response.headers[RUM_COLLECTOR_ACK_HEADER]).toBe('true');
+  });
+
+  it('rejects malformed binary logs while replay is off without contacting the collector', async () => {
+    process.env.RUM_SESSION_REPLAY_ENABLED = 'false';
+    const collectorRequest = jest.fn();
+    collector.on('request', collectorRequest);
+    const response = await request(createProxy())
+      .post('/v1/logs')
+      .set('Content-Type', 'application/x-protobuf')
+      .send(Buffer.from([10, 255]));
+    expect(response.status).toBe(400);
+    expect(collectorRequest).not.toHaveBeenCalled();
+  });
 
   it.each(['traces', 'logs'])(
     'sends only server credentials and intact %s payloads',

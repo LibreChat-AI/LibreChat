@@ -65,6 +65,22 @@ describe('getTelemetryConfig', () => {
     expect(config.serviceVersion).toBe('0.8.5');
   });
 
+  it('reports the baked BUILD_COMMIT ahead of the package version', () => {
+    const commit = 'f177bed1757c1b7a4e2bd2a7d1c7a3d0e9a6b5c4';
+
+    expect(
+      getTelemetryConfig({ BUILD_COMMIT: ` ${commit} `, npm_package_version: '0.8.5' })
+        .serviceVersion,
+    ).toBe(commit);
+    expect(
+      getTelemetryConfig({ BUILD_COMMIT: commit, OTEL_SERVICE_VERSION: '1.2.3' }).serviceVersion,
+    ).toBe('1.2.3');
+    expect(
+      getTelemetryConfig({ BUILD_COMMIT: '  ', npm_package_version: '0.8.5' }).serviceVersion,
+    ).toBe('0.8.5');
+    expect(getTelemetryConfig({}).serviceVersion).toBeUndefined();
+  });
+
   it('enables ioredis instrumentation only when explicitly configured', () => {
     const config = getTelemetryConfig({
       OTEL_IOREDIS_TRACING_ENABLED: 'true',

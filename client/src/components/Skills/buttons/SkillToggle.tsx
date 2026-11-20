@@ -24,7 +24,7 @@ function SkillToggle({ enabled, onChange }: SkillToggleProps) {
       render={
         <span
           onClick={(e) => e.stopPropagation()}
-          className="inline-flex h-9 items-center gap-2 rounded-md px-2 transition-colors hover:bg-surface-hover"
+          className="hover:bg-surface-hover inline-flex h-9 items-center gap-2 rounded-md px-2 transition-colors"
         >
           <Switch
             id={switchId}
@@ -35,7 +35,8 @@ function SkillToggle({ enabled, onChange }: SkillToggleProps) {
           <Label
             id={labelId}
             htmlFor={switchId}
-            className="cursor-pointer select-none whitespace-nowrap text-xs font-medium text-text-secondary"
+            variant="secondary"
+            className="cursor-pointer text-xs font-medium whitespace-nowrap select-none"
           >
             {localize('com_ui_skill_available')}
           </Label>

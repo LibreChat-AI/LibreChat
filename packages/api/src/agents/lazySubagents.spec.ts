@@ -5,6 +5,7 @@ import {
   guardUnavailableSubagent,
   getLazySubagentConfigId,
   createViewableSubagentLoader,
+  createRoutedGraphMemberLoader,
   resolveSubagentCodeAvailability,
 } from './lazySubagents';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
@@ -104,6 +105,27 @@ describe('getLazySubagentConfigId', () => {
     // Same `version` on both sides reproduces a revert that restores an older link
     // without bumping the version number.
     expect(getLazySubagentConfigId(linkedA)).not.toBe(getLazySubagentConfigId(linkedB));
+  });
+
+  it('changes when a linked Langfuse prompt pins a different version, even at the same groupId', () => {
+    const pinnedV3 = {
+      ...agent,
+      instructionsPrompt: {
+        source: 'langfuse' as const,
+        groupId: 'group-a',
+        selection: { type: 'exact' as const, version: 3 },
+      },
+    };
+    const pinnedV4 = {
+      ...agent,
+      instructionsPrompt: {
+        source: 'langfuse' as const,
+        groupId: 'group-a',
+        selection: { type: 'exact' as const, version: 4 },
+      },
+    };
+
+    expect(getLazySubagentConfigId(pinnedV3)).not.toBe(getLazySubagentConfigId(pinnedV4));
   });
 
   it('leaves the descriptor identity unchanged for an agent with no linked prompt', () => {
@@ -225,5 +247,70 @@ describe('subagent code availability', () => {
       description: 'Reviews PRs.',
       resolve,
     });
+  });
+});
+
+describe('createRoutedGraphMemberLoader', () => {
+  const signal = new AbortController().signal;
+  type Deps = Parameters<typeof createRoutedGraphMemberLoader<{ id: string }, string>>[0];
+  const setup = (overrides: Partial<Deps> = {}) => {
+    const skipped = new Set<string>();
+    const deps: Deps = {
+      getShared: jest.fn((_memberId: string): string | undefined => undefined),
+      isSkipped: jest.fn((memberId: string) => skipped.has(memberId)),
+      skip: jest.fn((memberId: string) => {
+        skipped.add(memberId);
+      }),
+      getAgent: jest.fn(async (memberId: string) => ({ id: memberId })),
+      canView: jest.fn(async () => true),
+      initialize: jest.fn(
+        async ({ memberId, context }: { memberId: string; context: { executionId: string } }) =>
+          `${memberId}@${context.executionId}`,
+      ),
+      isFatal: jest.fn(() => false),
+      ...overrides,
+    };
+    return { deps, load: createRoutedGraphMemberLoader<{ id: string }, string>(deps) };
+  };
+
+  it('initializes a member as a child of the routed parent execution', async () => {
+    const { deps, load } = setup();
+
+    await expect(load('member', 'run-parent', signal)).resolves.toBe(
+      'member@run-parent:graph:member',
+    );
+    expect(deps.initialize).toHaveBeenCalledWith({
+      agent: { id: 'member' },
+      memberId: 'member',
+      context: { signal, parentRunId: 'run-parent', executionId: 'run-parent:graph:member' },
+    });
+  });
+
+  it('reuses a shared member and never initializes a skipped or unviewable one', async () => {
+    const shared = setup({ getShared: jest.fn(() => 'shared-config') });
+    await expect(shared.load('member', 'run-parent', signal)).resolves.toBe('shared-config');
+    expect(shared.deps.getAgent).not.toHaveBeenCalled();
+
+    const hidden = setup({ canView: jest.fn(async () => false) });
+    await expect(hidden.load('member', 'run-parent', signal)).resolves.toBeNull();
+    await expect(hidden.load('member', 'run-other', signal)).resolves.toBeNull();
+    expect(hidden.deps.getAgent).toHaveBeenCalledTimes(1);
+    expect(hidden.deps.initialize).not.toHaveBeenCalled();
+  });
+
+  it('drops a member that fails to initialize unless the failure is fatal', async () => {
+    const failure = new Error('tools failed to load');
+    const recoverable = setup({ initialize: jest.fn().mockRejectedValue(failure) });
+    await expect(recoverable.load('member', 'run-parent', signal)).resolves.toBeNull();
+
+    const fatal = setup({
+      initialize: jest.fn().mockRejectedValue(failure),
+      isFatal: jest.fn(() => true),
+    });
+    await expect(fatal.load('member', 'run-parent', signal)).rejects.toBe(failure);
+
+    const aborted = new AbortController();
+    aborted.abort(new Error('canceled'));
+    await expect(fatal.load('member', 'run-parent', aborted.signal)).rejects.toThrow('canceled');
   });
 });

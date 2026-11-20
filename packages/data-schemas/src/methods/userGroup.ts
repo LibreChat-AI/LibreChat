@@ -1,10 +1,11 @@
 import { Types } from 'mongoose';
-import { AsyncLocalStorage } from 'async_hooks';
 import { CacheKeys, PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { TPrincipalSearchResult } from 'librechat-data-provider';
 import type { Model, ClientSession, FilterQuery } from 'mongoose';
 import type { CacheStore, IGroup, IRole, IUser } from '~/types';
+import { buildUserSearchFilter, scoreSearchMatch, buildGroupSearchFilter } from '~/utils/search';
 import { isValidObjectIdString } from '~/utils/objectId';
+import { runAfterTransaction } from '~/utils/postCommit';
 import { scopedCacheKey } from '~/config/tenantContext';
 import { escapeRegExp } from '~/utils/string';
 
@@ -30,81 +31,6 @@ const DEFAULT_STALE_EVICTION_DELAY_MS = 3000;
 
 const isCachedGroupId = (value: unknown): value is string =>
   typeof value === 'string' && isValidObjectIdString(value);
-
-type DeferredInvalidation = {
-  /** ALS snapshot (tenant scoping) captured where the mutation ran. */
-  run: (invalidate: () => Promise<void>) => Promise<void>;
-  invalidate: () => Promise<void>;
-};
-
-/** One queue and one set of lifecycle hooks per session, so many mutations in one
- * transaction cannot trip the emitter's max-listeners warning. */
-const sessionInvalidations = new WeakMap<ClientSession, DeferredInvalidation[]>();
-const hookedSessions = new WeakSet<ClientSession>();
-
-async function drainSessionInvalidations(session: ClientSession): Promise<void> {
-  const queue = sessionInvalidations.get(session);
-  if (!queue) {
-    return;
-  }
-  sessionInvalidations.delete(session);
-  await Promise.all(queue.map((entry) => entry.run(entry.invalidate).catch(() => undefined)));
-}
-
-function hookSessionLifecycle(session: ClientSession): void {
-  if (hookedSessions.has(session)) {
-    return;
-  }
-  hookedSessions.add(session);
-
-  const commitTransaction = session.commitTransaction.bind(session);
-  session.commitTransaction = async (
-    ...args: Parameters<ClientSession['commitTransaction']>
-  ): Promise<void> => {
-    await commitTransaction(...args);
-    await drainSessionInvalidations(session);
-  };
-
-  const abortTransaction = session.abortTransaction.bind(session);
-  session.abortTransaction = async (
-    ...args: Parameters<ClientSession['abortTransaction']>
-  ): Promise<void> => {
-    try {
-      await abortTransaction(...args);
-    } finally {
-      sessionInvalidations.delete(session);
-    }
-  };
-
-  session.once('ended', () => {
-    sessionInvalidations.delete(session);
-  });
-}
-
-/**
- * Runs cache invalidation immediately, or defers it to commit for transactional
- * writes. Mid-transaction invalidation would let concurrent readers re-cache pre-commit
- * state with no later correction; deferring keeps the existing entry serving the
- * still-committed old memberships until the transaction commits. Aborts discard the queue.
- */
-export function runAfterTransaction(
-  session: ClientSession | undefined,
-  invalidate: () => Promise<void>,
-): Promise<void> {
-  if (!session?.inTransaction()) {
-    return invalidate();
-  }
-  const deferred: DeferredInvalidation = { run: AsyncLocalStorage.snapshot(), invalidate };
-  const queue = sessionInvalidations.get(session);
-  if (queue) {
-    queue.push(deferred);
-    return Promise.resolve();
-  }
-  const newQueue: DeferredInvalidation[] = [deferred];
-  sessionInvalidations.set(session, newQueue);
-  hookSessionLifecycle(session);
-  return Promise.resolve();
-}
 
 /** Extracts member ids referenced by a group update; indeterminate when they cannot be enumerated. */
 function collectMemberIdsFromGroupUpdate(update: Record<string, unknown>): {
@@ -191,10 +117,7 @@ export function createUserGroupMethods(
     limit?: number,
     session?: ClientSession,
   ) => Promise<IGroup[]>;
-  findGroupsByMemberId: (
-    userId: string | Types.ObjectId,
-    session?: ClientSession,
-  ) => Promise<IGroup[]>;
+  invalidatePrincipalMemberships: (memberIds: string[]) => Promise<void>;
   createGroup: (groupData: Partial<IGroup>, session?: ClientSession) => Promise<IGroup>;
   upsertGroupByExternalId: (
     idOnTheSource: string,
@@ -206,17 +129,22 @@ export function createUserGroupMethods(
     userId: string | Types.ObjectId,
     groupId: string | Types.ObjectId,
     session?: ClientSession,
-  ) => Promise<{ user: IUser; group: IGroup | null }>;
+  ) => Promise<{ user: IUser; group: IGroup | null; changed: boolean }>;
   removeUserFromGroup: (
     userId: string | Types.ObjectId,
     groupId: string | Types.ObjectId,
     session?: ClientSession,
-  ) => Promise<{ user: IUser; group: IGroup | null }>;
+  ) => Promise<{ user: IUser; group: IGroup | null; changed: boolean }>;
   removeUserFromAllGroups: (userId: string | Types.ObjectId) => Promise<void>;
   findGroupByQuery: (
     filter: Record<string, unknown>,
     session?: ClientSession,
   ) => Promise<IGroup | null>;
+  /** Sets scalar fields and reports atomically whether any value actually changed. */
+  updateGroupFieldsTracked: (
+    groupId: string | Types.ObjectId,
+    data: Partial<Pick<IGroup, 'name' | 'description' | 'email' | 'avatar'>>,
+  ) => Promise<{ group: IGroup; changed: boolean; changedFields: string[] } | null>;
   updateGroupById: (
     groupId: string | Types.ObjectId,
     data: Record<string, unknown>,
@@ -227,7 +155,6 @@ export function createUserGroupMethods(
     update: Record<string, unknown>,
     options?: { session?: ClientSession },
   ) => Promise<import('mongoose').UpdateWriteOpResult>;
-  getUserGroups: (userId: string | Types.ObjectId, session?: ClientSession) => Promise<IGroup[]>;
   getUserPrincipals: (
     params: {
       userId: string | Types.ObjectId;
@@ -236,15 +163,6 @@ export function createUserGroupMethods(
     },
     session?: ClientSession,
   ) => Promise<Array<{ principalType: PrincipalType; principalId?: string | Types.ObjectId }>>;
-  syncUserEntraGroups: (
-    userId: string | Types.ObjectId,
-    entraGroups: Array<{ id: string; name: string; description?: string; email?: string }>,
-    session?: ClientSession,
-  ) => Promise<{
-    user: IUser;
-    addedGroups: IGroup[];
-    removedGroups: IGroup[];
-  }>;
   searchPrincipals: (
     searchPattern: string,
     limitPerType?: number,
@@ -279,6 +197,11 @@ export function createUserGroupMethods(
     memberId: string,
     session?: ClientSession,
   ) => Promise<IGroup | null>;
+  removeMemberByIdTracked: (
+    groupId: string | Types.ObjectId,
+    memberId: string,
+    session?: ClientSession,
+  ) => Promise<{ group: IGroup | null; changed: boolean }>;
 } {
   const getPrincipalsCache = (): CacheStore | undefined =>
     deps.getCache?.(CacheKeys.USER_PRINCIPALS);
@@ -611,7 +534,7 @@ export function createUserGroupMethods(
   }
 
   /**
-   * Find groups by name pattern (case-insensitive partial match)
+   * Find groups by word prefix of name or email (see `buildGroupSearchFilter`)
    * @param namePattern - The name pattern to search for
    * @param source - Optional source filter ('entra', 'local', or null for all)
    * @param limit - Maximum number of results to return
@@ -625,10 +548,11 @@ export function createUserGroupMethods(
     session?: ClientSession,
   ): Promise<IGroup[]> {
     const Group = mongoose.models.Group as Model<IGroup>;
-    const regex = new RegExp(escapeRegExp(namePattern), 'i');
-    const query: Record<string, unknown> = {
-      $or: [{ name: regex }, { email: regex }, { description: regex }],
-    };
+    const filter = buildGroupSearchFilter(namePattern);
+    if (!filter) {
+      return [];
+    }
+    const query: Record<string, unknown> = { ...filter };
 
     if (source) {
       query.source = source;
@@ -639,38 +563,6 @@ export function createUserGroupMethods(
       dbQuery.session(session);
     }
     return await dbQuery.lean<IGroup[]>();
-  }
-
-  /**
-   * Find all groups a user is a member of by their ID or idOnTheSource
-   * @param userId - The user ID
-   * @param session - Optional MongoDB session for transactions
-   * @returns Array of groups the user is a member of
-   */
-  async function findGroupsByMemberId(
-    userId: string | Types.ObjectId,
-    session?: ClientSession,
-  ): Promise<IGroup[]> {
-    const User = mongoose.models.User as Model<IUser>;
-    const Group = mongoose.models.Group as Model<IGroup>;
-
-    const userQuery = User.findById(userId, 'idOnTheSource');
-    if (session) {
-      userQuery.session(session);
-    }
-    const user = await userQuery.lean<{ idOnTheSource?: string }>();
-
-    if (!user) {
-      return [];
-    }
-
-    const userIdOnTheSource = user.idOnTheSource || userId.toString();
-
-    const query = Group.find({ memberIds: userIdOnTheSource });
-    if (session) {
-      query.session(session);
-    }
-    return await query.lean<IGroup[]>();
   }
 
   /**
@@ -742,7 +634,7 @@ export function createUserGroupMethods(
     userId: string | Types.ObjectId,
     groupId: string | Types.ObjectId,
     session?: ClientSession,
-  ): Promise<{ user: IUser; group: IGroup | null }> {
+  ): Promise<{ user: IUser; group: IGroup | null; changed: boolean }> {
     const User = mongoose.models.User as Model<IUser>;
     const Group = mongoose.models.Group as Model<IGroup>;
 
@@ -757,14 +649,19 @@ export function createUserGroupMethods(
     }
 
     const userIdOnTheSource = user.idOnTheSource || userId.toString();
-    const updatedGroup = await Group.findByIdAndUpdate(
-      groupId,
+    /** The filter makes the update match only when the member is absent, so a match
+     * is exactly one real change even when identical requests overlap. */
+    const changedGroup = await Group.findOneAndUpdate(
+      { _id: groupId, memberIds: { $ne: userIdOnTheSource } },
       { $addToSet: { memberIds: userIdOnTheSource } },
       options,
     ).lean<IGroup>();
+    const updatedGroup =
+      changedGroup ??
+      (await Group.findById(groupId, null, session ? { session } : {}).lean<IGroup>());
     await runAfterTransaction(session, () => invalidateMemberGroupsCache([userIdOnTheSource]));
 
-    return { user: user as IUser, group: updatedGroup };
+    return { user: user as IUser, group: updatedGroup, changed: changedGroup != null };
   }
 
   /**
@@ -781,7 +678,7 @@ export function createUserGroupMethods(
     userId: string | Types.ObjectId,
     groupId: string | Types.ObjectId,
     session?: ClientSession,
-  ): Promise<{ user: IUser; group: IGroup | null }> {
+  ): Promise<{ user: IUser; group: IGroup | null; changed: boolean }> {
     const User = mongoose.models.User as Model<IUser>;
     const Group = mongoose.models.Group as Model<IGroup>;
 
@@ -796,27 +693,17 @@ export function createUserGroupMethods(
     }
 
     const userIdOnTheSource = user.idOnTheSource || userId.toString();
-    const updatedGroup = await Group.findByIdAndUpdate(
-      groupId,
+    const changedGroup = await Group.findOneAndUpdate(
+      { _id: groupId, memberIds: userIdOnTheSource },
       { $pullAll: { memberIds: [userIdOnTheSource] } },
       options,
     ).lean<IGroup>();
+    const updatedGroup =
+      changedGroup ??
+      (await Group.findById(groupId, null, session ? { session } : {}).lean<IGroup>());
     await runAfterTransaction(session, () => invalidateMemberGroupsCache([userIdOnTheSource]));
 
-    return { user: user as IUser, group: updatedGroup };
-  }
-
-  /**
-   * Get all groups a user is a member of
-   * @param userId - The user ID
-   * @param session - Optional MongoDB session for transactions
-   * @returns Array of group documents
-   */
-  async function getUserGroups(
-    userId: string | Types.ObjectId,
-    session?: ClientSession,
-  ): Promise<IGroup[]> {
-    return await findGroupsByMemberId(userId, session);
+    return { user: user as IUser, group: updatedGroup, changed: changedGroup != null };
   }
 
   /**
@@ -904,148 +791,18 @@ export function createUserGroupMethods(
   }
 
   /**
-   * Sync a user's Entra ID group memberships
-   * @param userId - The user ID
-   * @param entraGroups - Array of Entra groups with id and name
-   * @param session - Optional MongoDB session for transactions
-   * @returns The updated user with new group memberships
-   */
-  async function syncUserEntraGroups(
-    userId: string | Types.ObjectId,
-    entraGroups: Array<{ id: string; name: string; description?: string; email?: string }>,
-    session?: ClientSession,
-  ): Promise<{
-    user: IUser;
-    addedGroups: IGroup[];
-    removedGroups: IGroup[];
-  }> {
-    const User = mongoose.models.User as Model<IUser>;
-    const Group = mongoose.models.Group as Model<IGroup>;
-
-    const query = User.findById(userId, { idOnTheSource: 1 });
-    if (session) {
-      query.session(session);
-    }
-    const user = await query.lean<{ idOnTheSource?: string; _id: Types.ObjectId }>();
-
-    if (!user) {
-      throw new Error(`User not found: ${userId}`);
-    }
-
-    /** Get user's idOnTheSource for storing in group.memberIds */
-    const userIdOnTheSource = user.idOnTheSource || userId.toString();
-
-    const entraIdMap = new Map<string, boolean>();
-    const addedGroups: IGroup[] = [];
-    const removedGroups: IGroup[] = [];
-
-    for (const entraGroup of entraGroups) {
-      entraIdMap.set(entraGroup.id, true);
-
-      let group = await findGroupByExternalId(entraGroup.id, 'entra', {}, session);
-
-      if (!group) {
-        group = await createGroup(
-          {
-            name: entraGroup.name,
-            description: entraGroup.description,
-            email: entraGroup.email,
-            idOnTheSource: entraGroup.id,
-            source: 'entra',
-            memberIds: [userIdOnTheSource],
-          },
-          session,
-        );
-
-        addedGroups.push(group);
-      } else if (!group.memberIds?.includes(userIdOnTheSource)) {
-        const { group: updatedGroup } = await addUserToGroup(userId, group._id, session);
-        if (updatedGroup) {
-          addedGroups.push(updatedGroup);
-        }
-      }
-    }
-
-    const groupsQuery = Group.find(
-      { source: 'entra', memberIds: userIdOnTheSource },
-      { _id: 1, idOnTheSource: 1 },
-    );
-    if (session) {
-      groupsQuery.session(session);
-    }
-    const existingGroups = await groupsQuery.lean<
-      Array<{
-        _id: Types.ObjectId;
-        idOnTheSource?: string;
-      }>
-    >();
-
-    for (const group of existingGroups) {
-      if (group.idOnTheSource && !entraIdMap.has(group.idOnTheSource)) {
-        const { group: removedGroup } = await removeUserFromGroup(userId, group._id, session);
-        if (removedGroup) {
-          removedGroups.push(removedGroup);
-        }
-      }
-    }
-
-    const userQuery = User.findById(userId);
-    if (session) {
-      userQuery.session(session);
-    }
-    const updatedUser = await userQuery.lean<IUser>();
-
-    if (!updatedUser) {
-      throw new Error(`User not found after update: ${userId}`);
-    }
-
-    return {
-      user: updatedUser,
-      addedGroups,
-      removedGroups,
-    };
-  }
-
-  /**
    * Calculate relevance score for a search result
    * @param item - The search result item
    * @param searchPattern - The search pattern
    * @returns Relevance score (0-100)
    */
   function calculateRelevanceScore(item: TPrincipalSearchResult, searchPattern: string): number {
-    const normalizedPattern = searchPattern.toLowerCase();
-
-    /** Get searchable text based on type */
-    const searchableFields =
+    /** The fields each search matches on; a group's description is not one of them */
+    const values =
       item.type === PrincipalType.USER
-        ? [item.name, item.email, item.username].filter(Boolean)
-        : [item.name, item.email, item.description].filter(Boolean);
-
-    let maxScore = 0;
-
-    for (const field of searchableFields) {
-      if (!field) continue;
-      const fieldLower = field.toLowerCase();
-      let score = 0;
-
-      /** Exact match gets highest score */
-      if (fieldLower === normalizedPattern) {
-        score = 100;
-      } else if (fieldLower.startsWith(normalizedPattern)) {
-        /** Starts with query gets high score */
-        score = 80;
-      } else if (fieldLower.includes(normalizedPattern)) {
-        /** Contains query gets medium score */
-        score = 50;
-      } else {
-        /** Default score for database match */
-        score = 10;
-      }
-
-      maxScore = Math.max(maxScore, score);
-    }
-
-    return maxScore;
+        ? [item.name, item.email, item.username]
+        : [item.name, item.email];
+    return scoreSearchMatch(values, searchPattern);
   }
 
   /**
@@ -1114,7 +871,8 @@ export function createUserGroupMethods(
   }
 
   /**
-   * Search for principals (users and groups) by pattern matching on name/email
+   * Search for principals: users and groups by word prefix (see `buildSearchTokenFilter`),
+   * roles by name
    * Returns combined results in TPrincipalSearchResult format without sorting
    * @param searchPattern - The pattern to search for
    * @param limitPerType - Maximum number of results to return
@@ -1136,17 +894,11 @@ export function createUserGroupMethods(
     const escapedPattern = escapeRegExp(trimmedPattern);
     const promises: Promise<TPrincipalSearchResult[]>[] = [];
 
-    if (!typeFilter || typeFilter.includes(PrincipalType.USER)) {
-      /** Note: searchUsers is imported from ~/models and needs to be passed in or implemented */
+    const userFilter = buildUserSearchFilter(trimmedPattern);
+    if (userFilter && (!typeFilter || typeFilter.includes(PrincipalType.USER))) {
       const userFields = 'name email username avatar provider idOnTheSource role';
-      /** For now, we'll use a direct query instead of searchUsers */
       const User = mongoose.models.User as Model<IUser>;
-      const regex = new RegExp(escapedPattern, 'i');
-      const userQuery = User.find({
-        $or: [{ name: regex }, { email: regex }, { username: regex }],
-      })
-        .select(userFields)
-        .limit(limitPerType);
+      const userQuery = User.find(userFilter).select(userFields).limit(limitPerType);
 
       if (session) {
         userQuery.session(session);
@@ -1246,6 +998,36 @@ export function createUserGroupMethods(
    * @param groupId - The group's ObjectId
    * @param data - Fields to set via $set
    */
+  async function updateGroupFieldsTracked(
+    groupId: string | Types.ObjectId,
+    data: Partial<Pick<IGroup, 'name' | 'description' | 'email' | 'avatar'>>,
+  ): Promise<{ group: IGroup; changed: boolean; changedFields: string[] } | null> {
+    const Group = mongoose.models.Group as Model<IGroup>;
+    const entries = Object.entries(data);
+    const unchanged = async () => {
+      const current = await Group.findById(groupId).lean<IGroup>();
+      return current ? { group: current, changed: false, changedFields: [] as string[] } : null;
+    };
+    if (entries.length === 0) {
+      return unchanged();
+    }
+    /** The filter matches only a group that differs, and the pre-image names exactly the fields
+     * this write changed, so overlapping identical requests record one change. */
+    const previous = await Group.findOneAndUpdate(
+      { _id: groupId, $or: entries.map(([key, value]) => ({ [key]: { $ne: value } })) },
+      { $set: data },
+      { new: false },
+    ).lean<IGroup>();
+    if (!previous) {
+      return unchanged();
+    }
+    const changedFields = entries
+      .filter(([key, value]) => (previous as unknown as Record<string, unknown>)[key] !== value)
+      .map(([key]) => key);
+    const group = (await Group.findById(groupId).lean<IGroup>()) ?? previous;
+    return { group, changed: true, changedFields };
+  }
+
   async function updateGroupById(
     groupId: string | Types.ObjectId,
     data: Record<string, unknown>,
@@ -1381,28 +1163,39 @@ export function createUserGroupMethods(
    * @param memberId - The raw memberId string to remove (ObjectId or idOnTheSource)
    * @param session - Optional MongoDB session for transactions
    */
+  async function removeMemberByIdTracked(
+    groupId: string | Types.ObjectId,
+    memberId: string,
+    session?: ClientSession,
+  ): Promise<{ group: IGroup | null; changed: boolean }> {
+    const Group = mongoose.models.Group as Model<IGroup>;
+    const options = { new: true, ...(session ? { session } : {}) };
+    const changedGroup = await Group.findOneAndUpdate(
+      { _id: groupId, memberIds: memberId },
+      { $pull: { memberIds: memberId } },
+      options,
+    ).lean<IGroup>();
+    const group =
+      changedGroup ??
+      (await Group.findById(groupId, null, session ? { session } : {}).lean<IGroup>());
+    await runAfterTransaction(session, () => invalidateMemberGroupsCache([memberId]));
+    return { group, changed: changedGroup != null };
+  }
+
   async function removeMemberById(
     groupId: string | Types.ObjectId,
     memberId: string,
     session?: ClientSession,
   ): Promise<IGroup | null> {
-    const Group = mongoose.models.Group as Model<IGroup>;
-    const options = { new: true, ...(session ? { session } : {}) };
-    const group = await Group.findByIdAndUpdate(
-      groupId,
-      { $pull: { memberIds: memberId } },
-      options,
-    ).lean<IGroup>();
-    await runAfterTransaction(session, () => invalidateMemberGroupsCache([memberId]));
-    return group;
+    return (await removeMemberByIdTracked(groupId, memberId, session)).group;
   }
 
   return {
+    invalidatePrincipalMemberships: invalidateMemberGroupsCache,
     findGroupById,
     findGroupByExternalId,
     findGroupsByExternalIds,
     findGroupsByNamePattern,
-    findGroupsByMemberId,
     createGroup,
     upsertGroupByExternalId,
     addUserToGroup,
@@ -1410,10 +1203,9 @@ export function createUserGroupMethods(
     removeUserFromAllGroups,
     findGroupByQuery,
     updateGroupById,
+    updateGroupFieldsTracked,
     bulkUpdateGroups,
-    getUserGroups,
     getUserPrincipals,
-    syncUserEntraGroups,
     searchPrincipals,
     calculateRelevanceScore,
     sortPrincipalsByRelevance,
@@ -1421,6 +1213,7 @@ export function createUserGroupMethods(
     countGroups,
     deleteGroup,
     removeMemberById,
+    removeMemberByIdTracked,
   };
 }
 

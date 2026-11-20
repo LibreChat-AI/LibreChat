@@ -306,13 +306,13 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
               icon: runSchedule.isLoading ? (
                 <Spinner className="size-4" />
               ) : (
-                <Play className="icon-sm text-text-primary mr-2" aria-hidden="true" />
+                <Play className="icon-sm text-text-primary me-2" aria-hidden="true" />
               ),
             },
             {
               label: localize('com_ui_edit'),
               onClick: () => setEditOpen(true),
-              icon: <Pencil className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              icon: <Pencil className="icon-sm text-text-primary me-2" aria-hidden="true" />,
               ariaHasPopup: 'dialog' as const,
               hideOnClick: false,
               ref: editButtonRef,
@@ -321,7 +321,7 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
             {
               label: localize('com_ui_delete'),
               onClick: () => setDeleteOpen(true),
-              icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+              icon: <Trash className="icon-sm text-text-primary me-2" aria-hidden="true" />,
               ariaHasPopup: 'dialog' as const,
               hideOnClick: false,
               ref: deleteButtonRef,
@@ -462,7 +462,7 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
           title={localize('com_ui_schedule_delete')}
           className="w-11/12 max-w-lg"
           main={
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               <Trans
                 i18nKey="com_ui_delete_confirm_strong"
                 values={{ title: schedule.name }}

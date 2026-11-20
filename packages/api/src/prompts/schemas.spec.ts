@@ -1,6 +1,5 @@
 import {
   updatePromptGroupSchema,
-  validatePromptGroupUpdate,
   safeValidatePromptPayload,
   safeValidatePromptGroupUpdate,
 } from './schemas';
@@ -150,6 +149,22 @@ describe('updatePromptGroupSchema', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should reject source field', () => {
+      const result = updatePromptGroupSchema.safeParse({
+        name: 'Test',
+        source: 'langfuse',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject a source identity field', () => {
+      const result = updatePromptGroupSchema.safeParse({
+        name: 'Test',
+        sourcePromptName: 'langfuse-prompt',
+      });
+      expect(result.success).toBe(false);
+    });
+
     it('should reject multiple sensitive fields in a single request', () => {
       const result = updatePromptGroupSchema.safeParse({
         name: 'Legit Name',
@@ -202,18 +217,6 @@ describe('updatePromptGroupSchema', () => {
   });
 });
 
-describe('validatePromptGroupUpdate', () => {
-  it('should return validated data for valid input', () => {
-    const input = { name: 'Test', category: 'testing' };
-    const result = validatePromptGroupUpdate(input);
-    expect(result).toEqual(input);
-  });
-
-  it('should throw ZodError for invalid input', () => {
-    expect(() => validatePromptGroupUpdate({ author: 'malicious-id' })).toThrow();
-  });
-});
-
 describe('safeValidatePromptGroupUpdate', () => {
   it('should return success true for valid input', () => {
     const result = safeValidatePromptGroupUpdate({ name: 'Test' });
@@ -224,7 +227,7 @@ describe('safeValidatePromptGroupUpdate', () => {
     const result = safeValidatePromptGroupUpdate({ author: 'malicious-id' });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.errors.length).toBeGreaterThan(0);
+      expect(result.error.issues.length).toBeGreaterThan(0);
     }
   });
 });

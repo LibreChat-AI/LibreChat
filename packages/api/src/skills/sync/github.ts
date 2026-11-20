@@ -33,11 +33,15 @@ import type {
   AssertNotCancelled,
 } from './adapters/types';
 import type { GitHubRepoAdapterConfig } from './adapters/github';
+import type { SkillBlobReservation } from '../reservation';
+import type { SkillUploadIntentDeps } from '../intent';
 import {
   GITHUB_FINE_GRAINED_TOKEN_RECOMMENDATION,
   createGitHubRepoAdapter,
 } from './adapters/github';
 import { DEFAULT_SKILL_IMPORT_LIMITS } from '../limits';
+import { makeSourceAuthorId } from '~/utils/author';
+import { withSkillUploadIntent } from '../intent';
 import { parseSkillMarkdown } from '../parse';
 import { normalizeRepoPath } from './path';
 import { SkillSyncError } from './errors';
@@ -134,6 +138,7 @@ type SaveBufferResult = {
 };
 
 type StoredSkillFileRef = {
+  file_id?: string;
   filepath: string;
   source: string;
   storageKey?: string;
@@ -150,6 +155,7 @@ type DeletedSyncedSkillJournal = {
 type SyncSkillFilesJournal = {
   staleFiles: StoredSkillFileRef[];
   savedFiles: StoredSkillFileRef[];
+  heldSupersededFileIds: string[];
 };
 
 type SyncSkillFilesResult = Pick<SyncCounters, 'syncedFileCount' | 'deletedFileCount'> &
@@ -157,7 +163,14 @@ type SyncSkillFilesResult = Pick<SyncCounters, 'syncedFileCount' | 'deletedFileC
 
 type MaybePromise<T> = T | Promise<T>;
 
-export type GitHubSkillSyncDeps = {
+export type GitHubSkillSyncDeps = SkillUploadIntentDeps & {
+  queueCommittedSkillUploadCleanup: (fileId: string) => Promise<void>;
+  markSkillUploadIntentCleaned: (fileId: string) => Promise<void>;
+  finishSkillUploadCleanupHold: (
+    fileId: string,
+    holdOwner: string,
+    cleanup: boolean,
+  ) => Promise<boolean>;
   getConfig: () => MaybePromise<SkillSyncConfig | undefined>;
   getCredentialToken: (
     provider: SkillSyncProvider,
@@ -217,13 +230,15 @@ export type GitHubSkillSyncDeps = {
   ) => Promise<{ deleted: boolean }>;
   deleteSkill: (id: string) => Promise<DeleteSkillResult>;
   saveBuffer: (params: {
-    userId: string;
+    reservation: SkillBlobReservation;
     buffer: Buffer;
+  }) => Promise<SaveBufferResult>;
+  reserveBlob: (params: {
+    userId: string;
     fileName: string;
-    basePath?: string;
     isImage?: boolean;
     tenantId?: string;
-  }) => Promise<SaveBufferResult>;
+  }) => Promise<SkillBlobReservation>;
   deleteFile?: (file: {
     filepath: string;
     source: string;
@@ -288,18 +303,6 @@ function makeUpstreamId(source: SkillSyncGitHubSourceConfig, rootPath: string): 
   // existing mirrors are updated in place instead of being treated as new and
   // colliding on the (name, author, tenantId) uniqueness constraint.
   return `${source.id}:${rootPath}`;
-}
-
-function makeSourceAuthorId(source: SkillSyncGitHubSourceConfig): Types.ObjectId {
-  // Fold the tenant into the synthetic author so the same source mirrored into
-  // different tenants gets distinct author ids (clearer audits, no cross-tenant
-  // author collisions). The tenant suffix is omitted when absent so single-tenant
-  // author ids stay stable.
-  const seed = source.tenantId
-    ? `${PROVIDER}:${source.id}:${source.tenantId}`
-    : `${PROVIDER}:${source.id}`;
-  const digest = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 24);
-  return new Types.ObjectId(digest);
 }
 
 function toSkillName(value: string): string {
@@ -858,7 +861,7 @@ function makeCreateInput(
     ...(update as Omit<UpdateSkillInput, 'source'>),
     name: update.name ?? fallbackName,
     description: update.description ?? fallbackName,
-    author: makeSourceAuthorId(source),
+    author: makeSourceAuthorId(PROVIDER, source.id, source.tenantId),
     authorName: SYSTEM_AUTHOR_NAME,
     source: PROVIDER,
     tenantId: source.tenantId,
@@ -1106,10 +1109,12 @@ async function cleanupFile(deps: GitHubSkillSyncDeps, file: StoredSkillFileRef):
 
 function toStoredFileRef(params: {
   saved: SaveBufferResult;
+  fileId: string;
   author: Types.ObjectId;
   tenantId?: string;
 }): StoredSkillFileRef {
   return {
+    file_id: params.fileId,
     filepath: params.saved.filepath,
     source: params.saved.source,
     storageKey: params.saved.storageKey,
@@ -1138,36 +1143,6 @@ function toSkillFileInput(file: ISkillFile & { _id: Types.ObjectId }): UpsertSki
   };
 }
 
-function toCreateSkillInput(skill: ISkill & { _id: Types.ObjectId }): CreateSkillInput {
-  return {
-    name: skill.name,
-    displayTitle: skill.displayTitle,
-    description: skill.description,
-    body: skill.body,
-    frontmatter: skill.frontmatter,
-    category: skill.category,
-    author: skill.author,
-    authorName: skill.authorName,
-    source: PROVIDER,
-    sourceMetadata: skill.sourceMetadata,
-    alwaysApply: skill.alwaysApply,
-    tenantId: skill.tenantId,
-  };
-}
-
-function toStoredFileRefFromSkillFile(
-  file: ISkillFile & { _id: Types.ObjectId },
-): StoredSkillFileRef {
-  return {
-    filepath: file.filepath,
-    source: file.source,
-    storageKey: file.storageKey,
-    storageRegion: file.storageRegion,
-    author: file.author,
-    tenantId: file.tenantId,
-  };
-}
-
 function getStoredFileKey(file: StoredSkillFileRef): string {
   return [file.source, file.filepath, file.storageKey ?? '', file.storageRegion ?? ''].join(':');
 }
@@ -1177,6 +1152,7 @@ async function cleanupStoredFiles(params: {
   files: StoredSkillFileRef[];
   logMessage: string;
   throwOnError?: boolean;
+  onCleaned?: (file: StoredSkillFileRef) => Promise<void>;
 }): Promise<void> {
   const seen = new Set<string>();
   const cleanupErrors: unknown[] = [];
@@ -1186,7 +1162,13 @@ async function cleanupStoredFiles(params: {
       continue;
     }
     seen.add(key);
-    await cleanupFile(params.deps, file).catch((cleanupError) => {
+    await (async () => {
+      if (params.onCleaned && !params.deps.deleteFile) {
+        throw new Error('Skill storage has no deletion strategy');
+      }
+      await cleanupFile(params.deps, file);
+      await params.onCleaned?.(file);
+    })().catch((cleanupError) => {
       cleanupErrors.push(cleanupError);
       logger.error(params.logMessage, cleanupError);
     });
@@ -1201,8 +1183,21 @@ async function restoreExistingSkillFiles(params: {
   skill: ISkill & { _id: Types.ObjectId };
   previousFiles: Array<ISkillFile & { _id: Types.ObjectId }>;
   savedFiles: StoredSkillFileRef[];
+  heldSupersededFileIds: string[];
+  cleanupHoldOwner: string;
 }): Promise<void> {
-  const { deps, skill, previousFiles, savedFiles } = params;
+  const { deps, skill, previousFiles, savedFiles, heldSupersededFileIds, cleanupHoldOwner } =
+    params;
+  // Queue new blobs before restoring old rows so failed provider cleanup is retryable.
+  const queued = await Promise.allSettled(
+    savedFiles
+      .filter((file) => file.file_id)
+      .map((file) => deps.queueCommittedSkillUploadCleanup(file.file_id!)),
+  );
+  const queueFailure = queued.find((result) => result.status === 'rejected');
+  // Restoring old rows would orphan a committed replacement whose cleanup
+  // intent was not durably queued. Leave the new rows intact for a later sync.
+  if (queueFailure?.status === 'rejected') throw queueFailure.reason;
   const previousByPath = new Map(previousFiles.map((file) => [file.relativePath, file]));
   const currentFiles = await deps.listSkillFiles(skill._id);
 
@@ -1215,12 +1210,23 @@ async function restoreExistingSkillFiles(params: {
   for (const file of previousFiles) {
     await deps.upsertSkillFile(toSkillFileInput(file));
   }
+  // The old rows are live again before their cleanup holds are removed.
+  // If release fails, retain the durable hold for stopped-writer recovery.
+  for (const fileId of new Set(heldSupersededFileIds)) {
+    await deps.finishSkillUploadCleanupHold(fileId, cleanupHoldOwner, false);
+  }
+  let cleanupFailure: unknown;
   await cleanupStoredFiles({
     deps,
     files: savedFiles,
     logMessage: '[GitHubSkillSync] Failed to clean up rolled-back synced file:',
     throwOnError: true,
+    onCleaned: (file) =>
+      file.file_id ? deps.markSkillUploadIntentCleaned(file.file_id) : Promise.resolve(),
+  }).catch((error) => {
+    cleanupFailure = error;
   });
+  if (cleanupFailure) throw cleanupFailure;
 }
 
 async function deleteSyncedSkillForRestore(
@@ -1230,14 +1236,6 @@ async function deleteSyncedSkillForRestore(
   const files = await deps.listSkillFiles(skill._id);
   const deletion = await deps.deleteSkill(skill._id.toString());
   if (!deletion.cleanupComplete) {
-    if (!deletion.failedCleanupSteps.includes('skill_files')) {
-      await cleanupStoredFiles({
-        deps,
-        files: files.map(toStoredFileRefFromSkillFile),
-        logMessage: '[GitHubSkillSync] Failed to clean up partially deleted stale skill file:',
-        throwOnError: true,
-      });
-    }
     throw new Error(
       `Skill cleanup did not finish: ${deletion.failedCleanupSteps.join(', ') || 'unknown step'}`,
     );
@@ -1246,31 +1244,6 @@ async function deleteSyncedSkillForRestore(
     deletedFileCount: files.length,
     deletedSkill: { skill, files },
   };
-}
-
-async function restoreDeletedSyncedSkill(
-  deps: GitHubSkillSyncDeps,
-  deleted: DeletedSyncedSkillJournal,
-): Promise<void> {
-  const restored = await deps.createSkill(toCreateSkillInput(deleted.skill));
-  for (const file of deleted.files) {
-    await deps.upsertSkillFile({
-      ...toSkillFileInput(file),
-      skillId: restored.skill._id,
-    });
-  }
-  await ensurePublicViewer(deps, restored.skill._id);
-}
-
-async function cleanupDeletedSyncedSkillFiles(
-  deps: GitHubSkillSyncDeps,
-  deleted: DeletedSyncedSkillJournal,
-): Promise<void> {
-  await cleanupStoredFiles({
-    deps,
-    files: deleted.files.map(toStoredFileRefFromSkillFile),
-    logMessage: '[GitHubSkillSync] Failed to clean up deleted stale mirrored skill file:',
-  });
 }
 
 function comparableSourceMetadata(metadata: Record<string, unknown> | undefined): string {
@@ -1471,9 +1444,11 @@ async function syncSkillFiles(params: {
   discovered: DiscoveredSkill;
   assertNotCancelled: AssertNotCancelled;
   journal?: SyncSkillFilesJournal;
+  cleanupHoldOwner?: string;
 }): Promise<SyncSkillFilesResult> {
-  const { deps, adapter, commit, source, skill, discovered, assertNotCancelled } = params;
-  const journal = params.journal ?? { staleFiles: [], savedFiles: [] };
+  const { deps, adapter, commit, source, skill, discovered, assertNotCancelled, cleanupHoldOwner } =
+    params;
+  const journal = params.journal ?? { staleFiles: [], savedFiles: [], heldSupersededFileIds: [] };
   const remotePaths = new Set<string>();
   let syncedFileCount = 0;
   let deletedFileCount = 0;
@@ -1496,48 +1471,85 @@ async function syncSkillFiles(params: {
     assertNotCancelled();
     assertGitHubBufferSize(buffer, relativePath);
     const fileId = crypto.randomUUID();
+    if (existing && cleanupHoldOwner) {
+      // Record before the DB write: even a failed CAS may have acquired the
+      // hold, and rollback must release it only after restoring the old row.
+      journal.heldSupersededFileIds.push(existing.file_id);
+    }
     const filename = getFilename(relativePath);
     const mimeType = guessMimeType(filename);
-    const saved = await deps.saveBuffer({
+    const fileName = `${fileId}__${filename}`;
+    const reserved = await deps.reserveBlob({
       userId: skill.author.toString(),
-      buffer,
-      fileName: `${fileId}__${filename}`,
-      basePath: 'uploads',
+      fileName,
       isImage: mimeType.startsWith('image/'),
       tenantId: skill.tenantId,
     });
-    const savedFile = toStoredFileRef({ saved, author: skill.author, tenantId: skill.tenantId });
-    try {
-      await deps.upsertSkillFile({
-        skillId: skill._id,
-        relativePath,
-        file_id: fileId,
-        filename,
-        filepath: saved.filepath,
-        storageKey: saved.storageKey,
-        storageRegion: saved.storageRegion,
-        source: saved.source,
-        sourceMetadata: {
-          provider: PROVIDER,
-          sourceId: source.id,
-          upstreamId: makeUpstreamId(source, discovered.rootPath),
-          commitSha: commit.id,
-          blobSha: entry.id,
-          path: entry.path,
-        },
-        mimeType,
-        bytes: buffer.length,
-        isExecutable: false,
-        author: skill.author,
-        tenantId: skill.tenantId,
-      });
-    } catch (error) {
-      await cleanupFile(deps, savedFile).catch((cleanupError) => {
-        logger.error('[GitHubSkillSync] Failed to clean up orphaned synced file:', cleanupError);
-        throw makeRollbackFailure(error);
-      });
-      throw error;
-    }
+    if (!deps.deleteFile) throw new Error('Skill storage has no deletion strategy');
+    let saved: SaveBufferResult | undefined;
+    await withSkillUploadIntent(deps, {
+      skillId: skill._id.toString(),
+      author: skill.author.toString(),
+      tenantId: skill.tenantId,
+      fileId,
+      source: reserved.source,
+      reservation: reserved,
+      save: async () => {
+        saved = await deps.saveBuffer({
+          reservation: reserved,
+          buffer,
+        });
+        if (saved.source !== reserved.source) throw new Error('Skill storage changed during sync');
+        return saved.filepath;
+      },
+      persist: async (filepath) => {
+        await deps.upsertSkillFile({
+          skillId: skill._id,
+          relativePath,
+          file_id: fileId,
+          ...(existing && cleanupHoldOwner ? { cleanupHoldOwner } : {}),
+          filename,
+          filepath,
+          storageKey: saved?.storageKey,
+          storageRegion: saved?.storageRegion,
+          source: reserved.source,
+          sourceMetadata: {
+            provider: PROVIDER,
+            sourceId: source.id,
+            upstreamId: makeUpstreamId(source, discovered.rootPath),
+            commitSha: commit.id,
+            blobSha: entry.id,
+            path: entry.path,
+          },
+          mimeType,
+          bytes: buffer.length,
+          isExecutable: false,
+          author: skill.author,
+          tenantId: skill.tenantId,
+        });
+        return fileId;
+      },
+      readPersisted: async () =>
+        (await deps.getSkillFileByPath(skill._id, relativePath))?.file_id === fileId
+          ? fileId
+          : null,
+      deleteReserved: (ref, savedPath) =>
+        deps.deleteFile!({
+          filepath: savedPath ?? ref.filepath,
+          storageKey: saved?.storageKey ?? ref.storageKey,
+          storageRegion: saved?.storageRegion ?? ref.storageRegion,
+          source: reserved.source,
+          user: skill.author,
+          tenantId: skill.tenantId,
+        }),
+    });
+    if (!saved) throw new Error('Skill upload returned no stored file');
+    const savedFile = toStoredFileRef({
+      saved,
+      fileId,
+      author: skill.author,
+      tenantId: skill.tenantId,
+    });
     syncedFileCount++;
     journal.savedFiles.push(savedFile);
     if (existing && existing.filepath !== saved.filepath) {
@@ -1566,26 +1578,12 @@ async function deleteSyncedSkill(
 ): Promise<number> {
   const files = await deps.listSkillFiles(skill._id);
   const deletion = await deps.deleteSkill(skill._id.toString());
-  let deletedFiles = 0;
-  const cleanupErrors: unknown[] = [];
-  if (!deletion.failedCleanupSteps.includes('skill_files')) {
-    for (const file of files) {
-      await cleanupFile(deps, file).catch((cleanupError) => {
-        cleanupErrors.push(cleanupError);
-        logger.error('[GitHubSkillSync] Failed to clean up mirrored skill file:', cleanupError);
-      });
-      deletedFiles++;
-    }
-  }
   if (!deletion.cleanupComplete) {
     throw new Error(
       `Skill cleanup did not finish: ${deletion.failedCleanupSteps.join(', ') || 'unknown step'}`,
     );
   }
-  if (cleanupErrors.length > 0) {
-    throw cleanupErrors[0];
-  }
-  return deletedFiles;
+  return files.length;
 }
 
 function getTokenEnvVarName(tokenReference: string | undefined): string | null {
@@ -1892,9 +1890,6 @@ async function syncSource(params: {
         existingSyncedSkills = staleConflictCleanup.remainingSkills;
         counts.deletedSkillCount += staleConflictCleanup.deletedSkillCount;
         counts.deletedFileCount += staleConflictCleanup.deletedFileCount;
-        if (staleConflictCleanup.deletedSkill) {
-          await cleanupDeletedSyncedSkillFiles(deps, staleConflictCleanup.deletedSkill);
-        }
       }
       counts.syncedSkillCount++;
       recordUnsupportedFiles(discovered);
@@ -1947,7 +1942,12 @@ async function syncSource(params: {
         }
         await ensurePublicViewer(deps, effectivePrepared.existing._id);
         const previousFiles = await deps.listSkillFiles(effectivePrepared.existing._id);
-        const journal: SyncSkillFilesJournal = { staleFiles: [], savedFiles: [] };
+        const cleanupHoldOwner = crypto.randomUUID();
+        const journal: SyncSkillFilesJournal = {
+          staleFiles: [],
+          savedFiles: [],
+          heldSupersededFileIds: [],
+        };
         let fileCounts: SyncSkillFilesResult;
         let staleConflictCleanup:
           | Awaited<ReturnType<typeof deleteNameConflictingStaleSkill>>
@@ -1962,6 +1962,7 @@ async function syncSource(params: {
             discovered,
             assertNotCancelled,
             journal,
+            cleanupHoldOwner,
           });
           if (prepared.existing && canReconcileStaleSkills) {
             staleConflictCleanup = await deleteNameConflictingStaleSkill({
@@ -1994,6 +1995,8 @@ async function syncSource(params: {
             skill: effectivePrepared.existing,
             previousFiles,
             savedFiles: journal.savedFiles,
+            heldSupersededFileIds: journal.heldSupersededFileIds,
+            cleanupHoldOwner,
           }).catch((cleanupError) => {
             rollbackFailed = true;
             logger.error(
@@ -2002,18 +2005,9 @@ async function syncSource(params: {
             );
           });
           if (staleConflictCleanup?.deletedSkill) {
-            await restoreDeletedSyncedSkill(deps, staleConflictCleanup.deletedSkill).catch(
-              (cleanupError) => {
-                logger.error(
-                  '[GitHubSkillSync] Failed to recreate stale mirrored skill after sync failure:',
-                  cleanupError,
-                );
-              },
-            );
-            /* deleteSkill removes the original id from agent allowlists and
-               deletes every ACL entry. Recreating the row recovers its data,
-               but cannot restore that dependent state, so this is never a
-               complete rollback and the source must fail visibly. */
+            /* The old mirror's blobs and permissions are gone. A replacement
+               row pointing at those deleted blobs would be corrupt; the next
+               source run must rebuild from upstream instead. */
             rollbackFailed = true;
           }
           throw rollbackFailed ? makeRollbackFailure(error) : error;
@@ -2022,9 +2016,14 @@ async function syncSource(params: {
           deps,
           files: fileCounts.staleFiles,
           logMessage: '[GitHubSkillSync] Failed to clean up replaced synced file:',
+          onCleaned: (file) =>
+            file.file_id ? deps.markSkillUploadIntentCleaned(file.file_id) : Promise.resolve(),
         });
-        if (staleConflictCleanup?.deletedSkill) {
-          await cleanupDeletedSyncedSkillFiles(deps, staleConflictCleanup.deletedSkill);
+        // Metadata has committed: do not roll back if cleanup release fails.
+        // Retained holds are safe and can be recovered after the writer stops.
+        for (const fileId of new Set(journal.heldSupersededFileIds)) {
+          const released = await deps.finishSkillUploadCleanupHold(fileId, cleanupHoldOwner, true);
+          if (!released) throw new Error(`Skill cleanup hold was lost for ${fileId}`);
         }
         counts.syncedSkillCount++;
         counts.syncedFileCount += fileCounts.syncedFileCount;

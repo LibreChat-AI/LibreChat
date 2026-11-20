@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import {
   conversationRow,
@@ -11,6 +10,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
+import { expect, test, unroute } from './fixtures';
 import { openSidebar } from './scenarios/sidebar';
 
 function uniqueLabel(prefix: string) {
@@ -123,9 +123,10 @@ test.describe('conversation management', () => {
       await expect(menu).toBeFocused();
       await page.keyboard.press('ArrowDown');
       await expect(menu.getByRole('menuitem').first()).toBeFocused();
-      const expectedOptions = ['Share', 'Pin'];
-      if (background) expectedOptions.push('Mark as unread');
-      expectedOptions.push('Rename', 'Duplicate', 'Change project', 'Archive', 'Delete');
+      const expectedOptions = ['Pin'];
+      /** A chat that is not the one on screen can be marked unread, and opened beside it. */
+      if (background) expectedOptions.push('Mark as unread', 'Open beside chat');
+      expectedOptions.push('Rename', 'Archive', 'Delete');
       await expect(menu.getByRole('menuitem')).toHaveText(expectedOptions);
       await test.info().attach('running-chat-menu', {
         body: await page.screenshot(),
@@ -203,7 +204,7 @@ test.describe('conversation management', () => {
     );
     release();
     await staleRead;
-    await page.unroute(pattern);
+    await unroute(page, pattern);
     await expect(conversationRow(page)).toContainText(renamedTitle);
     expect(
       (await sendMessageAndWaitForCompletion(page, replyPrompt(`${label}-next`))).ok(),
@@ -244,8 +245,8 @@ test.describe('conversation management', () => {
   }) => {
     await openMockChat(page);
     await sendAndExpectReply(page, uniqueLabel('portal-context'));
-    await conversationRow(page).click({ button: 'right' });
-    await page.getByRole('menuitem', { name: 'Share', exact: true }).click();
+    await page.getByRole('button', { name: 'Chat options' }).click();
+    await page.getByTestId('share-conversation-menu-item').click();
     const dialog = page.getByRole('dialog', { name: 'Share link to chat' });
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Create a shared link' }).click();
@@ -297,7 +298,10 @@ test.describe('conversation management', () => {
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
     const conversationUrl = page.url();
     await openSidebar(page);
-    await page.getByRole('link', { name: 'New chat', exact: true }).click();
+    await page
+      .locator('#mobile-drawer')
+      .getByRole('link', { name: 'New chat', exact: true })
+      .click();
     await expect(page).toHaveURL(/\/c\/new$/);
     await expect(page.locator('#mobile-drawer')).toHaveCSS('visibility', 'hidden');
     await openSidebar(page);

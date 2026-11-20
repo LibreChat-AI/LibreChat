@@ -98,10 +98,7 @@ export type DeleteAssistantBody = {
   endpoint: types.AssistantsEndpoint;
 };
 
-export type DeleteAssistantMutationOptions = MutationOptions<
-  void,
-  Pick<DeleteAssistantBody, 'assistant_id'>
->;
+export type DeleteAssistantMutationOptions = MutationOptions<void, DeleteAssistantBody>;
 
 export type UpdateActionResponse = [AssistantDocument, Assistant, Action];
 export type UpdateActionOptions = MutationOptions<UpdateActionResponse, UpdateActionVariables>;
@@ -210,24 +207,9 @@ export type ForkSharedConvoOptions = MutationOptions<
   types.TForkSharedConvoRequest
 >;
 
-export type CreateSharedLinkOptions = MutationOptions<
-  types.TSharedLink,
-  Partial<types.TSharedLink>
->;
-
 export type updateTagsInConvoOptions = MutationOptions<
   types.TTagConversationResponse,
   types.TTagConversationRequest
->;
-
-export type UpdateSharedLinkOptions = MutationOptions<
-  types.TSharedLink,
-  Partial<types.TSharedLink>
->;
-
-export type ArchiveConvoOptions = MutationOptions<
-  types.TArchiveConversationResponse,
-  types.TArchiveConversationRequest
 >;
 
 export type ArchiveAllConversationsOptions = MutationOptions<
@@ -309,8 +291,8 @@ export type UpdatePermResponse = r.TRole;
 
 /**
  * Cache entries that can appear under the `[QueryKeys.skills, ...]` key prefix.
- * Flat responses come from `useListSkillsQuery`; infinite responses come from
- * `useSkillsInfiniteQuery`. The context carries both shapes for rollback.
+ * Infinite responses come from `useSkillsInfiniteQuery`; flat responses may also
+ * be cached under this prefix. The context carries both shapes for rollback.
  */
 export type TSkillCacheEntry = TSkillListResponse | InfiniteData<TSkillListResponse> | undefined;
 
@@ -509,11 +491,6 @@ export type TLogoutResponse = {
 };
 
 export type LogoutOptions = MutationOptions<TLogoutResponse, undefined>;
-
-export interface AssistantInitialize {
-  message: string;
-  error?: string;
-}
 
 export interface CancelMCPOAuthResponse {
   success: boolean;

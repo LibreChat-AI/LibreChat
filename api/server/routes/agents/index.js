@@ -3,9 +3,11 @@ const {
   reportLocatorTraversalFailure,
   isEnabled,
   GenerationJobManager,
+  createBackgroundChildAbortGuard,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
+  resolveAbortedTurnPersistence,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -28,6 +30,7 @@ const {
   isConfirmedGenerationRetry,
   generationRetryProbeLimiter,
   generationRetryLimiter,
+  startSseKeepalive,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
 const { logger } = require('@librechat/data-schemas');
@@ -36,9 +39,11 @@ const {
   checkBan,
   moderateText,
   requireJwtAuth,
+  requireTermsAcceptance,
   messageIpLimiter,
-  configMiddleware,
+  strictConfigMiddleware,
   messageUserLimiter,
+  loadStreamKeepaliveMs,
 } = require('~/server/middleware');
 const SteerController = require('~/server/controllers/agents/steer');
 const {
@@ -56,6 +61,7 @@ const {
 } = require('~/server/controllers/agents/protocol');
 const {
   getFiles,
+  getMessages,
   saveMessage,
   saveConvo,
   getPersistedPrivateTextId,
@@ -67,7 +73,13 @@ const {
   acknowledgeScheduledStopPersistence,
 } = require('~/server/services/Schedules');
 const responses = require('./responses');
+const {
+  reviewBackgroundResponse,
+  submitBackgroundResponseReview,
+  cancelOwnerBackgroundResponse,
+} = require('~/server/services/Responses');
 const management = require('./management');
+const conversations = require('./conversations');
 const skills = require('./skills');
 const openai = require('./openai');
 const { v1 } = require('./v1');
@@ -142,6 +154,7 @@ router.use('/v1/responses', responses);
  */
 router.use('/v1/agents', management);
 router.use('/v1/skills', skills);
+router.use('/v1/conversations', conversations);
 
 /**
  * OpenAI-compatible API routes (API key authentication handled in route file)
@@ -164,14 +177,31 @@ const privateTextIngress = createPrivateTextIngress({
   getLegacyPii: (req) => req.config?.messageFilter?.pii,
   getKey: () => process.env.CREDS_KEY ?? '',
 });
-const chatConfigMiddleware = unless((req) => req.config != null, configMiddleware);
+const chatConfigMiddleware = strictConfigMiddleware;
 router.use(
   '/chat',
-  unless((req) => !isPreDenialTextSubmission(req), configMiddleware),
+  unless((req) => !isPreDenialTextSubmission(req), strictConfigMiddleware),
   unless((req) => !isPrivateTextChatSubmission(req), privateTextIngress),
 );
 router.use(checkBan);
 router.use(uaParser);
+router.get('/responses/:id/review', requireTermsAcceptance, reviewBackgroundResponse);
+router.post(
+  '/responses/:id/review',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  submitBackgroundResponseReview,
+);
+router.post(
+  '/responses/:id/cancel',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  cancelOwnerBackgroundResponse,
+);
 
 /**
  * Stream endpoints - mounted before chatRouter to bypass rate limiters
@@ -284,6 +314,9 @@ router.get('/chat/stream/:streamId', async (req, res) => {
   res.setHeader(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   res.flushHeaders();
   streamTelemetry.recordHeadersFlushed();
+  /** Started only for an authorized attachment, and never awaited: the keepalive runs at
+   * the default interval until the narrow config read resolves. */
+  startSseKeepalive(res, loadStreamKeepaliveMs(req));
 
   logger.debug(`[AgentStream] Client subscribed to ${streamId}, resume: ${isResume}`);
 
@@ -592,6 +625,12 @@ router.get('/chat/status/:conversationId', async (req, res) => {
  * @access Private
  * @description Mounted before chatRouter to bypass buildEndpointOption middleware
  */
+router.post(
+  '/chat/abort',
+  createBackgroundChildAbortGuard({
+    getJob: (streamId) => GenerationJobManager.getJob(streamId),
+  }),
+);
 router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
   logger.debug(`[AgentStream] ========== ABORT ENDPOINT HIT ==========`);
   logger.debug(`[AgentStream] Method: ${req.method}, Path: ${req.path}`);
@@ -789,11 +828,21 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
+          /** The stopped turn's persistence plan (which rows to write, and
+           *  whether the normal FINAL must be withheld for a reconciliation
+           *  frame instead) comes from @librechat/api, decided from the
+           *  compaction anchor this route reads. */
+          const abortPersistencePlan = await resolveAbortedTurnPersistence(
+            jobData,
+            shouldPersistAbortedTurn,
+            { userId: req?.user?.id, getMessages },
+          );
+          persistenceErrors.push(...abortPersistencePlan.persistenceErrors);
 
           if (
             jobData?.userMessage?.messageId &&
             jobData?.responseMessageId &&
-            shouldPersistAbortedTurn
+            abortPersistencePlan.writeResponseRow
           ) {
             const messageContext = {
               userId: req?.user?.id,
@@ -823,7 +872,7 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
               endpoint: jobData.endpoint,
               iconURL: jobData.iconURL,
               model: jobData.model,
-              unfinished: true,
+              unfinished: abortPersistencePlan.responseUnfinished,
               error: false,
               isCreatedByUser: false,
               ...(Array.isArray(jobData.userSubmittedPaths) &&
@@ -852,23 +901,26 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
              * with neither row stored. Both writes are idempotent upserts;
              * await the user prerequisite first, but still attempt the child
              * write and checkpoint cleanup so every independently useful
-             * operation gets a chance to succeed. */
+             * operation gets a chance to succeed. A compaction skips the
+             * prerequisite: its anchor is the persisted leaf itself. */
             let persistedRequestId;
-            try {
-              const persistedRequest = await saveAbortedUserMessage(
-                { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
-                messageContext,
-                requestMessage,
-                { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
-                req.user?.tenantId,
-                pendingAbortResult.finalEvent,
-              );
-              if (!persistedRequest) {
-                throw new Error('Abort user prerequisite was not persisted');
+            if (abortPersistencePlan.writeUserRow) {
+              try {
+                const persistedRequest = await saveAbortedUserMessage(
+                  { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
+                  messageContext,
+                  requestMessage,
+                  { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
+                  req.user?.tenantId,
+                  pendingAbortResult.finalEvent,
+                );
+                if (!persistedRequest) {
+                  throw new Error('Abort user prerequisite was not persisted');
+                }
+                persistedRequestId = persistedRequest._id;
+              } catch (error) {
+                persistenceErrors.push(error);
               }
-              persistedRequestId = persistedRequest._id;
-            } catch (error) {
-              persistenceErrors.push(error);
             }
 
             try {

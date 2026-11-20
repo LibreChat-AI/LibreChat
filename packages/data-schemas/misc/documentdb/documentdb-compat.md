@@ -347,3 +347,90 @@ those namespaces before opening the transaction.
 This sweep exists because every incompatibility found so far was invisible
 until someone thought to look for its class; here the engine adjudicates
 whatever each method emits, known class or not.
+
+## Admin config overrides — key encoding (2026-10-21)
+
+Admin config override documents (`configs.overrides`) are free-form JSON whose
+record keys legitimately contain `.` (Bedrock inference profiles such as
+`us.anthropic.claude-sonnet-4-5`, Azure model names such as `gpt-4.1`, MIME
+patterns, header names) and can start with `$`. MongoDB 5+ stores such field
+names but cannot address them in an update; DocumentDB, Cosmos DB (MongoDB
+API) and FerretDB restrict them further. Whether DocumentDB 5.0 and Cosmos
+accept dotted names inside a Mixed subdocument was never adjudicated live.
+
+The question no longer needs an answer. Config persistence goes through the
+portable store contract (`src/app/store.ts`, conformance suite
+`src/app/conformance.ts`), and the Mongoose binding (`src/methods/config.ts`)
+writes every document whole with plain `$set`. Its keys go raw when the engine
+stores them, and reversibly percent-escaped (`%`, `.`, `$` and NUL in every
+object key, `src/methods/encoding.ts`) when the engine refuses a raw name. An
+engine that cannot store a dotted or `$`-prefixed field name therefore never
+holds one, so DocumentDB and Cosmos are covered whichever way their field-name
+rules turn out. Values are never rewritten.
+
+- Write form: the binding sends the keys raw first. When the engine refuses a
+  field name (`isFieldNameRejection`), the refused write changed nothing, and
+  it is sent again encoded under the same revision precondition; that process
+  then encodes every later write that holds such a key. A document is also
+  written encoded when its keys spell escape sequences (`%2E`, `%24`, `%25`,
+  `%00`) while none holds a raw `.`, `$` or NUL, since a raw read would decode
+  them. An encoded document carries `keyEncoding: 1`; a raw write clears it.
+- Reads decode a marked document, and an unmarked one unless some key holds a
+  raw `.`, `$` or NUL (no encoded document does). The decoder rewrites only the
+  four sequences above, so raw keys an older server adds to an encoded
+  document, or writes under a marker it left in place, read as stored.
+- Rolling upgrades and rollback: servers before the encoding read every key
+  literally. On MongoDB 4.4+ (dotted names) and 5.0+ (`$` names inside a
+  value) the binding keeps writing raw keys, so an older server reads exactly
+  what it wrote. Only on an engine that refuses raw names does an older server
+  meet encoded keys, and those are entries it could not store itself (it
+  answered 422 `CONFIG_KEY_NOT_STORABLE`): it reads them as
+  `us%2Eanthropic%2Eclaude-sonnet-4-5` until it is upgraded. An older server's
+  group or role deletion that restores a config document drops the
+  `keyEncoding` field its schema lacks; the read rule above still decodes that
+  document. The one key a read can misread is a raw key that literally spells
+  one of the four escape sequences, in a document an older server wrote with no
+  dotted or `$` key.
+- No dotted-path `$set`/`$unset` or `$pull`/`$addToSet` touches `overrides` or
+  `tombstones`; every mutation is a pure transform followed by one
+  compare-and-swap on `{_id, configVersion}`, which every engine supports.
+  The batch route (`POST /api/admin/config/:type/:id/changes`, `src/app/changes.ts`)
+  applies any mix of set, unset, tombstone and entry changes (upsert, remove, rename)
+  to the decoded document and stores the result with that same single write, so it
+  needs nothing from the engine beyond the contract.
+- Pre-release check on a real cluster: run the conformance runner
+  (`misc/ferretdb/configStore.ferretdb.spec.ts`, any MongoDB-compatible URI in
+  `FERRETDB_URI`) against DocumentDB 5.0 and Cosmos. It passes 24/24 against
+  mongod 8.2 and mongodb-memory-server; FerretDB and the managed engines were
+  not available when this was written.
+- The runner is destructive: it deletes every document in the target
+  database's `configs` collection before each case and drops the collection
+  at teardown. Give it a throwaway database on the cluster (for example
+  `.../config_store_test`), never a database a deployment uses. It refuses to
+  start when `configs` already holds documents.
+- `compat.documentdb.spec.ts` › "admin config overrides with dotted record keys"
+  writes through `patchConfigFields` and `upsertConfig`, which store keys raw
+  or, on an engine that refuses them, encoded, so on DocumentDB and Cosmos it
+  checks whichever round trip the engine takes:
+  `npx jest --config misc/documentdb/jest.documentdb.config.mjs -t 'dotted record keys'`.
+- The 422 `CONFIG_KEY_NOT_STORABLE` answer (`isFieldNameRejection`) remains
+  for a key name the engine refuses in both forms, such as an empty key.
+
+### Before the encoding: raw dotted keys (2026-10-20)
+
+Before the store encoded keys, dotted record keys reached the engine verbatim
+through a dotted `$set` path and a whole-object `$set`. Documents written then
+carry no `keyEncoding` marker and still hold raw dotted names, which the
+binding reads verbatim and keeps raw on engines that store them. Local runs of
+the compat suite against a single-node replica set of each server (16 of 16
+passing on every version):
+
+| Engine                      | Dotted keys, `$set` path | Dotted keys, whole `$set` | `$` key inside a value |
+| --------------------------- | ------------------------ | ------------------------- | ---------------------- |
+| MongoDB 4.4.29 (local)      | supported                | supported                 | rejected               |
+| MongoDB 5.0.31 (local)      | supported                | supported                 | stored                 |
+| MongoDB 6.0.26 (local)      | supported                | supported                 | stored                 |
+| MongoDB 7.0.14 (local)      | supported                | supported                 | stored                 |
+| MongoDB 8.2.6 (local)       | supported                | supported                 | stored                 |
+| Amazon DocumentDB 5.0       | **not yet run**          | **not yet run**           | **not yet run**        |
+| Azure Cosmos DB for MongoDB | **not yet run**          | **not yet run**           | **not yet run**        |

@@ -37,7 +37,7 @@ export default function ImageResize() {
         onCheckedChange={setUserPreference}
         disabled={isEnforced || !isSupported || isConfigUnavailable || isConfigPending}
         aria-busy={isConfigPending}
-        className="ml-4"
+        className="ms-4"
         data-testid="clientImageResize"
         aria-labelledby={labelId}
       />

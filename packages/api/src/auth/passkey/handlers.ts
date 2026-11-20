@@ -7,6 +7,8 @@ import type { AppConfigUserLike, GetAppConfigOptions } from '~/app/service';
 import type { PasskeyConfig, PasskeyChallengeStore } from '~/auth/passkey';
 import type { ComparePasswordDeps } from '~/auth/password';
 import type { UserDocumentId } from '~/auth/verification';
+import type { RecordAuditEntry } from '~/admin/audit';
+import type { ServerRequest } from '~/types/http';
 import {
   getPasskeyConfig,
   isPasskeyEnabled,
@@ -18,6 +20,7 @@ import {
   createPasskeyAuthenticationOptions,
 } from '~/auth/passkey';
 import { grandfatherLegacyEmailVerification } from '~/auth/verification';
+import { createAdminAuditEmitter } from '~/admin/audit';
 import { resolveStrictAppConfig } from '~/app/service';
 import { comparePassword } from '~/auth/password';
 import { isEnabled } from '~/utils';
@@ -121,6 +124,9 @@ export interface PasskeyHandlersDeps {
   /** Resolves effective configuration for the authenticated principal. */
   getAppConfig?: (options: GetAppConfigOptions) => Promise<AppConfig | undefined>;
   compare: ComparePasswordDeps['compare'];
+  /** Optional audit emission for enrolment and removal; fail-open unless `auditFailClosed`. */
+  recordAuditEntry?: RecordAuditEntry;
+  auditFailClosed?: boolean;
   /** The login ban middleware; reports an internal failure through `next(err)`. */
   checkBan: (
     req: PasskeyRequest<AuthenticationBody>,
@@ -250,7 +256,15 @@ export function createPasskeyHandlers(deps: PasskeyHandlersDeps): PasskeyHandler
     getAppConfig,
     countPasskeysByUser,
     findPasskeyByCredentialId,
+    recordAuditEntry,
+    auditFailClosed,
   } = deps;
+
+  const emitAudit = createAdminAuditEmitter({
+    recordAuditEntry,
+    failClosed: auditFailClosed,
+    logPrefix: '[passkey]',
+  });
 
   const getChallengeStore = (): PasskeyChallengeStore =>
     createPasskeyChallengeStore(getChallengeCache());
@@ -446,18 +460,35 @@ export function createPasskeyHandlers(deps: PasskeyHandlersDeps): PasskeyHandler
        * the write and rolling this credential back keeps the stored set within
        * the cap without a transaction, at the cost of rejecting the whole race.
        */
+      const auditRegistered = (metadata: Record<string, unknown> = {}) =>
+        emitAudit(req as unknown as ServerRequest, {
+          action: 'passkey.registered',
+          severity: 'warning',
+          target: { type: 'passkey', id: passkey.id, name: passkey.name },
+          metadata: { deviceType: verified.deviceType, backedUp: verified.backedUp, ...metadata },
+        });
+      /** A credential that survives a failed rollback is a usable factor, so it is audited. */
+      const rollBack = async () => {
+        try {
+          await deletePasskey(passkey.id, req.user.id);
+        } catch (rollbackError) {
+          await auditRegistered({ rollback: 'failed' });
+          throw rollbackError;
+        }
+      };
       let countAfterWrite: number;
       try {
         countAfterWrite = await countPasskeysByUser(req.user.id);
       } catch (error) {
-        await deletePasskey(passkey.id, req.user.id);
+        await rollBack();
         throw error;
       }
       if (countAfterWrite > maxPasskeys) {
-        await deletePasskey(passkey.id, req.user.id);
+        await rollBack();
         return res.status(409).json({ message: 'Passkey limit reached' });
       }
 
+      await auditRegistered();
       return res.status(201).json({ passkey: serializePasskey(passkey) });
     } catch (err) {
       if (isDuplicateKeyError(err as MongoWriteError)) {
@@ -529,6 +560,11 @@ export function createPasskeyHandlers(deps: PasskeyHandlersDeps): PasskeyHandler
       if (!result?.deletedCount) {
         return res.status(404).json({ message: 'Passkey not found' });
       }
+      await emitAudit(req as unknown as ServerRequest, {
+        action: 'passkey.removed',
+        severity: 'warning',
+        target: { type: 'passkey', id: req.params.passkeyId },
+      });
       return res.status(200).json({ message: 'Passkey deleted' });
     } catch (err) {
       logger.error('[removePasskey]', err);

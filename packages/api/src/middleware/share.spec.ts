@@ -248,22 +248,25 @@ describe('createSharePolicyMiddleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('returns 400 for unsupported resource type', async () => {
-    const { checkShareAccess } = createSharePolicyMiddleware({
-      getRoleByName,
-      hasCapability,
-    });
-    const req = createRequest({ params: { resourceType: 'unsupported' } });
-    const res = createResponse();
+  it.each(['unsupported', ResourceType.SLACK_BOT])(
+    'rejects generic sharing for %s',
+    async (resourceType) => {
+      const { checkShareAccess } = createSharePolicyMiddleware({
+        getRoleByName,
+        hasCapability,
+      });
+      const req = createRequest({ params: { resourceType } });
+      const res = createResponse();
 
-    await checkShareAccess(req, res, next);
+      await checkShareAccess(req, res, next);
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({
-      error: 'Bad Request',
-      message: 'Unsupported resource type for sharing: unsupported',
-    });
-  });
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Bad Request',
+        message: `Unsupported resource type for sharing: ${resourceType}`,
+      });
+    },
+  );
 
   it('returns 403 when role has no permissions object', async () => {
     const { checkShareAccess } = createSharePolicyMiddleware({

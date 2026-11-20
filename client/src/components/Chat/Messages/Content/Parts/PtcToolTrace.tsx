@@ -1,11 +1,12 @@
 import { useTranslation } from 'react-i18next';
+import { parseToolName } from '@librechat/chat';
+import { useFollowScroll } from '@librechat/chat/react';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import type { PtcTraceEntry } from '~/common';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { cn, parseToolName, getRunStepDurationLabels } from '~/utils';
+import { cn, getRunStepDurationLabels } from '~/utils';
 import { useMCPServerNames } from '~/hooks/MCP';
-import useFollowScroll from './useFollowScroll';
 import { useLocalize } from '~/hooks';
 
 /** Terminal-style status column: one glyph wide for every state, so the
@@ -142,12 +143,13 @@ export default function PtcToolTrace({
    *  intended separation under a custom theme. */
   return (
     <div className={cn('p-4 text-xs', className)}>
-      <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
+      <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
         {localize('com_ui_ptc_trace_title')}
       </div>
       <ol
         ref={listRef}
         onScroll={onScroll}
+        dir="ltr"
         className="max-h-[200px] overflow-auto font-mono"
         aria-live="polite"
       >

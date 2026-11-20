@@ -1,4 +1,5 @@
 import {
+  Constants,
   extractEnvVariable,
   scheduledMCPIdentitySchema,
   scheduledMCPTargetSchema,
@@ -20,7 +21,7 @@ import type {
 } from '~/mcp/types';
 import type { ScheduleMCPFailureInput, ScheduleMCPSettlementBoundary } from './types';
 import type { ScheduleMCPEnrollmentResolver } from './authorization/service';
-import type { ScheduledTokenContext } from './context';
+import type { ExecutionContext } from '~/agents/authority/context';
 import {
   getMCPRequestContext,
   getMCPRequestSignal,
@@ -32,14 +33,15 @@ import {
   isMCPTransportAuthenticationError,
   createScheduledMCPTransportError,
 } from '~/mcp/errors';
+import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
-import { readScheduleFireContext, isScheduleFireRequest } from './trigger';
 import { getScheduleMCPExecution } from './authorization/execution';
 import { ScheduleMCPConsentError } from './authorization/service';
 import { usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 import { holdMCPRequestFailure } from '~/mcp/signal';
 import { awaitOboOperation } from '~/mcp/oauth/obo';
 import { isOwnedAbortError } from '~/utils/errors';
+import { isScheduleFireRequest } from './trigger';
 import { applyRequestHeaders } from '~/mcp/utils';
 
 export { ScheduledMCPBearerError } from '~/mcp/errors';
@@ -132,6 +134,33 @@ export function createScheduledMCPBearerHost(deps: {
         onFailure?.(error);
         throw error;
       };
+      /** What the owner allowed on this server, among what its agents still select. */
+      const grantedSelections = async (
+        target: ScheduledMCPTarget,
+        signal?: AbortSignal,
+      ): Promise<ScheduledMCPToolSelection[]> => {
+        const lookup = await awaitOboOperation(
+          deps.authority.lookupConsent(captured, target.resource, { signal }),
+          signal,
+        );
+        // With no grant for the server, authorizing the whole selection reports why.
+        // Nor is a whole-agent grant limited to the tools its agents had when it was made.
+        if (lookup.state !== 'found' || lookup.everything === true) return target.permittedTools;
+        // The whole server, granted or selected, is `mcp_all`: it stands for every tool there.
+        const every: string = Constants.mcp_all;
+        return lookup.consent.permittedTools
+          .map(({ agentId, tools }) => {
+            const current = target.permittedTools.find((item) => item.agentId === agentId)?.tools;
+            if (!current) return { agentId, tools: [] };
+            return {
+              agentId,
+              tools: tools.includes(every)
+                ? current
+                : tools.filter((tool) => current.includes(tool) || current.includes(every)),
+            };
+          })
+          .filter((item) => item.tools.length > 0);
+      };
       const authorize = async (
         target: ScheduledMCPTarget,
         selection: ScheduledMCPToolSelection,
@@ -221,7 +250,9 @@ export function createScheduledMCPBearerHost(deps: {
             const { [authorization[0][0]]: _authorization, ...headers } = effective.headers ?? {};
             if (/\{\{LIBRECHAT_(?:OPENID_|GRAPH_)/.test(JSON.stringify({ ...effective, headers })))
               deny('unsupported_mode', serverName);
-            const selections = selection ? [selection] : target.permittedTools;
+            // A connection is for the whole server, so it is admitted for what the owner
+            // allowed on it, not for everything the agents select there.
+            const selections = selection ? [selection] : await grantedSelections(target, signal);
             if (!selections.length) deny('tool_policy_denied', serverName);
             const authorizations = await Promise.all(
               selections.map((item) => authorize(target, item, stage, signal, onFailure)),
@@ -245,8 +276,11 @@ export function createScheduledMCPBearerHost(deps: {
               let pending = flights.get(key);
               if (!pending) {
                 pending = (async () => {
-                  for (const item of selections)
-                    await authorize(target, item, mintStage, ownerSignal, onFailure);
+                  await Promise.all(
+                    selections.map((item) =>
+                      authorize(target, item, mintStage, ownerSignal, onFailure),
+                    ),
+                  );
                   const result = await awaitOboOperation(
                     deps
                       .resolveBearer(
@@ -439,42 +473,43 @@ export async function resolveScheduledMCPBearerConfig(
     context?: RequestScopedMCPConnectionStore;
   },
 ): Promise<ParsedServerConfig> {
-  if (input.context?.quiesceStarted) throw new MCPRequestQuiescedError();
-  if (input.context?.cleanupStarted)
+  const { context } = input;
+  if (context?.quiesceStarted) throw new MCPRequestQuiescedError();
+  const scope = context && scopes.get(context);
+  /** Cleanup ends scheduled authority only; request-scoped checkout refuses a closed context. */
+  if (!context || !scope) return input.config;
+  if (context.cleanupStarted)
     throw new ScheduledMCPBearerError('binding_mismatch', input.serverName);
-  const scope = input.context && scopes.get(input.context);
-  let config = input.config;
-  if (scope && input.context) {
-    const requestSignal = getMCPRequestSignal(input.context);
-    const signal = input.signal ? AbortSignal.any([input.signal, requestSignal]) : requestSignal;
-    signal.throwIfAborted();
-    let knownFailure: Promise<never> | undefined;
-    let observedError: ScheduledMCPBearerError | undefined;
-    const observe = (error: ScheduledMCPBearerError): void => {
-      if (observedError === error) return;
-      observedError = error;
-      input.onFailure?.(error);
-      const admission = admitBearerFailure(input.context!, error);
-      const failure = Promise.resolve(admission).then((): never => {
-        throw error;
-      });
-      knownFailure ??= failure;
-      holdMCPRequestFailure(failure);
-    };
-    // Observe before any outer waiter detaches; receipt admission has a separate lifetime.
-    const operation = scope.resolve({ ...input, signal, onFailure: observe }).catch((error) => {
-      if (error instanceof ScheduledMCPBearerError) observe(error);
+  const requestSignal = getMCPRequestSignal(context);
+  const signal = input.signal ? AbortSignal.any([input.signal, requestSignal]) : requestSignal;
+  signal.throwIfAborted();
+  let knownFailure: Promise<never> | undefined;
+  let observedError: ScheduledMCPBearerError | undefined;
+  const observe = (error: ScheduledMCPBearerError): void => {
+    if (observedError === error) return;
+    observedError = error;
+    input.onFailure?.(error);
+    const admission = admitBearerFailure(context, error);
+    const failure = Promise.resolve(admission).then((): never => {
       throw error;
     });
-    try {
-      config = await awaitOboOperation(operation, signal);
-    } catch (error) {
-      if (knownFailure) return await knownFailure;
-      throw error;
-    }
+    knownFailure ??= failure;
+    holdMCPRequestFailure(failure);
+  };
+  // Observe before any outer waiter detaches; receipt admission has a separate lifetime.
+  const operation = scope.resolve({ ...input, signal, onFailure: observe }).catch((error) => {
+    if (error instanceof ScheduledMCPBearerError) observe(error);
+    throw error;
+  });
+  let config: ParsedServerConfig;
+  try {
+    config = await awaitOboOperation(operation, signal);
+  } catch (error) {
+    if (knownFailure) return await knownFailure;
+    throw error;
   }
-  if (input.context?.quiesceStarted) throw new MCPRequestQuiescedError();
-  if (input.context?.cleanupStarted)
+  if (context.quiesceStarted) throw new MCPRequestQuiescedError();
+  if (context.cleanupStarted)
     throw new ScheduledMCPBearerError('binding_mismatch', input.serverName);
   return config;
 }
@@ -489,7 +524,7 @@ export function rejectScheduledMCPBearer(
 export function prepareScheduledMCPBearer(input: {
   req: Parameters<typeof isScheduleFireRequest>[0] & { user: { id: string; tenantId?: string } };
   context?: RequestScopedMCPConnectionStore;
-  restoredContext?: ScheduledTokenContext;
+  executionContext?: ExecutionContext;
   host?: ScheduledMCPBearerHost;
   signal?: AbortSignal;
   streamId?: string | null;
@@ -502,20 +537,10 @@ export function prepareScheduledMCPBearer(input: {
   const execution = getScheduleMCPExecution(context);
   if (!isScheduleFireRequest(input.req) && !execution) return;
   input.signal?.throwIfAborted();
-  const fire = readScheduleFireContext(input.req);
-  const root = input.restoredContext;
-  const identity =
-    execution?.identity ??
-    root ??
-    (fire && typeof input.req.body?.agent_id === 'string'
-      ? {
-          scheduleId: fire.scheduleId,
-          ownerId: input.req.user.id,
-          tenantId: input.req.user.tenantId,
-          agentId: input.req.body.agent_id,
-          invocationMode: 'delegated' as const,
-        }
-      : undefined);
+  const schedule = getScheduleSource(input.executionContext);
+  const identity = execution?.identity ?? toScheduledTokenContext(input.executionContext);
+  /** Only a resumed run with a complete restored identity re-enters at the resume stage. */
+  const resumed = schedule?.resumed === true && identity != null && !execution;
   if (context && !identity) {
     attachScheduledMCPBearer(context, {
       scheduleId: '',
@@ -557,9 +582,14 @@ export function prepareScheduledMCPBearer(input: {
     context,
     captured,
     input.host,
-    execution?.stage ?? (root ? 'resume' : 'invoke'),
+    execution?.stage ?? (resumed ? 'resume' : 'invoke'),
     input.signal,
-    { manual: execution?.manual === true || (!execution && fire?.manual === true), onFailure },
+    {
+      manual:
+        execution?.manual === true ||
+        (!execution && schedule?.resumed === false && schedule.manual),
+      onFailure,
+    },
   );
 }
 

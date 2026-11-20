@@ -1,5 +1,5 @@
+import { isComposerFileTaken, releaseComposerFile } from '@librechat/chat';
 import type { ExtendedFile, FileSetter } from '~/common';
-import { isComposerFileTaken, releaseComposerFile } from '~/utils/composerFiles';
 import useSetFilesToDelete from './useSetFilesToDelete';
 
 export default function useUpdateFiles(setFiles: FileSetter) {
@@ -11,9 +11,11 @@ export default function useUpdateFiles(setFiles: FileSetter) {
    * outranks any earlier consumption of the same id: re-attaching a library
    * file reuses its server id, so the mark is dropped rather than obeyed.
    */
-  const addFile = (newFile: ExtendedFile) => {
+  const addFile = (newFile: ExtendedFile, shouldCommit?: () => boolean) => {
+    if (shouldCommit?.() === false) return;
     releaseComposerFile(newFile.file_id);
     setFiles((currentFiles) => {
+      if (shouldCommit?.() === false) return currentFiles;
       const updatedFiles = new Map(currentFiles);
       updatedFiles.set(newFile.file_id, newFile);
       return updatedFiles;
@@ -27,19 +29,26 @@ export default function useUpdateFiles(setFiles: FileSetter) {
    * it back would resurrect a file the message already owns, so a consumed id
    * is dropped here instead of re-entering the composer.
    */
-  const replaceFile = (newFile: ExtendedFile) => {
+  const replaceFile = (newFile: ExtendedFile, shouldCommit?: () => boolean) => {
     if (isComposerFileTaken(newFile.file_id)) {
       return;
     }
     setFiles((currentFiles) => {
+      if (shouldCommit?.() === false) return currentFiles;
       const updatedFiles = new Map(currentFiles);
       updatedFiles.set(newFile.file_id, newFile);
       return updatedFiles;
     });
   };
 
-  const updateFileById = (fileId: string, updates: Partial<ExtendedFile>, isEntityFile = false) => {
+  const updateFileById = (
+    fileId: string,
+    updates: Partial<ExtendedFile>,
+    isEntityFile = false,
+    shouldCommit?: () => boolean,
+  ) => {
     setFiles((currentFiles) => {
+      if (shouldCommit?.() === false) return currentFiles;
       if (!currentFiles.has(fileId)) {
         console.warn(`File with id ${fileId} not found.`);
         return currentFiles;
@@ -62,8 +71,12 @@ export default function useUpdateFiles(setFiles: FileSetter) {
     });
   };
 
-  const deleteFileById = (fileId: string) => {
+  const deleteFileById = (
+    fileId: string,
+    shouldCommit?: (currentFiles: Map<string, ExtendedFile>) => boolean,
+  ) => {
     setFiles((currentFiles) => {
+      if (shouldCommit?.(currentFiles) === false) return currentFiles;
       const updatedFiles = new Map(currentFiles);
       if (updatedFiles.has(fileId)) {
         updatedFiles.delete(fileId);

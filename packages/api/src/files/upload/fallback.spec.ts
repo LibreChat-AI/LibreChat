@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { UploadFallbackTextExtractors } from './fallback';
+import type { ServerRequest } from '~/types';
 import {
   UPLOAD_FALLBACK_TEXT_PLANS,
   getUploadFallbackTextPlan,
@@ -115,6 +116,29 @@ describe('resolveUploadFallbackText', () => {
     expect(extractors.parseDocument).not.toHaveBeenCalled();
   });
 
+  it('uses the request parser policy for best-effort spreadsheet fallback', async () => {
+    const file = {
+      path: path.join(__dirname, '../documents/sample.xlsx'),
+      originalname: 'sample.xlsx',
+      mimetype: XLSX_MIME,
+    } as Express.Multer.File;
+    const req = { config: { spreadsheetParsing: { maxConcurrent: 0 } } } as Pick<
+      ServerRequest,
+      'config'
+    >;
+    const extractors = spiedExtractors();
+    await expect(
+      resolveUploadFallbackText({
+        ...route,
+        file,
+        req,
+        fileId: 'file-policy',
+        extractors,
+      }),
+    ).resolves.toBeUndefined();
+    expect(extractors.parseDocument).toHaveBeenCalledWith({ file, req });
+  });
+
   it('stores the parsed text of a spreadsheet without decoding its bytes', async () => {
     const extractors = spiedExtractors();
     const file = {
@@ -126,7 +150,7 @@ describe('resolveUploadFallbackText', () => {
     await expect(
       resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors }),
     ).resolves.toBe('Sheet One:\nData,on,first,sheet\nSecond Sheet:\nData,On\nSecond,Sheet\n');
-    expect(extractors.parseDocument).toHaveBeenCalledWith({ file });
+    expect(extractors.parseDocument).toHaveBeenCalledWith({ file, req: undefined });
     expect(extractors.parseTextNative).not.toHaveBeenCalled();
   });
 

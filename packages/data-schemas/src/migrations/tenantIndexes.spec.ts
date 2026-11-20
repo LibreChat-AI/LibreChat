@@ -22,7 +22,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('dropSupersededTenantIndexes', () => {
@@ -97,6 +97,8 @@ describe('dropSupersededTenantIndexes', () => {
         .collection('conversationtags')
         .createIndex({ tag: 1, user: 1 }, { unique: true, name: 'tag_1_user_1' });
 
+      await db.createCollection('mcpnames');
+      await db.collection('mcpnames').createIndex({ name: 1 }, { unique: true });
       await db.createCollection('mcpservers');
       await db
         .collection('mcpservers')
@@ -246,8 +248,8 @@ describe('dropSupersededTenantIndexes', () => {
     });
 
     afterAll(async () => {
-      await freshConnection.close();
-      await freshServer.stop();
+      await freshConnection?.close();
+      await freshServer?.stop();
     });
 
     it('skips all indexes gracefully (no errors)', async () => {
@@ -274,8 +276,8 @@ describe('dropSupersededTenantIndexes', () => {
     });
 
     afterAll(async () => {
-      await partialConnection.close();
-      await partialServer.stop();
+      await partialConnection?.close();
+      await partialServer?.stop();
     });
 
     it('drops existing indexes and skips missing ones', async () => {
@@ -301,6 +303,7 @@ describe('dropSupersededTenantIndexes', () => {
         'accessroles',
         'conversationtags',
         'mcpservers',
+        'mcpnames',
         'files',
         'groups',
         'skillsyncstatuses',

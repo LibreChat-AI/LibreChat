@@ -14,3 +14,5 @@ export * from './byom';
 export * from './modes';
 export * from './controller';
 export * from './metadata';
+export * from './capture';
+export * from './context';

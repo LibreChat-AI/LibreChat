@@ -82,14 +82,7 @@ export function BrowserTTS({
         controls
         preload="none"
         controlsList="nodownload nofullscreen noremoteplayback"
-        style={{
-          position: 'absolute',
-          overflow: 'hidden',
-          display: 'none',
-          height: '0px',
-          width: '0px',
-        }}
-        src={audioRef.current?.src}
+        className="hidden"
         onError={(error) => {
           logger.error('Error fetching audio:', error);
         }}
@@ -180,14 +173,7 @@ export function ExternalTTS({
         controls
         preload="none"
         controlsList="nodownload nofullscreen noremoteplayback"
-        style={{
-          position: 'absolute',
-          overflow: 'hidden',
-          display: 'none',
-          height: '0px',
-          width: '0px',
-        }}
-        src={audioRef.current?.src}
+        className="hidden"
         onError={(error) => {
           logger.error('Error fetching audio:', error);
         }}

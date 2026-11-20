@@ -47,3 +47,47 @@
     transform: none;
   }
 }
+
+.animate-popover-left:dir(rtl) {
+  transform-origin: right;
+  transform: scale(0.95) translateX(0.5rem);
+}
+
+.animate-popover-left:dir(rtl)[data-enter] {
+  transform: scale(1) translateX(0);
+}
+
+.animate-popover-bottom:dir(rtl) {
+  transform-origin: bottom right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-popover-bottom:dir(rtl) {
+    transform: none;
+  }
+}
+
+/* Chrome and Edge before 120 drop the `:dir()` rules; they read the nearest direction from the
+ * `--dir-fallback` property tokens.css sets on every `dir` attribute. */
+@supports not selector(:dir(rtl)) {
+  @container style(--dir-fallback: rtl) {
+    .animate-popover-left:not([dir='ltr']) {
+      transform-origin: right;
+      transform: scale(0.95) translateX(0.5rem);
+    }
+
+    .animate-popover-left:not([dir='ltr'])[data-enter] {
+      transform: scale(1) translateX(0);
+    }
+
+    .animate-popover-bottom:not([dir='ltr']) {
+      transform-origin: bottom right;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .animate-popover-bottom:not([dir='ltr']) {
+        transform: none;
+      }
+    }
+  }
+}

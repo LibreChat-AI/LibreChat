@@ -23,6 +23,7 @@ const {
   checkToolResourceUploadPermission,
   resolveAssistantToolPermissions,
   resolveDownloadPath,
+  pipeToResponse,
 } = require('@librechat/api');
 const {
   isUUID,
@@ -438,7 +439,9 @@ router.get('/code/download/:session_id/:fileId', async (req, res) => {
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'private, no-store');
-    response.data.pipe(res);
+    pipeToResponse(response.data, res, (error) =>
+      logger.error('[CODE DOWNLOAD] Stream failed', getSafeErrorMetadata(error)),
+    );
   } catch (error) {
     /* `logAxiosError` redacts buffer/stream response bodies — without
      * it, a stream-typed axios failure dumps the entire `Readable`'s

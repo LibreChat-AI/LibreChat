@@ -2,7 +2,13 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import type { GraphEdge } from 'librechat-data-provider';
 import type { AgentDetail } from './agents.helpers';
-import { cleanupAgent, openAgentBuilder, selectMockModel, uniqueAgentName } from './agents.helpers';
+import {
+  cleanupAgent,
+  openAgentBuilder,
+  selectMockModel,
+  uniqueAgentName,
+  closeMobileDrawer,
+} from './agents.helpers';
 import {
   MOCK_ENDPOINTS,
   fetchJson,
@@ -167,6 +173,8 @@ async function selectAgentForChat(page: Page, agentName: string): Promise<void> 
   await page.getByRole('option', { name: agentName }).click();
   await expect(form.getByLabel('Agent name')).toHaveValue(agentName);
   await form.getByRole('button', { name: 'Select Agent' }).click();
+  /** On narrow viewports the builder drawer stays open over the composer. */
+  await closeMobileDrawer(page);
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 }
 
@@ -278,6 +286,7 @@ test.describe('agent handoffs', () => {
 
       await closeOrchestration(page);
       await reopenedForm.getByRole('button', { name: 'Select Agent' }).click();
+      await closeMobileDrawer(page);
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 
       const label = `scratch-bare-${Date.now()}`;
@@ -991,7 +1000,9 @@ test.describe('agent handoffs', () => {
     }
   });
 
-  test('executes a transitive router-to-specialist-to-reviewer handoff', async ({ page }) => {
+  test('executes a transitive router-to-specialist-to-reviewer handoff @scenario:connected-agents-transitive', async ({
+    page,
+  }) => {
     test.setTimeout(180000);
 
     await page.goto('/c/new', { timeout: 10000 });
@@ -1073,7 +1084,9 @@ test.describe('agent handoffs', () => {
     }
   });
 
-  test('executes simultaneous handoffs and renders both transfer branches', async ({ page }) => {
+  test('executes simultaneous handoffs and renders both transfer branches @scenario:connected-agents-simultaneous', async ({
+    page,
+  }) => {
     test.setTimeout(180000);
 
     await page.goto('/c/new', { timeout: 10000 });
@@ -1182,4 +1195,77 @@ test.describe('agent handoffs', () => {
       await cleanupAgent(page, leftId);
     }
   });
+});
+
+test('offers a hidden model preset as a handoff and executes its server-owned instructions', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/c/new');
+  const token = await getAccessToken(page);
+  const targets = await fetchJson<Array<{ id: string; name: string }>>(
+    page,
+    '/api/agents/handoff-targets',
+    token,
+  );
+  const targetId = targets.find((target) => target.name === 'Preset Specialist')?.id;
+  expect(targetId).toBeTruthy();
+  if (!targetId) throw new Error('Preset handoff target missing');
+  expect(targets).toContainEqual(
+    expect.objectContaining({ id: targetId, name: 'Preset Specialist' }),
+  );
+  expect(JSON.stringify(targets)).not.toContain('specialist preset instructions');
+  const startup = await fetchJson<{ modelSpecs?: { list?: Array<{ name: string }> } }>(
+    page,
+    '/api/config',
+    token,
+  );
+  expect(startup.modelSpecs?.list?.some((spec) => spec.name === 'e2e-handoff-specialist')).toBe(
+    false,
+  );
+  let parent: AgentDetail | undefined;
+  try {
+    const form = await configureNewAgent(page, uniqueAgentName('Preset Router'));
+    const region = await openOrchestration(page, form);
+    await region.getByRole('combobox').click();
+    await expect(
+      page.getByRole('option', { name: 'Preset Specialist', exact: true }),
+    ).toBeVisible();
+    await page.getByRole('option', { name: 'Preset Specialist', exact: true }).click();
+    await expect(region.getByRole('combobox').first()).toContainText('Preset Specialist');
+    await page.screenshot({
+      path: testInfo.outputPath('preset-handoff-picker.png'),
+      animations: 'disabled',
+    });
+    await testInfo.attach('Preset handoff picker', {
+      path: testInfo.outputPath('preset-handoff-picker.png'),
+      contentType: 'image/png',
+    });
+    parent = await createConfiguredAgent(form);
+    expect(parent.edges).toContainEqual(
+      expect.objectContaining({ to: targetId, edgeType: 'handoff' }),
+    );
+    await selectAgentForChat(page, parent.name ?? '');
+    const label = `preset-${Date.now()}`;
+    const response = await sendMessageAndWaitForCompletion(
+      page,
+      handoffMarker(label, [
+        {
+          from: parent.id,
+          to: targetId,
+          targetInstructions: 'Use the specialist preset instructions.',
+        },
+      ]),
+    );
+    expect(response.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E handoff complete ${label}: agent=${targetId}; received=`, {
+        exact: false,
+      }),
+    ).toBeVisible({ timeout: 30000 });
+    await expect(
+      messagesView(page).getByRole('button', { name: 'Transferred to Preset Specialist' }),
+    ).toBeVisible();
+  } finally {
+    await cleanupAgent(page, parent?.id);
+  }
 });

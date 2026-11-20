@@ -137,3 +137,49 @@ describe.each([EModelEndpoint.openAI, EModelEndpoint.azureOpenAI])(
     });
   },
 );
+
+describe('OpenRouter custom endpoint effort list', () => {
+  const model = 'openai/gpt-6.1-sol';
+  const renderSettings = (capabilities?: Record<string, unknown>) => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData([QueryKeys.endpoints], {
+      OpenRouter: {
+        type: EModelEndpoint.custom,
+        customParams: { defaultParamsEndpoint: 'openrouter' },
+      },
+    });
+    if (capabilities != null) {
+      queryClient.setQueryData([QueryKeys.reasoningCapabilities, 'OpenRouter'], {
+        capabilities,
+        expiresInMs: 3_600_000,
+      });
+    }
+    const conversation = {
+      endpoint: 'OpenRouter',
+      endpointType: EModelEndpoint.custom,
+      model,
+    } as TModelSelectProps['conversation'];
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={context}>
+          <OpenAISettings
+            conversation={conversation}
+            setOption={jest.fn(() => jest.fn()) as TSetOption}
+            models={[model]}
+          />
+        </ChatContext.Provider>
+      </QueryClientProvider>,
+    );
+    return screen.queryByRole('slider', { name: 'Reasoning Effort' });
+  };
+
+  it('offers only the efforts the selected model supports', () => {
+    const slider = renderSettings({ OpenRouter: { [model]: { efforts: ['low', 'high'] } } });
+
+    expect(slider).toHaveAttribute('aria-valuemax', '2');
+  });
+
+  it('hides the effort control while the capabilities are still loading', () => {
+    expect(renderSettings()).not.toBeInTheDocument();
+  });
+});

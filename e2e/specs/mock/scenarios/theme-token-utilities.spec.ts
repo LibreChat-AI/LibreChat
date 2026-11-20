@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import { NEW_CHAT_PATH } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The colors these tests read now live in `packages/client/src/theme/tokens.css` as
@@ -189,6 +189,11 @@ test.describe('logged out', () => {
       expect(transition.property).not.toBe('all');
       expect(parseFloat(transition.duration)).toBeGreaterThan(0);
     };
+
+    await page.route('**/api/config', async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...(await response.json()), emailEnabled: true } });
+    });
 
     await page.goto('/register', { timeout: 15000 });
     await expectColorTransition(page.getByRole('link', { name: 'Login', exact: true }));

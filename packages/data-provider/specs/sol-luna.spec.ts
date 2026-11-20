@@ -3,7 +3,9 @@ import { EModelEndpoint } from '../src/schemas';
 import { ReasoningEffort } from '../src/types';
 import { applyModelAwareDefaults, paramSettings } from '../src/parameterSettings';
 
-describe.each(['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna'])('%s catalog and settings', (model) => {
+const models = ['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna'];
+
+describe.each(models)('%s catalog and settings', (model) => {
   it('offers native OpenAI and Agents support without advertising legacy Assistants support', () => {
     for (const endpoint of [EModelEndpoint.openAI, EModelEndpoint.agents]) {
       expect(defaultModels[endpoint]).toContain(model);

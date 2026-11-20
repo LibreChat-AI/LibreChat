@@ -1,7 +1,9 @@
 import React, { memo, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { ComposerChip as Chip } from '@librechat/chat/components';
 import { Mic, Plus, Check, Square, ChevronDown } from 'lucide-react';
 import { IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
+import { useElementSize, useElementSizeSelect } from '@librechat/chat/react';
 import type { TConversation, EModelEndpoint, EndpointFileConfig } from 'librechat-data-provider';
 import type { PaletteEntry, PaletteMode } from '~/hooks/Input/usePaletteEntries';
 import type { Dictation } from '~/hooks/Input/useDictation';
@@ -9,15 +11,13 @@ import type { ExtendedFile, FileSetter } from '~/common';
 import usePaletteEntries from '~/hooks/Input/usePaletteEntries';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import useToolFavorites from '~/hooks/Input/useToolFavorites';
-import useElementSize from '~/hooks/Generic/useElementSize';
 import useChipPacking from '~/hooks/Input/useChipPacking';
 import { useBadgeRowContext } from '~/Providers';
 import TokenUsage from '../TokenUsage';
 import { useLocalize } from '~/hooks';
 import Thinking from './Thinking';
-import Palette from './Palette';
+import Palette from '../Palette';
 import { cn } from '~/utils';
-import Chip from './Chip';
 
 /** Stable identity so the memo below is not defeated when tools are hidden. */
 const EMPTY_ENTRIES: PaletteEntry[] = [];
@@ -97,6 +97,7 @@ function RoundButton({
         <IconButton
           label={label}
           size="md"
+          shape="composer"
           variant={primary ? 'primary' : 'ghost'}
           onClick={onClick}
           disabled={disabled}
@@ -157,7 +158,7 @@ export function ChipModes({ modes }: ChipModesProps) {
         gutter={6}
         unmountOnHide
         onClick={(event) => event.stopPropagation()}
-        className="animate-composer-popover border-border-light bg-presentation z-50 min-w-[10rem] rounded-xl border p-1 shadow-lg outline-hidden"
+        className="animate-composer-popover border-border-menu bg-surface-menu rounded-theme-menu-panel z-50 min-w-[10rem] border p-1 shadow-lg outline-hidden"
       >
         {modes.map((mode) => (
           <Ariakit.MenuItem
@@ -179,7 +180,6 @@ export function ChipModes({ modes }: ChipModesProps) {
 
 interface BarProps {
   index: number;
-  isRTL: boolean;
   disabled: boolean;
   agentId?: string | null;
   endpoint?: string | null;
@@ -216,7 +216,6 @@ interface BarProps {
  */
 function Bar({
   index,
-  isRTL,
   disabled,
   agentId,
   endpoint,
@@ -277,17 +276,21 @@ function Bar({
      that row; packing widest-first fills the rows instead. */
   const { ordered: packedEntries, rootRef, widths } = useChipPacking(barEntries);
 
-  const { ref: rowRef, width: rowWidth } = useElementSize<HTMLDivElement>();
   const { ref: plusRef, width: plusWidth } = useElementSize<HTMLSpanElement>();
   const { ref: controlsRef, width: controlsWidth } = useElementSize<HTMLDivElement>();
 
   /* A row of their own once they need one, and it runs the full width of the
      composer (the `+` corner included), since the buttons are on the row below
-     it rather than in the flow. */
-  const inlineChips = useMemo(
-    () =>
-      chipsFitInline(packedEntries, widths, rowWidth - plusWidth - controlsWidth - CHIP_GAP * 2),
-    [packedEntries, widths, rowWidth, plusWidth, controlsWidth],
+     it rather than in the flow. Only whether they fit is read from the row's
+     width: the composer changes width on every frame while a panel beside the
+     chat opens or closes, and the bar must not render for each of them. */
+  const chipsFitRow = useCallback(
+    ({ width }: { width: number }) =>
+      chipsFitInline(packedEntries, widths, width - plusWidth - controlsWidth - CHIP_GAP * 2),
+    [packedEntries, widths, plusWidth, controlsWidth],
+  );
+  const { ref: rowRef, value: inlineChips } = useElementSizeSelect<HTMLDivElement, boolean>(
+    chipsFitRow,
   );
   const dictating = dictation.active || dictation.transcribing;
 
@@ -315,10 +318,7 @@ function Bar({
   const above = chipsInline ? EMPTY_ENTRIES : packedEntries;
   const inline = chipsInline ? packedEntries : EMPTY_ENTRIES;
 
-  const rowClass = cn(
-    'flex flex-wrap items-center gap-1.5',
-    isRTL ? 'flex-row-reverse' : 'flex-row',
-  );
+  const rowClass = 'flex flex-wrap items-center gap-1.5';
   const barClass = 'flex flex-col gap-1.5 px-2 pb-2';
 
   const renderChip = (entry: PaletteEntry) => {
@@ -449,10 +449,7 @@ function Bar({
             each takes over the job next to it (stop, and stop-and-send) rather
             than being replaced by a control that slides in somewhere else. Only
             what has no job during a recording actually moves. */}
-        <div
-          ref={controlsRef}
-          className={cn('flex shrink-0 items-center gap-1.5', isRTL ? 'mr-auto' : 'ml-auto')}
-        >
+        <div ref={controlsRef} className="ms-auto flex shrink-0 items-center gap-1.5">
           {/* One cell holding both: the settled controls drop out of it as the
               elapsed time rises into their place, and the row keeps one width
               throughout so nothing beside it shifts. */}

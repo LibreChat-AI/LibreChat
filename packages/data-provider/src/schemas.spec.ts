@@ -15,6 +15,8 @@ import {
   subagentThreadLineageSchema,
   getGoogleThinkingBudgetBounds,
   tPresetSchema,
+  EModelEndpoint,
+  getModelKey,
 } from './schemas';
 
 describe('reasoningOverrideSchema', () => {
@@ -110,8 +112,11 @@ describe('anthropicSettings', () => {
         expect(reset('claude-haiku-5')).toBe(64000);
       });
 
-      it('should return 64K for future versions like claude-haiku-9', () => {
-        expect(reset('claude-haiku-9')).toBe(64000);
+      it('should return 128K for claude-haiku-5-5 and later', () => {
+        expect(reset('claude-haiku-5-5')).toBe(128000);
+        expect(reset('claude-haiku-5.5')).toBe(128000);
+        expect(reset('global.anthropic.claude-haiku-5-5')).toBe(128000);
+        expect(reset('claude-haiku-9')).toBe(128000);
       });
     });
 
@@ -335,6 +340,11 @@ describe('anthropicSettings', () => {
 
       it('should cap at 64K for claude-haiku-4-5 when value exceeds', () => {
         expect(set(80000, 'claude-haiku-4-5')).toBe(64000);
+      });
+
+      it('should cap at 128K for claude-haiku-5-5 when value exceeds', () => {
+        expect(set(100000, 'claude-haiku-5-5')).toBe(100000);
+        expect(set(200000, 'claude-haiku-5-5')).toBe(128000);
       });
     });
 
@@ -819,5 +829,32 @@ describe('tPresetSchema', () => {
 
     expect(parsed).not.toHaveProperty('createdAt');
     expect(parsed).not.toHaveProperty('updatedAt');
+  });
+});
+
+describe('getModelKey', () => {
+  it.each([
+    ['anthropic.claude-sonnet-4-6-v1:0', 'anthropic'],
+    ['us.anthropic.claude-sonnet-4-6', 'anthropic'],
+    ['us.meta.llama4-maverick-instruct-v1:0', 'meta'],
+    ['amazon.nova-pro-v1:0', 'amazon'],
+    ['amazon.claude-compatible-v1:0', 'amazon'],
+  ])('keys the provider-qualified Bedrock ID %s as %s', (model, expected) => {
+    expect(getModelKey(EModelEndpoint.bedrock, model)).toBe(expected);
+  });
+
+  it.each(['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-3.5-sonnet'])(
+    'keys the bare Bedrock Claude ID %s as anthropic',
+    (model) => {
+      expect(getModelKey(EModelEndpoint.bedrock, model)).toBe('anthropic');
+    },
+  );
+
+  it('keeps a bare Bedrock ID of an unknown family as its own key', () => {
+    expect(getModelKey(EModelEndpoint.bedrock, 'my-profile-alias')).toBe('my-profile-alias');
+  });
+
+  it('keys other endpoints by the model itself', () => {
+    expect(getModelKey(EModelEndpoint.anthropic, 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
   });
 });

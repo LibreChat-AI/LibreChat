@@ -1,16 +1,17 @@
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
 let mockIsUnseen = false;
+let mockInterface: { conversationIcons?: boolean } | undefined;
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
   useRemScale: () => 1,
   useToastContext: () => ({ showToast: jest.fn() }),
-  Spinner: ({ className }: { className?: string }) => (
-    <svg data-testid="status-ring" className={className} />
+  Spinner: ({ className, size }: { className?: string; size?: string | number }) => (
+    <svg data-testid="status-ring" className={className} data-size={size} />
   ),
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
@@ -24,7 +25,7 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false } }),
+  useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false, interface: mockInterface } }),
   useUpdateConversationMutation: () => ({ mutateAsync: jest.fn() }),
   usePinConversationMutation: () => ({ mutate: jest.fn() }),
   useProjectName: () => 'Scheduling',
@@ -41,7 +42,6 @@ jest.mock('recoil', () => ({
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    allConversationsSelector: 'allConversationsSelector',
     conversationIdByIndex: () => 'conversationIdByIndex',
   },
 }));
@@ -95,6 +95,38 @@ const unreadDot = (container: HTMLElement) =>
 describe('Conversation row status', () => {
   beforeEach(() => {
     mockIsUnseen = false;
+    mockInterface = undefined;
+  });
+
+  it('shows the endpoint icon by default and when conversationIcons is true', () => {
+    renderRow();
+    expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+    cleanup();
+    mockInterface = { conversationIcons: true };
+    renderRow();
+    expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+  });
+
+  it('renders no icon or leading box when conversationIcons is false', () => {
+    mockInterface = { conversationIcons: false };
+    const { container } = renderRow();
+
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
+    expect(container.querySelector('.size-5')).toBeNull();
+    expect(screen.getByText('Tool Approval UI')).toBeInTheDocument();
+  });
+
+  it('keeps the running ring and the unread dot when the icon is hidden', () => {
+    mockInterface = { conversationIcons: false };
+    renderRow({ isGenerating: true });
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
+    expect(screen.getByTestId('status-ring')).toBeInTheDocument();
+    cleanup();
+
+    mockIsUnseen = true;
+    const { container } = renderRow();
+    expect(unreadDot(container)).not.toBeNull();
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
   });
 
   it('rings the avatar while running and keeps the row menu reachable', () => {
@@ -109,6 +141,21 @@ describe('Conversation row status', () => {
     expect(screen.getByTestId('convo-options')).toBeInTheDocument();
     expect(screen.getAllByTestId('status-ring')).toHaveLength(1);
     expect(rowButton()).toContainElement(ring);
+  });
+
+  it('sizes the ring in rem so it follows the avatar box at any UI scale', () => {
+    renderRow({ isGenerating: true });
+
+    expect(screen.getByTestId('status-ring').getAttribute('class')).toContain('size-[2.125rem]');
+  });
+
+  it('offsets the ring in rem so it stays centered on the avatar at any UI scale', () => {
+    renderRow({ isGenerating: true });
+
+    const className = screen.getByTestId('status-ring').getAttribute('class') ?? '';
+    expect(className).toContain('-top-[0.4375rem]');
+    expect(className).toContain('-inset-s-[0.4375rem]');
+    expect(className).not.toMatch(/\[\d+px\]/);
   });
 
   it('marks an unseen reply on the avatar and in the title weight', () => {

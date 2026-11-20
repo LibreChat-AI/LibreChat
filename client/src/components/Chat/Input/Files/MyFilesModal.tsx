@@ -45,7 +45,7 @@ export function MyFilesModal({
       <OGDialogContent
         title={localize('com_nav_my_files')}
         onOpenAutoFocus={captureReturnFocus}
-        className="bg-surface-dialog text-text-primary w-11/12 shadow-2xl"
+        className="text-text-primary w-11/12 shadow-2xl"
       >
         <OGDialogHeader>
           <OGDialogTitle>{localize('com_nav_my_files')}</OGDialogTitle>

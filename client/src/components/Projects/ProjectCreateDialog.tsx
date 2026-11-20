@@ -105,7 +105,7 @@ export default function ProjectCreateDialog({
         main={
           <form id={formId} onSubmit={handleCreate} className="flex flex-col gap-4">
             <div className="space-y-2">
-              <Label htmlFor={`${formId}-name`} className="text-text-primary text-sm font-medium">
+              <Label htmlFor={`${formId}-name`} className="text-sm font-medium">
                 {localize('com_ui_project_name')}
               </Label>
               <Input
@@ -119,10 +119,7 @@ export default function ProjectCreateDialog({
               />
             </div>
             <div className="space-y-2">
-              <Label
-                htmlFor={`${formId}-description`}
-                className="text-text-primary text-sm font-medium"
-              >
+              <Label htmlFor={`${formId}-description`} className="text-sm font-medium">
                 {localize('com_ui_description')}{' '}
                 <span className="text-text-secondary font-normal">
                   {localize('com_ui_optional')}

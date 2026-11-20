@@ -9,10 +9,11 @@ import {
   thinkPrompt,
   replyText,
 } from '../helpers';
+import { sendCompactionHistory } from '../compaction.helpers';
 
 /**
  * Streamed content parts are folded into the response by the step reducers in
- * `client/src/hooks/SSE/steps`, each at its step's index. These scenarios pin
+ * `packages/chat/src/core/steps`, each at its step's index. These scenarios pin
  * what that looks like on screen, live and after the persisted copy reloads.
  */
 
@@ -64,6 +65,7 @@ test.describe('step reducer', () => {
     test.setTimeout(120_000);
     const label = uniqueLabel('compact');
     await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await sendCompactionHistory(page, label);
     await sendMessageAndWaitForCompletion(page, `tell me about ${label}`);
 
     await page.getByTestId('token-usage').click();

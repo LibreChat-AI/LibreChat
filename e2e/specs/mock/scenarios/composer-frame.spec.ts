@@ -1,0 +1,48 @@
+import { expect, test } from '@playwright/test';
+import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint } from '../helpers';
+
+/**
+ * The composer layout, drawn by the chat package's frame: a click on the surface's empty area
+ * returns focus to the draft, while a popup trigger inside it keeps focus so its menu can open
+ * and close normally (#15624). On a touch screen the draft is left alone instead.
+ */
+test.describe.configure({ timeout: 120_000 });
+
+test.describe('composer frame', () => {
+  test('a click on the surface focuses the draft, a popup trigger keeps it @scenario:composer-surface-click-focuses-draft', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      window.addEventListener('librechat:welcome-greeting-settled', () => {
+        document.documentElement.dataset.greetingSettled = 'true';
+      });
+    });
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const input = page.getByRole('textbox', { name: 'Message input' });
+    const surface = page.getByTestId('composer-surface');
+
+    /* Let the welcome autofocus finish before testing the frame's separate click behavior. */
+    await expect(page.locator('html')).toHaveAttribute('data-greeting-settled', 'true', {
+      timeout: 20000,
+    });
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await expect(input).not.toBeFocused();
+
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    await surface.click({ position: { x: (box?.width ?? 0) / 2, y: (box?.height ?? 0) - 6 } });
+    /* A coarse pointer leaves focus alone so the on-screen keyboard does not open on a stray tap. */
+    const coarse = await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches);
+    if (coarse) {
+      await expect(input).not.toBeFocused();
+      return;
+    }
+    await expect(input).toBeFocused();
+
+    const trigger = surface.locator('[aria-haspopup]:not([aria-haspopup="false"])').first();
+    await trigger.click();
+    await expect(input).not.toBeFocused();
+    await page.keyboard.press('Escape');
+  });
+});

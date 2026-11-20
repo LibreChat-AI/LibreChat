@@ -1,4 +1,8 @@
-import { WebSearchToolDefinition, CalculatorToolDefinition } from '@librechat/agents';
+import {
+  WebSearchToolDefinition,
+  CalculatorToolDefinition,
+  GitHubCompareToolDefinition,
+} from '@librechat/agents';
 import type { ExtendedJsonSchema } from './schema';
 import { AskUserQuestionToolDefinition } from '~/agents/hitl/askUserQuestionTool';
 import { geminiToolkit } from '~/tools/toolkits/gemini';
@@ -32,37 +36,6 @@ export const googleSearchSchema: ExtendedJsonSchema = {
     },
   },
   required: ['query'],
-};
-
-/** DALL-E 3 tool JSON schema */
-export const dalle3Schema: ExtendedJsonSchema = {
-  type: 'object',
-  properties: {
-    prompt: {
-      type: 'string',
-      maxLength: 4000,
-      description:
-        'A text description of the desired image, following the rules, up to 4000 characters.',
-    },
-    style: {
-      type: 'string',
-      enum: ['vivid', 'natural'],
-      description:
-        'Must be one of `vivid` or `natural`. `vivid` generates hyper-real and dramatic images, `natural` produces more natural, less hyper-real looking images',
-    },
-    quality: {
-      type: 'string',
-      enum: ['hd', 'standard'],
-      description: 'The quality of the generated image. Only `hd` and `standard` are supported.',
-    },
-    size: {
-      type: 'string',
-      enum: ['1024x1024', '1792x1024', '1024x1792'],
-      description:
-        'The size of the requested image. Use 1024x1024 (square) as the default, 1792x1024 if the user requests a wide image, and 1024x1792 for full-body portraits. Always include this parameter in the request.',
-    },
-  },
-  required: ['prompt', 'style', 'quality', 'size'],
 };
 
 /** Flux API tool JSON schema */
@@ -336,15 +309,6 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
     schema: googleSearchSchema,
     toolType: 'builtin',
   },
-  dalle: {
-    name: 'dalle',
-    description: `Use DALLE to create images from text descriptions.
-    - It requires prompts to be in English, detailed, and to specify image type and human features for diversity.
-    - Create only one image, without repeating or listing descriptions outside the "prompts" field.
-    - Maintains the original intent of the description, with parameters for image style, quality, and size to tailor the output.`,
-    schema: dalle3Schema,
-    toolType: 'builtin',
-  },
   flux: {
     name: 'flux',
     description:
@@ -436,6 +400,15 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
  * registers the tool pair on match.
  */
 const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
+  github_compare: {
+    name: GitHubCompareToolDefinition.name,
+    description: GitHubCompareToolDefinition.description,
+    schema: {
+      ...GitHubCompareToolDefinition.parameters,
+      required: [...GitHubCompareToolDefinition.parameters.required],
+    },
+    toolType: 'builtin',
+  },
   [CalculatorToolDefinition.name]: {
     name: CalculatorToolDefinition.name,
     description: CalculatorToolDefinition.description,
@@ -458,12 +431,4 @@ const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
 
 export function getToolDefinition(toolName: string): ToolRegistryDefinition | undefined {
   return toolDefinitions[toolName] ?? agentToolDefinitions[toolName];
-}
-
-export function getAllToolDefinitions(): ToolRegistryDefinition[] {
-  return [...Object.values(toolDefinitions), ...Object.values(agentToolDefinitions)];
-}
-
-export function getToolSchema(toolName: string): ExtendedJsonSchema | undefined {
-  return getToolDefinition(toolName)?.schema;
 }

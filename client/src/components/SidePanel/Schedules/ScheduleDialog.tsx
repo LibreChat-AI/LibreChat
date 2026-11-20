@@ -33,6 +33,7 @@ import type {
   TScheduleCadence,
   ScheduleFrequency,
 } from 'librechat-data-provider';
+import type { Authorization } from './Authorize';
 import type { TranslationKeys } from '~/hooks';
 import {
   describeCadence,
@@ -50,12 +51,21 @@ import {
   useCreateScheduleMutation,
   useUpdateScheduleMutation,
 } from '~/data-provider';
-import { scheduleMCPErrorMessage, scheduleMCPErrorOutcomes } from './errors';
+import {
+  useScheduleMCPOfferRefresh,
+  useScheduleMCPConsentMutations,
+} from '~/data-provider/Schedules/consent';
+import {
+  scheduleMCPErrorMessage,
+  scheduleMCPErrorOutcomes,
+  scheduleAuthorizationRejected,
+} from './errors';
 import { useLocalize, useClockFormat, useWeekStart } from '~/hooks';
 import { useChatProjectPicker } from './useScheduleProjects';
 import { VariableEditor } from '~/components/Variables';
 import ScheduleMCPRecovery from './ScheduleMCPRecovery';
 import { rotateWeekFrom } from '~/utils/clock';
+import Authorize from './Authorize';
 import { cn } from '~/utils';
 
 interface ScheduleDialogProps {
@@ -248,6 +258,16 @@ export default function ScheduleDialog({
   const pinnedProjectId = schedulesData?.limits.projectId;
   const minIntervalMinutes = schedulesData?.limits.minIntervalMinutes;
   const requireProject = schedulesData?.limits.requireProject === true;
+  /**
+   * Where consent is on, a schedule is authorized in the same step that creates it, and
+   * again in the same step that edits it: an edit ends the grant it had.
+   */
+  const authorizes = schedulesData?.limits.mcpConsent === true;
+  const [authorization, setAuthorization] = useState<Authorization>({
+    value: null,
+    owed: false,
+    unsaved: false,
+  });
   const {
     items: loadedProjectItems,
     namesById: projectNames,
@@ -269,7 +289,7 @@ export default function ScheduleDialog({
             {
               label: localize('com_ui_schedule_project_none'),
               value: '',
-              icon: <Folder className="h-4 w-4 text-text-secondary" aria-hidden="true" />,
+              icon: <Folder className="text-text-secondary h-4 w-4" aria-hidden="true" />,
             },
             ...loadedProjectItems,
           ],
@@ -327,6 +347,7 @@ export default function ScheduleDialog({
   /** Fingerprint of the payload the current key was last attempted with. */
   const lastAttemptedPayload = useRef<string | null>(null);
 
+  const refreshOffer = useScheduleMCPOfferRefresh();
   const createSchedule = useCreateScheduleMutation({
     onSuccess: () => {
       setMCPRecoveryOutcomes([]);
@@ -337,32 +358,46 @@ export default function ScheduleDialog({
     },
     onError: (error) => {
       setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
-      showToast({
-        message: scheduleMCPErrorMessage(error, localize) ?? localize('com_ui_error'),
-        status: 'error',
-      });
-    },
-  });
-
-  const updateSchedule = useUpdateScheduleMutation({
-    onSuccess: () => {
-      setMCPRecoveryOutcomes([]);
-      showToast({ message: localize('com_ui_schedule_updated'), status: 'success' });
-      onOpenChange(false);
-    },
-    onError: (error) => {
-      setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
-      const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
+      // What could be allowed changed under the owner's choice. The form stays open on the
+      // new offer, with the ticks that still apply, so the next create is not turned down too.
+      const rejected = scheduleAuthorizationRejected(error);
+      if (rejected) refreshOffer();
       showToast({
         message:
           scheduleMCPErrorMessage(error, localize) ??
-          localize(status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error'),
+          localize(rejected ? 'com_ui_schedule_authorize_changed' : 'com_ui_error'),
         status: 'error',
       });
     },
   });
 
-  const isLoading = createSchedule.isLoading || updateSchedule.isLoading;
+  const updated = () => {
+    setMCPRecoveryOutcomes([]);
+    showToast({ message: localize('com_ui_schedule_updated'), status: 'success' });
+    onOpenChange(false);
+  };
+  const refused = (error: Error) => {
+    setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
+    const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
+    // As on create: the offer the choice was made from is not the one the server holds.
+    const rejected = scheduleAuthorizationRejected(error);
+    if (rejected) refreshOffer();
+    const fallback = status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error';
+    showToast({
+      message:
+        scheduleMCPErrorMessage(error, localize) ??
+        localize(rejected ? 'com_ui_schedule_authorize_changed' : fallback),
+      status: 'error',
+    });
+  };
+  const updateSchedule = useUpdateScheduleMutation({ onSuccess: updated, onError: refused });
+  /**
+   * The schedule's own authorization step, for a save that changes what the schedule may use
+   * and nothing else: an edit with no field is refused, and this is not an edit.
+   */
+  const { confirm: authorize } = useScheduleMCPConsentMutations(schedule?.id ?? '');
+
+  const isLoading = createSchedule.isLoading || updateSchedule.isLoading || authorize.isLoading;
 
   /** Whether this submit carries a cadence at all: a pure rename does not, and the
    *  API only validates a cadence it actually receives. Only touched cadence
@@ -404,10 +439,20 @@ export default function ScheduleDialog({
         ...(cadenceTouched ? { cadence } : {}),
         ...(dirtyFields.timezone === true ? { timezone: values.timezone } : {}),
       };
-      // Nothing touched: a field-less PATCH is refused server-side (it would rotate
-      // the schedule's fencing for a request that changes nothing), so just close.
+      // No field touched: a field-less PATCH is refused server-side (it would rotate
+      // the schedule's fencing for a request that changes nothing). A choice that is not the
+      // grant in force is stored through the schedule's authorization step instead, which
+      // leaves the schedule's revision alone. Otherwise there is nothing to save.
       if (Object.keys(payload).length === 0) {
-        onOpenChange(false);
+        if (!(authorizes && authorization.value && authorization.unsaved)) {
+          onOpenChange(false);
+          return;
+        }
+        const { expectedRevision, ...choice } = authorization.value;
+        authorize.mutate(
+          { ...choice, expectedRevision: expectedRevision ?? null },
+          { onSuccess: updated, onError: (error) => refused(error as Error) },
+        );
         return;
       }
       updateSchedule.mutate({
@@ -418,6 +463,7 @@ export default function ScheduleDialog({
         // silently overwritten — the server answers 409 instead.
         payload: {
           ...payload,
+          ...(authorizes && authorization.value && { authorization: authorization.value }),
           ...(openedConfigRevision.current != null
             ? { expectedConfigRevision: openedConfigRevision.current }
             : {}),
@@ -436,6 +482,7 @@ export default function ScheduleDialog({
       timezone: values.timezone,
       target: 'new' as const,
       enabled: true,
+      ...(authorizes && authorization.value && { authorization: authorization.value }),
     };
     // STABLE across retries of the SAME intent, which is the whole point: the server
     // commits the row and arms it in two writes, so a failure between them leaves the
@@ -524,7 +571,13 @@ export default function ScheduleDialog({
     return null;
   };
   const cadenceError = resolveCadenceError();
-  const canSubmit = cronIsValid && daysAreValid && !belowFloor && !isLoading;
+  const canSubmit =
+    cronIsValid &&
+    daysAreValid &&
+    !belowFloor &&
+    !isLoading &&
+    // Something to allow, and nothing allowed yet: the schedule would only be refused its tools.
+    !(authorizes && authorization.owed && authorization.value == null);
 
   /** The offset disambiguates two similar names, which matters now that the zone is
    *  something the user picks rather than the browser's own. Memoized because it
@@ -551,7 +604,7 @@ export default function ScheduleDialog({
   const timezoneField = (
     <fieldset className="space-y-2">
       <legend>
-        <Label id="schedule-timezone-label" className="text-sm font-medium text-text-primary">
+        <Label id="schedule-timezone-label" className="text-sm font-medium">
           {localize('com_ui_schedule_timezone')}
         </Label>
       </legend>
@@ -605,7 +658,7 @@ export default function ScheduleDialog({
             <div className="space-y-1.5">
               <div className="grid gap-4 md:grid-cols-3">
                 <div className="space-y-2">
-                  <Label htmlFor="schedule-name" className="text-sm font-medium text-text-primary">
+                  <Label htmlFor="schedule-name" className="text-sm font-medium">
                     {localize('com_ui_name')}
                   </Label>
                   <Input
@@ -619,7 +672,7 @@ export default function ScheduleDialog({
                   <FieldMessage id="schedule-name-message" message={errors.name?.message} />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="schedule-agent" className="text-sm font-medium text-text-primary">
+                  <Label htmlFor="schedule-agent" className="text-sm font-medium">
                     {localize('com_ui_agent')}
                   </Label>
                   <Controller
@@ -656,10 +709,7 @@ export default function ScheduleDialog({
                   <FieldMessage id="schedule-agent-message" message={errors.agent_id?.message} />
                 </div>
                 <div className="space-y-2">
-                  <Label
-                    htmlFor="schedule-project"
-                    className="text-sm font-medium text-text-primary"
-                  >
+                  <Label htmlFor="schedule-project" className="text-sm font-medium">
                     {localize('com_ui_project')}
                   </Label>
                   {pinnedProjectId != null ? (
@@ -669,7 +719,7 @@ export default function ScheduleDialog({
                     <div
                       id="schedule-project"
                       data-testid="schedule-project-pinned"
-                      className="flex h-10 w-full items-center gap-2 rounded-xl border border-border-light bg-surface-secondary px-3 text-sm text-text-secondary"
+                      className="border-border-light bg-surface-secondary text-text-secondary flex h-10 w-full items-center gap-2 rounded-xl border px-3 text-sm"
                     >
                       <Folder className="h-4 w-4 shrink-0" aria-hidden="true" />
                       <span className="truncate">{projectDisplayName(pinnedProjectId)}</span>
@@ -704,7 +754,7 @@ export default function ScheduleDialog({
                           onBlur={field.onBlur}
                           items={projectItems}
                           SelectIcon={
-                            <Folder className="h-4 w-4 text-text-secondary" aria-hidden="true" />
+                            <Folder className="text-text-secondary h-4 w-4" aria-hidden="true" />
                           }
                           ariaLabel={localize('com_ui_project')}
                           ariaInvalid={errors.chatProjectId != null}
@@ -740,7 +790,7 @@ export default function ScheduleDialog({
               </div>
               {/* Full width, not inside the agent cell: at a third of the dialog this
                 sentence wraps an extra line and makes the identity row needlessly tall. */}
-              <p className="text-xs text-text-secondary">
+              <p className="text-text-secondary text-xs">
                 {localize('com_ui_schedule_target_new_chat')}
               </p>
             </div>
@@ -775,10 +825,7 @@ export default function ScheduleDialog({
 
             <fieldset className="space-y-2">
               <legend>
-                <Label
-                  id="schedule-frequency-label"
-                  className="text-sm font-medium text-text-primary"
-                >
+                <Label id="schedule-frequency-label" className="text-sm font-medium">
                   {localize('com_ui_schedule_frequency')}
                 </Label>
               </legend>
@@ -803,7 +850,7 @@ export default function ScheduleDialog({
             {frequency === 'cron' ? (
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="schedule-cron" className="text-sm font-medium text-text-primary">
+                  <Label htmlFor="schedule-cron" className="text-sm font-medium">
                     {localize('com_ui_schedule_cron_expression')}
                   </Label>
                   <Input
@@ -826,7 +873,7 @@ export default function ScheduleDialog({
                     data-testid="schedule-cron-input"
                     {...register('expression')}
                   />
-                  <p id="schedule-cron-hint" className="text-xs text-text-secondary">
+                  <p id="schedule-cron-hint" className="text-text-secondary text-xs">
                     {localize('com_ui_schedule_cron_hint')}
                   </p>
                   <FieldMessage
@@ -847,10 +894,7 @@ export default function ScheduleDialog({
                 {frequency === 'weekly' && (
                   <fieldset className="space-y-2">
                     <legend>
-                      <Label
-                        id="schedule-days-label"
-                        className="text-sm font-medium text-text-primary"
-                      >
+                      <Label id="schedule-days-label" className="text-sm font-medium">
                         {localize('com_ui_schedule_days')}
                       </Label>
                     </legend>
@@ -905,10 +949,7 @@ export default function ScheduleDialog({
                 )}
                 <fieldset className="space-y-2">
                   <legend>
-                    <Label
-                      id="schedule-time-label"
-                      className="text-sm font-medium text-text-primary"
-                    >
+                    <Label id="schedule-time-label" className="text-sm font-medium">
                       {localize(
                         frequency === 'hourly'
                           ? 'com_ui_schedule_minutes_past_hour'
@@ -959,7 +1000,7 @@ export default function ScheduleDialog({
                   contradict the "pick at least one day" message right below it. */}
               {daysAreValid && (
                 <p
-                  className="break-words rounded-lg bg-surface-secondary px-3 py-2 text-sm text-text-secondary"
+                  className="bg-surface-secondary text-text-secondary rounded-lg px-3 py-2 text-sm break-words"
                   data-testid="schedule-summary"
                 >
                   {summary}
@@ -968,10 +1009,10 @@ export default function ScheduleDialog({
               <FieldMessage id="schedule-cadence-message" message={cadenceError ?? undefined} />
               {previewRuns.length > 0 && (
                 <div className="space-y-1" data-testid="schedule-preview">
-                  <p className="text-xs font-medium text-text-primary">
+                  <p className="text-text-primary text-xs font-medium">
                     {localize('com_ui_schedule_next_runs')}
                   </p>
-                  <ul className="space-y-0.5 text-xs text-text-secondary">
+                  <ul className="text-text-secondary space-y-0.5 text-xs">
                     {previewRuns.map((run) => (
                       <li key={run.getTime()}>
                         {formatRunInstant(run, timezone, locale, prefersMeridiem)}
@@ -981,6 +1022,16 @@ export default function ScheduleDialog({
                 </div>
               )}
             </div>
+            {authorizes && selectedAgentId !== '' && (
+              <Authorize
+                key={selectedAgentId}
+                agentId={selectedAgentId}
+                scheduleId={
+                  schedule && selectedAgentId === schedule.agent_id ? schedule.id : undefined
+                }
+                onChange={setAuthorization}
+              />
+            )}
           </form>
         }
         buttons={

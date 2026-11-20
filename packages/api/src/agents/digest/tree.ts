@@ -442,20 +442,6 @@ export function snapshotActivitySummary(task: SubagentTaskSnapshot): ActivitySum
     : boundActivitySummary(decorated.activitySummary);
 }
 
-/** Copies a snapshot's bounded decorations onto a rebuilt snapshot. */
-export function carryActivity(
-  from: SubagentTaskSnapshot,
-  to: SubagentTaskSnapshot,
-): ActivitySnapshot {
-  const activity = snapshotActivity(from);
-  const activitySummary = snapshotActivitySummary(from);
-  return {
-    ...to,
-    ...(activity == null ? {} : { activity }),
-    ...(activitySummary == null ? {} : { activitySummary }),
-  };
-}
-
 /** Current SDK results can persist a failure as a completed message, so a
  * completed status is re-checked against the same verdict the live recorder uses. */
 const projectionStatus = (

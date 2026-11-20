@@ -8,12 +8,3 @@ export interface AzureOptions {
   azureOpenAIApiVersion?: string;
   azureOpenAIBasePath?: string;
 }
-
-/**
- * Client with azure property for setting deployment name
- */
-export interface GenericClient {
-  azure: {
-    azureOpenAIApiDeploymentName?: string;
-  };
-}

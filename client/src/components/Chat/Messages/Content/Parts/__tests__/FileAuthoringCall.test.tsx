@@ -45,8 +45,8 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
 
 jest.mock('../CodeWindowHeader', () => ({
   __esModule: true,
-  default: ({ language }: { language: string }) => (
-    <div data-testid="code-window-header" data-language={language} />
+  default: ({ language, label }: { language: string; label?: string }) => (
+    <div data-testid="code-window-header" data-language={language} data-label={label} />
   ),
 }));
 
@@ -118,8 +118,15 @@ describe('FileAuthoringCall', () => {
 
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Created SKILL.md');
     expect(screen.getByTestId('code-window-header')).toHaveAttribute('data-language', 'SKILL.md');
+    expect(screen.getByTestId('code-window-header')).toHaveAttribute(
+      'data-label',
+      'skills/demo/SKILL.md',
+    );
     expect(screen.getByText(/Large generated body stays visible/)).toBeInTheDocument();
-    expect(screen.getByText('Created skills/demo/SKILL.md (4096 chars).')).toBeInTheDocument();
+    /** The row already says it was created; the summary is not repeated. */
+    expect(
+      screen.queryByText('Created skills/demo/SKILL.md (4096 chars).'),
+    ).not.toBeInTheDocument();
   });
 
   it('labels a create_file overwrite as Updated when the output summary says so', () => {
@@ -309,8 +316,91 @@ describe('FileAuthoringCall', () => {
     expect(screen.getByText('status: draft')).toBeInTheDocument();
     expect(screen.getByText('status: published')).toBeInTheDocument();
     expect(
-      screen.getByText('Updated workspace/demo/SKILL.md with 2 exact replacements.'),
-    ).toBeInTheDocument();
+      screen.queryByText('Updated workspace/demo/SKILL.md with 2 exact replacements.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hides a bare success summary but keeps any other output', () => {
+    const args = { file_path: 'src/a.ts', old_text: 'const a = 1;', new_text: 'const a = 2;' };
+    const { rerender } = render(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={args}
+        output="Edited"
+      />,
+    );
+    expect(screen.queryByText('Edited')).not.toBeInTheDocument();
+
+    rerender(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={args}
+        output="Editor lock held by another process"
+      />,
+    );
+    expect(screen.getByText('Editor lock held by another process')).toBeInTheDocument();
+  });
+
+  describe('success summary visibility', () => {
+    const argsByTool = {
+      create_file: { file_path: 'src/a.ts', content: 'export const a = 1;' },
+      edit_file: { file_path: 'src/a.ts', old_text: 'const a = 1;', new_text: 'const a = 2;' },
+    };
+    const renderFinished = (toolName: 'create_file' | 'edit_file', output: string) =>
+      render(
+        <FileAuthoringCall
+          toolName={toolName}
+          initialProgress={1}
+          isSubmitting={false}
+          args={argsByTool[toolName]}
+          output={output}
+        />,
+      );
+
+    it.each([
+      {
+        name: 'a warning line',
+        toolName: 'create_file',
+        output: 'Created src/a.ts.\nWarning: bundled files could not be written.',
+        shown: /bundled files could not be written/,
+      },
+      {
+        name: 'a skill authoring warning list',
+        toolName: 'create_file',
+        output:
+          'Created skills/demo/SKILL.md (4096 chars).\n\nWarnings:\n- frontmatter.owner [UNKNOWN_KEY]: "owner" is not a recognized frontmatter key and is stored as-is',
+        shown: /not a recognized frontmatter key/,
+      },
+      {
+        name: 'a syntax check result after an edit',
+        toolName: 'edit_file',
+        output:
+          'Updated workspace/src/a.ts with 1 exact replacement.\n\n[syntax-check warning via tsc]\nsrc/a.ts(1,1): error TS1005',
+        shown: /syntax-check warning via tsc/,
+      },
+    ] as const)('keeps the output when the summary is followed by $name', (row) => {
+      renderFinished(row.toolName, row.output);
+
+      expect(screen.getByText(row.shown)).toBeInTheDocument();
+    });
+
+    it.each([
+      {
+        name: 'the skill invocation hint',
+        output:
+          'Created skills/demo/SKILL.md (4096 chars). Invoke it with the skill tool when you want its instructions loaded.',
+      },
+      { name: 'a trailing newline', output: 'Created src/a.ts (19 chars).\n' },
+    ])('hides a one-line summary with $name', ({ output }) => {
+      renderFinished('create_file', output);
+
+      expect(screen.getByText(/export const a = 1;/)).toBeInTheDocument();
+      expect(screen.queryByText(output.trim())).not.toBeInTheDocument();
+    });
   });
 
   it('renders replacements from JSON-stringified edits entries after workspace update', () => {

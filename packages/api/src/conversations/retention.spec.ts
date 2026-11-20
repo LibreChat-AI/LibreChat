@@ -8,6 +8,7 @@ import {
   resolveImportRetentionFields,
   resolveImportTagCounts,
   isTemporaryRecord,
+  isTemporaryTurn,
 } from './retention';
 
 describe('applyForcedRetention', () => {
@@ -222,6 +223,45 @@ describe('resolveResumableRetention', () => {
       ),
     ).toEqual({ isTemporary, retentionExpiresAt: deadline.toISOString() });
     expect(createExpiration).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isTemporaryTurn', () => {
+  it('follows the stored conversation over the request flag', () => {
+    expect(
+      isTemporaryTurn({
+        body: { isTemporary: false },
+        resolvedConversation: { isTemporary: true },
+      }),
+    ).toBe(true);
+    expect(
+      isTemporaryTurn({
+        body: { isTemporary: true },
+        resolvedConversation: { isTemporary: false },
+      }),
+    ).toBe(false);
+  });
+
+  it('counts a turn the administrator forces temporary', () => {
+    expect(
+      isTemporaryTurn({
+        resolvedConversation: { isTemporary: false },
+        config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
+      }),
+    ).toBe(true);
+  });
+
+  it('counts a legacy conversation that stores only a deadline', () => {
+    const expiredAt = new Date('2099-01-01T00:00:00.000Z');
+    expect(isTemporaryTurn({ resolvedConversation: { expiredAt } })).toBe(true);
+    expect(isTemporaryTurn({ resolvedConversation: { isTemporary: false, expiredAt } })).toBe(
+      false,
+    );
+  });
+
+  it('treats a turn without request state as permanent', () => {
+    expect(isTemporaryTurn()).toBe(false);
+    expect(isTemporaryTurn({ body: {} })).toBe(false);
   });
 });
 

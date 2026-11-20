@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
@@ -7,6 +6,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { expect, test } from './fixtures';
 
 /**
  * Creates a project from the all-projects page and returns its id.

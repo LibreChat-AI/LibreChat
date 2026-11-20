@@ -1,6 +1,7 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState, useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
+import { useIsSubmitting } from '@librechat/chat/react';
 import {
   getConfigDefaults,
   Constants,
@@ -13,13 +14,17 @@ import { TemporaryChat, TemporaryChatIndicator } from './TemporaryChat';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import ModelSelector from './Menus/Endpoints/ModelSelector';
 import { BackgroundTasksButton } from './BackgroundTasks';
+import { isCodeConversation } from './PullRequest/code';
 import { TraceButton, useTraceControl } from './Trace';
 import { useGetStartupConfig } from '~/data-provider';
 import ExportAndShareMenu from './ExportAndShareMenu';
 import SubagentThreadLink from './SubagentThreadLink';
+import { PullRequestChip } from './PullRequest';
 import BookmarkMenu from './Menus/BookmarkMenu';
+import { useChatContext } from '~/Providers';
 import AddMultiConvo from './AddMultiConvo';
 import { useHasAccess } from '~/hooks';
+import { Session } from './Session';
 import { cn } from '~/utils';
 import store from '~/store';
 
@@ -35,8 +40,12 @@ function Header({
 }) {
   const { data: startupConfig } = useGetStartupConfig();
   const navVisible = useRecoilValue(store.sidebarExpanded);
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
+  const isSubmitting = useIsSubmitting(0);
   const isSmallScreen = useDrawerViewport();
+  const [hasShownMobileMenu, setHasShownMobileMenu] = useState(false);
+  useEffect(() => {
+    if (isSmallScreen) setHasShownMobileMenu(true);
+  }, [isSmallScreen]);
 
   /** The mobile row only offers a new chat when there is one to leave. Read
    *  from the route rather than the context conversation, which still holds the
@@ -44,6 +53,14 @@ function Header({
    *  conversation has no id in the route yet, so absence counts as new too. */
   const { conversationId: routeConversationId } = useParams();
   const isNewChat = routeConversationId == null || routeConversationId === Constants.NEW_CONVO;
+  /** The context conversation can still be the previous chat for a render, so it counts only
+   *  once it is the routed one. Only a code conversation can have a pull request. */
+  const { conversation } = useChatContext();
+  const showPullRequest =
+    !isNewChat &&
+    parentConversationId == null &&
+    conversation?.conversationId === routeConversationId &&
+    isCodeConversation(conversation);
 
   const interfaceConfig = useMemo(
     () => startupConfig?.interface ?? defaultInterface,
@@ -77,13 +94,17 @@ function Header({
     enabled: parentConversationId == null,
   });
 
+  /** The session rail replaces the popover unless the deployment turned it off. Until the
+   *  config answers, neither is drawn, so a deployment without the rail never shows its control. */
+  const sessionRail = startupConfig != null && interfaceConfig.sessionRail !== false;
+
   /** The drawer covers the header on mobile; keep its controls out of the tab order. */
   const hiddenBehindNav = navVisible === true && isSmallScreen && 'hidden';
 
   return (
     /* The composer review is in a z-10 stacking context. Keep header controls
        above it when a tall review reaches the top of a short viewport. */
-    <div className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary md:from-surface-primary-alt/80 md:via-surface-primary-alt/50 2xl:from-surface-primary-alt/0 absolute top-0 z-20 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold 2xl:via-transparent">
+    <div className="from-surface-canvas via-surface-canvas/70 text-text-primary md:from-surface-canvas/80 md:via-surface-canvas/50 2xl:from-surface-canvas/0 theme-chrome-quiet:bg-surface-canvas theme-chrome-quiet:bg-none absolute top-0 z-20 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold 2xl:via-transparent">
       <div className={cn('flex-shrink-0 items-center', isSmallScreen ? 'flex' : 'hidden')}>
         <OpenSidebar testId="header-open-sidebar-button" />
       </div>
@@ -91,7 +112,7 @@ function Header({
       <div
         className={cn(
           'flex min-w-0 flex-1 items-center gap-2',
-          !isSmallScreen && 'pl-3 transition-all duration-200 ease-in-out',
+          !isSmallScreen && 'ps-3 transition-all duration-200 ease-in-out',
           hiddenBehindNav,
         )}
       >
@@ -103,35 +124,58 @@ function Header({
           <PresetsMenu />
         )}
         {hasAccessToBookmarks === true && (
-          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
+          <div className={cn('items-center empty:hidden', isSmallScreen ? 'hidden' : 'flex')}>
             <BookmarkMenu />
           </div>
         )}
         {hasAccessToMultiConvo === true && (
-          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
+          <div className={cn('items-center empty:hidden', isSmallScreen ? 'hidden' : 'flex')}>
             <AddMultiConvo />
           </div>
+        )}
+        {/* Desktop only: its details open to the right, into the room this cluster leaves free.
+            Small screens reach the same card from the overflow menu. */}
+        {!isSmallScreen && showPullRequest && (
+          <PullRequestChip key={`pr-${routeConversationId}`} conversationId={routeConversationId} />
         )}
       </div>
 
       <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
         {showTemporaryChat && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className={isSmallScreen ? undefined : 'hidden'} />}
-        {!isNewChat && parentConversationId == null && (
+        {sessionRail && parentConversationId == null && (
+          <Session
+            key={routeConversationId ?? Constants.NEW_CONVO}
+            conversationId={routeConversationId ?? Constants.NEW_CONVO}
+            agentId={conversation?.agent_id}
+            isSubmitting={isSubmitting}
+            autoOpen={interfaceConfig.sessionRailAutoOpen !== false}
+          />
+        )}
+        {startupConfig != null && !sessionRail && !isNewChat && parentConversationId == null && (
           <BackgroundTasksButton
             key={routeConversationId}
             conversationId={routeConversationId}
             isSubmitting={isSubmitting}
           />
         )}
-        <HeaderMenu
-          startupConfig={startupConfig}
-          trace={trace}
-          className={isSmallScreen ? undefined : 'hidden'}
-        />
+        {/* Avoid mounting a second action tree on desktop startup. Once visited, retain it
+            so resizing does not discard dialogs opened from the mobile menu. */}
+        {(isSmallScreen || hasShownMobileMenu) && (
+          <HeaderMenu
+            startupConfig={startupConfig}
+            trace={trace}
+            readOnly={readOnly}
+            pullRequestConversationId={showPullRequest ? routeConversationId : undefined}
+            className={isSmallScreen ? undefined : 'hidden'}
+          />
+        )}
         <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>
           {trace.show && <TraceButton onClick={trace.open} />}
-          <ExportAndShareMenu isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false} />
+          <ExportAndShareMenu
+            isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false}
+            readOnly={readOnly}
+          />
           {showTemporaryChat && <TemporaryChat />}
         </div>
       </div>

@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom';
 import { useLayoutEffect } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
+import { darkTheme, highContrastDarkTheme, highContrastLightTheme } from 'librechat-data-provider';
 import {
   ThemeProvider,
   isDark,
@@ -8,8 +9,6 @@ import {
   resolvesToHighContrast,
   useTheme,
 } from './ThemeProvider';
-import { highContrastDarkTheme, highContrastLightTheme } from '../themes/highContrast';
-import { darkTheme } from '../themes/dark';
 
 const matchMedia = (matches: boolean): MediaQueryList =>
   ({

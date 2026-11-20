@@ -1,4 +1,9 @@
-import { collectThemeIssues } from '../src/theme';
+import {
+  themeOwnerKey,
+  parseSessionHint,
+  formatSessionHint,
+  collectThemeIssues,
+} from '../src/theme';
 import { deploymentThemeSchema } from '../src/config';
 
 /** A deployment theme as `librechat.yaml` delivers it, with appearance only in the given modes. */
@@ -48,6 +53,40 @@ describe('menu and tooltip shadow roles in a theme definition', () => {
   });
 });
 
+describe('checkbox roles in a theme definition', () => {
+  const theme = {
+    version: 1,
+    name: 'checkbox-reference',
+    modes: {
+      light: {
+        colors: { 'rgb-checkbox-fill': '246 247 250' },
+        appearance: { checkboxFillStyle: 'fill', checkboxRadius: '0.125rem' },
+      },
+      dark: { appearance: { checkboxFillStyle: 'transparent' } },
+    },
+  };
+
+  it('accepts the fill style, the corner and an opaque fill', () => {
+    expect(deploymentThemeSchema.safeParse(theme).success).toBe(true);
+    expect(messages(theme)).toEqual([]);
+  });
+
+  it('rejects an unknown fill style, a non-length corner and a translucent fill', () => {
+    const glass = { ...theme, modes: { light: { appearance: { checkboxFillStyle: 'glass' } } } };
+    expect(messages(glass)).toEqual(['Invalid appearance value for checkboxFillStyle: glass']);
+
+    const round = { ...theme, modes: { light: { appearance: { checkboxRadius: 'round' } } } };
+    expect(messages(round)).toEqual(['Invalid appearance value for checkboxRadius: round']);
+
+    const translucent = {
+      ...theme,
+      modes: { light: { colors: { 'rgb-checkbox-fill': '1 2 3 / 0.5' } } },
+    };
+    expect(deploymentThemeSchema.safeParse(translucent).success).toBe(false);
+    expect(messages(translucent)).toHaveLength(1);
+  });
+});
+
 describe('field fill roles in a theme definition', () => {
   const theme = {
     version: 1,
@@ -85,4 +124,23 @@ describe('field fill roles in a theme definition', () => {
     };
     expect(messages(newer)).toEqual([]);
   });
+});
+
+describe('session hint', () => {
+  it('round-trips an owner whose key carries the separator', () => {
+    const hint = { expires: 1791000000000, owner: themeOwnerKey('user~1', 'acme') };
+    expect(parseSessionHint(formatSessionHint(hint))).toEqual(hint);
+  });
+
+  it('names a tenantless owner with an empty tenant', () => {
+    expect(themeOwnerKey('user-1')).toBe(':user-1');
+    expect(themeOwnerKey('user-1', null)).toBe(':user-1');
+  });
+
+  it.each(['', '~:user-1', 'soon~:user-1', '1791000000000'])(
+    'rejects the malformed %p',
+    (value) => {
+      expect(parseSessionHint(value)).toBeUndefined();
+    },
+  );
 });

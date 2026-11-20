@@ -1,9 +1,10 @@
 import { getDefaultStore } from 'jotai';
+import { useUsageHandler } from '@librechat/chat/react';
 import { act, renderHook } from '@testing-library/react';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage, TConversation } from 'librechat-data-provider';
-import type { ContextSnapshot } from '~/store/usage';
+import type { ContextSnapshot } from '~/components/Chat/Input/TokenUsage/store';
 import {
   contextSnapshotFamily,
   pendingUsageFamily,
@@ -12,10 +13,9 @@ import {
   liveTokensFamily,
   removeUsageAtoms,
   snapshotsByAnchorFamily,
-} from '~/store/usage';
+} from '~/components/Chat/Input/TokenUsage/store';
 import { getRegenerateSubmissionMessages } from '~/hooks/Chat/useChatFunctions';
 import { useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
-import useUsageHandler from '~/hooks/SSE/useUsageHandler';
 import useTokenUsage from '~/hooks/Chat/useTokenUsage';
 
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({

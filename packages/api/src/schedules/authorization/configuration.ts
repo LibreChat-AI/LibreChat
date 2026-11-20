@@ -43,7 +43,11 @@ function hasRoutingTemplate(headers?: Record<string, string>): boolean {
   });
 }
 
-/** Binds effective routing and trust without retaining tokens or rotating client/API secrets. */
+/**
+ * Binds effective routing and trust without retaining tokens or rotating client/API secrets, nor
+ * the masked previews the admin config API stores beside them (`keyPreview`,
+ * `client_secretPreview`), which change whenever an admin rotates the secret in place.
+ */
 export function getScheduledMCPConfigurationRevision(
   config: ParsedServerConfig,
   binding: ScheduledMCPResourceBinding,
@@ -59,10 +63,14 @@ export function getScheduledMCPConfigurationRevision(
     requestHeaders: config.requestHeaders,
     proxy: config.proxy,
     requiresOAuth: config.requiresOAuth,
-    oauth: config.oauth && { ...config.oauth, client_secret: undefined },
+    oauth: config.oauth && {
+      ...config.oauth,
+      client_secret: undefined,
+      client_secretPreview: undefined,
+    },
     oauth_headers: config.oauth_headers,
     obo: config.obo,
-    apiKey: config.apiKey && { ...config.apiKey, key: undefined },
+    apiKey: config.apiKey && { ...config.apiKey, key: undefined, keyPreview: undefined },
   };
   const runtime = processMCPEnv({ options: declared });
   if (runtime.type !== 'sse' && runtime.type !== 'http' && runtime.type !== 'streamable-http')

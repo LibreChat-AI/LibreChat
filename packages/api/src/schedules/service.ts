@@ -1,5 +1,5 @@
+import { isBalanceRefillDue, Permissions, PermissionTypes } from 'librechat-data-provider';
 import { logger, runAsSystem, tenantStorage, isRuntimeDisabled } from '@librechat/data-schemas';
-import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librechat-data-provider';
 import {
   DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
   isScheduleMCPAuthorizationFailure,
@@ -52,6 +52,7 @@ import { GenerationJobManager } from '../stream/GenerationJobManager';
 import { ScheduledMCPPolicyError } from './authorization/policy';
 import { buildBalanceUpdateFields } from '../middleware/balance';
 import { getAppConfigOptionsFromUser } from '../app/service';
+import { createTermsBlockCheck } from '../middleware/terms';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { startScheduleErasureSweep } from './erasure';
@@ -165,11 +166,14 @@ export interface SchedulesServiceDeps {
     ) => Promise<number>;
   };
   getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig | undefined>;
-  findUserById: (
-    userId: string | Types.ObjectId,
-  ) => Promise<{ _id: Types.ObjectId; tenantId?: string; role?: string } | null>;
+  findUserById: (userId: string | Types.ObjectId) => Promise<{
+    _id: string | Types.ObjectId;
+    tenantId?: string;
+    role?: string;
+    termsAccepted?: boolean;
+  } | null>;
   /** Reads the balance record together with the credits unexpired in-flight reservations hold. */
-  findBalance: (userId: string) => Promise<IBalance | null>;
+  findBalance: (userId: string, options?: { applyReset?: boolean }) => Promise<IBalance | null>;
   /**
    * Upserts a balance record. `setOnInsert` carries fields that must ONLY apply to a
    * document this call creates — chiefly the starting credit — so a record created by a
@@ -338,6 +342,8 @@ export function recordScheduledMCPToolAuthFailure(
   getRecorder: () => SchedulesService['recordMCPToolAuthFailure'],
   getRetryPolicy?: () => Promise<ScheduleMCPReceiptRetryPolicy | undefined>,
 ): Promise<boolean> {
+  // A grant held by an API key has no schedule run to record against.
+  if (input.identity != null && !('scheduleId' in input.identity)) return Promise.resolve(false);
   const bearer =
     input.error instanceof ScheduledMCPBearerError ||
     input.error instanceof ScheduledMCPPolicyError;
@@ -552,6 +558,9 @@ export function createScheduleLimitsResolver(
           enabled: config.mcpConsent.enabled === true,
           maxLifetimeHours:
             config.mcpConsent.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+          ...(config.mcpConsent.requireAfter != null && {
+            requireAfterMs: Date.parse(config.mcpConsent.requireAfter),
+          }),
         },
       }),
       maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,
@@ -676,27 +685,7 @@ export function createSchedulesService(
    * mirroring the chat balance check's auto-refill eligibility (record-based).
    */
   function isRefillEligible(record: IBalance | null | undefined): boolean {
-    if (record?.autoRefillEnabled !== true) {
-      return false;
-    }
-    if (!(typeof record.refillAmount === 'number' && record.refillAmount > 0)) {
-      return false;
-    }
-    const lastRefillDate = new Date(record.lastRefill ?? 0);
-    if (Number.isNaN(lastRefillDate.getTime())) {
-      return true;
-    }
-    // Mirror checkBalanceRecord's fallbacks exactly (interval 0 / 'days' when a
-    // partially-synced record is missing them) so we never pre-skip a record the
-    // interactive chat balance check would have refilled.
-    return (
-      new Date() >=
-      getRefillEligibilityDate(
-        lastRefillDate,
-        record.refillIntervalValue ?? 0,
-        record.refillIntervalUnit ?? 'days',
-      )
-    );
+    return record != null && isBalanceRefillDue(record, new Date());
   }
 
   const engineDeps: ScheduleEngineDeps = {
@@ -714,7 +703,12 @@ export function createSchedulesService(
       if (user == null) {
         return null;
       }
-      return { id: user._id.toString(), tenantId: user.tenantId, role: user.role };
+      return {
+        id: user._id.toString(),
+        tenantId: user.tenantId,
+        role: user.role,
+        termsAccepted: user.termsAccepted,
+      };
     },
     hasScheduleAccess: async (user) => {
       const role = await methods.getRoleByName(user.role);
@@ -726,11 +720,11 @@ export function createSchedulesService(
       if (balanceConfig?.enabled !== true) {
         return false;
       }
-      let record = await deps.findBalance(user.id);
+      let record = await deps.findBalance(user.id, { applyReset: false });
       // Credits in-flight requests hold are unavailable to this fire as well: the chat
       // balance check admits against the unreserved amount. Taken from this read because
       // the initialization/sync writes below return the record without the total.
-      const reservedCredits = record?.reservedCredits ?? 0;
+      let reservedCredits = record?.reservedCredits ?? 0;
       // Initialize/sync the record exactly as the chat's balance middleware would,
       // so a new user's startBalance is applied before we read it (avoids skipping
       // a schedule that an interactive chat would have allowed).
@@ -742,7 +736,16 @@ export function createSchedulesService(
           // record in between must never be handed back its starting balance. Each case
           // fences the credit write so it can only create, never restore, credits. The
           // refill-config fields are a genuine sync and never carry a credit.
-          const { user: initUser, tokenCredits, ...syncFields } = updateFields;
+          const {
+            user: initUser,
+            tokenCredits,
+            allotment,
+            allottedAt,
+            lastRefill,
+            ...syncFields
+          } = updateFields;
+          // The grant tuple is written only with the credit, so a racing creator keeps its period.
+          const grant = { allotment, allottedAt, lastRefill };
           if (record == null) {
             // ABSENT record: upsert. The credit rides `$setOnInsert` so a document created
             // by a concurrent charge keeps its charged balance; the refill-config sync is
@@ -751,7 +754,7 @@ export function createSchedulesService(
               set: syncFields,
               setOnInsert: {
                 ...(initUser != null ? { user: initUser } : {}),
-                ...(tokenCredits != null ? { tokenCredits } : {}),
+                ...(tokenCredits != null ? { tokenCredits, ...grant } : {}),
               },
             });
           } else if (tokenCredits != null) {
@@ -759,17 +762,27 @@ export function createSchedulesService(
             // concurrent initializer/charge already set and spent between the read and
             // here. Initialize under a `{ tokenCredits: null }` CAS; on a miss re-read the
             // winner's balance instead of overwriting it.
+            // The allotment rides the CAS so it is written only with the credit it describes.
             const initialized = await deps.initializeNullBalance(user.id, {
               tokenCredits,
-              sync: syncFields,
+              sync: { ...syncFields, ...grant },
             });
-            record = initialized ?? (await deps.findBalance(user.id)) ?? record;
+            record =
+              initialized ?? (await deps.findBalance(user.id, { applyReset: false })) ?? record;
           } else if (Object.keys(syncFields).length > 0) {
             // EXISTING record with a real credit: only refill-config sync remains, which
             // never touches `tokenCredits` and is safe to `$set` directly.
             record = await deps.upsertBalance(user.id, { set: syncFields, setOnInsert: {} });
           }
         }
+      }
+      if (
+        balanceConfig.autoRefillEnabled === true &&
+        record?.refillMode === 'reset' &&
+        isBalanceRefillDue(record, new Date())
+      ) {
+        record = await deps.findBalance(user.id, { applyReset: true });
+        reservedCredits = record?.reservedCredits ?? 0;
       }
       const credits = (record?.tokenCredits ?? 0) - reservedCredits;
       if (credits > 0) {
@@ -962,6 +975,9 @@ export function createSchedulesService(
     // count would let multiple tenants collectively exceed fireConcurrency.
     countActiveRunsGlobal: () => runAsSystem(() => methods.countActiveRuns()),
     isOwnerDeleting: (userId) => deps.isUserDeleting(userId),
+    // The HTTP gate's own check, over this service's config reader, so a fire resolves the
+    // owner's effective `modalAcceptance` exactly as their requests do.
+    isTermsBlocked: createTermsBlockCheck({ getAppConfig: deps.getAppConfig }),
     isGloballyDisabled: async () => {
       // Env first: an incident lever that must work even if the DB/config plane is the
       // thing failing (a kill switch that needs a healthy DB is the one that fails when

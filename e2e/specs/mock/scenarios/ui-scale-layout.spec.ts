@@ -2,7 +2,13 @@ import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
-import { clearUserConversations, deleteConversations, seedConversations } from '../db';
+import {
+  clearUserConversations,
+  deleteConversations,
+  deleteProjects,
+  seedConversations,
+  seedProjects,
+} from '../db';
 import {
   BASE_FONT_PX,
   MAX_SCALE,
@@ -208,14 +214,21 @@ test.describe('UI scale layout', () => {
   }) => {
     const user = getE2EUser();
     const conversationIds = [randomUUID(), randomUUID(), randomUUID()];
+    const now = Date.now();
+    await page.setViewportSize({ width: 1280, height: 720 });
     await clearUserConversations(user.email);
     await seedConversations(
       user.email,
       conversationIds.map((conversationId, index) => ({
         conversationId,
         title: `Scaled row ${index + 1}`,
-        updatedAt: new Date(),
+        updatedAt: new Date(now + index * 1000),
       })),
+    );
+
+    const projectIds = await seedProjects(
+      user.email,
+      Array.from({ length: 8 }, (_, index) => `Scale project ${index + 1}`),
     );
 
     try {
@@ -228,8 +241,18 @@ test.describe('UI scale layout', () => {
 
       await withStoredScale(page, MAX_SCALE);
       await page.reload({ timeout: 15000 });
-      firstRow = await conversationRow(page, 'Scaled row 1');
+      await accountButton(page);
       await expectRootFontPx(page, unscaledFont * MAX_SCALE);
+      const offscreenRow = page
+        .getByTestId('convo-item')
+        .filter({ hasText: 'Scaled row 1' })
+        .first();
+      await expect(offscreenRow).toBeVisible();
+      await expect(
+        offscreenRow,
+        'expanded projects should push the scaled conversation below the viewport',
+      ).not.toBeInViewport();
+      firstRow = await conversationRow(page, 'Scaled row 1');
       const scaled = await box(firstRow);
 
       /* The rows are measured into a CellMeasurerCache; a cache that is not
@@ -241,7 +264,7 @@ test.describe('UI scale layout', () => {
       );
       expect(clipped, 'the scaled row clips its own content').toBe(false);
     } finally {
-      await deleteConversations(conversationIds);
+      await Promise.all([deleteConversations(conversationIds), deleteProjects(projectIds)]);
     }
   });
 });

@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 const express = require('express');
 const {
   assertModelBoundContent,
@@ -26,6 +25,7 @@ const {
   recordShareLinkRejection,
   traceIdForMessage,
   resolveDownloadPath,
+  prepareResultToolCallPreviews,
 } = require('@librechat/api');
 const {
   logger,
@@ -42,6 +42,8 @@ const {
   updateSharedLink,
   getSharedLinks,
   getSharedLink,
+  findOwnedSharedLink,
+  findShareConversationRetention,
   getSharedLinkFile,
   backfillSharedLinkFiles,
   getMessages,
@@ -116,13 +118,7 @@ const resolveSharedLinkExpiration = (req, conversationId) =>
   getSharedLinkExpiration(
     { req, conversationId },
     {
-      getConvo: async (userId, sourceConversationId) => {
-        const Conversation = mongoose.models.Conversation;
-        return Conversation.findOne(
-          { conversationId: sourceConversationId, user: userId },
-          'isTemporary expiredAt',
-        ).lean();
-      },
+      getConvo: findShareConversationRetention,
       createExpirationDate: createChatExpirationDate,
       logger,
     },
@@ -424,6 +420,7 @@ if (allowSharedLinks) {
     sharedLinkConfigMiddleware,
     async (req, res) => {
       try {
+        const previewToolCalls = prepareResultToolCallPreviews(req, { getAppConfig });
         const result = await forkSharedConversation({
           shareId: req.params.shareId,
           shareResourceId: req.shareResourceId,
@@ -444,7 +441,7 @@ if (allowSharedLinks) {
         if (!result) {
           return res.status(404).json({ message: 'Shared conversation not found' });
         }
-        return res.status(201).json(result);
+        return res.status(201).json(await previewToolCalls(result));
       } catch (error) {
         if (isContentFilterError(error)) {
           return res.status(error.statusCode).json(error.body);
@@ -718,11 +715,7 @@ router.patch(
       }
 
       let expiredAt;
-      const SharedLink = mongoose.models.SharedLink;
-      const existing = await SharedLink.findOne(
-        { shareId: req.params.shareId, user: req.user.id },
-        'conversationId',
-      ).lean();
+      const existing = await findOwnedSharedLink(req.user.id, req.params.shareId);
       if (existing?.conversationId) {
         expiredAt = await resolveSharedLinkExpiration(req, existing.conversationId);
       }

@@ -1,13 +1,11 @@
 import { ServerConfigsCacheFactory, APP_CACHE_NAMESPACE } from '../ServerConfigsCacheFactory';
 import { ServerConfigsCacheRedisAggregateKey } from '../ServerConfigsCacheRedisAggregateKey';
 import { ServerConfigsCacheInMemory } from '../ServerConfigsCacheInMemory';
-import { ServerConfigsCacheRedis } from '../ServerConfigsCacheRedis';
 import { cacheConfig } from '~/cache';
 
 // Mock the cache implementations
 jest.mock('../ServerConfigsCacheRedisAggregateKey');
 jest.mock('../ServerConfigsCacheInMemory');
-jest.mock('../ServerConfigsCacheRedis');
 
 // Mock the cache config module
 jest.mock('~/cache', () => ({
@@ -30,7 +28,6 @@ describe('ServerConfigsCacheFactory', () => {
 
       expect(cache).toBeInstanceOf(ServerConfigsCacheRedisAggregateKey);
       expect(ServerConfigsCacheRedisAggregateKey).toHaveBeenCalledWith(APP_CACHE_NAMESPACE, false);
-      expect(ServerConfigsCacheRedis).not.toHaveBeenCalled();
       expect(ServerConfigsCacheInMemory).not.toHaveBeenCalled();
     });
 
@@ -41,17 +38,6 @@ describe('ServerConfigsCacheFactory', () => {
 
       expect(cache).toBeInstanceOf(ServerConfigsCacheInMemory);
       expect(ServerConfigsCacheInMemory).toHaveBeenCalledWith();
-      expect(ServerConfigsCacheRedis).not.toHaveBeenCalled();
-      expect(ServerConfigsCacheRedisAggregateKey).not.toHaveBeenCalled();
-    });
-
-    it('should return ServerConfigsCacheRedis for non-App namespaces when USE_REDIS is true', () => {
-      cacheConfig.USE_REDIS = true;
-
-      const cache = ServerConfigsCacheFactory.create('CustomNamespace', true);
-
-      expect(cache).toBeInstanceOf(ServerConfigsCacheRedis);
-      expect(ServerConfigsCacheRedis).toHaveBeenCalledWith('CustomNamespace', true);
       expect(ServerConfigsCacheRedisAggregateKey).not.toHaveBeenCalled();
     });
 

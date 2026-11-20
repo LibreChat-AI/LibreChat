@@ -7,7 +7,7 @@ import type { TConversationTag, TConversationTagRequest } from 'librechat-data-p
 import { useBookmarkContext } from '~/Providers/BookmarkContext';
 import { useConversationTagMutation } from '~/data-provider';
 import { useLocalize } from '~/hooks';
-import { cn, logger } from '~/utils';
+import { logger } from '~/utils';
 
 type TBookmarkFormProps = {
   tags?: string[];
@@ -84,7 +84,7 @@ const BookmarkForm = ({
       <div className="space-y-4">
         {/* Tag name input */}
         <div className="space-y-2">
-          <Label htmlFor="bookmark-tag" className="text-text-primary text-sm font-medium">
+          <Label htmlFor="bookmark-tag" className="text-sm font-medium">
             {localize('com_ui_bookmarks_title')}
           </Label>
           <Input
@@ -120,7 +120,7 @@ const BookmarkForm = ({
           <Label
             id="bookmark-description-label"
             htmlFor="bookmark-description"
-            className="text-text-primary text-sm font-medium"
+            className="text-sm font-medium"
           >
             {localize('com_ui_bookmarks_description')}
           </Label>
@@ -138,12 +138,8 @@ const BookmarkForm = ({
             id="bookmark-description"
             disabled={false}
             placeholder={localize('com_ui_enter_description')}
-            className={cn(
-              'border-border-light min-h-[6.25rem] w-full resize-none rounded-lg border',
-              'text-text-primary bg-transparent px-3 py-2 text-sm',
-              'placeholder:text-text-tertiary',
-              'focus-visible:ring-border-heavy focus-visible:ring-1',
-            )}
+            variant="field"
+            className="min-h-[6.25rem] resize-none"
             aria-labelledby="bookmark-description-label"
             aria-invalid={!!errors.description}
             aria-describedby="bookmark-description-error"

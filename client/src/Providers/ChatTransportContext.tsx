@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react';
+import { createSSETransport } from '@librechat/chat';
 import { EndpointURLs } from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
-import { createSSETransport } from '~/hooks/SSE/transport';
 import * as requests from '~/data-provider';
 
 /**

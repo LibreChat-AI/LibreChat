@@ -14,9 +14,9 @@ import {
   MCPConfigInitializationCanceledError,
 } from '~/mcp/registry/MCPServersRegistry';
 import { ServerConfigsCacheInMemory } from '~/mcp/registry/cache/ServerConfigsCacheInMemory';
+import { MCPCommittedWriteError, MCPInspectionFailedError } from '~/mcp/errors';
 import { getMCPAppToolsPublicationGeneration } from '~/mcp/toolsChanged';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
-import { MCPInspectionFailedError } from '~/mcp/errors';
 import { processMCPEnv } from '~/utils/env';
 
 // Mock MCPServerInspector to avoid actual server connections
@@ -739,6 +739,7 @@ describe('MCPServersRegistry', () => {
         'srv',
         yamlConfig,
       );
+      const getServerConfigSpy = jest.spyOn(registry, 'getServerConfig');
 
       await expect(
         registry.resolveCachedAppServerConfig({
@@ -749,6 +750,40 @@ describe('MCPServersRegistry', () => {
           ...allowlists,
         }),
       ).resolves.toEqual({ serverConfig: storedYamlConfig, connectionOwner: 'operator' });
+      expect(getServerConfigSpy).toHaveBeenCalledWith('srv', 'user-1', undefined, 'USER');
+    });
+
+    it('rechecks the current role for a persisted App without reusing another role or a legacy cache entry', async () => {
+      const roleServer = {
+        ...testParsedConfig,
+        source: 'user' as const,
+        title: 'Role-scoped server',
+      };
+      const dbGet = jest.spyOn(registry['dbConfigsRepo'], 'get');
+      dbGet.mockImplementation(async (_serverName, userId, role) =>
+        userId === 'user-1' && (role === 'ADMIN' || role === undefined) ? roleServer : undefined,
+      );
+      const validate = (role: string) =>
+        registry.resolveCachedAppServerConfig({
+          serverName: 'srv',
+          userId: 'user-1',
+          role,
+          mcpConfig: {},
+          ...allowlists,
+        });
+
+      // A roleless caller may already have filled the original per-server cache key.
+      await registry.getServerConfig('srv', 'user-1');
+      await expect(validate('USER')).resolves.toBeUndefined();
+      await expect(validate('ADMIN')).resolves.toMatchObject({ serverConfig: roleServer });
+      await expect(validate('USER')).resolves.toBeUndefined();
+      await expect(validate('ADMIN')).resolves.toMatchObject({ serverConfig: roleServer });
+
+      expect(dbGet.mock.calls.filter(([, userId]) => userId === 'user-1')).toEqual([
+        ['srv', 'user-1', undefined],
+        ['srv', 'user-1', 'USER'],
+        ['srv', 'user-1', 'ADMIN'],
+      ]);
     });
   });
 
@@ -840,6 +875,67 @@ describe('MCPServersRegistry', () => {
         // Verify server is removed from underlying cache repository
         const config = await registry['cacheConfigsRepo'].get('cache_server');
         expect(config).toBeUndefined();
+      });
+    });
+
+    describe('cache invalidation failure after a committed write', () => {
+      const failInvalidation = () =>
+        jest
+          .spyOn(
+            registry as unknown as { invalidateServerReadCaches: () => Promise<void> },
+            'invalidateServerReadCaches',
+          )
+          .mockRejectedValue(new Error('redis down'));
+
+      it('reports what addServer persisted', async () => {
+        failInvalidation();
+
+        const failure = await registry
+          .addServer('cache_server', testParsedConfig, 'CACHE')
+          .catch((error) => error);
+
+        expect(failure).toBeInstanceOf(MCPCommittedWriteError);
+        expect(failure.committed.serverName).toBe('cache_server');
+        expect(await registry['cacheConfigsRepo'].get('cache_server')).toBeDefined();
+      });
+
+      it('reports what commitServerUpdate persisted', async () => {
+        await registry.addServer('cache_server', testParsedConfig, 'CACHE');
+        failInvalidation();
+        const updated = { ...testParsedConfig, command: 'python' } as t.ParsedServerConfig;
+
+        const failure = await registry
+          .commitServerUpdate('cache_server', updated, 'CACHE')
+          .catch((error) => error);
+
+        expect(failure).toBeInstanceOf(MCPCommittedWriteError);
+        expect(failure.committed.command).toBe('python');
+      });
+
+      it('refreshes the read caches when a repository step after the write fails', async () => {
+        await registry.addServer('cache_server', testParsedConfig, 'CACHE');
+        const invalidate = jest.spyOn(
+          registry as unknown as { invalidateServerReadCaches: () => Promise<void> },
+          'invalidateServerReadCaches',
+        );
+        jest
+          .spyOn(registry['cacheConfigsRepo'], 'remove')
+          .mockRejectedValueOnce(new MCPCommittedWriteError(undefined, new Error('acl down')));
+
+        await expect(registry.removeServer('cache_server', 'CACHE')).rejects.toBeInstanceOf(
+          MCPCommittedWriteError,
+        );
+        expect(invalidate).toHaveBeenCalledWith('cache_server', undefined, 'CACHE');
+      });
+
+      it('still reports a removal that committed', async () => {
+        await registry.addServer('cache_server', testParsedConfig, 'CACHE');
+        failInvalidation();
+
+        await expect(registry.removeServer('cache_server', 'CACHE')).rejects.toBeInstanceOf(
+          MCPCommittedWriteError,
+        );
+        expect(await registry['cacheConfigsRepo'].get('cache_server')).toBeUndefined();
       });
     });
 

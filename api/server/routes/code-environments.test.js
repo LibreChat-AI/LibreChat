@@ -43,6 +43,7 @@ const mockGenerationJobManager = {
   getCleanupBlockingJobIdsForConversations: jest.fn(),
 };
 let mockHandlerDeps;
+let mockSetupDeps;
 const mockModels = {
   isAgentTriggerPrincipalActive: jest.fn(),
   getConvoCodeEnvironmentDecision: jest.fn(),
@@ -51,10 +52,17 @@ const mockModels = {
 
 jest.mock('@librechat/data-schemas', () => ({
   SystemCapabilities: { MANAGE_CODE_ENVIRONMENTS: 'manage:code_environments' },
+  createBrowserSetupBackend: jest.fn(() => ({})),
 }));
 
 jest.mock('@librechat/api', () => ({
   GenerationJobManager: mockGenerationJobManager,
+  createCodeSetupRouter: jest.fn((deps) => {
+    mockSetupDeps = deps;
+    const router = require('express').Router();
+    router.get('/capabilities', (_req, res) => res.json({ browserEnrollmentVersion: 1 }));
+    return router;
+  }),
   createCodeEnvironmentRegistry: jest.fn(() => mockRegistry),
   createCodeEnvironmentHttpHandlers: jest.fn((deps) => {
     mockHandlerDeps = deps;
@@ -68,7 +76,12 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/server/middleware/roles/capabilities', () => ({
   requireCapability: mockRequireCapability,
 }));
-jest.mock('~/server/middleware', () => ({ requireJwtAuth: mockRequireJwtAuth }));
+jest.mock('~/server/middleware', () => ({
+  requireJwtAuth: mockRequireJwtAuth,
+  requireSameOrigin: jest.fn((_req, _res, next) => next()),
+  checkBan: jest.fn((_req, _res, next) => next()),
+}));
+jest.mock('~/cache/getLogStores', () => jest.fn(() => ({ get: jest.fn() })));
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn(),
   getCodeEnvironmentRegistry: mockGetCodeEnvironmentRegistry,
@@ -94,6 +107,17 @@ describe('code environment routes', () => {
     createApp();
 
     expect(mockGetCodeEnvironmentRegistry).not.toHaveBeenCalled();
+  });
+
+  it('mounts machine setup before the browser JWT boundary without initializing the registry', async () => {
+    await request(createApp()).get('/api/code-environments/setup/capabilities').expect(200, {
+      browserEnrollmentVersion: 1,
+    });
+    expect(mockRequireJwtAuth).not.toHaveBeenCalled();
+    expect(mockGetCodeEnvironmentRegistry).not.toHaveBeenCalled();
+    expect(mockSetupDeps.requireJwtAuth).toBe(mockRequireJwtAuth);
+    expect(mockSetupDeps.requireSameOrigin).toEqual(expect.any(Function));
+    expect(mockSetupDeps.checkBan).toEqual(expect.any(Function));
   });
 
   it('allows authenticated discovery without the management capability', async () => {

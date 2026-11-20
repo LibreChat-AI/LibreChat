@@ -49,10 +49,6 @@ jest.mock('~/server/services/PermissionService', () => ({
   getEffectivePermissions: jest.fn().mockResolvedValue(0),
 }));
 
-jest.mock('~/server/services/Files', () => ({
-  hasAccessToFilesViaAgent: jest.fn(),
-}));
-
 const mockGetLogStores = jest.fn();
 jest.mock('~/cache', () => ({
   getLogStores: (...args) => mockGetLogStores(...args),

@@ -819,6 +819,97 @@ describe('scheduled dispatch authority across redirect hops', () => {
   );
 });
 
+/**
+ * The SDK transports follow same-origin redirects themselves unless `redirectPolicy` leaves them
+ * to the fetch. These run the real transports so a redirect `createFetchFunction` declined can
+ * never be re-issued by the SDK.
+ */
+describe('SDK transports defer redirects to the connection fetch', () => {
+  let conn: MCPConnection | null = null;
+  let server: RawResponseServer | undefined;
+
+  afterEach(async () => {
+    await safeDisconnect(conn);
+    conn = null;
+    await server?.close();
+    server = undefined;
+  });
+
+  it.each([307, 308] as const)(
+    'does not let the streamable-http transport repeat a tools/call answered with %s',
+    async (status) => {
+      const sessions = new Map<string, StreamableHTTPServerTransport>();
+      const toolCallPaths: string[] = [];
+      server = await createRawResponseServer(async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+        const body: { method?: string } | undefined = chunks.length
+          ? JSON.parse(Buffer.concat(chunks).toString())
+          : undefined;
+        if (body?.method === 'tools/call') {
+          toolCallPaths.push(req.url!);
+          res.writeHead(status, { Location: '/replayed' });
+          res.end();
+          return;
+        }
+        const sid = req.headers['mcp-session-id'] as string | undefined;
+        let transport = sid ? sessions.get(sid) : undefined;
+        if (!transport) {
+          transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+          const mcp = new McpServer({ name: 'no-replay', version: '0.0.1' });
+          mcp.tool('read', 'Reads once', {}, async () => ({
+            content: [{ type: 'text', text: 'read' }],
+          }));
+          await mcp.connect(transport);
+        }
+        await transport.handleRequest(req, res, body);
+        if (transport.sessionId && !sessions.has(transport.sessionId)) {
+          sessions.set(transport.sessionId, transport);
+        }
+      });
+      conn = new MCPConnection({
+        serverName: 'sdk-no-replay',
+        serverConfig: { type: 'streamable-http', url: new URL('mcp', server.url).href },
+        resolveRequestHeaders: jest.fn(async () => ({ authorization: 'Bearer occurrence' })),
+        useSSRFProtection: false,
+      });
+
+      try {
+        await conn.connect();
+        await expect(
+          conn.client.callTool({ name: 'read', arguments: {} }, undefined, { timeout: 3000 }),
+        ).rejects.toThrow();
+        expect(toolCallPaths).toEqual(['/mcp']);
+      } finally {
+        await closeMCPSessions(sessions);
+      }
+    },
+  );
+
+  it('does not let the SSE transport follow a same-origin redirect of its stream', async () => {
+    const paths: string[] = [];
+    server = await createRawResponseServer((req, res) => {
+      paths.push(req.url!);
+      if (req.url === '/sse') {
+        res.writeHead(302, { Location: '/moved' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end();
+    });
+    conn = new MCPConnection({
+      serverName: 'sse-no-follow',
+      serverConfig: { type: 'sse', url: new URL('sse', server.url).href },
+      useSSRFProtection: false,
+    });
+
+    await expect(conn.connect()).rejects.toThrow();
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.every((path) => path === '/sse')).toBe(true);
+  });
+});
+
 describe('MCP SSRF protection – 307/308 redirect following', () => {
   let server: TestServer | undefined;
   let conn: MCPConnection | null;

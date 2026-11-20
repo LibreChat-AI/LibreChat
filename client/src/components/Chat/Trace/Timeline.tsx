@@ -216,6 +216,7 @@ function Timeline({
         aria-label={localize('com_ui_trace_overview')}
         aria-describedby={hintId}
         data-testid="trace-overview"
+        dir="ltr"
         data-scale={scale}
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
@@ -259,7 +260,8 @@ function Timeline({
         )}
       </div>
       <div
-        className="text-text-secondary flex justify-between text-[11px] tabular-nums"
+        dir="ltr"
+        className="text-text-secondary text-2xs flex justify-between tabular-nums"
         aria-hidden="true"
       >
         {TICKS.map((fraction) => (

@@ -1,5 +1,5 @@
 import { EModelEndpoint, Providers } from './schemas';
-import { KnownEndpoints } from './config';
+import { normalizeEndpointName } from './utils';
 
 /** Canonical provider identity used for branding across client and server. */
 export enum ProviderId {
@@ -37,29 +37,6 @@ export const endpointToProvider: Partial<Record<EModelEndpoint, ProviderId>> = {
   [EModelEndpoint.anthropic]: ProviderId.anthropic,
   [EModelEndpoint.google]: ProviderId.google,
   [EModelEndpoint.bedrock]: ProviderId.bedrock,
-};
-
-export const knownEndpointToProvider: Record<KnownEndpoints, ProviderId> = {
-  [KnownEndpoints.anyscale]: ProviderId.anyscale,
-  [KnownEndpoints.apipie]: ProviderId.apipie,
-  [KnownEndpoints.cohere]: ProviderId.cohere,
-  [KnownEndpoints.fireworks]: ProviderId.fireworks,
-  [KnownEndpoints.deepseek]: ProviderId.deepseek,
-  [KnownEndpoints.moonshot]: ProviderId.moonshot,
-  [KnownEndpoints.groq]: ProviderId.groq,
-  [KnownEndpoints.helicone]: ProviderId.helicone,
-  [KnownEndpoints.huggingface]: ProviderId.huggingface,
-  [KnownEndpoints.lemonade]: ProviderId.lemonade,
-  [KnownEndpoints.mistral]: ProviderId.mistral,
-  [KnownEndpoints.mlx]: ProviderId.mlx,
-  [KnownEndpoints.ollama]: ProviderId.ollama,
-  [KnownEndpoints.openrouter]: ProviderId.openrouter,
-  [KnownEndpoints.perplexity]: ProviderId.perplexity,
-  [KnownEndpoints.shuttleai]: ProviderId.shuttleai,
-  [KnownEndpoints['together.ai']]: ProviderId.together,
-  [KnownEndpoints.unify]: ProviderId.unify,
-  [KnownEndpoints.vercel]: ProviderId.vercel,
-  [KnownEndpoints.xai]: ProviderId.xai,
 };
 
 const providerAliases: Record<string, ProviderId> = {
@@ -105,11 +82,15 @@ export function resolveProviderId(input?: string | null): ProviderId | null {
   return providerByNormalizedId[key] ?? providerAliases[key] ?? null;
 }
 
-/** Resolves a runtime provider to its model catalog, using a native alias only when needed. */
+/**
+ * Resolves a runtime provider to its model catalog: its own catalog when one exists, else a
+ * native alias, else the name the runtime serves it under (`normalizeEndpointName`), so an
+ * agent saved as `Ollama` reads the `ollama` catalog.
+ */
 export function resolveModelCatalogKey<T>(
   provider?: string | null,
   catalogs?: Partial<Record<string, T>>,
 ): string {
   const key = provider ?? '';
-  return catalogs?.[key] != null ? key : (modelCatalogAliases[key] ?? key);
+  return catalogs?.[key] != null ? key : (modelCatalogAliases[key] ?? normalizeEndpointName(key));
 }

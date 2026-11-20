@@ -1,4 +1,4 @@
-const { logger, redactMessage, getTenantId } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
@@ -9,10 +9,12 @@ const {
 const {
   sendEvent,
   getToolkitKey,
+  createGitHubCompareRegistry,
   getUserMCPAuthMap,
   createAuthIdentityContext,
   selectMCPUpstreamTokenProvider,
   loadToolDefinitions,
+  orderMCPServerNames,
   createMCPToolApprovalMetadata,
   GenerationJobManager,
   isActionDomainAllowed,
@@ -25,12 +27,11 @@ const {
   buildWebSearchDynamicContext,
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
+  getReplayablePendingMCPOAuthStarts,
   getMCPServerNamesFromTools,
-  buildMCPAuthToolCall,
-  buildMCPAuthStepId,
-  buildMCPAuthRunStepEvent,
-  buildMCPAuthRunStepDeltaEvent,
-  buildMCPAuthRunStepCompletedEvent,
+  createMCPOAuthDeferral,
+  createMCPInitializationOAuthPrompts,
+  shouldAwaitOAuthSignIn,
   inspectContentWithTraversal,
   ContentFilterError,
   assertModelBoundContent,
@@ -49,6 +50,8 @@ const {
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isFatalAgentInitializationError,
   codeExecutionAuthHeaders,
+  createLaneGitRecorder,
+  resolvePullRequestRecording,
   createAttachedWorkspaceBashTool,
   createRepositoryInstructionSource,
   createRepositoryInstructionLoader,
@@ -57,9 +60,10 @@ const {
   resolveAttachedWorkspaceAdmissionOptions,
   resolveAttachedWorkspaceRequestTimeoutMs,
   createContextProgrammaticBashTool,
-  resolveCodeExecutionContext,
-  resolveCodeExecutionWorkspaceSelections,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
   resolveCodeExecutionWorkspaceContext,
+  requiresCodeWorkspaceCapabilities,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
   CREATE_FILE_TOOL_NAME,
@@ -72,6 +76,10 @@ const {
   splitAssistantMCPToolResult,
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
+  getOutboundTimeoutMs,
+  getToolErrorText,
+  setMissingCodeFilesContext,
+  getAssistantRun,
 } = require('@librechat/api');
 const {
   Time,
@@ -129,7 +137,13 @@ const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSe
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
-const { findPluginAuthsByKeys, getRoleByName } = require('~/models');
+const {
+  findPluginAuthsByKeys,
+  getRoleByName,
+  setConvoLaneGit,
+  getConvoLaneContext,
+  reserveConvoLaneGitSeq,
+} = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 
@@ -356,13 +370,16 @@ const processVisionRequest = async (client, currentAction) => {
   /** @type {ChatCompletion | undefined} */
   const completion = await client.visionPromise;
   if (completion && completion.usage) {
-    recordUsage({
-      user: client.req.user.id,
-      model: client.req.body.model,
-      conversationId: (client.responseMessage ?? client.finalMessage).conversationId,
-      ...completion.usage,
-      transactions: getTransactionsConfig(client.req.config),
-    });
+    /** Not awaited, so the run's drain has to wait for it. */
+    getAssistantRun(client.req).track(
+      recordUsage({
+        user: client.req.user.id,
+        model: client.req.body.model,
+        conversationId: (client.responseMessage ?? client.finalMessage).conversationId,
+        ...completion.usage,
+        transactions: getTransactionsConfig(client.req.config),
+      }),
+    );
   }
   const output = completion?.choices?.[0]?.message?.content ?? 'No image details found.';
   return {
@@ -461,7 +478,6 @@ async function processRequiredActions(client, requiredActions) {
     user: client.req.user.id,
     model: client.req.body.model ?? 'gpt-4o-mini',
     tools,
-    functions: true,
     endpoint: client.req.body.endpoint,
     options: {
       processFileURL,
@@ -482,6 +498,8 @@ async function processRequiredActions(client, requiredActions) {
   }, {});
 
   const promises = [];
+  /** A later action that fails to start must not strand the tools already running. */
+  const assistantRun = getAssistantRun(client.req);
 
   let actionSetsData = null;
   let isActionTool = false;
@@ -691,6 +709,7 @@ async function processRequiredActions(client, requiredActions) {
         encrypted, // Pass the encrypted values for OAuth flow
         useSSRFProtection: !Array.isArray(_allowedDomains) || _allowedDomains.length === 0,
         allowedAddresses: _allowedAddresses,
+        timeoutMs: getOutboundTimeoutMs(appConfig, 'actionsMs'),
       });
       if (!tool) {
         logger.warn(
@@ -721,7 +740,7 @@ async function processRequiredActions(client, requiredActions) {
       const output = getSafeRequiredActionOutput(
         client,
         currentAction,
-        `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
+        `Error processing tool ${currentAction.tool}: ${getToolErrorText(error)}`,
       );
       return {
         tool_call_id: currentAction.toolCallId,
@@ -734,7 +753,7 @@ async function processRequiredActions(client, requiredActions) {
         ._call(currentAction.toolInput)
         .then(handleToolOutput)
         .catch(handleToolError);
-      promises.push(promise);
+      promises.push(assistantRun.track(promise));
     } catch (error) {
       const toolOutputError = handleToolError(error);
       promises.push(Promise.resolve(toolOutputError));
@@ -776,8 +795,6 @@ const isExpectedMCPTool = (toolName) =>
   toolName?.includes(Constants.mcp_delimiter) &&
   !toolName.startsWith(mcpServerPinPrefix) &&
   !isActionTool(toolName);
-const isExpectedMCPToolsUnavailableError = (error) =>
-  error?.code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE;
 const createExpectedMCPToolsUnavailableError = (agentName, cause) => {
   const subject = agentName ? `Agent "${agentName}"` : 'The agent';
   const error = new Error(
@@ -832,8 +849,10 @@ async function loadToolDefinitionsWrapper({
   agentResourceType,
   streamId = null,
   jobCreatedAt,
+  unattended,
   tool_resources,
   codeExecutionContext,
+  attachedEnvironmentOptOut,
   accessibleMcpServerNames,
   signal,
   upstreamTokenProvider: suppliedUpstreamTokenProvider,
@@ -875,32 +894,22 @@ async function loadToolDefinitionsWrapper({
   /** Gates the sandbox everywhere it is reachable, not just the `execute_code`
    *  entry in `filteredTools`: this flag also drives tool classification and the
    *  programmatic bash tool, which would otherwise run code for a denied role. */
-  const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
-    enabledCapabilities.has(AgentCapabilities.execute_code) &&
-    canUseTool(Tools.execute_code);
-  const baseCodeExecutionContext =
-    codeExecutionContext ??
-    resolveCodeExecutionContext({
-      statefulSessions:
-        codeExecutionEnabled &&
-        enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
-        agent.stateful_code_sessions === true,
-      environment: agent.stateful_code_environment,
-      environmentId: agent.code_environment_id,
-      environmentIds: agent.code_environment_ids,
-      allowEnvironmentSelection:
-        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-        conversation: req.resolvedConversation,
-        request: runtimeRequestBody,
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable:
+          enabledCapabilities.has(AgentCapabilities.execute_code) && canUseTool(Tools.execute_code),
+        statefulSessionsAvailable: enabledCapabilities.has(
+          AgentCapabilities.stateful_code_sessions,
+        ),
+        conversationId: runtimeRequestBody?.conversationId,
+        resolvedContext: codeExecutionContext,
+        attachedEnvironmentOptOut,
       }),
-      inheritedEnvironments: req.codeWorkspaceInheritance,
-      environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-      userId: req.user.id,
-      agentId: agent.id,
-      conversationId: runtimeRequestBody?.conversationId,
-    });
+    );
   const resolvedCodeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
@@ -1036,9 +1045,16 @@ async function loadToolDefinitionsWrapper({
   const flowManager = getFlowStateManager(flowsCache);
   const pendingOAuthServers = new Set();
   const pendingOAuthStarts = new Map();
-  const emittedOAuthStarts = new Map();
-  const oauthToolCallIds = new Map();
-  const oauthStepIndexes = new Map();
+  const initializationOAuth = createMCPInitializationOAuthPrompts({
+    userId: req.user.id,
+    res,
+    sendEvent,
+    jobs: GenerationJobManager,
+    streamId,
+    jobCreatedAt,
+    unattended,
+    logger,
+  });
   /** @type {Record<string, import('@librechat/api').LCAvailableTools>} */
   const mcpAvailableTools = {};
   const requestScopedConnections = getMCPRequestContext(req, res);
@@ -1063,83 +1079,6 @@ async function loadToolDefinitionsWrapper({
       return;
     }
     mcpAvailableTools[serverName] = availableTools;
-  };
-
-  const createOAuthEmitter = (serverName, index) => {
-    return async (authURL, options) => {
-      if (emittedOAuthStarts.get(serverName) === authURL) {
-        return;
-      }
-      emittedOAuthStarts.set(serverName, authURL);
-
-      const flowId =
-        oauthToolCallIds.get(serverName) ?? `${req.user.id}:${serverName}:${Date.now()}`;
-      const stepId = buildMCPAuthStepId(serverName);
-      oauthToolCallIds.set(serverName, flowId);
-      oauthStepIndexes.set(serverName, index);
-      const toolCall = buildMCPAuthToolCall({
-        id: flowId,
-        serverName,
-      });
-
-      const runStepEvent = buildMCPAuthRunStepEvent({ stepId, toolCall, index });
-      const runStepDeltaEvent = buildMCPAuthRunStepDeltaEvent({
-        authURL,
-        stepId,
-        toolCall,
-        options,
-      });
-
-      if (streamId) {
-        await GenerationJobManager.emitChunk(streamId, runStepEvent, {
-          expectedCreatedAt: jobCreatedAt,
-        });
-        await GenerationJobManager.emitChunk(streamId, runStepDeltaEvent, {
-          expectedCreatedAt: jobCreatedAt,
-        });
-      } else if (res && !res.writableEnded) {
-        sendEvent(res, runStepEvent);
-        sendEvent(res, runStepDeltaEvent);
-      } else {
-        logger.warn('[Tool Definitions] Cannot emit MCP OAuth event', {
-          hasStreamId: Boolean(streamId),
-          hasResponse: Boolean(res),
-          responseEnded: Boolean(res?.writableEnded),
-        });
-      }
-    };
-  };
-
-  const createOAuthEndEmitter = (serverName) => {
-    return async () => {
-      const stepId = buildMCPAuthStepId(serverName);
-      const toolCall = buildMCPAuthToolCall({
-        id: oauthToolCallIds.get(serverName),
-        args: '',
-        output: 'OAuth authentication completed',
-        serverName,
-        type: 'tool_call',
-      });
-      const runStepCompletedEvent = buildMCPAuthRunStepCompletedEvent({
-        stepId,
-        toolCall,
-        index: oauthStepIndexes.get(serverName) ?? 0,
-      });
-
-      if (streamId) {
-        await GenerationJobManager.emitChunk(streamId, runStepCompletedEvent, {
-          expectedCreatedAt: jobCreatedAt,
-        });
-      } else if (res && !res.writableEnded) {
-        sendEvent(res, runStepCompletedEvent);
-      } else {
-        logger.warn('[Tool Definitions] Cannot emit MCP OAuth completion', {
-          hasStreamId: Boolean(streamId),
-          hasResponse: Boolean(res),
-          responseEnded: Boolean(res?.writableEnded),
-        });
-      }
-    };
   };
 
   const getPendingOAuthStartForEmit = async (serverName) => {
@@ -1169,6 +1108,16 @@ async function loadToolDefinitionsWrapper({
    *  spellings itself (direct identity first, alias fallback), so this
    *  closure must look up EXACTLY the name it is given. */
   const approvalMetadata = createMCPToolApprovalMetadata();
+  const oauthDeferral = createMCPOAuthDeferral({
+    tools: defsFilteredTools,
+    toolOptions: agent.tool_options,
+    deferredToolsEnabled,
+    backgroundToolsEnabled: checkCapability(AgentCapabilities.run_in_background),
+    knownServerNames: [...(mcpServerNames ?? []), ...mcpRawServerNames],
+    pendingOAuthServers,
+    pendingOAuthStarts,
+    rememberAvailableTools: rememberMCPAvailableTools,
+  });
   const getOrFetchMCPServerTools = async (userId, serverName) => {
     const addPendingOAuthServer = async () => {
       const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
@@ -1191,6 +1140,8 @@ async function loadToolDefinitionsWrapper({
         serverName,
         userId,
         configServers,
+        req.user?.role,
+        { idOnTheSource: req.user?.idOnTheSource },
       );
     } catch {
       logger.warn(
@@ -1229,12 +1180,17 @@ async function loadToolDefinitionsWrapper({
     const cached = await getMCPServerTools(userId, serverName, serverConfig, capabilityProfile);
     if (cached) {
       rememberMCPAvailableTools(serverName, cached);
-      await addPendingOAuthServer();
+      await oauthDeferral.promptUnlessDeferred(
+        serverName,
+        serverConfig,
+        cached,
+        addPendingOAuthServer,
+      );
       return cached;
     }
 
     if (await addPendingOAuthServer()) {
-      return null;
+      return oauthDeferral.deferSignIn(serverName, serverConfig);
     }
 
     const oauthStart = async (authURL, options) => {
@@ -1249,6 +1205,7 @@ async function loadToolDefinitionsWrapper({
       user: req.user,
       streamId,
       jobCreatedAt,
+      unattended,
       oauthStart,
       flowManager,
       serverName,
@@ -1264,11 +1221,11 @@ async function loadToolDefinitionsWrapper({
     });
 
     rememberMCPAvailableTools(serverName, result?.availableTools);
-    return result?.availableTools || null;
+    return oauthDeferral.resolveReconnectTools(serverName, serverConfig, result?.availableTools);
   };
 
   const refreshMCPServerTools = async (_userId, serverName) => {
-    if (pendingOAuthServers.has(serverName)) {
+    if (oauthDeferral.hasSignInDecision(serverName)) {
       return null;
     }
 
@@ -1283,6 +1240,7 @@ async function loadToolDefinitionsWrapper({
       user: req.user,
       streamId,
       jobCreatedAt,
+      unattended,
       forceNew: true,
       oauthStart,
       flowManager,
@@ -1376,11 +1334,13 @@ async function loadToolDefinitionsWrapper({
     mcpToolAliases,
     mcpResolution,
     oauthActionToolNames,
+    mcpServerLookupOrder,
   } = await loadToolDefinitions(
     {
       userId: req.user.id,
       agentId: agent.id,
       tools: defsFilteredTools,
+      githubCompareEnabled: appConfig?.githubCompare?.enabled,
       toolOptions: agent.tool_options,
       deferredToolsEnabled,
       programmaticToolsEnabled,
@@ -1392,6 +1352,7 @@ async function loadToolDefinitionsWrapper({
       mcpServerNames,
       rawServerNames: mcpRawServerNames,
       accessibleServerNames: defsAccessibleServerNames,
+      mcpCatalogLookups: appConfig?.concurrency?.mcpCatalogLookups,
     },
     {
       isBuiltInTool,
@@ -1403,70 +1364,76 @@ async function loadToolDefinitionsWrapper({
 
   /** OAuth discovery must not reconnect (or prompt for) a server whose
    *  definitions the collision filter deliberately rejected. */
-  for (const serverName of getMCPServerNamesFromTools(defsFilteredTools, mcpServerNames)) {
-    if (pendingOAuthServers.has(serverName)) {
-      continue;
-    }
-
-    const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
-      flowManager,
-      userId: req.user.id,
-      serverName,
-    });
-    if (pendingOAuthStart) {
-      pendingOAuthServers.add(serverName);
-      pendingOAuthStarts.set(serverName, pendingOAuthStart);
-    }
+  const discoveredOAuthStarts = await getReplayablePendingMCPOAuthStarts({
+    flowManager,
+    userId: req.user.id,
+    serverNames: getMCPServerNamesFromTools(defsFilteredTools, mcpServerNames),
+    skip: (serverName) => oauthDeferral.hasSignInDecision(serverName),
+  });
+  for (const [serverName, pendingOAuthStart] of discoveredOAuthStarts) {
+    pendingOAuthServers.add(serverName);
+    pendingOAuthStarts.set(serverName, pendingOAuthStart);
   }
 
-  if (pendingOAuthServers.size > 0 && (res || streamId)) {
-    const serverNames = Array.from(pendingOAuthServers);
+  if (
+    shouldAwaitOAuthSignIn({
+      res,
+      streamId,
+      unattended,
+      pending: pendingOAuthServers.size,
+      logger,
+    })
+  ) {
+    const serverNames = orderMCPServerNames(pendingOAuthServers, mcpServerLookupOrder);
     logger.info(
       `[Tool Definitions] MCP OAuth required for ${serverNames.length} server(s); emitting events and waiting`,
     );
 
-    const oauthWaitPromises = serverNames.map(async (serverName, index) => {
-      try {
-        const pendingOAuthStart = await getPendingOAuthStartForEmit(serverName);
-        const oauthStart = createOAuthEmitter(serverName, index);
-        if (pendingOAuthStart) {
-          await oauthStart(pendingOAuthStart.authURL, pendingOAuthStart.options);
-        }
+    const oauthWaitPromises = serverNames.map((serverName, index) => {
+      const oauthPrompt = initializationOAuth.forServer(serverName, index);
+      return oauthPrompt.run(async () => {
+        try {
+          const pendingOAuthStart = await getPendingOAuthStartForEmit(serverName);
+          const oauthStart = oauthPrompt.start;
+          if (pendingOAuthStart) {
+            await oauthStart(pendingOAuthStart.authURL, pendingOAuthStart.options);
+          }
 
-        const result = await reinitMCPServer({
-          signal,
-          user: req.user,
-          streamId,
-          jobCreatedAt,
-          serverName,
-          configServers,
-          userMCPAuthMap,
-          flowManager,
-          requestBody: runtimeRequestBody,
-          returnOnOAuth: false,
-          oauthStart,
-          oauthEnd: createOAuthEndEmitter(serverName),
-          connectionTimeout: Time.TWO_MINUTES,
-          upstreamTokenProvider,
-          upstreamTokenProviderResolver,
-          oboIdentityContext,
-          recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
-          mcpApps,
-        });
+          const result = await reinitMCPServer({
+            signal,
+            user: req.user,
+            streamId,
+            jobCreatedAt,
+            serverName,
+            configServers,
+            userMCPAuthMap,
+            flowManager,
+            requestBody: runtimeRequestBody,
+            returnOnOAuth: false,
+            oauthStart,
+            oauthEnd: oauthPrompt.end,
+            connectionTimeout: Time.TWO_MINUTES,
+            upstreamTokenProvider,
+            upstreamTokenProviderResolver,
+            oboIdentityContext,
+            recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
+            mcpApps,
+          });
 
-        if (result?.availableTools && Object.keys(result.availableTools).length > 0) {
-          rememberMCPAvailableTools(serverName, result.availableTools);
-          logger.info('[Tool Definitions] MCP OAuth completed; tools available');
-          return { serverName, success: true };
+          if (result?.availableTools && Object.keys(result.availableTools).length > 0) {
+            rememberMCPAvailableTools(serverName, result.availableTools);
+            logger.info('[Tool Definitions] MCP OAuth completed; tools available');
+            return { serverName, success: true };
+          }
+          return { serverName, success: false };
+        } catch (error) {
+          if (isFatalAgentInitializationError(error, { signal })) {
+            throw error;
+          }
+          logger.debug('[Tool Definitions] MCP OAuth wait failed for one server');
+          return { serverName, success: false };
         }
-        return { serverName, success: false };
-      } catch (error) {
-        if (isFatalAgentInitializationError(error, { signal })) {
-          throw error;
-        }
-        logger.debug('[Tool Definitions] MCP OAuth wait failed for one server');
-        return { serverName, success: false };
-      }
+      });
     });
 
     const results = await Promise.all(oauthWaitPromises);
@@ -1483,6 +1450,7 @@ async function loadToolDefinitionsWrapper({
           userId: req.user.id,
           agentId: agent.id,
           tools: defsFilteredTools,
+          githubCompareEnabled: appConfig?.githubCompare?.enabled,
           toolOptions: agent.tool_options,
           deferredToolsEnabled,
           programmaticToolsEnabled,
@@ -1494,6 +1462,7 @@ async function loadToolDefinitionsWrapper({
           mcpServerNames,
           rawServerNames: mcpRawServerNames,
           accessibleServerNames: defsAccessibleServerNames,
+          mcpCatalogLookups: appConfig?.concurrency?.mcpCatalogLookups,
         },
         {
           isBuiltInTool,
@@ -1536,9 +1505,10 @@ async function loadToolDefinitionsWrapper({
    * sandbox can't see the prior turn's generated artifacts on first read.
    */
   let primedCodeFiles;
+  let codeContextEntries;
   if (hasExecuteCode && tool_resources) {
     try {
-      const { toolContext, files } = await primeCodeFiles({
+      const { toolContext, files, contextFiles, missingFilesContext } = await primeCodeFiles({
         req,
         tool_resources,
         agentId: agent.id,
@@ -1555,9 +1525,11 @@ async function loadToolDefinitionsWrapper({
       if (toolContext) {
         dynamicToolContextMap[Tools.execute_code] = toolContext;
       }
+      setMissingCodeFilesContext(dynamicToolContextMap, missingFilesContext);
       if (files?.length) {
         primedCodeFiles = files;
       }
+      codeContextEntries = contextFiles;
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal })) {
         throw error;
@@ -1626,9 +1598,11 @@ async function loadToolDefinitionsWrapper({
     dynamicToolContextMap,
     toolDefinitions,
     hasDeferredTools,
+    deferredToolsEnabled,
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,
+    codeContextEntries,
     oauthActionToolNames,
     codeExecutionContext: resolvedCodeExecutionContext,
     repositoryInstructionSource: createRepositoryInstructionSource({
@@ -1672,8 +1646,10 @@ async function loadAgentTools({
   openAIApiKey,
   streamId = null,
   jobCreatedAt,
+  unattended,
   definitionsOnly = true,
   codeExecutionContext: providedCodeExecutionContext,
+  attachedEnvironmentOptOut,
   accessibleMcpServerNames,
   upstreamTokenProvider,
   upstreamTokenProviderResolver,
@@ -1688,8 +1664,10 @@ async function loadAgentTools({
         agentResourceType,
         streamId,
         jobCreatedAt,
+        unattended,
         tool_resources,
         codeExecutionContext: providedCodeExecutionContext,
+        attachedEnvironmentOptOut,
         accessibleMcpServerNames,
         signal,
         upstreamTokenProvider,
@@ -1807,34 +1785,23 @@ async function loadAgentTools({
     });
   }
 
-  const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
-    enabledCapabilities.has(AgentCapabilities.execute_code) &&
-    canUseTool(Tools.execute_code);
   const runtimeRequestBody = requestBody ?? req.body;
-  const statefulCodeSessions =
-    codeExecutionEnabled &&
-    enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
-    agent.stateful_code_sessions === true;
-  const baseCodeExecutionContext =
-    providedCodeExecutionContext ??
-    resolveCodeExecutionContext({
-      statefulSessions: statefulCodeSessions,
-      environment: agent.stateful_code_environment,
-      environmentId: agent.code_environment_id,
-      environmentIds: agent.code_environment_ids,
-      allowEnvironmentSelection:
-        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-        conversation: req.resolvedConversation,
-        request: runtimeRequestBody,
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable:
+          enabledCapabilities.has(AgentCapabilities.execute_code) && canUseTool(Tools.execute_code),
+        statefulSessionsAvailable: enabledCapabilities.has(
+          AgentCapabilities.stateful_code_sessions,
+        ),
+        conversationId: runtimeRequestBody?.conversationId,
+        resolvedContext: providedCodeExecutionContext,
+        attachedEnvironmentOptOut,
       }),
-      inheritedEnvironments: req.codeWorkspaceInheritance,
-      environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-      userId: req.user.id,
-      agentId: agent.id,
-      conversationId: runtimeRequestBody?.conversationId,
-    });
+    );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
@@ -1855,7 +1822,6 @@ async function loadAgentTools({
     agent,
     signal,
     userMCPAuthMap,
-    functions: true,
     user: req.user.id,
     tools: _agentTools,
     options: {
@@ -1875,6 +1841,7 @@ async function loadAgentTools({
       upstreamTokenProvider,
       upstreamTokenProviderResolver,
       codeExecutionContext,
+      toolRegistry: createGitHubCompareRegistry(_agentTools, appConfig?.githubCompare),
       [Tools.web_search]: webSearchCallbacks,
     },
     webSearch: appConfig.webSearch,
@@ -2085,8 +2052,10 @@ async function loadAgentTools({
       description: functionSignature.description,
       streamId,
       jobCreatedAt,
+      unattended,
       useSSRFProtection: !Array.isArray(_allowedDomains) || _allowedDomains.length === 0,
       allowedAddresses: _allowedAddresses,
+      timeoutMs: getOutboundTimeoutMs(appConfig, 'actionsMs'),
     });
 
     if (!tool) {
@@ -2172,6 +2141,7 @@ async function loadToolsForExecution({
   tool_resources,
   streamId = null,
   jobCreatedAt,
+  unattended,
   conversationId,
   actionsEnabled,
   accessibleMcpServerNames,
@@ -2240,7 +2210,7 @@ async function loadToolsForExecution({
   }
   /** Short-circuits before the role read, so an agent without `execute_code` or a
    *  deployment with the capability off pays nothing for the check. */
-  const codeExecutionEnabled =
+  const codeExecutionAllowed =
     enabledCapabilities?.has(AgentCapabilities.execute_code) === true &&
     agent?.tools?.includes(Tools.execute_code) === true &&
     (await checkToolRolePermission({
@@ -2251,32 +2221,25 @@ async function loadToolsForExecution({
       context: 'loadToolsForExecution',
     }));
 
-  /** Resolve the trusted endpoint/profile from the actually executing agent.
-   * This stays per-agent across handoffs and subagents; no graph-global stateful
-   * flag or model-supplied value is consulted. */
-  const statefulCodeSessions =
-    codeExecutionEnabled &&
-    enabledCapabilities?.has(AgentCapabilities.stateful_code_sessions) === true &&
-    agent?.stateful_code_sessions === true;
-  const baseCodeExecutionContext = resolveCodeExecutionContext({
-    statefulSessions: statefulCodeSessions,
-    environment: agent?.stateful_code_environment,
-    environmentId: agent?.code_environment_id,
-    environmentIds: agent?.code_environment_ids,
-    allowEnvironmentSelection:
-      req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-    workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-      conversation: req.resolvedConversation,
-      request: runtimeRequestBody,
-    }),
-    inheritedEnvironments: req.codeWorkspaceInheritance,
-    environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-    userId: req.user.id,
-    agentId: agent?.id,
-    conversationId: conversationId ?? runtimeRequestBody?.conversationId,
-  });
+  /** Resolve the trusted endpoint/profile from the actually executing agent under the
+   * same per-agent rule as initialization, including the conversation's "No workspace"
+   * decision. This stays per-agent across handoffs and subagents; no graph-global
+   * stateful flag or model-supplied value is consulted. */
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable: codeExecutionAllowed,
+        statefulSessionsAvailable:
+          enabledCapabilities?.has(AgentCapabilities.stateful_code_sessions) === true,
+        conversationId: conversationId ?? runtimeRequestBody?.conversationId,
+      }),
+    );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
+    requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(toolNames),
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
     persistedSelections: req.resolvedConversation?.codeWorkspaces,
     environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
@@ -2382,8 +2345,26 @@ async function loadToolsForExecution({
               baseUrl: codeExecutionContext.baseUrl,
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
+              onLaneGit: await createLaneGitRecorder({
+                ...resolvePullRequestRecording(
+                  req.config?.endpoints?.agents?.pullRequests,
+                  process.env,
+                ),
+                user: req.user.id,
+                conversationId: conversationId ?? runtimeRequestBody?.conversationId,
+                repo: codeExecutionContext.codeWorkspace.environment?.repo,
+                workspace: {
+                  environmentId: codeExecutionContext.codeWorkspace.environmentId,
+                  workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
+                },
+                admittedEpoch: req.resolvedConversation?.codeAttachmentEpoch,
+                getConvoLaneContext,
+                reserveConvoLaneGitSeq,
+                setConvoLaneGit,
+              }),
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,
               nativeSandbox: codeExecutionContext.codeWorkspace.nativeSandbox,
+              detachedCommands: codeExecutionContext.codeWorkspace.detachedCommands,
               environment: codeExecutionContext.codeWorkspace.environment,
               gitIdentity: agent?.git_identity,
               maxTimeoutMs: resolveAttachedWorkspaceCommandTimeoutMax(
@@ -2481,7 +2462,6 @@ async function loadToolsForExecution({
       agent,
       signal,
       userMCPAuthMap,
-      functions: true,
       tools: regularToolNames,
       user: req.user.id,
       options: {
@@ -2490,6 +2470,7 @@ async function loadToolsForExecution({
         requestBody: runtimeRequestBody,
         agentResourceType,
         jobCreatedAt,
+        unattended,
         tool_resources,
         processFileURL,
         uploadImageBuffer,
@@ -2499,6 +2480,7 @@ async function loadToolsForExecution({
          *  registry failure at execution can't fail-closed a tool the same
          *  turn already advertised. */
         accessibleMcpServerNames,
+        toolRegistry,
         requestScopedConnections: mcpRequestScopedConnections,
         upstreamTokenProvider,
         upstreamTokenProviderResolver,
@@ -2522,6 +2504,7 @@ async function loadToolsForExecution({
       appConfig,
       streamId,
       jobCreatedAt,
+      unattended,
       actionToolNames,
       preparedActionSnapshot,
     });
@@ -2575,6 +2558,7 @@ async function loadActionToolsForExecution({
   appConfig,
   streamId,
   jobCreatedAt,
+  unattended,
   actionToolNames,
   preparedActionSnapshot,
 }) {
@@ -2671,6 +2655,7 @@ async function loadActionToolsForExecution({
       action,
       streamId,
       jobCreatedAt,
+      unattended,
       zodSchema,
       encrypted,
       requestBuilder,
@@ -2678,6 +2663,7 @@ async function loadActionToolsForExecution({
       description: functionSignature.description,
       useSSRFProtection: !Array.isArray(allowedDomains) || allowedDomains.length === 0,
       allowedAddresses,
+      timeoutMs: getOutboundTimeoutMs(appConfig, 'actionsMs'),
     });
 
     if (!tool) {
@@ -2700,7 +2686,6 @@ module.exports = {
   processRequiredActions,
   resolveAgentCapabilities,
   isFatalAgentInitializationError,
-  isExpectedMCPToolsUnavailableError,
   /** Re-exported for controllers that already depend on (and mock) this
    *  module, avoiding a fresh heavy `services/MCP` require chain there. */
   getAccessibleMcpServerNames,

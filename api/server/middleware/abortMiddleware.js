@@ -6,6 +6,7 @@ const {
   countTokens,
   isAbortError,
   GenerationJobManager,
+  abortOwnedGeneration,
   sanitizeMessageForTransmit,
   buildAbortedResponseMetadata,
   announceReply,
@@ -13,8 +14,12 @@ const {
 const { truncateText, smartTruncateText } = require('~/app/clients/prompts');
 const clearPendingReq = require('~/cache/clearPendingReq');
 const { sendError } = require('~/server/middleware/error');
+const enrollAssistantRun = require('~/server/middleware/assistants/run');
 const { abortRun } = require('./abortRun');
 const db = require('~/models');
+
+/** The stop request writes usage and messages, so the account drain waits for it too. */
+const abortAssistantRun = enrollAssistantRun(abortRun);
 
 /**
  * Abort an active message generation.
@@ -25,14 +30,14 @@ async function abortMessage(req, res) {
   const { abortKey, endpoint } = req.body;
 
   if (isAssistantsEndpoint(endpoint)) {
-    return await abortRun(req, res);
+    return await abortAssistantRun(req, res);
   }
 
   const conversationId = abortKey?.split(':')?.[0] ?? req.user.id;
   const userId = req.user.id;
 
-  // Use GenerationJobManager to abort the job (streamId === conversationId)
-  const abortResult = await GenerationJobManager.abortJob(conversationId);
+  // streamId === conversationId; only the job's owner may stop it
+  const abortResult = await abortOwnedGeneration(conversationId, req.user, GenerationJobManager);
 
   if (!abortResult.success) {
     if (!res.headersSent) {
@@ -133,9 +138,7 @@ async function abortMessage(req, res) {
     responseMessage,
   };
 
-  logger.debug(
-    `[abortMessage] ID: ${userId} | ${req.user.email} | Aborted request: ${conversationId}`,
-  );
+  logger.debug(`[abortMessage] ID: ${userId} | Aborted request: ${conversationId}`);
 
   if (res.headersSent) {
     return sendEvent(res, finalEvent);

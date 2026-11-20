@@ -10,6 +10,158 @@ jest.mock('react-i18next', () => ({
 }));
 
 describe('Button', () => {
+  it('keeps fold headers in inherited typography with their original hover and focus geometry', () => {
+    render(<Button variant="fold-header">Tool activity</Button>);
+    const header = screen.getByRole('button', { name: 'Tool activity' });
+    expect(header).toHaveAttribute('type', 'button');
+    expect(header).not.toHaveAttribute('data-activity-card');
+    expect(header).toHaveClass(
+      'text-text-secondary',
+      'hover:text-text-secondary',
+      'bg-transparent',
+      'hover:bg-transparent',
+      'rounded-none',
+      'p-0',
+      'py-1',
+      'focus-visible:ring-focus-subtle',
+      'focus-visible:ring-2',
+      'focus-visible:ring-offset-0',
+    );
+    expect(header).not.toHaveClass(
+      'text-sm',
+      'font-theme-control',
+      'whitespace-nowrap',
+      'transition-colors',
+      'h-theme-button',
+    );
+  });
+
+  it('keeps the ordinary button recipe after adding the fold header bypass', () => {
+    render(<Button>Continue</Button>);
+    const button = screen.getByRole('button', { name: 'Continue' });
+    expect(button).toHaveClass('text-sm', 'font-theme-control', 'h-theme-button');
+    expect(button).not.toHaveClass('rounded-none', 'py-1');
+    expect(button).not.toHaveAttribute('data-activity-card');
+  });
+
+  it('keeps the activity card content-sized with native focus and disabled semantics', () => {
+    render(
+      <Button variant="activity-card" disabled>
+        <span>Agent activity</span>
+        <ul>
+          <li>Details</li>
+        </ul>
+      </Button>,
+    );
+    const card = screen.getByRole('button', { name: 'Agent activity Details' });
+    expect(card).toBeDisabled();
+    expect(card).toHaveClass('flex-col', 'w-full', 'text-start', 'bg-surface-secondary');
+    expect(card).not.toHaveClass('h-theme-button', 'whitespace-nowrap', 'disabled:opacity-50');
+    expect(card.className).not.toContain('theme-disabled:');
+    expect(card.className).not.toContain('focus-visible:outline');
+  });
+
+  it('keeps a confirming destructive button solid in every theme', () => {
+    const destructive = cn(buttonVariants({ variant: 'destructive' }));
+
+    expect(destructive).toContain('bg-surface-destructive');
+    expect(destructive).toContain('text-text-on-status');
+    expect(destructive).not.toContain('theme-destructive-soft:');
+  });
+
+  it('paints an inline destructive button solid and tints it only when the theme asks', () => {
+    const destructive = cn(buttonVariants({ variant: 'destructive-soft' }));
+
+    expect(destructive).toContain('bg-surface-destructive');
+    expect(destructive).toContain('text-text-on-status');
+    expect(destructive).toContain('theme-destructive-soft:bg-surface-destructive/10');
+    expect(destructive).toContain('theme-destructive-soft:text-text-destructive');
+    // The ink stays at 4.5:1 over the light-theme tint only below a 20% hover and pressed share.
+    expect(destructive).toContain('theme-destructive-soft:hover:bg-surface-destructive/14');
+    expect(destructive).toContain('theme-destructive-soft:hover:active:bg-surface-destructive/17');
+  });
+
+  it('rests a quiet button in the secondary ink and raises it to the primary one on hover', () => {
+    const quiet = cn(buttonVariants({ variant: 'quiet' }));
+    const ghost = cn(buttonVariants({ variant: 'ghost' }));
+
+    expect(quiet).toContain('text-text-secondary');
+    expect(quiet).toContain('hover:text-text-primary');
+    expect(quiet).toContain('hover:bg-surface-hover');
+    expect(ghost).not.toContain('text-text-secondary');
+  });
+
+  it('marks the current nav destination with aria-pressed and the theme navigation roles', () => {
+    const nav = cn(buttonVariants({ variant: 'nav', size: 'icon' }));
+    expect(nav).toContain('text-text-secondary');
+    expect(nav).toContain('hover:bg-surface-nav-hover');
+    expect(nav).toContain('aria-pressed:bg-surface-nav-selected');
+    expect(nav).toContain('aria-pressed:text-text-primary');
+    expect(nav).toContain('size-theme-button');
+  });
+
+  it('presses the message action to the pressed fill like ghost and keeps the carousel arrows on the fixed surface', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain(
+      'hover:active:bg-surface-pressed',
+    );
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('bg-surface-pressed');
+  });
+
+  it('offers the message, link, carousel and toolbar roles as variants', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('text-text-secondary-alt');
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('p-1.5');
+    expect(cn(buttonVariants({ variant: 'inline-link' }))).toContain('hover:bg-transparent');
+    expect(cn(buttonVariants({ variant: 'inline-link' }))).toContain('focus-visible:ring-offset-0');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).toContain('bg-surface-fixed');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).toContain(
+      'hover:bg-surface-fixed-hover',
+    );
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('text-xs');
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('hover:bg-surface-hover');
+  });
+
+  it('lets the message, link, carousel and toolbar roles keep their own box at the default size', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).not.toContain('px-4');
+    expect(cn(buttonVariants({ variant: 'inline-link' }))).not.toContain('h-theme-button');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).toContain('p-2');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('px-4');
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('py-1');
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).not.toContain('py-2');
+  });
+
+  it('gives a floating control a surface only when its chrome outline is gone', () => {
+    const floating = cn(buttonVariants({ variant: 'floating', size: 'icon-theme' }));
+
+    expect(floating).toContain('border-border-chrome');
+    expect(floating).toContain('bg-surface-chat/90');
+    expect(floating).toContain('theme-chrome-quiet:bg-surface-chat');
+    expect(floating).toContain('theme-chrome-quiet:shadow-md');
+    expect(floating).toContain('theme-chrome-quiet:hover:active:bg-surface-pressed');
+  });
+
+  it('outlines a toggle in the control border', () => {
+    expect(cn(buttonVariants({ variant: 'outline-toggle' }))).toContain('border-border-control');
+  });
+
+  it('outlines an icon button in the chrome border and a text button in the light one', () => {
+    const icon = cn(buttonVariants({ variant: 'outline', size: 'icon-theme' }));
+    const text = cn(buttonVariants({ variant: 'outline', size: 'dense' }));
+
+    expect(icon).toContain('border-border-chrome');
+    expect(icon).not.toContain('border-border-light');
+    expect(text).toContain('border-border-light');
+    expect(text).not.toContain('border-border-chrome');
+  });
+
+  it('outlines a subtle icon button in the chrome border as well', () => {
+    expect(cn(buttonVariants({ variant: 'subtle', size: 'icon' }))).toContain(
+      'border-border-chrome',
+    );
+    expect(cn(buttonVariants({ variant: 'subtle', size: 'dense' }))).toContain(
+      'border-border-light',
+    );
+  });
+
   it('owns dense action padding without changing the default-height recipe', () => {
     render(
       <Button variant="outline" size="dense">
@@ -122,7 +274,7 @@ describe('Button', () => {
     expect(screen.getByRole('button', { name: 'Toggle' })).toHaveClass(
       'bg-presentation',
       'border-border-light',
-      'rounded-xl',
+      'rounded-theme-control',
       'duration-0',
       'hover:bg-surface-active-alt',
     );
@@ -140,7 +292,7 @@ describe('Button', () => {
     );
 
     const button = screen.getByRole('button', { name: 'Back' });
-    expect(button).toHaveClass('rounded-xl', 'h-theme-button-sm', 'bg-presentation');
+    expect(button).toHaveClass('rounded-theme-control', 'h-theme-button-sm', 'bg-presentation');
     expect(button).not.toHaveClass('rounded-lg');
 
     rerender(
@@ -321,5 +473,19 @@ describe('Button', () => {
     spinner
       ?.querySelectorAll('circle')
       .forEach((circle) => expect(circle).toHaveAttribute('stroke', 'currentColor'));
+  });
+
+  it('offers the sign-in sizes, shape and link variants as roles rather than caller classes', () => {
+    expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-theme-auth-control');
+    expect(cn(buttonVariants({ shape: 'soft' }))).not.toContain('rounded-lg');
+    expect(cn(buttonVariants({ size: 'auth' }))).toContain('h-theme-auth-button');
+    expect(cn(buttonVariants({ size: 'auth-action' }))).toContain('h-theme-auth-action');
+    expect(cn(buttonVariants({ shape: 'auth-action' }))).toContain('rounded-theme-auth-action');
+    expect(cn(buttonVariants({ shape: 'auth-action' }))).not.toContain('rounded-lg');
+    expect(cn(buttonVariants({ size: 'snug' }))).toContain('p-1');
+    expect(cn(buttonVariants({ size: 'wide' }))).toContain('px-8');
+    expect(cn(buttonVariants({ size: 'bare' }))).toContain('p-0');
+    expect(cn(buttonVariants({ variant: 'link-accent' }))).toContain('text-accent-primary');
+    expect(cn(buttonVariants({ variant: 'hyperlink' }))).toContain('text-link');
   });
 });

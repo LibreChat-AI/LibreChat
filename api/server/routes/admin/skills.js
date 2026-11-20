@@ -3,7 +3,11 @@ const { createAdminSkillsSyncAccess, createAdminSkillsSyncHandlers } = require('
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
 const { requireJwtAuth } = require('~/server/middleware');
-const { upsertSkillSyncCredential, deleteSkillSyncCredential } = require('~/models');
+const {
+  upsertSkillSyncCredential,
+  deleteSkillSyncCredential,
+  recordAuditEntry,
+} = require('~/models');
 const { getGitHubSkillSyncRunnerForRequest } = require('~/server/services/Skills/sync');
 const { getAppConfig } = require('~/server/services/Config');
 const configMiddleware = require('~/server/middleware/config/app');
@@ -20,6 +24,7 @@ const handlers = createAdminSkillsSyncHandlers({
   getRunner: getGitHubSkillSyncRunnerForRequest,
   upsertCredential: upsertSkillSyncCredential,
   deleteCredential: deleteSkillSyncCredential,
+  recordAuditEntry,
 });
 
 router.use(

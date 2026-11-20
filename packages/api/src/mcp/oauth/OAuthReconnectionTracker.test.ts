@@ -1,4 +1,7 @@
-import { OAuthReconnectionTracker } from './OAuthReconnectionTracker';
+import {
+  OAuthReconnectionTracker,
+  createOAuthReconnectionTracker,
+} from './OAuthReconnectionTracker';
 
 describe('OAuthReconnectTracker', () => {
   let tracker: OAuthReconnectionTracker;
@@ -545,6 +548,51 @@ describe('OAuthReconnectTracker', () => {
       expect(tracker.isStillReconnecting(userId, serverName)).toBe(false);
       // Second user's connection should still be reconnecting
       expect(tracker.isStillReconnecting(anotherUserId, serverName)).toBe(true);
+    });
+  });
+
+  describe('failed entry retention', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('drops failed entries that were never retried once retention passes', () => {
+      jest.useFakeTimers();
+      tracker.setFailed(userId, serverName);
+      expect(tracker.getStats().usersWithFailedServers).toBe(1);
+
+      jest.advanceTimersByTime(25 * 60 * 60 * 1000);
+      tracker.setFailed('other-user', serverName);
+
+      expect(tracker.isFailed(userId, serverName)).toBe(false);
+      expect(tracker.getStats().usersWithFailedServers).toBe(1);
+    });
+
+    it('honors mcpSettings.oauthFailureRetentionMs', () => {
+      jest.useFakeTimers();
+      const short = createOAuthReconnectionTracker({
+        mcpSettings: { oauthFailureRetentionMs: 60_000 },
+      });
+      short.setFailed(userId, serverName);
+      jest.advanceTimersByTime(2 * 60_000);
+      short.setFailed('other-user', serverName);
+      expect(short.getStats().usersWithFailedServers).toBe(1);
+
+      const dflt = createOAuthReconnectionTracker(undefined);
+      dflt.setFailed(userId, serverName);
+      jest.advanceTimersByTime(2 * 60_000);
+      dflt.setFailed('other-user', serverName);
+      expect(dflt.getStats().usersWithFailedServers).toBe(2);
+    });
+
+    it('prunes promptly when retention is shorter than the prune interval', () => {
+      jest.useFakeTimers();
+      const tiny = new OAuthReconnectionTracker(1_000);
+      tiny.setFailed(userId, serverName);
+      tiny.setFailed('warm', serverName);
+      jest.advanceTimersByTime(2_000);
+      tiny.setFailed('other-user', serverName);
+      expect(tiny.getStats().usersWithFailedServers).toBe(1);
     });
   });
 });

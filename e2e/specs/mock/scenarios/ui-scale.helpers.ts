@@ -57,7 +57,11 @@ export async function expectRootFontPx(page: Page, expected: number) {
  * and CSS-visible while translated off-canvas, so "visible" alone can hand back
  * a control no one can click.
  */
-async function reachable(page: Page, candidates: Locator): Promise<Locator | null> {
+async function reachable(
+  page: Page,
+  candidates: Locator,
+  scrollIntoView = false,
+): Promise<Locator | null> {
   const viewport = page.viewportSize();
   if (!viewport) {
     return null;
@@ -65,7 +69,20 @@ async function reachable(page: Page, candidates: Locator): Promise<Locator | nul
   const count = await candidates.count();
   for (let index = 0; index < count; index++) {
     const candidate = candidates.nth(index);
-    const bounds = await candidate.boundingBox();
+    let bounds = await candidate.boundingBox();
+    /* A rendered conversation can sit below Projects. Only scroll candidates
+       in the open sidebar, never the rail translated off-canvas. */
+    if (
+      scrollIntoView &&
+      bounds &&
+      bounds.width > 0 &&
+      bounds.height > 0 &&
+      bounds.x + bounds.width > 0 &&
+      bounds.x < viewport.width
+    ) {
+      await candidate.scrollIntoViewIfNeeded();
+      bounds = await candidate.boundingBox();
+    }
     /* Intersection, not containment: the off-canvas rail sits entirely beside
        the viewport, while an on-screen control may legitimately bleed a pixel. */
     if (
@@ -95,12 +112,13 @@ async function reachableInSidebar(
   page: Page,
   candidates: Locator,
   label: string,
+  scrollIntoView = false,
 ): Promise<Locator> {
   let found: Locator | null = null;
   await expect
     .poll(
       async () => {
-        found = await reachable(page, candidates);
+        found = await reachable(page, candidates, scrollIntoView);
         if (found) {
           return true;
         }
@@ -137,6 +155,7 @@ export async function conversationRow(page: Page, title: string): Promise<Locato
     page,
     page.locator('[data-testid="convo-item"]').filter({ hasText: title }),
     `the conversation row "${title}"`,
+    true,
   );
 }
 

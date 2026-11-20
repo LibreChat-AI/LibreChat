@@ -5,7 +5,7 @@ describe('composerSurfaceClasses', () => {
     const classes = composerSurfaceClasses();
 
     expect(classes).toContain('border-border-light');
-    expect(classes).toContain('bg-surface-chat');
+    expect(classes).toContain('bg-surface-composer');
     expect(classes).toContain('text-text-primary');
   });
 });
@@ -15,7 +15,7 @@ describe('composerSubmitClasses', () => {
     const classes = composerSubmitClasses();
 
     expect(classes).toContain('size-theme-control');
-    expect(classes).toContain('rounded-theme-control-round');
+    expect(classes).toContain('rounded-theme-composer-action');
     expect(classes).toContain('p-theme-compact');
   });
 

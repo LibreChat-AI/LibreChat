@@ -110,7 +110,7 @@ describe('Code output publication gateway', () => {
     expect(commit).toHaveBeenCalledWith(file);
     const finalize = async () => file;
     expect(persistence.finalize(file, finalize)).toBe(finalize);
-    expect(persistence.context).toBe(FileContext.execute_code);
+    expect(persistence.context).toBe(FileContext.execute_code_snapshot);
   });
 
   it('uses a unique attempt ID until publication and then returns the canonical file identity', async () => {

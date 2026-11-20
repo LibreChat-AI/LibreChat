@@ -26,6 +26,7 @@ import {
   ToolExecuteOptions,
 } from './handlers';
 import { markSandboxReady } from './prewarm';
+import { captureAuthoredSkills, restoreAuthoredSkills } from './authored';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { WorkspaceToolHttpError } from '../code/workspace';
 import { createAttachedWorkspaceBashTool, stampCommandExecutor } from '../code/command';
@@ -110,7 +111,9 @@ function invokeHandlerWithConfig(
  * badge / persisted `skills_enabled` + ACL). Tests that mock
  * `getSkillByName` directly need this so they reach the lookup.
  */
-it('keeps enrolled MCP work foreground even when runnable metadata requests detached execution', async () => {
+it('keeps MCP work foreground under a grant its completion turn could not find again', async () => {
+  // A grant that is not a schedule's: the turn that would pick the result up has no way
+  // to resolve it, so the call runs here whatever the runnable metadata asks for.
   const configs: Record<string, unknown>[] = [];
   const args: unknown[] = [];
   const name = 'query_mcp_warehouse';
@@ -146,9 +149,15 @@ it('keeps enrolled MCP work foreground even when runnable metadata requests deta
   expect(configs).toHaveLength(1);
 });
 
-it.each([true, false])(
-  'captures background completion origin only from its host execution (scheduled=%s)',
-  async (scheduled) => {
+/**
+ * A schedule's run sends work to the background like any other, with or without a grant: the
+ * tool call itself is authorized where it is made, and its completion turn resolves the
+ * schedule's grant again. `kind` is the run: under a grant, a schedule with none, or a chat.
+ */
+it.each(['granted', 'unauthorized', 'chat'] as const)(
+  'sends background work off with its origin taken only from its host execution (%s)',
+  async (kind) => {
+    const scheduled = kind !== 'chat';
     const identity = {
       scheduleId: 'original-schedule',
       ownerId: 'origin-owner',
@@ -159,7 +168,9 @@ it.each([true, false])(
     const preregister = jest.fn(async () => false as const);
     const name = 'query_mcp_warehouse';
     const handler = createToolExecuteHandler({
-      ...(scheduled && { scheduledMCPExecution: { enrolled: false, identity } }),
+      ...(scheduled && {
+        scheduledMCPExecution: { enrolled: kind === 'granted', detaches: true, identity },
+      }),
       loadTools: async () => ({ loadedTools: [createMockTool(name, [])] as never[] }),
       backgroundToolCompletion: {
         preregister,
@@ -176,7 +187,7 @@ it.each([true, false])(
         agentId: 'child',
         toolCalls: [
           {
-            id: `origin-${scheduled}`,
+            id: `origin-${kind}`,
             stepId: 'origin-step',
             name,
             args: { run_in_background: true, scheduleId: 'forged' },
@@ -189,12 +200,12 @@ it.each([true, false])(
           scheduledMCPExecution: { identity: { ...identity, scheduleId: 'forged' } },
           req: { user: { id: identity.ownerId }, body: { conversationId: 'origin-conversation' } },
         },
-        metadata: { run_id: `origin-response-${scheduled}`, thread_id: 'origin-conversation' },
+        metadata: { run_id: `origin-response-${kind}`, thread_id: 'origin-conversation' },
       });
     });
     expect(preregister).toHaveBeenCalledWith(
       expect.objectContaining({
-        parentMessageId: `origin-response-${scheduled}`,
+        parentMessageId: `origin-response-${kind}`,
         conversationId: 'origin-conversation',
         scheduleMCPIdentity: scheduled ? identity : null,
       }),
@@ -1492,7 +1503,13 @@ describe('createToolExecuteHandler', () => {
         { name: 'custom_tool', allowed_callers: ['code_execution'] },
       ]);
       expect(capturedConfigs[0].disallowedToolDefs).toEqual([{ name: 'direct_tool' }]);
-      expect(capturedConfigs[0].toolMap).toEqual(new Map([['custom_tool', customTool]]));
+      const innerTools = capturedConfigs[0].toolMap as Map<string, typeof customTool>;
+      expect([...innerTools.keys()]).toEqual(['custom_tool']);
+      expect(innerTools.get('custom_tool')?.name).toBe(customTool.name);
+      const input = { query: 'inner query' };
+      const config = { toolCall: { id: 'inner-call' } };
+      await innerTools.get('custom_tool')?.invoke(input, config);
+      expect(customTool.invoke).toHaveBeenCalledWith(input, config);
     });
 
     it('uses the SDK live projection as the authoritative active PTC policy', async () => {
@@ -1558,9 +1575,12 @@ describe('createToolExecuteHandler', () => {
         { name: 'active_programmatic_tool', allowed_callers: ['code_execution'] },
       ]);
       expect(capturedConfigs[0].disallowedToolDefs).toEqual([{ name: 'active_direct_tool' }]);
-      expect(capturedConfigs[0].toolMap).toEqual(
-        new Map([['active_programmatic_tool', activeProgrammaticTool]]),
-      );
+      const innerTools = capturedConfigs[0].toolMap as Map<string, typeof activeProgrammaticTool>;
+      expect([...innerTools.keys()]).toEqual(['active_programmatic_tool']);
+      const input = { query: 'inner query' };
+      const config = { toolCall: { id: 'inner-call' } };
+      await innerTools.get('active_programmatic_tool')?.invoke(input, config);
+      expect(activeProgrammaticTool.invoke).toHaveBeenCalledWith(input, config);
     });
 
     it('treats an empty versioned projection as authoritative', async () => {
@@ -3290,6 +3310,180 @@ describe('createToolExecuteHandler', () => {
       });
     }
 
+    it.each([
+      'allowed',
+      'revoked',
+      'replaced',
+      'missing',
+      'hidden',
+      'disabled',
+      'unprimed',
+      'unprimed-hidden',
+      'deleted-later',
+    ])('restores authored identity into a fresh handler after approval: %s', async (scenario) => {
+      const skill = {
+        _id: SKILL_ID,
+        name: 'resumed-skill',
+        body: '---\nname: resumed-skill\ndescription: Resume regression\n---\n# Authored body\n',
+        description: 'Resume regression',
+        version: 1,
+        fileCount: 0,
+      };
+      let stored = false;
+      const twinId = new Types.ObjectId();
+      const getSkillByName = jest.fn(async (name: string, ids: Array<{ toString(): string }>) => {
+        if (ids.some((id) => id.toString() === twinId.toString())) {
+          return { ...skill, _id: twinId, body: '# Same-name twin' };
+        }
+        return stored &&
+          name === skill.name &&
+          ids.some((id) => id.toString() === SKILL_ID.toString())
+          ? { ...skill, disableModelInvocation: scenario.endsWith('hidden') }
+          : null;
+      });
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: 9,
+        relativePath: 'references/a.md',
+      }));
+      const getAuthorSkillByName = jest.fn(async () =>
+        scenario === 'missing'
+          ? null
+          : {
+              ...skill,
+              disableModelInvocation: scenario.endsWith('hidden'),
+              _id: scenario === 'replaced' ? new Types.ObjectId() : SKILL_ID,
+            },
+      );
+      const dependencies = {
+        getSkillByName,
+        createSkill: jest.fn(async () => {
+          stored = true;
+          return { skill, warnings: [] };
+        }),
+        getAuthorSkillByName,
+        getSkillFileByPath: jest.fn(async () => null),
+        saveSkillFileContent,
+      };
+      const original = makeAuthoringHandler(dependencies, { accessibleSkillIds: [] });
+      const [created] = await invokeHandlerWithConfig(
+        original,
+        [
+          {
+            id: 'create-main',
+            name: 'create_file',
+            args: { path: 'skills/resumed-skill/SKILL.md', content: skill.body },
+          },
+        ],
+        { req, accessibleSkillIds: [] },
+      );
+      expect(created.status).toBe('success');
+      // JSON round-trip and a new handler/configurable model a different resume replica.
+      const bindings = JSON.parse(JSON.stringify(captureAuthoredSkills(original)));
+      expect(bindings).toEqual([
+        {
+          agentId: '',
+          name: skill.name,
+          id: SKILL_ID.toString(),
+          primed: true,
+        },
+      ]);
+      if (scenario.startsWith('unprimed')) bindings[0].primed = false;
+      const resumed = makeAuthoringHandler(
+        {
+          ...dependencies,
+          canEditSkill: jest.fn(async () => scenario !== 'revoked'),
+        },
+        {
+          accessibleSkillIds: [twinId],
+          skillAuthoringAvailable: scenario !== 'disabled',
+          skillPrimedIdsByName: { [skill.name]: twinId.toString() },
+        },
+      );
+      restoreAuthoredSkills(resumed, bindings);
+      const fresh = { req, accessibleSkillIds: [], activeSkillNames: new Set(['unrelated']) };
+      const [bundled] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'create-reference',
+            name: 'create_file',
+            args: { path: 'skills/resumed-skill/references/a.md', content: 'reference' },
+          },
+        ],
+        fresh,
+      );
+      const allowed = ['allowed', 'hidden', 'unprimed', 'deleted-later'].includes(scenario);
+      expect(bundled.status).toBe(allowed ? 'success' : 'error');
+      expect(saveSkillFileContent).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      if (scenario === 'deleted-later') {
+        stored = false;
+        getAuthorSkillByName.mockResolvedValue({
+          ...skill,
+          _id: twinId,
+          disableModelInvocation: false,
+        });
+      }
+      const stillAllowed = allowed && scenario !== 'deleted-later';
+      const [laterWrite] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'later-reference',
+            name: 'create_file',
+            args: { path: 'skills/resumed-skill/references/b.md', content: 'later' },
+          },
+        ],
+        fresh,
+      );
+      expect(laterWrite.status).toBe(stillAllowed ? 'success' : 'error');
+      if (stillAllowed) {
+        expect(saveSkillFileContent.mock.calls).toHaveLength(2);
+        expect(saveSkillFileContent).toHaveBeenLastCalledWith(
+          expect.objectContaining({ skillId: SKILL_ID }),
+        );
+      }
+      const [read] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'read-authored',
+            name: Constants.READ_FILE,
+            args: { path: 'skills/resumed-skill/SKILL.md' },
+          },
+        ],
+        fresh,
+      );
+      expect(read.status).toBe(stillAllowed ? 'success' : 'error');
+      if (stillAllowed) {
+        expect(String(read.content)).toContain('# Authored body');
+        expect(String(read.content)).not.toContain('# Same-name twin');
+      }
+
+      const [invoked] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'invoke-authored',
+            name: Constants.SKILL_TOOL,
+            args: { skillName: skill.name },
+          },
+        ],
+        fresh,
+      );
+      expect(invoked.status).toBe(['allowed', 'unprimed'].includes(scenario) ? 'success' : 'error');
+      if (scenario.endsWith('hidden')) expect(invoked.errorMessage).toContain('cannot be invoked');
+      if (scenario === 'disabled') expect(getAuthorSkillByName).not.toHaveBeenCalled();
+      if (scenario === 'deleted-later') {
+        expect(saveSkillFileContent).toHaveBeenCalledTimes(1);
+        expect(captureAuthoredSkills(resumed)).toEqual(bindings);
+      }
+      if (scenario === 'allowed') {
+        expect(JSON.stringify(invoked.injectedMessages)).toContain('# Authored body');
+        // A second pause before another tool call retains the exact binding.
+        expect(captureAuthoredSkills(resumed)).toEqual(bindings);
+      }
+    });
+
     it('creates a new SKILL.md through create_file', async () => {
       const createSkill = jest.fn(async () => ({
         skill: {
@@ -3591,15 +3785,7 @@ describe('createToolExecuteHandler', () => {
       expect(getSkillByName).toHaveBeenLastCalledWith('shared-name', [SKILL_ID], {});
     });
 
-    it('keeps the authored id reachable after the per-batch configurable copy', async () => {
-      /**
-       * `ON_TOOL_EXECUTE` rebuilds the run configurable every batch
-       * (`{ ...incomingConfigurable, executionContext }`), so a map assigned
-       * onto that copy is discarded with it. The map is seeded on the run's own
-       * configurable for exactly this reason; this pins the surviving channel so
-       * a future change that reassigns it instead of mutating it fails here
-       * rather than silently unpinning cross-batch invocation.
-       */
+    it('keeps authored files usable when each batch gets a fresh configurable', async () => {
       const createdSkill = {
         _id: SKILL_ID,
         name: 'cross-batch-skill',
@@ -3609,7 +3795,22 @@ describe('createToolExecuteHandler', () => {
         version: 1,
       };
       let stored = false;
-      const getSkillByName = jest.fn(async () => (stored ? createdSkill : null));
+      const getSkillByName = jest.fn(async (name: string, ids: Array<typeof SKILL_ID>) =>
+        stored && name === createdSkill.name && ids.some((id) => id.equals(SKILL_ID))
+          ? { ...createdSkill }
+          : null,
+      );
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: 9,
+        relativePath: 'references/a.md',
+      }));
+      const updateSkill = jest.fn(
+        async ({ update }: Parameters<NonNullable<ToolExecuteOptions['updateSkill']>>[0]) => {
+          createdSkill.body = update.body ?? createdSkill.body;
+          createdSkill.version++;
+          return { status: 'updated' as const, skill: { ...createdSkill }, warnings: [] };
+        },
+      );
       const loadTools: ToolExecuteOptions['loadTools'] = jest.fn(async () => ({
         loadedTools: [],
         configurable: {
@@ -3621,46 +3822,71 @@ describe('createToolExecuteHandler', () => {
       const handler = createToolExecuteHandler({
         loadTools,
         canCreateSkill: jest.fn(async () => true),
+        canEditSkill: jest.fn(async () => true),
         grantSkillOwner: jest.fn(async () => undefined),
-        getSkillByName: getSkillByName as unknown as ToolExecuteOptions['getSkillByName'],
+        getSkillByName,
         createSkill: jest.fn(async () => {
           stored = true;
-          return { skill: createdSkill };
-        }) as unknown as ToolExecuteOptions['createSkill'],
+          return { skill: { ...createdSkill }, warnings: [] };
+        }),
+        getSkillFileByPath: jest.fn(async () => null),
+        saveSkillFileContent,
+        updateSkill,
       });
-      const runConfigurable: Record<string, unknown> = { req, accessibleSkillIds: [] };
-
-      await invokeHandlerWithConfig(
-        handler,
-        [
-          {
-            id: 'call_create_cross_batch',
-            name: 'create_file',
-            args: { path: 'skills/cross-batch-skill/SKILL.md', content: createdSkill.body },
+      const calls: ToolCallRequest[] = [
+        {
+          id: 'create-skill',
+          name: 'create_file',
+          args: { path: 'skills/cross-batch-skill/SKILL.md', content: createdSkill.body },
+        },
+        {
+          id: 'create-reference',
+          name: 'create_file',
+          args: { path: 'skills/cross-batch-skill/references/a.md', content: 'reference' },
+        },
+        {
+          id: 'read-skill',
+          name: Constants.READ_FILE,
+          args: { path: 'skills/cross-batch-skill/SKILL.md' },
+        },
+        {
+          id: 'edit-skill',
+          name: 'edit_file',
+          args: {
+            path: 'skills/cross-batch-skill/SKILL.md',
+            old_text: '# Cross batch body',
+            new_text: '# Refined body',
           },
-        ],
-        runConfigurable,
+        },
+        {
+          id: 'invoke-skill',
+          name: Constants.SKILL_TOOL,
+          args: { skillName: 'cross-batch-skill' },
+        },
+      ];
+      const results: ToolExecuteResult[] = [];
+      for (const call of calls) {
+        // Neither the configurable nor its catalog is shared between graph tasks.
+        const [result] = await invokeHandlerWithConfig(handler, [call], {
+          req,
+          accessibleSkillIds: [],
+        });
+        expect(result).toMatchObject({ toolCallId: call.id, status: 'success' });
+        if (call.id !== 'create-skill') {
+          expect(getSkillByName).toHaveBeenLastCalledWith('cross-batch-skill', [SKILL_ID], {});
+        }
+        results.push(result);
+      }
+
+      expect(saveSkillFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({ skillId: SKILL_ID, relativePath: 'references/a.md' }),
       );
-
-      expect(runConfigurable.authoredSkillIdsByName).toEqual({
-        'cross-batch-skill': SKILL_ID.toString(),
-      });
-
-      const [invoked] = await invokeHandlerWithConfig(
-        handler,
-        [
-          {
-            id: 'call_invoke_cross_batch',
-            name: Constants.SKILL_TOOL,
-            args: { skillName: 'cross-batch-skill' },
-          },
-        ],
-        runConfigurable,
+      expect(results[2].content).toContain('# Cross batch body');
+      expect(updateSkill).toHaveBeenCalledWith(
+        expect.objectContaining({ id: SKILL_ID.toString(), expectedVersion: 1 }),
       );
-
-      expect(invoked.status).toBe('success');
-      expect(JSON.stringify(invoked.injectedMessages)).toContain('# Cross batch body');
-      expect(getSkillByName).toHaveBeenLastCalledWith('cross-batch-skill', [SKILL_ID], {});
+      expect(JSON.stringify(results[4].injectedMessages)).toContain('# Refined body');
+      expect(JSON.stringify(results[4].injectedMessages)).not.toContain('# Cross batch body');
     });
 
     it('does not advertise invocation for a skill created with disable-model-invocation', async () => {
@@ -4628,6 +4854,46 @@ describe('createToolExecuteHandler', () => {
       expect(saveSkillFileContent).toHaveBeenCalledWith(
         expect.objectContaining({ expectedFileId: 'revision-1', createOnly: false }),
       );
+    });
+
+    it('reports a safe error when Skill deletion wins the agent file-write race', async () => {
+      const saveSkillFileContent = jest.fn(async () => {
+        throw Object.assign(new Error('Skill is being deleted'), { code: 'SKILL_DELETING' });
+      });
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'edit-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          file_id: 'revision-1',
+          content: 'hello old\n',
+          isBinary: false,
+          mimeType: 'text/markdown',
+          bytes: 10,
+          filepath: '/tmp/a.md',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_deleting',
+          name: 'edit_file',
+          args: {
+            path: 'skills/edit-skill/references/a.md',
+            old_text: 'hello old',
+            new_text: 'hello new',
+          },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('Skill is being deleted');
+      expect(result.errorMessage).not.toContain('Internal');
     });
 
     it.each(['github', 'notion'] as const)(
@@ -6135,6 +6401,30 @@ describe('createToolExecuteHandler', () => {
         ...params,
       });
     }
+
+    it('hands refs provisioned by a read_file batch to that sandbox read', async () => {
+      const fresh = {
+        id: 'fresh-1',
+        resource_id: 'user-1',
+        storage_session_id: 'sess-fresh',
+        name: 'input.csv',
+        kind: 'user' as const,
+      };
+      const readSandboxFile = jest.fn(async () => ({ content: 'a,b' }));
+      const handler = makeSandboxAuthoringHandler({
+        provisionFiles: jest.fn(async () => [fresh]),
+        readSandboxFile,
+      });
+
+      const [result] = await invokeHandler(handler, [
+        { id: 'first_read', name: Constants.READ_FILE, args: { path: '/mnt/data/input.csv' } },
+      ]);
+
+      expect(result.status).toBe('success');
+      expect(readSandboxFile).toHaveBeenCalledWith(
+        expect.objectContaining({ file_path: '/mnt/data/input.csv', files: [fresh] }),
+      );
+    });
 
     it('rejects exact replacement amplification before writing a non-attached sandbox file', async () => {
       const writeSandboxFile = jest.fn();

@@ -189,7 +189,7 @@ export default function ProjectInstructionsDialog({
               <p id={`${formId}-instructions-help`} className="sr-only">
                 {localize('com_ui_project_instructions_help')}
               </p>
-              <p className="text-text-tertiary text-right text-xs tabular-nums" aria-live="polite">
+              <p className="text-text-tertiary text-end text-xs tabular-nums" aria-live="polite">
                 {instructions.length}/{instructionsLimit}
               </p>
             </div>

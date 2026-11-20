@@ -225,3 +225,93 @@ describe('Azure full-hostname instances', () => {
     );
   });
 });
+
+describe('Gemini-compatible custom endpoint requests', () => {
+  const GATEWAY_URL = 'https://gateway.example.com/v1beta/openai';
+
+  /** Sends one chat completion through the real client and returns the body the gateway receives. */
+  async function getRequestBody(
+    modelOptions: object,
+    rest: { addParams?: Record<string, unknown> } = {},
+  ): Promise<Record<string, unknown>> {
+    const bodies: Record<string, unknown>[] = [];
+    const fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']> = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        id: 'chatcmpl_test',
+        object: 'chat.completion',
+        created: 1,
+        model: 'gemini-3.1-pro-preview',
+        choices: [
+          { index: 0, message: { role: 'assistant', content: 'Four.' }, finish_reason: 'stop' },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+      });
+    };
+    const options: NonNullable<Parameters<typeof getOpenAIConfig>[1]> = {
+      streaming: false,
+      reverseProxyUrl: GATEWAY_URL,
+      customParams: { defaultParamsEndpoint: 'google' },
+      modelOptions,
+      ...rest,
+    };
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-google-key',
+      options,
+      'Gemini (Custom)',
+    );
+    const model = initializeModel({
+      provider: Providers.OPENAI,
+      clientOptions: {
+        ...llmConfig,
+        verbosity: undefined,
+        configuration: { ...configOptions, fetch },
+      },
+    });
+
+    await model.invoke('What is 2 + 2?');
+
+    expect(bodies).toHaveLength(1);
+    return bodies[0];
+  }
+
+  it.each(['minimal', 'low', 'medium', 'high'])(
+    'sends a selected %s thinking level as reasoning_effort',
+    async (thinkingLevel) => {
+      const body = await getRequestBody({ model: 'gemini-3.1-pro-preview', thinkingLevel });
+
+      expect(body).toMatchObject({
+        model: 'gemini-3.1-pro-preview',
+        reasoning_effort: thinkingLevel,
+      });
+      for (const key of ['thinkingConfig', 'thinking_config', 'thinkingLevel', 'extra_body']) {
+        expect(body).not.toHaveProperty(key);
+      }
+    },
+  );
+
+  it('sends no reasoning_effort when no thinking level is selected', async () => {
+    const body = await getRequestBody({ model: 'gemini-3.1-pro-preview' });
+
+    expect(body).toMatchObject({ model: 'gemini-3.1-pro-preview' });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('sends the level a Flash model accepts when the selection is not supported', async () => {
+    const body = await getRequestBody({ model: 'gemini-4-argon', thinkingLevel: 'minimal' });
+
+    expect(body).toMatchObject({ reasoning_effort: 'low' });
+  });
+
+  it.each([
+    ['reasoning_effort', { reasoning_effort: 'high' }],
+    ['reasoning object', { reasoning: { effort: 'high' } }],
+  ])('lets an addParams %s replace the selected thinking level', async (_name, addParams) => {
+    const body = await getRequestBody(
+      { model: 'gemini-3.1-pro-preview', thinkingLevel: 'low' },
+      { addParams },
+    );
+
+    expect(body).toMatchObject({ reasoning_effort: 'high' });
+  });
+});

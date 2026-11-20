@@ -1,4 +1,27 @@
+import { isAxiosError } from 'axios';
 import type { AxiosResponse } from 'axios';
+import type {
+  AgentChannel,
+  ActivateAgentChannel,
+  SlackChannelManifest,
+  SlackAppPage,
+  SlackAppRegistration,
+  ConfigureSlackApp,
+  SlackWorkspaceStatus,
+  SlackBotManagers,
+  SlackBotManager,
+  SlackWorkspaceConnect,
+  SlackWorkspaceDetail,
+  SlackWorkspaceRoutePage,
+  SlackWorkspaceRouteStatus,
+  SetSlackWorkspaceRoute,
+} from './types/channels';
+import type {
+  ResponseReviewView,
+  ResponseCancelReceipt,
+  ResponseReviewDecision,
+  ResponseReviewDecisionReceipt,
+} from './types/responseReview';
 import type {
   TTracePage,
   TTracePageParams,
@@ -6,12 +29,25 @@ import type {
   TTraceRecordParams,
   TTraceRecordDetail,
 } from './types/traces';
+import type {
+  ChannelIdentityClient,
+  ChannelIdentityResult,
+  ChannelLinkView,
+} from './types/channelIdentity';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
+import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
+import {
+  responseReviewDecisionReceiptSchema,
+  responseCancelReceiptSchema,
+} from './types/responseReview';
+import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
+import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
+import { setClientLimits } from './clientLimits';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
 import * as mcp from './types/mcpServers';
@@ -27,6 +63,223 @@ import * as config from './config';
 import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
+
+export function listAgentChannels(agentId: string): Promise<AgentChannel[]> {
+  return request.get(endpoints.agentChannels(agentId));
+}
+
+export function getResponseReview(responseId: string): Promise<ResponseReviewView> {
+  return request.get(endpoints.responseReview(responseId));
+}
+
+export async function cancelOwnerResponse(responseId: string): Promise<ResponseCancelReceipt> {
+  const body: unknown = await request.post(endpoints.responseCancel(responseId), {});
+  const receipt = responseCancelReceiptSchema.safeParse(body);
+  if (!receipt.success || receipt.data.id !== responseId)
+    throw new Error('Response cancellation acknowledgement is unavailable');
+  return receipt.data;
+}
+
+export async function submitResponseReviewDecision(
+  responseId: string,
+  decision: ResponseReviewDecision,
+): Promise<ResponseReviewDecisionReceipt> {
+  const body: unknown = await request.post(endpoints.responseReview(responseId), decision);
+  const receipt = responseReviewDecisionReceiptSchema.safeParse(body);
+  if (
+    !receipt.success ||
+    receipt.data.responseId !== responseId ||
+    receipt.data.actionId !== decision.actionId
+  )
+    throw new Error('Response decision acknowledgement is unavailable');
+  return receipt.data;
+}
+
+export function createAgentChannel(
+  agentId: string,
+  credentialMode: AgentChannel['credentialMode'] = 'shared',
+): Promise<AgentChannel> {
+  return request.post(endpoints.agentChannels(agentId), { type: 'slack', credentialMode });
+}
+
+export function getAgentChannelManifest(
+  agentId: string,
+  channelId: string,
+): Promise<SlackChannelManifest> {
+  return request.get(`${endpoints.agentChannels(agentId, channelId)}/manifest`);
+}
+
+function channelCredentialFailure(error: unknown): never {
+  const failure = isAxiosError<{ error?: unknown }>(error)
+    ? error.response?.data?.error
+    : undefined;
+  const code =
+    typeof failure === 'object' && failure !== null && 'code' in failure ? failure.code : failure;
+  // Axios failures retain serialized secrets. Only this supported setup code may escape.
+  throw Object.assign(
+    new Error('Channel credential update failed'),
+    code === 'transactions_unavailable' ? { code } : {},
+  );
+}
+
+export function activateAgentChannel(
+  agentId: string,
+  channelId: string,
+  input: ActivateAgentChannel,
+): Promise<AgentChannel> {
+  return request
+    .patch(endpoints.agentChannels(agentId, channelId), input)
+    .catch(channelCredentialFailure);
+}
+
+export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { status: 'disabled' });
+}
+
+export function changeAgentChannelMode(
+  agentId: string,
+  channelId: string,
+  credentialMode: AgentChannel['credentialMode'],
+  revision: string,
+): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { credentialMode, revision });
+}
+
+export function deleteAgentChannel(agentId: string, channelId: string): Promise<void> {
+  return request.delete(endpoints.agentChannels(agentId, channelId));
+}
+
+export function createWorkspaceAgentChannel(
+  agentId: string,
+  workspaceId: string,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId)}/workspace-connections`, { workspaceId });
+}
+
+export function getAgentChannelWorkspaceRoutes(
+  agentId: string,
+  channelId: string,
+  cursor?: string,
+): Promise<SlackWorkspaceRoutePage> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getAgentChannelWorkspaceTarget(
+  agentId: string,
+  channelId: string,
+  externalChannelId?: string,
+): Promise<SlackWorkspaceRouteStatus> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes?target=${encodeURIComponent(externalChannelId || 'default')}`,
+  );
+}
+
+export function setAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: SetSlackWorkspaceRoute,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId, channelId)}/workspace-routes`, input);
+}
+
+export function removeAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: { externalChannelId?: string; expectedRevision: string },
+): Promise<void> {
+  return request.deleteWithOptions(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes`,
+    { data: input },
+  );
+}
+
+export function getSlackWorkspaces(cursor?: string): Promise<SlackWorkspaceStatus> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getSlackBotManagers(workspaceId: string): Promise<SlackBotManagers> {
+  return request.get(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`);
+}
+
+export function searchSlackBotManagers(
+  workspaceId: string,
+  query: string,
+): Promise<SlackBotManager[]> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+export function setSlackBotManagers(
+  workspaceId: string,
+  revision: string,
+  userIds: string[],
+): Promise<{ revision: string }> {
+  return request.put(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`, {
+    revision,
+    userIds,
+  });
+}
+
+export function getSlackWorkspace(workspaceId: string): Promise<SlackWorkspaceDetail> {
+  return request.get(endpoints.slackWorkspaces(workspaceId));
+}
+
+export function getSlackApps(cursor?: string): Promise<SlackAppPage> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/apps${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function configureSlackApp(input: ConfigureSlackApp): Promise<SlackAppRegistration> {
+  return request.put(`${endpoints.slackWorkspaces()}/apps`, input).catch(channelCredentialFailure);
+}
+
+export function removeSlackApp(appId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces()}/apps/${encodeURIComponent(appId)}/remove`, {
+    revision,
+  });
+}
+
+export function connectSlackWorkspace(
+  workspaceId?: string,
+  appId?: string,
+): Promise<SlackWorkspaceConnect> {
+  return request.post(`${endpoints.slackWorkspaces()}/connect`, { workspaceId, appId });
+}
+
+export function disconnectSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.slackWorkspaces(workspaceId), { data: { revision } });
+}
+
+export function removeSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces(workspaceId)}/remove`, { revision });
+}
+
+export function cancelSlackWorkspaceInstall(flowId: string): Promise<void> {
+  return request.delete(`${endpoints.slackWorkspaces()}/attempts/${encodeURIComponent(flowId)}`);
+}
+
+export const channelIdentityClient: ChannelIdentityClient = {
+  preview: (ticket): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/preview`, { ticket }),
+  accept: ({ ticket, expectedRevision }): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/accept`, {
+      ticket,
+      revision: expectedRevision,
+    }),
+  list: (): Promise<ChannelLinkView[]> =>
+    request.get(`${endpoints.apiBaseUrl()}/api/channels/links`),
+  revoke: (linkId, revision): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.deleteWithOptions(
+      `${endpoints.apiBaseUrl()}/api/channels/links/${encodeURIComponent(linkId)}`,
+      { data: { revision } },
+    ),
+};
 
 export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResponse> {
   const query = new URLSearchParams();
@@ -93,6 +346,28 @@ export function getLangfuseSessionLink(
   return request.get(endpoints.adminLangfuseSessionLink(conversationId));
 }
 
+export function updateLangfusePromptSync(
+  payload: t.TUpdateLangfusePromptSyncRequest,
+): Promise<t.TLangfuseConnectionStatus> {
+  return request.put(endpoints.adminLangfusePromptSync(), payload);
+}
+
+export function getLangfusePrompts(
+  params: t.TLangfusePromptListParams = {},
+): Promise<t.TLangfusePromptListResponse> {
+  return request.get(endpoints.adminLangfusePrompts(params));
+}
+
+export function getLangfusePrompt(
+  params: t.TLangfusePromptGetParams,
+): Promise<t.TLangfusePromptGetResponse> {
+  return request.get(endpoints.adminLangfusePrompt(params.name, params.version));
+}
+
+export function syncLangfusePrompts(): Promise<t.TLangfusePromptSyncResult> {
+  return request.post(endpoints.adminLangfuseSyncPrompts(), {});
+}
+
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
 }
@@ -103,6 +378,38 @@ export function revokeAllUserKeys(): Promise<unknown> {
 
 export function deleteUser(payload?: t.TDeleteUserRequest): Promise<unknown> {
   return request.deleteWithOptions(endpoints.deleteUser(), { data: payload });
+}
+
+function parseCodeSetupAttempt(attemptId: string, data: unknown): CodeSetupAttempt {
+  const attempt = codeSetupAttemptSchema.parse(data);
+  if (attempt.attemptId !== attemptId) {
+    throw new Error('Code setup response does not match the requested attempt');
+  }
+  return attempt;
+}
+
+export async function getCodeSetupAttempt(attemptId: string): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(attemptId, await request.get(endpoints.codeSetupAttempt(attemptId)));
+}
+
+export async function approveCodeSetupAttempt(
+  attemptId: string,
+  payload: CodeSetupApprovalRequest,
+): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(
+    attemptId,
+    await request.post(
+      endpoints.codeSetupApprove(attemptId),
+      codeSetupApprovalRequestSchema.parse(payload),
+    ),
+  );
+}
+
+export async function denyCodeSetupAttempt(attemptId: string): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(
+    attemptId,
+    await request.post(endpoints.codeSetupDeny(attemptId), {}),
+  );
 }
 
 export function getCodeEnvironments(): Promise<t.TCodeEnvironmentsResponse> {
@@ -252,6 +559,10 @@ export function getAgentApiKeys(): Promise<t.TAgentApiKeyListResponse> {
   return request.get(endpoints.apiKeys());
 }
 
+export function getApiKeyAgents(): Promise<t.TApiKeyAgentsResponse> {
+  return request.get(endpoints.apiKeyAgents());
+}
+
 export function createAgentApiKey(
   payload: t.TAgentApiKeyCreateRequest,
 ): Promise<t.TAgentApiKeyCreateResponse> {
@@ -296,10 +607,6 @@ export function getUserBalance(): Promise<t.TBalanceResponse> {
   return request.get(endpoints.balance());
 }
 
-export const updateTokenCount = (text: string) => {
-  return request.post(endpoints.tokenizer(), { arg: text });
-};
-
 export const login = (payload: t.TLoginUser): Promise<t.TLoginResponse> => {
   return request.post(endpoints.login(), payload);
 };
@@ -314,10 +621,6 @@ export const register = (payload: t.TRegisterUser) => {
 
 export const userKeyQuery = (name: string): Promise<t.TCheckUserKeyResponse> =>
   request.get(endpoints.userKeyQuery(name));
-
-export const getLoginGoogle = () => {
-  return request.get(endpoints.loginGoogle());
-};
 
 export const requestPasswordReset = (
   payload: t.TRequestPasswordReset,
@@ -351,10 +654,6 @@ export const resendVerificationEmail = (
   return request.post(endpoints.resendVerificationEmail(), payload);
 };
 
-export const getAvailablePlugins = (): Promise<s.TPlugin[]> => {
-  return request.get(endpoints.plugins());
-};
-
 export const updateUserPlugins = (payload: t.TUpdateUserPlugins) => {
   return request.post(endpoints.userPlugins(), payload);
 };
@@ -373,12 +672,6 @@ export const bindActionOAuth = (actionId: string): Promise<{ success: boolean }>
 
 export const getMCPConnectionStatus = (): Promise<q.MCPConnectionStatusResponse> => {
   return request.get(endpoints.mcpConnectionStatus());
-};
-
-export const getMCPServerConnectionStatus = (
-  serverName: string,
-): Promise<q.MCPServerConnectionStatusResponse> => {
-  return request.get(endpoints.mcpServerConnectionStatus(serverName));
 };
 
 export const getMCPAuthValues = (serverName: string): Promise<q.MCPAuthValuesResponse> => {
@@ -406,19 +699,33 @@ export const getStartupConfig = (
     mcpCustomUserVars?: Record<string, { title: string; description: string }>;
   }
 > => {
-  return request.get(endpoints.config(options?.context));
+  return request
+    .get<config.TStartupConfig>(endpoints.config(options?.context))
+    .then((startupConfig) => {
+      setClientLimits(startupConfig?.clientLimits);
+      return startupConfig;
+    });
 };
 
 export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {
   return request.get(endpoints.aiEndpoints());
 };
 
-export const getTokenConfig = (): Promise<t.TTokenConfigMap> => {
-  return request.get(endpoints.tokenConfig());
+export const getTokenConfig = async (endpoint?: string): Promise<t.TTokenConfigMap> => {
+  const config = await request.get<t.TTokenConfigMap>(endpoints.tokenConfig(endpoint));
+  return endpoint == null ? config : { [endpoint]: config[endpoint] ?? {} };
 };
 
-export const getModels = async (): Promise<t.TModelsConfig> => {
-  return request.get(endpoints.models());
+export const getReasoningCapabilities = (
+  endpoint: string,
+): Promise<t.TReasoningCapabilitiesResponse> => {
+  return request.get(endpoints.reasoningCapabilities(endpoint));
+};
+
+export const getModels = async (endpoint?: string): Promise<t.TModelsConfig> => {
+  const models = await request.get<t.TModelsConfig>(endpoints.models(endpoint));
+  // Older servers ignore the selector and return the aggregate catalog.
+  return endpoint == null ? models : { [endpoint]: models[endpoint] ?? [] };
 };
 
 /* Assistants */
@@ -434,14 +741,17 @@ export const getAssistantById = ({
   endpoint,
   assistant_id,
   version,
+  model,
 }: {
   endpoint: s.AssistantsEndpoint;
   assistant_id: string;
-  version: number | string | number;
+  version: number | string;
+  model?: string | null;
 }): Promise<a.Assistant> => {
   return request.get(
     endpoints.assistants({
-      path: assistant_id,
+      path: encodeURIComponent(assistant_id),
+      options: model ? { model } : undefined,
       endpoint,
       version,
     }),
@@ -753,6 +1063,9 @@ export const deleteAgent = ({ agent_id }: m.DeleteAgentBody): Promise<void> => {
   );
 };
 
+export const getModelSpecHandoffs = (): Promise<ag.ModelSpecHandoffTarget[]> =>
+  request.get(endpoints.agents({ path: 'handoff-targets' }));
+
 export const listAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
@@ -959,6 +1272,14 @@ export const textToSpeech = (data: FormData): Promise<ArrayBuffer> => {
   return request.postTTS(endpoints.textToSpeechManual(), data);
 };
 
+export const streamTextToSpeech = (data: FormData, signal: AbortSignal): Promise<Response> => {
+  return request.authenticatedFetch(endpoints.textToSpeechManual(), {
+    method: 'POST',
+    body: data,
+    signal,
+  });
+};
+
 export const getVoices = (): Promise<f.VoiceResponse> => {
   return request.get(endpoints.textToSpeechVoices());
 };
@@ -969,14 +1290,20 @@ export const getCustomConfigSpeech = (): Promise<t.TCustomConfigSpeechResponse> 
 
 /* conversations */
 
+/** Asks for tool-call previews in a response whose messages seed the conversation cache. */
+function withToolCallPreviews(url: string): string {
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}${TOOL_CALL_PREVIEWS_PARAM}=${TOOL_CALL_PREVIEWS_VERSION}`;
+}
+
 export function duplicateConversation(
   payload: t.TDuplicateConvoRequest,
 ): Promise<t.TDuplicateConvoResponse> {
-  return request.post(endpoints.duplicateConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.duplicateConversation()), payload);
 }
 
 export function forkConversation(payload: t.TForkConvoRequest): Promise<t.TForkConvoResponse> {
-  return request.post(endpoints.forkConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.forkConversation()), payload);
 }
 
 export function forkSharedConversation(
@@ -984,7 +1311,7 @@ export function forkSharedConversation(
   targetMessageIndex?: number,
   shareRevision?: string,
 ): Promise<t.TForkConvoResponse> {
-  return request.post(endpoints.forkSharedMessages(shareId), {
+  return request.post(withToolCallPreviews(endpoints.forkSharedMessages(shareId)), {
     targetMessageIndex,
     shareRevision,
   });
@@ -1005,10 +1332,6 @@ export const listConversations = (
 ): Promise<q.ConversationListResponse> => {
   return request.get(endpoints.conversations(params ?? {}));
 };
-
-export function getConversations(cursor: string): Promise<t.TGetConversationsResponse> {
-  return request.get(endpoints.conversations({ cursor }));
-}
 
 export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
   return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
@@ -1138,13 +1461,13 @@ export const editArtifact = async ({
   messageId,
   ...params
 }: m.TEditArtifactRequest): Promise<m.TEditArtifactResponse> => {
-  return request.post(endpoints.messagesArtifacts(messageId), params);
+  return request.post(withToolCallPreviews(endpoints.messagesArtifacts(messageId)), params);
 };
 
 export const branchMessage = async (
   payload: m.TBranchMessageRequest,
 ): Promise<m.TBranchMessageResponse> => {
-  return request.post(endpoints.messagesBranch(), payload);
+  return request.post(withToolCallPreviews(endpoints.messagesBranch()), payload);
 };
 
 export interface OwnerMessageText {
@@ -1162,14 +1485,32 @@ export function getOwnerMessageTexts(
   return request.post(`${endpoints.messages({ conversationId })}/owner-text`, { messageIds });
 }
 
-export function getMessagesByConvoId(conversationId: string): Promise<s.TMessage[]> {
+/**
+ * Loads a conversation's messages. `toolPreviews` asks for bounded previews of settled tool
+ * calls; a caller that needs every byte (export, share, trace) leaves it off.
+ */
+export function getMessagesByConvoId(
+  conversationId: string,
+  options?: { toolPreviews?: boolean },
+): Promise<s.TMessage[]> {
   if (
     conversationId === config.Constants.NEW_CONVO ||
     conversationId === config.Constants.PENDING_CONVO
   ) {
     return Promise.resolve([]);
   }
-  return request.get(endpoints.messages({ conversationId }));
+  const url = endpoints.messages({ conversationId });
+  return request.get(options?.toolPreviews === true ? withToolCallPreviews(url) : url);
+}
+
+export function getToolCallPart(params: q.ToolCallPartParams): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.messageToolCallPart(params));
+}
+
+export function getSubagentAttachmentCalls(
+  params: q.SubagentAttachmentCallsParams,
+): Promise<q.SubagentAttachmentCallsResponse> {
+  return request.get(endpoints.messageSubagentAttachmentCalls(params));
 }
 
 export function getMessageById(conversationId: string, messageId: string): Promise<s.TMessage[]> {
@@ -1189,6 +1530,61 @@ export function getSubagentThread(
   return request.get(endpoints.subagentThread(parentConversationId, threadId, taskId, cursor));
 }
 
+/** The most rows one read of a child thread's messages asks for; the server holds the same bound. */
+export const SUBAGENT_THREAD_MESSAGES_PAGE = 50;
+
+/**
+ * One page of a child thread's messages, in the shape and with the previews of a conversation
+ * load: the thread's newest rows, or with `cursor` the rows before a page already read. A
+ * thread can hold more than is worth reading at once, so it is read a page at a time.
+ */
+export async function getSubagentThreadMessages(
+  parentConversationId: string,
+  threadId: string,
+  options?: { toolPreviews?: boolean; cursor?: string },
+): Promise<t.SubagentThreadMessagesPage> {
+  const url = endpoints.subagentThreadMessagesPage(parentConversationId, threadId, {
+    limit: SUBAGENT_THREAD_MESSAGES_PAGE,
+    cursor: options?.cursor,
+  });
+  const page = await request.get<s.TMessage[] | t.SubagentThreadMessagesPage>(
+    options?.toolPreviews === true ? withToolCallPreviews(url) : url,
+  );
+  /** A server that predates paging answers with the whole thread as a list. */
+  return Array.isArray(page) ? { messages: page, earlier: null } : page;
+}
+
+/** The full tool call behind a preview in a child thread; `params.conversationId` is the thread. */
+export function getSubagentThreadToolCallPart(
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.subagentThreadToolCallPart(parentConversationId, params));
+}
+
+export function getSubagentTaskContent(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  afterSequence?: number,
+  cursor?: string,
+): Promise<t.SubagentTaskContentResponse> {
+  return request.get(
+    endpoints.subagentTaskContent(parentConversationId, threadId, taskId, afterSequence, cursor),
+  );
+}
+
+export function getSubagentControlReceipt(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  invocationId: string,
+): Promise<t.SubagentControlResponse> {
+  return request.get(
+    endpoints.subagentControlReceipt(parentConversationId, threadId, taskId, invocationId),
+  );
+}
+
 export function controlSubagentTask(
   parentConversationId: string,
   threadId: string,
@@ -1206,6 +1602,32 @@ export function cancelBackgroundTasks(
   body: t.BackgroundTaskCancelRequest,
 ): Promise<t.BackgroundTaskCancelResponse> {
   return request.post(endpoints.backgroundTasksCancel(conversationId), body);
+}
+
+export function getConversationPullRequest(
+  conversationId: string,
+  options?: { signal?: AbortSignal },
+): Promise<t.TConversationPullRequestResponse> {
+  return request.get(endpoints.conversationPullRequest(conversationId), options);
+}
+
+export function getConversationPullRequests(
+  conversationIds: string[],
+  options?: { signal?: AbortSignal },
+): Promise<t.TConversationPullRequestsResponse> {
+  return request.post(endpoints.conversationPullRequests(), { conversationIds }, options);
+}
+
+export function getPullRequestConnection(): Promise<t.TPullRequestConnection> {
+  return request.get(endpoints.pullRequestConnection());
+}
+
+export function connectPullRequestAccount(): Promise<t.TPullRequestConnectStart> {
+  return request.get(endpoints.pullRequestConnect());
+}
+
+export function disconnectPullRequestAccount(): Promise<void> {
+  return request.delete(endpoints.pullRequestDisconnect());
 }
 
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
@@ -1228,6 +1650,17 @@ export function getPromptGroups(
 
 export function getPromptGroup(id: string): Promise<t.TPromptGroup> {
   return request.get(endpoints.getPromptGroup(id));
+}
+
+export function resolvePromptGroup(
+  id: string,
+  version?: number,
+): Promise<t.TResolvedPromptResponse> {
+  return request.get(endpoints.resolvePromptGroup(id, version));
+}
+
+export function getPromptGroupRevisions(id: string): Promise<t.TPromptRevisionChoicesResponse> {
+  return request.get(endpoints.getPromptGroupRevisions(id));
 }
 
 export function createPrompt(payload: t.TCreatePrompt): Promise<t.TCreatePromptResponse> {
@@ -1598,10 +2031,6 @@ export function addTagToConversation(
 ): Promise<t.TTagConversationResponse> {
   return request.put(endpoints.addTagToConversation(conversationId), payload);
 }
-export function rebuildConversationTags(): Promise<t.TConversationTagsResponse> {
-  return request.post(endpoints.conversationTags('rebuild'));
-}
-
 export function healthCheck(): Promise<string> {
   return request.get(endpoints.health());
 }
@@ -1655,11 +2084,17 @@ export function finalizeTwoFactorSetup(
   return request.post(endpoints.finalizeTwoFactorSetup(), payload);
 }
 
+export function cancelTwoFactorSetup(
+  payload: t.TCancel2FASetupRequest,
+): Promise<t.TCancel2FASetupResponse> {
+  return request.post(endpoints.cancelTwoFactorSetup(), payload);
+}
+
 export function verifyTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
   return request.post(endpoints.verifyTwoFactor(), payload);
 }
 
-export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
+export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TConfirm2FAResponse> {
   return request.post(endpoints.confirmTwoFactor(), payload);
 }
 
@@ -1816,10 +2251,6 @@ export function getGraphApiToken(params: q.GraphTokenParams): Promise<q.GraphTok
   return request.get(endpoints.graphToken(params.scopes));
 }
 
-export function getDomainServerBaseUrl(): string {
-  return `${endpoints.apiBaseUrl()}/api`;
-}
-
 /* Active Jobs */
 export interface ActiveJobsResponse {
   activeJobIds: string[];
@@ -1832,6 +2263,9 @@ export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
 export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
   return request.get(endpoints.scheduleMCPConsent(id));
 }
+export function getScheduleMCPOffer(agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.scheduleMCPOffer(), { agent_id: agentId });
+}
 export function confirmScheduleMCPConsent(
   id: string,
   payload: ConfirmScheduleMCPConsent,
@@ -1840,6 +2274,26 @@ export function confirmScheduleMCPConsent(
 }
 export function revokeScheduleMCPConsent(id: string, expectedRevision: string): Promise<void> {
   return request.deleteWithOptions(endpoints.scheduleMCPConsent(id), {
+    data: { expectedRevision },
+  });
+}
+
+export function getApiKeyMCPConsent(id: string, agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.get(endpoints.apiKeyMCPConsent(id, agentId));
+}
+export function confirmApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  payload: ConfirmScheduleMCPConsent,
+): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.apiKeyMCPConsent(id, agentId), payload);
+}
+export function revokeApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  expectedRevision: string,
+): Promise<void> {
+  return request.deleteWithOptions(endpoints.apiKeyMCPConsent(id, agentId), {
     data: { expectedRevision },
   });
 }

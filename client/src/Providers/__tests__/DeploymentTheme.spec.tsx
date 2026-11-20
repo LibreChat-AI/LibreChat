@@ -3,10 +3,23 @@ import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { useTheme, clickHouseTheme } from '@librechat/client';
 import { act, render, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { QueryKeys, MutationKeys, dataService } from 'librechat-data-provider';
+import {
+  QueryKeys,
+  MutationKeys,
+  dataService,
+  formatSessionHint,
+  SESSION_HINT_COOKIE,
+  DEPLOYMENT_THEME_BOOT_ID,
+} from 'librechat-data-provider';
 import type { TStartupConfig, TUser } from 'librechat-data-provider';
 import type { ThemeDefinition } from '@librechat/client';
-import { buildThemeCache, writeThemeCache, THEME_CACHE_KEY } from '../themeCache';
+import {
+  setThemeOwner,
+  buildThemeCache,
+  writeThemeCache,
+  THEME_CACHE_KEY,
+  THEME_OWNER_KEY,
+} from '../themeCache';
 import DeploymentTheme, { useDeploymentThemeOverride } from '../DeploymentTheme';
 import { useGetStartupConfig } from '~/data-provider';
 import store from '~/store';
@@ -415,21 +428,34 @@ describe('DeploymentTheme', () => {
   });
 });
 
+/** The readable hint the server sets beside the session cookies; no `expires` removes it. */
+function sessionHint(expires?: number, owner = 'tenant-a:user-1') {
+  document.cookie =
+    expires === undefined
+      ? `${SESSION_HINT_COOKIE}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`
+      : `${SESSION_HINT_COOKIE}=${encodeURIComponent(formatSessionHint({ expires, owner }))}; path=/`;
+}
+
 describe('DeploymentTheme cache', () => {
   const user = { id: 'user-1', tenantId: 'tenant-a' };
   let queryClient: QueryClient;
   let getStartupConfig: jest.SpyInstance;
   let warn: jest.SpyInstance;
 
+  /** What a tab that was served `theme` as `owner` leaves behind. */
   const cacheTheme = (owner = 'tenant-a:user-1', theme: ConfigTheme = 'clickhouse') => {
     const definition = theme === 'clickhouse' ? clickHouseTheme : (theme as ThemeDefinition);
     writeThemeCache(buildThemeCache(owner, theme as NonNullable<ConfigTheme>, definition));
+    setThemeOwner(owner);
+    sessionHint(Date.now() + 60000, owner);
   };
   const cachedEntry = () => JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
   const pending = () => getStartupConfig.mockReturnValue(new Promise(() => undefined));
 
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
+    sessionHint(undefined);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     getStartupConfig = jest.spyOn(dataService, 'getStartupConfig');
     mockGetThemeFromEnv.mockReturnValue(undefined);
@@ -449,6 +475,135 @@ describe('DeploymentTheme cache', () => {
 
     expect(root().dataset.theme).toBe('clickhouse');
     expect(localStorage.getItem('theme-definition')).toBeNull();
+  });
+
+  it('paints no cached theme in a tab that has not seen its owner signed in', () => {
+    cacheTheme();
+    sessionStorage.clear();
+    pending();
+    renderTheme(queryClient);
+
+    expect(root().dataset.theme).toBeUndefined();
+    expect(cachedEntry()?.owner).toBe('tenant-a:user-1');
+  });
+
+  it.each([
+    ['has ended', Date.now() - 1000],
+    ['left no expiry', undefined],
+  ])('paints no cached theme for the tab owner when the session %s', (_, at) => {
+    cacheTheme();
+    sessionHint(at);
+    pending();
+    renderTheme(queryClient);
+
+    expect(root().dataset.theme).toBeUndefined();
+  });
+
+  it('paints no cached theme when the live session belongs to someone who signed in since', () => {
+    cacheTheme();
+    sessionHint(Date.now() + 60000, 'tenant-b:user-2');
+    pending();
+    renderTheme(queryClient);
+
+    expect(root().dataset.theme).toBeUndefined();
+  });
+
+  it('paints no cached theme in a tab whose identity changed elsewhere', () => {
+    cacheTheme('tenant-b:user-2');
+    setThemeOwner('tenant-a:user-1');
+    pending();
+    renderTheme(queryClient);
+
+    expect(root().dataset.theme).toBeUndefined();
+  });
+
+  it('records the signed-in owner for the tab and forgets it at sign-out', async () => {
+    getStartupConfig.mockResolvedValue(configWith(inlineTheme));
+    let signOut: () => void = () => undefined;
+    function SignOut() {
+      const setUser = useSetRecoilState(store.user);
+      signOut = () => setUser(undefined);
+      return null;
+    }
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.user, user as TUser)}>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignOut />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+
+    await waitFor(() => expect(cachedEntry()?.owner).toBe('tenant-a:user-1'));
+    expect(sessionStorage.getItem(THEME_OWNER_KEY)).toBe('tenant-a:user-1');
+
+    act(() => signOut());
+    await waitFor(() => expect(sessionStorage.getItem(THEME_OWNER_KEY)).toBeNull());
+    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+  });
+
+  describe("the shell's base theme", () => {
+    const embed = (source: NonNullable<ConfigTheme>) => {
+      const block = document.createElement('script');
+      block.type = 'application/json';
+      block.id = DEPLOYMENT_THEME_BOOT_ID;
+      block.textContent = JSON.stringify({ source });
+      document.head.append(block);
+    };
+
+    afterEach(() => {
+      document.getElementById(DEPLOYMENT_THEME_BOOT_ID)?.remove();
+      window.history.pushState({}, '', '/');
+    });
+
+    it('paints a first-ever visit in the first commit, before the config answers', () => {
+      embed('clickhouse');
+      pending();
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBe('clickhouse');
+      expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+      expect(localStorage.getItem('theme-definition')).toBeNull();
+    });
+
+    it('resolves an inline definition the build could not', () => {
+      embed(inlineTheme as NonNullable<ConfigTheme>);
+      pending();
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBe(inlineTheme.name);
+    });
+
+    it("yields to the owner's cache", () => {
+      embed('librechat');
+      cacheTheme();
+      pending();
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBe('clickhouse');
+    });
+
+    it('yields to the answer once it arrives', async () => {
+      embed('clickhouse');
+      let answer: (config: TStartupConfig) => void = () => undefined;
+      getStartupConfig.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+      renderTheme(queryClient, user);
+      expect(root().dataset.theme).toBe('clickhouse');
+
+      await act(async () => answer(configWith(undefined)));
+      await waitFor(() => expect(root().dataset.theme).toBeUndefined());
+      expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+    });
+
+    it('does not paint on a shared link, which paints its own tenant', () => {
+      embed('clickhouse');
+      pending();
+      window.history.pushState({}, '', '/share/abc');
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBeUndefined();
+    });
   });
 
   it('does not seed the cache on a shared link, which paints its own tenant', () => {
@@ -537,6 +692,57 @@ describe('DeploymentTheme cache', () => {
     await waitFor(() => expect(root().dataset.theme).toBe('acme'));
   });
 
+  it('keeps painting the signed-out answer while the signed-in one loads', async () => {
+    let signIn: () => void = () => undefined;
+    function SignIn() {
+      const setUser = useSetRecoilState(store.user);
+      signIn = () => setUser(user as TUser);
+      return null;
+    }
+    getStartupConfig.mockResolvedValueOnce(configWith('clickhouse'));
+    render(
+      <RecoilRoot>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignIn />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    getStartupConfig.mockReturnValue(new Promise(() => undefined));
+    act(() => {
+      queryClient.removeQueries();
+      signIn();
+    });
+    expect(root().dataset.theme).toBe('clickhouse');
+  });
+
+  it('drops a signed-in answer when the identity ends before the signed-out one loads', async () => {
+    let signOut: () => void = () => undefined;
+    function SignOut() {
+      const setUser = useSetRecoilState(store.user);
+      signOut = () => setUser(undefined);
+      return null;
+    }
+    getStartupConfig.mockResolvedValueOnce(configWith('clickhouse'));
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.user, user as TUser)}>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignOut />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    getStartupConfig.mockReturnValue(new Promise(() => undefined));
+    act(() => signOut());
+    await waitFor(() => expect(root().dataset.theme).toBeUndefined());
+  });
+
   it('does not write a signed-out answer over the cache', async () => {
     cacheTheme();
     getStartupConfig.mockResolvedValue(configWith());
@@ -597,6 +803,7 @@ describe('DeploymentTheme cache', () => {
         .execute();
     });
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(THEME_OWNER_KEY)).toBeNull();
   });
 
   const runMutation = (key: string, mutationFn: () => Promise<unknown>) =>
@@ -630,6 +837,7 @@ describe('DeploymentTheme cache', () => {
 
     await runMutation(MutationKeys.refreshToken, refresh);
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(THEME_OWNER_KEY)).toBeNull();
   });
 
   it('keeps the cache when the silent refresh restores a session', async () => {

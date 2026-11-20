@@ -1,8 +1,8 @@
 import React from 'react';
 import { act, render } from '@testing-library/react';
+import { useChatSurface } from '@librechat/chat/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
-import type { ChatSurface } from '~/components/Chat/Subagents/surface';
-import { useChatSurface } from '~/components/Chat/Subagents/surface';
+import type { ChatSurface } from '@librechat/chat/react';
 import AppChatSurface from '../Surface';
 import store from '~/store';
 

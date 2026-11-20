@@ -22,6 +22,10 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => (key === 'com_ui_temporary' ? 'Temporary Chat' : key),
 }));
 
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: undefined }),
+}));
+
 let mockRetentionMode: string | undefined;
 
 jest.mock('~/data-provider', () => ({

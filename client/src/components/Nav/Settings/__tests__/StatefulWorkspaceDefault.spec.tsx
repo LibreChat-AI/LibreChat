@@ -1,6 +1,5 @@
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
 import StatefulWorkspaceDefault from '../StatefulWorkspaceDefault';
 
 const mockMutate = jest.fn();
@@ -8,42 +7,7 @@ const mockShowToast = jest.fn();
 let mockAllowedEnvironments: Array<'user' | 'agent-user' | 'conversation'> | undefined;
 
 jest.mock('@librechat/client', () => ({
-  Select: ({
-    value,
-    onValueChange,
-    disabled,
-    children,
-  }: {
-    value: string;
-    onValueChange: (value: string) => void;
-    disabled?: boolean;
-    children: ReactNode;
-  }) => (
-    <select
-      aria-label="workspace-default"
-      value={value}
-      disabled={disabled}
-      onChange={(event) => onValueChange(event.target.value)}
-    >
-      {children}
-    </select>
-  ),
-  SelectTrigger: ({ children }: { children: ReactNode }) => children,
-  SelectValue: () => null,
-  SelectContent: ({ children }: { children: ReactNode }) => children,
-  SelectItem: ({
-    value,
-    children,
-    disabled,
-  }: {
-    value: string;
-    children: ReactNode;
-    disabled?: boolean;
-  }) => (
-    <option value={value} disabled={disabled}>
-      {children}
-    </option>
-  ),
+  ...jest.requireActual('@librechat/client'),
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
@@ -79,31 +43,42 @@ describe('StatefulWorkspaceDefault', () => {
   it('shows the saved user preference', () => {
     render(<StatefulWorkspaceDefault />);
 
-    expect(screen.getByRole('combobox', { name: 'workspace-default' })).toHaveValue('agent-user');
+    expect(screen.getByTestId('default-stateful-workspace')).toHaveTextContent(
+      'com_ui_stateful_code_environment_agent_user',
+    );
+  });
+
+  it('describes the trigger with the workspace explanation', () => {
+    render(<StatefulWorkspaceDefault />);
+
+    expect(screen.getByTestId('default-stateful-workspace')).toHaveAccessibleDescription(
+      'com_ui_default_stateful_workspace_description',
+    );
   });
 
   it('persists a new default for future agents', async () => {
     render(<StatefulWorkspaceDefault />);
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: 'workspace-default' }),
-      'conversation',
+    await userEvent.click(screen.getByTestId('default-stateful-workspace'));
+    await userEvent.click(
+      await screen.findByRole('option', { name: 'com_ui_stateful_code_environment_conversation' }),
     );
 
     expect(mockMutate).toHaveBeenCalledWith({ statefulCodeEnvironment: 'conversation' });
   });
 
-  it('only enables deployment-allowed scopes while preserving the saved value', () => {
+  it('lists the saved disallowed scope as disabled', async () => {
     mockAllowedEnvironments = ['user'];
 
     render(<StatefulWorkspaceDefault />);
+    await userEvent.click(screen.getByTestId('default-stateful-workspace'));
 
     expect(
-      screen.getByRole('option', { name: 'com_ui_stateful_code_environment_user' }),
-    ).toBeEnabled();
+      await screen.findByRole('option', { name: 'com_ui_stateful_code_environment_user' }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('option', { name: 'com_ui_stateful_code_environment_agent_user' }),
-    ).toBeDisabled();
+    ).toHaveAttribute('aria-disabled', 'true');
     expect(
       screen.queryByRole('option', { name: 'com_ui_stateful_code_environment_conversation' }),
     ).not.toBeInTheDocument();

@@ -181,7 +181,7 @@ export default function RouteErrorBoundary() {
                   variant="outline"
                   size="sm"
                   onClick={handleCopyStack}
-                  className="ml-2 px-2 py-1 text-xs"
+                  className="ms-2 px-2 py-1 text-xs"
                   aria-label={localize('com_ui_copy_stack_trace')}
                 >
                   {localize('com_ui_copy')}
@@ -191,7 +191,7 @@ export default function RouteErrorBoundary() {
             <div className="bg-surface-tertiary overflow-x-auto rounded-lg p-4">
               {formatStackTrace(errorDetails.stack).map(({ number, content }) => (
                 <div key={number} className="flex">
-                  <span className="text-text-secondary pr-4 font-mono text-xs select-none">
+                  <span className="text-text-secondary pe-4 font-mono text-xs select-none">
                     {String(number).padStart(3, '0')}
                   </span>
                   <pre className="text-text-primary flex-1 font-mono text-xs leading-relaxed">

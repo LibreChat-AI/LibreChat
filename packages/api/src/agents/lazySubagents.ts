@@ -193,6 +193,71 @@ export function createViewableSubagentLoader<TAgent>({
   };
 }
 
+/** The SDK-facing context a routed graph member initializes under. */
+export interface RoutedGraphMemberContext {
+  signal: AbortSignal;
+  /** The per-call-routed parent execution the member follows. */
+  parentRunId: string;
+  /** Stable per parent and member; routing groups the member's route with the parent's. */
+  executionId: string;
+}
+
+/**
+ * Loads the graph members a per-call-routed parent resolves. A member already shared
+ * this request (initialized on its own route) is reused; otherwise it initializes as
+ * a child of the parent's execution so it may follow the parent's machine, and its
+ * config stays with that execution rather than the request-wide graph cache.
+ */
+export function createRoutedGraphMemberLoader<TAgent, TConfig>({
+  getShared,
+  isSkipped,
+  skip,
+  getAgent,
+  canView,
+  initialize,
+  isFatal,
+}: {
+  getShared: (memberId: string) => TConfig | undefined;
+  isSkipped: (memberId: string) => boolean;
+  skip: (memberId: string) => void;
+  getAgent: (memberId: string, signal: AbortSignal) => Promise<TAgent | null | undefined>;
+  canView: (agent: TAgent, memberId: string, signal: AbortSignal) => Promise<boolean>;
+  initialize: (input: {
+    agent: TAgent;
+    memberId: string;
+    context: RoutedGraphMemberContext;
+  }) => Promise<TConfig>;
+  isFatal: (error: unknown, signal: AbortSignal) => boolean;
+}): (memberId: string, parentRunId: string, signal: AbortSignal) => Promise<TConfig | null> {
+  return async (memberId, parentRunId, signal) => {
+    if (signal.aborted) {
+      throw signal.reason ?? new Error('Subagent resolution was aborted.');
+    }
+    const shared = getShared(memberId);
+    if (shared != null) {
+      return shared;
+    }
+    if (isSkipped(memberId)) {
+      return null;
+    }
+    const agent = await getAgent(memberId, signal);
+    if (agent == null || !(await canView(agent, memberId, signal))) {
+      skip(memberId);
+      return null;
+    }
+    const executionId = `${parentRunId}:graph:${memberId}`;
+    try {
+      return await initialize({ agent, memberId, context: { signal, parentRunId, executionId } });
+    } catch (error) {
+      if (isFatal(error, signal)) {
+        throw error;
+      }
+      logger.error(`[lazySubagents] Error initializing routed graph member ${memberId}:`, error);
+      return null;
+    }
+  };
+}
+
 export interface SubagentCodeAvailability {
   codeEnvAvailable: boolean;
   statefulCodeSessions: boolean;
