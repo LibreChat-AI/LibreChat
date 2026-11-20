@@ -3698,6 +3698,17 @@ describe('primeResources snapshot upload receipts', () => {
       new Set(['snapshot']),
       true,
     ],
+    [
+      'the receipt was filed under an agent for a file the user owns this turn',
+      snapshot({
+        metadata: {
+          ...snapshot().metadata,
+          codeEnvRefs: { default: { ...receipt, kind: 'agent' as const, id: 'agent1' } },
+        },
+      }),
+      new Set(['snapshot']),
+      true,
+    ],
   ])('queues the stored bytes when %s', async (_label, file, alive, probed) => {
     const checkSessionsAlive = jest.fn().mockResolvedValue(alive);
     const result = await prime(file, checkSessionsAlive);

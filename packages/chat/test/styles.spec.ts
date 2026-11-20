@@ -42,7 +42,7 @@ const named = (name: string): boolean =>
 
 /**
  * Names the package's source uses that the app's stylesheets still have rules for. Each is a
- * difference an app outside LibreChat would see (`markdown`, `prose`, the scrollbar gutters), or
+ * difference an app outside LibreChat would see (the scrollbar gutters, `tooltip`), or
  * a word that only reads like a class in a string here (`css`, `nav`, `config`). The list may
  * only shrink: moving the rules into a shipped stylesheet takes a name off, and a new name on
  * it means a component leans on the app's stylesheet again.
@@ -57,12 +57,9 @@ const APP_STYLED = [
   'group',
   'hide-scrollbar',
   'high-contrast',
-  'markdown',
   'message-content',
   'nav',
   'overflow-y-auto',
-  'prose',
-  'prose-sm',
   'scrollbar-gutter-spacer',
   'scrollbar-gutter-stable',
   'tooltip',
@@ -98,5 +95,17 @@ describe('the stylesheets behind the package’s classes', () => {
     for (const [, animation] of css.matchAll(/animation:\s*([\w-]+)/g)) {
       expect(css).toMatch(new RegExp(`@keyframes ${animation}\\s*\\{`));
     }
+  });
+
+  it('finds how written content reads in the client package’s stylesheet, not the app’s', () => {
+    const published = read(require.resolve('@librechat/client/style.css'));
+    for (const name of ['prose', 'markdown']) {
+      expect(classesIn(published)).toContain(name);
+      expect(app).not.toContain(name);
+    }
+    /** Sized from the reader's setting where the app sets one, and from a length where none is. */
+    expect(published).toMatch(
+      /\.markdown\s*\{[^}]*font-size:\s*var\(--markdown-font-size,\s*var\(--font-size-base,\s*1rem\)\)/,
+    );
   });
 });

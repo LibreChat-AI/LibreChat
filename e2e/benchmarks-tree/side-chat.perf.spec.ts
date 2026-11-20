@@ -66,7 +66,10 @@ test.use({
  * Counts the components each commit rendered, by the part of the page they are in, through the
  * hook React offers its DevTools; it works on the built client. A fiber rendered when it is
  * new or did work, and a subtree whose child pointer did not move is skipped, as React skipped
- * it. Also keeps the duration of every keystroke the browser reports as slower than a frame.
+ * it. The counts are of components that ran, not of distinct names: two components can share
+ * one (the app's `Markdown` and the library's), and a count that looks like a double render
+ * is to be checked against a single commit before it is believed. Also keeps the duration of
+ * every keystroke the browser reports as slower than a frame.
  */
 function installRenderProbe(): void {
   type Fiber = {
@@ -80,7 +83,12 @@ function installRenderProbe(): void {
     elementType: unknown;
   };
   type Named = { displayName?: string; name?: string; render?: Named; type?: Named };
-  const COMPONENT_TAGS = new Set([0, 1, 11, 14, 15]);
+  /**
+   * Function, class, forwardRef and plain-memo fibers: the ones a component's own code runs
+   * for. A `memo` with a comparator is two fibers, a wrapper (tag 14) around the component it
+   * wraps, and counting the wrapper would count every such component twice.
+   */
+  const COMPONENT_TAGS = new Set([0, 1, 11, 15]);
   const HOST = 5;
   const PERFORMED_WORK = 1;
   const state: Renders = {
