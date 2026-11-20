@@ -318,6 +318,7 @@ interface:
   modelSelect: true
   parameters: true
   presets: true
+  lockModelPerConversation: false
   prompts:
     use: true
     create: true

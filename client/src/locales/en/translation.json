@@ -382,6 +382,8 @@
   "com_ui_code_approval_accept_edits_description": "Edits files, asks before commands",
   "com_ui_code_approval_full_access": "Full access",
   "com_ui_code_approval_full_access_description": "Edits and runs commands; sandbox limits apply",
+  "com_ui_model_locked": "Model is locked for this conversation",
+  "com_ui_model_locked_tooltip": "Model selection is locked",
   "com_ui_review_action": "Review 1 action",
   "com_ui_review_actions": "Review {{0}} actions",
   "com_ui_review_run_command": "Run command",

@@ -17,12 +17,14 @@ const {
   isAgentsEndpoint,
   parseCompactConvo,
   getDefaultParamsEndpoint,
+  Constants,
 } = require('librechat-data-provider');
+
 const azureAssistants = require('~/server/services/Endpoints/azureAssistants');
 const assistants = require('~/server/services/Endpoints/assistants');
 const { getEndpointsConfig } = require('~/server/services/Config');
 const agents = require('~/server/services/Endpoints/agents');
-const { updateFilesUsage, getBranchLinks } = require('~/models');
+const { updateFilesUsage, getBranchLinks, getConvo } = require('~/models');
 
 const buildFunction = {
   [EModelEndpoint.agents]: agents.buildOptions,
@@ -60,7 +62,7 @@ function inspectResolvedCurrentUser(req, promptPrefixTemplate) {
 
 async function buildEndpointOption(req, res, next) {
   restoreAgentTriggerModelSpec(req);
-  const { endpoint, endpointType } = req.body;
+  const { endpoint, endpointType, conversationId } = req.body;
   const isAgents =
     isAgentsEndpoint(endpoint) || req.baseUrl.startsWith(EndpointURLs[EModelEndpoint.agents]);
 
@@ -87,6 +89,29 @@ async function buildEndpointOption(req, res, next) {
   }
 
   const appConfig = req.config;
+
+  const lockEnabled = appConfig?.interfaceConfig?.lockModelPerConversation === true;
+
+  if (lockEnabled && !isAgents && conversationId && conversationId !== Constants.NEW_CONVO) {
+    try {
+      const existingConvo = await getConvo(req.user.id, conversationId);
+      if (existingConvo?.endpoint && existingConvo?.model) {
+        const requestedModel = req.body.model;
+        const endpointMismatch = existingConvo.endpoint !== endpoint;
+        const modelMismatch = requestedModel && existingConvo.model !== requestedModel;
+
+        if (endpointMismatch || modelMismatch) {
+          return res.status(409).json({
+            type: 'model_locked',
+            message: 'model in conversation is locked',
+          });
+        }
+      }
+    } catch (error) {
+      req.app?.locals?.logger?.error?.('[buildEndpointOption] model lock check failed', error);
+    }
+  }
+
   let appliedModelSpecPrivateFields = new Set();
   let enforcedModelSpecFields = new Set();
   if (appConfig.modelSpecs?.list?.length && appConfig.modelSpecs?.enforce) {

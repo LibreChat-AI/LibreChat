@@ -13,7 +13,9 @@ import {
 import { useAgentsMapContext, useAssistantsMapContext, useLiveAnnouncer } from '~/Providers';
 import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
+import useWarnModelLocked from '~/hooks/Input/useWarnModelLocked';
 import useSelectMention from '~/hooks/Input/useSelectMention';
+import useIsModelLocked from '~/hooks/Input/useIsModelLocked';
 import { useCatalogReady } from '~/hooks/useCatalogWarmup';
 import useModelSpecs from '~/hooks/Agents/specs';
 import { filterItems } from './utils';
@@ -30,6 +32,7 @@ type ModelSelectorContextType = {
   agentsMap: t.TAgentsMap | undefined;
   assistantsMap: t.TAssistantsMap | undefined;
   endpointsConfig: t.TEndpointsConfig;
+  isModelLocked: boolean;
 
   // Functions
   endpointRequiresUserKey: (endpoint: string) => boolean;
@@ -65,6 +68,10 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
     useModelSelectorChatContext();
   const localize = useLocalize();
   const { announcePolite } = useLiveAnnouncer();
+
+  const isModelLocked = useIsModelLocked();
+  const warnLocked = useWarnModelLocked();
+
   const modelSpecs = useModelSpecs(startupConfig);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
@@ -203,6 +210,10 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
 
   const handleSelectEndpoint = useCallback(
     (endpoint: Endpoint) => {
+      if (isModelLocked) {
+        warnLocked();
+        return;
+      }
       if (!endpoint.hasModels) {
         if (endpoint.value) {
           onSelectEndpoint?.(endpoint.value);
@@ -214,7 +225,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
         });
       }
     },
-    [onSelectEndpoint],
+    [onSelectEndpoint, isModelLocked, warnLocked],
   );
 
   const handleSelectModel = useCallback(
@@ -264,6 +275,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       endpointRequiresUserKey,
       setSearchValue: setDebouncedSearchValue,
       ...keyProps,
+      isModelLocked,
     }),
     [
       searchValue,
@@ -283,6 +295,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       endpointRequiresUserKey,
       setDebouncedSearchValue,
       keyProps,
+      isModelLocked,
     ],
   );
 

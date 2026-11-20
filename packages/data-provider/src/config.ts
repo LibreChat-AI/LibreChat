@@ -3504,6 +3504,7 @@ export const interfaceSchema = z
     conversationIcons: z.boolean().optional(),
     mcpServers: mcpServersSchema.optional(),
     modelSelect: z.boolean().optional(),
+    lockModelPerConversation: z.boolean().optional(),
     /** Set to false during a rolling upgrade, until every API replica supports title ownership and old title jobs drain. */
     runningChatRename: z.boolean().default(true),
     /** Milliseconds between syntax highlights while a code block streams. */
@@ -3787,6 +3788,7 @@ export const interfaceSchema = z
   })
   .prefault({
     modelSelect: true,
+    lockModelPerConversation: false,
     runningChatRename: true,
     codeHighlightThrottleMs: DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
     agentSelectorLimit: DEFAULT_AGENT_SELECTOR_LIMIT,
