@@ -53,13 +53,13 @@ function readOAuthError(error: unknown): { code?: string; status?: unknown } {
     return {};
   }
   const record = error as { error?: unknown; code?: unknown; status?: unknown };
-  const code =
-    typeof record.error === 'string'
-      ? record.error
-      : typeof record.code === 'string'
-        ? record.code
-        : undefined;
-  return { code, status: record.status };
+  if (typeof record.error === 'string') {
+    return { code: record.error, status: record.status };
+  }
+  if (typeof record.code === 'string') {
+    return { code: record.code, status: record.status };
+  }
+  return { status: record.status };
 }
 
 /**
