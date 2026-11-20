@@ -1,7 +1,7 @@
 import { useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
+import { Lightbulb, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
-import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import {
   getOutcomeStatus,
   isSpanFailed,
@@ -15,7 +15,9 @@ import {
 } from '@librechat/chat/react';
 import {
   PhaseLabel,
-  FOLD_EASING,
+  PhaseGlyph,
+  PhaseMarker,
+  LivePhaseHeader as PackageLivePhaseHeader,
   FOLD_RAIL_CLASSES,
   ROW_GLYPH_SLOT,
   TOOL_ROW_CLASSES,
@@ -82,28 +84,6 @@ function schedulePostPaint(callback: () => void): () => void {
       frameId = undefined;
     }
   };
-}
-
-/** The header's icon slot. Its only job is geometric: every other row in the
- *  transcript opens with the same glyph slot and an 8px gap, so a summary
- *  rendered without one sits to the left of the rows it replaces — the fold
- *  then moves its own text sideways at the moment the reader is trying to
- *  follow it. */
-function PhaseGlyph({ failed, partial = false }: { failed: boolean; partial?: boolean }) {
-  let Icon = Check;
-  let tone = 'text-text-secondary';
-  if (failed) {
-    Icon = CircleX;
-    tone = 'text-status-error';
-  } else if (partial) {
-    Icon = TriangleAlert;
-    tone = 'text-status-warning';
-  }
-  return (
-    <span className={cn(ROW_GLYPH_SLOT, tone)} aria-hidden="true">
-      <Icon size={14} />
-    </span>
-  );
 }
 
 /** Glyphs a span header shows: up to this many, of which at most `SPAN_SITES`
@@ -255,9 +235,20 @@ function LivePhaseHeader({
   }, [painted, detail, onAnnounce]);
 
   return (
-    <>
-      <RailGlyph hover={railHover}>
-        {iconNames.length === 0 ? (
+    <PackageLivePhaseHeader
+      text={painted.text}
+      source={painted.source}
+      animate={animate}
+      lineId={lineId}
+      comboId={comboId}
+      detailId={detailId}
+      combo={combo}
+      isBackgroundTaskCheck={painted.isBackgroundTaskCheck}
+      failedNote={failedNote}
+      cancelledNote={cancelledNote}
+      railHover={railHover}
+      glyph={
+        iconNames.length === 0 ? (
           /** A span that is only reasoning so far has no tool to show; it takes
            *  the glyph the reasoning row itself uses. */
           <span
@@ -278,59 +269,9 @@ function LivePhaseHeader({
               isAnimating
             />
           </span>
-        )}
-      </RailGlyph>
-      {/** The multiplier counts the line it is printed next to, so it travels
-       *  with that line instead of sitting out at the row's right edge beside
-       *  the chevron, where it read as a property of the row. `Create File ×2`
-       *  in the unfolded group is the same phrase in the same order. It is a
-       *  separate element rather than part of the line's text so the
-       *  disclosure's name keeps a space before it and the ticker still
-       *  animates one sentence at a time. */}
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        <PhaseLabel
-          text={painted.text}
-          source={painted.source}
-          animate={animate}
-          live
-          grow={combo === ''}
-          lineId={lineId}
-        />
-        {combo !== '' && (
-          <span
-            id={comboId}
-            className={
-              painted.isBackgroundTaskCheck
-                ? 'text-text-secondary shrink-0 text-xs font-normal'
-                : 'sr-only'
-            }
-            data-testid="live-phase-combo"
-          >
-            {combo}
-          </span>
-        )}
-      </span>
-      {detail !== '' && (
-        <span
-          id={detailId}
-          className="text-text-warning shrink-0 text-xs font-normal"
-          data-testid="live-phase-outcome"
-        >
-          {/** The failure count is spoken here, as part of the header's name,
-           *  and SHOWN by the pill beside the header, which is also the way to
-           *  the failed rows. Only a stop count has no pill and stays visible.
-           *  The verdict is the span's, not the newest line's, so it keeps its
-           *  own separator from whatever the row happens to be saying. */}
-          {failedNote !== '' && <span className="sr-only">· {failedNote}</span>}
-          {cancelledNote !== '' && (
-            <>
-              <span className="text-text-secondary me-1">·</span>
-              <span>{cancelledNote}</span>
-            </>
-          )}
-        </span>
-      )}
-    </>
+        )
+      }
+    />
   );
 }
 
@@ -584,22 +525,12 @@ export default function ActivityPhaseGroup({
     );
   }
   const group = !hasContent ? (
-    <div
-      className={cn(
-        'text-text-secondary mt-1 mb-2 flex min-h-7 w-full items-center gap-2 py-1',
-        shouldAnimateEntrance && `animate-in fade-in-0 motion-reduce:animate-none ${FOLD_EASING}`,
-      )}
-      data-testid="activity-phase-card"
-    >
-      <PhaseGlyph failed={allFailed} partial={partialMarkerFallback} />
-      <span
-        className="tool-status-text min-w-0 flex-1 truncate text-start font-medium"
-        role="status"
-        title={label}
-      >
-        {label}
-      </span>
-    </div>
+    <PhaseMarker
+      label={label}
+      failed={allFailed}
+      partial={partialMarkerFallback}
+      animate={shouldAnimateEntrance}
+    />
   ) : (
     /** No chrome. A phase summary is another row in the same list as the tool
      *  groups it stands for, so it carries the same geometry: 16px glyph, 8px
