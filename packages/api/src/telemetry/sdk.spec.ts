@@ -478,16 +478,16 @@ describe('telemetry SDK lifecycle', () => {
 
     const attributes = startSpanHook({
       origin: 'https://api.openweathermap.org',
-      path: '/data/3.0/onecall?appid=OPENWEATHER_SECRET_123&lat=40.71&lon=-74.01',
+      path: '/data/4.0/onecall/current?appid=OPENWEATHER_SECRET_123&lat=40.71&lon=-74.01',
     });
 
     expect(attributes).toEqual({
-      'http.target': '/data/3.0/onecall?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
+      'http.target': '/data/4.0/onecall/current?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
       'http.url':
-        'https://api.openweathermap.org/data/3.0/onecall?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
+        'https://api.openweathermap.org/data/4.0/onecall/current?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
       'url.full':
-        'https://api.openweathermap.org/data/3.0/onecall?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
-      'url.path': '/data/3.0/onecall',
+        'https://api.openweathermap.org/data/4.0/onecall/current?appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
+      'url.path': '/data/4.0/onecall/current',
       'url.query': 'appid=[REDACTED]&lat=[REDACTED]&lon=[REDACTED]',
     });
     expect(JSON.stringify(attributes)).not.toContain('OPENWEATHER_SECRET_123');
