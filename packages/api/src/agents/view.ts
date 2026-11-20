@@ -464,6 +464,7 @@ const publicTaskSummaries = (
       taskId: truncateUtf8(taskId, MAX_PUBLIC_ID_BYTES).text,
       status: publicTaskStatus(task.status, taskId === activeTaskId, task.statusDerived),
       ...(isoDate(task.createdAt) == null ? {} : { createdAt: isoDate(task.createdAt) }),
+      ...(isoDate(task.startedAt) == null ? {} : { startedAt: isoDate(task.startedAt) }),
     });
   }
   if (activeTaskId != null) {

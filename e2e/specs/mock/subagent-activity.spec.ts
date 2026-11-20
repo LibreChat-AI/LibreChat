@@ -316,6 +316,10 @@ test.describe('detached subagent activity', () => {
       );
 
       await expect(rows.filter({ hasText: 'Completed' })).toHaveCount(2, { timeout: 30_000 });
+      /** A finished child says how long it ran: the children here take seconds, never none. */
+      for (const row of await rows.all()) {
+        await expect(row).toContainText(/Completed\s*(\d+m \d+s|[1-9]\d*s)/);
+      }
       await expect(toggle).toHaveAccessibleName('Session');
       await expect(rail.getByRole('button', { name: /^Stop/ })).toHaveCount(0);
       await expect(rail.getByTestId('session-row-now')).toHaveCount(0);

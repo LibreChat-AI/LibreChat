@@ -1129,6 +1129,12 @@ describe('parent child-thread index', () => {
             messageId: 'task-1:assistant',
             status: 'completed',
             createdAt: new Date('2026-08-21T11:01:00.000Z'),
+            startedAt: new Date('2026-08-21T11:00:00.000Z'),
+          },
+          {
+            messageId: 'task-0:assistant',
+            status: 'completed',
+            createdAt: new Date('2026-08-21T10:30:00.000Z'),
           },
         ],
       },
@@ -1165,7 +1171,17 @@ describe('parent child-thread index', () => {
           actorId: 'analyst-a',
           status: 'completed',
           latestTaskId: 'task-1',
-          tasks: [expect.objectContaining({ taskId: 'task-1', status: 'completed' })],
+          /** Each task's end and, where the store knew it, its dispatch: the pair a client
+           *  needs to say how long the task ran. */
+          tasks: [
+            {
+              taskId: 'task-1',
+              status: 'completed',
+              createdAt: '2026-08-21T11:01:00.000Z',
+              startedAt: '2026-08-21T11:00:00.000Z',
+            },
+            { taskId: 'task-0', status: 'completed', createdAt: '2026-08-21T10:30:00.000Z' },
+          ],
         }),
       ],
     });
