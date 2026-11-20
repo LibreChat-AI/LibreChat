@@ -65,18 +65,35 @@ describe('createProviderSessionAuthorizer: establish', () => {
     },
   );
 
-  it('record mode: a missing ref establishes without calling the database', async () => {
+  it('record mode: a missing ref establishes without calling the database and logs a warning', async () => {
     const methods = makeMethods();
+    const logger = makeLogger();
     const authorizer = createProviderSessionAuthorizer({
       methods,
       getConfig: async () => makeConfig({ mode: 'record' }),
-      logger: makeLogger(),
+      logger,
       now: () => now,
     });
     await expect(
       authorizer.establish({ ref: null, expiresAt, callbackIssuedAt: now }),
     ).resolves.toEqual({ ok: true });
     expect(methods.establish).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[providerSession] login has no provider session (sid) to record; a back-channel logout cannot end it',
+      { mode: 'record' },
+    );
+  });
+
+  it('off mode: a missing ref logs nothing', async () => {
+    const logger = makeLogger();
+    const authorizer = createProviderSessionAuthorizer({
+      methods: makeMethods(),
+      getConfig: async () => makeConfig({ mode: 'off' }),
+      logger,
+      now: () => now,
+    });
+    await authorizer.establish({ ref: null, expiresAt, callbackIssuedAt: now });
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it.each(['record'] as const)('%s mode: a successful establish is ok', async (mode) => {
@@ -170,18 +187,20 @@ describe('createProviderSessionAuthorizer: authorize', () => {
     expect(methods.authorize).not.toHaveBeenCalled();
   });
 
-  it('record mode: a missing ref is ok without calling the database', async () => {
+  it('record mode: a missing ref is ok without calling the database or logging', async () => {
     const methods = makeMethods();
+    const logger = makeLogger();
     const authorizer = createProviderSessionAuthorizer({
       methods,
       getConfig: async () => makeConfig({ mode: 'record' }),
-      logger: makeLogger(),
+      logger,
       now: () => now,
     });
     await expect(authorizer.authorize({ ref: null, expiresAt, legacy: true })).resolves.toEqual({
       ok: true,
     });
     expect(methods.authorize).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it.each(['record'] as const)('%s mode: a successful authorize is ok', async (mode) => {

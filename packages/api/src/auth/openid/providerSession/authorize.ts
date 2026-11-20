@@ -110,6 +110,12 @@ export function createProviderSessionAuthorizer({
     }
 
     if (input.ref == null) {
+      /** Logged at login only, not on each refresh: the operator must know the provider sends
+       *  no `sid` before a back-channel logout can end this session. */
+      logger.warn(
+        '[providerSession] login has no provider session (sid) to record; a back-channel logout cannot end it',
+        { mode: config.mode },
+      );
       return { ok: true };
     }
 
