@@ -50,6 +50,8 @@ export interface RemoteAgentAccessDependencies {
 export interface ApiKeyAuthRequest extends Request {
   user?: IUser & { id: string };
   apiKeyId?: string;
+  /** Set for a key issued to an integration. Such a key is not the owner's personal key. */
+  apiKeyBound?: boolean;
 }
 
 export interface RemoteAgentAccessRequest extends ApiKeyAuthRequest {
@@ -159,6 +161,7 @@ export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
       }
       req.user = user as IUser & { id: string };
       req.apiKeyId = String(keyValidation.keyId);
+      if (keyValidation.binding) req.apiKeyBound = true;
 
       next();
     } catch (error) {

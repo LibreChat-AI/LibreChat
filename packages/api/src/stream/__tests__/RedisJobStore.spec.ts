@@ -746,6 +746,25 @@ describe('RedisJobStore', () => {
     );
   });
 
+  test('copies the content of a hosted run without touching Redis', async () => {
+    const redis = { isCluster: true, eval: jest.fn() } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+    const live = [{ type: 'text', text: 'one ' }];
+    store.setContentParts('stream-host-copy', live as never, 101);
+
+    const copy = store.copyHostContent('stream-host-copy', 101);
+    /** The run keeps writing; the copy holds what it had at the call. */
+    live[0] = { type: 'text', text: 'one two ' };
+
+    expect(copy).toEqual([{ type: 'text', text: 'one ' }]);
+    await expect(store.getContentParts('stream-host-copy', 101)).resolves.toEqual({
+      content: [{ type: 'text', text: 'one two ' }],
+    });
+    expect(store.copyHostContent('stream-host-copy', 100)).toBeNull();
+    expect(store.copyHostContent('stream-not-hosted')).toBeNull();
+    expect(redis.eval).not.toHaveBeenCalled();
+  });
+
   test('guards local content caches by creation epoch', async () => {
     const evalRedis = jest.fn().mockResolvedValue(false);
     const redis = {

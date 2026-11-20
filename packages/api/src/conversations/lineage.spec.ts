@@ -208,17 +208,98 @@ describe('cloneLineage', () => {
     ]);
   });
 
-  it('leaves the parent link undefined when the parent is cloned later or absent', () => {
-    const { entries } = cloneLineage(
-      [
-        { messageId: 'early', parentMessageId: 'late', createdAt: at(0) },
-        { messageId: 'late', parentMessageId: 'missing', createdAt: at(10) },
-      ],
-      sequentialIds(),
-    );
+  it('preserves every parent link for every listing order of a branched conversation', () => {
+    const sources = [
+      message('root', ROOT, 100),
+      message('parent', 'root', 100),
+      message('child', 'parent', 0),
+      message('sibling', 'root', 200),
+      message('leaf', 'child', 0),
+    ].map((source) => Object.freeze(source));
+    const original = sources.map((source) => ({ ...source }));
+    let checked = 0;
+    const checkOrders = (prefix: LineageMessage[], remaining: LineageMessage[]): void => {
+      if (remaining.length > 0) {
+        for (let i = 0; i < remaining.length; i++) {
+          checkOrders(
+            [...prefix, remaining[i]],
+            remaining.filter((_, index) => index !== i),
+          );
+        }
+        return;
+      }
+      const { entries, idMapping } = cloneLineage(Object.freeze(prefix), sequentialIds());
+      const byId = new Map(entries.map((entry) => [entry.messageId, entry]));
+      expect(entries).toHaveLength(sources.length);
+      expect(new Set(idMapping.values()).size).toBe(sources.length);
+      for (const entry of entries) {
+        const parent = entry.source.parentMessageId;
+        expect(entry.messageId).not.toBe(entry.source.messageId);
+        expect(entry.parentMessageId).toBe(parent === ROOT ? ROOT : idMapping.get(parent ?? ''));
+        const parentEntry = byId.get(entry.parentMessageId);
+        if (parentEntry) {
+          expect(entry.createdAt.getTime()).toBeGreaterThan(parentEntry.createdAt.getTime());
+        }
+      }
+      checked++;
+    };
 
-    expect(entries.map((entry) => entry.parentMessageId)).toEqual([undefined, undefined]);
-    expect(entries.map((entry) => entry.createdAt.getTime())).toEqual([BASE, BASE + 10]);
+    checkOrders([], sources);
+
+    expect(checked).toBe(120);
+    expect(sources).toEqual(original);
+  });
+
+  it.each([undefined, null, '', 'missing'])(
+    'roots a message whose parent is %p instead of leaving a sequential fallback',
+    (parentMessageId) => {
+      const { entries } = cloneLineage(
+        [message('root', ROOT), { messageId: 'orphan', parentMessageId, createdAt: at(10) }],
+        sequentialIds(),
+      );
+
+      expect(entries.map((entry) => entry.parentMessageId)).toEqual([ROOT, ROOT]);
+    },
+  );
+
+  it.each([
+    { sources: [message('a', 'a')] },
+    { sources: [message('a', 'b'), message('b', 'a'), message('tail', 'a')] },
+  ])('breaks cyclic clone links without changing their sources: %p', ({ sources }) => {
+    const original = sources.map((source) => ({ ...source }));
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const { entries } = cloneLineage(sources, sequentialIds());
+
+    expect(entries).toHaveLength(sources.length);
+    expect(entries.filter((entry) => entry.parentMessageId === ROOT)).toHaveLength(1);
+    const byId = new Map(entries.map((entry) => [entry.messageId, entry]));
+    for (const entry of entries) {
+      const parent = byId.get(entry.parentMessageId);
+      if (parent) {
+        expect(entry.createdAt.getTime()).toBeGreaterThan(parent.createdAt.getTime());
+      }
+    }
+    expect(sources).toEqual(original);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('clones a deep reverse-listed chain without recursion or quadratic walks', () => {
+    const length = 20_000;
+    const sources = reverseChain(length);
+    const startedAt = performance.now();
+    const { entries, idMapping } = cloneLineage(sources, sequentialIds());
+
+    expect(performance.now() - startedAt).toBeLessThan(1000);
+    expect(entries).toHaveLength(length);
+    const leaf = entries.find((entry) => entry.source.messageId === `m${length - 1}`);
+    expect(leaf?.createdAt.getTime()).toBe(BASE + length - 1);
+    expect(leaf?.parentMessageId).toBe(idMapping.get(`m${length - 2}`));
+    expect(sources.every((source) => source.createdAt.getTime() === BASE)).toBe(true);
+  });
+
+  it('clones an empty conversation', () => {
+    expect(cloneLineage([], sequentialIds())).toEqual({ entries: [], idMapping: new Map() });
   });
 
   it('stamps a missing timestamp with the current time', () => {

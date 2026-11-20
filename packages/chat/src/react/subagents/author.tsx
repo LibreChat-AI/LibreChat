@@ -1,14 +1,14 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { EModelEndpoint, QueryKeys, ContentTypes } from 'librechat-data-provider';
-import type { Agent, TMessage } from 'librechat-data-provider';
+import type { AgentDisplay, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { findSubagentDispatch, isDocumentId } from '../../core';
 import { MessageIconSlot } from '../messages/host';
 import { useMessagePartsHost } from '../host';
 
 /** Who wrote a turn, in the form main chat's message header shows an author. */
-export type TurnAuthor = { name: string; icon: ReactNode; agent?: Agent; agentId?: string };
+export type TurnAuthor = { name: string; icon: ReactNode; agent?: AgentDisplay; agentId?: string };
 
 /** Keep graph and legacy aliases readable. A prefix alone cannot prove a
  *  stored agent identity; suppress known agent IDs and the non-graph self alias. */
@@ -48,10 +48,10 @@ export function isSelfSpawn(subagentType?: string | null, kind?: 'agent' | 'grap
 export function resolveChildAgent(
   agentId: string | undefined,
   subagentType: string | null | undefined,
-  spawningAgent: Agent | undefined,
-  agentsMap: Record<string, Agent | undefined> | undefined,
+  spawningAgent: AgentDisplay | undefined,
+  agentsMap: Record<string, AgentDisplay | undefined> | undefined,
   kind?: 'agent' | 'graph',
-): Agent | undefined {
+): AgentDisplay | undefined {
   if (kind === 'graph') return undefined;
   if (agentId != null) return agentsMap?.[agentId];
   return isSelfSpawn(subagentType, kind) ? spawningAgent : undefined;
@@ -87,7 +87,7 @@ export function findAgentLaneId(
 export function resolveSelfAuthor(
   parent: TurnAuthor,
   agentId: string | undefined,
-  agentsMap: Record<string, Agent | undefined> | undefined,
+  agentsMap: Record<string, AgentDisplay | undefined> | undefined,
   fallbackName: string,
 ): TurnAuthor {
   if (agentId == null || agentId === parent.agentId) return parent;
@@ -106,7 +106,7 @@ export function resolveSubagentAuthor(
     title?: string;
   },
   parent: TurnAuthor,
-  agentsMap: Record<string, Agent | undefined> | undefined,
+  agentsMap: Record<string, AgentDisplay | undefined> | undefined,
   fallbackName: string,
 ): TurnAuthor {
   if (isSelfSpawn(child.subagentType, child.subagentKind)) {
@@ -128,7 +128,7 @@ export function resolveSubagentAuthor(
 
 /** The author main chat draws for an agent turn: the agent's name and avatar,
  *  or the agents endpoint icon when it has none or is not resolvable. */
-export function agentAuthor(agent: Agent | undefined, fallbackName: string): TurnAuthor {
+export function agentAuthor(agent: AgentDisplay | undefined, fallbackName: string): TurnAuthor {
   const name = agent?.name || fallbackName;
   return {
     agent,
@@ -176,7 +176,7 @@ export function findAgentAuthorMessage(
 /** The author main chat's own header shows for `message`. */
 export function messageAuthor(
   message: TMessage | undefined,
-  agentsMap: Record<string, Agent | undefined> | undefined,
+  agentsMap: Record<string, AgentDisplay | undefined> | undefined,
   fallbackName: string,
   laneId?: string,
 ): TurnAuthor {

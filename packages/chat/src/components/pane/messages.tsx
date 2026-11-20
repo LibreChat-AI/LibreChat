@@ -24,7 +24,12 @@ export default function ScreenMessages({
   messagesTree,
   messages,
   slots,
-}: ChatScreenMessagesProps & { slots?: ChatScreenMessagesSlots }): ReactElement {
+  primary,
+}: ChatScreenMessagesProps & {
+  slots?: ChatScreenMessagesSlots;
+  /** `false` for a list mounted beside the page's main one; see `MessagesViewProps.primary`. */
+  primary?: boolean;
+}): ReactElement {
   const { showScrollButton, maximizeChatSpace } = useChatSurface();
   return (
     <MessagesViewProvider>
@@ -34,6 +39,7 @@ export default function ScreenMessages({
         messages={messages}
         showScrollButton={showScrollButton}
         maximizeChatSpace={maximizeChatSpace}
+        primary={primary}
       />
     </MessagesViewProvider>
   );

@@ -10,6 +10,10 @@ import '~/Providers/MessagePartsHostContext';
 
 let mockConversation: Record<string, unknown> | null;
 
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: { id: 'user' } }),
+}));
+
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ conversationId: 'child-thread' }),
 }));

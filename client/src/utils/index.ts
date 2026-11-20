@@ -54,6 +54,7 @@ export * from './favoritesError';
 export {
   getSteerPart,
   applySteerPart,
+  applyReasoningLabel,
   MAX_QUOTE_COUNT,
   dedupeSteersById,
   insertQueuedOrigin,
@@ -62,6 +63,7 @@ export {
   carriedSteerContext,
   appendAppliedSteerIds,
   findSteerMessageIndex,
+  findReasoningLabelMessageIndex,
   collectAppliedSteerIds,
   resolveAbortSteerTarget,
   findResponseMessageIndex,
@@ -74,7 +76,6 @@ export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/c
 export * from './agentModelSelection';
 export * from './runStepDuration';
 export * from './documentTitle';
-export * from './reasoningLabels';
 export * from './numbers';
 export { default as cn } from './cn';
 export { default as logger } from './logger';

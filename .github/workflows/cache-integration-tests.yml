@@ -19,6 +19,9 @@ on:
       - 'packages/data-schemas/src/**'
       - 'packages/data-schemas/package.json'
       - 'redis-config/**'
+      - 'api/cache/getLogStores.js'
+      - 'api/server/index.js'
+      - 'api/server/experimental.js'
       - '.github/workflows/cache-integration-tests.yml'
       - '.github/actions/redis-binaries/**'
       - '!**.md'
@@ -136,6 +139,34 @@ jobs:
           REDIS_URI: redis://127.0.0.1:6379
         run: npm run test:cache-integration
 
+      - name: Start three independent regional Redis instances
+        run: |
+          for port in 6380 6381 6382; do
+            redis-server --daemonize yes --port "$port" --save '' --appendonly no
+            if ! timeout --kill-after=1s 10s bash -c '
+              until response=$(redis-cli --raw -p "$1" ping 2>&1) &&
+                [[ "$response" == PONG ]]; do
+                printf "%s\n" "$response" >&2
+                sleep 0.1
+              done
+            ' _ "$port"; then
+              echo "::error::Redis on port $port did not become ready within 10 seconds"
+              exit 1
+            fi
+          done
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
+
+      - name: Test role changes across three regional caches
+        working-directory: packages/api
+        env:
+          NODE_ENV: test
+          USE_REDIS: false
+          ROLE_CACHE_REQUIRE_INTEGRATION: '1'
+          ROLE_CACHE_REDIS_URLS: redis://127.0.0.1:6380,redis://127.0.0.1:6381,redis://127.0.0.1:6382
+        run: npm run test:roles-integration
+
       - name: Run all cache integration tests (Redis Cluster)
         working-directory: packages/api
         env:
@@ -154,6 +185,12 @@ jobs:
         if: always()
         run: redis-cli -p 6379 shutdown || true
 
+      - name: Stop regional Redis instances
+        if: always()
+        run: |
+          for port in 6380 6381 6382; do
+            redis-cli -p "$port" shutdown || true
+          done
   # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
   # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
   # until it is. No job here may be skipped.

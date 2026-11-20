@@ -48,21 +48,21 @@
   </a>
 </p>
 
-## 🚀 What's New in v0.8.8
+## 🚀 What's New in v0.8.9
 
-- **Agent Management API (beta):** Create, discover, update, and delete Agents; manage Agent files and Skills; and authenticate machine clients through deployment-bound OIDC identities while preserving existing role and Agent access controls. Public OpenAPI and Swagger UI cover inference, events, Agent management, and Skill management.
-- **Attached workspaces (highly experimental):** Select or save a per-Agent default workspace for each managed or personal code worker, then let Agents inspect trees, read and search files, author changes, and run Bash with bounded timeouts. Personal workers support bounded self-service enrollment, readiness status, and per-Agent Git identity.
-- **Background tool controls:** Optionally cancel ordinary background tools, including attached Bash, while keeping detached Subagent execution independent.
-- **Code approval controls:** Choose **Ask**, **Allow**, or **Deny** for file writes and command execution where administrators permit it, including a **Full access** mode for trusted attached environments. File Search and Run Code also honor role grants.
-- **Manual context compaction:** Start a summarize-only turn before the context window fills while preserving recent conversation content according to the deployment's summarization policy.
-- **Context Usage:** Inspect dialogue, retained tool traffic, Agent instructions, cache, cost, and runway pressure without double-counting category subsets.
-- **Unified attachments:** Upload once and let LibreChat route content to the model or extracted text, then provision File Search and Code tools only when needed.
-- **Models:** Added GPT-6 Astra and GPT-6.1 Sol, with Responses API routing and tool-call support.
-- **Agent and chat UI:** Unified tool activity, reasoning, search, and Agent workflows; added one draggable Pinned section for chats and favorites, morphing state icons, high-contrast themes, rich-text message copying, clearer sidebar titles, and refined live phase layouts.
-- **Observability:** Inspect ordered model conversations, tool rounds, and costs in the Trace Viewer; export correlated application logs through OpenTelemetry, configure allowlisted Langfuse trace identity and metadata, tag browser diagnostics with client build IDs, and scope Insights to authorized Agents.
-- **Reliability and security:** Strengthened Agent continuation and checkpoint recovery, Redis liveness detection, DocumentDB coordination, OpenID and MCP OAuth sessions, shared-link throttling, tenant isolation, attachment bounds, and upload error handling.
+- **Chat Projects:** Organize conversations with shared instructions and reference files.
+- **Account protection:** Register passkeys, change your email, and manage stronger account security controls.
+- **Agent Channels (beta):** Connect Agents to Slack with linked accounts, approvals, and feedback.
+- **Background Responses:** Save, review, cancel, and recover Agent API responses independently of a chat connection.
+- **SDK-backed Agents (experimental):** Register local or remote runtimes with authorized host-tool access.
+- **Tools and prompts:** Use MCP Apps, deferred Tool Search, clearer approvals, and Langfuse prompts in the catalog and Agent instructions.
+- **BYOM (highly experimental):** Enroll personal machines, select per-chat workspaces, copy attachments, and track pull requests.
+- **Agent controls:** Answer inline Ask User questions and follow resumable background Subagents with clearer task progress.
+- **Models:** Added Gemini 4 Hydrogen, GPT-6.1 Terra, Claude Fable 5.2, GPT Image 2.6 Sunburst/Flare, and restricted-access Mythos 5.2/GPT-6 Cyber.
+- **UI polish:** Deployment themes, chat controls, notifications, right-to-left layouts, restored drafts, thinking settings, and Read Aloud.
+- **Performance and security:** Faster chat loading, fewer composer re-renders, Node.js security updates, and stronger auth, file, and tool safeguards.
 
-Read the [full v0.8.8 changelog](https://www.librechat.ai/changelog/v0.8.8).
+Read the [full v0.8.9 changelog](https://www.librechat.ai/changelog/v0.8.9).
 
 # ✨ Features
 

@@ -5,7 +5,7 @@ import type { MCPServerDefinition } from '~/hooks/MCP/useMCPServerManager';
 import type { MCPServerStatusIconProps } from './MCPServerStatusIcon';
 import {
   getStatusColor,
-  getStatusTextKey,
+  getMCPStatusLabelKey,
   shouldShowActionButton,
   type ConnectionStatusMap,
 } from './mcpServerUtils';
@@ -33,13 +33,21 @@ export default function MCPServerMenuItem({
 }: MCPServerMenuItemProps) {
   const localize = useLocalize();
   const displayName = server.config?.title || server.serverName;
-  const statusColor = getStatusColor(server.serverName, connectionStatus, isInitializing);
-  const statusTextKey = getStatusTextKey(server.serverName, connectionStatus, isInitializing);
-  const statusText = localize(statusTextKey as Parameters<typeof localize>[0]);
+  const statusColor = getStatusColor(
+    server.serverName,
+    connectionStatus,
+    isInitializing,
+    statusIconProps?.view,
+  );
+  const statusLabelKey = getMCPStatusLabelKey(
+    connectionStatus?.[server.serverName],
+    isInitializing?.(server.serverName),
+    statusIconProps?.view,
+  );
+  const accessibleLabel = statusLabelKey
+    ? `${displayName}, ${localize(statusLabelKey, { 0: server.serverName })}`
+    : displayName;
   const showActionButton = shouldShowActionButton(statusIconProps);
-
-  // Include status in aria-label so screen readers announce it
-  const accessibleLabel = `${displayName}, ${statusText}`;
 
   return (
     <Ariakit.MenuItemCheckbox

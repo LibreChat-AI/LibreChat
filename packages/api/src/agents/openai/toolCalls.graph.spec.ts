@@ -10,6 +10,7 @@ import {
   Run,
 } from '@librechat/agents';
 import type { BaseMessage } from '@langchain/core/messages';
+import type { EventHandler } from '@librechat/agents';
 import type { Response } from 'express';
 import type { ChatCompletionChunk, ToolCall } from './types';
 import {
@@ -264,75 +265,358 @@ describe('tool-call projection with real SDK graph dispatch', () => {
       '{"i":1}',
     ]);
   });
-  it('keeps tools executed by the SDK out of the final OpenAI response', async () => {
-    const frames: string[] = [];
-    const tracker = createOpenAIStreamTracker();
-    const context = { requestId: 'accepted', created: 1, model: 'fixture' };
-    const res: Response = Object.create(response);
-    jest.spyOn(res, 'write').mockImplementation((frame) => {
-      frames.push(String(frame));
-      return true;
-    });
-    const config = { tracker, context, res };
-    const executed: string[] = [];
-    const handlers = createOpenAIHandlers(config);
-    const run = await Run.create({
-      runId: 'accepted-host-integration',
-      skipCleanup: true,
-      tokenCounter: () => 1,
-      graphConfig: {
-        type: 'standard',
-        maxContextTokens: 100_000,
-        llmConfig: {
-          provider: Providers.OPENAI,
-          streaming: false,
-          streamUsage: false,
+  it.each([false, true])(
+    'observes SDK tool results only when opted in (include=%s)',
+    async (observe) => {
+      const frames: string[] = [];
+      const tracker = createOpenAIStreamTracker();
+      const context = { requestId: 'accepted', created: 1, model: 'fixture' };
+      const res: Response = Object.create(response);
+      jest.spyOn(res, 'write').mockImplementation((frame) => {
+        frames.push(String(frame));
+        return true;
+      });
+      const config = {
+        tracker,
+        context,
+        res,
+        include: observe ? ['server_tool_results' as const] : undefined,
+      };
+      const executed: string[] = [];
+      const handlers = createOpenAIHandlers(config);
+      const owners: unknown[] = [];
+      if (observe) {
+        const complete = handlers.on_run_step_completed;
+        handlers.on_run_step_completed = {
+          handle(event, data, metadata, graph) {
+            owners.push(metadata?.agentId);
+            return complete.handle(event, data, metadata, graph);
+          },
+        };
+      }
+      const run = await Run.create({
+        runId: 'accepted-host-integration',
+        skipCleanup: true,
+        tokenCounter: () => 1,
+        graphConfig: {
+          type: 'standard',
+          maxContextTokens: 100_000,
+          llmConfig: {
+            provider: Providers.OPENAI,
+            streaming: false,
+            streamUsage: false,
+          },
+          tools: [
+            tool(
+              async ({ city }) => {
+                executed.push(city);
+                return 'sunny';
+              },
+              {
+                name: 'lookup',
+                description: 'Weather',
+                schema: z.object({ city: z.string() }),
+              },
+            ),
+          ],
         },
-        tools: [
-          tool(
-            async ({ city }) => {
-              executed.push(city);
-              return 'sunny';
-            },
-            {
-              name: 'lookup',
-              description: 'Weather',
-              schema: z.object({ city: z.string() }),
-            },
-          ),
-        ],
+        customHandlers: handlers,
+      });
+      if (run.Graph == null) throw new Error('Missing graph');
+      let calls = 0;
+      run.Graph.overrideModel = {
+        invoke: async (messages: BaseMessage[]): Promise<AIMessageChunk> => {
+          calls++;
+          return messages.some((message) => message.getType() === 'tool')
+            ? new AIMessageChunk('done')
+            : new AIMessageChunk({
+                content: '',
+                tool_calls: [{ id: 'internal', name: 'lookup', args: { city: 'Paris' } }],
+              });
+        },
+      };
+
+      await run.processStream(
+        { messages: [new HumanMessage('weather')] },
+        { configurable: { thread_id: 'accepted-host-integration' }, version: 'v2' },
+      );
+      sendFinalChunk(config);
+
+      expect(calls).toBe(2);
+      expect(executed).toEqual(['Paris']);
+      if (observe) expect(owners).toEqual([expect.any(String)]);
+      expect(tracker.toolCalls.size).toBe(0);
+      const chunks: ChatCompletionChunk[] = frames
+        .filter((frame) => frame !== 'data: [DONE]\n\n')
+        .map((frame) => JSON.parse(frame.slice(6)));
+      expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
+      expect(chunks.some((chunk) => chunk.choices[0].delta.content === 'done')).toBe(true);
+      expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_results ?? [])).toEqual(
+        observe
+          ? [
+              {
+                index: 0,
+                call_id: 'internal',
+                name: 'lookup',
+                arguments: '{"city":"Paris"}',
+                output: 'sunny',
+              },
+            ]
+          : [],
+      );
+      expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+    },
+  );
+
+  it.each([
+    { observe: true, fallback: undefined },
+    { observe: true, fallback: 'Paris' },
+    { observe: true, fallback: 'Berlin' },
+    { observe: false, fallback: undefined },
+  ])('observes accepted results without eager speculation (%j)', async ({ observe, fallback }) => {
+    const frames: string[] = [];
+    const events: string[] = [];
+    const owners: unknown[] = [];
+    const tracker = createOpenAIStreamTracker();
+    const config = {
+      tracker,
+      context: { requestId: 'eager', created: 1, model: 'fixture' },
+      writer: {
+        write: (frame: string) => {
+          frames.push(frame);
+        },
       },
-      customHandlers: handlers,
+      include: observe ? ['server_tool_results' as const] : undefined,
+    };
+    const handlers: Record<string, EventHandler> = createOpenAIHandlers(config);
+    let completed!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      completed = resolve;
     });
-    if (run.Graph == null) throw new Error('Missing graph');
-    let calls = 0;
-    run.Graph.overrideModel = {
-      invoke: async (messages: BaseMessage[]): Promise<AIMessageChunk> => {
-        calls++;
-        return messages.some((message) => message.getType() === 'tool')
-          ? new AIMessageChunk('done')
-          : new AIMessageChunk({
-              content: '',
-              tool_calls: [{ id: 'internal', name: 'lookup', args: { city: 'Paris' } }],
-            });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error('Eager completion was not dispatched')), 3000);
+    });
+    for (const name of ['on_model_response', 'on_run_step_completed'] as const) {
+      const delegate = handlers[name];
+      handlers[name] = {
+        async handle(event, data, metadata, graph) {
+          events.push(name);
+          if (name === 'on_run_step_completed') {
+            owners.push(metadata?.agentId);
+            if (
+              data == null ||
+              !('result' in data) ||
+              data.result == null ||
+              typeof data.result !== 'object' ||
+              !('id' in data.result) ||
+              typeof data.result.id !== 'string'
+            )
+              throw new Error('Expected SDK completion');
+            if (!observe) expect(data.result).toEqual(expect.objectContaining({ eager: true }));
+            const step = graph?.getRunStep(data.result.id);
+            expect(step?.stepDetails).toEqual(
+              expect.objectContaining({
+                tool_calls: expect.arrayContaining([expect.objectContaining({ id: 'eager' })]),
+              }),
+            );
+          }
+          await delegate?.handle(event, data, metadata, graph);
+          if (name === 'on_run_step_completed') completed();
+        },
+      };
+    }
+    const fallbackCalls: unknown[] = [];
+    const transport = jest.fn(async () => {
+      const chunks = [
+        {
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'eager',
+                    type: 'function',
+                    function: {
+                      name: 'lookup',
+                      arguments: JSON.stringify({ city: fallback }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+      ];
+      const payload =
+        chunks
+          .map(
+            (chunk) =>
+              'data: ' +
+              JSON.stringify({
+                id: 'fallback-response',
+                object: 'chat.completion.chunk',
+                created: 1,
+                model: 'fallback',
+                ...chunk,
+              }) +
+              '\n\n',
+          )
+          .join('') + 'data: [DONE]\n\n';
+      return new globalThis.Response(payload, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+    const acceptance = handlers.on_model_response;
+    handlers.on_model_response = {
+      async handle(event, data, metadata, graph) {
+        if (data != null && 'toolCallDispositions' in data && data.toolCalls.length > 0) {
+          fallbackCalls.push(data.toolCalls[0].args);
+          // The SDK registry retains the failed primary step even when accepted fallback args differ.
+          const step = graph?.getRunStep(graph.toolCallStepIds.get('eager') ?? '');
+          expect(step?.stepDetails).toEqual(
+            expect.objectContaining({
+              tool_calls: expect.arrayContaining([
+                expect.objectContaining({ args: { city: 'Paris' } }),
+              ]),
+            }),
+          );
+        }
+        await acceptance.handle(event, data, metadata, graph);
       },
     };
-
-    await run.processStream(
-      { messages: [new HumanMessage('weather')] },
-      { configurable: { thread_id: 'accepted-host-integration' }, version: 'v2' },
-    );
-    sendFinalChunk(config);
-
-    expect(calls).toBe(2);
-    expect(executed).toEqual(['Paris']);
-    expect(tracker.toolCalls.size).toBe(0);
-    const chunks: ChatCompletionChunk[] = frames
-      .filter((frame) => frame !== 'data: [DONE]\n\n')
-      .map((frame) => JSON.parse(frame.slice(6)));
-    expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
-    expect(chunks.some((chunk) => chunk.choices[0].delta.content === 'done')).toBe(true);
-    expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+    const executed: string[] = [];
+    handlers.on_tool_execute = {
+      handle(_event, data) {
+        if (data == null || !('resolve' in data))
+          throw new Error('Expected SDK tool execution request');
+        events.push('execute');
+        data.resolve(
+          data.toolCalls.map((call) => {
+            executed.push(call.id);
+            return { toolCallId: call.id, status: 'success', content: 'protected result' };
+          }),
+        );
+      },
+    };
+    try {
+      const run = await Run.create({
+        runId: 'eager-host-integration',
+        skipCleanup: true,
+        tokenCounter: () => 1,
+        eagerEventToolExecution: { enabled: tracker.toolExecution?.eagerToolExecution ?? true },
+        graphConfig: {
+          type: 'standard',
+          maxContextTokens: 100_000,
+          llmConfig: {
+            provider: Providers.OPENAI,
+            streaming: true,
+            streamUsage: false,
+            fallbacks: fallback
+              ? [
+                  {
+                    provider: Providers.OPENAI,
+                    clientOptions: {
+                      apiKey: 'fixture',
+                      model: 'fallback',
+                      streaming: true,
+                      maxRetries: 0,
+                      configuration: { fetch: transport },
+                    },
+                  },
+                ]
+              : undefined,
+          },
+          tools: [],
+          toolDefinitions: [
+            {
+              name: 'lookup',
+              description: 'Fixture',
+              parameters: {
+                type: 'object',
+                properties: { city: { type: 'string' } },
+                required: ['city'],
+              },
+            },
+          ],
+        },
+        customHandlers: handlers,
+      });
+      if (run.Graph == null) throw new Error('Missing graph');
+      run.Graph.overrideModel = {
+        invoke: async () => {
+          throw new Error('Expected streaming provider invocation');
+        },
+        stream: async (messages: BaseMessage[]) => {
+          return (async function* () {
+            if (messages.some((message) => message.getType() === 'tool')) {
+              yield new AIMessageChunk('done');
+              return;
+            }
+            yield new AIMessageChunk({
+              content: '',
+              tool_call_chunks: [
+                {
+                  id: 'eager',
+                  name: 'lookup',
+                  args: '{"city":"Paris"}',
+                  index: 0,
+                  type: 'tool_call_chunk',
+                },
+              ],
+              response_metadata: { finish_reason: 'tool_calls' },
+            });
+            if (!observe) await Promise.race([completion, deadline]);
+            if (fallback) throw new Error('Fixture primary failed after eager completion');
+          })();
+        },
+      };
+      await run.processStream(
+        { messages: [new HumanMessage('weather')] },
+        { configurable: { thread_id: 'eager-host-integration' }, version: 'v2' },
+      );
+      sendFinalChunk(config);
+      if (observe) {
+        expect(events.indexOf('on_model_response')).toBeLessThan(events.indexOf('execute'));
+        expect(owners).toEqual(['default']);
+      } else {
+        expect(events.indexOf('on_run_step_completed')).toBeLessThan(
+          events.indexOf('on_model_response'),
+        );
+        expect(owners).toEqual([undefined]);
+      }
+      expect(fallbackCalls).toEqual([{ city: fallback ?? 'Paris' }]);
+      expect(transport).toHaveBeenCalledTimes(fallback ? 1 : 0);
+      expect(executed).toEqual(['eager']);
+      expect(tracker.toolCalls.size).toBe(0);
+      const chunks: ChatCompletionChunk[] = frames
+        .filter((frame) => frame !== 'data: [DONE]\n\n')
+        .map((frame) => JSON.parse(frame.slice(6)));
+      expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
+      expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_results ?? [])).toEqual(
+        observe
+          ? [
+              {
+                index: 0,
+                call_id: 'eager',
+                name: 'lookup',
+                arguments: JSON.stringify({ city: fallback ?? 'Paris' }),
+                output: 'protected result',
+              },
+            ]
+          : [],
+      );
+      expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+    } finally {
+      clearTimeout(timeout);
+    }
   });
 
   it('assembles the name before emitting when real SDK chunks split it', async () => {

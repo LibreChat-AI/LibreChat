@@ -11,7 +11,9 @@ const clientId = 'e2e-management-client';
 
 export const managementAuth = {
   oidc: { enabled: true, issuer, audience },
-  clients: [{ clientId, userId: managementUserId, tenantId: managementTenantId }],
+  clients: [
+    { clientId, userId: managementUserId, tenantId: managementTenantId, conversationRead: true },
+  ],
 };
 
 /** Only the identity provider is a fixture; LibreChat verifies the token over HTTP. */

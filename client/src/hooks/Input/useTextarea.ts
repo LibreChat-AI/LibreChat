@@ -164,6 +164,12 @@ export default function useTextarea({
      * cancel request was in flight. Keep both messages distinct when the
      * composer already owns text; an empty composer receives the exact steer. */
     const currentText = textAreaRef.current?.value ?? '';
+    /* The words can reach this composer twice: handed over, and restored from the draft saved
+     * for the conversation. When it already holds exactly them, there is nothing to add. */
+    if (currentText === text) {
+      setPendingComposerText(undefined);
+      return;
+    }
     const handoffText = currentText.length > 0 ? `\n${text}` : text;
     if (!insertComposerText(handoffText)) {
       return;

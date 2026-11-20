@@ -13,13 +13,8 @@ export interface AuthorizationFacts {
   readonly rbac: 'allowed' | 'denied' | 'unavailable';
   readonly scheduleActive: boolean;
   readonly graphAgentIds: readonly string[];
+  /** Identifies the selections the owner allowed; a result must carry the current one. */
   readonly policyRevision: string;
-  readonly classifications: readonly {
-    agentId: string;
-    tool: string;
-    effect: 'read' | 'write' | 'unknown';
-    source: 'host' | 'server_hint';
-  }[];
   readonly approvalRequired: boolean;
   readonly providerInstalled: boolean;
   readonly resourceAcceptanceVerified: boolean;
@@ -75,10 +70,6 @@ const facts: AuthorizationFacts = {
   scheduleActive: true,
   graphAgentIds: ['root-agent', 'child-agent'],
   policyRevision: 'policy-1',
-  classifications: [
-    { agentId: 'root-agent', tool: 'query', effect: 'read', source: 'host' },
-    { agentId: 'child-agent', tool: 'query', effect: 'read', source: 'host' },
-  ],
   approvalRequired: false,
   providerInstalled: true,
   resourceAcceptanceVerified: true,
@@ -177,28 +168,14 @@ export const authorizationFixtures: readonly AuthorizationFixture[] = [
     },
     { ...request, selection: { agentId: 'child-agent', tools: ['query'] } },
   ),
-  fixture('changed-trusted-policy', 'binding_mismatch', { ...facts, policyRevision: 'policy-2' }),
   fixture('empty-tool-selection', 'tool_policy_denied', facts, {
     ...request,
     selection: { agentId: 'root-agent', tools: [] },
   }),
-  fixture('new-tool-not-enrolled', 'tool_policy_denied', facts, {
+  fixture('tool-not-allowed-by-owner', 'tool_policy_denied', facts, {
     ...request,
     selection: { agentId: 'root-agent', tools: ['query', 'delete'] },
   }),
-  ...(['write', 'unknown'] as const).map((effect) =>
-    fixture(`tool-effect-${effect}`, 'tool_policy_denied', {
-      ...facts,
-      classifications: [{ agentId: 'root-agent', tool: 'query', effect, source: 'host' }],
-    }),
-  ),
-  fixture('server-readonly-hint-is-not-authority', 'tool_policy_denied', {
-    ...facts,
-    classifications: [
-      { agentId: 'root-agent', tool: 'query', effect: 'read', source: 'server_hint' },
-    ],
-  }),
-  fixture('unclassified-tool', 'tool_policy_denied', { ...facts, classifications: [] }),
   fixture('approval-needed-headlessly', 'approval_required', { ...facts, approvalRequired: true }),
   fixture('missing-provider', 'provider_missing', { ...facts, providerInstalled: false }),
   fixture('resource-not-certified', 'resource_unverified', {

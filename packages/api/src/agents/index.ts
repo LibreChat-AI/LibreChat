@@ -21,6 +21,7 @@ export * from './edges';
 export * from './errors';
 export * from './eventRetention';
 export * from './envelope';
+export * from './authority';
 export * from './execution';
 export * from './files';
 export * from './handlers';
@@ -50,6 +51,7 @@ export * from './migration';
 export * from './parameters';
 export * from './input';
 export * from './plan';
+export * from './policy';
 export * from './prewarm';
 export * from './promptCache';
 export * from './ptc';
@@ -60,6 +62,7 @@ export * from './usage';
 export * from './resources';
 export * from './responses';
 export * from './skills';
+export * from './specs';
 export * from './toggles';
 export {
   ContextPartKeys,
@@ -115,3 +118,10 @@ export * from './queuedTurns';
 export * from './queuedTurnHttp';
 export * from './files/index';
 export { captureAuthoredSkills, restoreAuthoredSkills } from './authored';
+
+export { createSdkModelHost } from './remoteSdk/builder';
+export type { SdkModelHost } from './remoteSdk/builder';
+export * from './turn';
+
+export { createSdkFileHost, createChatSdkFileSession } from './remoteSdk/attachments';
+export type { SdkFileHost, SdkFileSession } from './remoteSdk/attachments';

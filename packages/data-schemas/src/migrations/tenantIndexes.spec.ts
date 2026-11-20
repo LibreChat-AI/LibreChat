@@ -97,6 +97,8 @@ describe('dropSupersededTenantIndexes', () => {
         .collection('conversationtags')
         .createIndex({ tag: 1, user: 1 }, { unique: true, name: 'tag_1_user_1' });
 
+      await db.createCollection('mcpnames');
+      await db.collection('mcpnames').createIndex({ name: 1 }, { unique: true });
       await db.createCollection('mcpservers');
       await db
         .collection('mcpservers')
@@ -301,6 +303,7 @@ describe('dropSupersededTenantIndexes', () => {
         'accessroles',
         'conversationtags',
         'mcpservers',
+        'mcpnames',
         'files',
         'groups',
         'skillsyncstatuses',

@@ -1196,3 +1196,76 @@ test.describe('agent handoffs', () => {
     }
   });
 });
+
+test('offers a hidden model preset as a handoff and executes its server-owned instructions', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/c/new');
+  const token = await getAccessToken(page);
+  const targets = await fetchJson<Array<{ id: string; name: string }>>(
+    page,
+    '/api/agents/handoff-targets',
+    token,
+  );
+  const targetId = targets.find((target) => target.name === 'Preset Specialist')?.id;
+  expect(targetId).toBeTruthy();
+  if (!targetId) throw new Error('Preset handoff target missing');
+  expect(targets).toContainEqual(
+    expect.objectContaining({ id: targetId, name: 'Preset Specialist' }),
+  );
+  expect(JSON.stringify(targets)).not.toContain('specialist preset instructions');
+  const startup = await fetchJson<{ modelSpecs?: { list?: Array<{ name: string }> } }>(
+    page,
+    '/api/config',
+    token,
+  );
+  expect(startup.modelSpecs?.list?.some((spec) => spec.name === 'e2e-handoff-specialist')).toBe(
+    false,
+  );
+  let parent: AgentDetail | undefined;
+  try {
+    const form = await configureNewAgent(page, uniqueAgentName('Preset Router'));
+    const region = await openOrchestration(page, form);
+    await region.getByRole('combobox').click();
+    await expect(
+      page.getByRole('option', { name: 'Preset Specialist', exact: true }),
+    ).toBeVisible();
+    await page.getByRole('option', { name: 'Preset Specialist', exact: true }).click();
+    await expect(region.getByRole('combobox').first()).toContainText('Preset Specialist');
+    await page.screenshot({
+      path: testInfo.outputPath('preset-handoff-picker.png'),
+      animations: 'disabled',
+    });
+    await testInfo.attach('Preset handoff picker', {
+      path: testInfo.outputPath('preset-handoff-picker.png'),
+      contentType: 'image/png',
+    });
+    parent = await createConfiguredAgent(form);
+    expect(parent.edges).toContainEqual(
+      expect.objectContaining({ to: targetId, edgeType: 'handoff' }),
+    );
+    await selectAgentForChat(page, parent.name ?? '');
+    const label = `preset-${Date.now()}`;
+    const response = await sendMessageAndWaitForCompletion(
+      page,
+      handoffMarker(label, [
+        {
+          from: parent.id,
+          to: targetId,
+          targetInstructions: 'Use the specialist preset instructions.',
+        },
+      ]),
+    );
+    expect(response.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E handoff complete ${label}: agent=${targetId}; received=`, {
+        exact: false,
+      }),
+    ).toBeVisible({ timeout: 30000 });
+    await expect(
+      messagesView(page).getByRole('button', { name: 'Transferred to Preset Specialist' }),
+    ).toBeVisible();
+  } finally {
+    await cleanupAgent(page, parent?.id);
+  }
+});

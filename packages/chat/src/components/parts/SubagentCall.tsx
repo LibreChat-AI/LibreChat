@@ -4,29 +4,32 @@ import { Button, cn } from '@librechat/client';
 import { ChevronRight, Users } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
 import type { PartMetadata, TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { Agent } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
 import type { MessagePartMessage, MessagePartsHost, ToolCallChrome } from '../../react/host';
 import type { SubagentContentPreview } from '../../react/subagents/state';
-import type { SubagentTickerLine } from '../../core/subagents/content';
 import {
   activeSubagentPanel,
   subagentProgressKey,
   useSubagentProgress,
 } from '../../react/subagents/state';
+import { isLiveSubagentStatus, subagentStatusLabelKey } from '../../react/subagents/status';
+import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
 import { isSelfSpawn as isSelfSpawnType } from '../../react/subagents/author';
+import { pickTailIndex, pickTailPart } from '../../react/subagents/tail';
 import { parseSubagentBackgroundHandle } from '../../core/parts/handle';
+import { lastVisibleContentIdx } from '../../core/parts/activityLabels';
 import { resolveSubagentAgentId } from '../../react/subagents/identity';
-import { subagentStatusLabelKey } from '../../react/subagents/status';
-import { tailOverflowDirection } from '../../core/subagents/content';
 import { useOpenSubagentPanel } from '../../react/subagents/surface';
 import { useParentSubagents } from '../../react/subagents/parents';
+import { useThreadInterest } from '../../react/subagents/follows';
 import { getSubagentPrompt } from '../../react/subagents/prompt';
+import { PartsPreviewContext } from '../../react/parts/preview';
+import { FailedRevealContext, useFailedReveal } from './reveal';
 import { useToolCallIntent } from '../../react/parts/intent';
-import { parseToolName } from '../../core/parts/toolLabels';
+import { useBranchTailSelect } from '../../react/latest';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
-import { useFailedReveal } from './reveal';
 import { FOLD_GLYPH_CLASS } from './rows';
 
 export interface SubagentCallProps {
@@ -55,10 +58,7 @@ export interface SubagentCallProps {
 }
 
 /** App subscriptions arrive as values; render callbacks contain no card behavior. */
-export type SubagentCallContext = Pick<
-  ToolCallChrome,
-  'localize' | 'mcpServerNames' | 'renderAttachments'
-> &
+export type SubagentCallContext = Pick<ToolCallChrome, 'localize' | 'renderAttachments'> &
   Pick<MessagePartsHost, 'renderAgentIcon'> & {
     message: Pick<MessagePartMessage, 'messageId' | 'conversationId' | 'partIndex'>;
     isSharedConvo?: boolean;
@@ -66,7 +66,6 @@ export type SubagentCallContext = Pick<
     agentsMap?: Record<string, Agent | undefined>;
   };
 
-const TICKER_MAX_LINES = 3;
 /** Trailing-edge refresh window for the live preview once the ticker has
  *  enough text to fill the row. Keeps long streaming lines from repainting
  *  every token while still letting the collapsed subagent UI feel responsive. */
@@ -76,7 +75,7 @@ export const SUBAGENT_TICKER_THROTTLE_MS = 400;
  *  streams the rest of the sentence. The pass-through lets early
  *  tokens appear right away, and throttling only kicks in once the
  *  preview is long enough to "fill the container". */
-const TICKER_PASSTHROUGH_CHARS = 120;
+const PREVIEW_PASSTHROUGH_CHARS = 120;
 
 /**
  * Trailing-edge throttle for the ticker. Forwards `value` at most once per
@@ -188,7 +187,6 @@ export default function SubagentCall({
   isSharedConvo,
   shareId,
   localize,
-  mcpServerNames,
   agentsMap,
   renderAgentIcon,
   renderAttachments,
@@ -211,7 +209,13 @@ export default function SubagentCall({
     subagentType,
     progress?.subagentKind ?? subagentIdentity?.subagentKind,
   );
-  const subagentAgentId = resolveSubagentAgentId(progress, subagentIdentity);
+  /** A detached child's identity as the parent's index reports it, once the parent's own stream
+   *  that named it is gone. */
+  const { byThreadId } = useParentSubagents();
+  const indexedChild =
+    backgroundHandle == null ? undefined : byThreadId.get(backgroundHandle.subagent_thread_id);
+  const subagentAgentId =
+    resolveSubagentAgentId(progress, subagentIdentity) ?? indexedChild?.agentId;
   const subagentAgent = subagentAgentId ? agentsMap?.[subagentAgentId] : undefined;
   /**
    * Tri-state status resolution, aligned with `ToolCall.tsx`:
@@ -250,33 +254,15 @@ export default function SubagentCall({
   const running = !finished && !cancelled;
   const detachedStatusUnknown = backgroundHandle != null && progress == null && !isSubmitting;
 
-  /** Last `TICKER_MAX_LINES` lines from the atom's incrementally-built
-   *  ticker state, so history isn't lost to any event trimming. */
-  const tickerLines = useMemo<SubagentTickerLine[]>(() => {
-    const lines = progress?.tickerState?.lines ?? [];
-    return lines.slice(-TICKER_MAX_LINES);
-  }, [progress?.tickerState?.lines]);
+  /** The child's newest part: the row it is on right now. */
+  const tailPart = useMemo(() => {
+    const parts = (progress?.contentParts ?? []) as TMessageContentParts[];
+    const index = lastVisibleContentIdx(parts);
+    return index < 0 ? undefined : { part: parts[index], index };
+  }, [progress?.contentParts]);
 
-  /** Only throttle once the running buffer is wide enough to "fill the
-   *  container". Pre-threshold updates pass through so the user sees
-   *  early tokens immediately, not a static "Reasoning: I" while more
-   *  text piles up behind the throttle. */
-  const shouldThrottleTicker = useMemo(() => {
-    if (!running) return false;
-    const liveBody = tickerLines.reduce((max, line) => {
-      if (line.kind === 'writing' || line.kind === 'reasoning') {
-        return Math.max(max, line.body.length);
-      }
-      return max;
-    }, 0);
-    return liveBody >= TICKER_PASSTHROUGH_CHARS;
-  }, [running, tickerLines]);
-
-  const displayedTickerLines = useTickerThrottle(
-    tickerLines,
-    SUBAGENT_TICKER_THROTTLE_MS,
-    shouldThrottleTicker,
-  );
+  const preview = useThrottledRow(tailPart, running);
+  const showPreview = running && preview != null;
 
   const prompt = getSubagentPrompt(args);
 
@@ -419,100 +405,107 @@ export default function SubagentCall({
 
   return (
     <>
-      <Button
-        variant="activity-card"
-        data-running={running && !detachedStatusUnknown}
-        onClick={openDetails}
-        disabled={!canOpenDetails}
-        data-subagent-thread={
-          canOpenDurablePanel ? backgroundHandle?.subagent_thread_id : undefined
-        }
-        data-subagent-tool-call={toolCallId}
-        data-subagent-parent-message={parentMessageId}
-        data-subagent-part-index={partIndex}
-        className={cn('my-2', canOpenDetails && 'group')}
-        aria-label={detachedStatusUnknown ? undefined : cardLabel}
-      >
-        <div className="text-text-primary flex w-full min-w-0 items-center gap-2 text-sm font-medium">
-          <div
-            className={cn(
-              FOLD_GLYPH_CLASS,
-              'flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full',
-              running &&
-                !subagentAgent &&
-                'text-text-primary animate-pulse motion-reduce:animate-none',
-            )}
-            aria-hidden="true"
-          >
-            {subagentAgent ? renderAgentIcon(subagentAgent) : <Users size={14} />}
-          </div>
-          {subagentNameLabel ? (
-            <>
-              <span
-                className="max-w-[50%] min-w-0 shrink truncate font-semibold"
-                title={subagentNameLabel}
-              >
-                {subagentNameLabel}
-              </span>
-              <span
-                className="text-text-secondary min-w-0 flex-1 truncate font-normal"
-                title={detachedStatusUnknown ? undefined : headerText}
-              >
-                {detachedStatusUnknown && backgroundHandle != null ? (
-                  <DetachedTaskStatus
-                    threadId={backgroundHandle.subagent_thread_id}
-                    taskId={backgroundHandle.background_task_id}
-                    fallback={headerText}
-                    localize={localize}
-                  />
-                ) : (
-                  headerText
-                )}
-              </span>
-            </>
-          ) : (
-            <>
-              <span
-                className="min-w-0 truncate"
-                title={detachedStatusUnknown ? undefined : headerText}
-              >
-                {detachedStatusUnknown && backgroundHandle != null ? (
-                  <DetachedTaskStatus
-                    threadId={backgroundHandle.subagent_thread_id}
-                    taskId={backgroundHandle.background_task_id}
-                    fallback={headerText}
-                    localize={localize}
-                  />
-                ) : (
-                  headerText
-                )}
-              </span>
-              <span className="flex-1" />
-            </>
-          )}
-          {canOpenDetails && (
-            <ChevronRight
-              size={14}
-              className="text-text-secondary shrink-0 transition group-hover:translate-x-0.5 rtl:-scale-x-100 rtl:group-hover:-translate-x-0.5"
+      <div className={cn('relative my-2', PREVIEW_ROOM)}>
+        <Button
+          variant="activity-card"
+          data-running={running && !detachedStatusUnknown}
+          onClick={openDetails}
+          disabled={!canOpenDetails}
+          data-subagent-thread={
+            canOpenDurablePanel ? backgroundHandle?.subagent_thread_id : undefined
+          }
+          data-subagent-tool-call={toolCallId}
+          data-subagent-parent-message={parentMessageId}
+          data-subagent-part-index={partIndex}
+          className={cn(canOpenDetails && 'group')}
+          aria-label={detachedStatusUnknown ? undefined : cardLabel}
+        >
+          <div className="text-text-primary flex w-full min-w-0 items-center gap-2 text-sm font-medium">
+            <div
+              className={cn(
+                FOLD_GLYPH_CLASS,
+                'flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full',
+                running &&
+                  !subagentAgent &&
+                  'text-text-primary animate-pulse motion-reduce:animate-none',
+              )}
               aria-hidden="true"
-            />
-          )}
-        </div>
+            >
+              {subagentAgent ? renderAgentIcon(subagentAgent) : <Users size={14} />}
+            </div>
+            {subagentNameLabel ? (
+              <>
+                <span
+                  className="max-w-[50%] min-w-0 shrink truncate font-semibold"
+                  title={subagentNameLabel}
+                >
+                  {subagentNameLabel}
+                </span>
+                <span
+                  className="text-text-secondary min-w-0 flex-1 truncate font-normal"
+                  title={detachedStatusUnknown ? undefined : headerText}
+                >
+                  {detachedStatusUnknown && backgroundHandle != null ? (
+                    <DetachedTaskStatus
+                      threadId={backgroundHandle.subagent_thread_id}
+                      taskId={backgroundHandle.background_task_id}
+                      fallback={headerText}
+                      localize={localize}
+                    />
+                  ) : (
+                    headerText
+                  )}
+                </span>
+              </>
+            ) : (
+              <>
+                <span
+                  className="min-w-0 truncate"
+                  title={detachedStatusUnknown ? undefined : headerText}
+                >
+                  {detachedStatusUnknown && backgroundHandle != null ? (
+                    <DetachedTaskStatus
+                      threadId={backgroundHandle.subagent_thread_id}
+                      taskId={backgroundHandle.background_task_id}
+                      fallback={headerText}
+                      localize={localize}
+                    />
+                  ) : (
+                    headerText
+                  )}
+                </span>
+                <span className="flex-1" />
+              </>
+            )}
+            {canOpenDetails && (
+              <ChevronRight
+                size={14}
+                className="text-text-secondary shrink-0 transition group-hover:translate-x-0.5 rtl:-scale-x-100 rtl:group-hover:-translate-x-0.5"
+                aria-hidden="true"
+              />
+            )}
+          </div>
 
-        <ul className="text-text-secondary w-full space-y-0.5 ps-5 font-mono text-xs">
-          {displayedTickerLines.length === 0 && running ? (
-            <li className="truncate opacity-70">{localize('com_ui_subagent_waiting')}</li>
+          {!showPreview && running ? (
+            <div className="text-text-secondary w-full truncate text-sm opacity-70">
+              {localize('com_ui_subagent_waiting')}
+            </div>
           ) : null}
-          {displayedTickerLines.map((line, i) => (
-            <TickerLineView
-              key={`${i}-${tickerLineKey(line)}`}
-              line={line}
-              localize={localize}
-              mcpServerNames={mcpServerNames}
-            />
-          ))}
-        </ul>
-      </Button>
+        </Button>
+        {showPreview ? (
+          <SubagentPreview
+            key={preview.index}
+            part={preview.part}
+            messageId={`${parentMessageId}:${toolCallId}:${partIndex}:preview`}
+          />
+        ) : null}
+        {!showPreview && canOpenDurablePanel && backgroundHandle != null ? (
+          <DetachedPreview
+            threadId={backgroundHandle.subagent_thread_id}
+            taskId={backgroundHandle.background_task_id}
+          />
+        ) : null}
+      </div>
 
       {!hideAttachments && attachments != null && attachments.length > 0
         ? renderAttachments(attachments)
@@ -538,12 +531,76 @@ function DetachedTaskStatus({
   taskId: string;
   fallback: string;
 }): ReactNode {
-  const { byThreadId } = useParentSubagents();
-  const child = byThreadId.get(threadId);
-  const status =
-    child?.tasks.find((task) => task.taskId === taskId)?.status ??
-    (child?.latestTaskId === taskId ? child.status : undefined);
+  const status = useDetachedStatus(threadId, taskId);
   return <>{status == null ? fallback : localize(subagentStatusLabelKey(status))}</>;
+}
+
+/** A detached task's status in the parent's subagent index, when the index has one. */
+function useDetachedStatus(threadId: string, taskId: string) {
+  const { byThreadId, discover } = useParentSubagents();
+  const child = byThreadId.get(threadId);
+  /** A child dispatched after the index was last read is not in it; the index is told. */
+  useEffect(() => {
+    if (child == null) {
+      discover(threadId);
+    }
+  }, [child, discover, threadId]);
+  return (
+    child?.tasks.find((task) => task.taskId === taskId)?.status ??
+    (child?.latestTaskId === taskId ? child.status : undefined)
+  );
+}
+
+/**
+ * A detached child's row, read from its thread's messages wherever something is following that
+ * thread. Its own leaf, so a streamed token re-renders this row alone and never the card.
+ */
+function DetachedPreview({ threadId, taskId }: { threadId: string; taskId: string }): ReactNode {
+  const status = useDetachedStatus(threadId, taskId);
+  const live = status != null && isLiveSubagentStatus(status);
+  /**
+   * A running child is followed for its row; the page follows it once, with or without a panel.
+   * Its messages outlive the following: a child the page has no room to preview keeps what was
+   * last read for it, which is not what it is doing now, so its row is shown only while it is
+   * being followed.
+   */
+  const followed = useThreadInterest(threadId, { live: true, enabled: live, passive: true });
+  const part = useBranchTailSelect(threadId, threadId, pickTailPart);
+  const index = useBranchTailSelect(threadId, threadId, pickTailIndex);
+  const row = useMemo(
+    () => (part == null || index == null ? undefined : { part, index }),
+    [part, index],
+  );
+  const shown = useThrottledRow(row, live && followed);
+  if (shown == null || !live || !followed) {
+    return null;
+  }
+  return (
+    <SubagentPreview
+      key={shown.index}
+      part={shown.part}
+      messageId={`${threadId}:${taskId}:preview`}
+    />
+  );
+}
+
+type PreviewRow = { part: TMessageContentParts; index: number };
+
+/**
+ * A child's row at the pace the card redraws it. Short text passes straight through, so the
+ * first tokens appear at once; once the live text is long enough to fill the row it refreshes on
+ * the throttle, wherever the row comes from, instead of on every token.
+ */
+function useThrottledRow(row: PreviewRow | undefined, running: boolean): PreviewRow | undefined {
+  const throttled = useMemo(() => {
+    if (!running || row == null) return false;
+    const { part } = row;
+    let text: unknown = '';
+    if (part.type === ContentTypes.TEXT) text = part.text;
+    else if (part.type === ContentTypes.THINK) text = part.think;
+    return typeof text === 'string' && text.length >= PREVIEW_PASSTHROUGH_CHARS;
+  }, [running, row]);
+  return useTickerThrottle(row, SUBAGENT_TICKER_THROTTLE_MS, throttled);
 }
 
 function extractSubagentType(args: SubagentCallProps['args']): string {
@@ -559,148 +616,77 @@ function extractSubagentType(args: SubagentCallProps['args']): string {
   return a?.subagent_type ?? 'agent';
 }
 
-/** Stable key for a ticker line. Helps React reuse the DOM node across
- *  in-place updates to the same live `writing` / `reasoning` line, and
- *  gives tool-call lines a stable identity by tool name. */
-function tickerLineKey(line: SubagentTickerLine): string {
-  switch (line.kind) {
-    case 'writing':
-    case 'reasoning':
-      return line.kind;
-    case 'using_tool':
-      return `using:${line.toolNames.join(',')}`;
-    case 'tool_complete':
-      return `done:${line.toolName}`;
-    case 'error':
-      return `error:${line.message ?? ''}`;
-  }
-}
-
-/** Inline code-style tool-name badge. Matches the monospace styling of
- *  the ticker itself but with a subtle background so the tool identifier
- *  reads as a "code" token rather than plain prose. */
-function ToolNameBadge({ name }: { name: string }): ReactNode {
-  return (
-    <code className="bg-surface-tertiary text-text-primary shrink-0 rounded px-1">{name}</code>
-  );
-}
-
-/** Render a single tool id as a compact JSX fragment: MCP tools split
- *  into `<server> · <code>toolName</code>`, native tools resolve their
- *  friendly name via `FRIENDLY_NAME_KEYS`, unknown ids fall back to a
- *  bare code badge of the raw name. */
-function ToolIdentifier({
-  rawName,
-  localize,
-  mcpServerNames,
-}: {
-  rawName: string;
-  localize: (key: string) => string;
-  mcpServerNames?: readonly string[];
-}): ReactNode {
-  const parsed = parseToolName(rawName, mcpServerNames);
-  if (parsed.mcpServer) {
-    return (
-      <span className="inline-flex min-w-0 shrink items-baseline gap-1">
-        <span className="truncate">{parsed.mcpServer}</span>
-        <span className="text-text-tertiary shrink-0">{'\u00b7'}</span>
-        <ToolNameBadge name={parsed.toolName} />
-      </span>
-    );
-  }
-  if (parsed.friendlyKey) {
-    return <span className="truncate">{localize(parsed.friendlyKey)}</span>;
-  }
-  return <ToolNameBadge name={parsed.toolName} />;
-}
+const PREVIEW_ROW_HEIGHT = 'h-8';
+/** No request to reveal a failure reaches a picture, and it claims no focus. */
+const NO_REVEAL = { tick: 0, claimFocus: null };
+/** A tool artifact is always some other row's: a picture never draws it and never takes it. */
+const PICTURE_CLAIM: [string | null, Dispatch<SetStateAction<string | null>>] = [
+  'subagent-preview',
+  () => undefined,
+];
+const useNoClaim = (): [string | null, Dispatch<SetStateAction<string | null>>] => PICTURE_CLAIM;
+/**
+ * The line above the row dissolves at the top edge instead of being cut through. A mask stencil,
+ * not paint: only its alpha is read, so it is not a theme color.
+ */
+const PREVIEW_FADE =
+  '[mask-image:linear-gradient(to_bottom,transparent,rgb(var(--black)/1)_0.625rem)]';
+/** Room under the header for the row, kept by the card only while a row is drawn over it. */
+const PREVIEW_ROOM = '[&:has([data-subagent-preview])>button]:pb-11';
+/** `inert` as an attribute: React 18's types do not know it. */
+const INERT: Record<string, string> = { inert: '' };
 
 /**
- * Renderer for one ticker line. Writing is the default visible activity, so
- * it renders without a redundant prefix. Reasoning retains its semantic label.
- * Streaming bodies run the outer box opposite to the text direction so the
- * oldest characters clip and the newest stay visible; `text-end` of that box is
- * the text's own start, so a line that fits stays where it reads from. The text
- * sits in an isolated `dir="auto"` span so its punctuation is never reordered.
- *
- * Tool lines (`using_tool`, `tool_complete`) go through `ToolIdentifier`
- * so MCP-hosted tools render as `<server> · <tool>` badges and native
- * tools use their friendly names, matching the delimiter-aware
- * rendering the main tool UI already uses.
+ * The row the child is on right now, drawn by the renderer the thread itself uses and shown one
+ * row at a time: the same tool row, reasoning row or text a reader sees after opening the child,
+ * held to the card's last line. It is a picture of that row, not a control: it sits over the
+ * card instead of inside its button, takes no pointer or focus, and is hidden from assistive
+ * technology, which reads the card's label.
  */
-function TailText({ text }: { text: string }): ReactNode {
+function SubagentPreview({
+  part,
+  messageId,
+}: {
+  part: TMessageContentParts;
+  messageId: string;
+}): ReactNode {
+  const host = useMessagePartsHost();
+  const content = useMemo(() => [part], [part]);
+  const pictureHost = useMemo(() => ({ ...host, useToolArtifactClaim: useNoClaim }), [host]);
   return (
-    <span
-      dir={tailOverflowDirection(text)}
-      className="min-w-0 flex-1 overflow-hidden text-end text-ellipsis whitespace-nowrap"
+    <div
+      {...INERT}
+      aria-hidden="true"
+      data-subagent-preview
+      className={cn(
+        'pointer-events-none absolute inset-x-[calc(0.75rem+1px)] bottom-[calc(0.5rem+1px)] overflow-hidden',
+        PREVIEW_ROW_HEIGHT,
+        PREVIEW_FADE,
+      )}
     >
-      <bdi dir="auto" className="[unicode-bidi:isolate]">
-        {text}
-      </bdi>
-    </span>
-  );
-}
-
-function TickerLineView({
-  line,
-  localize,
-  mcpServerNames,
-}: { line: SubagentTickerLine } & Pick<
-  SubagentCallContext,
-  'localize' | 'mcpServerNames'
->): ReactNode {
-  if (line.kind === 'writing') {
-    return (
-      <li className="text-text-primary flex w-full items-baseline overflow-hidden">
-        <TailText text={line.body} />
-      </li>
-    );
-  }
-  if (line.kind === 'reasoning') {
-    return (
-      <li className="text-text-primary flex w-full items-baseline gap-1 overflow-hidden">
-        <span className="shrink-0">{`${localize('com_ui_subagent_ticker_reasoning')}:`}</span>
-        <TailText text={line.body} />
-      </li>
-    );
-  }
-  if (line.kind === 'using_tool') {
-    const prefix = localize('com_ui_subagent_ticker_using');
-    return (
-      <li className="flex w-full items-baseline gap-1 overflow-hidden whitespace-nowrap">
-        <span className="shrink-0">{prefix}</span>
-        <span className="flex min-w-0 flex-1 items-baseline gap-1 overflow-hidden">
-          {line.toolNames.map((name, i) => (
-            <span key={`${i}-${name}`} className="flex min-w-0 items-baseline gap-1">
-              {i > 0 && <span className="text-text-tertiary shrink-0">{','}</span>}
-              <ToolIdentifier rawName={name} localize={localize} mcpServerNames={mcpServerNames} />
-            </span>
-          ))}
-          {line.argsSnippet && (
-            <span className="text-text-tertiary min-w-0 truncate">{`(${line.argsSnippet})`}</span>
-          )}
-        </span>
-      </li>
-    );
-  }
-  if (line.kind === 'tool_complete') {
-    return (
-      <li className="flex w-full items-baseline gap-1 overflow-hidden whitespace-nowrap">
-        <ToolIdentifier
-          rawName={line.toolName}
-          localize={localize}
-          mcpServerNames={mcpServerNames}
-        />
-        <span className="text-text-tertiary shrink-0">{'\u2192'}</span>
-        <TailText text={line.outputSnippet ?? localize('com_ui_subagent_ticker_tool_done')} />
-      </li>
-    );
-  }
-  /* error */
-  const errorPrefix = localize('com_ui_subagent_ticker_error');
-  return (
-    <li className="text-text-warning flex w-full items-baseline gap-1 overflow-hidden">
-      <span className="shrink-0">{`${errorPrefix}:`}</span>
-      <span className="min-w-0 flex-1 truncate">{line.message ?? ''}</span>
-    </li>
+      {/* Held to its last line: what the child wrote most recently is the part in view. */}
+      <div className="absolute inset-x-0 bottom-0">
+        {/* A picture of the child's row and nothing more: the row itself registers what it
+            holds with the app, owns its artifacts and answers a request to reveal a failure. */}
+        <PartsPreviewContext.Provider value={true}>
+          <FailedRevealContext.Provider value={NO_REVEAL}>
+            <MessagePartsHostProvider host={pictureHost}>
+              {host.renderContentParts({
+                content,
+                messageId,
+                conversationId: null,
+                isCreatedByUser: false,
+                showThinking: false,
+                isSubmitting: true,
+                isLast: true,
+                /** The row is live: a renderer told otherwise draws a tool still running as
+                 *  stopped. */
+                isLatestMessage: true,
+              })}
+            </MessagePartsHostProvider>
+          </FailedRevealContext.Provider>
+        </PartsPreviewContext.Provider>
+      </div>
+    </div>
   );
 }

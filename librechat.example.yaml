@@ -2,10 +2,25 @@
 # https://www.librechat.ai/docs/configuration/librechat_yaml
 
 # Configuration version (required)
-version: 1.3.18
+version: 1.3.19
 
 # Cache settings: Set to true to enable caching
 cache: true
+
+# Upgrade every replica before enabling regional role caching, then restart all
+# replicas together with the same setting. Mixed settings use different cache keys.
+# To disable it again, stop all replicas, clear the ROLES namespace in each backing
+# Redis store, then restart with roleCache.enabled set to false.
+# Enable change streams on the roles collection before starting watchers; cold role
+# reads and watchers use the primary database. Cached entries expire even if events
+# are missed. Set changeStreamsEnabled: false to retain TTL-only caching during a
+# source outage. These settings take effect on restart.
+# roleCache:
+#   enabled: true
+#   changeStreamsEnabled: true
+#   ttlMs: 60000
+#   retryDelayMs: 1000
+#   maxAwaitTimeMs: 1000
 
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
@@ -203,8 +218,8 @@ projects:
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
-  # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
-  # user's name, for deployments where the header selector already names the agent.
+  # 'entity' shows its name and icon; 'greeting' shows the time-of-day greeting (or customWelcome) with
+  # the user's name and no icon, for deployments where the header selector already shows the agent.
   # landingHeading: entity
   # Show the generic disclaimer and policy links on the welcome screen (default: true).
   # true places them at the bottom of the page, 'composer' directly under the composer, and false
@@ -214,6 +229,10 @@ interface:
   # 'whenDifferent' drops them when the header's model selector already shows that agent; a
   # response from another agent keeps them. The name stays available to screen readers.
   # messageAuthor: always
+  # Show the endpoint, agent or assistant icon on each sidebar chat history row (default: true).
+  # Set to false when every chat uses the same agent and the icon is noise. A running or unread
+  # status still shows on the row.
+  # conversationIcons: true
   # Allow renaming a running chat or one with a placeholder title (default: true).
   # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
   # title-generation jobs have drained. While false, rename is disabled for running chats
@@ -309,6 +328,15 @@ interface:
   # Allow the artifacts pane to be moved into its own browser window
   # (desktop only; the mobile sheet is unaffected). Default: true.
   artifactUndocking: true
+  # Continue a subagent's thread as a chat in the side panel, beside the conversation,
+  # instead of navigating to the new chat. Default: true.
+  sideChat: true
+  # List a conversation's subagents and background tasks in a rail beside the chat, opened
+  # from the chat header. Set false to list them in a header popover instead. Default: true.
+  sessionRail: true
+  # Show the session rail by itself when work starts running in a conversation (desktop only;
+  # closing it keeps it closed for that conversation). Default: true.
+  sessionRailAutoOpen: true
   # Ask each viewer before loading Google Tag Manager (ANALYTICS_GTM_ID).
   # Set false when the deployment settles consent itself, e.g. internal use. Default: true.
   # analyticsConsent: true
@@ -506,6 +534,9 @@ registration:
 #   refillAmount: 10000
 #   # Deploy reset-capable servers to every replica before selecting 'reset'.
 #   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
+#   # Align every period to this instant plus whole intervals, e.g. weekly resets every Monday
+#   # at 00:00 UTC. Needs a Z or ±HH:MM offset; omit for periods that run from each user's last refill.
+#   # refillAnchor: '2026-01-05T00:00:00Z'
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
 #   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
@@ -577,6 +608,7 @@ registration:
 #   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
 #   imageFetchMs: 30000 # reading a stored image, by URL or from blob storage, to encode it for a provider
+#   fileFetchMs: 300000 # reading a stored document, audio or video file to encode it for a provider
 #   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
 #   speechMs: 300000 # each text-to-speech or speech-to-text provider request
 #   imageGenerationMs: 300000 # each Stable Diffusion image generation request
@@ -815,6 +847,25 @@ endpoints:
   #   # (optional) Assistant Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
   #   capabilities: ["code_interpreter", "retrieval", "actions", "tools", "image_vision"]
   # agents:
+  #   # Optional primary-model execution for remote SDK agents. Budgets are per process.
+  #   # Restart to change budgets; workers must support builderModel: 1.
+  #   # Initial protected-chat admission also requires modelAdmission: 1 on workers.
+  #   # Combined output protection requires modelAdmissionWithProviderText: 1 and an explicit policy service.
+  #   # Local graph tools and provider fallbacks remain gated.
+  #   sdkHostModels:
+  #     maxConcurrentCalls: 32
+  #     maxAdmissionEntries: 4096
+  #     maxBufferedRequestBytes: 67108864
+  #     timeoutMs: 60000
+  #     maxRequestBytes: 4194304
+  #     maxResponseBytes: 4194304
+  #   sdkRuntimes:
+  #     schema-advisor:
+  #       roles: [ADMIN]
+  #       remote:
+  #         url: wss://runtime.example/sdk
+  #         secret: ${SDK_RUNTIME_SECRET}
+  #         hostModel: true
   #   # Maximum provider response-body inactivity for Agent model calls. Defaults to 15 minutes;
   #   # each received chunk resets the timer. Set to 0 to disable the idle timeout.
   #   modelResponseBodyTimeoutMs: 900000
@@ -1869,3 +1920,21 @@ endpoints:
 #   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.
 #   leaseTtlMs: 30000 # Integer 1000-600000. Sharing updates on deployments without transactions hold a per-resource lease this long between renewals.
 #   leaseWaitMs: 3000 # Integer 0-60000. How long an update waits for a contended lease before answering 409.
+
+# Provider presets can be offered as handoff targets in the agent builder:
+# modelSpecs:
+#   list:
+#     - name: research-assistant
+#       label: Research Assistant
+#       handoff: true
+#       showInMenu: false  # independent of handoff availability
+#       webSearch: true
+#       skills: true
+#       preset:
+#         endpoint: openAI
+#         model: gpt-4o
+#         promptPrefix: You are a research assistant. Cite your sources.
+# Handoffs resolve the current user's effective config on every run. Removing
+# the preset or disabling handoff makes existing references unavailable. Saved
+# agents retain their existing ACL checks. Model preset handoffs are available
+# to in-app agent runs; remote APIs require separately shared saved agents.

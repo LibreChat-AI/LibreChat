@@ -24,6 +24,7 @@ import BookmarkMenu from './Menus/BookmarkMenu';
 import { useChatContext } from '~/Providers';
 import AddMultiConvo from './AddMultiConvo';
 import { useHasAccess } from '~/hooks';
+import { Session } from './Session';
 import { cn } from '~/utils';
 import store from '~/store';
 
@@ -93,6 +94,10 @@ function Header({
     enabled: parentConversationId == null,
   });
 
+  /** The session rail replaces the popover unless the deployment turned it off. Until the
+   *  config answers, neither is drawn, so a deployment without the rail never shows its control. */
+  const sessionRail = startupConfig != null && interfaceConfig.sessionRail !== false;
+
   /** The drawer covers the header on mobile; keep its controls out of the tab order. */
   const hiddenBehindNav = navVisible === true && isSmallScreen && 'hidden';
 
@@ -138,7 +143,16 @@ function Header({
       <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
         {showTemporaryChat && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className={isSmallScreen ? undefined : 'hidden'} />}
-        {!isNewChat && parentConversationId == null && (
+        {sessionRail && parentConversationId == null && (
+          <Session
+            key={routeConversationId ?? Constants.NEW_CONVO}
+            conversationId={routeConversationId ?? Constants.NEW_CONVO}
+            agentId={conversation?.agent_id}
+            isSubmitting={isSubmitting}
+            autoOpen={interfaceConfig.sessionRailAutoOpen !== false}
+          />
+        )}
+        {startupConfig != null && !sessionRail && !isNewChat && parentConversationId == null && (
           <BackgroundTasksButton
             key={routeConversationId}
             conversationId={routeConversationId}

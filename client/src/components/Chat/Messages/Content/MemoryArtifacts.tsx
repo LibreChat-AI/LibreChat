@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { memo, useId, useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
 import { toolPanelSpacingClassName } from '@librechat/chat/react';
@@ -27,7 +27,7 @@ const isUnlinkedMemoryArtifact = (
 export const hasMemoryArtifacts = (attachments?: TAttachment[]): boolean =>
   attachments?.some(isUnlinkedMemoryArtifact) ?? false;
 
-export default function MemoryArtifacts({ attachments }: { attachments?: TAttachment[] }) {
+export default memo(function MemoryArtifacts({ attachments }: { attachments?: TAttachment[] }) {
   const contentId = useId();
   const localize = useLocalize();
   const [showInfo, setShowInfo] = useState(false);
@@ -126,4 +126,4 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
       </div>
     </>
   );
-}
+});

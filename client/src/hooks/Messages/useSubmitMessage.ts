@@ -5,7 +5,7 @@ import type { TMessage, TReasoningOverride } from 'librechat-data-provider';
 import { useChatContext, useChatFormContext, useAddedChatContext } from '~/Providers';
 import { useGetLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useAuthContext } from '~/hooks/AuthContext';
-import { mainTextareaId } from '~/common';
+import { composerTextareaId } from '~/common';
 import store from '~/store';
 
 export default function useSubmitMessage() {
@@ -81,12 +81,14 @@ export default function useSubmitMessage() {
        * a non-auto-sent prompt so every picker, including variable dialogs,
        * preserves the text for the composer's guarded submit route. */
 
-      const textarea = document.getElementById(mainTextareaId) as HTMLTextAreaElement | null;
+      const textarea = document.getElementById(
+        composerTextareaId(index),
+      ) as HTMLTextAreaElement | null;
       const currentText = textarea?.value ?? methods.getValues('text');
       const newText = currentText.trim().length > 1 ? `\n${parsedText}` : parsedText;
       setActivePrompt(newText);
     },
-    [autoSendPrompts, submitMessage, setActivePrompt, methods, user],
+    [autoSendPrompts, submitMessage, setActivePrompt, methods, user, index],
   );
 
   return { submitMessage, submitPrompt };

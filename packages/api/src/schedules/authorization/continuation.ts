@@ -6,7 +6,13 @@ import { ScheduledMCPPolicyError } from './policy';
 
 export type ScheduleMCPCompletionLookup = ScheduleMethods['getScheduleMCPCompletionState'];
 
-/** Completion turns cannot adopt consent granted after their parent task was admitted. */
+/**
+ * Who a background task's completion turn acts for: the schedule that started the task, while
+ * it still exists and still runs the same agent. The turn is another run of that agent, and
+ * runs under whatever the schedule's owner allows when it starts: the grant the schedule
+ * holds then, checked live like any run's, or none. It inherits nothing from the run that
+ * started the task.
+ */
 export async function resolveScheduleMCPCompletion(
   scope: { ownerId: string; tenantId: string | null; scheduleMCPIdentity?: unknown },
   lookup?: ScheduleMCPCompletionLookup,
@@ -16,8 +22,7 @@ export async function resolveScheduleMCPCompletion(
   if (identity.ownerId !== scope.ownerId || identity.tenantId !== scope.tenantId)
     throw new ScheduledMCPPolicyError('binding_mismatch', '', identity.agentId);
   if (!lookup) throw new ScheduledMCPPolicyError('dependency_unavailable', '', identity.agentId);
-  const state = await lookup(identity);
-  if (!state || state.enrolled)
+  if (!(await lookup(identity)))
     throw new ScheduledMCPPolicyError('binding_mismatch', '', identity.agentId);
   return identity;
 }

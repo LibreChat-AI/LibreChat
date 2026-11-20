@@ -28,6 +28,9 @@ describe('ToolCard', () => {
     render(<ToolCard item={skill} selected={false} onToggle={jest.fn()} />);
     expect(screen.getByText('Reviewer')).toBeInTheDocument();
     expect(screen.getByText('Review PRs')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Reviewer/ })).toHaveAccessibleName(
+      /com_ui_tools_kind_skills/,
+    );
   });
 
   test('clicking the card invokes onToggle with the item', () => {
@@ -69,6 +72,34 @@ describe('ToolCard', () => {
     };
     render(<ToolCard item={mcp} selected={false} onToggle={jest.fn()} />);
     expect(screen.queryByText('com_ui_tools_count[count=14]')).not.toBeInTheDocument();
+  });
+
+  test('keeps a neutral MCP dot and only announces a known status', () => {
+    const mcp: AgentItem = {
+      kind: 'mcp',
+      id: 'everything',
+      name: 'Everything',
+      description: 'List tools',
+      iconKey: 'mcp',
+      server: { serverName: 'everything', isConfigured: true, tools: [] } as never,
+      toolCount: 1,
+    };
+    const onToggle = jest.fn();
+    const { rerender } = render(
+      <ToolCard item={mcp} selected onToggle={onToggle} status={{ tone: 'bg-status-neutral' }} />,
+    );
+    const card = screen.getByRole('button', { name: 'Everything List tools', pressed: true });
+    expect(card.querySelector('.bg-status-neutral')).toHaveAttribute('aria-hidden', 'true');
+
+    rerender(
+      <ToolCard
+        item={mcp}
+        selected
+        onToggle={onToggle}
+        status={{ label: 'Error', tone: 'bg-status-error' }}
+      />,
+    );
+    expect(card).toHaveAccessibleName('Everything Error List tools');
   });
 
   test('renders public and shared-author badges for another user public skill', () => {

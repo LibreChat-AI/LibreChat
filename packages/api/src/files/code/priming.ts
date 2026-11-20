@@ -7,10 +7,11 @@ import {
   getCodeEnvRefForProfile,
   resolveSandboxFilename,
 } from 'librechat-data-provider';
-import type { CodeEnvRef, TFile } from 'librechat-data-provider';
+import type { CodeEnvRef, CodeEnvRefContent, TFile } from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import type { CodeExecutionRoute } from '../provision/service';
 import type { CodeExecutionContext } from '~/agents/execution';
+import type { CodeObjectInfo } from './receipt';
 import type { ServerRequest } from '~/types';
 import {
   claimCodeDestination,
@@ -26,6 +27,7 @@ import {
   createCodeApiUploadRegistry,
   withCodeApiUploadSlot,
 } from '~/utils/code';
+import { checkCodeFileActive, getSnapshotReceipt, provesStoredContent } from './receipt';
 import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from './form';
 import { isStorageNotFoundError } from '~/files/encode/utils';
 import { codeExecutionHeaders } from '~/agents/execution';
@@ -39,12 +41,15 @@ export function createCodeFileUploadRef({
   sandboxFilename,
   executionProfile,
   executionRouteKey = executionProfile,
+  content,
 }: {
   sourceRef: CodeEnvRef | SnapshotCodeOwner;
   uploaded: Pick<CodeEnvRef, 'storage_session_id' | 'file_id'> & { filename?: string };
   sandboxFilename: string;
   executionProfile: 'default' | 'stateful';
   executionRouteKey?: string;
+  /** Digest of the uploaded bytes, when the uploader held them. */
+  content?: CodeEnvRefContent;
 }): CodeEnvRef {
   return {
     ...(sourceRef.kind === 'skill'
@@ -57,11 +62,11 @@ export function createCodeFileUploadRef({
     executionProfile,
     ...(executionRouteKey !== executionProfile ? { executionRouteKey } : {}),
     provisionedAt: Date.now(),
+    ...(content ? { content } : {}),
   };
 }
 
-export interface CodeFileInfo {
-  lastModified?: string;
+export interface CodeFileInfo extends CodeObjectInfo {
   originalFilename?: string;
 }
 
@@ -117,11 +122,6 @@ export async function getCodeFileInfo({
   }
 }
 
-/** Matches the existing 23-hour code-storage freshness window. */
-export function checkCodeFileActive(dateString: string | undefined): boolean {
-  return dateString != null && (Date.now() - new Date(dateString).getTime()) / 3_600_000 < 23;
-}
-
 interface SnapshotCodeOwner {
   kind: 'user';
   id: string;
@@ -167,8 +167,10 @@ export async function selectCodeFiles({
     }
     const snapshot = file.context === FileContext.execute_code_snapshot;
     const ownedRef = getCodeEnvRefForProfile(file.metadata, routeKey);
-    // Snapshot receipts can name mounts, but never prove their current bytes.
-    const ref = snapshot ? undefined : ownedRef;
+    /* A snapshot pointer names a mount. Only a receipt for this content version, matched
+     * against the stored object below, stands in for uploading the bytes again. */
+    const receipt = snapshot ? getSnapshotReceipt(file, routeKey) : undefined;
+    const probeRef = snapshot ? receipt : ownedRef;
     const sourceRef =
       ownedRef ??
       getCodeEnvRefs(file.metadata)[0]?.[1] ??
@@ -189,17 +191,24 @@ export async function selectCodeFiles({
         scope: routeKey,
         concurrency,
         signal,
-        task: () => (ref ? getFileInfo(ref) : Promise.resolve(null)),
+        task: () => (probeRef ? getFileInfo(probeRef) : Promise.resolve(null)),
       }));
-    candidates.push({ file, ref, sourceRef, getInfo });
+    candidates.push({ file, probeRef, receipt, snapshot, sourceRef, getInfo });
   }
   const resolved = await Promise.all(
     candidates.map(async (candidate) => {
-      const { file, ref, sourceRef, getInfo } = candidate;
-      const info = ref ? await getInfo() : null;
+      const { file, probeRef, receipt, snapshot, sourceRef, getInfo } = candidate;
+      const info = probeRef ? await getInfo() : null;
       signal?.throwIfAborted();
       const storedName = sourceRef.sandboxFilename ?? info?.originalFilename;
       const plannedName = snapshotMounts.get(file.file_id);
+      const reusesReceipt =
+        receipt != null &&
+        provesStoredContent(receipt.content, info) &&
+        checkCodeFileActive(info?.lastModified) &&
+        receipt.sandboxFilename === (plannedName ?? getCodeFileDestination(file, routeKey));
+      const snapshotRef = reusesReceipt ? receipt : undefined;
+      const ref = snapshot ? snapshotRef : probeRef;
       const recovering =
         !ref ||
         !checkCodeFileActive(info?.lastModified) ||

@@ -174,3 +174,32 @@ it('does not offer agent reconnection for permission-only recovery', () => {
     true,
   );
 });
+
+it('sends the owner to the authorization dialog, not the agent, for a missing or stale grant', () => {
+  for (const reason of [
+    'consent_missing',
+    'consent_expired',
+    'consent_revoked',
+    'binding_mismatch',
+  ] as const) {
+    const outcome = { server: 'warehouse', status: 'mcp_reauth_required' as const, reason };
+    const error = Object.assign(new Error('refused'), { response: { data: { mcp: [outcome] } } });
+    expect(scheduleMCPErrorMessage(error, (key) => key)).toBe(
+      'warehouse: com_ui_schedule_mcp_authorization',
+    );
+    expect(scheduleMCPNeedsAgentRecovery([outcome])).toBe(false);
+  }
+  const reconnect = {
+    server: 'warehouse',
+    status: 'mcp_reauth_required' as const,
+    reason: 'credential_rejected' as const,
+  };
+  const error = Object.assign(new Error('refused'), { response: { data: { mcp: [reconnect] } } });
+  expect(scheduleMCPErrorMessage(error, (key) => key)).toBe(
+    'warehouse: com_ui_schedule_mcp_reauth',
+  );
+  expect(scheduleMCPNeedsAgentRecovery([reconnect])).toBe(true);
+  expect(
+    scheduleMCPNeedsAgentRecovery([{ server: 'warehouse', status: 'mcp_reauth_required' }]),
+  ).toBe(true);
+});

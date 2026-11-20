@@ -140,7 +140,7 @@ function QuestionPanel({
   return (
     <div className="absolute bottom-full z-10 mb-2 w-full">
       <div
-        className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[60vh] flex-col border p-2 shadow-lg [view-transition-name:ask-question]"
+        className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[60vh] flex-col border p-2 shadow-sm [view-transition-name:ask-question]"
         onKeyDown={(e) => {
           if (isCancelKey(e.nativeEvent) && !e.nativeEvent.isComposing) {
             e.preventDefault();
@@ -266,7 +266,7 @@ export default function AskPopover({
       <div className="absolute bottom-full z-10 mb-2 w-full">
         {/* The prompt and answers scroll within their own caps; this outer cap keeps the card on
             screen when both are at their limit on a short viewport. */}
-        <div className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[70vh] flex-col overflow-y-auto border shadow-lg [view-transition-name:ask-question]">
+        <div className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[70vh] flex-col overflow-y-auto border shadow-sm [view-transition-name:ask-question]">
           {renderQuestions({
             liveAsk,
             questions: liveAsk.questions,

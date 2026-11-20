@@ -18,6 +18,7 @@ import type { ChatSurface, SubagentPanelState } from '../../../react/subagents/s
 import type { ActiveSubagentPanel } from '../../../react/subagents/state';
 import type { SubagentsHost } from '../../../react/subagents/host';
 import type { MessagePartsHost } from '../../../react/host';
+import type { FollowedChat } from '../../../react/follow';
 import {
   activeSubagentPanel,
   subagentProgressKey,
@@ -47,10 +48,14 @@ const mockUseToolCallPartQuery = jest.fn(
   }),
 );
 const mockUseSubagentActivityStream = jest.fn();
+/** Unset, as on a host that follows no thread: the panel then draws the durable view. */
+const mockUseThreadChat = jest.fn();
 const mockForkMutate = jest.fn();
 const mockControlMutate = jest.fn();
 const mockNavigateToConvo = jest.fn();
 const mockNavigate = jest.fn();
+/** Set by a test whose app offers a place beside the conversation. */
+let mockOpenBeside: jest.Mock | undefined;
 const mockShowToast = jest.fn();
 const mockGetSubagentThread = jest.fn();
 const mockApprovalProviderMounted = jest.fn();
@@ -161,6 +166,7 @@ function ApprovalScopeProbe({ children }: { children: React.ReactNode }) {
 
 const subagentsHost: SubagentsHost = createSubagentsHost({
   useAgentsMap: () => agentsMap,
+  useThreadChat: (...args) => mockUseThreadChat(...args),
   useThread: (...args) => mockUseSubagentThreadQuery(...args),
   loadThread: (...args) => mockGetSubagentThread(...args),
   useToolCallPart: (...args) => {
@@ -186,6 +192,7 @@ const subagentsHost: SubagentsHost = createSubagentsHost({
   useNavigation: () => ({
     openConversation: (conversation) => mockNavigateToConvo(conversation),
     openConversationId: (conversationId) => mockNavigate(conversationId),
+    ...(mockOpenBeside != null && { openBeside: mockOpenBeside }),
   }),
   /** The app scales the sheet breakpoint by the reader's text size before it asks. */
   useSheetLayout: () =>
@@ -304,6 +311,53 @@ jest.mock('../conversation', () => ({
             {detailStateByTask?.get(turn.taskId)}
           </div>
         ))}
+      </div>
+    );
+  },
+}));
+
+jest.mock('../followed', () => ({
+  __esModule: true,
+  default: function MockFollowedThread({
+    threadId,
+    agentId,
+    followed,
+    briefAuthor,
+    controls,
+    onCancelControl,
+  }: {
+    threadId: string;
+    agentId?: string;
+    briefAuthor?: { label: string };
+    followed: { isLoading: boolean };
+    controls?: Array<{ controlId?: string; status: string }>;
+    onCancelControl?: (controlId: string) => void;
+  }) {
+    const { useContext } = jest.requireActual<typeof import('react')>('react');
+    const { TaskContentScopeContext } = jest.requireActual<
+      typeof import('../../../react/subagents/scope')
+    >('../../../react/subagents/scope');
+    const scope = useContext(TaskContentScopeContext);
+    return (
+      <div
+        data-testid="followed-thread"
+        data-thread={threadId}
+        data-agent={agentId}
+        data-brief-author={briefAuthor?.label}
+        data-loading={String(followed.isLoading)}
+        data-receipt-scope={JSON.stringify(scope)}
+        data-controls={(controls ?? []).map((control) => control.status).join(',')}
+      >
+        {onCancelControl != null &&
+          (controls ?? []).map((control) => (
+            <button
+              key={control.controlId}
+              type="button"
+              onClick={() => onCancelControl(control.controlId ?? '')}
+            >
+              {`withdraw-${control.controlId}`}
+            </button>
+          ))}
       </div>
     );
   },
@@ -605,6 +659,7 @@ describe('SubagentThreadPanel', () => {
   beforeEach(() => {
     /** The app's jest config clears mock calls between tests; this package's does not. */
     jest.clearAllMocks();
+    mockUseThreadChat.mockReset();
     queryClient = new QueryClient();
     window.sessionStorage.clear();
     window.localStorage.clear();
@@ -613,6 +668,7 @@ describe('SubagentThreadPanel', () => {
     mockViewportWidth = null;
     mockRemScale = 1;
     mockEnterToSend = true;
+    mockOpenBeside = undefined;
     mockClaimForeground.mockClear();
     mockHandOffComposerText.mockClear();
     mockApprovalProviderMounted.mockClear();
@@ -2801,6 +2857,56 @@ describe('SubagentThreadPanel', () => {
     ).toEqual([]);
   });
 
+  it('opens the continued conversation beside this one where the app has a place for it', () => {
+    mockOpenBeside = jest.fn();
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+
+    fireEvent.change(screen.getByLabelText('com_ui_message_input'), {
+      target: { value: 'Take this further.' },
+    });
+    fireEvent.keyDown(screen.getByLabelText('com_ui_message_input'), { key: 'Enter' });
+    const mutationOptions = mockForkMutate.mock.calls[0][1];
+    const conversation = { conversationId: 'continued-chat', agent_id: 'agent-1' };
+    act(() => mutationOptions.onSuccess({ conversation, messages: [] }));
+
+    /** The reader stays where they are: the words go with the conversation, as its next turn. */
+    expect(mockOpenBeside).toHaveBeenCalledWith(conversation, 'Take this further.');
+    expect(mockNavigateToConvo).not.toHaveBeenCalled();
+    expect(mockHandOffComposerText).not.toHaveBeenCalled();
+  });
+
+  it('opens the continued conversation beside this one with no words when none were written', () => {
+    mockOpenBeside = jest.fn();
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_continue_new_chat' }));
+    const mutationOptions = mockForkMutate.mock.calls[0][1];
+    const conversation = { conversationId: 'continued-chat', agent_id: 'agent-1' };
+    act(() => mutationOptions.onSuccess({ conversation, messages: [] }));
+
+    expect(mockOpenBeside).toHaveBeenCalledWith(conversation, undefined);
+  });
+
   /** The composer is shared across selections, so a continuation that lands
    *  after the reader has moved on must hand over the words IT was sent with,
    *  and must not take the words now in front of them. */
@@ -4641,5 +4747,306 @@ describe('SubagentThreadPanel', () => {
     expect(
       screen.getByRole('status', { name: 'com_ui_subagent_thread_history_truncated' }),
     ).toHaveTextContent('•••');
+  });
+
+  describe('following a background child thread', () => {
+    const followedChat = (overrides: Partial<FollowedChat> = {}): FollowedChat => ({
+      chat: undefined,
+      messages: [],
+      status: 'ready',
+      connection: 'idle',
+      error: undefined,
+      isLoading: false,
+      isFollowing: false,
+      isUnattached: false,
+      isLoadError: false,
+      retry: jest.fn(),
+      hasEarlier: false,
+      isLoadingEarlier: false,
+      isEarlierError: false,
+      loadEarlier: () => undefined,
+      canSend: () => false,
+      send: () => false,
+      stop: () => Promise.resolve(),
+      attach: () => undefined,
+      ...overrides,
+    });
+
+    const reply = (content?: TMessage['content']): TMessage =>
+      ({
+        messageId: 'task:assistant',
+        conversationId: 'child-thread',
+        parentMessageId: 'task:user',
+        isCreatedByUser: false,
+        text: 'Done',
+        ...(content == null ? {} : { content }),
+      }) as TMessage;
+
+    const view = (status: SubagentThreadView['status']) =>
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: { ...completedView, status, turns: completedTurns },
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+
+    const mount = (panelSelection: ActiveSubagentPanel = selection) =>
+      render(
+        <Root>
+          <SubagentThreadPanel selection={panelSelection} />
+        </Root>,
+      );
+
+    const remount = (
+      rerender: ReturnType<typeof render>['rerender'],
+      panelSelection: ActiveSubagentPanel = selection,
+    ) =>
+      rerender(
+        <Root>
+          <SubagentThreadPanel selection={panelSelection} />
+        </Root>,
+      );
+
+    it('draws a finished thread as a conversation, read through its parent', () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat());
+
+      mount();
+
+      const thread = screen.getByTestId('followed-thread');
+      expect(thread).toHaveAttribute('data-thread', 'child-thread');
+      expect(thread).toHaveAttribute('data-agent', 'agent-1');
+      /** The brief is the dispatching agent's turn; unresolved here, so its fallback name. */
+      expect(thread).toHaveAttribute('data-brief-author', 'com_ui_subagent_parent_agent');
+      expect(thread).toHaveAttribute(
+        'data-receipt-scope',
+        JSON.stringify({
+          parentConversationId: 'parent-conversation',
+          threadId: 'child-thread',
+          taskId: 'task',
+        }),
+      );
+      expect(screen.queryByTestId('subagent-conversation')).not.toBeInTheDocument();
+      expect(mockUseThreadChat).toHaveBeenLastCalledWith('parent-conversation', 'child-thread', {
+        live: false,
+        enabled: true,
+      });
+    });
+
+    it("names a self-spawn's brief for the agent it runs as, as the durable view does", () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat());
+
+      mount({ ...selection, subagentType: 'self' });
+
+      expect(screen.getByTestId('followed-thread')).toHaveAttribute(
+        'data-brief-author',
+        'Analyst One',
+      );
+    });
+
+    it('shows the thread while its messages load', () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat({ isLoading: true }));
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toHaveAttribute('data-loading', 'true');
+    });
+
+    it('tells the thread a run is live while its task is running', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+      expect(mockUseThreadChat).toHaveBeenLastCalledWith('parent-conversation', 'child-thread', {
+        live: true,
+        enabled: true,
+      });
+      /** One stream per thread: the activity feed stays closed while the thread is followed. */
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, false);
+    });
+
+    it('keeps the durable view for a running task with no generation to follow', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat({ isUnattached: true }));
+
+      mount();
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, true);
+    });
+
+    it('does not take an attachment that has not started yet for one that found nothing', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat());
+      const { rerender } = mount();
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+      remount(rerender);
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+      expect(screen.queryByTestId('subagent-conversation')).not.toBeInTheDocument();
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, false);
+    });
+
+    it('hands a run back to the durable view when its followed stream is lost for good', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+      const { rerender } = mount();
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, false);
+
+      mockUseThreadChat.mockReturnValue(followedChat({ isUnattached: true, status: 'error' }));
+      remount(rerender);
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+      expect(mockUseSubagentActivityStream).toHaveBeenLastCalledWith(selection, true);
+    });
+
+    it('keeps the durable view for a finished thread whose stored reply lacks its parts', () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat({ messages: [reply()] }));
+
+      mount();
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+    });
+
+    it('draws a finished thread whose stored reply holds its parts as a conversation', () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(
+        followedChat({ messages: [reply([{ type: ContentTypes.TEXT, text: 'Done' }])] }),
+      );
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+    });
+
+    it('does not judge a reply still being streamed by the parts it has so far', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(
+        followedChat({ isFollowing: true, status: 'streaming', messages: [reply()] }),
+      );
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+    });
+
+    it("keeps the durable view when the thread's messages cannot be read", () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat({ isLoadError: true }));
+
+      mount();
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+    });
+
+    it('stays on the conversation when the run it followed ends before the task view catches up', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+      const { rerender } = mount();
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+
+      mockUseThreadChat.mockReturnValue(followedChat());
+      remount(rerender);
+
+      expect(screen.getByTestId('followed-thread')).toBeInTheDocument();
+      expect(screen.queryByTestId('subagent-conversation')).not.toBeInTheDocument();
+    });
+
+    it('stays on the durable view it chose when that run ends', () => {
+      view('running');
+      mockUseThreadChat.mockReturnValue(followedChat({ isUnattached: true }));
+      const { rerender } = mount();
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat());
+      remount(rerender);
+
+      expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+    });
+
+    it('hands the conversation the guidance still waiting on the child, and withdraws it', () => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: {
+          ...completedView,
+          status: 'running',
+          turns: completedTurns,
+          controlReceipts: [
+            {
+              invocationId: 'invocation-1',
+              controlId: 'control-1',
+              action: 'steer',
+              status: 'accepted',
+              createdAt: '2026-11-16T13:42:38.000Z',
+              updatedAt: '2026-11-16T13:42:38.000Z',
+              message: 'Check the release notes too.',
+            },
+          ],
+        },
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      mockUseThreadChat.mockReturnValue(followedChat({ isFollowing: true, status: 'streaming' }));
+
+      mount();
+
+      expect(screen.getByTestId('followed-thread')).toHaveAttribute('data-controls', 'accepted');
+      fireEvent.click(screen.getByRole('button', { name: 'withdraw-control-1' }));
+
+      expect(mockControlMutate).toHaveBeenCalledTimes(1);
+      expect(mockControlMutate.mock.calls[0][0]).toMatchObject({
+        parentConversationId: 'parent-conversation',
+        threadId: 'child-thread',
+        command: { taskId: 'task', action: 'cancel_message', controlId: 'control-1' },
+      });
+    });
+
+    it('follows nothing for a foreground child, which has no thread of its own', () => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      mockUseThreadChat.mockReturnValue(followedChat());
+      const foreground = { ...selection, durable: undefined };
+
+      mount(foreground);
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(mockUseThreadChat).toHaveBeenLastCalledWith('parent-conversation', '', {
+        live: false,
+        enabled: false,
+      });
+    });
+
+    it('keeps an event thread on its task timeline', () => {
+      view('completed');
+      mockUseThreadChat.mockReturnValue(followedChat());
+      const eventSelection = {
+        ...selection,
+        event: { actorId: 'actor-1', progressKey: 'event-task:child-thread:task' },
+      };
+
+      mount(eventSelection);
+
+      expect(screen.queryByTestId('followed-thread')).not.toBeInTheDocument();
+      expect(mockUseThreadChat).toHaveBeenLastCalledWith('parent-conversation', 'child-thread', {
+        live: false,
+        enabled: false,
+      });
+    });
   });
 });
