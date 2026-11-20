@@ -265,6 +265,18 @@ function hasSelectableEntitySelection({
   return endpointsConfig[endpoint] != null;
 }
 
+/**
+ * Whether the switch {@link getConvoSwitchLogic} describes changes the conversation that is
+ * open, keeping its messages, instead of starting another one.
+ */
+export const switchesInPlace = ({
+  shouldSwitch,
+  isNewModular,
+  isCurrentModular,
+  isExistingConversation,
+}: Omit<InitiatedTemplateResult, 'template' | 'newEndpointType'>): boolean =>
+  isExistingConversation && isCurrentModular && isNewModular && shouldSwitch;
+
 /** Get the conditional logic for switching conversations */
 export function getConvoSwitchLogic(params: ConversationInitParams): InitiatedTemplateResult {
   const { conversation, newEndpoint, endpointsConfig, modularChat = false } = params;

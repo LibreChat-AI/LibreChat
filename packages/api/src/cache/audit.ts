@@ -1,3 +1,5 @@
+import { Keyv } from 'keyv';
+
 interface AuditableStore {
   opts?: { namespace?: string; ttl?: number; store?: { size?: number; entries?: unknown } };
 }
@@ -7,6 +9,16 @@ interface AuditLogger {
 }
 
 const toMB = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+
+/** Select the TTL stores that need local expiry cleanup or auditing. */
+export function selectExpiringMemoryStores(stores: readonly unknown[]): Keyv[] {
+  return stores.filter(
+    (store): store is Keyv =>
+      store instanceof Keyv &&
+      Number.parseInt(String(store.opts?.ttl ?? 0)) > 0 &&
+      !store.opts?.store?.constructor?.name?.includes('Redis'),
+  );
+}
 
 /**
  * Logs per-namespace entry counts and TTL only. Cache values and keys can hold

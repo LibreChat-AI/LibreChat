@@ -204,3 +204,28 @@ describe('createRunFileSnapshotStore', () => {
     await store.discard('../../report.csv');
   });
 });
+
+test('reads bounded snapshot ranges without reading the entire file into memory', async () => {
+  const store = createRunFileSnapshotStore({
+    open: async () => Readable.from([Buffer.from('abcdefgh')]),
+    maxBytes: 8,
+    maxFiles: 1,
+  });
+  try {
+    const snapshot = await store.capture(source);
+    const readFile = jest.spyOn(fs, 'readFile');
+    expect((await store.readRange(snapshot.snapshotId, 2, 3)).toString()).toBe('cde');
+    expect(await store.readRange(snapshot.snapshotId, 8, 0)).toHaveLength(0);
+    for (const [offset, length] of [
+      [-1, 1],
+      [7, 2],
+      [0, Number.MAX_SAFE_INTEGER],
+    ]) {
+      await expect(store.readRange(snapshot.snapshotId, offset, length)).rejects.toThrow('range');
+    }
+    expect(readFile).not.toHaveBeenCalled();
+    readFile.mockRestore();
+  } finally {
+    await store.close();
+  }
+});

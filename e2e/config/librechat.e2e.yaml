@@ -106,7 +106,9 @@ mcpServers:
     timeout: 30000
   e2e-http:
     type: streamable-http
-    url: http://127.0.0.1:8765/mcp
+    url: &e2e-http-url http://127.0.0.1:8765/mcp
+    # The fixture is explicitly anonymous; enrollment and execution bind the same auth descriptor.
+    requiresOAuth: false
     title: E2E HTTP
     description: Local HTTP MCP fixture for allowlist-override e2e tests.
     timeout: 30000
@@ -183,9 +185,22 @@ endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    remoteApi:
+      integrations:
+        # The API-key grant e2e needs an offer to accept; `owner`, the default, has none.
+        mode: delegated
+        resources:
+          e2e-http:
+            url: *e2e-http-url
+            credentialMode: anonymous
+            issuer: null
+            audience: null
+            scopes: []
+    sdkHostFiles: {}
     sdkRuntimes:
       remote-example:
         remote:
+          hostFiles: true
           url: ws://127.0.0.1:8804/sdk
           secret: e2e-remote-sdk-fixture-secret-not-a-production-key
         roles: [ADMIN, USER]
@@ -422,6 +437,15 @@ modelSpecs:
     - 'Mock Gemini'
     - 'agents'
   list:
+    - name: 'e2e-handoff-specialist'
+      label: 'Preset Specialist'
+      showInMenu: false
+      handoff: true
+      preset:
+        endpoint: 'Mock Provider A'
+        model: 'mock-model-a'
+        promptPrefix: 'Use the specialist preset instructions.'
+
     - name: 'e2e-mock-provider-a'
       label: 'Mock Provider A'
       preset:
@@ -433,6 +457,13 @@ modelSpecs:
       preset:
         endpoint: 'Mock Provider B'
         model: 'mock-model-b'
+
+    - name: 'e2e-builder-mcp'
+      label: 'E2E Builder MCP'
+      hideBadgeRow: true
+      preset:
+        endpoint: 'Mock Provider C'
+        model: 'mock-model-c'
 
     - name: 'e2e-icon-spec'
       label: 'E2E Icon Spec'

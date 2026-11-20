@@ -19,8 +19,7 @@ export interface LineageSource {
 export interface ClonedLineageEntry<T extends LineageSource> {
   source: T;
   messageId: string;
-  /** Undefined when the source's parent had not been cloned yet in clone order. */
-  parentMessageId: string | undefined;
+  parentMessageId: string;
   createdAt: Date;
 }
 
@@ -129,16 +128,14 @@ const toDate = (value: LineageSource['createdAt']): Date => {
 };
 
 /**
- * Assigns each message a new id, re-links it to its parent's clone and moves its timestamp
- * after that clone's. Root messages are cloned first; a message whose parent is cloned later
- * keeps an undefined parent link, as the caller's persistence decides where it attaches.
+ * Assigns all clone ids before re-linking parents, independent of source order.
+ * Missing parents become roots; cycles and timestamps are normalized on the clones only.
  */
 export function cloneLineage<T extends LineageSource>(
   messages: readonly T[],
   createId: () => string,
 ): ClonedLineage<T> {
   const idMapping = new Map<string, string>();
-  const clonedCreatedAt = new Map<string, Date>();
   const ordered = [...messages].sort((a, b) => {
     if (a.parentMessageId === Constants.NO_PARENT) {
       return -1;
@@ -153,21 +150,21 @@ export function cloneLineage<T extends LineageSource>(
     const messageId = createId();
     idMapping.set(source.messageId, messageId);
 
-    const parentMessageId =
-      source.parentMessageId && source.parentMessageId !== Constants.NO_PARENT
-        ? idMapping.get(source.parentMessageId)
-        : Constants.NO_PARENT;
-
-    let createdAt = toDate(source.createdAt);
-    const parentCreatedAt =
-      parentMessageId == null ? undefined : clonedCreatedAt.get(parentMessageId);
-    if (parentCreatedAt != null && createdAt <= parentCreatedAt) {
-      createdAt = new Date(parentCreatedAt.getTime() + 1);
-    }
-    clonedCreatedAt.set(messageId, createdAt);
-
-    return { source, messageId, parentMessageId, createdAt };
+    return {
+      source,
+      messageId,
+      parentMessageId: source.parentMessageId || Constants.NO_PARENT,
+      createdAt: toDate(source.createdAt),
+    };
   });
+
+  for (const entry of entries) {
+    entry.parentMessageId =
+      entry.parentMessageId === Constants.NO_PARENT
+        ? Constants.NO_PARENT
+        : (idMapping.get(entry.parentMessageId) ?? Constants.NO_PARENT);
+  }
+  orderMessageLineage(entries);
 
   return { entries, idMapping };
 }

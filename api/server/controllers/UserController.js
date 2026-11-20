@@ -23,6 +23,7 @@ const {
   finalizeMCPAuthorizationMutation,
   clearSessionHintCookie,
   compareSecret,
+  sanitizeUserForResponse,
 } = require('@librechat/api');
 const { Tools, Constants, FileSources } = require('librechat-data-provider');
 const { updateUserPluginAuth, deleteUserPluginAuth } = require('~/server/services/PluginService');
@@ -72,37 +73,6 @@ const emailChangeService = createEmailChangeService(
     appName: process.env.APP_TITLE || 'LibreChat',
   }),
 );
-
-const PUBLIC_USER_RESPONSE_FIELDS = [
-  '_id',
-  'id',
-  'name',
-  'username',
-  'email',
-  'emailVerified',
-  'avatar',
-  'provider',
-  'role',
-  'plugins',
-  'twoFactorEnabled',
-  'termsAccepted',
-  'personalization',
-  'favorites',
-  'skillStates',
-  'createdAt',
-  'updatedAt',
-  'tenantId',
-];
-
-const sanitizeUserForResponse = (user) => {
-  const source = user.toObject != null ? user.toObject() : user;
-  return PUBLIC_USER_RESPONSE_FIELDS.reduce((userData, field) => {
-    if (source[field] !== undefined) {
-      userData[field] = source[field];
-    }
-    return userData;
-  }, {});
-};
 
 const getUserController = async (req, res) => {
   const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));

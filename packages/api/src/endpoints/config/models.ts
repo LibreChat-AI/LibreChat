@@ -52,7 +52,7 @@ export function configuredModelList(
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
-import { isUserProvided } from '~/utils';
+import { getSafeErrorMetadata, isUserProvided } from '~/utils';
 
 /**
  * Stable fingerprint of a headers object, used to disambiguate the
@@ -201,7 +201,8 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             );
           } else {
             logger.warn(
-              `[loadConfigModels] Failed to retrieve user key for "${userKeyEndpoints[i].name}": ${msg}`,
+              `[loadConfigModels] Failed to retrieve user key for "${userKeyEndpoints[i].name}":`,
+              getSafeErrorMetadata(settled.reason),
             );
           }
           userKeyMap.set(userKeyEndpoints[i].name, null);
@@ -222,7 +223,17 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       // endpoints that happen to share the same baseURL+apiKey but configure
       // different (potentially user-bound) headers don't reuse each other's
       // fetched model list within the same request.
-      const uniqueKey = `${BASE_URL}__${API_KEY}__${endpoint.provider ?? ''}__${headersFingerprint(endpointHeaders)}`;
+      const uniqueKey = crypto
+        .createHash('sha256')
+        .update(
+          JSON.stringify([
+            BASE_URL,
+            API_KEY,
+            endpoint.provider ?? '',
+            headersFingerprint(endpointHeaders),
+          ]),
+        )
+        .digest('hex');
 
       if (models?.fetch && !apiKeyIsUserProvided && !baseURLIsUserProvided) {
         if (!fetchPromisesMap[uniqueKey]) {
@@ -310,11 +321,14 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     for (let i = 0; i < settledResults.length; i++) {
       const currentKey = uniqueKeys[i];
       const settled = settledResults[i];
+      const associatedNames = uniqueKeyToEndpointsMap[currentKey];
       if (settled.status === 'rejected') {
-        logger.warn(`[loadConfigModels] Model fetch failed for "${currentKey}":`, settled.reason);
+        logger.warn(
+          `[loadConfigModels] Model fetch failed for "${associatedNames.join('", "')}":`,
+          getSafeErrorMetadata(settled.reason),
+        );
       }
       const modelData = settled.status === 'fulfilled' ? settled.value : [];
-      const associatedNames = uniqueKeyToEndpointsMap[currentKey];
 
       for (const name of associatedNames) {
         const endpoint = endpointsMap[name];
@@ -329,20 +343,27 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
        *  name (the query is staleTime:Infinity and won't recover otherwise) */
       const winnerTokenKey = uniqueKeyToTokenKey[currentKey];
       if (settled.status === 'fulfilled' && winnerTokenKey != null && associatedNames.length > 1) {
-        const cache = tokenConfigCache();
-        const config = await cache.get(winnerTokenKey);
-        if (config != null) {
-          for (const name of associatedNames) {
-            const siblingKey = getTokenConfigKey(
-              endpointsMap[name],
-              name,
-              req.user?.id ?? '',
-              tenantId,
-            );
-            if (siblingKey !== winnerTokenKey) {
-              await cache.set(siblingKey, config);
+        try {
+          const cache = tokenConfigCache();
+          const config = await cache.get(winnerTokenKey);
+          if (config != null) {
+            for (const name of associatedNames) {
+              const siblingKey = getTokenConfigKey(
+                endpointsMap[name],
+                name,
+                req.user?.id ?? '',
+                tenantId,
+              );
+              if (siblingKey !== winnerTokenKey) {
+                await cache.set(siblingKey, config);
+              }
             }
           }
+        } catch (error) {
+          logger.warn(
+            `[loadConfigModels] Failed to share token config for "${associatedNames.join('", "')}":`,
+            getSafeErrorMetadata(error),
+          );
         }
       }
     }

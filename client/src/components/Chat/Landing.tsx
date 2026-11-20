@@ -80,10 +80,10 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
 
   const brandedSpecLabel = modelSpec?.showOnLanding ? modelSpec.label : '';
   const brandedSpecDescription = (modelSpec?.showOnLanding && modelSpec.description) || '';
-  const name =
-    isTemporary || startupConfig?.interface?.landingHeading === 'greeting'
-      ? ''
-      : (entity?.name ?? brandedSpecLabel);
+  const isGreetingHeading = startupConfig?.interface?.landingHeading === 'greeting';
+  /** Greeting mode drops the entity icon: the header selector already shows it. */
+  const showIcon = isTemporary || !isGreetingHeading;
+  const name = isTemporary || isGreetingHeading ? '' : (entity?.name ?? brandedSpecLabel);
   const description = isTemporary
     ? localize('com_ui_temporary_description')
     : ((entity?.description || brandedSpecDescription || conversation?.greeting) ?? '');
@@ -169,35 +169,39 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
         <div
           className={`flex ${textHasMultipleLines ? 'flex-col' : 'flex-col md:flex-row'} items-center justify-center gap-2`}
         >
-          <div className={`relative size-10 justify-center ${textHasMultipleLines ? 'mb-2' : ''}`}>
-            <div className="avatar-stroke size-full rounded-full dark:after:shadow-none">
-              {isTemporary ? (
-                <div className={containerClassName}>
-                  <HatGlasses className="text-text-primary h-2/3 w-2/3" aria-hidden="true" />
-                </div>
-              ) : (
-                <ConvoIcon
-                  agentsMap={agentsMap}
-                  assistantMap={assistantMap}
-                  conversation={conversation}
-                  endpointsConfig={endpointsConfig}
-                  containerClassName={containerClassName}
-                  context="landing"
-                  className="text-text-primary h-2/3 w-2/3"
-                  size={41}
-                />
+          {showIcon && (
+            <div
+              className={`relative size-10 justify-center ${textHasMultipleLines ? 'mb-2' : ''}`}
+            >
+              <div className="avatar-stroke size-full rounded-full dark:after:shadow-none">
+                {isTemporary ? (
+                  <div className={containerClassName}>
+                    <HatGlasses className="text-text-primary h-2/3 w-2/3" aria-hidden="true" />
+                  </div>
+                ) : (
+                  <ConvoIcon
+                    agentsMap={agentsMap}
+                    assistantMap={assistantMap}
+                    conversation={conversation}
+                    endpointsConfig={endpointsConfig}
+                    containerClassName={containerClassName}
+                    context="landing"
+                    className="text-text-primary h-2/3 w-2/3"
+                    size={41}
+                  />
+                )}
+              </div>
+              {startupConfig?.showBirthdayIcon && (
+                <TooltipAnchor
+                  className="absolute inset-e-2 bottom-[1.6875rem]"
+                  description={localize('com_ui_happy_birthday')}
+                  aria-label={localize('com_ui_happy_birthday')}
+                >
+                  <BirthdayIcon />
+                </TooltipAnchor>
               )}
             </div>
-            {startupConfig?.showBirthdayIcon && (
-              <TooltipAnchor
-                className="absolute inset-e-2 bottom-[1.6875rem]"
-                description={localize('com_ui_happy_birthday')}
-                aria-label={localize('com_ui_happy_birthday')}
-              >
-                <BirthdayIcon />
-              </TooltipAnchor>
-            )}
-          </div>
+          )}
           {name ? (
             <div className="flex flex-col items-center gap-0 p-2">
               <SplitText

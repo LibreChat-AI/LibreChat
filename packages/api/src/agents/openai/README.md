@@ -1,6 +1,6 @@
 # Agents API response projection
 
-This module projects an **agent run**, which can include several model invocations and server-executed tools, onto an OpenAI-compatible response. It is not a transparent proxy for a single model completion. Only explicitly client-owned calls in graph-accepted model responses may become outward `tool_calls`; SDK- and provider-executed calls stay inside the run. Binding caller-supplied tool schemas and client execution remains a separate feature.
+This module projects an **agent run**, which can include several model invocations and server-executed tools, onto an OpenAI-compatible response. It is not a transparent proxy for a single model completion. Only explicitly client-owned calls in graph-accepted model responses may become outward `tool_calls`; SDK- and provider-executed calls never become client execution requests. Completed SDK executions can be observed separately with the opt-in extension below. Binding caller-supplied tool schemas and client execution remains a separate feature.
 
 ## Owners and boundaries
 
@@ -69,3 +69,64 @@ The SDK projector accepts only client-disposition calls from graph-accepted resp
 - `service.spec.ts` and the Express controller spec: both response modes, actual serializers, internal-call suppression, accepted client calls, claim discard and failure behavior.
 
 These tests do not run a live provider, a distributed multi-agent deployment or a persisted resume. The graph test executes a local tool but does not exercise the mounted HTTP server. There is no new database, cache, authorization policy or migration. Code and built packages must deploy together.
+
+## Opt-in server execution results
+
+Both Chat hosts accept the LibreChat extension `include: ["server_tool_results"]`.
+It adds completed execution records to `choices[0].message.tool_results` in JSON,
+or `choices[0].delta.tool_results` in SSE. A record is `{ call_id, name, arguments,
+output }`, all strings; streamed records also carry a stable zero-based completion
+`index`. JSON includes an empty array if no results are observed. Omitted `include`
+or `include: []` omits the fields. Unknown/malformed selectors return 400 before
+execution; duplicate supported selectors are harmless.
+
+```text
+accepted model response + sdk disposition (owner/call identity)
+  -> SDK ToolNode processed completion + authoritative metadata.agentId
+  -> run-local bounded observation projector
+  -> JSON tool_results / indexed SSE delta.tool_results
+```
+
+For this selector, both Chat hosts disable the SDK's speculative eager tool
+prestart. Tools execute after model acceptance, so the observer receives final
+processed ToolNode results rather than trying to associate a failed provider
+attempt's early output with an accepted fallback. Normal Chat requests and the
+Responses API retain their existing execution policy. Custom `createRun` adapters
+must forward the supplied `eagerToolExecution: false` option.
+
+This trades tool/model-stream overlap for authoritative result observation:
+opted-in tools start after the model finishes its accepted call, and failed
+provider attempts do not speculatively execute them. Tool latency may therefore
+be higher for opted-in requests; there is no production latency estimate.
+
+The collector never changes execution requests, tool ownership, `finish_reason`,
+authorization, billing or artifact callbacks. It consumes only accepted SDK-owned
+calls with matching completed execution owner, name and call ID. Pinned SDK 4.2.10
+`ToolNode.withToolScope` stamps `metadata.agentId`; `Run` forwards it unchanged.
+Missing owner metadata fails closed with an incomplete flag: an ownerless result
+cannot be inferred safely from a pending ID when provider/client siblings reuse
+that ID. Acceptance deduplication is also scoped by execution owner.
+
+Only processed string arguments/results are exposed; no raw ToolMessage, artifact
+or graph-state serialization is performed. Existing tool-output protection and
+SDK truncation remain authoritative. Provider-hosted tools without SDK completion
+and unfinished/client-executed calls have no invented records. These observations
+are distinct from the actionable client `tool_calls` projection above. Responses
+API output, persistence and retrieval are unchanged; this selector applies only
+to Chat Completions and is not an Open Responses requirement.
+
+Projection-only safety guards bound capture to 1024 accepted server calls and
+4 MiB of identity/argument/output UTF-8 text per run, matching the SDK client-call
+projection envelope. They are independent of tool execution limits; exhaustion
+fences additional observation while preserving completed records and normal graph
+success. Smaller guards can be injected into the collector for constrained hosts
+and focused tests. Overflow or unattributable ownership adds
+`message.tool_results_incomplete: true` in JSON or
+`delta.tool_results_incomplete: true` on the terminal SSE chunk. Such records are
+not a complete audit log. Partial SSE records also do not imply run success if the
+usual execution error follows. No durable Chat storage is introduced.
+
+Successful records survive the existing `completeOpenAIToolCalls` finally-abort
+cleanup after `finish`. Failure/cancellation clears unpublished records; late and
+duplicate completions cannot append results. Accepted/completed identity state is
+released at the run boundary.

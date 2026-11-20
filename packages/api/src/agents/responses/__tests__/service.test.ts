@@ -1366,3 +1366,50 @@ describe('reported tools and tool_choice', () => {
     ).toEqual({ valid: false, error: expect.stringContaining('tools[0] must be an object') });
   });
 });
+
+describe('nullable numeric request controls', () => {
+  const base = { model: 'agent_test', input: 'hello' };
+
+  it.each([
+    ['max_output_tokens', null],
+    ['max_output_tokens', 1],
+    ['max_output_tokens', 4096],
+    ['temperature', null],
+    ['temperature', 0],
+    ['temperature', 2],
+  ])('preserves valid %s=%p', (field, value) => {
+    const request = { ...base, [field]: value };
+    expect(validateResponseRequest(request)).toEqual({ valid: true, request });
+  });
+
+  it.each([
+    ['max_output_tokens', 1.5],
+    ['max_output_tokens', NaN],
+    ['max_output_tokens', Infinity],
+    ['max_output_tokens', -Infinity],
+    ['max_output_tokens', 0],
+    ['max_output_tokens', -1],
+    ['max_output_tokens', '10'],
+    ['max_output_tokens', true],
+    ['max_output_tokens', {}],
+    ['max_output_tokens', []],
+    ['temperature', NaN],
+    ['temperature', Infinity],
+    ['temperature', -Infinity],
+    ['temperature', -0.1],
+    ['temperature', 2.1],
+    ['temperature', '1'],
+    ['temperature', true],
+    ['temperature', {}],
+    ['temperature', []],
+  ])('rejects malformed %s=%p', (field, value) => {
+    expect(validateResponseRequest({ ...base, [field]: value })).toMatchObject({ valid: false });
+  });
+
+  it('preserves omitted controls and does not mutate the caller request', () => {
+    const request = Object.freeze({ ...base });
+    expect(validateResponseRequest(request)).toEqual({ valid: true, request });
+    expect(request).not.toHaveProperty('temperature');
+    expect(request).not.toHaveProperty('max_output_tokens');
+  });
+});

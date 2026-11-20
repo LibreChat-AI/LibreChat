@@ -40,6 +40,7 @@ const {
   createLazyAgentHistoryResolver,
   resolveToolRoleGrants,
   createChatRunFileBindings,
+  createChatSdkFileSession,
   createAxiosInstance,
   getCodeApiAuthHeaders,
   getCodeExecutionBaseUrl,
@@ -2118,6 +2119,15 @@ const initializeClientWithProvider = async ({
     subagentAggregatorsByToolCallId,
     subagentTasks,
     runFiles: runFileBindings.session,
+    sdkFiles: createChatSdkFileSession({
+      audit: (event) => logger.warn('[agents:sdk-files]', event),
+      host: req.app?.locals?.sdkFileHost,
+      req,
+      getInputs: () => primaryConfig.currentRequestAttachments,
+      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId, { storageOnly: true }),
+      filterFiles: filterFilesByAgentAccess,
+      getStrategyFunctions,
+    }),
     /** Resolved endpoint token/pricing config so spending and cost reflect
      *  configured rates for custom-endpoint agents instead of defaults. */
     endpointTokenConfig: primaryConfig.endpointTokenConfig,
@@ -2158,7 +2168,7 @@ function createInitializeClient(dependencies = {}) {
       params.req,
       dependencies.resolveUpstreamTokenProvider,
       params.signal,
-      params.scheduledTokenContext,
+      params.executionContext,
     );
     return initializeWithScheduleMCPExecution(
       {
@@ -2168,8 +2178,9 @@ function createInitializeClient(dependencies = {}) {
           params.req,
           params.res,
         ),
-        restoredContext: params.scheduledTokenContext,
+        executionContext: params.executionContext,
         restoredJob: params.scheduleJobIdentity,
+        approvedToolCalls: params.approvedToolCalls,
       },
       () => require('~/server/services/Schedules/consent'),
       () =>
@@ -2177,7 +2188,7 @@ function createInitializeClient(dependencies = {}) {
           {
             req: params.req,
             context: getMCPRequestContext(params.req),
-            restoredContext: params.scheduledTokenContext,
+            executionContext: params.executionContext,
             host: dependencies.scheduledBearerHost,
             signal: params.signal,
             streamId: params.req._resumableStreamId,

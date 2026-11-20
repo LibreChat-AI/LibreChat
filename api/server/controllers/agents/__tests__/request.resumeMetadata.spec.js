@@ -264,6 +264,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   buildGenerationStartedResponse: (...args) =>
     jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
+  describeCreatedTurn: (...args) =>
+    jest.requireActual('@librechat/api').describeCreatedTurn(...args),
   getPreliminaryResponseMessageId: jest.requireActual(
     '../../../../../packages/api/src/utils/message',
   ).getPreliminaryResponseMessageId,
@@ -303,6 +305,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   logAgentMemorySnapshot: jest.fn(),
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),
+  createScheduleExecutionContext: (...args) =>
+    jest.requireActual('@librechat/api').createScheduleExecutionContext(...args),
   exemptFromConcurrencyLimiter: (...args) => mockExemptFromConcurrencyLimiter(...args),
   toPendingSteer: jest.fn((item) => item),
   promoteDrainedSteers: (...args) =>
@@ -1259,6 +1263,57 @@ describe('ResumableAgentController resume metadata', () => {
       DEFAULT_OWNED_CLAIM,
     );
     expect(mockDecrementPendingRequest).toHaveBeenCalledWith('user-123');
+  });
+
+  it.each([
+    ['a verified schedule trigger', true],
+    ['an ordinary request that copies the trigger body', false],
+  ])('passes the schedule context to initialization only for %s', async (_label, trusted) => {
+    const conversationId = 'scheduled-context-conversation';
+    mockGenerationJobManager.claimGeneration.mockResolvedValue(
+      wonGenerationClaim({ streamId: conversationId, conversationId }),
+    );
+    mockIsScheduleLive.mockResolvedValue(true);
+    const req = {
+      _isAgentTrigger: trusted,
+      _isScheduledFire: trusted,
+      _isManualScheduledFire: false,
+      user: { id: 'user-123', tenantId: 'tenant-1' },
+      body: {
+        text: 'Run the scheduled digest.',
+        messageId: 'scheduled-context-message',
+        conversationId: 'new',
+        newConversationId: conversationId,
+        agent_id: 'agent-1',
+        scheduleId: 'schedule-1',
+        scheduledFor: '2026-08-17T12:00:00.000Z',
+        agentTrigger: {
+          version: 1,
+          event: {
+            type: 'schedule.occurrence',
+            occurredAt: Date.parse('2026-08-17T12:00:00.000Z'),
+            source: { type: 'schedule', id: 'schedule-1' },
+          },
+        },
+        endpointOption: { endpoint: 'agents', agent_id: 'agent-1' },
+      },
+      config: {},
+    };
+    const initializeClient = jest.fn().mockRejectedValue(new Error('stop before provider'));
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+
+    expect(initializeClient).toHaveBeenCalledTimes(1);
+    expect(initializeClient.mock.calls[0][0].executionContext).toEqual(
+      trusted
+        ? {
+            principal: { userId: 'user-123', tenantId: 'tenant-1' },
+            agentId: 'agent-1',
+            source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: false },
+            unattended: false,
+          }
+        : undefined,
+    );
   });
 
   it('rejects a superseded automatic occurrence after durable job creation and preserves its outcome', async () => {
@@ -4432,7 +4487,12 @@ describe('ResumableAgentController resume metadata', () => {
 
       expect(mockGenerationJobManager.emitChunk).toHaveBeenCalledWith(
         conversationId,
-        expect.objectContaining({ created: true, message: expect.objectContaining(skills) }),
+        expect.objectContaining({
+          created: true,
+          message: expect.objectContaining(skills),
+          /** A plain new turn states only the id its reply is stored under. */
+          turn: { responseMessageId: 'server-response' },
+        }),
         expect.any(Object),
       );
       expect(mockGenerationJobManager.updateMetadata).toHaveBeenCalledWith(

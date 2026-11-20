@@ -1,6 +1,6 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.9-rc1",
+  "version": "v0.8.9",
   "description": "",
   "packageManager": "npm@11.13.0",
   "scarfSettings": {
@@ -144,6 +144,8 @@
     "b:balance": "bun config/add-balance.js",
     "b:list-balances": "bun config/list-balances.js",
     "reset-terms": "node config/reset-terms.js",
+    "migrate:mcp-reservations": "node config/migrate-mcp-reservations.js",
+    "migrate:mcp-reservations:dry-run": "node config/migrate-mcp-reservations.js --dry-run",
     "migrate:tenant-indexes": "node config/migrate-tenant-indexes.js",
     "migrate:tenant-indexes:dry-run": "node config/migrate-tenant-indexes.js --dry-run",
     "migrate:terms-timestamp": "node config/migrate-terms-timestamp.js",

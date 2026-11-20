@@ -190,11 +190,15 @@ function htmlTokens(raw) {
   return tokens;
 }
 
-/** The structure of a chunk with prose masked: everything a translation must reproduce exactly. */
+/**
+ * The structure of a chunk with prose masked: everything a translation must reproduce exactly.
+ * Prose is dropped rather than masked, since word order legitimately moves it around links,
+ * code and emphasis (a verb-final language puts text after a trailing link).
+ */
 function skeleton(markdown) {
   const tokens = [];
   const push = (token) => {
-    if (token !== 'T' || tokens.at(-1) !== 'T') tokens.push(token);
+    if (token !== 'T') tokens.push(token);
   };
   let rawCode = 0;
   const visit = (node) => {

@@ -33,9 +33,9 @@ import {
   ReasoningParameterFormat,
 } from './schemas';
 import { resolveEffectiveUseResponsesApi } from './file-config';
+import { gpt6Tier, gpt6Release } from './families';
 import { clampSettingRange } from './generate';
 import { isGeminiHydrogen } from './gemini';
-import { gpt6Tier } from './families';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -1486,6 +1486,7 @@ export function resolveReasoningSettingForTarget({
   paramDefinitions,
   blockedReasoningKeys,
   modelReasoning,
+  responsesApiRouting,
 }: {
   endpoint: string;
   model?: string | null;
@@ -1494,6 +1495,7 @@ export function resolveReasoningSettingForTarget({
   reasoningFormat?: ReasoningParameterFormat | null;
   paramDefinitions?: Partial<SettingDefinition>[] | null;
   blockedReasoningKeys?: ReadonlySet<string>;
+  responsesApiRouting?: ResponsesApiRouting;
   /** Provider-reported efforts for `model`; see {@link applyModelAwareDefaults}. */
   modelReasoning?: TModelReasoning | null;
 }): SettingDefinition | undefined {
@@ -1539,7 +1541,7 @@ export function resolveReasoningSettingForTarget({
     baseSettings,
     effectiveDefaultParamsEndpoint,
     model,
-    undefined,
+    responsesApiRouting,
     effectiveModelReasoning(modelReasoning, paramDefinitions),
   ).map((setting) => {
     const override = customSettingsByKey.get(setting.key);
@@ -1799,11 +1801,25 @@ function applyModelFamilyDefaults(
   }
   const tier = gpt6Tier(model);
   if (tier === 'sol' || tier === 'terra' || tier === 'luna') {
-    return settings.map((setting) => {
+    const sol62 =
+      gpt6Release(model)?.toLowerCase() === 'gpt-6.2-sol' &&
+      (responsesApiRouting?.[model]?.firstPartyEndpoint ??
+        responsesApiRouting?.[`${gpt6Release(model)}-*`]?.firstPartyEndpoint ??
+        false);
+    const supportedSettings = sol62
+      ? settings.filter((setting) => !['temperature', 'top_p'].includes(setting.key))
+      : settings;
+    return supportedSettings.map((setting) => {
+      if (sol62 && setting.key === 'max_tokens') {
+        return { ...setting, range: { min: 1, max: 128000, step: 1 } };
+      }
       if (setting.key === 'reasoning_effort') {
         return {
           ...setting,
-          options: setting.options?.filter((effort) => effort !== ReasoningEffort.minimal),
+          options: setting.options?.filter(
+            (effort) =>
+              effort !== ReasoningEffort.minimal && (!sol62 || effort !== ReasoningEffort.none),
+          ),
         };
       }
       /** Match the native backend's unset default without writing into stored

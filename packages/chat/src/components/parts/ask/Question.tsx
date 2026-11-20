@@ -252,7 +252,7 @@ function AskUserQuestionSingle({
         return;
       }
       arrivedSingleQuestions.add(actionId);
-      if (!isFocusIdle()) {
+      if (!isFocusIdle(cardRef.current)) {
         return;
       }
       const target = optionRefs.current.find((option) => option != null && !option.disabled);

@@ -77,6 +77,22 @@ server.registerTool(
   },
 );
 
+/** Returns its text padded with an unbroken run of spaces, the shape of a scraped page
+ *  or a program's output that tokenizes in quadratic time when counted whole. */
+server.registerTool(
+  'padded_echo',
+  {
+    description: 'Echoes text followed by a run of spaces; used to verify tool-output budgets.',
+    inputSchema: {
+      text: z.string(),
+      pad_spaces: z.number().int().min(0).max(500000).optional(),
+    },
+  },
+  async ({ text, pad_spaces = 0 }) => ({
+    content: [{ type: 'text', text: `E2E padded echo: ${text}${' '.repeat(pad_spaces)}end` }],
+  }),
+);
+
 server.registerTool(
   'approval_probe',
   {

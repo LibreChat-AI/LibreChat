@@ -2,7 +2,7 @@ export { default as useAdaptiveSSE } from './adaptive';
 export { default as useResumableSSE } from './resumable';
 export { StreamHostProvider, useStreamHost } from './host';
 export { useStepHandler } from './step';
-export { useUsageHandler } from './usage';
+export { useUsageHandler, toResumableUsage } from './usage';
 export { useContentHandler } from './content';
 export { settleFinishedRun } from './resume/finished';
 export { useResumeAnnouncements } from './resume/announcements';

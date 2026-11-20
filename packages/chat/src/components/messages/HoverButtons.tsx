@@ -151,7 +151,9 @@ const HoverButtons = ({
   const localize = useLocalize();
   /** Read from the pane's chat contract here rather than passed down: a send toggles the
    *  rerun controls on every row, and only this toolbar has to re-render for it. */
-  const isSubmitting = useContext(ChatContext)?.isSubmitting === true;
+  const chat = useContext(ChatContext);
+  const isSubmitting = chat?.isSubmitting === true;
+  const readOnly = chat?.readOnly === true;
   const [isCopied, setIsCopied] = useState(false);
   const { useGetMessages, useHasPendingTurn } = useMessagesHost();
   const getMessages = useGetMessages();
@@ -203,6 +205,7 @@ const HoverButtons = ({
     parentIsUserMessage,
     isUserInitiatedCompaction: isUserInitiatedCompaction(message),
     latestMessageId: latestMessageId,
+    readOnly,
   });
 
   const {

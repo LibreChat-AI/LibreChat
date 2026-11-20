@@ -16,6 +16,12 @@ export interface RunFileSnapshot {
 export interface RunFileSnapshotStore {
   capture: (source: RunArtifactDescriptor, signal?: AbortSignal) => Promise<RunFileSnapshot>;
   read: (snapshotId: string, signal?: AbortSignal) => Promise<Buffer>;
+  readRange: (
+    snapshotId: string,
+    offset: number,
+    length: number,
+    signal?: AbortSignal,
+  ) => Promise<Buffer>;
   discard: (snapshotId: string) => Promise<void>;
   close: () => Promise<void>;
 }
@@ -28,6 +34,7 @@ interface SnapshotEntry {
   controller: AbortController;
   reads: Set<Promise<Buffer>>;
   removal?: Promise<void>;
+  release?: () => void;
 }
 
 /** Keeps immutable private bytes off the heap and outside the public file store. */
@@ -35,12 +42,15 @@ export function createRunFileSnapshotStore({
   open,
   maxBytes,
   maxFiles,
+  reserve,
 }: {
   open: (source: RunArtifactDescriptor, signal?: AbortSignal) => Promise<Readable>;
   /** Aggregate bytes reserved by completed and currently streaming snapshots. */
   maxBytes: number;
   /** Includes captures that have not yet finished opening their source. */
   maxFiles: number;
+  /** Optional shared quota; retained until private bytes have actually been removed. */
+  reserve?: (source: RunArtifactDescriptor) => () => void;
 }): RunFileSnapshotStore {
   if (
     !Number.isSafeInteger(maxBytes) ||
@@ -126,6 +136,8 @@ export function createRunFileSnapshotStore({
       if (entries.get(entry.snapshotId) === entry) {
         entries.delete(entry.snapshotId);
         allocatedBytes -= entry.size;
+        entry.release?.();
+        entry.release = undefined;
       }
     })();
     entry.removal = removal;
@@ -149,6 +161,7 @@ export function createRunFileSnapshotStore({
           ready: false,
           controller: new AbortController(),
           reads: new Set(),
+          release: reserve?.(source),
         };
         entries.set(entry.snapshotId, entry);
         const effectiveSignal = AbortSignal.any([
@@ -224,6 +237,66 @@ export function createRunFileSnapshotStore({
     return entry ? track(remove(entry)) : Promise.resolve();
   }
 
+  function readRange(
+    snapshotId: string,
+    offset: number,
+    length: number,
+    signal?: AbortSignal,
+  ): Promise<Buffer> {
+    return track(
+      (async () => {
+        assertOpen(signal);
+        const entry = entries.get(snapshotId);
+        if (!entry?.ready || !entry.path)
+          throw new Error('The private artifact snapshot is unavailable.');
+        if (
+          !Number.isSafeInteger(offset) ||
+          !Number.isSafeInteger(length) ||
+          offset < 0 ||
+          length < 0 ||
+          offset > entry.size ||
+          length > entry.size - offset
+        ) {
+          throw new Error('Invalid private artifact snapshot range.');
+        }
+        const effectiveSignal = AbortSignal.any([
+          lifetime.signal,
+          entry.controller.signal,
+          ...(signal ? [signal] : []),
+        ]);
+        const reading = (async () => {
+          effectiveSignal.throwIfAborted();
+          const handle = await fs.open(entry.path!, 'r');
+          try {
+            const buffer = Buffer.alloc(length);
+            let position = 0;
+            while (position < length) {
+              effectiveSignal.throwIfAborted();
+              const { bytesRead } = await handle.read(
+                buffer,
+                position,
+                length - position,
+                offset + position,
+              );
+              if (!bytesRead) throw new Error('The private artifact snapshot is incomplete.');
+              position += bytesRead;
+            }
+            effectiveSignal.throwIfAborted();
+            return buffer;
+          } finally {
+            await handle.close();
+          }
+        })();
+        entry.reads.add(reading);
+        try {
+          return await reading;
+        } finally {
+          entry.reads.delete(reading);
+        }
+      })(),
+    );
+  }
+
   function close(): Promise<void> {
     if (closing) return closing;
     closed = true;
@@ -233,11 +306,12 @@ export function createRunFileSnapshotStore({
       await Promise.allSettled([...entries.values()].map(remove));
       const root = await directory?.catch(() => undefined);
       if (root) await fs.rm(root, { recursive: true, force: true });
+      for (const entry of entries.values()) entry.release?.();
       entries.clear();
       allocatedBytes = 0;
     })();
     return closing;
   }
 
-  return { capture, read, discard, close };
+  return { capture, read, readRange, discard, close };
 }

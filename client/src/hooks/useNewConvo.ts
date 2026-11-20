@@ -118,7 +118,13 @@ function restoreRememberedTarget(
   return { ...conversation, endpoint, assistant_id: assistantId, model };
 }
 
-const useNewConvo = (index = 0) => {
+/**
+ * `routed` is false for a pane the page's route does not address, such as a conversation open
+ * beside the chat. Such a pane holds one conversation: it takes a change to that conversation
+ * (its model, endpoint or agent) and nothing that would put another in its place, and nothing
+ * it does moves the route or the page's focus.
+ */
+const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { data: startupConfig } = useGetStartupConfig();
@@ -294,7 +300,7 @@ const useNewConvo = (index = 0) => {
           setConversation(conversation);
         }
         setSubmission({} as TSubmission);
-        if (isCancelled) {
+        if (isCancelled || !routed) {
           return;
         }
 
@@ -338,7 +344,7 @@ const useNewConvo = (index = 0) => {
         }
         navigate(path, { replace: true });
       },
-    [index, endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
+    [index, routed, endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
   );
 
   const newConversation = useCallback(
@@ -353,6 +359,12 @@ const useNewConvo = (index = 0) => {
       disableParams,
     }: NewConversationOptions = {}) {
       const nextConversationId = _template.conversationId ?? '';
+      if (!routed) {
+        const held = getConversation()?.conversationId ?? '';
+        if (held === '' || held === Constants.NEW_CONVO || nextConversationId !== held) {
+          return;
+        }
+      }
       const keepsExistingDraft =
         modelsData != null ||
         keepComposerState ||
@@ -541,7 +553,7 @@ const useNewConvo = (index = 0) => {
        * call already opened, such as agent metadata arriving late. The user did
        * not ask for anything there, so it must not cancel a conversation they
        * clicked while it was in flight. */
-      if (!keepComposerState) {
+      if (!keepComposerState && routed) {
         supersedeNavigation();
       }
 
@@ -559,6 +571,7 @@ const useNewConvo = (index = 0) => {
     [
       index,
       files,
+      routed,
       setFiles,
       agentsMap,
       saveDrafts,

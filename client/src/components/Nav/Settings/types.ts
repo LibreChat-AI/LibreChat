@@ -58,6 +58,9 @@ export interface SettingsContextValue {
   allowAccountDeletion: boolean;
   aboutEnabled: boolean;
   mascotAllowed: boolean;
+  /** The deployment has the session rail and lets it show itself. */
+  sessionRailAutoOpenAllowed: boolean;
+  engineSTT: string;
   engineTTS: string;
   langfuseConnectionAccess: boolean;
   langfusePromptSyncAccess?: boolean;

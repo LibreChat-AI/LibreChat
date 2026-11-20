@@ -1,13 +1,14 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
+  Constants,
   ErrorTypes,
   SystemRoles,
   ContentTypes,
   ViolationTypes,
   EModelEndpoint,
 } from 'librechat-data-provider';
-import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
+import type { Agent, AgentDisplay, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { MessageContext } from '~/Providers/MessageContext';
@@ -63,6 +64,14 @@ jest.mock('@librechat/chat/components', () => ({
     ref: { current: null },
   }),
 }));
+
+let mockPresetTargets: AgentDisplay[] = [];
+jest.mock('~/data-provider/Agents/queries', () => ({
+  useModelSpecHandoffsQuery: () => ({ data: mockPresetTargets }),
+}));
+afterEach(() => {
+  mockPresetTargets = [];
+});
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsData })),
@@ -171,6 +180,15 @@ describe('LibreChat attachment limits', () => {
       'This turn exceeds the configured total attachment size limit (128 > 104.8576). Remove some attachments or use smaller files and try again.';
     renderError(detail, providerMessage);
     expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeVisible();
+  });
+
+  it('does not blame the provider for a file over the size limit for its model', () => {
+    const detail =
+      'The attached file "big.csv" is over the 4.5 MB limit for a file sent to this model. Remove it or attach a smaller file, then try again.';
+    renderError(detail, providerMessage);
+    expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
     expect(screen.getByText(detail)).toBeVisible();
   });
 
@@ -1323,5 +1341,24 @@ describe('Error — agent handoffs within a row', () => {
 
     expect(screen.getByText(catalog.com_error_no_user_key_generic)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('Google');
+  });
+});
+
+describe('preset handoff error identity', () => {
+  const id = Constants.MODEL_SPEC_AGENT_PREFIX + 'abc123';
+  const source = { endpoint: EModelEndpoint.agents, model: id } as TMessage;
+  test('uses the actual provider and model rather than the graph hash', () => {
+    mockPresetTargets = [
+      { id, name: 'Preset Specialist', provider: 'openAI', model: 'gpt-4o', avatar: null },
+    ];
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).toContain('gpt-4o');
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
+  });
+  test('does not expose a retired preset hash as an endpoint or model', () => {
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
   });
 });

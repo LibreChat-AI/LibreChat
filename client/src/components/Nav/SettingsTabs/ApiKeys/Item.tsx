@@ -1,19 +1,24 @@
 import { useRef, useState } from 'react';
-import { Trash2 } from 'lucide-react';
 import { Button } from '@librechat/client';
+import { Plug, Trash2 } from 'lucide-react';
 import type { TAgentApiKeyListItem } from 'librechat-data-provider';
 import { formatDate, formatRelativeTime, getExpiryStatus } from './utils';
 import DeleteKeyDialog from './DeleteKeyDialog';
 import { useLocalize } from '~/hooks';
+import KeyGrant from './KeyGrant';
 
 type ItemProps = {
   apiKey: TAgentApiKeyListItem;
+  /** Key runs are limited to what the owner granted, so each key gets a way to grant. */
+  grants?: boolean;
 };
 
-export default function Item({ apiKey }: ItemProps) {
+export default function Item({ apiKey, grants = false }: ItemProps) {
   const localize = useLocalize();
   const deleteButtonRef = useRef<HTMLButtonElement | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const grantButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [grantOpen, setGrantOpen] = useState(false);
 
   const status = getExpiryStatus(apiKey.expiresAt);
 
@@ -55,6 +60,28 @@ export default function Item({ apiKey }: ItemProps) {
           </span>
         </div>
       </div>
+      {/* A key issued to an integration holds no grants, so there is nothing to open for it. */}
+      {grants && apiKey.bound !== true && (
+        <Button
+          ref={grantButtonRef}
+          variant="outline"
+          size="icon"
+          onClick={() => setGrantOpen(true)}
+          aria-label={localize('com_ui_api_key_grant_open', { 0: apiKey.name })}
+          aria-haspopup="dialog"
+          className="size-8 shrink-0 self-center"
+        >
+          <Plug className="icon-sm" aria-hidden="true" />
+        </Button>
+      )}
+      {grantOpen && (
+        <KeyGrant
+          id={apiKey.id}
+          name={apiKey.name}
+          onOpenChange={setGrantOpen}
+          triggerRef={grantButtonRef}
+        />
+      )}
       <Button
         ref={deleteButtonRef}
         variant="destructive-soft"

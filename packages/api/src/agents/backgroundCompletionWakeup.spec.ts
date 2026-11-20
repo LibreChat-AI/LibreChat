@@ -1071,29 +1071,28 @@ describe('pending background completions', () => {
   });
 });
 
-it('fences an ordinary background wakeup queued before schedule enrollment', async () => {
+it('refuses a background wakeup once its schedule is gone, before claiming its results', async () => {
   const { methods } = resolverMethods();
-  const lookup = jest.fn(async () => ({
-    identity: {
-      scheduleId: 'schedule',
-      ownerId: 'user-1',
-      tenantId: 'tenant-1',
-      agentId: 'agent_parent_1',
-      invocationMode: 'delegated' as const,
-    },
-    enrolled: true,
-  }));
+  const identity = {
+    scheduleId: 'schedule',
+    ownerId: 'user-1',
+    tenantId: 'tenant-1',
+    agentId: 'agent_parent_1',
+    invocationMode: 'delegated' as const,
+  };
+  // Deleted, erased, or moved to another agent: there is nothing left for the turn to act for.
+  const lookup = jest.fn(async () => null);
   const prepare = createBackgroundToolCompletionWakeupResolver({
     methods: methods as never,
     getGenerationJob: async () => null,
     getScheduleMCPCompletionState: lookup,
   });
   await expect(
-    prepare(await envelope({ scheduleMCPIdentity: (await lookup()).identity }), {
+    prepare(await envelope({ scheduleMCPIdentity: identity }), {
       idempotencyKey: 'wakeup',
     } as never),
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  expect(lookup).toHaveBeenCalledWith((await lookup()).identity);
+  expect(lookup).toHaveBeenCalledWith(identity);
   expect(methods.claimBackgroundToolResults).not.toHaveBeenCalled();
 });
 
@@ -1143,20 +1142,43 @@ describe('capability-gated receipt batch resolution', () => {
         getGenerationJob: async () => null,
         getScheduleMCPCompletionState: async () => ({ identity, enrolled }),
       });
-      const pending = prepare(await envelope({ scheduleMCPIdentity: identity }), {
-        idempotencyKey: 'batch',
-        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
-      });
-      if (enrolled) {
-        await expect(pending).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-        expect(methods.claimAgentBackgroundToolResultBatch).not.toHaveBeenCalled();
-      } else
-        await expect(pending).resolves.toMatchObject({
-          status: 'ready',
-          scheduleMCPIdentity: identity,
-        });
+      // With a grant or without one, the batch is delivered to a turn that acts for the
+      // schedule, under whatever its owner allows when that turn starts.
+      await expect(
+        prepare(await envelope({ scheduleMCPIdentity: identity }), {
+          idempotencyKey: 'batch',
+          requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+        }),
+      ).resolves.toMatchObject({ status: 'ready', scheduleMCPIdentity: identity });
     },
   );
+
+  it('refuses a batch whose schedule is gone, before claiming it', async () => {
+    const methods = batchMethods();
+    const prepare = createBackgroundToolCompletionWakeupResolver({
+      methods: methods as never,
+      getGenerationJob: async () => null,
+      getScheduleMCPCompletionState: async () => null,
+    });
+    await expect(
+      prepare(
+        await envelope({
+          scheduleMCPIdentity: {
+            scheduleId: 'schedule',
+            ownerId: 'user-1',
+            tenantId: 'tenant-1',
+            agentId: 'agent_parent_1',
+            invocationMode: 'delegated' as const,
+          },
+        }),
+        {
+          idempotencyKey: 'batch',
+          requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+        },
+      ),
+    ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+    expect(methods.claimAgentBackgroundToolResultBatch).not.toHaveBeenCalled();
+  });
 
   it('does not probe batch storage for rollout-default v2 deliveries', async () => {
     const methods = batchMethods();

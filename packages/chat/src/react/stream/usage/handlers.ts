@@ -93,13 +93,24 @@ export function createUsageHandlers(
 
   /** The transport owns response-id normalization. Use the same response it
    * renders, including durable IDs assigned by legacy text and resume events. */
+  /**
+   * A turn draws its reply under a placeholder id, and the first run step renames the row to
+   * the id the server stores it under. The submission keeps the placeholder (other handlers
+   * key on it), so the id the row took is remembered here, by placeholder.
+   */
+  const named = new Map<string, string>();
+  const renderedId = (submission: UsageSubmissionLike): string | null => {
+    const drawn = submission.initialResponse?.messageId ?? null;
+    return drawn == null ? null : (named.get(drawn) ?? drawn);
+  };
+
   const bindResponse: UsageHandlers['bindResponse'] = (submission) => {
     const convoKey = getConvoKey(submission);
     if (liveConversationKey === Constants.NEW_CONVO && convoKey !== liveConversationKey) {
       moveConversation(liveConversationKey, convoKey);
     }
     liveConversationKey = convoKey;
-    const responseId = submission.initialResponse?.messageId ?? null;
+    const responseId = renderedId(submission);
     const ownerAtom = activeUsageResponseIdFamily(convoKey);
     const previousId = jotai.get(ownerAtom);
     jotai.set(ownerAtom, responseId);
@@ -116,6 +127,17 @@ export function createUsageHandlers(
       jotai.set(snapshotAtom, { ...snapshot, responseMessageId: responseId });
     }
     return responseId;
+  };
+
+  const nameResponse: UsageHandlers['nameResponse'] = (responseId, submission) => {
+    const drawn = submission.initialResponse?.messageId;
+    if (!drawn || !responseId || drawn === responseId) {
+      return;
+    }
+    /** One turn in flight per handler set, so earlier turns' names are no longer needed. */
+    named.clear();
+    named.set(drawn, responseId);
+    bindResponse(submission);
   };
 
   const setLive = (convoKey: string, value: number) => {
@@ -475,6 +497,7 @@ export function createUsageHandlers(
 
   return {
     bindResponse,
+    nameResponse,
     contextHandler,
     usageHandler,
     tapStream,
