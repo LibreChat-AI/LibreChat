@@ -33,6 +33,9 @@ const ASSERT_SKILLS_MARKER = 'E2E_ASSERT_SKILLS:';
 const ASSERT_MANUAL_SKILL_MARKER = 'E2E_ASSERT_MANUAL_SKILL:';
 const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
+/** `E2E_LIST_PROVIDER_FILES:<label>` names every provider file in the request, earlier turns'
+ *  included; `E2E_ASSERT_PROVIDER_FILE` looks only at the latest user message. */
+const LIST_PROVIDER_FILES_MARKER = 'E2E_LIST_PROVIDER_FILES:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
 const REPORT_CONTEXT_TOKENS_MARKER = 'E2E_REPORT_CONTEXT_TOKENS';
@@ -495,6 +498,24 @@ function collectProviderFileNames(value, names = new Set()) {
   }
 
   return names;
+}
+
+function providerFileListResponses({ messages, text }) {
+  const label = getMarkerValue(text, LIST_PROVIDER_FILES_MARKER);
+  if (!label) {
+    return null;
+  }
+
+  const names = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const type = message ? messageType(message) : '';
+    if (type === 'human' || type === 'user') {
+      collectProviderFileNames(message.content, names);
+    }
+  }
+  return {
+    responses: [`E2E provider files (${label}): ${Array.from(names).sort().join(', ') || 'none'}`],
+  };
 }
 
 function providerFileAssertionResponses({ messages, text }) {
@@ -4035,6 +4056,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const providerFileAssertion = providerFileAssertionResponses({ messages, text });
   if (providerFileAssertion) {
     return providerFileAssertion;
+  }
+
+  const providerFileList = providerFileListResponses({ messages, text });
+  if (providerFileList) {
+    return providerFileList;
   }
 
   const quoteAssertion = quoteAssertionResponses({ messages, text });

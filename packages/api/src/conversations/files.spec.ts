@@ -1,6 +1,12 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TAttachment, TConversation, TMessage } from 'librechat-data-provider';
-import { forkFileScope, withoutMessageFiles, withoutConversationFiles } from './files';
+import {
+  forkFileScope,
+  withoutMessageFiles,
+  withoutExcludedFiles,
+  scopeHistoricalReplay,
+  withoutConversationFiles,
+} from './files';
 
 const upload = { file_id: 'upload-1', filename: 'screenshot.png', type: 'image/png' };
 const output = { file_id: 'output-1', filename: 'chart.png', toolCallId: 'call-1' } as TAttachment;
@@ -100,12 +106,13 @@ describe('withoutMessageFiles', () => {
 
 describe('withoutConversationFiles', () => {
   it('drops conversation file ids and keeps the settings', () => {
-    const conversation: Partial<TConversation> & { files?: string[] } = {
+    const conversation: Partial<TConversation> & { files?: string[]; excludedFiles?: string[] } = {
       conversationId: 'convo-1',
       title: 'Screenshots',
       model: 'gpt-4o',
       files: ['upload-1'],
       file_ids: ['legacy-1'],
+      excludedFiles: ['upload-1'],
     };
 
     expect(withoutConversationFiles(conversation)).toEqual({
@@ -130,5 +137,108 @@ describe('forkFileScope', () => {
     const scope = forkFileScope(true);
     expect(scope.message(message)).toEqual({ messageId: 'user-1' });
     expect(scope.conversation(conversation)).toEqual({ conversationId: 'convo-1' });
+  });
+});
+
+describe('withoutExcludedFiles', () => {
+  const kept = { file_id: 'kept-1', filename: 'notes.pdf', type: 'application/pdf' };
+  const history: Partial<TMessage>[] = [
+    {
+      messageId: 'user-1',
+      text: 'Compare these',
+      isCreatedByUser: true,
+      files: [upload, kept],
+      tokenCount: 1600,
+    },
+    { messageId: 'assistant-1', text: 'Here is a chart', attachments: [output] },
+    { messageId: 'user-2', text: 'Thanks' },
+  ];
+
+  it('returns the same array, and the same messages, when nothing is left out', () => {
+    expect(withoutExcludedFiles(history, undefined)).toBe(history);
+    expect(withoutExcludedFiles(history, [])).toBe(history);
+    expect(withoutExcludedFiles(history, ['a-file-this-chat-never-had'])).toBe(history);
+  });
+
+  it('drops only the left-out upload and copies only the message that named it', () => {
+    const result = withoutExcludedFiles(history, [upload.file_id]);
+
+    expect(result[0]).toEqual({ ...history[0], files: [kept] });
+    expect(result[1]).toBe(history[1]);
+    expect(result[2]).toBe(history[2]);
+    expect(history[0].files).toEqual([upload, kept]);
+  });
+
+  it('keeps the stored token count, which errs toward budgeting too much', () => {
+    const [message] = withoutExcludedFiles(history, [upload.file_id, kept.file_id]);
+
+    expect(message.files).toEqual([]);
+    expect(message.tokenCount).toBe(1600);
+  });
+
+  it('drops a left-out code output and keeps attachments that are not files', () => {
+    const sources = { type: 'web_search', toolCallId: 'call-2' } as unknown as TAttachment;
+    const messages: Partial<TMessage>[] = [
+      { messageId: 'assistant-1', attachments: [output, sources] },
+    ];
+
+    const [message] = withoutExcludedFiles(messages, ['output-1']);
+
+    expect(message.attachments).toEqual([sources]);
+  });
+
+  it('removes the locator from a content part and a file from a steer part, not the part', () => {
+    const content = [
+      { type: ContentTypes.TEXT, text: 'Generated:' },
+      { type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'image-1' } },
+      { type: 'file', file: { file_id: 'kept-1' } },
+      { type: ContentTypes.STEER, steer: 'use this instead', files: [upload, kept] },
+    ] as unknown as TMessage['content'];
+    const messages: Partial<TMessage>[] = [{ messageId: 'assistant-1', content }];
+
+    const [message] = withoutExcludedFiles(messages, ['image-1', upload.file_id]);
+
+    expect(message.content).toEqual([
+      { type: ContentTypes.TEXT, text: 'Generated:' },
+      { type: ContentTypes.IMAGE_FILE },
+      { type: 'file', file: { file_id: 'kept-1' } },
+      { type: ContentTypes.STEER, steer: 'use this instead', files: [kept] },
+    ]);
+    expect(message.content?.[0]).toBe(content?.[0]);
+    expect(message.content?.[2]).toBe(content?.[2]);
+  });
+});
+
+describe('scopeHistoricalReplay', () => {
+  const fileIds = ['upload-1', 'kept-1'];
+  const steerFileIds = ['steer-1', 'upload-1'];
+
+  it('returns the ids as given, and closes nothing, when no file is left out', () => {
+    const scope = scopeHistoricalReplay({ fileIds, steerFileIds, excluded: undefined });
+
+    expect(scope.fileIds).toBe(fileIds);
+    expect(scope.steerFileIds).toBe(steerFileIds);
+    expect(scope.admitted).toBeUndefined();
+    expect(scopeHistoricalReplay({ fileIds, steerFileIds, excluded: [] }).admitted).toBeUndefined();
+  });
+
+  it('takes left-out files out of both lists and admits only what is left', () => {
+    const scope = scopeHistoricalReplay({ fileIds, steerFileIds, excluded: ['upload-1'] });
+
+    expect(scope.fileIds).toEqual(['kept-1']);
+    expect(scope.steerFileIds).toEqual(['steer-1']);
+    expect(scope.admitted).toEqual(new Set(['kept-1', 'steer-1']));
+  });
+
+  it('admits nothing when every earlier file is left out', () => {
+    const scope = scopeHistoricalReplay({
+      fileIds,
+      steerFileIds,
+      excluded: ['upload-1', 'kept-1', 'steer-1'],
+    });
+
+    expect(scope.fileIds).toEqual([]);
+    expect(scope.steerFileIds).toEqual([]);
+    expect(scope.admitted).toEqual(new Set());
   });
 });

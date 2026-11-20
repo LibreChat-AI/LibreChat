@@ -20,6 +20,13 @@ export const MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH = 128;
  * the summary instead of rebuilding from durable history.
  */
 export const AGENT_EVENT_ACTOR_SUMMARY_VERSION = 1;
+/** How many files one conversation can leave out; keeps the list a bounded part of the document. */
+export const MAX_EXCLUDED_FILES = 500;
+
+/** The conversation's left-out files after a change, or why the change was not made. */
+export type FileExclusionResult =
+  | { ok: true; value: string[] }
+  | { ok: false; error: { code: 'not_found' | 'limit_exceeded' } };
 
 /** Branch and head commit the conversation's code lane last reported; null when it has none. */
 export interface IConversationLaneGit {
@@ -360,6 +367,9 @@ export interface IConversation extends Document {
   fileTokenLimit?: number;
   // Additional fields
   files?: string[];
+  /** Files of this conversation that later turns leave out: not sent to the model again and
+   *  not handed to its tools. Bounded by `MAX_EXCLUDED_FILES`. */
+  excludedFiles?: string[];
   expiredAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;

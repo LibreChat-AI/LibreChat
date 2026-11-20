@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   isAgentsStream,
+  getAccessToken,
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   messagesView,
@@ -366,6 +367,69 @@ test.describe('core chat loop', () => {
     await page.reload({ timeout: 10000 });
     await expect(page).toHaveURL(conversationUrl);
     await expect(fileChip).toBeVisible();
+  });
+
+  test('stops sending a file the conversation leaves out, and sends it again once taken back @scenario:conversation-leaves-file-out', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+
+    const csvFixture: UploadFixture = {
+      name: 'left-out-upload.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('name,value\nalpha,1\n'),
+    };
+    const filename = csvFixture.name;
+    const fileChip = messagesView(page).getByRole('button', { name: filename });
+    const listed = (label: string, names: string) =>
+      messagesView(page).getByText(`E2E provider files (${label}): ${names}`);
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const upload = await uploadProviderFile(page, csvFixture);
+    const { file_id: fileId } = (await upload.json()) as { file_id: string };
+    expect(fileId).toBeTruthy();
+
+    let response = await sendMessageAndWaitForCompletion(
+      page,
+      `E2E_ASSERT_PROVIDER_FILE:${filename}`,
+    );
+    expect(response.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E provider file assertion passed: ${filename}`),
+    ).toBeVisible();
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/);
+    const conversationId = page.url().split('/c/')[1];
+
+    /** A later turn sends the earlier message's file again: that is the cost being controlled. */
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:before');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('before', filename)).toBeVisible();
+
+    const token = await getAccessToken(page);
+    const setExcluded = (excluded: boolean) =>
+      page.request.post(`/api/convos/${conversationId}/files/exclusion`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { fileIds: [fileId], excluded },
+      });
+
+    const left = await setExcluded(true);
+    expect(left.ok()).toBeTruthy();
+    expect(await left.json()).toEqual({ excludedFiles: [fileId] });
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:left-out');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('left-out', 'none')).toBeVisible();
+    /** Left out of what the model is sent, not out of the conversation: the message keeps it. */
+    await expect(fileChip).toBeVisible();
+
+    const back = await setExcluded(false);
+    expect(back.ok()).toBeTruthy();
+    expect(await back.json()).toEqual({ excludedFiles: [] });
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:taken-back');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('taken-back', filename)).toBeVisible();
   });
 
   test('supports attaching, removing, and sending provider files from the composer', async ({
