@@ -76,6 +76,7 @@ jest.mock('@librechat/chat/components', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useAddedResponse: () => ({}),
+  useBranchOnLoad: jest.fn(),
 }));
 
 jest.mock('../Presentation', () => ({

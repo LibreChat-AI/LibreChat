@@ -16,6 +16,7 @@ export {
 export { default as useSubmitMessage } from './useSubmitMessage';
 export { default as useMessagesRetention } from './useMessagesRetention';
 export { useLatestMessage, useLatestMessageId } from './useLatestMessage';
+export { default as useBranchOnLoad } from './useBranchOnLoad';
 export { default as useCopyToClipboard } from './useCopyToClipboard';
 export {
   hasCopyableText,

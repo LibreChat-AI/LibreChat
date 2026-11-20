@@ -13,7 +13,7 @@ import {
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
-import type { TChatProject, TSubmission } from 'librechat-data-provider';
+import type { TChatProject, TMessage, TSubmission } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
@@ -25,10 +25,10 @@ import ApprovalProvider from './Messages/Content/ApprovalContext';
 import { preloadMessages, renderMessages } from './Messages/load';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
+import { useAddedResponse, useBranchOnLoad } from '~/hooks';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { TargetContext } from '~/Providers/TargetContext';
 import useTarget from '~/hooks/Chat/target';
-import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
 import WelcomeBackdrop from './Backdrop';
 import ChatForm from './Input/ChatForm';
@@ -67,7 +67,9 @@ function warmMessages() {
   preloadMessages().catch(() => undefined);
 }
 
-type ChatViewScreenProps = Required<Pick<ChatViewProps, 'index' | 'routePending'>> &
+type ChatViewScreenProps = Required<
+  Pick<ChatViewProps, 'index' | 'routePending' | 'historyReady'>
+> &
   Pick<ChatViewProps, 'project'> & {
     conversationId?: string;
     fileMap: ReturnType<typeof useFileMapContext>;
@@ -79,6 +81,7 @@ type ChatViewScreenProps = Required<Pick<ChatViewProps, 'index' | 'routePending'
     landingFooter: ReturnType<typeof useLandingFooter>;
     configuredFooter: ReturnType<typeof useConfiguredFooter>;
     submission: TSubmission | null;
+    getMessages: () => TMessage[] | undefined;
   };
 
 /**
@@ -100,8 +103,13 @@ function ChatViewScreen({
   landingFooter,
   configuredFooter,
   submission,
+  historyReady,
+  getMessages,
 }: ChatViewScreenProps) {
-  const { messages, isLoading } = useChatSessionMessages(conversationId);
+  const { messages, isLoading, isFetching } = useChatSessionMessages(conversationId);
+  /** Persist/restore the viewed branch after messages settle. Resume still owns
+   *  in-flight generations and overwrites this from its effect. */
+  useBranchOnLoad(conversationId, getMessages, index, historyReady && !isLoading && !isFetching);
   return (
     <ChatScreen
       index={index}
@@ -161,6 +169,7 @@ function ChatViewPane({
   index = 0,
   project,
   routePending = false,
+  historyReady = true,
   conversationId,
 }: ChatViewProps & {
   conversationId?: string;
@@ -267,6 +276,8 @@ function ChatViewPane({
                               landingFooter={landingFooter}
                               configuredFooter={configuredFooter}
                               submission={rootSubmission}
+                              historyReady={historyReady}
+                              getMessages={chat.getMessages}
                             />
                           </TraceSurface>
                         </Presentation>

@@ -88,7 +88,7 @@ describe('ChatSessionProvider', () => {
     const pane = renderSession(host);
 
     expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false });
-    expect(pane).toHaveBeenLastCalledWith({ messages, isLoading: false });
+    expect(pane).toHaveBeenLastCalledWith({ messages, isLoading: false, isFetching: false });
   });
 
   it('loads history but defers resume until the host has the saved record', () => {
@@ -238,7 +238,11 @@ describe('ChatSessionProvider', () => {
       const longer = [...messages, { messageId: 'm-2' } as TMessage];
       write(longer);
 
-      expect(pane).toHaveBeenLastCalledWith({ messages: longer, isLoading: false });
+      expect(pane).toHaveBeenLastCalledWith({
+        messages: longer,
+        isLoading: false,
+        isFetching: false,
+      });
     });
   });
 });

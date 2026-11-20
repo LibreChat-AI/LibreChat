@@ -14,6 +14,7 @@ import { useChatHost } from './host';
 export type ChatSessionMessages = {
   messages: TMessage[] | null;
   isLoading: boolean;
+  isFetching: boolean;
 };
 
 /**
@@ -27,11 +28,11 @@ export type ChatSessionMessages = {
  * when the conversation is fetched.
  */
 export function useChatSessionMessages(conversationId?: string): ChatSessionMessages {
-  const { messages, isLoading } = useChatHost().useMessages(conversationId, {
+  const { messages, isLoading, isFetching } = useChatHost().useMessages(conversationId, {
     isStreaming: false,
     enabled: false,
   });
-  return { messages, isLoading };
+  return { messages, isLoading, isFetching };
 }
 
 /**
@@ -91,7 +92,7 @@ export function ChatSessionProvider({
 
   return (
     <ChatContext.Provider value={chat}>
-      {typeof children === 'function' ? children({ messages, isLoading }) : children}
+      {typeof children === 'function' ? children({ messages, isLoading, isFetching }) : children}
     </ChatContext.Provider>
   );
 }

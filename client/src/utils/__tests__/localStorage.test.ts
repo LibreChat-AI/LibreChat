@@ -15,6 +15,10 @@ describe('clearAllConversationStorage', () => {
       JSON.stringify({ spec: 'some-spec' }),
     );
     localStorage.setItem(`${LocalStorageKeys.AGENT_ID_PREFIX}0`, 'agent_1');
+    localStorage.setItem(
+      `${LocalStorageKeys.BRANCH_TARGET_}aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+      'message-1',
+    );
     localStorage.setItem('unrelated-key', 'keep-me');
 
     clearAllConversationStorage();
@@ -24,6 +28,11 @@ describe('clearAllConversationStorage', () => {
     expect(localStorage.getItem(LocalStorageKeys.LAST_TOOLS)).toBeNull();
     expect(localStorage.getItem(`${LocalStorageKeys.LAST_CONVO_SETUP}_0`)).toBeNull();
     expect(localStorage.getItem(`${LocalStorageKeys.AGENT_ID_PREFIX}0`)).toBeNull();
+    expect(
+      localStorage.getItem(
+        `${LocalStorageKeys.BRANCH_TARGET_}aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+      ),
+    ).toBeNull();
     expect(localStorage.getItem('unrelated-key')).toBe('keep-me');
   });
 });
