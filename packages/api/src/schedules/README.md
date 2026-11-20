@@ -90,6 +90,10 @@ and that agent still selects it. Anything else is refused with `tool_policy_deni
 that cannot be listed (not declared, declared for another URL, or selected as a whole) is left
 out of what the owner is offered, and the rest is still offered.
 
+- Where the offer starts from the whole agent (a new grant, or a stored one made for it), the
+  form's boxes start ticked, every one: the declared servers' tools and the other tools
+  alike. Choosing tool by tool then leaves out what the owner unticks and nothing else. A
+  stored grant that lists its tools starts from what it lists.
 - A tool the agent selects later is not allowed until the owner confirms again. It does not
   invalidate the tools already allowed.
 - A tool the owner left out does not keep the schedule from running, and the run never loads
