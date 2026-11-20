@@ -1,4 +1,10 @@
-import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import {
+  Tools,
+  Constants,
+  ContentTypes,
+  ToolCallTypes,
+  resolveDisplayToolCall,
+} from 'librechat-data-provider';
 import type {
   Agents,
   TAttachment,
@@ -122,7 +128,10 @@ export function getToolMeta(
     /** `agentId` disambiguates attachments when a handoff response repeats a
      *  provider tool-call id across agents; `filterAttachmentsForPart` reads it
      *  the same way. */
-    const tc = toolCall as Agents.ToolCall & { progress?: number; agentId?: string };
+    /** A dispatcher call is named, iconed and judged as the tool it ran. */
+    const tc = resolveDisplayToolCall(
+      toolCall as Agents.ToolCall & { progress?: number; agentId?: string },
+    );
     /** Subagents can finish with `progress === 1` and no final output
      *  text (the parent saw "" / undefined back). Fall back to progress
      *  so the group header flips from "Running N agents" to "Ran N

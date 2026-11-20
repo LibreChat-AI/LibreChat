@@ -21,6 +21,7 @@ import {
   synthesizeToggleToolOptions,
 } from '~/agents/toggles';
 import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
+import { orderNames } from '~/agents/promptCache';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
@@ -220,7 +221,7 @@ export async function loadAddedAgent(
   const tools: string[] = resolveEphemeralTools(ephemeralAgent, modelSpec);
 
   const serverToolKeys = await mapWithConcurrency(
-    [...mcpServers],
+    orderNames(req.config, mcpServers),
     getLookupConcurrency(appConfig, 'mcpCatalogLookups'),
     async (mcpServer): Promise<string[]> => {
       /** Address durable catalogs by the effective request overlay; request-scoped
@@ -233,7 +234,9 @@ export async function loadAddedAgent(
         overlayConfig && requiresEphemeralUserConnection(overlayConfig)
           ? null
           : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
-      return serverTools ? Object.keys(serverTools) : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
+      return serverTools
+        ? orderNames(req.config, Object.keys(serverTools))
+        : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
     },
   );
   for (const keys of serverToolKeys) {

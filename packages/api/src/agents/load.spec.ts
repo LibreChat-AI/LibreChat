@@ -100,3 +100,61 @@ describe('loadEphemeralAgent → resolveSender parity', () => {
     expect(sender).toBe(parseEphemeralAgentId(agent?.id ?? '')?.sender);
   });
 });
+
+const STABLE_CONTEXT = {
+  endpoints: { agents: { promptCache: { stableContext: true } } },
+};
+
+describe('loadEphemeralAgent MCP ordering', () => {
+  const catalogs: Record<string, Record<string, unknown>> = {
+    alpha: { b_mcp_alpha: {}, a_mcp_alpha: {} },
+    beta: { z_mcp_beta: {}, c_mcp_beta: {}, m_mcp_beta: {} },
+    gamma: { only_mcp_gamma: {} },
+  };
+  const orderDeps: LoadAgentDeps = {
+    getAgent: async () => null,
+    getMCPServerTools: async (_userId, serverName) => catalogs[serverName] ?? null,
+  };
+
+  async function load(mcp: string[], deps: LoadAgentDeps = orderDeps, stableContext = true) {
+    const req = {
+      user: { id: 'user-1' },
+      config: stableContext ? STABLE_CONTEXT : {},
+      body: { ephemeralAgent: { mcp } },
+    } as unknown as Parameters<typeof loadEphemeralAgent>[0]['req'];
+    const agent = await loadEphemeralAgent(
+      { req, endpoint: 'my-custom-endpoint', model_parameters: { model: 'm' } as never },
+      deps,
+    );
+    return { agent, published: req.body?.ephemeralAgent?.mcp };
+  }
+
+  test('different picker orders of the same servers yield identical tools and published servers', async () => {
+    const first = await load(['gamma', 'alpha', 'beta']);
+    const second = await load(['beta', 'gamma', 'alpha']);
+    expect(first.agent?.tools).toEqual([
+      'a_mcp_alpha',
+      'b_mcp_alpha',
+      'c_mcp_beta',
+      'm_mcp_beta',
+      'z_mcp_beta',
+      'only_mcp_gamma',
+    ]);
+    expect(second.agent?.tools).toEqual(first.agent?.tools);
+    expect(first.published).toEqual(['alpha', 'beta', 'gamma']);
+    expect(second.published).toEqual(first.published);
+  });
+
+  test('keeps the picker order and the catalog order without stableContext', async () => {
+    const result = await load(['gamma', 'alpha', 'beta'], orderDeps, false);
+    expect(result.agent?.tools).toEqual([
+      'only_mcp_gamma',
+      'b_mcp_alpha',
+      'a_mcp_alpha',
+      'z_mcp_beta',
+      'c_mcp_beta',
+      'm_mcp_beta',
+    ]);
+    expect(result.published).toEqual(['gamma', 'alpha', 'beta']);
+  });
+});
