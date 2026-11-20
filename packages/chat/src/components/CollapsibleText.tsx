@@ -40,6 +40,7 @@ const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(functio
   const contentId = useId();
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
+  const [measured, setMeasured] = useState(false);
   const [wasEnabled, setWasEnabled] = useState(enabled);
 
   // Turning the preference off resets the reveal, so re-enabling always
@@ -64,6 +65,7 @@ const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(functio
     }
     const measure = () => setOverflowing(el.scrollHeight - collapsedMaxHeight > overflowTolerance);
     measure();
+    setMeasured(true);
     if (typeof ResizeObserver === 'undefined') {
       return;
     }
@@ -77,6 +79,21 @@ const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(functio
   }
 
   const clamped = !expanded && overflowing;
+  /**
+   * Until it has been measured the content is held to the tallest it could be without a clamp.
+   * A long message would otherwise be laid out at its full height for one render and shrink in
+   * the next, before either is painted: nothing a reader sees, but everything below it in the
+   * thread moves down and back, and a thread that is still mounting rows above the reader takes
+   * that first height as the row's. Content that fits is not touched by the hold, and the hold
+   * is gone by the time the frame is painted, so nothing is hidden without a toggle.
+   */
+  const held = !measured && !expanded;
+  let maxHeight: number | undefined;
+  if (clamped) {
+    maxHeight = collapsedMaxHeight;
+  } else if (held) {
+    maxHeight = collapsedMaxHeight + overflowTolerance;
+  }
 
   /** Focus stays in the tab order across the whole message (the text is in the
    *  DOM and must remain reachable), but landing on a control that is actually
@@ -100,8 +117,8 @@ const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(functio
     <div className="w-full min-w-0">
       <div
         id={contentId}
-        className={cn('relative w-full', clamped && 'overflow-hidden')}
-        style={clamped ? { maxHeight: collapsedMaxHeight } : undefined}
+        className={cn('relative w-full', maxHeight != null && 'overflow-hidden')}
+        style={maxHeight != null ? { maxHeight } : undefined}
         onFocus={revealIfClipped}
       >
         <div ref={contentRef} className="w-full">
