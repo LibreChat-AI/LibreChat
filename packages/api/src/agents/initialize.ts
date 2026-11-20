@@ -131,10 +131,12 @@ import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attac
 import { narrowScheduledMCPTools } from '~/schedules/authorization/execution';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
+import { getPromptTime, isStableContextEnabled } from './promptCache';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
+import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
@@ -2712,16 +2714,21 @@ export async function initializeAgent(
     }
   }
 
+  let temporalInstructions: string | undefined;
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
       user: user ? (user as unknown as TUser) : null,
-      now: runtime.turnStartedAt,
+      now: getPromptTime(runtime.appConfig, runtime),
       timezone: runtime.requestBody.timezone,
     });
     if (hasTemporalSpecialVars(agent.instructions)) {
       agent.instructions = undefined;
-      appendAdditionalInstructions(agent, resolvedInstructions);
+      if (isStableContextEnabled(runtime.appConfig)) {
+        temporalInstructions = resolvedInstructions;
+      } else {
+        appendAdditionalInstructions(agent, resolvedInstructions);
+      }
     } else {
       agent.instructions = resolvedInstructions;
     }
@@ -3023,7 +3030,9 @@ export async function initializeAgent(
     agentContextAttachments,
     fileConsumers,
     toolContextMap: toolContextMap ?? {},
-    dynamicToolContextMap: dynamicToolContextMap ?? {},
+    dynamicToolContextMap: temporalInstructions
+      ? { ...dynamicToolContextMap, [AGENT_TEMPORAL_INSTRUCTIONS_KEY]: temporalInstructions }
+      : (dynamicToolContextMap ?? {}),
     useLegacyContent: !!options.useLegacyContent,
     tools: (tools ?? []) as GenericTool[] & string[],
     maxToolResultChars: maxToolResultCharsResolved,

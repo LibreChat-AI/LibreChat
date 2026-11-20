@@ -37,6 +37,7 @@ export * from './tokens';
 export * from './tokenMap';
 export * from './url';
 export * from './message';
+export * from './providerItems';
 export * from './quotes';
 export * from './tracing';
 export * from './keylock';
