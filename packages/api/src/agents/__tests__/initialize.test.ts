@@ -2993,6 +2993,7 @@ describe('initializeAgent — request generation params', () => {
 
   it('forwards UI/preset params from endpointOption onto the provider request', async () => {
     const { agent, req, res, loadTools, db, getOptions } = createMocks({
+      provider: Providers.ANTHROPIC,
       model: 'claude-sonnet-5',
       maxContextTokens: undefined,
       modelDefault: 200000,
@@ -3018,7 +3019,7 @@ describe('initializeAgent — request generation params', () => {
             effort: 'high',
           },
         },
-        allowedProviders: new Set([Providers.OPENAI]),
+        allowedProviders: new Set([Providers.ANTHROPIC]),
         isInitialAgent: true,
       },
       db,
