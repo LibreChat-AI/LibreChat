@@ -7133,6 +7133,67 @@ describe('AgentClient - titleConvo', () => {
       expect(client.processAttachments).not.toHaveBeenCalled();
     });
 
+    /** A tool-routed file with extracted text reaches an agent that has no tool to read it as
+     *  text, from the transcript, unless it is one of the shared prompt files. A file the
+     *  conversation leaves out is no longer one of those, so it has to be kept out by name. */
+    describe('a left-out file with extracted text', () => {
+      const { resolveTurnDeliveryRouting } = require('@librechat/api');
+      const csv = {
+        ...makeUploadedFile('left-out-csv', 'figures.csv', 'text/csv'),
+        text: 'region,total',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+      };
+      const transcript = () => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'Use the figures.',
+          isCreatedByUser: true,
+          files: [{ file_id: csv.file_id }],
+        },
+      ];
+      const scopedIds = () =>
+        (client.options.agentContextAttachmentsByAgentId.get(mockAgent.id) ?? []).map(
+          ({ file_id }) => file_id,
+        );
+
+      beforeEach(() => {
+        client.options.resendFiles = true;
+        client.options.attachments = [];
+        client.authorizedHistoricalFiles = new Map([[csv.file_id, csv]]);
+        mockAgent.fileConsumers = { executeCode: false, fileSearch: false };
+        mockAgent.deliveryRouting = resolveTurnDeliveryRouting({
+          agent: { provider: 'openAI' },
+          config: {
+            fileConfig: {
+              endpoints: {
+                openAI: {
+                  defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
+                  textFallbackWithoutTools: true,
+                },
+              },
+            },
+          },
+        });
+      });
+
+      it('reaches the agent as text while the conversation includes it', async () => {
+        await client.buildMessages(transcript(), 'msg-1', {});
+
+        expect(scopedIds()).toEqual([csv.file_id]);
+      });
+
+      it('does not reach the agent once the conversation leaves it out', async () => {
+        client.options.excludedFiles = [csv.file_id];
+
+        await client.buildMessages(transcript(), 'msg-1', {});
+
+        expect(scopedIds()).toEqual([]);
+      });
+    });
+
     /** A file can be sent to the model and placed in the code environment at once (a screenshot
      *  in a chat whose agent runs code). Agent setup primes every such file of the thread again
      *  on each turn and hands it over with the request's own, so being in that list does not

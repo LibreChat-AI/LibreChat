@@ -99,6 +99,10 @@ export function applyCheckpointDelivery<T extends TurnDeliveryFile>(files: T[]):
  * owner-hydrated candidates until each receiver resolves them, then add only text absent
  * from the shared prompt to its scoped context. The existing scoped-context pipeline owns
  * endpoint filtering, aggregate admission, inspection and extraction for these copies.
+ *
+ * A file the conversation leaves out is no candidate, whoever would receive it. It has to be
+ * said here: left out of the replay, it is no longer among the shared prompt files, which is
+ * the only other thing that keeps a file from being offered to a receiver as text.
  */
 export function resolveScopedTurnAttachments<T extends TurnDeliveryFile & { file_id: string }>({
   agents,
@@ -109,6 +113,7 @@ export function resolveScopedTurnAttachments<T extends TurnDeliveryFile & { file
   requestAttachments,
   sharedRunAttachmentIds,
   attachmentsByAgentId,
+  excluded,
 }: {
   agents: readonly {
     agentId: string;
@@ -125,15 +130,20 @@ export function resolveScopedTurnAttachments<T extends TurnDeliveryFile & { file
   requestAttachments: readonly T[];
   sharedRunAttachmentIds: ReadonlySet<string>;
   attachmentsByAgentId?: Map<string, T[]> | Record<string, T[]>;
+  /** Files the conversation leaves out of later turns. */
+  excluded?: readonly string[] | null;
 }): Map<string, T[]> {
+  const leftOut = new Set(excluded ?? []);
+  const withheld = (fileId: string): boolean =>
+    sharedRunAttachmentIds.has(fileId) || leftOut.has(fileId);
   const candidates = new Map<string, T>();
   for (const fileId of collectModelBoundHistoricalFileIdState(resendFiles === false ? [] : messages)
     .fileIds) {
     const file = historicalFiles?.get(fileId);
-    if (file && !sharedRunAttachmentIds.has(fileId)) candidates.set(fileId, file);
+    if (file && !withheld(fileId)) candidates.set(fileId, file);
   }
   for (const file of requestAttachments) {
-    if (!sharedRunAttachmentIds.has(file.file_id)) candidates.set(file.file_id, file);
+    if (!withheld(file.file_id)) candidates.set(file.file_id, file);
   }
   const sharedAgents = new Set(sharedConversationAgentIds);
   const result = new Map<string, T[]>();
