@@ -1223,7 +1223,7 @@ describe('getGoogleModels', () => {
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
-  it('discovers versioned Gemini chat models, keeping known models first in default order', async () => {
+  it('appends discovered versioned Gemini chat models to the defaults', async () => {
     mockedAxios.get.mockResolvedValueOnce(
       listing(
         'gemini-2.5-flash',
@@ -1242,12 +1242,8 @@ describe('getGoogleModels', () => {
         'gemma-4-31b-it',
       ),
     );
-    await expect(getGoogleModels({ fetch: true })).resolves.toEqual([
-      'gemini-4-argon',
-      'gemini-3.1-pro-preview-customtools',
-      'gemini-2.5-flash',
-      'gemini-4-neon',
-    ]);
+    // Unlisted defaults stay: Vertex agents validate against this same catalog.
+    await expect(getGoogleModels({ fetch: true })).resolves.toEqual([...defaults, 'gemini-4-neon']);
     expect(mockedAxios.get).toHaveBeenCalledWith(
       'https://generativelanguage.googleapis.com/v1beta/openai/models',
       expect.objectContaining({
@@ -1261,7 +1257,7 @@ describe('getGoogleModels', () => {
     await expect(getGoogleModels({ fetch: true })).resolves.toEqual(defaults);
   });
 
-  it('falls back to default models when no listed model can chat', async () => {
+  it('returns default models when no listed model can chat', async () => {
     mockedAxios.get.mockResolvedValueOnce(listing('gemini-embedding-2', 'gemma-4-31b-it'));
     await expect(getGoogleModels({ fetch: true })).resolves.toEqual(defaults);
   });

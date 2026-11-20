@@ -596,8 +596,8 @@ const GOOGLE_CHAT_MODEL = /^gemini-\d/;
 const GOOGLE_NON_CHAT_MODEL = /-(?:tts|image|live|audio|transcribe|translate|computer-use)(?:-|$)/;
 
 /**
- * Gets Google models from config, environment, or (when `fetch` is set) the Gemini API, falling
- * back to defaults. Discovered models the defaults already list keep the default order.
+ * Gets Google models from config, environment, or defaults. With `fetch`, Gemini API models the
+ * defaults lack are appended; defaults are never removed, since Vertex validates against them too.
  * @param opts - Options for getting models
  * @returns Promise resolving to array of model IDs
  */
@@ -628,15 +628,10 @@ export async function getGoogleModels(
     name: EModelEndpoint.google,
     createTokenConfig: false,
   });
-  const chat = new Set(
-    listed
-      .map((id) => id.replace(/^models\//, ''))
-      .filter((id) => GOOGLE_CHAT_MODEL.test(id) && !GOOGLE_NON_CHAT_MODEL.test(id)),
-  );
-  if (chat.size === 0) {
-    return models;
-  }
-  return [...new Set([...models.filter((id) => chat.has(id)), ...chat])];
+  const chat = listed
+    .map((id) => id.replace(/^models\//, ''))
+    .filter((id) => GOOGLE_CHAT_MODEL.test(id) && !GOOGLE_NON_CHAT_MODEL.test(id));
+  return [...new Set([...models, ...chat])];
 }
 
 /**
