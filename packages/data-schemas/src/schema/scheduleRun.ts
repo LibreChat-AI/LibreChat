@@ -79,6 +79,7 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
             enum: ['authorize', 'configure', 'restore_permission', 'retry_later'],
           },
           automaticReplay: { type: Boolean, enum: [false] },
+          skipped: { type: Boolean, enum: [true] },
           status: {
             type: String,
             required: true,

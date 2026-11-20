@@ -970,6 +970,21 @@ describe('the tools a run loads under a grant', () => {
     expect(narrowScheduledMCPTools(req, 'root', keys)).toEqual(['query_mcp_warehouse']);
     expect(narrowScheduledMCPTools({}, 'root', keys)).toBe(keys);
   });
+
+  it('loads nothing on a server the occurrence was fired without, with a grant or with none', async () => {
+    const keys = ['query_mcp_warehouse', 'export_mcp_warehouse', 'search_mcp_notes', 'web_search'];
+    // No grant: only the skipped server's tools are left out.
+    expect(
+      narrowScheduledMCPTools({ _scheduleSkippedServers: ['warehouse'] }, 'root', keys),
+    ).toEqual(['search_mcp_notes', 'web_search']);
+    // Under a grant, what it leaves out and what was skipped are both left out.
+    const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const req = { _scheduleSkippedServers: ['warehouse'] };
+    await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
+    expect(
+      narrowScheduledMCPTools(req, 'root', ['query_mcp_warehouse', 'export_mcp_warehouse']),
+    ).toEqual([]);
+  });
 });
 
 describe('a tool the owner approves call by call', () => {

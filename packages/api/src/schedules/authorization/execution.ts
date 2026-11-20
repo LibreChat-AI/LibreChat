@@ -23,6 +23,7 @@ import {
 } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
+import { withoutSkippedMCPServers } from '../trigger';
 import { findMCPRequestContext } from '~/mcp/request';
 import { ScheduleMCPConsentError } from './service';
 import { isOwnedAbortError } from '~/utils/errors';
@@ -124,7 +125,8 @@ export function bindScheduledMCPInvocation(
 /**
  * What a run loads for an agent. Under a schedule's grant that is only what the owner
  * allowed: a tool left out is never defined for the model, and a server with nothing allowed
- * is never connected to. Any other request loads the agent's tools as they are.
+ * is never connected to. A scheduled run also loads nothing on a server its occurrence was
+ * fired without. Any other request loads the agent's tools as they are.
  */
 export function narrowScheduledMCPTools(
   req: object | undefined,
@@ -132,7 +134,8 @@ export function narrowScheduledMCPTools(
   toolKeys: string[],
 ): string[] {
   const context = findMCPRequestContext(req);
-  return (context && executions.get(context)?.narrow(agentId, toolKeys)) ?? toolKeys;
+  const granted = (context && executions.get(context)?.narrow(agentId, toolKeys)) ?? toolKeys;
+  return withoutSkippedMCPServers(req, granted);
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { ScheduleMCPCompletionLookup } from './continuation';
@@ -14,8 +14,12 @@ import {
   scheduledMCPIdentity,
   getScheduleMCPExecution,
 } from './execution';
+import {
+  readScheduleFireContext,
+  isScheduleFireRequest,
+  restoreSkippedMCPServers,
+} from '../trigger';
 import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
-import { readScheduleFireContext, isScheduleFireRequest } from '../trigger';
 import { createScheduleMCPConsentHost, createMCPUseCheck } from './host';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createScheduleLimitsResolver } from '../service';
@@ -34,6 +38,13 @@ export function createScheduleMCPRuntimeHost(
   > & {
     enrollment: ScheduleMCPEnrollmentDeps;
     getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
+    methods: {
+      /** The MCP outcomes an occurrence's run row holds. */
+      getScheduleRunMCP: (
+        scheduleId: string,
+        scheduledFor: string | Date,
+      ) => Promise<ScheduleMCPOutcome[]>;
+    };
   },
 ): {
   consent: ReturnType<typeof createScheduleMCPConsentHost>;
@@ -45,6 +56,8 @@ export function createScheduleMCPRuntimeHost(
     executionContext?: ExecutionContext;
     restoredJob?: {
       scheduleId?: string;
+      /** The occurrence the saved job belongs to: its run row holds what it went without. */
+      scheduledFor?: string | Date;
       scheduleManual?: boolean;
       scheduleMCPCompletion?: ScheduledMCPIdentity;
     };
@@ -195,6 +208,14 @@ export function createScheduleMCPRuntimeHost(
             (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
         )
           throw new ScheduledMCPPolicyError('binding_mismatch', '');
+        // A resumed run rebuilds its tools on a request that is not a trigger. The servers its
+        // occurrence was started without are read back from the occurrence's own run row, so
+        // the resumed run goes without the same ones.
+        if (schedule?.resumed === true && restoredJob?.scheduledFor != null)
+          restoreSkippedMCPServers(
+            req,
+            await deps.methods.getScheduleRunMCP(scheduleId, restoredJob.scheduledFor),
+          );
         await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', enrolled, {
           legacy: !enrolled,
           manual: restoredContext
