@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { OpenIDIcon, useToastContext } from '@librechat/client';
+import { useOutletContext, useSearchParams, useLocation } from 'react-router-dom';
 import {
   ErrorTypes,
   registerPage,
   OPENID_SESSION_ENDED,
   AUTH_SESSION_CHECK_UNAVAILABLE,
 } from 'librechat-data-provider';
-import { useOutletContext, useSearchParams, useLocation } from 'react-router-dom';
 import type { TLoginLayoutContext } from '~/common';
 import type { TranslationKeys } from '~/hooks';
 import { getLoginError, persistRedirectToSession } from '~/utils';
