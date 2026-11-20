@@ -192,6 +192,35 @@ describe('useProgressiveRowMount', () => {
   });
 });
 
+describe('pinsByHand', () => {
+  const original = (globalThis as { CSS?: unknown }).CSS;
+  const load = (anchors: boolean) => {
+    (globalThis as { CSS?: unknown }).CSS = { supports: () => anchors };
+    let pins: (isSubmitting: boolean) => boolean = () => false;
+    jest.isolateModules(() => {
+      pins = jest.requireActual('../useProgressiveRowMount').pinsByHand;
+    });
+    return pins;
+  };
+
+  afterEach(() => {
+    (globalThis as { CSS?: unknown }).CSS = original;
+  });
+
+  it('leaves an idle thread to a browser that anchors scroll itself', () => {
+    expect(load(true)(false)).toBe(false);
+  });
+
+  it('holds the reader itself beside a reply in flight, even there', () => {
+    expect(load(true)(true)).toBe(true);
+  });
+
+  it('holds the reader itself wherever the browser does not anchor', () => {
+    expect(load(false)(false)).toBe(true);
+    expect(load(false)(true)).toBe(true);
+  });
+});
+
 describe('row gates', () => {
   let frames: Array<FrameRequestCallback | undefined>;
   const scrollableRef = { current: null } as React.RefObject<HTMLDivElement | null>;
@@ -302,6 +331,150 @@ describe('row gates', () => {
     rerender(tree(60));
     expect(commits).toEqual([true]);
     expect(mounted(container)).toEqual([60]);
+  });
+
+  /**
+   * A reader who has scrolled up is held in place while rows mount above them: the scroll
+   * position moves by exactly what the step added. What a row adds is not settled when it
+   * mounts. A long user message measures itself in a layout effect and renders again clamped.
+   */
+  describe('holding the reader while rows mount above them', () => {
+    const FULL = 900;
+    const CLAMPED = 400;
+    /** Where the first row mounted so far sits in the document: below everything added. */
+    let anchorOffset: number;
+    let container: HTMLDivElement;
+    let rect: jest.SpyInstance;
+    /** What the browser does to the scroll position when the long message collapses. */
+    let onClamp: () => void;
+
+    beforeEach(() => {
+      anchorOffset = 100;
+      onClamp = () => undefined;
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      container.scrollTop = 5000;
+      rect = jest
+        .spyOn(Element.prototype, 'getBoundingClientRect')
+        .mockImplementation(() => ({ top: anchorOffset - container.scrollTop }) as DOMRect);
+    });
+
+    afterEach(() => {
+      rect.mockRestore();
+      container.remove();
+    });
+
+    /** Measures itself in a layout effect and renders again clamped, as a long user turn does. */
+    function LongMessage() {
+      const [clamped, setClamped] = React.useState(false);
+      React.useLayoutEffect(() => setClamped(true), []);
+      React.useLayoutEffect(() => {
+        if (clamped) {
+          onClamp();
+        }
+      }, [clamped]);
+      anchorOffset = 100 + (clamped ? CLAMPED : FULL);
+      return null;
+    }
+    const Message = React.memo(function Message({ depth }: { depth: number }) {
+      const visible = useRowMounted(depth);
+      if (!visible) {
+        return null;
+      }
+      return <div className="message-render">{depth === 20 ? <LongMessage /> : null}</div>;
+    });
+    function Reading({ onInsertAbove }: { onInsertAbove?: (height: number) => void }) {
+      const [gates] = React.useState(createRowGates);
+      const ref = React.useRef(container);
+      const mountWindow = useProgressiveRowMount({
+        tailDepth: 59,
+        anchorBottom: true,
+        isSubmitting: false,
+        conversationId: 'convo-a',
+        scrollableRef: ref,
+        gates,
+        onInsertAbove,
+      });
+      return (
+        <RowMountProvider mountWindow={mountWindow} gates={gates}>
+          {Array.from({ length: 60 }, (_, depth) => (
+            <Message key={depth} depth={depth} />
+          ))}
+        </RowMountProvider>
+      );
+    }
+
+    /** The step that mounts the long message, and the microtask after its commit. */
+    const mountLongMessage = () =>
+      act(async () => {
+        const pending = frames.length;
+        for (let index = 0; index < pending; index += 1) {
+          const frame = frames[index];
+          frames[index] = undefined;
+          frame?.(index);
+        }
+      });
+
+    /**
+     * The scroll position moves by exactly what the step added. What a row adds is not
+     * settled when it mounts: the long message is counted at its full height first.
+     */
+    it('moves a reader who scrolled up by what the step added once its rows have settled', async () => {
+      render(<Reading />, { container });
+      await mountLongMessage();
+      expect(container.scrollTop).toBe(5000 + CLAMPED);
+    });
+
+    it('says how much height a step added above the reader', async () => {
+      /** The thread is as tall as the rows in it. */
+      Object.defineProperty(container, 'scrollHeight', {
+        get: () => 1000 + (container.getElementsByClassName('message-render').length - 16) * 30,
+        configurable: true,
+      });
+      const added = jest.fn();
+      render(<Reading onInsertAbove={added} />, { container });
+      expect(added).not.toHaveBeenCalled();
+
+      await mountLongMessage();
+      expect(added).toHaveBeenCalledTimes(1);
+      expect(added).toHaveBeenCalledWith(32 * 30);
+    });
+
+    it('waits for the reader to stop scrolling before it mounts the next rows', async () => {
+      const now = jest.spyOn(performance, 'now').mockReturnValue(10_000);
+      try {
+        render(<Reading />, { container });
+        const rows = () => container.getElementsByClassName('message-render').length;
+        expect(rows()).toBe(16);
+
+        container.dispatchEvent(new Event('wheel'));
+        await mountLongMessage();
+        expect(rows()).toBe(16);
+
+        /** Still turning the wheel a moment later: still waiting. */
+        now.mockReturnValue(10_100);
+        container.dispatchEvent(new Event('wheel'));
+        now.mockReturnValue(10_200);
+        await mountLongMessage();
+        expect(rows()).toBe(16);
+
+        now.mockReturnValue(10_300);
+        await mountLongMessage();
+        expect(rows()).toBe(48);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('leaves a reader on the end where the browser put them as the content shrank', async () => {
+      /** The content ends where the reader is, so the scroll position cannot stay past it. */
+      onClamp = () => {
+        container.scrollTop = 5000 + CLAMPED;
+      };
+      render(<Reading />, { container });
+      await mountLongMessage();
+      expect(container.scrollTop).toBe(5000 + CLAMPED);
+    });
   });
 
   it('follows the window a commit later when nothing publishes to the gates', () => {

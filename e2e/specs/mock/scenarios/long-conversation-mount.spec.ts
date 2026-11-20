@@ -18,7 +18,12 @@ import { getE2EUser } from '../../../setup/user';
 /** Past the row count at which the thread mounts progressively instead of all at once. */
 const TURNS = 60;
 
-async function seedLongChat(turns = TURNS): Promise<string> {
+/** A user turn long enough to be collapsed to a preview once it has measured itself. */
+const LONG_TURN = Array.from({ length: 60 }, (_, line) => `A long turn, line ${line + 1}.`).join(
+  '\n\n',
+);
+
+async function seedLongChat(turns = TURNS, longEvery = 0): Promise<string> {
   const conversationId = randomUUID();
   const { email } = getE2EUser();
   await seedConversations(email, [
@@ -31,7 +36,10 @@ async function seedLongChat(turns = TURNS): Promise<string> {
     const message = {
       messageId,
       parentMessageId,
-      text: `Turn ${index + 1} of the long conversation`,
+      text:
+        longEvery > 0 && isCreatedByUser && index % longEvery === 0
+          ? LONG_TURN
+          : `Turn ${index + 1} of the long conversation`,
       isCreatedByUser,
       sender: isCreatedByUser ? 'User' : 'Mock Provider A',
     };
@@ -228,5 +236,74 @@ test.describe('a long conversation with a reply in flight', () => {
     await stop.click();
     await expect(stop).toBeHidden({ timeout: 30_000 });
     await expect(thread.locator('.message-render').last()).toBeInViewport();
+  });
+});
+
+/**
+ * A reader who scrolls up while the rest of a long thread is still mounting is obeyed, and
+ * stays where they stopped. Rows keep mounting above them, some of which change height once
+ * more after they mount: a long user turn collapses to a preview. Holding the reader by writing
+ * the scroll position on every step cancelled the scroll they were making, and counted such a
+ * turn at its full height.
+ */
+test.describe('a reader scrolling up while a long conversation mounts', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
+
+  const MANY = 600;
+  let conversationId: string;
+
+  test.beforeEach(async () => {
+    conversationId = await seedLongChat(MANY, 20);
+  });
+
+  test.afterEach(async () => {
+    await deleteMessagesByConversation([conversationId]);
+    await deleteConversations([conversationId]);
+  });
+
+  test('keeps their place as rows mount above them @scenario:reader-keeps-place-while-long-conversation-mounts', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+    /** Mounting, and landed on its end: the open's own scroll there is not the reader's. */
+    await page.waitForFunction(() => {
+      const scroller = document.getElementById('messages-end')?.parentElement?.parentElement;
+      return (
+        scroller != null &&
+        document.getElementsByClassName('message-render').length >= 40 &&
+        scroller.scrollTop > 0 &&
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1
+      );
+    });
+    const view = await page.getByTestId('messages-view').boundingBox();
+    await page.mouse.move((view?.x ?? 0) + (view?.width ?? 800) / 2, (view?.y ?? 0) + 300);
+    await page.mouse.wheel(0, -1500);
+    /** A wheel scroll is animated: let it land before reading where it left the reader. */
+    await page.waitForTimeout(400);
+
+    const marked = await page.evaluate(() => {
+      const rows = Array.from(document.getElementsByClassName('message-render'));
+      const row = rows.find((candidate) => candidate.getBoundingClientRect().top > 80);
+      row?.setAttribute('data-reading', '');
+      const scroller = document.getElementById('messages-end')?.parentElement?.parentElement;
+      return {
+        top: row?.getBoundingClientRect().top ?? Number.NaN,
+        mounted: rows.length,
+        fromEnd: scroller
+          ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+          : Number.NaN,
+      };
+    });
+    /** Read while the thread was still arriving, or the wait below proves nothing. */
+    expect(marked.mounted).toBeLessThan(MANY);
+    /** The scroll was obeyed: the reader is a good way above the end. */
+    expect(marked.fromEnd).toBeGreaterThan(1000);
+
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(MANY, { timeout: 60_000 });
+    const top = await page
+      .locator('[data-reading]')
+      .evaluate((row) => row.getBoundingClientRect().top);
+    expect(Math.abs(top - marked.top)).toBeLessThanOrEqual(2);
   });
 });
