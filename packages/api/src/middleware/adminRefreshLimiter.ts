@@ -1,4 +1,5 @@
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
+import { logger } from '@librechat/data-schemas';
 import { adminRefreshRateLimitSchema } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Store } from 'express-rate-limit';
@@ -27,7 +28,16 @@ export function createAdminRefreshLimiter({
         ipKeyGenerator(removePorts(req) ?? req.socket.remoteAddress ?? 'unknown'),
       standardHeaders: true,
       legacyHeaders: false,
-      message: { message: 'Too many session renewal requests. Try again later.' },
+      /** The route has no authenticated user, so `logViolation` (which counts per user) cannot
+       *  record this; the warning is how an operator sees repeated renewals from one address. */
+      handler: (req, res) => {
+        logger.warn('[adminRefreshLimiter] Admin token renewal rate limit exceeded', {
+          ip: removePorts(req) ?? req.socket.remoteAddress,
+          windowMs,
+          max,
+        });
+        res.status(429).json({ message: 'Too many session renewal requests. Try again later.' });
+      },
     });
   });
 
