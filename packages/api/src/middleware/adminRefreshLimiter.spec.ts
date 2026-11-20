@@ -1,6 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import { rateLimit } from 'express-rate-limit';
+import { logger } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import { createAdminRefreshLimiter } from './adminRefreshLimiter';
 
@@ -60,6 +61,20 @@ describe('createAdminRefreshLimiter', () => {
       message: 'Too many session renewal requests. Try again later.',
     });
     await request(app).post('/login').expect(204);
+  });
+
+  it('logs a warning with the client address when it rejects a renewal', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const { app } = createApp({ windowMs: 60_000, max: 1 });
+    await request(app).post('/refresh').set('X-Forwarded-For', '198.51.100.24:50001').expect(204);
+    expect(warn).not.toHaveBeenCalled();
+    await request(app).post('/refresh').set('X-Forwarded-For', '198.51.100.24:50002').expect(429);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[adminRefreshLimiter] Admin token renewal rate limit exceeded',
+      { ip: '198.51.100.24', windowMs: 60_000, max: 1 },
+    );
+    warn.mockRestore();
   });
 
   it('keeps one IPv4 budget when a trusted proxy forwards changing source ports', async () => {
