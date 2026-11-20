@@ -1321,6 +1321,8 @@ export const discordChannelConfigSchema = z
       })
       .strict()
       .prefault({}),
+    /** Lets Discord show tool arguments and accept approve or deny decisions. Off keeps review in the browser. */
+    nativeReviews: z.boolean().default(false),
     /** Public gateway origin/prefix, independent of the Slack gateway and browser origin. */
     publicUrl: z
       .url()

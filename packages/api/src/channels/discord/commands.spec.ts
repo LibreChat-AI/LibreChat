@@ -71,7 +71,7 @@ it('deduplicates ask retries and keeps separate commands in separate conversatio
 it('shows owned status and preserves proxy prefixes in authenticated review links', () =>
   scope(async () => {
     await linked();
-    expect((await invoke({ kind: 'status' })).content).toContain('no retained run');
+    expect((await invoke({ kind: 'status' })).content).toBe('You have no recent requests here.');
     await invoke({ kind: 'ask', prompt: 'Question' });
     const [run] = await allRuns();
     await models.ChannelRun.updateOne(
@@ -98,7 +98,9 @@ it('shows owned status and preserves proxy prefixes in authenticated review link
       },
     ]);
     await linked(otherActor, other);
-    expect((await invoke({ kind: 'status' }, otherActor)).content).toContain('no retained run');
+    expect((await invoke({ kind: 'status' }, otherActor)).content).toBe(
+      'You have no recent requests here.',
+    );
   }));
 
 it('freezes cancellation across a replay even if another run is admitted later', () =>
@@ -108,7 +110,7 @@ it('freezes cancellation across a replay even if another run is admitted later',
     const [first] = await allRuns();
     const job = await claim({ kind: 'cancel' });
     expect((await execute(job.record, job.fence, native(job.record))).content).toContain(
-      'Cancellation requested',
+      'Stop requested. Waiting for the agent to confirm.',
     );
     const second = await runs.admit(
       {
@@ -128,7 +130,7 @@ it('freezes cancellation across a replay even if another run is admitted later',
       now + 1,
     );
     expect((await execute(job.record, job.fence, native(job.record))).content).toContain(
-      'Cancellation requested',
+      'Stop requested. Waiting for the agent to confirm.',
     );
     const persisted = await models.ChannelRun.findOne({ runId: second.run.runId }).lean();
     expect(persisted?.cancellationRequested).toBe(false);
@@ -167,13 +169,13 @@ it('binds native cancellation to the current actor and a confirmed source messag
     expect(
       (await invoke({ kind: 'cancel', reference: run.runId, messageId: '890123456789012346' }))
         .content,
-    ).toContain('no active run');
+    ).toBe('There is no active request to stop here.');
     await linked(otherActor, other);
     expect(
       (await invoke({ kind: 'cancel', reference: run.runId, messageId }, otherActor)).content,
-    ).toContain('no active run');
+    ).toBe('There is no active request to stop here.');
     expect((await invoke({ kind: 'cancel', reference: run.runId, messageId })).content).toContain(
-      'Cancellation requested',
+      'Stop requested. Waiting for the agent to confirm.',
     );
   }));
 

@@ -2,6 +2,7 @@ import {
   discordConfirmationControl,
   discordConfirmationParts,
   discordRunControl,
+  discordDecisionControl,
   parseDiscordControl,
   discordIngressActionSchema,
 } from './types/discordIngress';
@@ -51,5 +52,29 @@ it('allows a slash cancel without a reference but rejects half-bound native cont
   expect(
     discordIngressActionSchema.safeParse({ kind: 'feedback', reference: runId, rating: 'thumbsUp' })
       .success,
+  ).toBe(false);
+});
+
+it('binds review entry to a real source and decisions to an immutable private interaction', () => {
+  const review = discordRunControl('review', runId);
+  expect(parseDiscordControl(review)).toBeNull();
+  expect(parseDiscordControl(review, messageId)).toEqual({
+    kind: 'review',
+    reference: runId,
+    messageId,
+  });
+  const decide = discordDecisionControl(messageId, 3);
+  expect(decide.length).toBeLessThanOrEqual(100);
+  expect(parseDiscordControl(decide)).toEqual({ kind: 'decide', reference: messageId, choice: 3 });
+  expect(parseDiscordControl(`lc1:v:${messageId}:4`)).toBeNull();
+  expect(parseDiscordControl('lc1:v:wrong:0')).toBeNull();
+  expect(() => discordDecisionControl(messageId, -1)).toThrow();
+  expect(
+    discordIngressActionSchema.safeParse({
+      kind: 'decide',
+      reference: messageId,
+      choice: 0,
+      actionId: 'model-selected',
+    }).success,
   ).toBe(false);
 });

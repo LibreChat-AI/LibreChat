@@ -26,7 +26,9 @@ export const discordInboxSubmissionSchema = submission.extend({ guildId: channel
 /** Signed BOT_DM controls contain a physical DM destination, never a substituted guild. */
 export const discordDmInboxSubmissionSchema = submission
   .extend({ scope: z.literal('dm') })
-  .refine((value) => ['ask', 'status', 'cancel', 'feedback'].includes(value.action.kind));
+  .refine((value) =>
+    ['ask', 'status', 'cancel', 'feedback', 'review', 'decide'].includes(value.action.kind),
+  );
 export type DiscordDmInboxSubmission = z.infer<typeof discordDmInboxSubmissionSchema>;
 /** Server-derived source snapshot supports exact selection joins and independent privacy cleanup. */
 export const discordDmInboxReferenceSchema = z

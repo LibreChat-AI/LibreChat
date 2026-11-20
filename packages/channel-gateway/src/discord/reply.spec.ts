@@ -343,3 +343,15 @@ it('rejects an inspection callback that returns another physical event or deadli
   ).rejects.toThrow('lease changed');
   expect(calls('/webhooks/')).toHaveLength(0);
 });
+
+it('replaces private review controls with the recorded decision receipt', async () => {
+  job.reply = { content: 'Your decision is recorded and queued for processing.' };
+  expect(await turn()).toBe(true);
+  const [url, options] = calls('/webhooks/')[0];
+  expect(url).toContain('/messages/@original');
+  expect(JSON.parse(options.body)).toEqual({
+    content: job.reply.content,
+    components: [],
+    allowed_mentions: { parse: [], replied_user: false },
+  });
+});

@@ -61,7 +61,16 @@ export function createDiscordMetrics(registry: Registry): DiscordObserver {
       if (Number.isFinite(event.seconds) && event.seconds >= 0) queue.observe(event.seconds);
     } else if (event.type === 'command')
       commands.inc({
-        action: label(event.action, ['ask', 'link', 'confirm', 'status', 'cancel', 'feedback']),
+        action: label(event.action, [
+          'ask',
+          'link',
+          'confirm',
+          'status',
+          'cancel',
+          'feedback',
+          'review',
+          'decide',
+        ]),
         outcome: label(event.outcome, discordCommandOutcomes),
       });
   });

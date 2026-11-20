@@ -2,7 +2,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { generateKeyPairSync, createHash, sign } from 'node:crypto';
 import type { DiscordApplicationSecurity, DiscordInboxSubmission } from 'librechat-data-provider';
-import type { DiscordDmConsume } from 'librechat-data-provider';
+import type { DiscordDmConsume, DiscordDmInboxSubmission } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import type { DiscordWebhookDependencies } from './http';
@@ -592,3 +592,43 @@ describe('Discord ingress observation', () => {
     }
   });
 });
+
+it.each(['guild', 'dm'] as const)(
+  'acknowledges native review and decisions privately in %s and persists only bounded control identifiers',
+  async (source) => {
+    const submitDm = jest.fn(async (input: DiscordDmInboxSubmission) => {
+      expect(input.scope).toBe('dm');
+      return 'accepted' as const;
+    });
+    await start({ submitDm });
+    const runId = '12345678-1234-4123-8123-123456789012';
+    const messageId = '890123456789012345';
+    const payload = {
+      ...(source === 'dm' ? dmEvent() : event),
+      type: 3,
+      message: { id: messageId, flags: 64 },
+      data: { custom_id: `lc1:r:${runId}`, component_type: 2 },
+    };
+    const entry = await send(payload);
+    expect(entry.status).toBe(200);
+    expect(await entry.json()).toEqual({ type: 5, data: { flags: 64 } });
+    const decision = await send({
+      ...payload,
+      data: { custom_id: `lc1:v:${event.id}:1`, component_type: 2 },
+    });
+    expect(decision.status).toBe(200);
+    expect(await decision.json()).toEqual({ type: 6 });
+    const publicDecision = await send({
+      ...payload,
+      message: { id: messageId, flags: 0 },
+      data: { custom_id: `lc1:v:${event.id}:1`, component_type: 2 },
+    });
+    expect(await publicDecision.json()).toEqual({ type: 5, data: { flags: 64 } });
+    const actions = source === 'dm' ? submitDm.mock.calls.map((call) => call[0]) : received;
+    expect(actions).toEqual([
+      expect.objectContaining({ action: { kind: 'review', reference: runId, messageId } }),
+      expect.objectContaining({ action: { kind: 'decide', reference: event.id, choice: 1 } }),
+      expect.objectContaining({ action: { kind: 'decide', reference: event.id, choice: 1 } }),
+    ]);
+  },
+);

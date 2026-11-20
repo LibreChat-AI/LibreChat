@@ -19,6 +19,14 @@ export const discordIngressActionSchema = z.discriminatedUnion('kind', [
     .strict()
     .refine((action) => Boolean(action.reference) === Boolean(action.messageId)),
   z.object({ kind: z.literal('confirm'), reference }).strict(),
+  z.object({ kind: z.literal('review'), reference, messageId: channelSnowflakeSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('decide'),
+      reference: channelSnowflakeSchema,
+      choice: z.number().int().min(0).max(3),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('feedback'),
@@ -53,11 +61,18 @@ export function discordConfirmationParts(
     : null;
 }
 export function discordRunControl(
-  kind: 'cancel' | 'thumbsUp' | 'thumbsDown',
+  kind: 'cancel' | 'thumbsUp' | 'thumbsDown' | 'review',
   runId: string,
 ): string {
   if (!/^[\w-]{1,80}$/.test(runId)) throw new TypeError('Invalid Discord run reference');
-  return `lc1:${{ cancel: 'x', thumbsUp: 'u', thumbsDown: 'd' }[kind]}:${runId}`;
+  return `lc1:${{ cancel: 'x', thumbsUp: 'u', thumbsDown: 'd', review: 'r' }[kind]}:${runId}`;
+}
+/** Private decision controls identify an immutable, owner-bound inbox review, never model text. */
+export function discordDecisionControl(reference: string, choice: number): string {
+  channelSnowflakeSchema.parse(reference);
+  if (!Number.isInteger(choice) || choice < 0 || choice > 3)
+    throw new TypeError('Invalid Discord review choice');
+  return `lc1:v:${reference}:${choice}`;
 }
 /** Parsing identifies a capability; the command service still authorizes its actor and source. */
 export function parseDiscordControl(
@@ -65,12 +80,23 @@ export function parseDiscordControl(
   messageId?: string,
 ): DiscordIngressAction | null {
   if (customId.length > 100) return null;
-  const match = /^lc1:([cxud]):([\w-]+)$/.exec(customId);
+  const decision = /^lc1:v:([0-9]+):([0-3])$/.exec(customId);
+  if (decision) {
+    const parsed = discordIngressActionSchema.safeParse({
+      kind: 'decide',
+      reference: decision[1],
+      choice: Number(decision[2]),
+    });
+    return parsed.success ? parsed.data : null;
+  }
+  const match = /^lc1:([cxudr]):([\w-]+)$/.exec(customId);
   if (!match) return null;
   const [, kind, reference] = match;
   if (kind === 'c')
     return discordConfirmationParts(reference) ? { kind: 'confirm', reference } : null;
-  if (!channelSnowflakeSchema.safeParse(messageId).success || reference.length > 80) return null;
+  const source = channelSnowflakeSchema.safeParse(messageId);
+  if (!source.success || reference.length > 80) return null;
+  if (kind === 'r') return { kind: 'review', reference, messageId: source.data };
   const parsed = discordIngressActionSchema.safeParse(
     kind === 'x'
       ? { kind: 'cancel', reference, messageId }

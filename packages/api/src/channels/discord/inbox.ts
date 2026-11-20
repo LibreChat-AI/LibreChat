@@ -214,7 +214,10 @@ export function createDiscordInboxService(deps: DiscordInboxServiceDependencies)
           try {
             if (
               record.state === 'processing' &&
-              (record.routing === 'inspection' || record.thread || record.action?.kind === 'ask')
+              (record.routing === 'inspection' ||
+                record.thread ||
+                ['ask', 'review', 'decide'].includes(record.action?.kind ?? '') ||
+                (record.action?.kind === 'status' && deps.inspection != null))
             )
               return {
                 fence,

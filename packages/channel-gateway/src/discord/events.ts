@@ -48,7 +48,12 @@ export const interactionSchema = z.discriminatedUnion('type', [
   z.object({
     ...common,
     type: z.literal(3),
-    message: z.object({ id: snowflake }).optional(),
+    message: z
+      .object({
+        id: snowflake,
+        flags: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+      })
+      .optional(),
     data: z.object({
       custom_id: z.string().min(1).max(100),
       component_type: z.number().int(),

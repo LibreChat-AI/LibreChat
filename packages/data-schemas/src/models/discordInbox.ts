@@ -12,7 +12,7 @@ export interface DiscordCancelResult {
   cancelled: boolean;
 }
 
-/** Private ingress payloads are erased at completion; only deduplication metadata survives. */
+/** Tokens, prompts and replies are erased at completion; bounded encrypted review choices expire with the row. */
 interface DiscordInboxPayload {
   tenantId?: string;
   eventId: string;
@@ -25,6 +25,8 @@ interface DiscordInboxPayload {
   action?: DiscordIngressAction;
   encryptedToken?: string;
   encryptedReply?: string;
+  /** Immutable native decision context, encrypted and bounded by this interaction's expiry/TTL. */
+  encryptedReview?: string;
   commandResult?: DiscordCancelResult;
   state: 'queued' | 'processing' | 'reply' | 'done' | 'failed';
   receivedAt: number;
@@ -94,6 +96,7 @@ export function createDiscordInboxModel(
       action: { type: Schema.Types.Mixed, select: false },
       encryptedToken: { type: String, select: false },
       encryptedReply: { type: String, select: false },
+      encryptedReview: { type: String, select: false },
       commandResult: { type: Schema.Types.Mixed, select: false },
       state: {
         type: String,

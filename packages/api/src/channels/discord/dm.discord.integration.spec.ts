@@ -309,6 +309,7 @@ async function fixture(ordinary = true) {
     storage: runs,
     guard: handlers.service,
     resolvePrincipal: authority.resolvePrincipal,
+    publicBaseUrl: 'https://chat.example/prefix/',
     responseCredential: credentials.provision,
     feedbackEnabled: createDiscordFeedbackProjection({
       storage: feedbackStorage,
@@ -402,6 +403,8 @@ async function fixture(ordinary = true) {
     'delivery/begin': runHandlers.begin,
     'delivery/settle': runHandlers.settle,
     commit: runHandlers.commit,
+    review: runHandlers.review,
+    cancel: runHandlers.cancel,
   };
   for (const [path, handler] of Object.entries(operations))
     app.post(`${root}/:runId/${path}`, handler);
@@ -974,11 +977,13 @@ it('cancels only the current selected DM generation and validates the exact Stop
       { $set: { progress: { externalMessageKey: `${dmId}:777`, outcome: 'confirmed' } } },
     );
     expect((await f.command({ reference: run!.runId, messageId: '778' })).status).toBe(200);
-    expect((await f.reply())?.reply.content).toContain('no active run');
+    expect((await f.reply())?.reply.content).toBe('There is no active request to stop here.');
     expect((await models.ChannelRun.findOne().lean())?.cancellationRequested).toBe(false);
     f.state.enabled = false;
     expect((await f.command({ reference: run!.runId, messageId: '777' })).status).toBe(200);
-    expect((await f.reply())?.reply.content).toContain('Cancellation requested');
+    expect((await f.reply())?.reply.content).toContain(
+      'Stop requested. Waiting for the agent to confirm.',
+    );
     expect((await models.ChannelRun.findOne().lean())?.cancellationRequested).toBe(true);
   });
 });
@@ -1070,7 +1075,7 @@ it('keeps private review metadata available while DM execution is disabled and c
     models.DiscordDmSelection.updateOne({}, { $set: { revision: 'new-generation' } }),
   );
   expect((await f.command('cancel')).status).toBe(200);
-  expect((await f.reply())?.reply.content).toContain('no active run');
+  expect((await f.reply())?.reply.content).toBe('There is no active request to stop here.');
   await scoped(async () =>
     expect((await models.ChannelRun.findOne().lean())?.cancellationRequested).toBe(false),
   );
@@ -1205,3 +1210,46 @@ it.each(['revoked', 'replaced'] as const)(
     expect(f.scores).toEqual([]);
   },
 );
+
+it('authorizes the retained DM review with its exact stored admission and refuses superseded source selection', async () => {
+  const f = await fixture();
+  const run = await scoped(async () => {
+    await models.ChannelRun.updateOne(
+      {},
+      {
+        $set: {
+          state: 'requires_action',
+          execution: {
+            protocol: 'responses',
+            responseId: 'resp_private',
+            conversationId: 'private-conversation',
+          },
+          snapshot: {
+            responseId: 'resp_private',
+            status: 'requires_action',
+            text: '',
+            elapsedMs: 1,
+            pendingAction: {
+              actionId: 'private-action',
+              kind: 'tool_approval',
+              expiresAt: Date.now() + 60000,
+            },
+          },
+        },
+      },
+    );
+    return models.ChannelRun.findOne().lean();
+  });
+  if (!run) throw new Error('Missing private run');
+  const result = await f
+    .client()
+    .review(run.runId, run.admission.actor, run.principal.channelRevision, dmId);
+  expect(result.url).toBe('https://chat.example/prefix/responses/resp_private/review');
+  await expect(
+    f.client().review(run.runId, run.admission.actor, run.principal.channelRevision, parentId),
+  ).rejects.toMatchObject({ status: 403 });
+  await scoped(() => models.DiscordDmSelection.updateOne({}, { $set: { revision: 'superseded' } }));
+  await expect(
+    f.client().review(run.runId, run.admission.actor, run.principal.channelRevision, dmId),
+  ).rejects.toMatchObject({ status: 403 });
+});

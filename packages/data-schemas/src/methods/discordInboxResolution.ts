@@ -104,11 +104,13 @@ export function createDiscordInboxResolutionStorage(
       .session(session)
       .lean();
     if (!record) return null;
-    const textAsk =
-      record.routing !== 'inspection' && !record.thread && record.action?.kind === 'ask';
-    if (record.routing !== 'inspection' && !record.thread && !textAsk) return null;
+    const textCommand =
+      record.routing !== 'inspection' &&
+      !record.thread &&
+      ['ask', 'status', 'review', 'decide'].includes(record.action?.kind ?? '');
+    if (record.routing !== 'inspection' && !record.thread && !textCommand) return null;
     if (
-      textAsk &&
+      textCommand &&
       !record.dm &&
       !(await touchChannelAuthority(
         mongoose,
@@ -254,7 +256,7 @@ export function createDiscordInboxResolutionStorage(
           record.routing === 'inspection' ||
           record.thread ||
           record.state !== 'processing' ||
-          record.action?.kind !== 'ask' ||
+          !['ask', 'status', 'review', 'decide'].includes(record.action?.kind ?? '') ||
           record.inspectionEpoch === fence.epoch
         )
           return stale();

@@ -833,11 +833,11 @@ describe('signed native thread commands', () => {
       const customId = discordRunControl('cancel', run.runId);
       expect(
         (await signed('cancel', '', { customId, messageId: '789012345678901236' })).reply.content,
-      ).toContain('no active run');
+      ).toBe('There is no active request to stop here.');
       expect((await allRuns())[0].cancellationRequested).toBe(false);
       expect(
         (await signed('cancel', '', { customId, messageId: '789012345678901235' })).reply.content,
-      ).toContain('Cancellation requested');
+      ).toContain('Stop requested. Waiting for the agent to confirm.');
       expect((await allRuns())[0].cancellationRequested).toBe(true);
     }));
   it('refuses a private thread after the actor loses membership', () =>
@@ -869,7 +869,9 @@ describe('signed native thread commands', () => {
       expect(await allRuns()).toHaveLength(0);
       await linked();
       await signed('ask', 'Fresh prompt');
-      expect((await signed('cancel')).reply.content).toContain('Cancellation requested');
+      expect((await signed('cancel')).reply.content).toContain(
+        'Stop requested. Waiting for the agent to confirm.',
+      );
       const [stored] = await allRuns();
       expect(stored.admission.input).toBe('Fresh prompt');
       expect(stored.cancellationRequested).toBe(true);

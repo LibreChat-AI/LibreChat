@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type {
   ChannelRunPrincipal,
   ChannelRunState,
@@ -38,6 +39,29 @@ const denied = (): { ok: false; error: { code: 'authority_changed' } } => ({
 });
 
 export interface DiscordCommandStorage {
+  reviewRun(
+    scope: DiscordCommandScope,
+    now: number,
+    runId: string,
+    messageId?: string,
+  ): Promise<DiscordCommandResult<ChannelRunRecord | null>>;
+  saveReview(
+    scope: DiscordCommandScope,
+    encryptedReview: string,
+    now: number,
+  ): Promise<DiscordCommandResult<string>>;
+  updateReview(
+    scope: DiscordCommandScope,
+    reference: string,
+    previous: string,
+    next: string,
+    now: number,
+  ): Promise<boolean>;
+  readReview(
+    scope: DiscordCommandScope,
+    reference: string,
+    now: number,
+  ): Promise<DiscordCommandResult<string | null>>;
   latest(
     scope: DiscordCommandScope,
     now: number,
@@ -132,7 +156,110 @@ export function createDiscordCommandStorage(
     ...(run.execution?.conversationId ? { conversationId: run.execution.conversationId } : {}),
     ...(run.execution?.responseId ? { responseId: run.execution.responseId } : {}),
   });
+  function source(record: DiscordInboxRecord, messageId: string) {
+    const key = `${record.externalChannelId}:${messageId}`;
+    return {
+      $or: [
+        { 'progress.externalMessageKey': key, 'progress.outcome': 'confirmed' },
+        { receipts: { $elemMatch: { externalMessageKey: key, outcome: 'confirmed' } } },
+      ],
+    };
+  }
   return {
+    reviewRun: (scope, now, runId, messageId) =>
+      withRequiredTransaction(
+        mongoose,
+        async (session) => {
+          if (!(await authorized(scope, now, session))) return denied();
+          const run = await runs
+            .findOne({
+              ...filter(scope),
+              runId,
+              ...(messageId ? source(scope.record, messageId) : {}),
+            })
+            .session(session)
+            .lean();
+          return { ok: true as const, value: run };
+        },
+        indexes,
+      ),
+    saveReview: (scope, encryptedReview, now) => {
+      z.string().min(1).max(32768).parse(encryptedReview);
+      return withRequiredTransaction(
+        mongoose,
+        async (session) => {
+          if (!(await authorized(scope, now, session))) return denied();
+          const key = { applicationId: scope.record.applicationId, eventId: scope.record.eventId };
+          const current = await inbox
+            .findOne(key)
+            .select('+encryptedReview')
+            .session(session)
+            .lean();
+          if (!current) return denied();
+          if (current.encryptedReview) return { ok: true as const, value: current.encryptedReview };
+          await inbox.updateOne(key, { $set: { encryptedReview } }, { session });
+          return { ok: true as const, value: encryptedReview };
+        },
+        indexes,
+      );
+    },
+    readReview: (scope, reference, now) =>
+      withRequiredTransaction(
+        mongoose,
+        async (session) => {
+          if (!(await authorized(scope, now, session))) return denied();
+          const { record } = scope;
+          const found = await inbox
+            .findOne({
+              applicationId: record.applicationId,
+              applicationRevision: record.applicationRevision,
+              eventId: reference,
+              channelId: record.channelId,
+              channelRevision: record.channelRevision,
+              agentId: record.agentId,
+              externalChannelId: record.externalChannelId,
+              externalUserId: record.externalUserId,
+              expiresAt: { $gt: now },
+              state: { $in: ['reply', 'done'] },
+              ...(record.dm
+                ? {
+                    'dm.selectionId': record.dm.selectionId,
+                    'dm.selectionRevision': record.dm.selectionRevision,
+                  }
+                : { dm: { $exists: false } }),
+              ...(record.thread ? { thread: record.thread } : { thread: { $exists: false } }),
+            })
+            .select('+encryptedReview')
+            .session(session)
+            .lean();
+          return { ok: true as const, value: found?.encryptedReview ?? null };
+        },
+        indexes,
+      ),
+    updateReview: (scope, reference, previous, next, now) => {
+      z.string().min(1).max(32768).parse(next);
+      return withRequiredTransaction(
+        mongoose,
+        async (session) => {
+          if (!(await authorized(scope, now, session))) return false;
+          const result = await inbox.updateOne(
+            {
+              applicationId: scope.record.applicationId,
+              eventId: reference,
+              externalUserId: scope.record.externalUserId,
+              externalChannelId: scope.record.externalChannelId,
+              channelId: scope.record.channelId,
+              encryptedReview: previous,
+              expiresAt: { $gt: now },
+            },
+            { $set: { encryptedReview: next } },
+            { session },
+          );
+          return result.matchedCount === 1;
+        },
+        indexes,
+      );
+    },
     latest: (scope, now) =>
       withRequiredTransaction(
         mongoose,
