@@ -136,6 +136,14 @@ describe('applyGoogleAdminRefresh', () => {
     },
   );
 
+  it('throws OPENID_CLIENT_MISCONFIGURED when Google rejects the OAuth client', async () => {
+    fetchMock.mockResolvedValueOnce(makeStatus(401, { error: 'invalid_client' }));
+    await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({
+      code: 'OPENID_CLIENT_MISCONFIGURED',
+      status: 500,
+    });
+  });
+
   it('keeps network failures retryable', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
     await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({

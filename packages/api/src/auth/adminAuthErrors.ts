@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import { isProviderSessionUnavailableError } from '~/auth/openid/providerSession/errors';
 import { AdminExchangeError } from '~/auth/exchange';
 import { AdminRefreshError } from '~/auth/refresh';
@@ -26,21 +27,72 @@ export function mapAdminAuthError(error: unknown): AdminAuthErrorResponse | null
   return null;
 }
 
-/** Only an explicit invalid grant confirms that the user's renewal credentials were rejected. */
+/** OAuth error codes that end the admin session: the provider refused the user's credentials or
+ *  requires the user to sign in again. */
+const SESSION_ENDING_OAUTH_ERRORS = new Set([
+  'invalid_grant',
+  'interaction_required',
+  'login_required',
+  'consent_required',
+]);
+
+/** OAuth error codes that report a fault in this server's client configuration. A retry cannot
+ *  succeed and the user's credentials are not at fault. */
+const CLIENT_MISCONFIGURED_OAUTH_ERRORS = new Set([
+  'invalid_client',
+  'unauthorized_client',
+  'unsupported_grant_type',
+  'invalid_scope',
+  'invalid_request',
+]);
+
+export const OPENID_CLIENT_MISCONFIGURED = 'OPENID_CLIENT_MISCONFIGURED';
+
+function readOAuthError(error: unknown): { code?: string; status?: unknown } {
+  if (typeof error !== 'object' || error === null) {
+    return {};
+  }
+  const record = error as { error?: unknown; code?: unknown; status?: unknown };
+  const code =
+    typeof record.error === 'string'
+      ? record.error
+      : typeof record.code === 'string'
+        ? record.code
+        : undefined;
+  return { code, status: record.status };
+}
+
+/**
+ * Maps a failed refresh grant to its HTTP response. An OAuth error code counts only when the
+ * provider answered with status 400, 401 or 403, or with no status:
+ *  - a refused credential or a required sign-in answers `401 REFRESH_FAILED`;
+ *  - a client configuration fault answers `500 OPENID_CLIENT_MISCONFIGURED` and is logged as an
+ *    error;
+ *  - anything else (`server_error`, `temporarily_unavailable`, 5xx, 429, a network error, an
+ *    unknown code) answers a retryable `503 AUTH_SESSION_CHECK_UNAVAILABLE`.
+ */
 export function mapAdminRefreshError(error: unknown): AdminAuthErrorResponse {
   const mapped = mapAdminAuthError(error);
   if (mapped) {
     return mapped;
   }
-  const status =
-    typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined;
-  const rejected =
-    typeof error === 'object' &&
-    error !== null &&
-    (('error' in error && error.error === 'invalid_grant') ||
-      ('code' in error && error.code === 'invalid_grant'));
-  if (rejected && (status === undefined || status === 400 || status === 401 || status === 403)) {
+  const { code, status } = readOAuthError(error);
+  const confirmed = status === undefined || status === 400 || status === 401 || status === 403;
+  if (code && confirmed && SESSION_ENDING_OAUTH_ERRORS.has(code)) {
     return { status: 401, body: { error: 'Refresh failed', error_code: 'REFRESH_FAILED' } };
+  }
+  if (code && confirmed && CLIENT_MISCONFIGURED_OAUTH_ERRORS.has(code)) {
+    logger.error('[adminRefresh] The identity provider rejected the OAuth client configuration', {
+      oauthError: code,
+      status,
+    });
+    return {
+      status: 500,
+      body: {
+        error: 'Identity provider client is misconfigured',
+        error_code: OPENID_CLIENT_MISCONFIGURED,
+      },
+    };
   }
   return {
     status: 503,
