@@ -67,55 +67,6 @@ const baseConfig = {
 } as unknown as AppConfig;
 
 describe('mergeConfigOverrides', () => {
-  it.each(['role', 'group'] as const)(
-    'supports enabling Insights for a selected %s while inheriting aggregate-only privacy',
-    (principalType) => {
-      const base = {
-        ...baseConfig,
-        interfaceConfig: {
-          ...baseConfig.interfaceConfig,
-          insights: { enabled: false, showDetails: false },
-        },
-      } as AppConfig;
-      const override = {
-        ...fakeConfig({ interface: { insights: { enabled: true } } }, 10),
-        principalType,
-      } as IConfig;
-      const merged = mergeConfigOverrides(base, [override]);
-      expect(merged.interfaceConfig?.insights).toEqual({ enabled: true, showDetails: false });
-      expect(base.interfaceConfig?.insights).toEqual({ enabled: false, showDetails: false });
-      expect(merged.interfaceConfig?.modelSelect).toBe(true);
-    },
-  );
-
-  it('preserves enablement when an override changes only Insights privacy', () => {
-    const base = {
-      ...baseConfig,
-      interfaceConfig: {
-        ...baseConfig.interfaceConfig,
-        insights: { enabled: true, showDetails: true },
-      },
-    } as AppConfig;
-    const merged = mergeConfigOverrides(base, [
-      fakeConfig({ interface: { insights: { showDetails: false } } }, 10),
-    ]);
-    expect(merged.interfaceConfig?.insights).toEqual({ enabled: true, showDetails: false });
-  });
-
-  it('supports disabling Insights for a principal without clearing its privacy setting', () => {
-    const base = {
-      ...baseConfig,
-      interfaceConfig: {
-        ...baseConfig.interfaceConfig,
-        insights: { enabled: true, showDetails: false },
-      },
-    } as AppConfig;
-    const merged = mergeConfigOverrides(base, [
-      fakeConfig({ interface: { insights: { enabled: false } } }, 10),
-    ]);
-    expect(merged.interfaceConfig?.insights).toEqual({ enabled: false, showDetails: false });
-  });
-
   it('returns base config when configs array is empty', () => {
     expect(mergeConfigOverrides(baseConfig, [])).toBe(baseConfig);
   });

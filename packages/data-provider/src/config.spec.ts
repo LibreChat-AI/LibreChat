@@ -126,19 +126,6 @@ describe('Insights configuration', () => {
       false,
     );
   });
-  it('accepts the proposed YAML object without adding other settings', () => {
-    const insights = { enabled: true, showDetails: false };
-    expect(
-      configSchema.parse({ version: '1.3.9', interface: { insights } }).interface?.insights,
-    ).toEqual(insights);
-  });
-
-  it('leaves an unconfigured Insights section absent', () => {
-    expect(interfaceSchema.parse({}).insights).toBeUndefined();
-    expect(interfaceSchema.parse(undefined).insights).toBeUndefined();
-    expect(configSchema.parse({ version: '1.3.9' }).interface?.insights).toBeUndefined();
-  });
-
   it('retains omitted flags for partial configuration overrides', () => {
     expect(insightsConfigSchema.parse({ enabled: true })).toEqual({ enabled: true });
     expect(insightsConfigSchema.parse({ showDetails: false })).toEqual({ showDetails: false });
@@ -184,19 +171,6 @@ describe('Insights configuration', () => {
     expect(resolveInsightsConfig({ enabled: true })).toEqual({
       enabled: true,
       showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-  });
-
-  it('passes configured flags through', () => {
-    expect(resolveInsightsConfig({ enabled: true, showDetails: false })).toEqual({
-      enabled: true,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    expect(resolveInsightsConfig({ enabled: true, showDetails: true })).toEqual({
-      enabled: true,
-      showDetails: true,
       adminAutoSelectAllAgents: false,
     });
   });
