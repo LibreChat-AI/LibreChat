@@ -32,16 +32,14 @@ import {
   useFailedRevealTrigger,
   useExpandCollapse,
   EXPAND_TRANSITION,
-} from '@librechat/chat/components';
-import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { RailHover } from '@librechat/chat/components';
-import type { CSSProperties, ReactNode } from 'react';
-import {
   getLiveActivity,
   getSpanIconNames,
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
-} from './live';
+} from '@librechat/chat/components';
+import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { RailHover } from '@librechat/chat/components';
+import type { CSSProperties, ReactNode } from 'react';
 import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
@@ -54,6 +52,7 @@ import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
 import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
+import { useFoldParts } from './fold';
 import { cn } from '~/utils';
 
 export { PhaseLabel } from '@librechat/chat/components';
@@ -358,6 +357,7 @@ export default function ActivityPhaseGroup({
   const [isExpanded, setIsExpanded] = useState(foldsIn);
   const [isSettled, setIsSettled] = useState(!foldsIn);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  useFoldParts(rootRef, outcomeParts);
   const headerRef = useRef<HTMLDivElement | null>(null);
   const railHover = useRailHover();
   const railScope = useMemo(() => ({ header: headerRef, expanded: isExpanded }), [isExpanded]);
@@ -571,6 +571,7 @@ export default function ActivityPhaseGroup({
             onClick={handleToggle}
             aria-expanded={isExpanded}
             aria-controls={panelId}
+            data-fold-toggle=""
             /** A live header is named by its own content: the line it shows
              *  is resolved inside `LivePhaseHeader`, below this component. It
              *  is named by that line ALONE: the polite region beside it holds

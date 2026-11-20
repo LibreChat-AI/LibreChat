@@ -148,11 +148,15 @@ describe('Header stacking', () => {
     expect(session.mock.calls[0][0]).toMatchObject({ autoOpen: false });
   });
 
-  test('offers the session control on a chat that has not been saved yet', () => {
-    mockRoute.current = undefined;
-    render(<Header />);
-    expect(session.mock.calls[0][0]).toMatchObject({ conversationId: 'new' });
-  });
+  test.each([undefined, 'new'])(
+    'offers no session control on a chat nothing has been sent in (route %s)',
+    (route) => {
+      mockRoute.current = route;
+      render(<Header />);
+      expect(session).not.toHaveBeenCalled();
+      expect(backgroundTasks).not.toHaveBeenCalled();
+    },
+  );
 
   test('keeps the popover when the deployment turns the session rail off', () => {
     mockStartupConfig.current = { interface: { sessionRail: false } };

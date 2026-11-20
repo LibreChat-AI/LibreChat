@@ -3,6 +3,7 @@ import { useSetAtom } from 'jotai';
 import type { NamedExoticComponent, ReactElement } from 'react';
 import type { ThreadMessageProps } from '../../../react/messages/types';
 import type { ThreadRow } from '../../../core/thread';
+import { useRowMounted } from '../../../react/messages/useProgressiveRowMount';
 import { activityParentMessageIds } from '../../../core/activity';
 import { useMessagesHost } from '../../../react/messages/host';
 import { siblingIdxFamily } from '../../../react/thread';
@@ -13,9 +14,16 @@ type RowProps = Pick<ThreadMessageProps, 'currentEditId' | 'setCurrentEditId'> &
   row: ThreadRow;
 };
 
-/** One visible row of the flat thread: the message plus its activity group. */
-function Row({ row, currentEditId, setCurrentEditId }: RowProps): ReactElement {
+/**
+ * One visible row of the flat thread: the message plus its activity group.
+ *
+ * The row waits on the progressive mount window itself. A wrapper that did the waiting would
+ * render for every row on every list update, and the list updates on every frame of a reply:
+ * this component is memoized on its row, so a row that did not change is not looked at.
+ */
+function Row({ row, currentEditId, setCurrentEditId }: RowProps): ReactElement | null {
   const { renderActivity } = useMessagesHost();
+  const mounted = useRowMounted(row.depth);
   const { message, siblingIdx, siblingCount, parentKey } = row;
   const setSiblingIdx = useSetAtom(siblingIdxFamily(parentKey));
   const setSiblingIdxRev = useCallback(
@@ -24,6 +32,10 @@ function Row({ row, currentEditId, setCurrentEditId }: RowProps): ReactElement {
     },
     [siblingCount, setSiblingIdx],
   );
+
+  if (!mounted) {
+    return null;
+  }
 
   const activityIds = activityParentMessageIds(message, row.childCount > 0, currentEditId);
   const hasParallelContent = !message.isCreatedByUser && hasParallelLanes(message.content);

@@ -44,6 +44,8 @@ describe('ToolGroupHeader', () => {
     const header = defaults.headerRef.current;
     expect(button).toHaveAttribute('type', 'button');
     expect(button).toHaveAttribute('aria-expanded', 'false');
+    /** The hook something outside the fold opens it by, when it follows a call inside. */
+    expect(button).toHaveAttribute('data-fold-toggle');
     expect(header?.firstElementChild).toBe(button);
     expect(header?.lastElementChild).toBe(defaults.actionSlotRef.current);
     expect(button).not.toContainElement(defaults.actionSlotRef.current);

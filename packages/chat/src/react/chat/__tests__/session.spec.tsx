@@ -1,13 +1,14 @@
 /**
  * @jest-environment jsdom
  */
+import { useSyncExternalStore } from 'react';
 import { getDefaultStore } from 'jotai';
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import type { TConversation, TMessage, TSubmission } from 'librechat-data-provider';
 import type { ChatHost, ChatMessagesQuery } from '../host';
 import type { ChatContract } from '../contract';
 import { submissionByIndex, clearSubmissions, isSubmittingFamily } from '../../submission';
-import { ChatSessionProvider } from '../session';
+import { ChatSessionProvider, useChatSessionMessages } from '../session';
 import { useChatContext } from '../context';
 import { ChatHostProvider } from '../host';
 
@@ -165,5 +166,83 @@ describe('ChatSessionProvider', () => {
     renderSession(host);
 
     expect(order.slice(0, 5)).toEqual(['messages', 'contract', 'stream', 'resume', 'drain']);
+  });
+
+  describe('with its pane given as an element', () => {
+    /** A host whose messages change the way a streamed reply changes them. */
+    function createLiveHost() {
+      let query: ChatMessagesQuery = { messages, isLoading: false, isFetching: false };
+      const listeners = new Set<() => void>();
+      const subscribe = (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      };
+      const asked = jest.fn();
+      const useMessages = (id: string | undefined, options: object): ChatMessagesQuery => {
+        asked(id, options);
+        return useSyncExternalStore(subscribe, () => query);
+      };
+      const write = (next: TMessage[]) =>
+        act(() => {
+          query = { ...query, messages: next };
+          listeners.forEach((listener) => listener());
+        });
+      return { host: { useMessages } as unknown as ChatHost, write, asked };
+    }
+
+    it('redraws what reads the messages on every change, and not the pane around it', () => {
+      const { host, write, asked } = createLiveHost();
+      const drawn = { pane: 0, reader: [] as Array<TMessage[] | null> };
+      function Reader() {
+        drawn.reader.push(useChatSessionMessages('convo-1').messages);
+        return null;
+      }
+      function Pane() {
+        drawn.pane += 1;
+        return <Reader />;
+      }
+      render(
+        <ChatHostProvider host={host}>
+          <ChatSessionProvider index={1} conversationId="convo-1">
+            <Pane />
+          </ChatSessionProvider>
+        </ChatHostProvider>,
+      );
+      expect(drawn.pane).toBe(1);
+      expect(drawn.reader[drawn.reader.length - 1]).toBe(messages);
+      /** The session loads the conversation; the reader follows that and loads nothing. */
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: false });
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: false, enabled: false });
+      const sessions = mockUseChatHelpers.mock.calls.length;
+
+      const longer = [...messages, { messageId: 'm-2' } as TMessage];
+      write(longer);
+      write([...longer, { messageId: 'm-3' } as TMessage]);
+
+      /** The session itself still ran for each change, as its hooks need to. */
+      expect(mockUseChatHelpers.mock.calls.length).toBe(sessions + 2);
+      expect(drawn.reader[drawn.reader.length - 1]).toHaveLength(3);
+      expect(drawn.pane).toBe(1);
+    });
+
+    it('still calls a pane given as a function with the messages on every change', () => {
+      const { host, write } = createLiveHost();
+      const pane = jest.fn(() => null);
+      render(
+        <ChatHostProvider host={host}>
+          <ChatSessionProvider index={1} conversationId="convo-1">
+            {pane}
+          </ChatSessionProvider>
+        </ChatHostProvider>,
+      );
+      const longer = [...messages, { messageId: 'm-2' } as TMessage];
+      write(longer);
+
+      expect(pane).toHaveBeenLastCalledWith({
+        messages: longer,
+        isLoading: false,
+        isFetching: false,
+      });
+    });
   });
 });

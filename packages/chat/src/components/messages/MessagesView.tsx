@@ -9,6 +9,7 @@ import {
   createRowGates,
   RowMountProvider,
   useProgressiveRowMount,
+  pinsByHand,
 } from '../../react/messages/useProgressiveRowMount';
 import { OffscreenRowsProvider, useOffscreenRows } from '../../react/messages/offscreen';
 import useMessageScrolling from '../../react/messages/useMessageScrolling';
@@ -144,6 +145,7 @@ export default function MessagesView({
     handleSmoothToRef,
     debouncedHandleScroll,
     handleNearBottomChange,
+    handleInsertAbove,
   } = useMessageScrolling({
     messagesTree,
     conversationId,
@@ -218,6 +220,7 @@ export default function MessagesView({
     conversationId: treeConversationId,
     scrollableRef,
     gates,
+    onInsertAbove: handleInsertAbove,
   });
   useEffect(() => {
     const isNearBottom = measureNearBottom();
@@ -234,12 +237,13 @@ export default function MessagesView({
   return (
     <div className="relative flex-1 overflow-hidden overflow-y-auto">
       <div className="relative h-full">
-        {/* The mount hook pins the anchor row itself (document-space measurement); native
-            scroll anchoring reacting to the same insertions would double-correct. */}
+        {/* While the mount hook pins the anchor row itself (document-space measurement), the
+            browser's scroll anchoring is off: the two reacting to the same insertions would
+            double-correct. Otherwise the browser holds the reader and the hook stands down. */}
         <div
           className={cn(
             'h-full w-full scrollbar-gutter-stable overflow-y-auto',
-            mountWindow != null && '[overflow-anchor:none]',
+            mountWindow != null && pinsByHand(isSubmitting) && '[overflow-anchor:none]',
           )}
           onScroll={debouncedHandleScroll}
           ref={scrollableRef}

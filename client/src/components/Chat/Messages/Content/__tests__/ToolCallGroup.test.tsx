@@ -12,9 +12,11 @@ import {
   ToolAuthWarning,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import { visitTaskTarget } from '~/components/Chat/BackgroundTasks/jump';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { HeaderActionSlotContext } from '../slot';
 import ToolCallGroup from '../ToolCallGroup';
+import { foldHolds } from '../fold';
 
 const mockMCPServerNames: string[] = [];
 
@@ -183,7 +185,6 @@ jest.mock('~/utils', () => ({
   getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   hasPendingApprovalInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingApprovalInPart,
-  hasPendingAuthInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingAuthInPart,
 }));
 
 jest.mock('../Parts', () => ({
@@ -2273,5 +2274,69 @@ describe('ToolCallGroup sole tool', () => {
     fireEvent.click(screen.getByRole('button', { expanded: false }));
     expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
     expect(screen.getByTestId('probe-1')).toHaveTextContent('false');
+  });
+});
+
+/**
+ * A closed group has drawn none of its rows. Something that wants one of its calls on screen
+ * (the session rail, taking a reader to a background tool) has to open the group first, and has
+ * only the call's id to go on.
+ */
+describe('ToolCallGroup as a fold a call can be followed into', () => {
+  const parts = [
+    { part: makePart('t1'), idx: 0 },
+    { part: makePart('t2'), idx: 1 },
+  ];
+
+  it('answers for the calls it holds and opens when one of them is asked for', async () => {
+    const { container } = render(
+      <RecoilRoot>
+        <div id="message-fold">
+          <ToolCallGroup
+            parts={parts}
+            isSubmitting={false}
+            isLast={false}
+            showThinking={false}
+            lastContentIdx={1}
+            followedByAnswer
+            renderPart={(part, idx) => (
+              <div
+                key={idx}
+                data-task-tool-call={
+                  part.type === ContentTypes.TOOL_CALL
+                    ? part[ContentTypes.TOOL_CALL]?.id
+                    : undefined
+                }
+              />
+            )}
+          />
+        </div>
+      </RecoilRoot>,
+    );
+
+    const root = container.querySelector('[data-fold-root]') as HTMLElement;
+    expect(foldHolds(root, 't2')).toBe(true);
+    expect(foldHolds(root, 't9')).toBe(false);
+    const toggle = root.querySelector('[data-fold-toggle]') as HTMLElement;
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(container.querySelector('[data-task-tool-call="t2"]')).toBeNull();
+
+    const reached = visitTaskTarget({
+      id: 'tool:task',
+      kind: 'tool',
+      name: 'fetch_image',
+      status: 'completed',
+      messageId: 'message-fold',
+      toolCallId: 't2',
+    });
+
+    expect(reached).toBe(true);
+    const row = await waitFor(() => {
+      const drawn = container.querySelector<HTMLElement>('[data-task-tool-call="t2"]');
+      expect(drawn).not.toBeNull();
+      return drawn as HTMLElement;
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(row).toHaveFocus());
   });
 });

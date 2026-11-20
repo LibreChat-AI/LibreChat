@@ -1,7 +1,12 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
 import { Constants, ContentTypes, Tools, imageGenTools } from 'librechat-data-provider';
-import { PendingSkillCall, Container, HiddenAttachmentsContext } from '@librechat/chat/components';
+import {
+  Container,
+  blocksLiveFold,
+  PendingSkillCall,
+  HiddenAttachmentsContext,
+} from '@librechat/chat/components';
 import {
   hasParallelLanes,
   parallelLaneGroups,
@@ -58,7 +63,6 @@ import EditContentParts from './EditContentParts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
-import { blocksLiveFold } from './live';
 import Part from './Part';
 
 /** An empty TEXT part — the placeholder some endpoints seed in

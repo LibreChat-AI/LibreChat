@@ -7,7 +7,9 @@
     "type": "git",
     "url": "https://github.com/LibreChat-AI/LibreChat"
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "**/*.css"
+  ],
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "./dist/index.d.cts",
@@ -42,6 +44,8 @@
         "default": "./dist/components.cjs"
       }
     },
+    "./locales/*": "./dist/locales/*",
+    "./style.css": "./dist/style.css",
     "./package.json": "./package.json"
   },
   "files": [
@@ -51,6 +55,8 @@
     "clean": "rimraf dist",
     "b:clean": "bun run rimraf dist",
     "build": "npm run clean && tsdown",
+    "build:locales": "node ../../scripts/i18n-chat.mts",
+    "prepack": "npm run build && npm run build:locales",
     "b:build": "bun run b:clean && bun run tsdown",
     "build:watch": "tsdown --watch",
     "typecheck": "node ../../scripts/typecheck.mts && node ../../scripts/typecheck.mts -p test/tsconfig.json",

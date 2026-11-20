@@ -18,6 +18,7 @@ module.exports = {
   moduleNameMapper: {
     '^@librechat/chat$': '<rootDir>/src/index.ts',
     '^@librechat/chat/(react|components)$': '<rootDir>/src/$1.ts',
+    '^@librechat/chat/style\\.css$': '<rootDir>/src/style.css',
   },
   // The core runs without a DOM; a React spec opts into jsdom with a docblock.
   testEnvironment: 'node',

@@ -1,8 +1,9 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
+import type { TranslationKeys } from '@librechat/client';
 import type { TOptions } from 'i18next';
-import type { TranslationKeys } from '~/hooks';
-import { firstErrorLine, getFailedLines } from '../live';
+import { firstErrorLine } from '../../../../core/parts/output';
+import { getFailedLines } from '../live';
 
 const localize = (key: TranslationKeys, values?: TOptions): string =>
   key === 'com_ui_failed_subject' ? `Failed: ${String(values?.[0])}` : key;

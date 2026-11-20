@@ -22,9 +22,11 @@ export const mcpValuesAtomFamily = atomFamily((conversationId: string | null) =>
 });
 
 /**
- * Global storage atom for MCP pinned state (shared across all conversations)
+ * Global storage atom for MCP pinned state (shared across all conversations).
+ * Unpinned until `interface.defaultPinnedTools` seeds it or the user pins it, like
+ * the built-in tools: the pin puts the MCP Servers chip on the composer bar.
  */
-export const mcpPinnedAtom = atomWithStorage<boolean>(LocalStorageKeys.PIN_MCP_, true, undefined, {
+export const mcpPinnedAtom = atomWithStorage<boolean>(LocalStorageKeys.PIN_MCP_, false, undefined, {
   getOnInit: true,
 });
 

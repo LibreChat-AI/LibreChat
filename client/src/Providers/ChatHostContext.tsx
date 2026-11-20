@@ -89,7 +89,8 @@ function useMessageCache(): ChatMessageCache {
 /** The conversation's messages query. Refetches stale caches on mount: navigation invalidates
  *  (not removes) messages, so a warm conversation renders instantly from cache and reconciles in
  *  the background instead of unmounting into a spinner. A payload or failure `ChatRoute` just
- *  prefetched counts as this mount's own load. */
+ *  prefetched counts as this mount's own load. With `enabled: false` it is a second reader of
+ *  that query, which never fetches. */
 function useMessages(
   conversationId: string | undefined,
   { isStreaming, enabled = true }: { isStreaming: boolean; enabled?: boolean },
@@ -102,7 +103,8 @@ function useMessages(
     conversationId ?? '',
     {
       enabled: enabled && !!conversationId && conversationId !== Constants.SEARCH,
-      refetchOnMount: refetchMessagesOnMount,
+      /** A reader that only follows the query leaves its mount, and the prefetch's mark, alone. */
+      ...(enabled && { refetchOnMount: refetchMessagesOnMount }),
     },
     { isStreaming },
   );
