@@ -391,5 +391,5 @@ export {
   getSpanIconNames,
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
-} from './components/parts/phase/live';
-export type { LiveActivity } from './components/parts/phase/live';
+} from './components/parts/phase/activity';
+export type { LiveActivity } from './components/parts/phase/activity';
