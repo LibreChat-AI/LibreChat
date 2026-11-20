@@ -1,16 +1,28 @@
+import { DEFAULT_REFRESH_TOKEN_EXPIRY } from '@librechat/data-schemas';
 import type {
   ProviderSessionOperationData,
   ProviderSessionEstablishResult,
   ProviderSessionAuthorizeResult,
   ProviderSessionRevokeResult,
 } from '@librechat/data-schemas';
+import type { ProviderSessionRef } from 'librechat-data-provider';
+import type {
+  EstablishOAuthProviderSessionInput,
+  PersistOpenIDAdminProviderSessionBindingDeps,
+  PersistOpenIDAdminProviderSessionBindingInput,
+} from './callback';
 import type { BackchannelLogoutRegistration, ResolvedBackchannelLogoutConfig } from './config';
 import type { ProviderSessionAuthorizer } from './authorize';
 import type { OpenIdIssuerSource } from '~/auth/openid';
 import type { OpenIDLogger } from '../types';
+import {
+  establishOAuthProviderSession,
+  persistOpenIDAdminProviderSessionBinding,
+} from './callback';
 import { resolveBackchannelLogoutConfig, createMemoizedConfigLoader } from './config';
 import { createProviderSessionAuthorizer } from './authorize';
 import { getOpenIdIssuer } from '~/auth/openid';
+import { math } from '~/utils/math';
 
 export interface ProviderSessionServiceMethods {
   establish: (data: ProviderSessionOperationData) => Promise<ProviderSessionEstablishResult>;
@@ -29,6 +41,8 @@ export interface CreateProviderSessionServiceOptions {
   /** Returns the configured OpenID client ID, read lazily per call so a runtime config change
    *  is picked up without restarting the service. */
   getClientId: () => string | undefined;
+  /** Stores the admin-exchange refresh token with its provider-session binding. */
+  storeOpenIDSession: PersistOpenIDAdminProviderSessionBindingDeps['storeOpenIDSession'];
   logger: OpenIDLogger;
 }
 
@@ -49,6 +63,13 @@ export interface ProviderSessionService {
   /** Lazy proxy: each method resolves `getProviderSessionAuthorizer()` per call, so callers can
    *  capture this object once, at construction time. */
   providerSessionAuthorizer: ProviderSessionAuthorizer;
+  /** OAuth callback step, run before any cookie setter: `null` for a non-OpenID login,
+   *  `undefined` once `res` has redirected on denial, so the caller must stop. */
+  establishOAuthCallback: (
+    input: EstablishOAuthProviderSessionInput,
+  ) => Promise<ProviderSessionRef | null | undefined>;
+  /** Admin-panel OAuth step: persists the exchange credential's provider-session binding. */
+  persistOAuthAdminBinding: (input: PersistOpenIDAdminProviderSessionBindingInput) => Promise<void>;
 }
 
 /** Wires the provider-session authorizer, its config loader, and the OpenID client lookup from
@@ -58,6 +79,7 @@ export function createProviderSessionService({
   getAppConfig,
   getOpenIdClient,
   getClientId,
+  storeOpenIDSession,
   logger,
 }: CreateProviderSessionServiceOptions): ProviderSessionService {
   async function loadBackchannelLogoutConfig(): Promise<ResolvedBackchannelLogoutConfig> {
@@ -120,6 +142,30 @@ export function createProviderSessionService({
     getMode: () => getProviderSessionAuthorizer().getMode(),
   };
 
+  function establishOAuthCallback(
+    input: EstablishOAuthProviderSessionInput,
+  ): Promise<ProviderSessionRef | null | undefined> {
+    return establishOAuthProviderSession(
+      {
+        authorizer: providerSessionAuthorizer,
+        getProviderSessionClient,
+        logger,
+        /** Read per call, like the session it binds, so a changed env value applies. */
+        refreshTokenExpiryMs: math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+      },
+      input,
+    );
+  }
+
+  function persistOAuthAdminBinding(
+    input: PersistOpenIDAdminProviderSessionBindingInput,
+  ): Promise<void> {
+    return persistOpenIDAdminProviderSessionBinding(
+      { authorizer: providerSessionAuthorizer, storeOpenIDSession, logger },
+      input,
+    );
+  }
+
   return {
     getProviderSessionAuthorizer,
     getBackchannelLogoutConfig,
@@ -127,5 +173,7 @@ export function createProviderSessionService({
     getProviderSessionClient,
     revokeProviderSession,
     providerSessionAuthorizer,
+    establishOAuthCallback,
+    persistOAuthAdminBinding,
   };
 }
