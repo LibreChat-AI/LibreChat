@@ -196,6 +196,7 @@ export function createDiscordChannelRuntime(
           publicBaseUrl: deps.publicBaseUrl || 'http://localhost:3080',
         })
       : undefined,
+    nativeReviews: async () => (await deps.policy.read()).nativeReviews,
     enabled,
     dmEnabled: async () => (await deps.policy.read()).dm.enabled,
   });

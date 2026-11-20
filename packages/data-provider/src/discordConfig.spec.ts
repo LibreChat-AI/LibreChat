@@ -19,6 +19,12 @@ it('keeps DM selection opt-in with bounded code/session lifetimes and applicatio
     expect(discordChannelConfigSchema.safeParse({ dm }).success).toBe(false);
 });
 
+it('keeps native Discord reviews off unless an operator enables them', () => {
+  expect(discordChannelConfigSchema.parse({}).nativeReviews).toBe(false);
+  expect(discordChannelConfigSchema.parse({ nativeReviews: true }).nativeReviews).toBe(true);
+  expect(discordChannelConfigSchema.safeParse({ nativeReviews: 'yes' }).success).toBe(false);
+});
+
 it('keeps Discord disabled unless explicitly enabled and preserves Slack defaults', () => {
   expect(channelConfigSchema.parse({}).discord).toBeUndefined();
   expect(discordChannelConfigSchema.parse({}).enabled).toBe(false);

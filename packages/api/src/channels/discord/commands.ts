@@ -40,6 +40,8 @@ export function createDiscordCommandExecutor(deps: {
     fence: DiscordInboxFence,
     principal: ChannelRunPrincipal,
   ) => Promise<DiscordPrivateReply>;
+  /** Resolves the operator's `nativeReviews` setting on each call; absent means enabled. */
+  nativeReviews?: () => Promise<boolean>;
   review?: (
     scope: DiscordCommandScope,
     channel: AgentChannelRecord,
@@ -227,8 +229,9 @@ export function createDiscordCommandExecutor(deps: {
       });
     }
     const scope = { record, fence, principal };
+    const nativeReviews = async () => (deps.nativeReviews ? deps.nativeReviews() : true);
     if (action.kind === 'review' || action.kind === 'decide')
-      return deps.review
+      return deps.review && (await nativeReviews())
         ? reply(record, 'reported', await deps.review(scope, channel))
         : unavailable(record);
     if (action.kind === 'cancel') {
@@ -251,7 +254,7 @@ export function createDiscordCommandExecutor(deps: {
         content: 'You have no recent requests here.',
       });
     const run = latest.value;
-    if (run.state === 'requires_action' && deps.review)
+    if (run.state === 'requires_action' && deps.review && (await nativeReviews()))
       return reply(record, 'reported', await deps.review(scope, channel, run.runId));
     const labels = {
       queued: 'queued',

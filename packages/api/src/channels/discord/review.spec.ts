@@ -67,7 +67,10 @@ const tool: Agents.HumanInterruptPayload = {
     { action_name: 'send_email', tool_call_id: 'call-a', allowed_decisions: ['approve', 'reject'] },
   ],
 };
-async function fixture(payload: Agents.HumanInterruptPayload = tool) {
+async function fixture(
+  payload: Agents.HumanInterruptPayload = tool,
+  nativeReviews: (() => Promise<boolean>) | undefined = undefined,
+) {
   await linked();
   await invoke({ kind: 'ask', prompt: 'Please work' });
   const [run] = await allRuns();
@@ -205,6 +208,7 @@ async function fixture(payload: Agents.HumanInterruptPayload = tool) {
     runs,
     commands,
     review,
+    nativeReviews,
     enabled: async () => true,
     now: () => now,
   });
@@ -259,6 +263,20 @@ it('records one canonical once approval and returns its receipt on replay withou
       saved?.resume?.intentId,
     );
     expect((await f.command(control(reply, 1))).reply.content).toContain('no longer available');
+  }));
+it('keeps review in the browser and rejects native decisions while native reviews are off', () =>
+  scope(async () => {
+    let enabled = true;
+    const f = await fixture(tool, async () => enabled);
+    const opened = await f.open();
+    expect(opened.reply.actions?.[0].label).toBe('Approve once');
+    enabled = false;
+    const refused = await f.command(control(opened.reply));
+    expect(refused.reply.content).toContain('no longer available');
+    expect(refused.reply.actions).toBeUndefined();
+    expect((await f.storage.read(f.responseOwner, f.responseId))?.resume).toBeUndefined();
+    const reopened = await f.open();
+    expect(JSON.stringify(reopened.reply)).not.toContain('Private tool arguments');
   }));
 it('keeps review private from another Discord actor even when the LibreChat account is the same', () =>
   scope(async () => {
