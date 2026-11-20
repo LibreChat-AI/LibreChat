@@ -1,5 +1,9 @@
 import React, { useRef, useState } from 'react';
+import { RecoilRoot } from 'recoil';
+import { dataService } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { TStartupConfig } from 'librechat-data-provider';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
 import { ServersChip, ServersCatalog, useServersEntry } from '../Servers';
 
@@ -9,10 +13,12 @@ import { ServersChip, ServersCatalog, useServersEntry } from '../Servers';
  * server rather than the palette's first five.
  */
 
-jest.mock('~/hooks/MCP/useMCPRefresh', () => ({ useMCPRefresh: jest.fn() }));
-const { useMCPRefresh: mockMCPRefresh } = jest.requireMock('~/hooks/MCP/useMCPRefresh') as {
-  useMCPRefresh: jest.Mock;
-};
+/* A copy, so the HTTP calls below can be spied on. */
+jest.mock('librechat-data-provider', () => {
+  const actual =
+    jest.requireActual<typeof import('librechat-data-provider')>('librechat-data-provider');
+  return { ...actual, dataService: { ...actual.dataService } };
+});
 
 let mockIsPinned = true;
 const mockSetIsPinned = jest.fn();
@@ -75,39 +81,59 @@ function Harness({ entries }: { entries: PaletteEntry[] }) {
   );
 }
 
+/** Polls fast enough to observe a second status read within a test. */
+const STATUS_INTERVAL = 50;
+
+function renderHarness(entries: PaletteEntry[]) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <RecoilRoot>
+      <QueryClientProvider client={client}>
+        <Harness entries={entries} />
+      </QueryClientProvider>
+    </RecoilRoot>,
+  );
+}
+
 const chip = () => screen.queryByTestId('composer-mcp-servers');
 
 describe('MCP Servers chip', () => {
   beforeEach(() => {
     mockIsPinned = true;
     mockSetIsPinned.mockClear();
-    mockMCPRefresh.mockClear();
+    jest.restoreAllMocks();
+    jest.spyOn(dataService, 'getStartupConfig').mockResolvedValue({
+      interface: { mcpServers: { statusRefreshInterval: STATUS_INTERVAL } },
+    } as unknown as TStartupConfig);
+    jest
+      .spyOn(dataService, 'getMCPConnectionStatus')
+      .mockResolvedValue({ success: true, connectionStatus: {} } as Awaited<
+        ReturnType<typeof dataService.getMCPConnectionStatus>
+      >);
   });
 
   it('appears while the MCP pin is on', () => {
-    render(<Harness entries={SERVERS} />);
+    renderHarness(SERVERS);
     expect(chip()).toHaveTextContent('com_ui_mcp_servers');
   });
 
   it('stays off while the MCP pin is off', () => {
     mockIsPinned = false;
-    render(<Harness entries={SERVERS} />);
+    renderHarness(SERVERS);
     expect(chip()).toBeNull();
   });
 
   it('stays off when there is no server to list', () => {
-    render(<Harness entries={[tool('web_search')]} />);
+    renderHarness([tool('web_search')]);
     expect(chip()).toBeNull();
   });
 
   it('opens every server in the MCP Servers dialog, whose cards select them', async () => {
-    render(<Harness entries={SERVERS} />);
-    expect(mockMCPRefresh).toHaveBeenLastCalledWith({ enabled: false });
+    renderHarness(SERVERS);
 
     fireEvent.click(screen.getByRole('button', { name: OPEN_LABEL }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('com_ui_mcp_servers');
-    expect(mockMCPRefresh).toHaveBeenLastCalledWith({ enabled: true });
     const cards = dialog.querySelectorAll('li > div > button[aria-pressed]');
     expect(cards).toHaveLength(SERVERS.length);
 
@@ -118,8 +144,26 @@ describe('MCP Servers chip', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
+  it('polls server statuses only while the dialog is open', async () => {
+    const status = jest.mocked(dataService.getMCPConnectionStatus);
+    renderHarness(SERVERS);
+    await waitFor(() => expect(dataService.getStartupConfig).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, STATUS_INTERVAL * 3));
+    expect(status).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: OPEN_LABEL }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(status.mock.calls.length).toBeGreaterThanOrEqual(2));
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const settled = status.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, STATUS_INTERVAL * 4));
+    expect(status).toHaveBeenCalledTimes(settled);
+  });
+
   it("unpins through the user's MCP pin", () => {
-    render(<Harness entries={SERVERS} />);
+    renderHarness(SERVERS);
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_unpin' }));
     expect(mockSetIsPinned).toHaveBeenCalledWith(false);
   });
