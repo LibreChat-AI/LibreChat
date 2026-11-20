@@ -5,7 +5,27 @@ const requiredScenarios = [
   'discord-durable-response-and-actor-isolation',
   'discord-dm-selection-ask-and-output',
   'discord-dm-revoke-fences-later-prompts',
+  'discord-native-mention-exactly-once',
+  'discord-native-thread-actor-lanes',
+  'discord-native-dm-selection-and-revoke',
 ];
+
+/**
+ * Signed ingress and native Gateway ingestion need different backend policy, so they run as separate
+ * Playwright passes. The gate reads their reports together: a pass that never ran leaves its
+ * scenarios missing, and any runner error in either pass fails the lane.
+ */
+export function mergeDiscordReports(reports) {
+  assert.ok(Array.isArray(reports) && reports.length > 0, 'Missing Discord Playwright reports');
+  for (const report of reports) {
+    assert.ok(Array.isArray(report?.suites), 'Missing Discord Playwright suites');
+    assert.ok(Array.isArray(report.errors), 'Missing Discord Playwright error list');
+  }
+  return {
+    errors: reports.flatMap((report) => report.errors),
+    suites: reports.flatMap((report) => report.suites),
+  };
+}
 
 /** A successful Playwright process can still have skipped every opt-in scenario. */
 export function assertDiscordResults(report) {
