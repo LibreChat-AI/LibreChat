@@ -56,6 +56,7 @@
   "com_ui_discord_binding_replace_help": "Replace this channel binding with this agent? The previous binding will stop accepting new requests. Everyone must grant personal consent again.",
   "com_ui_discord_title": "Discord",
   "com_ui_discord_description": "Connect Discord apps and servers.",
+  "com_ui_discord_row_description": "Connect agents to your Discord servers and direct messages.",
   "com_ui_discord_admin": "Only organization administrators can manage Discord applications and servers.",
   "com_ui_discord_disabled": "Discord setup is unavailable. Ask your administrator to enable it.",
   "com_ui_discord_changed": "This configuration changed. Refresh before trying again.",

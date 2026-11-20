@@ -373,7 +373,7 @@ test('returns keyboard focus to the settings entry after Escape', async () => {
       <DiscordSettings />
     </QueryClientProvider>,
   );
-  const trigger = screen.getByRole('button', { name: 'com_ui_discord_title' });
+  const trigger = screen.getByRole('button', { name: 'com_ui_manage' });
   await user.click(trigger);
   expect(await screen.findByRole('dialog', { name: 'com_ui_discord_title' })).toBeVisible();
   await user.keyboard('{Escape}');

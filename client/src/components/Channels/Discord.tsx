@@ -186,6 +186,7 @@ function SettingsControl({
   onAutoOpened: () => void;
 }) {
   const localize = useLocalize();
+  const rowId = useId();
   const [open, setOpen] = useAtom(openAtom);
   useEffect(() => {
     if (!autoOpen) return;
@@ -194,12 +195,27 @@ function SettingsControl({
   }, [autoOpen, onAutoOpened, setOpen]);
   return (
     <OGDialog open={open} onOpenChange={setOpen}>
-      <OGDialogTrigger asChild>
-        <Button type="button" variant="ghost" className="w-full justify-start">
-          <DiscordIcon />
-          {localize('com_ui_discord_title')}
-        </Button>
-      </OGDialogTrigger>
+      <section aria-labelledby={`${rowId}-title`} className="flex items-center gap-3">
+        <span
+          className="border-border-light bg-surface-secondary flex size-10 shrink-0 items-center justify-center rounded-lg border"
+          aria-hidden="true"
+        >
+          <DiscordIcon mark className="size-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 id={`${rowId}-title`} className="text-text-primary text-sm font-medium">
+            {localize('com_ui_discord_title')}
+          </h3>
+          <p className="text-text-secondary mt-0.5 text-xs">
+            {localize('com_ui_discord_row_description')}
+          </p>
+        </div>
+        <OGDialogTrigger asChild>
+          <Button type="button" variant="outline">
+            {localize('com_ui_manage')}
+          </Button>
+        </OGDialogTrigger>
+      </section>
       <OGDialogTemplate
         title={localize('com_ui_discord_title')}
         description={localize('com_ui_discord_description')}
