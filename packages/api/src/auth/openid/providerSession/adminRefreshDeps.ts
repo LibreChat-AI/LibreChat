@@ -93,6 +93,10 @@ export interface AdminOpenIdRefreshPrepareResult {
   grantRefreshToken: string;
   /** True when `grantRefreshToken` is a bridged replacement rather than the presented token. */
   bridged: boolean;
+  /** True when the provider-session checks run and neither a Session row nor a bridge binds the
+   *  presented token. Such a request cannot take a grant result recorded by another request,
+   *  because nothing ties that result to a provider session this request was checked against. */
+  unbound: boolean;
   /** Identity the bridge lookup resolved; feeds a flight key so concurrent retries sharing a
    *  bridged token coalesce into a single IdP grant, and feeds `applyAdminRefresh`'s post-grant
    *  bridge store so it keys the same row the lookup read. */
@@ -188,6 +192,10 @@ export async function prepareAdminOpenIdRefresh(
     binding,
     grantRefreshToken: resolution.refreshToken,
     bridged: resolution.bridged,
+    unbound:
+      Boolean(providerSessionDeps.findProviderSessionBinding) &&
+      precheckLookup.ok &&
+      !precheckLookup.binding,
     identity: resolution.identity,
   };
 }
@@ -466,7 +474,7 @@ async function runOwnedAdminGrant(
 export async function runAdminOpenIdRefreshGrant(
   grant: () => Promise<RefreshTokenset>,
   presentedRefreshToken: string,
-  prepared: Pick<AdminOpenIdRefreshPrepareResult, 'bridged' | 'identity'> &
+  prepared: Pick<AdminOpenIdRefreshPrepareResult, 'bridged' | 'unbound' | 'identity'> &
     Partial<Pick<AdminOpenIdRefreshPrepareResult, 'grantRefreshToken'>>,
   deps: AdminRefreshGrantDeps,
 ): Promise<RefreshTokenset> {
@@ -499,7 +507,16 @@ export async function runAdminOpenIdRefreshGrant(
     }
     if (!flight.acquired) {
       /** A concurrent request with the same token owns the grant. Granting again would present a
-       *  token the owner already spent, so this request takes the owner's result instead. */
+       *  token the owner already spent, so this request takes the owner's result instead. An
+       *  unbound request is denied in every mode: the owner's Session row and bridge are gone,
+       *  for example after a provider-session denial deleted the bridge, so the recorded result
+       *  has no provider session left to authorize. A bridged request always has a binding. */
+      if (prepared.unbound) {
+        logger.warn(
+          '[runAdminOpenIdRefreshGrant] Denied a recorded grant result to a request with no provider-session binding',
+        );
+        throw new AdminRefreshError(OPENID_SESSION_ENDED, 401, 'Provider session has ended');
+      }
       return waitForSharedAdminTokenset(grantKey, presentedRefreshToken, deps);
     }
     return runOwnedAdminGrant(grant, grantKey, flight.ownerId, ownedDeps);
