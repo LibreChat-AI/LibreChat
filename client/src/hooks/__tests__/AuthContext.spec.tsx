@@ -1687,7 +1687,7 @@ describe('AuthContextProvider — session check unavailable', () => {
       refreshOptions.onError({ response: { status: 401, data: { code: 'OPENID_SESSION_ENDED' } } }),
     );
 
-    expect(mockNavigate).toHaveBeenCalledWith('/login?error=OPENID_SESSION_ENDED');
+    expect(mockNavigate).toHaveBeenCalledWith('/login?redirect=false&error=OPENID_SESSION_ENDED');
     expect(
       screen.queryByRole('heading', { name: "We couldn't verify your session" }),
     ).not.toBeInTheDocument();

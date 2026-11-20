@@ -375,13 +375,14 @@ export function buildLoginRedirectUrl(pathname?: string, search?: string, hash?:
   return `/login?${REDIRECT_PARAM}=${encodeURIComponent(currentPath)}`;
 }
 
-/** Adds a server denial code to a login URL so the login page can show why the session ended. */
+/** Adds a server denial code to a login URL so the login page can show why the session ended.
+ *  `redirect=false` stops the OpenID auto-redirect, so the user sees the message before signing in again. */
 export function withLoginError(loginUrl: string, code?: string): string {
   if (!code) {
     return loginUrl;
   }
   const separator = loginUrl.includes('?') ? '&' : '?';
-  return `${loginUrl}${separator}error=${encodeURIComponent(code)}`;
+  return `${loginUrl}${separator}redirect=false&error=${encodeURIComponent(code)}`;
 }
 
 export const resendVerificationEmail = () => `${BASE_URL}/api/user/verify/resend`;
