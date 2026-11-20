@@ -40,11 +40,21 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc -p e2e/openid/tsconfig.json
-      - run: npx playwright install --with-deps chromium
+      # The browser suite launches this Chromium build, so its download stays fatal.
+      - name: Install lockfile-pinned Chromium
+        run: npx playwright install --no-shell chromium
+      # The runner's own Chrome already brings the libraries Chromium links; the extra
+      # packages are optional fonts, so an unreachable apt mirror must not fail the job.
+      - name: Install optional Chromium system packages (best effort)
+        timeout-minutes: 4
+        continue-on-error: true
+        run: .github/scripts/install-playwright-fonts.sh chromium
       - run: npm run e2e:prepare
       - run: npm run e2e:openid:keycloak -- --project=${{ matrix.suite }}
       - name: Upload test results
         if: always()
+        timeout-minutes: 3
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: keycloak-${{ matrix.suite }}-results

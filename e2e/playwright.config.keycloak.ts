@@ -16,6 +16,8 @@ export default defineConfig({
   reporter: [['list'], ['json', { outputFile: 'openid/.test-results/results.json' }]],
   use: {
     browserName: 'chromium',
+    // CI installs Chromium with `--no-shell`, so headless runs use the full build.
+    channel: 'chromium',
     ignoreHTTPSErrors: true,
     // Auth traces and HAR files contain real test credentials.
     trace: 'off',
