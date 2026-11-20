@@ -1155,6 +1155,40 @@ describe('axios 401 interceptor — temporary session-check unavailability', () 
       '/login?redirect_to=%2Fc%2Frace&redirect=false&error=OPENID_SESSION_ENDED',
     ]);
   });
+
+  it('keeps the reason from a caller-started refresh when the retry gets a 403 without a code', async () => {
+    expect.assertions(2);
+    setTokenHeader('expired-token');
+    const hrefWrites = setTrackedWindowLocation({
+      href: 'http://localhost/c/race',
+      pathname: '/c/race',
+      search: '',
+      hash: '',
+    } as Partial<Location>);
+
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      if (config.url?.includes('/api/auth/refresh?retry=true') === true) {
+        return Promise.reject({
+          response: { status: 403, data: { message: 'No session found' } },
+          config,
+        });
+      }
+      if (config.url?.includes('/api/auth/refresh') === true) {
+        return Promise.reject({
+          response: { status: 401, data: { code: 'OPENID_SESSION_ENDED' } },
+          config,
+        });
+      }
+      return create401Error(config);
+    });
+
+    await dataRequest.refreshToken().catch(() => undefined);
+
+    expect(getCallsForUrl('/api/auth/refresh')).toHaveLength(2);
+    expect(hrefWrites).toEqual([
+      '/login?redirect_to=%2Fc%2Frace&redirect=false&error=OPENID_SESSION_ENDED',
+    ]);
+  });
 });
 
 describe('axios 401 interceptor — stale auth generation', () => {

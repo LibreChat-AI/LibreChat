@@ -737,8 +737,9 @@ if (typeof window !== 'undefined') {
             return Promise.reject(markAuthSessionUnavailable(error));
           }
 
+          // The retry can lose the denial code after the server removes the session.
           advanceAuthGeneration();
-          redirectToLoginOnce(getLoginErrorCode(refreshError));
+          redirectToLoginOnce(getLoginErrorCode(refreshError) ?? getLoginErrorCode(error));
           return Promise.reject(error);
         }
       }
