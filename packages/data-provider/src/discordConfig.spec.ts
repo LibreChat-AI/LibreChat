@@ -185,3 +185,19 @@ it('keeps Discord health windows bounded, optional and separate from retry polic
   ])
     expect(discordChannelConfigSchema.safeParse({ health }).success).toBe(false);
 });
+
+it('preserves status-only and inline defaults and bounds opt-in Discord delivery UX', () => {
+  const config = discordChannelConfigSchema.parse({});
+  expect(config.streaming).toEqual({ mode: 'status', maxPreviewChars: 1400 });
+  expect(config.longReply).toEqual({ inlineParts: 0, maxAttachmentBytes: 1048576 });
+  for (const value of [
+    { streaming: { mode: 'reasoning' } },
+    { streaming: { maxPreviewChars: 1801 } },
+    { streaming: { maxPreviewChars: 127 } },
+    { longReply: { inlineParts: 101 } },
+    { longReply: { inlineParts: -1 } },
+    { longReply: { maxAttachmentBytes: 1048577 } },
+    { longReply: { maxAttachmentBytes: 0 } },
+  ])
+    expect(discordChannelConfigSchema.safeParse(value).success).toBe(false);
+});

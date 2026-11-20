@@ -310,7 +310,7 @@ export class ChannelWorker {
       if (
         terminalSnapshot(run) &&
         run.progress?.outcome === 'confirmed' &&
-        run.progress.text !== this.provider.progressText(run)
+        run.progress.text !== this.provider.progressText(run, bundle)
       )
         run = await syncProgress(run);
       if (run.state === 'delivering' && run.snapshot) {
@@ -495,7 +495,7 @@ export class ChannelWorker {
         ['unknown', 'inflight', 'permanent_failure'].includes(progress.outcome))
     )
       return run;
-    const text = this.provider.progressText(run);
+    const text = this.provider.progressText(run, bundle);
     if (!progress || progress.outcome === 'confirmed') {
       if (progress?.text === text) return run;
       const revision = (progress?.revision ?? 0) + 1;

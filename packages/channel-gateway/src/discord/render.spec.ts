@@ -2,6 +2,7 @@ import {
   discordRendererVersion,
   discordSessionRendererVersion,
   renderDiscordPlan,
+  renderDiscordPreview,
   sanitizeDiscordMentions,
   discordPlanRevision,
   readDiscordFeedbackPresentation,
@@ -178,4 +179,13 @@ describe('Discord answer rendering', () => {
       expect(() => renderDiscordPlan({ runId, text: 'Answer' }, 1, { feedback: true })).toThrow();
     },
   );
+});
+
+it('bounds saturated previews, closes code fences and keeps Unicode and mentions safe', () => {
+  const preview = renderDiscordPreview('```typescript\n' + '😀 @everyone '.repeat(1000), 1400);
+  expect(preview.length).toBeLessThanOrEqual(1400);
+  expect(preview).toContain('\n```\n\n…');
+  expect(preview).not.toMatch(/[\uD800-\uDBFF]$/);
+  expect(preview).not.toContain('@everyone');
+  expect(renderDiscordPreview('short', 128)).toBe('short');
 });

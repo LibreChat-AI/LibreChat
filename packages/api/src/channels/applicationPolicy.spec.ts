@@ -22,6 +22,15 @@ function fixture(tenantId: string | undefined) {
   return { policy, user, config, readAppConfig, findUser, isPrincipalActive };
 }
 
+it('reads tenant policy without a principal lookup when no principal is given', async () =>
+  tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+    const f = fixture('tenant-a');
+    expect(await f.policy.appConfig('tenant-a')).toBe(f.config);
+    expect(f.findUser).not.toHaveBeenCalled();
+    expect(f.readAppConfig).toHaveBeenCalledTimes(1);
+    expect(f.readAppConfig.mock.calls[0][0]).toEqual({ tenantId: 'tenant-a', failClosed: true });
+  }));
+
 it.each(['tenant-a', undefined])(
   'loads current principal overrides in the application tenant %s',
   async (tenantId) =>

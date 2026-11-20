@@ -5,6 +5,7 @@ import type { ChannelDeliveryPlan, ChannelDeliveryPart } from 'librechat-data-pr
 
 export const discordLegacyRendererVersion = 'discord-text-v1';
 export const discordRendererVersion = 'discord-text-v2';
+export const discordDocumentRendererVersion = 'discord-document-v1';
 /** v2 whose last answer part may carry an authorized session link button, resolved at delivery. */
 export const discordSessionRendererVersion = 'discord-text-v3';
 const feedbackFormat = 'discord-feedback-v1';
@@ -28,6 +29,8 @@ export function discordFeedbackPresentation(
 
 export function readDiscordFeedbackPresentation(part: ChannelDeliveryPart): string | undefined {
   if (part.presentation === undefined) return undefined;
+  if (part.presentation.format === 'discord-document-v1')
+    return readDiscordDocumentPresentation(part)?.feedbackRunId;
   const wrapper = presentationSchema.safeParse(part.presentation);
   if (!wrapper.success) throw new Error('Invalid Discord feedback presentation');
   const value = wrapper.data;
@@ -58,17 +61,22 @@ class DiscordRenderLimitError extends Error {
   }
 }
 
-function splitText(source: string, maxParts: number, shorten: boolean): string[] {
+function splitText(
+  source: string,
+  maxParts: number,
+  shorten: boolean,
+  maxLength = 2000,
+  notice = shorteningNotice,
+): string[] {
   const chunks: string[] = [];
   let chunk = '';
   let fence: string | undefined;
   const close = () => (fence !== undefined ? '\n```' : '');
-  const limit = () =>
-    2000 - (shorten && chunks.length === maxParts - 1 ? shorteningNotice.length : 0);
+  const limit = () => maxLength - (shorten && chunks.length === maxParts - 1 ? notice.length : 0);
   const next = () => {
     if (chunks.length === maxParts - 1) {
       if (!shorten) throw new DiscordRenderLimitError();
-      chunks.push(chunk + close() + shorteningNotice);
+      chunks.push(chunk + close() + notice);
       return false;
     }
     chunks.push(chunk + close());
@@ -161,4 +169,85 @@ export function renderDiscordPlan(
     plan.parts[0].presentation = discordFeedbackPresentation(input.runId);
   plan.revision = discordPlanRevision(plan);
   return plan;
+}
+
+/** One bounded draft, with closed code fences and no split Unicode or active mention syntax. */
+export function renderDiscordPreview(text: string, maxChars: number): string {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 128 || maxChars > 1800)
+    throw new TypeError('Invalid Discord preview budget');
+  return splitText(sanitizeDiscordMentions(text), 1, true, maxChars, '\n\n…')[0] ?? '';
+}
+
+const documentSchema = z
+  .object({
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    bytes: z.number().int().min(1).max(1_048_576),
+    feedbackRunId: z.string().min(1).max(80).optional(),
+    artifactsUnavailable: z.boolean().optional(),
+  })
+  .strict();
+
+export function readDiscordDocumentPresentation(
+  part: ChannelDeliveryPart,
+): z.infer<typeof documentSchema> | undefined {
+  if (part.presentation?.format !== discordDocumentRendererVersion) return undefined;
+  if (part.presentation.payload.length > 256)
+    throw new Error('Invalid Discord document presentation');
+  const value = documentSchema.parse(JSON.parse(part.presentation.payload));
+  if (
+    JSON.stringify(value) !== part.presentation.payload ||
+    part.text !== documentCaption(value.artifactsUnavailable)
+  )
+    throw new Error('Invalid Discord document presentation');
+  if (value.feedbackRunId) discordRunControl('thumbsUp', value.feedbackRunId);
+  return value;
+}
+
+/** Only a hash and byte count are persisted: final delivery checks the immutable answer snapshot. */
+export function renderDiscordDocumentPlan(
+  input: DiscordRenderInput,
+  feedback: boolean,
+  artifactsUnavailable = false,
+): DiscordTextPlan {
+  const bytes = Buffer.byteLength(input.text);
+  const payload = documentSchema.parse({
+    sha256: createHash('sha256').update(input.text).digest('hex'),
+    bytes,
+    ...(feedback ? { feedbackRunId: input.runId } : {}),
+    ...(artifactsUnavailable ? { artifactsUnavailable: true } : {}),
+  });
+  const plan: DiscordTextPlan = {
+    revision: '',
+    rendererVersion: discordDocumentRendererVersion,
+    parts: [
+      {
+        operationId: `${input.runId}:discord:0`,
+        kind: 'message',
+        required: true,
+        text: documentCaption(artifactsUnavailable),
+        presentation: { format: discordDocumentRendererVersion, payload: JSON.stringify(payload) },
+      },
+    ],
+  };
+  plan.revision = discordPlanRevision(plan);
+  return plan;
+}
+
+export function discordAnswerFits(text: string, maxParts: number): boolean {
+  try {
+    renderDiscordPlan({ runId: 'budget', text }, maxParts);
+    return true;
+  } catch (error) {
+    if (error instanceof DiscordRenderLimitError) return false;
+    throw error;
+  }
+}
+
+function documentCaption(artifactsUnavailable = false): string {
+  return (
+    'The complete reply is attached as reply.md.' +
+    (artifactsUnavailable
+      ? '\n\nOther attachments are unavailable in Discord. Use /librechat status to open the saved session.'
+      : '')
+  );
 }

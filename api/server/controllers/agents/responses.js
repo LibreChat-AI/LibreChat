@@ -1151,7 +1151,7 @@ const executeResponse = async (envelope, { req, res }) => {
 
         // Combine handlers
         const handlers = {
-          on_message_delta: responsesHandlers.on_message_delta,
+          on_message_delta: responseRuntime.previewHandler(responsesHandlers.on_message_delta),
           on_reasoning_delta: responsesHandlers.on_reasoning_delta,
           on_run_step: clientTools.wrapRunStep(responsesHandlers.on_run_step),
           on_run_step_delta: responsesHandlers.on_run_step_delta,
@@ -1383,7 +1383,7 @@ const executeResponse = async (envelope, { req, res }) => {
         };
 
         const handlers = {
-          on_message_delta: aggregatorHandlers.on_message_delta,
+          on_message_delta: responseRuntime.previewHandler(aggregatorHandlers.on_message_delta),
           on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
           on_run_step: clientTools.wrapRunStep(aggregatorHandlers.on_run_step),
           on_run_step_delta: aggregatorHandlers.on_run_step_delta,

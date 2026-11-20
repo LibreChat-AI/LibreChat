@@ -39,6 +39,7 @@ interface Mutation {
   receipt?: ChannelDeliveryReceipt;
 }
 interface Write {
+  document?: string;
   components?: APIActionRowComponent<APIButtonComponent>[];
   content?: string;
   nonce?: string;
@@ -154,6 +155,7 @@ function fixture(owned = false, thread = false, dm = false) {
   const calls: { path: string; body: Mutation; headers: Headers }[] = [];
   const writes: { method: string; path: string; body: Write; headers: Headers }[] = [];
   const hooks: {
+    advance?: () => void;
     begin?: () => void;
     commit?: () => Response;
     read?: (path: string) => Response | undefined;
@@ -187,13 +189,16 @@ function fixture(owned = false, thread = false, dm = false) {
           },
         });
       if (path.endsWith('/advance')) {
-        state.state = 'delivering';
-        state.snapshot = {
-          status: 'completed',
-          responseId: 'resp_123',
-          text: 'Final answer',
-          elapsedMs: 10,
-        };
+        if (hooks.advance) hooks.advance();
+        else {
+          state.state = 'delivering';
+          state.snapshot = {
+            status: 'completed',
+            responseId: 'resp_123',
+            text: 'Final answer',
+            elapsedMs: 10,
+          };
+        }
       } else if (path.endsWith('/progress/plan')) {
         state.progress = {
           revision: body.revision ?? 0,
@@ -245,7 +250,14 @@ function fixture(owned = false, thread = false, dm = false) {
   const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
     async (input, init) => {
       const path = new URL(String(input)).pathname;
-      const body: Write = init?.body ? JSON.parse(String(init.body)) : {};
+      const form = init?.body instanceof FormData ? init.body : undefined;
+      const serialized = form ? form.get('payload_json') : init?.body;
+      const body: Write = serialized ? JSON.parse(String(serialized)) : {};
+      if (form) {
+        const file = form.get('files[0]');
+        if (!(file instanceof Blob)) throw new Error('Missing document');
+        body.document = await file.text();
+      }
       const method = init?.method ?? 'GET';
       if (method === 'GET') {
         const response = hooks.read?.(path);
@@ -275,6 +287,9 @@ function fixture(owned = false, thread = false, dm = false) {
         expect(state.receipts.some((item) => item.outcome === 'inflight')).toBe(true);
       return json({
         channel_id: path.split('/')[4],
+        ...(body.document
+          ? { attachments: [{ filename: 'reply.md', size: Buffer.byteLength(body.document) }] }
+          : {}),
         id: method === 'PATCH' ? path.split('/').at(-1) : String(++messageId),
       });
     },
@@ -465,7 +480,7 @@ describe('Discord durable worker delivery', () => {
     expect(f.writes.map((write) => write.method)).toEqual(['POST', 'PATCH', 'POST', 'DELETE']);
     expect(f.writes.map((write) => write.body.content)).toEqual([
       'Working...',
-      'Completed.',
+      'The agent finished. Delivery is not confirmed yet. If the reply does not arrive, use /librechat status to open the saved session.',
       'Final answer',
       undefined,
     ]);
@@ -697,7 +712,8 @@ describe('Discord durable worker delivery', () => {
       elapsedMs: 10,
       pendingAction: { kind: 'oauth', actionId: 'private', expiresAt: Date.now() + 60_000 },
     };
-    expect(discordProgressText(f.state)).toContain('Completion is not confirmed');
+    expect(discordProgressText(f.state)).toContain('I cannot confirm this request’s status');
+    expect(discordProgressText(f.state)).toContain('some actions may already have run');
     expect(discordProgressText(f.state)).not.toContain('private review');
   });
 
@@ -1561,4 +1577,162 @@ describe('native DM provider output', () => {
       { method: 'DELETE', path: '/api/v10/channels/555/messages/777' },
     ]);
   });
+});
+
+describe('Discord quiet drafts and complete documents', () => {
+  test('previews only answer text when enabled and keeps status-only defaults', () => {
+    const f = fixture();
+    f.state.snapshot = {
+      status: 'running',
+      text: '',
+      previewText: 'Hello @everyone 😀',
+      elapsedMs: 1,
+    };
+    expect(f.provider.progressText(f.state, f.bundle)).toBe('Working...');
+    f.bundle.discord.streaming.mode = 'partial';
+    expect(f.provider.progressText(f.state, f.bundle)).toBe(
+      'Draft reply, still working:\n\nHello @\u200beveryone 😀',
+    );
+    f.state.cancellationRequested = true;
+    expect(f.provider.progressText(f.state, f.bundle)).not.toContain('Hello');
+    f.state.cancellationRequested = false;
+    f.state.snapshot.recovery = 'execution_state_unavailable';
+    expect(f.provider.progressText(f.state, f.bundle)).not.toContain('Hello');
+    delete f.state.snapshot.recovery;
+    f.state.snapshot.status = 'requires_action';
+    expect(f.provider.progressText(f.state, f.bundle)).not.toContain('Hello');
+  });
+
+  test('offers a native private review with Stop and never publishes the action ID', async () => {
+    const f = fixture();
+    f.state.snapshot = {
+      status: 'requires_action',
+      text: '',
+      elapsedMs: 1,
+      pendingAction: {
+        kind: 'tool_approval',
+        actionId: 'private-action',
+        expiresAt: Date.now() + 60_000,
+      },
+    };
+    f.state.progress = {
+      revision: 1,
+      rendererVersion: 'discord-progress-v1',
+      text: discordProgressText(f.state),
+      outcome: 'inflight',
+      attempts: 1,
+    };
+    await f.provider.writeProgress(f.state, f.bundle, f.controller.signal);
+    expect(f.writes[0].body.components?.[0].components).toEqual([
+      expect.objectContaining({ label: 'Review request', custom_id: 'lc1:r:run-1' }),
+      expect.objectContaining({ label: 'Stop' }),
+    ]);
+    expect(JSON.stringify(f.writes)).not.toContain('private-action');
+  });
+
+  test('delivers the entire Unicode answer as one immutable Markdown upload without inline duplication', async () => {
+    const f = fixture();
+    f.bundle.discord.longReply.inlineParts = 2;
+    f.state.feedbackEnabled = true;
+    const text = '```typescript\n' + '😀 <@123> @everyone\n'.repeat(1500) + '```';
+    f.savedPlan(text, summary('https://chat.company.com/trace/session'));
+    expect(f.state.plan?.rendererVersion).toBe('discord-document-v1');
+    expect(JSON.stringify(f.state.plan)).not.toContain(text);
+    await f.execute();
+    expect(f.writes.filter((write) => write.body.document)).toHaveLength(1);
+    expect(f.writes[0].body.document).toBe(text);
+    expect(f.writes[0].body.content).toBe('The complete reply is attached as reply.md.');
+    expect(f.writes).toHaveLength(1);
+    expect(
+      f.writes[0].body.components?.[0].components.map((button) =>
+        'label' in button ? button.label : undefined,
+      ),
+    ).toEqual(['Thumbs up', 'Thumbs down', 'View session']);
+    expect(f.writes[0].body.nonce).toBe(discordNonce('run-1:discord:0'));
+    expect(f.writes[0].headers.get('Content-Type')).toBeNull();
+    expect(f.writes[0].body.allowed_mentions).toEqual({ parse: [], replied_user: false });
+    expect(f.state.state).toBe('delivered');
+  });
+
+  test('refuses changed document bytes before writing after a restart', async () => {
+    const f = fixture();
+    f.bundle.discord.longReply.inlineParts = 1;
+    f.savedPlan('x'.repeat(5000));
+    f.state.snapshot!.text = 'y'.repeat(5000);
+    await expect(f.restartExecute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.writes).toEqual([]);
+  });
+
+  test('does not send a second fallback after an ambiguous upload and preserves its source', async () => {
+    const f = fixture();
+    f.bundle.discord.longReply.inlineParts = 1;
+    const text = 'x'.repeat(5000);
+    f.savedPlan(text);
+    f.hooks.write = () => {
+      throw new Error('private transport problem');
+    };
+    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.writes).toHaveLength(1);
+    expect(f.state.receipts[0].outcome).toBe('unknown');
+    expect(f.state.snapshot!.text).toBe(text);
+    await expect(f.restartExecute()).rejects.toThrow('Delivery deferred or awaits reconciliation');
+    expect(f.writes).toHaveLength(1);
+  });
+
+  test('respects the document byte budget and keeps existing inline delivery when disabled', () => {
+    const f = fixture();
+    f.savedPlan('x'.repeat(5000));
+    expect(f.state.plan?.rendererVersion).toBe(discordRendererVersion);
+    f.bundle.discord.longReply.inlineParts = 1;
+    f.bundle.discord.longReply.maxAttachmentBytes = 1024;
+    f.savedPlan('😀'.repeat(1500));
+    expect(f.state.plan?.rendererVersion).toBe(discordRendererVersion);
+  });
+});
+
+it('coalesces saturated drafts into one edited message and removes it after the final answer', async () => {
+  const f = fixture();
+  f.bundle.discord.streaming.mode = 'partial';
+  let revision = 0;
+  f.hooks.advance = () => {
+    revision++;
+    f.state.state = revision < 3 ? 'executing' : 'delivering';
+    f.state.snapshot = {
+      responseId: 'resp_123',
+      elapsedMs: revision,
+      status: revision < 3 ? 'running' : 'completed',
+      text: revision < 3 ? '' : 'Final answer',
+      ...(revision < 3 ? { previewText: 'x'.repeat(2000 + revision) } : {}),
+    };
+  };
+  await f.execute();
+  expect(f.writes.filter((write) => write.method === 'POST')).toHaveLength(2);
+  const drafts = f.writes.filter((write) => write.body.content?.startsWith('Draft reply'));
+  expect(drafts).toHaveLength(1);
+  expect(drafts[0].method).toBe('PATCH');
+  expect(drafts[0].body.content!.length).toBeLessThanOrEqual(2000);
+  expect(f.writes.filter((write) => write.body.content === 'Final answer')).toHaveLength(1);
+  expect(f.writes.at(-1)?.method).toBe('DELETE');
+});
+
+it('keeps an honest progress message and full source when Discord rejects the document', async () => {
+  const f = fixture();
+  f.bundle.discord.longReply.inlineParts = 1;
+  const text = 'Complete answer '.repeat(500);
+  f.savedPlan(text);
+  f.state.progress = {
+    revision: 2,
+    rendererVersion: 'discord-progress-v1',
+    text: discordProgressText(f.state),
+    externalMessageKey: '111:777',
+    outcome: 'confirmed',
+    attempts: 1,
+  };
+  f.hooks.write = () => json({ message: 'private provider error' }, 403);
+  await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+  expect(f.state.receipts[0].outcome).toBe('permanent_failure');
+  expect(f.state.progress.text).toContain('Delivery is not confirmed');
+  expect(f.state.snapshot?.text).toBe(text);
+  expect(f.writes).toHaveLength(1);
+  expect(f.writes[0].method).toBe('POST');
 });
