@@ -13,7 +13,6 @@ import type {
   TInsightsChurnedUser,
   TInsightsConversation,
   TInsightsDailyPoint,
-  TInsightsDetailedResponse,
   TInsightsFeedback,
   TInsightsModel,
   TInsightsParams,
@@ -35,13 +34,7 @@ export type InsightsOptions = TInsightsParams & {
 export type InsightsResult = TInsightsResponse;
 
 export type InsightsMethods = {
-  getInsights(
-    options?: InsightsOptions & { showDetails?: true },
-  ): Promise<TInsightsDetailedResponse>;
-  getInsights(
-    options: InsightsOptions & { showDetails: false },
-  ): Promise<TInsightsAggregateResponse>;
-  getInsights(options?: InsightsOptions): Promise<InsightsResult>;
+  getInsights: (options?: InsightsOptions) => Promise<InsightsResult>;
 };
 
 type CountResult = { total: number };
@@ -433,13 +426,6 @@ const toUser = (
 };
 
 export function createInsightsMethods(mongoose: typeof import('mongoose')): InsightsMethods {
-  async function getInsights(
-    options?: InsightsOptions & { showDetails?: true },
-  ): Promise<TInsightsDetailedResponse>;
-  async function getInsights(
-    options: InsightsOptions & { showDetails: false },
-  ): Promise<TInsightsAggregateResponse>;
-  async function getInsights(options?: InsightsOptions): Promise<InsightsResult>;
   async function getInsights(options: InsightsOptions = {}): Promise<InsightsResult> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const User = mongoose.models.User as Model<IUser>;

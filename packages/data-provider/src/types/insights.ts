@@ -131,7 +131,6 @@ export type TInsightsDetailSections = {
   };
 };
 
-export type TInsightsDetailedResponse = TInsightsAggregateResponse & TInsightsDetailSections;
 export type TInsightsResponse = TInsightsAggregateResponse & Partial<TInsightsDetailSections>;
 
 export type TInsightsAccessResponse = {

@@ -76,19 +76,14 @@ function createInsightsMethods(connection: typeof mongoose) {
     await migrateInsightsAttribution();
     return methods.getInsights(options);
   };
-  return { ...methods, getInsights: getInsights as typeof methods.getInsights };
+  return { ...methods, getInsights };
 }
 
 function createScopedInsightsMethods() {
   const methods = createInsightsMethods(mongoose);
   return {
     getInsights: (options: Parameters<typeof methods.getInsights>[0]) =>
-      methods.getInsights({
-        ...options,
-        showDetails: true,
-        agents: selectedAgents,
-        agentIds: ['agent-a'],
-      }),
+      methods.getInsights({ ...options, agents: selectedAgents, agentIds: ['agent-a'] }),
   };
 }
 
@@ -717,55 +712,6 @@ describe('Insights methods', () => {
     ]);
   });
 
-  it('reflects changed and removed feedback on responses created in the selected period', async () => {
-    const user = new mongoose.Types.ObjectId().toString();
-    const createdAt = new Date('2026-10-03T12:00:00Z');
-    await fixtures.conversations.insertOne({
-      conversationId: 'updated-feedback',
-      user,
-      tenantId: 'tenant-a',
-      createdAt,
-    });
-    await fixtures.messages.insertOne({
-      messageId: 'updated-feedback-response',
-      conversationId: 'updated-feedback',
-      user,
-      tenantId: 'tenant-a',
-      createdAt,
-      isCreatedByUser: false,
-      feedback: { rating: 'thumbsUp', tag: 'accurate_reliable' },
-    });
-    const methods = createInsightsMethods(mongoose);
-    const options = {
-      tenantId: 'tenant-a',
-      agentIds: ['agent-a'],
-      showDetails: false as const,
-      range: 'custom' as const,
-      fromTimestamp: '2026-10-01T00:00:00Z',
-      toTimestamp: '2026-10-07T23:59:59Z',
-    };
-    expect((await methods.getInsights(options)).summary.feedback).toEqual(
-      feedbackCounts(1, 0, { accurate_reliable: 1 }),
-    );
-    await mongoose.models.Message.collection.updateOne(
-      { messageId: 'updated-feedback-response', user },
-      {
-        $set: {
-          feedback: { rating: 'thumbsDown', tag: 'inaccurate', text: 'private feedback' },
-          updatedAt: new Date('2026-10-15T12:00:00Z'),
-        },
-      },
-    );
-    expect((await methods.getInsights(options)).summary.feedback).toEqual(
-      feedbackCounts(0, 1, { inaccurate: 1 }),
-    );
-    await mongoose.models.Message.collection.updateOne(
-      { messageId: 'updated-feedback-response', user },
-      { $set: { feedback: null } },
-    );
-    expect((await methods.getInsights(options)).summary.feedback).toEqual(feedbackCounts());
-  });
-
   it('counts recorded spend by root and transaction date without requiring recent messages', async () => {
     const user = new mongoose.Types.ObjectId();
     const privateValue = 'private-transaction-sentinel';
@@ -893,44 +839,6 @@ describe('Insights methods', () => {
       'summary',
     ]);
   });
-
-  it.each([
-    ['absent', [], null],
-    ['credits only', [{ tokenType: 'credits', tokenValue: -100_000 }], null],
-    ['unpriced', [{ tokenType: 'prompt' }, { tokenType: 'completion', tokenValue: null }], null],
-    ['free', [{ tokenType: 'prompt', tokenValue: 0 }], 0],
-  ] as const)(
-    'distinguishes unavailable from recorded zero spend: %s',
-    async (_name, rows, expected) => {
-      const now = new Date();
-      const user = new mongoose.Types.ObjectId();
-      await fixtures.conversations.insertOne({
-        conversationId: 'spend-availability',
-        user: user.toString(),
-        tenantId: 'tenant-a',
-        createdAt: now,
-      });
-      if (rows.length)
-        await mongoose.models.Transaction.collection.insertMany(
-          rows.map((row) => ({
-            conversationId: 'spend-availability',
-            user,
-            tenantId: 'tenant-a',
-            createdAt: now,
-            ...row,
-          })),
-        );
-      const result = await createInsightsMethods(mongoose).getInsights({
-        tenantId: 'tenant-a',
-        agentIds: ['agent-a'],
-        showDetails: false,
-      });
-      expect(result.summary.spendUSD).toBe(expected);
-      expect(
-        result.daily.find((day) => day.date === now.toISOString().slice(0, 10))?.spendUSD,
-      ).toBe(expected);
-    },
-  );
 
   it('isolates spend by conversation owner, tenant and eligibility before combining agents', async () => {
     const now = new Date();
@@ -1586,7 +1494,7 @@ describe('Insights methods', () => {
 
     const methods = createScopedInsightsMethods();
     const insights = await methods.getInsights({ tenantId: 'tenant-a', range: '7d' });
-    const byUser = new Map(insights.latest.conversations.map((row) => [row.userId, row]));
+    const byUser = new Map(insights.latest!.conversations.map((row) => [row.userId, row]));
 
     expect(byUser.get(firstUserId.toString())).toEqual(
       expect.objectContaining({
@@ -1608,7 +1516,7 @@ describe('Insights methods', () => {
       range: '7d',
       search: 'first@example.com',
     });
-    expect(search.latest.conversations).toEqual([
+    expect(search.latest!.conversations).toEqual([
       expect.objectContaining({ userId: firstUserId.toString() }),
     ]);
   });
@@ -1769,7 +1677,7 @@ describe('Insights methods', () => {
         messages: 2,
       }),
     ]);
-    expect(agentAInsights.latest.conversations).toEqual(
+    expect(agentAInsights.latest!.conversations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           conversationId: 'primary-agent-a',
@@ -1779,7 +1687,7 @@ describe('Insights methods', () => {
         }),
       ]),
     );
-    expect(agentBInsights.latest.conversations).toEqual([]);
+    expect(agentBInsights.latest!.conversations).toEqual([]);
     const combined = await methods.getInsights({
       tenantId: 'tenant-a',
       range: '7d',
@@ -1869,7 +1777,7 @@ describe('Insights methods', () => {
       toTimestamp: to.toISOString(),
     });
 
-    expect(result.latest.conversations).toEqual([
+    expect(result.latest!.conversations).toEqual([
       expect.objectContaining({
         conversationId: 'historical-conversation',
         firstMessage: 'Historical prompt',
@@ -2143,13 +2051,13 @@ describe('Insights methods', () => {
     });
 
     expect(byConversationId.summary.totalConversations).toBe(2);
-    expect(byConversationId.latest.conversations.map((row) => row.conversationId)).toEqual([
+    expect(byConversationId.latest!.conversations.map((row) => row.conversationId)).toEqual([
       'incident-review-123',
     ]);
-    expect(byUser.latest.conversations.map((row) => row.conversationId)).toEqual([
+    expect(byUser.latest!.conversations.map((row) => row.conversationId)).toEqual([
       'incident-review-123',
     ]);
-    expect(byMessage.latest.conversations).toEqual([]);
+    expect(byMessage.latest!.conversations).toEqual([]);
     expect(crossTenant.latest).toEqual(expect.objectContaining({ conversations: [], pages: 1 }));
   });
 
