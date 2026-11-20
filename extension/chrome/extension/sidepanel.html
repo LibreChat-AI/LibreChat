@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="container">
+    <header class="panel-header">
+      <h3>LibreChat Assistant</h3>
+      <button type="button" id="new-chat-button">New Chat</button>
+    </header>
+    <div id="conversation-container" class="conversation-container">
+      <p class="placeholder">Ask a question about the current page...</p>
+    </div>
+    <form id="query-form">
+      <textarea id="query-input" placeholder="e.g., Summarize this page for me" rows="3"></textarea>
+      <button type="submit" id="submit-button">Ask</button>
+    </form>
+  </div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

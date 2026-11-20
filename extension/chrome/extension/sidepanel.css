@@ -1,0 +1,128 @@
+body {
+  font-family: sans-serif;
+  padding: 10px;
+  margin: 0;
+  color: #333;
+}
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  position: relative;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+  gap: 8px;
+}
+h3 {
+  margin: 0;
+}
+#new-chat-button {
+  padding: 6px 12px;
+  background-color: #6c757d;
+  color: #fff;
+  border: none;
+  border-radius: 16px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+#new-chat-button:disabled {
+  background-color: #b5b8bc;
+  cursor: not-allowed;
+}
+.conversation-container {
+  flex-grow: 1;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 8px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.placeholder {
+  color: #888;
+}
+#query-form {
+  display: flex;
+  flex-direction: column;
+}
+#query-input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  resize: vertical;
+  margin-bottom: 5px;
+}
+#submit-button {
+  padding: 10px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+#submit-button:disabled {
+  background-color: #aaa;
+  cursor: not-allowed;
+}
+#reconnect-button {
+  margin-top: 10px;
+  padding: 10px;
+  background-color: #28a745;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  width: 100%;
+}
+#reconnect-button:disabled {
+  background-color: #6c757d;
+  cursor: not-allowed;
+}
+.message {
+  display: flex;
+}
+.message.user {
+  justify-content: flex-end;
+}
+.message.assistant {
+  justify-content: flex-start;
+}
+.message .bubble {
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 18px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.message.user .bubble {
+  background-color: #007bff;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.message.assistant .bubble {
+  background-color: #f1f3f5;
+  color: #333;
+  border-bottom-left-radius: 4px;
+}
+.blinking-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 1.2em;
+  background-color: #333;
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom;
+}
+
+@keyframes blink {
+  50% {
+    background-color: transparent;
+  }
+}
