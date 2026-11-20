@@ -2,11 +2,13 @@ import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import {
   discordGatewayOwnerSchema,
+  discordCredentialStateSchema,
   discordGuildRemovalTargetSchema,
   channelSnowflakeSchema,
 } from 'librechat-data-provider';
 import type {
   DiscordGatewayOwner,
+  DiscordCredentialState,
   DiscordGuildRemovalTarget,
   DiscordGuildRemovalPreparation,
 } from 'librechat-data-provider';
@@ -39,6 +41,7 @@ export interface DiscordGatewayPrivateState {
   checkpoints: DiscordGatewayCheckpointRecord[];
 }
 export interface DiscordGatewayStorage {
+  observeCredentials(owner: DiscordGatewayOwner, state: DiscordCredentialState): Promise<boolean>;
   prepareGuildRemoval(
     owner: DiscordGatewayOwner,
     guildId: string,
@@ -184,6 +187,22 @@ export function createDiscordGatewayStorage(
     expiresAt: { $gt: new Date() },
   });
   return {
+    observeCredentials: (owner, state) => {
+      const parsed = discordCredentialStateSchema.parse(state);
+      return operation(owner, false, async (scope, _policy, session) => {
+        if (!(await touchLease(mongoose, scope, session))) return false;
+        const result = await applications.updateOne(
+          {
+            tenantId: tenant() ?? null,
+            applicationId: owner.applicationId,
+            revision: owner.applicationRevision,
+          },
+          { $set: { credentialHealth: { state: parsed, checkedAt: Date.now() } } },
+          { session, runValidators: true },
+        );
+        return result.matchedCount === 1;
+      });
+    },
     prepareGuildRemoval: (owner, guildId) => {
       channelSnowflakeSchema.parse(guildId);
       return operation<DiscordGuildRemovalPreparation | null>(

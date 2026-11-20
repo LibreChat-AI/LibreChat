@@ -109,6 +109,7 @@ it('requires bearer authentication on every endpoint and rejects caller-selected
     'bootstrap',
     'load',
     'save',
+    'observeCredentials',
     'prepareGuildRemoval',
     'removeGuild',
   ]) {
@@ -352,4 +353,34 @@ it('uses one application owner for bot delivery while the optional Gateway socke
     botToken: 'private-bot-token',
     policy: { enabled: false },
   });
+});
+
+it('records only authenticated owner-fenced credential states with a server timestamp', async () => {
+  const app = server();
+  const send = (body: object) =>
+    request(app)
+      .post('/observeCredentials')
+      .auth('private-service-'.repeat(3), { type: 'bearer' })
+      .send(body);
+  expect((await send({ owner: current(), state: 'invalid' })).status).toBe(409);
+  await service.acquire(current(), 30000);
+  for (const extra of [{ checkedAt: 1 }, { tenantId: 'foreign' }, { error: 'private-token' }]) {
+    expect((await send({ owner: current(), state: 'invalid', ...extra })).status).toBe(400);
+  }
+  for (const state of ['permission_denied', 'unavailable', 'private-token']) {
+    expect((await send({ owner: current(), state })).status).toBe(400);
+  }
+  const before = Date.now();
+  expect((await send({ owner: current(), state: 'invalid' })).status).toBe(204);
+  await scoped(async () => {
+    const record = await installs.readApplication(applicationId);
+    expect(record?.credentialHealth?.state).toBe('invalid');
+    expect(record?.credentialHealth?.checkedAt).toBeGreaterThanOrEqual(before);
+    expect(record?.revision).toBe(revision);
+  });
+  expect(
+    (await send({ owner: { ...current(), applicationRevision: 'stale' }, state: 'valid' })).status,
+  ).toBe(409);
+  await service.release(current());
+  expect((await send({ owner: current(), state: 'valid' })).status).toBe(409);
 });

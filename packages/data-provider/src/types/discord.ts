@@ -2,6 +2,14 @@ import { z } from 'zod';
 import type { DiscordAgentChannel } from './channels';
 import { channelSnowflakeSchema } from '../channelProvider';
 export const discordPublicKeySchema = z.string().regex(/^[a-f\d]{64}$/i);
+export const discordCredentialStateSchema = z.enum(['valid', 'invalid']);
+export const discordCredentialHealthSchema = z
+  .object({
+    state: discordCredentialStateSchema,
+    checkedAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+export type DiscordCredentialState = z.infer<typeof discordCredentialStateSchema>;
 
 /** Verified organization application metadata. Credentials are write-only. */
 export interface DiscordApplication {
@@ -13,6 +21,8 @@ export interface DiscordApplication {
   createdBy: string;
   revision: string;
   authorityWrites: number;
+  /** Last bot-token observation, not a guarantee of current routing or permission health. */
+  credentialHealth?: z.infer<typeof discordCredentialHealthSchema>;
 }
 
 /** An organization installation; the installer is not an execution principal. */

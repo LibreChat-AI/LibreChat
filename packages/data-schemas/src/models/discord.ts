@@ -21,6 +21,16 @@ export function createDiscordApplicationModel(
       createdBy: { type: String, required: true, immutable: true },
       revision: { type: String, required: true },
       authorityWrites: { type: Number, required: true, default: 0 },
+      credentialHealth: {
+        type: new Schema(
+          {
+            state: { type: String, required: true, enum: ['valid', 'invalid'] },
+            checkedAt: { type: Number, required: true, min: 1 },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
       encryptedBotToken: { type: String, required: true, select: false },
       encryptedClientSecret: { type: String, required: true, select: false },
     },

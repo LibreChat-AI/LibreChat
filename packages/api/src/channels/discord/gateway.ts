@@ -1,6 +1,7 @@
 import { tenantStorage } from '@librechat/data-schemas';
 import {
   discordGatewayOwnerSchema,
+  discordCredentialStateSchema,
   discordGatewayBatchSchema,
   discordGatewaySessionSchema,
   discordGatewayBootstrapSchema,
@@ -10,6 +11,7 @@ import {
 } from 'librechat-data-provider';
 import type {
   DiscordGatewayBatch,
+  DiscordCredentialState,
   DiscordGatewayBootstrap,
   DiscordGatewayOwner,
   DiscordChannelConfig,
@@ -19,6 +21,7 @@ import type {
 import type { DiscordGatewayStorage, DiscordInstallationStorage } from '@librechat/data-schemas';
 
 export interface DiscordGatewayService {
+  observeCredentials(owner: DiscordGatewayOwner, state: DiscordCredentialState): Promise<boolean>;
   prepareGuildRemoval(
     owner: DiscordGatewayOwner,
     guildId: string,
@@ -65,6 +68,10 @@ export function createDiscordGatewayService(deps: {
     return next && JSON.stringify(next.gateway) === JSON.stringify(policy.gateway);
   };
   return {
+    observeCredentials: (owner, state) => {
+      const parsed = discordCredentialStateSchema.parse(state);
+      return scoped(owner, false, () => deps.storage.observeCredentials(owner, parsed));
+    },
     prepareGuildRemoval: (owner, guildId) => {
       channelSnowflakeSchema.parse(guildId);
       return scoped(owner, null, () => deps.storage.prepareGuildRemoval(owner, guildId));
