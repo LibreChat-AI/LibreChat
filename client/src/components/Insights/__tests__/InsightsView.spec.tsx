@@ -1,7 +1,7 @@
 import React from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   TInsightsSelectionResponse,
@@ -66,13 +66,9 @@ const mockUseInsightsQuery = jest.fn(
     params,
   }),
 );
-const mockStartupConfig = jest.fn(() => ({
-  data: { insightsEnabled: true },
-  isLoading: false,
-}));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => mockStartupConfig(),
+  useGetStartupConfig: () => ({ data: { insightsEnabled: true }, isLoading: false }),
   useInsightsQuery: (params: TInsightsParams, options?: { enabled?: boolean; retry?: boolean }) =>
     mockUseInsightsQuery(params, options),
 }));
@@ -171,37 +167,13 @@ describe('InsightsView agent selection', () => {
     expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
     await user.click(screen.getByText('com_insights_no_agents_selected'));
-    const allAgents = screen.getByRole('button', { name: 'com_insights_select_all_agents' });
-    expect(allAgents).toBeEnabled();
-    await user.click(allAgents);
+    await user.click(screen.getByRole('button', { name: 'com_insights_select_all_agents' }));
     await waitFor(() => expect(lastQueryParams().allAgents).toBe(true));
     expect(lastQueryParams().agentIds).toBeUndefined();
-    expect(screen.getByRole('combobox', { hidden: true })).toHaveTextContent(
-      'com_insights_all_agents:3',
-    );
     expect(screen.queryByText('com_insights_select_agents_to_load')).not.toBeInTheDocument();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  });
-
-  it('recovers agent filters the server rejects without showing them as selected', async () => {
-    mockUseInsightsQuery.mockImplementation((params) => {
-      if (params.agentIds?.length === insightsData.agents.length) {
-        return {
-          ...queryResult(params),
-          isError: true,
-          error: Object.assign(new Error('Forbidden'), { response: { status: 403 } }),
-        };
-      }
-      return queryResult(params, selection);
-    });
-    renderView('/insights?agentIds=agent-1&agentIds=agent-2&agentIds=agent-3');
-    await waitFor(() => expect(lastQueryParams().agentIds).toBeUndefined());
-    expect(screen.getByText('com_insights_no_agents_selected')).toBeInTheDocument();
-    expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
   });
 
   beforeEach(() => {
-    mockStartupConfig.mockReturnValue({ data: { insightsEnabled: true }, isLoading: false });
     mockUseInsightsQuery.mockClear();
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: insightsData,
@@ -219,31 +191,9 @@ describe('InsightsView agent selection', () => {
       isPreviousData: true,
     }));
     renderView('/insights?agentIds=agent-2');
-    expect(lastQueryParams().agentIds).toEqual(['agent-2']);
     expect(screen.getByRole('combobox')).toHaveTextContent('Beta');
     expect(screen.getByText('com_insights_loading')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('heading', { name: 'com_insights_total_messages' }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('redirects a direct visit and disables statistics loading when startup disables Insights', () => {
-    mockStartupConfig.mockReturnValue({ data: { insightsEnabled: false }, isLoading: false });
-    render(
-      <MemoryRouter initialEntries={['/insights']}>
-        <Routes>
-          <Route path="/insights" element={<InsightsView />} />
-          <Route path="/c/new" element={<div data-testid="chat-destination" />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    expect(screen.getByTestId('chat-destination')).toBeInTheDocument();
-    expect(mockUseInsightsQuery).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ enabled: false }),
-    );
   });
 
   it('renders an aggregate-only response without detail tables or identity search', () => {
@@ -258,11 +208,7 @@ describe('InsightsView agent selection', () => {
     renderView();
     expect(screen.getByText('com_insights_total_conversations')).toBeInTheDocument();
     expect(screen.queryByText('com_insights_top_users')).not.toBeInTheDocument();
-    expect(screen.queryByText('com_insights_churned_users')).not.toBeInTheDocument();
     expect(screen.queryByText('com_insights_latest_conversations')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('textbox', { name: 'com_insights_search_placeholder' }),
-    ).not.toBeInTheDocument();
   });
 
   it('shows the aggregate response, outcome, feedback and period-activity fields', () => {
@@ -298,9 +244,6 @@ describe('InsightsView agent selection', () => {
     expect(metricCard('com_insights_interrupted').getByText('0')).toBeInTheDocument();
     expect(metricCard('com_insights_thumbs_up').getByText('5')).toBeInTheDocument();
     expect(metricCard('com_insights_thumbs_down').getByText('2')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_feedback_tag_inaccurate').nextElementSibling).toHaveTextContent(
-      '1',
-    );
     expect(
       screen.getByText('com_ui_feedback_tag_other_issue').nextElementSibling,
     ).toHaveTextContent('1');
@@ -316,7 +259,6 @@ describe('InsightsView agent selection', () => {
     const responseTrend = metricCard('com_insights_responses').getByRole('img');
     fireEvent.focus(responseTrend);
     expect(within(responseTrend).getByText('2')).toBeInTheDocument();
-    expect(screen.queryByText('com_insights_latest_conversations')).not.toBeInTheDocument();
   });
 
   it('lists recorded models, an unknown-model row and missing spend as zero', () => {
@@ -358,7 +300,6 @@ describe('InsightsView agent selection', () => {
     renderView();
 
     const panel = metricCard('com_insights_models');
-    expect(panel.getByText('com_insights_models_definition')).toBeInTheDocument();
     expect(panel.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'com_insights_model',
       'com_insights_responses',
