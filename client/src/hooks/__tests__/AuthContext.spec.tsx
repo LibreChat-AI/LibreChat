@@ -1743,6 +1743,16 @@ describe('AuthContextProvider — sign in again from Retry', () => {
     expect(screen.getByTestId('consumer')).toHaveAttribute('data-authenticated', 'false');
   });
 
+  it('clears the axios bearer that another provider left on the shared defaults', () => {
+    const mockSetTokenHeader = jest.requireMock('librechat-data-provider').setTokenHeader;
+    showRetry();
+    mockSetTokenHeader.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    expect(mockSetTokenHeader).toHaveBeenCalledWith(undefined);
+  });
+
   it('ignores a retry that settles after the user chose to sign in again', () => {
     jest.useFakeTimers();
     showRetry();

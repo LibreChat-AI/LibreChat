@@ -328,6 +328,10 @@ const AuthContextProvider = ({
    */
   const clearAuthenticationForRedirect = useCallback(() => {
     endSessionClientState();
+    /** A replaced document has no bearer. Another provider (a share page, for example) can leave
+     *  one on the shared axios defaults, and a near-expiry bearer would start a proactive refresh
+     *  that signs this tab in again. */
+    setTokenHeader(undefined);
     setUser(undefined);
     setToken(undefined);
     setIsAuthenticated(false);
