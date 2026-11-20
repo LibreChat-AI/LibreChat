@@ -7,7 +7,9 @@
     "type": "git",
     "url": "https://github.com/LibreChat-AI/LibreChat"
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "**/*.css"
+  ],
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "./dist/index.d.cts",
@@ -43,6 +45,7 @@
       }
     },
     "./locales/*": "./dist/locales/*",
+    "./style.css": "./dist/style.css",
     "./package.json": "./package.json"
   },
   "files": [
