@@ -573,6 +573,29 @@ describe('AccessControlService', () => {
       acquire.mockRestore();
     });
 
+    test('does not report lock index readiness as lease contention', async () => {
+      const acquire = jest.spyOn(service['_dbMethods'], 'acquireResourceLock').mockRejectedValue(
+        Object.assign(new Error('index build pending'), {
+          code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
+        }),
+      );
+
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [],
+          grantedBy: grantedById,
+          leaseWaitMs: 0,
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 503,
+        code: 'RESOURCE_PERMISSIONS_UNAVAILABLE',
+      });
+      expect(acquire).toHaveBeenCalledTimes(1);
+      acquire.mockRestore();
+    });
+
     test('answers a retryable 503 when the lease renewal fails', async () => {
       const renew = jest
         .spyOn(service['_dbMethods'], 'renewResourceLock')

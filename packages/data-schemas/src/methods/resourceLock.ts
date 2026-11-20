@@ -5,6 +5,15 @@ import { createIndexesWithRetry } from '~/utils/retry';
 /** A stuck index build must surface as an error instead of hanging the request. */
 const INDEX_BUILD_WAIT_MS = 2_000;
 
+export class ResourceLockIndexesNotReadyError extends Error {
+  readonly code = 'RESOURCE_LOCK_INDEXES_NOT_READY';
+
+  constructor(readonly waitMs: number) {
+    super(`Resource lock indexes did not become ready within ${waitMs}ms`);
+    this.name = 'ResourceLockIndexesNotReadyError';
+  }
+}
+
 function isDuplicateKeyError(error: unknown): boolean {
   return typeof error === 'object' && error != null && (error as { code?: unknown }).code === 11000;
 }
@@ -60,8 +69,9 @@ export function createResourceLockMethods(mongoose: typeof import('mongoose')): 
     readyWaitMs,
   }: ResourceLockAcquireData): Promise<boolean> {
     const ResourceLock = mongoose.models.ResourceLock as Model<IResourceLock>;
-    if (!(await indexesReady(Math.min(readyWaitMs ?? INDEX_BUILD_WAIT_MS, INDEX_BUILD_WAIT_MS)))) {
-      return false;
+    const waitMs = Math.min(readyWaitMs ?? INDEX_BUILD_WAIT_MS, INDEX_BUILD_WAIT_MS);
+    if (!(await indexesReady(waitMs))) {
+      throw new ResourceLockIndexesNotReadyError(waitMs);
     }
     const now = new Date();
     const expiresAt = new Date(now.getTime() + ttlMs);

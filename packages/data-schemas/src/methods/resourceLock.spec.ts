@@ -172,7 +172,9 @@ describe('resource lease Mongo adapter', () => {
     try {
       const attempt = methods.acquireResourceLock(lock);
       await jest.advanceTimersByTimeAsync(25);
-      expect(await attempt).toBe(false);
+      await expect(attempt).rejects.toMatchObject({
+        code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
+      });
       // The retry helper polls every five seconds; the second conflict is past the lease deadline.
       await jest.advanceTimersByTimeAsync(5_000);
       expect(build).toHaveBeenCalledTimes(2);
@@ -185,7 +187,7 @@ describe('resource lease Mongo adapter', () => {
     expect(build).toHaveBeenCalledTimes(3);
   });
 
-  it('returns false at the readiness deadline without writing, then can acquire after readiness', async () => {
+  it('distinguishes the readiness deadline without writing, then can acquire after readiness', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     let finish!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -196,15 +198,10 @@ describe('resource lease Mongo adapter', () => {
     const lock = { key: 'deadline', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 25 };
     const attempt = methods.acquireResourceLock(lock);
     try {
-      await jest.advanceTimersByTimeAsync(24);
-      let settled = false;
-      void attempt.then(() => {
-        settled = true;
+      await jest.advanceTimersByTimeAsync(25);
+      await expect(attempt).rejects.toMatchObject({
+        code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
       });
-      await Promise.resolve();
-      expect(settled).toBe(false);
-      await jest.advanceTimersByTimeAsync(1);
-      expect(await attempt).toBe(false);
     } finally {
       finish();
       jest.useRealTimers();
@@ -225,7 +222,9 @@ describe('resource lease Mongo adapter', () => {
     try {
       const attempt = methods.acquireResourceLock(lock);
       await jest.advanceTimersByTimeAsync(2_000);
-      expect(await attempt).toBe(false);
+      await expect(attempt).rejects.toMatchObject({
+        code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
+      });
     } finally {
       finish();
       jest.useRealTimers();
