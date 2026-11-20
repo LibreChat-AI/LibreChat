@@ -1,6 +1,9 @@
+import { once } from 'node:events';
+import { WebSocketServer } from 'ws';
 import * as timers from 'node:timers/promises';
 import { discordChannelConfigSchema } from 'librechat-data-provider';
 import { WebSocketManager, WebSocketShardEvents } from '@discordjs/ws';
+import type { AddressInfo } from 'node:net';
 import type { DiscordGatewayDriverOptions } from './socket';
 import { createDiscordGatewayDriver, createOwnedIdentifyThrottler } from './socket';
 import { DiscordRateCoordinator } from './rates';
@@ -138,5 +141,146 @@ describe('published Discord SDK binding', () => {
     await expect(driver.connect()).rejects.toThrow('Ownership lost');
     expect(transport).not.toHaveBeenCalled();
     await driver.destroy();
+  });
+});
+
+describe('published Discord SDK binding before READY', () => {
+  /** A Gateway that says HELLO, hears IDENTIFY and then closes with `closeWith`, sends READY or stays silent. */
+  async function gateway(behavior: { closeWith?: number; ready?: boolean } = {}) {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await once(server, 'listening');
+    const { port } = server.address() as AddressInfo;
+    const seen = { connections: 0, identifies: 0 };
+    let identified!: () => void;
+    const firstIdentify = new Promise<void>((resolve) => {
+      identified = resolve;
+    });
+    server.on('connection', (socket) => {
+      seen.connections++;
+      socket.send(JSON.stringify({ op: 10, d: { heartbeat_interval: 45_000 } }));
+      socket.on('message', (raw) => {
+        if (JSON.parse(String(raw)).op !== 2) return;
+        seen.identifies++;
+        identified();
+        if (behavior.closeWith !== undefined) socket.close(behavior.closeWith);
+        if (behavior.ready)
+          socket.send(
+            JSON.stringify({
+              op: 0,
+              t: 'READY',
+              s: 1,
+              d: { session_id: 'session', resume_gateway_url: 'wss://gateway.discord.gg' },
+            }),
+          );
+      });
+    });
+    const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
+      Response.json({
+        url: `ws://127.0.0.1:${port}`,
+        shards: 1,
+        session_start_limit: {
+          total: 1000,
+          remaining: 999,
+          reset_after: 86_400_000,
+          max_concurrency: 1,
+        },
+      }),
+    );
+    return {
+      seen,
+      transport,
+      firstIdentify,
+      close: async () => {
+        for (const client of server.clients) client.terminate();
+        await new Promise((resolve) => server.close(resolve));
+      },
+    };
+  }
+  const bounded = () => ({
+    ...options(),
+    policy: discordChannelConfigSchema.shape.gateway.parse({
+      enabled: true,
+      handshakeTimeoutMs: 1000,
+    }),
+  });
+
+  test('shutdown while a shard waits for READY settles within the handshake bound', async () => {
+    const remote = await gateway();
+    const rejections: unknown[] = [];
+    const record = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      let owned = true;
+      const config = bounded();
+      config.retrieveSessionInfo = () => {
+        if (!owned) throw new Error('Discord Gateway ownership unavailable');
+        return null;
+      };
+      const driver = createDiscordGatewayDriver(config, remote.transport);
+      void driver.connect().catch(() => undefined);
+      await remote.firstIdentify;
+      // A session marks itself stopped before it closes the driver.
+      owned = false;
+      const startedAt = Date.now();
+      await expect(driver.destroy()).rejects.toThrow('Discord Gateway destroy timed out');
+      expect(Date.now() - startedAt).toBeLessThan(2500);
+      // The SDK retries the close after 500 ms and asks for the session again, which is frozen.
+      await timers.setTimeout(800);
+      expect(rejections).toEqual([]);
+      expect(remote.seen.connections).toBe(1);
+    } finally {
+      process.off('unhandledRejection', record);
+      await remote.close();
+    }
+  });
+
+  test('losing ownership while the SDK reconnects freezes it without an unhandled rejection', async () => {
+    const remote = await gateway({ closeWith: 4000 });
+    const rejections: unknown[] = [];
+    const record = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      let owned = true;
+      const config = bounded();
+      config.retrieveSessionInfo = () => {
+        if (!owned) throw new Error('Discord Gateway ownership unavailable');
+        return null;
+      };
+      const driver = createDiscordGatewayDriver(config, remote.transport);
+      void driver.connect().catch(() => undefined);
+      await remote.firstIdentify;
+      owned = false;
+      // The SDK waits 500 ms before it reconnects after an unknown close, then asks for the session.
+      await timers.setTimeout(1500);
+      expect(rejections).toEqual([]);
+      expect(remote.seen).toEqual({ connections: 1, identifies: 1 });
+      await driver.destroy();
+      await timers.setTimeout(700);
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+      await remote.close();
+    }
+  });
+
+  test('a session update that fails after ownership ended is not an unhandled rejection', async () => {
+    const remote = await gateway({ ready: true });
+    const rejections: unknown[] = [];
+    const record = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const config = bounded();
+      config.updateSessionInfo = async () => {
+        throw new Error('Discord checkpoint ownership changed');
+      };
+      const driver = createDiscordGatewayDriver(config, remote.transport);
+      await driver.connect();
+      await timers.setTimeout(100);
+      expect(rejections).toEqual([]);
+      await driver.destroy();
+    } finally {
+      process.off('unhandledRejection', record);
+      await remote.close();
+    }
   });
 });

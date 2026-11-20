@@ -424,6 +424,9 @@ export function createDiscordTelemetry(options: {
               observation.reason === 'identity'
             )
               entry?.fatal();
+            // The owner outlives a failed session, so its shards stay down until the next one is READY.
+            else if (observation.reason !== 'shutdown' && observation.reason !== 'lost')
+              for (let shardId = 0; shardId < shards; shardId++) entry?.native('closed', shardId);
             return;
         }
       };

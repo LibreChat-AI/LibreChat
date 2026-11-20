@@ -89,6 +89,10 @@ export function createDiscordGatewayDriver(
   transport: typeof fetch = fetch,
   rates: DiscordRateCoordinator = new DiscordRateCoordinator(),
 ): DiscordGatewayDriver {
+  // The SDK runs reconnects and heartbeats on timers no caller awaits, so a hook that throws there
+  // is an unhandled rejection that ends the process. Losing ownership freezes the SDK instead:
+  // it opens no further socket and sends no further IDENTIFY, and the session stops itself.
+  const parked = new Promise<never>(() => undefined);
   const rest = new REST({
     version: '10',
     retries: 0,
@@ -160,8 +164,20 @@ export function createDiscordGatewayDriver(
     handshakeTimeout: options.policy.handshakeTimeoutMs,
     helloTimeout: options.policy.handshakeTimeoutMs,
     readyTimeout: options.policy.readyTimeoutMs,
-    retrieveSessionInfo: options.retrieveSessionInfo,
-    updateSessionInfo: options.updateSessionInfo,
+    retrieveSessionInfo: (shardId) => {
+      try {
+        return options.retrieveSessionInfo(shardId);
+      } catch {
+        return parked;
+      }
+    },
+    updateSessionInfo: async (shardId, info) => {
+      try {
+        await options.updateSessionInfo(shardId, info);
+      } catch {
+        // Every failing path has already stopped the session, and a stopped session records nothing.
+      }
+    },
     buildIdentifyThrottler: createOwnedIdentifyThrottler(options),
   });
   manager.on(WebSocketShardEvents.Dispatch, options.dispatch);
@@ -174,8 +190,23 @@ export function createDiscordGatewayDriver(
   );
   return {
     connect: () => manager.connect(),
+    // Closing a shard that is waiting for READY can start a second close on the same socket inside
+    // the SDK, and the first never settles. The wait is bounded so shutdown cannot hang on it.
     destroy: async () => {
-      await manager.destroy();
+      const destroying = Promise.resolve(manager.destroy());
+      void destroying.catch(() => undefined);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Discord Gateway destroy timed out')),
+          options.policy.handshakeTimeoutMs,
+        );
+      });
+      try {
+        await Promise.race([destroying, expired]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }

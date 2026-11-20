@@ -3,6 +3,7 @@ import type { DiscordChannelConfig, DiscordInboxResolution } from 'librechat-dat
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DiscordGatewayOwner, DiscordGatewayDependencies } from './gateway';
 import type { SharedGatewayConfig } from '../config';
+import type { DiscordRetryState } from './recovery';
 import type { Logger } from '../types';
 import { DiscordReplyClient, deliverDiscordReply } from './reply';
 import { DiscordGatewayControlClient } from './ownership';
@@ -14,6 +15,7 @@ import { dispatchDiscordEvent } from './dispatch';
 import { DiscordRateCoordinator } from './rates';
 import { DiscordControlClient } from './control';
 import { runDiscordApplications } from './pool';
+import { discordRetryDelay } from './recovery';
 import { runDiscordSession } from './session';
 import { createDiscordWebhook } from './http';
 import { ChannelWorker } from '../worker';
@@ -92,34 +94,8 @@ export class DiscordGatewayApp {
         };
         this.active.set(owner.applicationId, context);
         try {
-          if (this.policy.gateway.enabled) {
-            await runDiscordSession(
-              {
-                owner,
-                policy: this.policy,
-                ownership: this.ownership,
-                createDriver:
-                  this.createDriver ??
-                  ((options) => createDiscordGatewayDriver(options, this.transport, context.rates)),
-                log: this.log,
-                dispatch: (application, event, dispatchSignal) =>
-                  dispatchDiscordEvent(
-                    {
-                      owner,
-                      application,
-                      policy: this.policy,
-                      rates: context.rates,
-                      runtime: this.runtime,
-                      gateway: this.ownership,
-                      transport: this.transport,
-                    },
-                    event,
-                    dispatchSignal,
-                  ),
-              },
-              ownedSignal,
-            );
-          } else await untilAbort(ownedSignal);
+          if (this.policy.gateway.enabled) await this.sessions(context, ownedSignal);
+          else await untilAbort(ownedSignal);
         } finally {
           this.active.delete(owner.applicationId);
           await Promise.allSettled([...context.tasks]);
@@ -127,6 +103,54 @@ export class DiscordGatewayApp {
       },
       signal,
     );
+  }
+
+  /**
+   * A failed session only delays the next session. The lease and the REST workers (replies, inbox
+   * claims and delivery) stay with the application, so a Gateway that cannot connect never stops
+   * signed slash commands from being answered. A new revision is a new owner and starts at once.
+   */
+  private async sessions(context: OwnedApplication, signal: AbortSignal): Promise<void> {
+    const { owner } = context;
+    const retry: DiscordRetryState = { fatalFailures: 0, transientFailures: 0 };
+    while (!signal.aborted) {
+      try {
+        await runDiscordSession(
+          {
+            owner,
+            policy: this.policy,
+            ownership: this.ownership,
+            createDriver:
+              this.createDriver ??
+              ((options) => createDiscordGatewayDriver(options, this.transport, context.rates)),
+            log: this.log,
+            dispatch: (application, event, dispatchSignal) =>
+              dispatchDiscordEvent(
+                {
+                  owner,
+                  application,
+                  policy: this.policy,
+                  rates: context.rates,
+                  runtime: this.runtime,
+                  gateway: this.ownership,
+                  transport: this.transport,
+                },
+                event,
+                dispatchSignal,
+              ),
+          },
+          signal,
+        );
+        return;
+      } catch (error) {
+        if (signal.aborted) return;
+        const { fatal, waitMs } = discordRetryDelay(retry, error, this.policy.gateway);
+        this.log.warn(
+          fatal ? 'discord_application_quarantined' : 'discord_application_runtime_unavailable',
+        );
+        await delay(waitMs, undefined, { signal }).catch(() => undefined);
+      }
+    }
   }
 
   private async task(context: OwnedApplication, work: () => Promise<void>): Promise<void> {

@@ -25,9 +25,9 @@ export const DEFAULT_DISCORD_HEALTH_POLICY: Readonly<DiscordHealthPolicy> =
 
 export interface DiscordHealthOptions extends Partial<DiscordHealthPolicy> {
   now?: () => number;
-  /** Applications held out of restart after a fatal stop. Their teardown removed ownership, so
-   * the owner of that state supplies a count per reason at read time. It must not count an
-   * application that is still owned, or the per concern totals exceed the application count. */
+  /** Applications held out after a fatal stop that this process no longer owns. An application
+   * that is held but still owned is counted by its own entry (a failing Gateway), so a supplier
+   * must not count it again, or the per concern totals exceed the application count. */
   quarantine?: () => DiscordQuarantineSummary;
 }
 
@@ -50,7 +50,7 @@ export interface DiscordHealthEntry {
   /** Bot side outcomes only. An actor losing access is per user and never belongs here. */
   permission(result: 'ok' | 'denied'): void;
   native(signal: 'up' | 'ack' | 'closed' | 'gap', shardId: number): void;
-  /** A stop that only a new revision or the end of a quarantine can recover from. */
+  /** A stop that holds the next session. Only the next READY or RESUMED, or a new revision, recovers it. */
   fatal(): void;
 }
 
@@ -278,6 +278,8 @@ export class DiscordHealth {
     if (signal === 'up') {
       shard.upAt = at;
       shard.closed = false;
+      // A session that reaches READY or RESUMED after a fatal stop is a new, working session.
+      tracked.fatal = false;
     } else if (signal === 'ack') shard.ackAt = at;
     else if (signal === 'gap') shard.gapAt = at;
     else shard.closed = true;
