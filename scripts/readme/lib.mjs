@@ -29,6 +29,7 @@ export const GLOSSARY = [
   'Railway',
   'Sealos',
   'API',
+  'RAG',
   'URL',
   'SDK',
   'OAuth',
@@ -154,6 +155,8 @@ function proseWords(markdown, context = '', withAttributes = true) {
   const text = parts
     .join(' ')
     .replace(/https?:\/\/\S+/g, ' ')
+    // Bare domains, paths and file names such as `librechat.ai/docs` or `librechat.yaml`.
+    .replace(/[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\b(?:\/[\w./-]*)?/gi, ' ')
     .replace(GLOSSARY_PATTERN, ' ');
   return text.match(/\p{L}[\p{L}'’-]*/gu) ?? [];
 }
