@@ -1185,65 +1185,69 @@ describe('getAnthropicModels', () => {
 
 describe('getGoogleModels', () => {
   let originalEnv: NodeJS.ProcessEnv;
+  const defaults = defaultModels[EModelEndpoint.google];
+  const listing = (...ids: string[]) => ({
+    data: { data: ids.map((id) => ({ id: `models/${id}` })) },
+  });
 
   beforeEach(() => {
     originalEnv = { ...process.env };
+    delete process.env.GOOGLE_MODELS;
+    delete process.env.GOOGLE_REVERSE_PROXY;
+    process.env.GOOGLE_KEY = 'test-google-key';
+    mockedAxios.get.mockReset();
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  it('returns default models without discovery when GOOGLE_KEY is not set', async () => {
-    delete process.env.GOOGLE_MODELS;
-    delete process.env.GOOGLE_KEY;
-    mockedAxios.get.mockClear();
-    const models = await getGoogleModels();
-    expect(models).toEqual(defaultModels[EModelEndpoint.google]);
+  it('returns default models without discovery unless fetch is enabled', async () => {
+    await expect(getGoogleModels()).resolves.toEqual(defaults);
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
-  it('returns models from GOOGLE_MODELS when set', async () => {
+  it('returns models from GOOGLE_MODELS even when fetch is enabled', async () => {
     process.env.GOOGLE_MODELS = 'gemini-pro, bard ';
-    const models = await getGoogleModels();
-    expect(models).toEqual(['gemini-pro', 'bard']);
-  });
-
-  it('returns default models without discovery when the key is user provided', async () => {
-    delete process.env.GOOGLE_MODELS;
-    process.env.GOOGLE_KEY = 'user_provided';
-    mockedAxios.get.mockClear();
-    const models = await getGoogleModels();
-    expect(models).toEqual(defaultModels[EModelEndpoint.google]);
+    await expect(getGoogleModels({ fetch: true })).resolves.toEqual(['gemini-pro', 'bard']);
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
-  it('discovers Gemini chat models, keeping known models first in default order', async () => {
-    delete process.env.GOOGLE_MODELS;
-    process.env.GOOGLE_KEY = 'test-google-key';
-    mockedAxios.get.mockResolvedValueOnce({
-      data: {
-        data: [
-          { id: 'models/gemini-2.5-flash' },
-          { id: 'models/gemini-2.5-flash-preview-tts' },
-          { id: 'models/gemini-3.1-pro-preview-customtools' },
-          { id: 'models/gemini-3.1-flash-image' },
-          { id: 'models/gemini-3.8-live' },
-          { id: 'models/gemini-embedding-2' },
-          { id: 'models/gemini-4-argon' },
-          { id: 'models/gemini-4-neon' },
-          { id: 'models/gemma-4-31b-it' },
-        ],
-      },
-    });
-    const models = await getGoogleModels();
-    expect(models).toEqual([
+  it.each([
+    ['no GOOGLE_KEY', { GOOGLE_KEY: '' }],
+    ['a user-provided key', { GOOGLE_KEY: 'user_provided' }],
+    ['GOOGLE_REVERSE_PROXY', { GOOGLE_REVERSE_PROXY: 'https://proxy.example.com' }],
+  ])('returns default models without discovery with %s', async (_label, env) => {
+    Object.assign(process.env, env);
+    await expect(getGoogleModels({ fetch: true })).resolves.toEqual(defaults);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('discovers versioned Gemini chat models, keeping known models first in default order', async () => {
+    mockedAxios.get.mockResolvedValueOnce(
+      listing(
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-preview-tts',
+        'gemini-2.5-computer-use-preview-10-2025',
+        'gemini-3.1-pro-preview-customtools',
+        'gemini-3.1-flash-image',
+        'gemini-3.5-live-translate-preview',
+        'gemini-3.8-live',
+        'gemini-embedding-2',
+        'gemini-flash-latest',
+        'gemini-omni-1.2-flash',
+        'gemini-4-argon',
+        'gemini-4-neon',
+        'gemma-4-31b-it',
+      ),
+    );
+    await expect(getGoogleModels({ fetch: true })).resolves.toEqual([
       'gemini-4-argon',
       'gemini-3.1-pro-preview-customtools',
       'gemini-2.5-flash',
       'gemini-4-neon',
     ]);
-    expect(mockedAxios.get).toHaveBeenLastCalledWith(
+    expect(mockedAxios.get).toHaveBeenCalledWith(
       'https://generativelanguage.googleapis.com/v1beta/openai/models',
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer test-google-key' }),
@@ -1252,21 +1256,13 @@ describe('getGoogleModels', () => {
   });
 
   it('falls back to default models when discovery fails', async () => {
-    delete process.env.GOOGLE_MODELS;
-    process.env.GOOGLE_KEY = 'test-google-key';
     mockedAxios.get.mockRejectedValueOnce(new Error('network down'));
-    const models = await getGoogleModels();
-    expect(models).toEqual(defaultModels[EModelEndpoint.google]);
+    await expect(getGoogleModels({ fetch: true })).resolves.toEqual(defaults);
   });
 
-  it('skips discovery behind GOOGLE_REVERSE_PROXY', async () => {
-    delete process.env.GOOGLE_MODELS;
-    process.env.GOOGLE_KEY = 'test-google-key';
-    process.env.GOOGLE_REVERSE_PROXY = 'https://proxy.example.com';
-    mockedAxios.get.mockClear();
-    const models = await getGoogleModels();
-    expect(models).toEqual(defaultModels[EModelEndpoint.google]);
-    expect(mockedAxios.get).not.toHaveBeenCalled();
+  it('falls back to default models when no listed model can chat', async () => {
+    mockedAxios.get.mockResolvedValueOnce(listing('gemini-embedding-2', 'gemma-4-31b-it'));
+    await expect(getGoogleModels({ fetch: true })).resolves.toEqual(defaults);
   });
 });
 
@@ -1482,7 +1478,7 @@ describe('configured model lists skip provider discovery', () => {
 
   it('returns the configured Google list without requesting /models', async () => {
     process.env.GOOGLE_KEY = 'test-google-key';
-    const models = await getGoogleModels({ configuredModels: ['gemini-a'] });
+    const models = await getGoogleModels({ configuredModels: ['gemini-a'], fetch: true });
     expect(models).toEqual(['gemini-a']);
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });

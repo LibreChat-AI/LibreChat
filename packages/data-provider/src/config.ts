@@ -2876,6 +2876,8 @@ export const modelListEndpointSchema = baseEndpointSchema.merge(
 );
 
 export const googleEndpointSchema = modelListEndpointSchema.extend({
+  /** Discover models from the Gemini API (server `GOOGLE_KEY` only) instead of the default list. */
+  fetch: z.boolean().optional(),
   /** USD per million tokens, including an explicit cached-input rate for the billing tier. */
   tokenConfig: z
     .record(

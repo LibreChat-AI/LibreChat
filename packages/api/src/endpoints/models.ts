@@ -591,13 +591,13 @@ export async function getAnthropicModels(
 
 /** Gemini API's OpenAI-compatible base URL, whose `/models` lists what the key can access. */
 const GOOGLE_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
-/** Listed models that cannot serve a text chat. */
-const GOOGLE_NON_CHAT_MODEL =
-  /tts|image|embedding|live|audio|robotics|computer-use|transcribe|translate|nano-banana/;
+/** Versioned Gemini IDs; aliases such as `gemini-flash-latest` miss the version-based request rules. */
+const GOOGLE_CHAT_MODEL = /^gemini-\d/;
+const GOOGLE_NON_CHAT_MODEL = /-(?:tts|image|live|audio|transcribe|translate|computer-use)(?:-|$)/;
 
 /**
- * Gets Google models from config, environment, or the Gemini API, falling back to defaults.
- * Discovered models the defaults already list keep the default order; newer ones follow.
+ * Gets Google models from config, environment, or (when `fetch` is set) the Gemini API, falling
+ * back to defaults. Discovered models the defaults already list keep the default order.
  * @param opts - Options for getting models
  * @returns Promise resolving to array of model IDs
  */
@@ -605,6 +605,8 @@ export async function getGoogleModels(
   opts: {
     /** A model list configured for the endpoint; when set, it is returned without discovery. */
     configuredModels?: string[];
+    /** Discover models from the Gemini API when a server `GOOGLE_KEY` is set. */
+    fetch?: boolean;
   } = {},
 ): Promise<string[]> {
   if (opts.configuredModels) {
@@ -616,27 +618,26 @@ export async function getGoogleModels(
   }
 
   const apiKey = process.env.GOOGLE_KEY?.trim();
-  if (!apiKey || isUserProvided(apiKey) || process.env.GOOGLE_REVERSE_PROXY) {
+  if (!opts.fetch || !apiKey || isUserProvided(apiKey) || process.env.GOOGLE_REVERSE_PROXY) {
     return models;
   }
 
-  const discovered = (
-    await fetchModels({
-      apiKey,
-      baseURL: GOOGLE_OPENAI_BASE_URL,
-      name: EModelEndpoint.google,
-      createTokenConfig: false,
-    })
-  ).map((id) => id.replace(/^models\//, ''));
-  if (discovered.length === 0) {
+  const listed = await fetchModels({
+    apiKey,
+    baseURL: GOOGLE_OPENAI_BASE_URL,
+    name: EModelEndpoint.google,
+    createTokenConfig: false,
+  });
+  const chat = listed
+    .map((id) => id.replace(/^models\//, ''))
+    .filter((id) => GOOGLE_CHAT_MODEL.test(id) && !GOOGLE_NON_CHAT_MODEL.test(id));
+  if (chat.length === 0) {
     return models;
   }
-
-  const available = new Set(discovered);
-  const added = discovered.filter(
-    (id) => id.startsWith('gemini-') && !GOOGLE_NON_CHAT_MODEL.test(id) && !models.includes(id),
-  );
-  return [...models.filter((id) => available.has(id)), ...added];
+  return [
+    ...models.filter((id) => chat.includes(id)),
+    ...chat.filter((id) => !models.includes(id)),
+  ];
 }
 
 /**

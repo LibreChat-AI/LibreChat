@@ -69,6 +69,7 @@ async function loadDefaultModels(req) {
         }),
         getGoogleModels({
           configuredModels: configuredModelList(appConfig, EModelEndpoint.google),
+          fetch: appConfig?.endpoints?.[EModelEndpoint.google]?.fetch,
         }).catch((error) => {
           logger.error('Error getting Google models:', error);
           return [];

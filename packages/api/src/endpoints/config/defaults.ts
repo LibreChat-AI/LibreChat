@@ -56,6 +56,7 @@ export async function loadDefaultEndpointModels(
     [EModelEndpoint.google]: () =>
       loaders.getGoogleModels({
         configuredModels: configuredModelList(appConfig, EModelEndpoint.google),
+        fetch: appConfig.endpoints?.google?.fetch,
       }),
     [EModelEndpoint.bedrock]: () => loaders.getBedrockModels(),
   };
