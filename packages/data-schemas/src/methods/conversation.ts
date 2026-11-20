@@ -4022,7 +4022,11 @@ export function createConversationMethods(
           getVisibleConversationRetentionFilter(),
           getHumanConversationFilter(),
         ],
-      } as FilterQuery<IConversation>).lean<IConversation[]>();
+      } as FilterQuery<IConversation>)
+        /* Search only needs conversation metadata; the embedded `messages` id array can hold
+           thousands of entries per conversation and is never read from these rows. */
+        .select('-messages')
+        .lean<IConversation[]>();
 
       results.sort(
         (a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime(),

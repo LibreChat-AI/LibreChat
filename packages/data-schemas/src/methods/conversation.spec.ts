@@ -2898,6 +2898,42 @@ describe('Conversation Operations', () => {
       expect(result?.convoMap[tempConvo.conversationId]).toBeUndefined();
     });
 
+    it('omits the embedded messages array from getConvosQueried rows and keeps the metadata', async () => {
+      const base = Date.now();
+      const ids = [uuidv4(), uuidv4(), uuidv4()];
+      for (const [index, conversationId] of ids.entries()) {
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          title: `Queried ${index}`,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-4o',
+          messages: [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()],
+        });
+        await Conversation.collection.updateOne(
+          { conversationId },
+          { $set: { updatedAt: new Date(base - index * 1000) } },
+        );
+      }
+      const wanted = ids.map((conversationId) => ({ conversationId }));
+
+      const first = await getConvosQueried('user123', wanted, null, 2);
+
+      expect(first.conversations.map((c) => c.conversationId)).toEqual([ids[0], ids[1]]);
+      expect(first.nextCursor).toBe(new Date(base - 1000).toISOString());
+      for (const convo of first.conversations) {
+        expect(convo).not.toHaveProperty('messages');
+        expect(convo.title).toMatch(/^Queried/);
+        expect(convo.model).toBe('gpt-4o');
+        expect(convo.endpoint).toBe(EModelEndpoint.openAI);
+        expect(first.convoMap[convo.conversationId]).not.toHaveProperty('messages');
+      }
+
+      const second = await getConvosQueried('user123', wanted, first.nextCursor, 2);
+      expect(second.conversations.map((c) => c.conversationId)).toEqual([ids[2]]);
+      expect(second.nextCursor).toBeNull();
+    });
+
     it('hides durable subagent threads from conversation lists and search results', async () => {
       const parentId = uuidv4();
       const childId = uuidv4();
