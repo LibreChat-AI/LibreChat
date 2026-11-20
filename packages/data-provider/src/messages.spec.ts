@@ -9,6 +9,7 @@ import {
   isCompactedLeaf,
   isFileAttachment,
   isFileContentPart,
+  messageFileIds,
   messageCarriesFiles,
   hasContentPartFiles,
   isUserInitiatedCompaction,
@@ -299,6 +300,29 @@ describe('isUserInitiatedCompaction', () => {
 });
 
 type Content = NonNullable<TMessage['content']>;
+
+describe('messageFileIds', () => {
+  it('names the files in every shape a later turn collects them from', () => {
+    expect(
+      messageFileIds({
+        files: [{ file_id: 'upload' }],
+        attachments: [{ file_id: 'chart', toolCallId: 't' }, { type: 'web_search' }] as never,
+        content: [
+          { type: ContentTypes.TEXT, text: 'Here:' },
+          { type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'img' } },
+          { type: 'file', file: { file_id: 'doc' } },
+          { type: 'file', file_id: 'direct' },
+          { type: ContentTypes.STEER, steer: 'use this', files: [{ file_id: 'steered' }] },
+        ] as Content,
+      }),
+    ).toEqual(['upload', 'chart', 'img', 'doc', 'direct', 'steered']);
+  });
+
+  it('names none for a message without files', () => {
+    expect(messageFileIds({})).toEqual([]);
+    expect(messageFileIds({ files: [], content: [] as Content })).toEqual([]);
+  });
+});
 
 describe('messageCarriesFiles', () => {
   it('finds uploads, file-backed attachments and file references in content', () => {

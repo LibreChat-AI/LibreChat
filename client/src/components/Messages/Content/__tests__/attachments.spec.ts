@@ -1,7 +1,9 @@
 import { Constants, ErrorTypes, ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import {
+  isCountLimitError,
   isAttachmentError,
+  collectOlderFileIds,
   mayBeAttachmentError,
   findAttachmentRecovery,
 } from '../Error/attachments';
@@ -116,7 +118,12 @@ describe('findAttachmentRecovery', () => {
 
     const recovery = findAttachmentRecovery(messages, messages[3]);
 
-    expect(recovery).toEqual({ parent: messages[2], canRetry: true, branchTargetId: undefined });
+    expect(recovery).toEqual({
+      parent: messages[2],
+      canRetry: true,
+      branchTargetId: undefined,
+      olderCarryFiles: false,
+    });
   });
 
   it('also offers a branch ending before the failed turn when earlier turns carry files', () => {
@@ -127,10 +134,12 @@ describe('findAttachmentRecovery', () => {
       answer('a2', 'u2', { error: true }),
     ];
 
+    /** The one earlier file is the failed turn's own, so there is nothing older to leave out. */
     expect(findAttachmentRecovery(messages, messages[3])).toEqual({
       parent: messages[2],
       canRetry: true,
       branchTargetId: 'a1',
+      olderCarryFiles: false,
     });
   });
 
@@ -148,6 +157,7 @@ describe('findAttachmentRecovery', () => {
       parent: messages[2],
       canRetry: false,
       branchTargetId: 'a1',
+      olderCarryFiles: true,
     });
   });
 
@@ -167,6 +177,7 @@ describe('findAttachmentRecovery', () => {
       parent: messages[2],
       canRetry: false,
       branchTargetId: 'a1',
+      olderCarryFiles: true,
     });
   });
 
@@ -229,5 +240,57 @@ describe('findAttachmentRecovery', () => {
     expect(findAttachmentRecovery(messages, messages[0])).toBeNull();
     expect(findAttachmentRecovery(messages, messages[2])).toBeNull();
     expect(findAttachmentRecovery(undefined, messages[1])).toBeNull();
+  });
+});
+
+describe('isCountLimitError', () => {
+  it('tells a turn with too many files of its own from one over a limit earlier files count toward', () => {
+    expect(
+      isCountLimitError('This turn exceeds the configured attachment count limit (11 > 10).'),
+    ).toBe(true);
+    expect(
+      isCountLimitError('This turn exceeds the configured total attachment size limit (30 > 20).'),
+    ).toBe(false);
+    expect(
+      isCountLimitError('This turn exceeds the configured extracted document text limit (9 > 8).'),
+    ).toBe(false);
+  });
+});
+
+describe('collectOlderFileIds', () => {
+  const diagram = { file_id: 'diagram', filename: 'diagram.png' };
+
+  it('collects every earlier file on the branch, in each shape, nearest turn first', () => {
+    const messages = [
+      user('u0', Constants.NO_PARENT, { files: [{ file_id: 'report', filename: 'report.pdf' }] }),
+      answer('a0', 'u0', {
+        attachments: [{ file_id: 'chart', toolCallId: 't' }] as TMessage['attachments'],
+        content: [
+          { type: ContentTypes.STEER, steer: 'use this', steerId: 's1', files: [diagram] },
+        ] as TMessage['content'],
+      }),
+      user('u1', 'a0', { files: [screenshot] }),
+      answer('a1', 'u1', { error: true }),
+    ];
+
+    expect(collectOlderFileIds(messages, messages[2])).toEqual(['chart', 'diagram', 'report']);
+  });
+
+  it('leaves out of the list a file the failed turn carries itself, and a sibling branch', () => {
+    const messages = [
+      user('u0', Constants.NO_PARENT, { files: [screenshot, diagram] }),
+      answer('a0', 'u0'),
+      user('sibling', 'a0', { files: [{ file_id: 'other-branch', filename: 'x.png' }] }),
+      user('u1', 'a0', { files: [screenshot] }),
+      answer('a1', 'u1', { error: true }),
+    ];
+
+    expect(collectOlderFileIds(messages, messages[3])).toEqual(['diagram']);
+  });
+
+  it('finds nothing older for the first turn of a conversation', () => {
+    const messages = [user('u0', Constants.NO_PARENT, { files: [screenshot] })];
+
+    expect(collectOlderFileIds(messages, messages[0])).toEqual([]);
   });
 });
