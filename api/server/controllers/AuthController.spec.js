@@ -2831,7 +2831,8 @@ describe('refreshController – LibreChat path', () => {
       expect(setAuthTokens).toHaveBeenCalled();
       expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'local-user-id' });
       expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
-      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
       expect(res.send).not.toHaveBeenCalledWith(
         expect.objectContaining({ token: 'local-app-token' }),
       );
