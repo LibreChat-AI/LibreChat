@@ -712,7 +712,7 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
  * Errors (all responses are `{ error: string, error_code: string }`):
  *   400 MISSING_REFRESH_TOKEN  — refresh_token absent or empty
  *   400 INVALID_PROVIDER       — provider value not one of 'openid' | 'google'
- *   401 REFRESH_FAILED         — IdP rejected the refresh grant
+ *   401 REFRESH_FAILED         — IdP rejected the refresh token or requires a new sign-in
  *   401 USER_NOT_FOUND         — no LibreChat user matches the refreshed sub
  *   401 USER_ID_MISMATCH       — supplied user_id resolves to a different provider id
  *   401 ISSUER_MISMATCH        — refreshed tokenset was issued by an unexpected issuer
@@ -725,6 +725,7 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
  *   503 OPENID_NOT_CONFIGURED  — OpenID is not configured on this server
  *   503 GOOGLE_NOT_CONFIGURED  — Google admin OAuth is not configured on this server
  *   503 AUTH_SESSION_CHECK_UNAVAILABLE — session check or IdP renewal unavailable
+ *   500 OPENID_CLIENT_MISCONFIGURED — IdP rejected this server's OAuth client configuration
  *   500 INTERNAL_ERROR         — anything else (logged server-side)
  */
 router.post(
