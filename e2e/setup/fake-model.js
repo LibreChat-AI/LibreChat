@@ -35,6 +35,7 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
+const REPORT_TOOLS_MARKER = 'E2E_REPORT_TOOLS';
 const REPORT_CONTEXT_TOKENS_MARKER = 'E2E_REPORT_CONTEXT_TOKENS';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
@@ -4010,6 +4011,12 @@ function resolveResponses({ graph, messages, text, toolNames }) {
 
   if (text.includes(REPORT_LLM_CONFIG_MARKER)) {
     return llmConfigReportResponses(graph);
+  }
+
+  if (text.includes(REPORT_TOOLS_MARKER)) {
+    const agent = graph?.agentContexts?.values().next().value;
+    const names = [...collectToolDefinitions(agent ? [agent] : []).keys()];
+    return { responses: [`E2E tools: ${JSON.stringify(names)}`] };
   }
 
   if (text.includes(REPORT_CONTEXT_TOKENS_MARKER)) {

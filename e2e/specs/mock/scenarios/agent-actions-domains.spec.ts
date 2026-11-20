@@ -88,6 +88,18 @@ test.describe('agent actions domain checks', () => {
       });
       await sendMessageAndWaitForCompletion(page, replyPrompt('actions-domains'));
       await expect(messagesView(page).getByText(replyText('actions-domains'))).toBeVisible();
+
+      /** The model must be offered both actions, not just a reply from an agent that lost them. */
+      await sendMessageAndWaitForCompletion(page, `E2E_REPORT_TOOLS ${Date.now()}`);
+      const report = messagesView(page)
+        .getByText(/E2E tools: /)
+        .last();
+      await expect(report).toBeVisible({ timeout: 15000 });
+      const text = (await report.textContent()) ?? '';
+      const offered = JSON.parse(text.slice(text.indexOf('['))) as string[];
+      for (const operationId of ['e2eDomainsListA', 'e2eDomainsListB']) {
+        expect(offered.filter((name) => name.startsWith(`${operationId}_action_`))).toHaveLength(1);
+      }
     } finally {
       await cleanupAgent(page, agentId);
     }
