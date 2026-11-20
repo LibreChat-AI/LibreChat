@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Spinner } from '@librechat/client';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { buildLoginRedirectUrl, channelConfigSchema, dataService } from 'librechat-data-provider';
 import type { ChannelIdentityResult, ChannelLinkView } from 'librechat-data-provider';
 import { useOwnerActionPolicy, OwnerTermsModal } from '~/hooks/useOwnerActionPolicy';
 import { useGetAgentByIdQuery } from '~/data-provider/Agents';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { useAuthContext, useLocalize } from '~/hooks';
+import Handoff from '~/components/Channels/Handoff';
 import Link from '~/components/Channels/Link';
 
 const storageKey = 'channel_link_pending_ticket';
@@ -54,18 +55,25 @@ function initialTicket(): PendingTicket | undefined {
 function AuthenticatedLink({
   ticket,
   onResult,
+  canResume,
 }: {
   ticket: string;
+  canResume: boolean;
   onResult: (result: ChannelIdentityResult<ChannelLinkView>) => void;
 }) {
   const { user, isAuthenticated, isAuthReady } = useAuthContext();
   const location = useLocation();
+  const navigate = useNavigate();
   if (!isAuthReady) return <Loading />;
   if (!isAuthenticated)
     return (
-      <Navigate
-        to={buildLoginRedirectUrl(location.pathname, location.search, location.hash)}
-        replace
+      <Handoff
+        key={ticket}
+        ticket={ticket}
+        canResume={canResume}
+        onContinue={() =>
+          navigate(buildLoginRedirectUrl(location.pathname, location.search, ''), { replace: true })
+        }
       />
     );
   if (!user?.id) return <Loading />;
@@ -156,6 +164,7 @@ function OwnedLink({
 /** Clears the fragment before AuthContext can turn the return path into a login query. */
 export default function ChannelLinkRoute() {
   const [pending, setPending] = useState(initialTicket);
+  const [canResume, setCanResume] = useState(true);
   const location = useLocation();
   const navigate = useNavigate();
   useEffect(() => {
@@ -165,7 +174,9 @@ export default function ChannelLinkRoute() {
     try {
       if (next) window.sessionStorage.setItem(storageKey, JSON.stringify(next));
       else window.sessionStorage.removeItem(storageKey);
+      setCanResume(true);
     } catch {
+      setCanResume(false);
       /* Sign-in remains possible; blocked storage requires requesting another ticket. */
     }
     // Update both native history and router location before any auth redirect can read it.
@@ -214,10 +225,11 @@ export default function ChannelLinkRoute() {
   );
   if (location.hash) return <Loading />;
   return (
-    <AuthContextProvider>
+    <AuthContextProvider authConfig={{ loginRedirect: '/login', optional: true }}>
       <AuthenticatedLink
         key={pending?.savedAt ?? 'absent'}
         ticket={pending?.ticket ?? ''}
+        canResume={canResume}
         onResult={onResult}
       />
     </AuthContextProvider>

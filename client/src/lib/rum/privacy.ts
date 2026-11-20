@@ -13,7 +13,8 @@ type SpanAttributes = Parameters<
   NonNullable<RumOtelWebExporterOptions['onAttributesSerializing']>
 >[0];
 
-const AUTH_ROUTE = /\/(?:login|register|forgot-password|reset-password|verify|oauth)(?:\/|$)/i;
+const AUTH_ROUTE =
+  /\/(?:login|register|forgot-password|reset-password|verify|oauth|channels\/link)(?:\/|$)/i;
 const URL_ATTRIBUTE =
   /^(?:data-)?(?:href|src|url|uri|action|formaction|poster|cite|background|data|xlink:href)$/i;
 const URL_SPAN_ATTRIBUTE = /url|uri|href|referr?er|^http\.target$|location/i;

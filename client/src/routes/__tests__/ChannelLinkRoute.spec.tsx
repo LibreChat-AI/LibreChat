@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { QRCodeSVG } from 'qrcode.react';
 import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
@@ -33,13 +34,30 @@ jest.mock(
     ({ content }: { content: string }) => <p>{content}</p>,
 );
 const mockAuthUrls: string[] = [];
+const mockAuthConfigurations: Array<{ optional?: boolean } | undefined> = [];
+const mockClipboard = jest.fn();
+jest.mock('qrcode.react', () => ({
+  QRCodeSVG: jest.fn(({ title }: { title: string }) => <svg role="img" aria-label={title} />),
+}));
 jest.mock('~/hooks', () => ({
   useAuthContext: jest.fn(),
   useLocalize: () => (key: string) => key,
+  useCopyToClipboard: jest.requireActual('~/hooks/Messages/useCopyToClipboard').default,
+}));
+jest.mock('copy-to-clipboard', () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockClipboard(...args),
 }));
 jest.mock('~/hooks/AuthContext', () => ({
-  AuthContextProvider: ({ children }: { children: React.ReactNode }) => {
+  AuthContextProvider: ({
+    children,
+    authConfig,
+  }: {
+    children: React.ReactNode;
+    authConfig?: { optional?: boolean };
+  }) => {
     mockAuthUrls.push(globalThis.window.location.href);
+    mockAuthConfigurations.push(authConfig);
     return <>{children}</>;
   },
 }));
@@ -90,6 +108,9 @@ function renderRoute() {
 
 beforeEach(() => {
   mockAuthUrls.length = 0;
+  mockAuthConfigurations.length = 0;
+  mockClipboard.mockReset().mockReturnValue(true);
+  jest.mocked(QRCodeSVG).mockClear();
   sessionStorage.clear();
   window.history.replaceState({}, '', '/channels/link');
   authenticated(false);
@@ -132,6 +153,9 @@ afterEach(() => {
 test('preserves mixed-case tickets across login and sends exact POST bodies, never redirect URLs', async () => {
   window.history.replaceState({}, '', `/channels/link#${ticket}`);
   const first = renderRoute();
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'com_ui_channel_handoff_continue' }),
+  );
   await screen.findByTestId('login');
   expect(mockAuthUrls.length).toBeGreaterThan(0);
   expect(mockAuthUrls.every((url) => !url.includes(ticket))).toBe(true);
@@ -187,6 +211,9 @@ test('transient preview 401 retains the ticket for sign-in and retry', async () 
   first.unmount();
   authenticated(false);
   const login = renderRoute();
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'com_ui_channel_handoff_continue' }),
+  );
   await screen.findByTestId('login');
   expect(window.location.href).not.toContain(ticket);
   login.unmount();
@@ -293,6 +320,9 @@ test('blocked storage never puts the ticket into the login URL', async () => {
   });
   window.history.replaceState({}, '', `/channels/link#${ticket}`);
   const first = renderRoute();
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'com_ui_channel_handoff_continue' }),
+  );
   await screen.findByTestId('login');
   expect(window.location.href).not.toContain(ticket);
   expect(mockAuthUrls.every((url) => !url.includes(ticket))).toBe(true);
@@ -408,3 +438,122 @@ test('an old owner acknowledgement cannot replace the new owner preview or consu
   expect(screen.getByRole('button', { name: 'com_ui_channel_link_accept' })).toBeEnabled();
   expect(savedTicket().ticket).toBe(ticket);
 });
+
+test('offers private phone handoff before login without reading account data', async () => {
+  window.history.replaceState({}, '', `/channels/link?unused=value#${ticket}`);
+  renderRoute();
+  expect(
+    await screen.findByRole('button', { name: 'com_ui_channel_handoff_continue' }),
+  ).toBeVisible();
+  expect(screen.queryByTestId('login')).not.toBeInTheDocument();
+  expect(mockAuthConfigurations.every((config) => config?.optional === true)).toBe(true);
+  expect(post).not.toHaveBeenCalled();
+  expect(dataService.getStartupConfig).not.toHaveBeenCalled();
+  expect(jest.mocked(QRCodeSVG)).not.toHaveBeenCalled();
+  expect(document.body.textContent).not.toContain('account@example.com');
+  expect(document.body.textContent).not.toContain('U1');
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_channel_handoff_phone' }));
+  const url = `${window.location.origin}/channels/link#${ticket}`;
+  expect(screen.getByLabelText('com_ui_channel_handoff_private_link')).toHaveValue(url);
+  expect(jest.mocked(QRCodeSVG).mock.calls.at(-1)?.[0].value).toBe(url);
+  expect(screen.getByText('com_ui_channel_handoff_privacy')).toBeVisible();
+  expect(screen.getByText('com_ui_channel_handoff_expiry')).toBeVisible();
+  expect(screen.getByText('com_ui_channel_handoff_confirmation')).toBeVisible();
+  expect(screen.getByText('com_ui_channel_handoff_localhost')).toBeVisible();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_copy_link' }));
+  expect(mockClipboard).toHaveBeenCalledWith(
+    url,
+    expect.objectContaining({ format: 'text/plain' }),
+  );
+  expect(screen.getByRole('status')).toHaveTextContent('com_ui_copied');
+  expect(window.location.href).not.toContain(ticket);
+  expect(mockAuthUrls.every((authUrl) => !authUrl.includes(ticket))).toBe(true);
+  expect(post).not.toHaveBeenCalled();
+});
+
+test('phone handoff permits manual copy when clipboard access fails', async () => {
+  mockClipboard.mockReturnValue(false);
+  window.history.replaceState({}, '', `/channels/link#${ticket}`);
+  renderRoute();
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'com_ui_channel_handoff_phone' }),
+  );
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_copy_link' }));
+  expect(screen.getByText('com_ui_channel_handoff_localhost')).toBeVisible();
+  expect(screen.getByText('com_ui_channel_handoff_copy_failed')).toBeVisible();
+  const input = screen.getByLabelText('com_ui_channel_handoff_private_link');
+  await userEvent.click(input);
+  expect(input).toHaveFocus();
+  expect(
+    window.getSelection()?.toString() || (input as HTMLInputElement).selectionEnd,
+  ).toBeTruthy();
+});
+
+test('blocked storage warns before sign-in and still allows private phone handoff', async () => {
+  jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new DOMException('Blocked', 'SecurityError');
+  });
+  window.history.replaceState({}, '', `/channels/link#${ticket}`);
+  renderRoute();
+  expect(await screen.findByText('com_ui_channel_handoff_storage')).toBeVisible();
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_channel_handoff_phone' }));
+  expect(screen.getByLabelText('com_ui_channel_handoff_private_link')).toHaveValue(
+    `${window.location.origin}/channels/link#${ticket}`,
+  );
+  expect(window.location.hash).toBe('');
+  expect(post).not.toHaveBeenCalled();
+});
+
+test('expired stored tickets do not offer a QR code or a sign-in loop', async () => {
+  sessionStorage.setItem(
+    storageKey,
+    JSON.stringify({ ticket, savedAt: Date.now() - maxAgeMs - 1 }),
+  );
+  renderRoute();
+  expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_channel_link_invalid');
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_channel_handoff_continue' }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_channel_handoff_phone' }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByTestId('login')).not.toBeInTheDocument();
+  expect(post).not.toHaveBeenCalled();
+});
+
+test('phone handoff disappears when the tab ticket expires', async () => {
+  jest.useFakeTimers();
+  sessionStorage.setItem(
+    storageKey,
+    JSON.stringify({ ticket, savedAt: Date.now(), expiresAtMs: Date.now() + 1000 }),
+  );
+  renderRoute();
+  const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+  await user.click(await screen.findByRole('button', { name: 'com_ui_channel_handoff_phone' }));
+  expect(screen.getByLabelText('com_ui_channel_handoff_private_link')).toBeVisible();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(1000);
+  });
+  expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_channel_link_invalid');
+  expect(screen.queryByLabelText('com_ui_channel_handoff_private_link')).not.toBeInTheDocument();
+  expect(savedTicket()).toBeNull();
+});
+
+test.each(['', '#malformed-ticket'])(
+  'missing or malformed fragment %s has a safe unauthenticated recovery',
+  async (hash) => {
+    window.history.replaceState({}, '', `/channels/link${hash}`);
+    renderRoute();
+    expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_channel_link_invalid');
+    expect(screen.getByRole('link', { name: 'com_ui_channel_link_go_home' })).toHaveAttribute(
+      'href',
+      '/',
+    );
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channel_handoff_phone' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('login')).not.toBeInTheDocument();
+    expect(window.location.hash).toBe('');
+    expect(post).not.toHaveBeenCalled();
+  },
+);

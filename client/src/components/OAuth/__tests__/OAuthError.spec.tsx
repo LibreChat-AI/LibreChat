@@ -109,3 +109,22 @@ describe('OAuthError', () => {
     expect(JSON.stringify(notice)).not.toContain('private-token');
   });
 });
+
+test('Discord recovery links to LibreChat without forwarding callback state or provider text', () => {
+  renderAt(
+    '/oauth/error?error=discord_invalid_state&flow=private-flow&error_description=private-detail',
+  );
+  expect(screen.getByRole('link', { name: 'com_ui_channel_link_go_home' })).toHaveAttribute(
+    'href',
+    '/',
+  );
+  expect(screen.queryByText(/private-flow|private-detail/)).not.toBeInTheDocument();
+});
+
+test('generic OAuth failures preserve their existing recovery controls', () => {
+  renderAt('/oauth/error?error=callback_failed');
+  expect(
+    screen.queryByRole('link', { name: 'com_ui_channel_link_go_home' }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'com_ui_close_window' })).toBeVisible();
+});
