@@ -2,7 +2,11 @@
 import axios, { AxiosHeaders } from 'axios';
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type * as t from './types';
-import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE, AUTH_SESSION_CHECK_UNAVAILABLE } from './config';
+import {
+  OPENID_SESSION_ENDED,
+  AUTH_SESSION_CHECK_UNAVAILABLE,
+  TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
+} from './config';
 import { persistTwoFactorSetupToken } from './twoFactor';
 import { setTokenHeader } from './headers-helpers';
 import { getClientLimit } from './clientLimits';
@@ -109,6 +113,13 @@ const isSessionCheckUnavailableResponse = (error: unknown): boolean => {
     ?.response;
   const code = (response?.data as { code?: unknown } | undefined)?.code;
   return response?.status === 503 && code === AUTH_SESSION_CHECK_UNAVAILABLE;
+};
+
+/** Returns the code of a denied refresh when the login page has a message for it. */
+const getLoginErrorCode = (error: unknown): typeof OPENID_SESSION_ENDED | undefined => {
+  const response = (error as { response?: { data?: unknown } } | undefined)?.response;
+  const code = (response?.data as { code?: unknown } | undefined)?.code;
+  return code === OPENID_SESSION_ENDED ? OPENID_SESSION_ENDED : undefined;
 };
 
 const AUTH_SESSION_UNAVAILABLE_MARKER = '__authSessionUnavailable';
@@ -404,12 +415,13 @@ const startAuthRecovery = (retryRefresh?: boolean) => {
   return refreshPromise;
 };
 
-const redirectToLoginOnce = () => {
+const redirectToLoginOnce = (errorCode?: string) => {
   if (isAuthRedirectInProgress()) {
     return;
   }
 
-  const href = endpoints.apiBaseUrl() + endpoints.buildLoginRedirectUrl();
+  const href =
+    endpoints.apiBaseUrl() + endpoints.withLoginError(endpoints.buildLoginRedirectUrl(), errorCode);
   setAuthRedirectStartedAt();
   window.dispatchEvent(
     new CustomEvent(AUTH_REDIRECT_EVENT, { detail: { href, inDocument: false } }),
@@ -524,7 +536,7 @@ const handleProactiveRefreshFailure = (
 
   if (generationMatches) {
     advanceAuthGeneration();
-    redirectToLoginOnce();
+    redirectToLoginOnce(getLoginErrorCode(error));
   }
   throw new AuthSessionEndedError();
 };
@@ -625,7 +637,7 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
       return markAuthSessionUnavailable(response);
     }
     advanceAuthGeneration();
-    redirectToLoginOnce();
+    redirectToLoginOnce(getLoginErrorCode(refreshError));
     return response;
   }
 
@@ -753,7 +765,7 @@ if (typeof window !== 'undefined') {
 
           /** A rejected refresh must route to login like an empty token, or the 401 reaches the caller unredirected. */
           advanceAuthGeneration();
-          redirectToLoginOnce();
+          redirectToLoginOnce(getLoginErrorCode(refreshError));
           return Promise.reject(error);
         }
       }
@@ -778,6 +790,7 @@ export default {
   dispatchTokenUpdatedEvent,
   redirectIfTwoFactorSetupPayload,
   classifyRefreshFailure,
+  getLoginErrorCode,
   isAuthSessionUnavailableError,
   getAuthGeneration,
   advanceAuthGeneration,

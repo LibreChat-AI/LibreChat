@@ -4,6 +4,7 @@
 import {
   agentQueuedTurn,
   buildLoginRedirectUrl,
+  withLoginError,
   getSharedLinks,
   agentQueuedTurnsByConversation,
   enableTwoFactorSetup,
@@ -16,6 +17,24 @@ import {
   subagentThreadMessagesPage,
   subagentThreadToolCallPart,
 } from '../src/api-endpoints';
+
+describe('withLoginError', () => {
+  it('returns the login URL unchanged without a code', () => {
+    expect(withLoginError('/login?redirect_to=%2Fc%2Fnew')).toBe('/login?redirect_to=%2Fc%2Fnew');
+  });
+
+  it('adds the code as the first query parameter', () => {
+    expect(withLoginError('/login', 'OPENID_SESSION_ENDED')).toBe(
+      '/login?error=OPENID_SESSION_ENDED',
+    );
+  });
+
+  it('adds the code after an existing redirect_to', () => {
+    expect(withLoginError('/login?redirect_to=%2Fc%2Fnew', 'OPENID_SESSION_ENDED')).toBe(
+      '/login?redirect_to=%2Fc%2Fnew&error=OPENID_SESSION_ENDED',
+    );
+  });
+});
 
 describe('buildLoginRedirectUrl', () => {
   afterEach(() => {
