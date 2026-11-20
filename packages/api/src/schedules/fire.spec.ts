@@ -988,6 +988,21 @@ it('fires without a server that is not ready, and says which the run goes withou
   expect(methods.reserveStartedRun).toHaveBeenCalledWith(
     expect.not.objectContaining({ admissionOnly: true }),
   );
+  // On the row before the run can start, so a resume can read them whatever happens to the
+  // write that follows the enqueue.
+  expect(methods.reserveStartedRun).toHaveBeenCalledWith(
+    expect.objectContaining({
+      mcp: expect.arrayContaining([
+        expect.objectContaining({ server: 'Notion', skipped: true }),
+        expect.objectContaining({ server: 'Warehouse', skipped: true }),
+        expect.objectContaining({ server: 'Vault', skipped: true }),
+        { server: 'Linear', status: 'ready' },
+      ]),
+    }),
+  );
+  expect(jest.mocked(methods.reserveStartedRun).mock.invocationCallOrder[0]).toBeLessThan(
+    jest.mocked(deps.enqueueTrigger).mock.invocationCallOrder[0],
+  );
   expect(deps.enqueueTrigger).toHaveBeenCalledTimes(1);
   const [envelope] = jest.mocked(deps.enqueueTrigger).mock.calls[0];
   expect(envelope).toMatchObject({

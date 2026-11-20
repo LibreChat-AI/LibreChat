@@ -580,13 +580,16 @@ export async function fireSchedule(
         conversationId,
         firedAt: new Date(),
         ...(capacitySlot != null ? { capacitySlot } : {}),
+        // The readiness outcomes are on the row before the run can start: a resumed run reads
+        // from it the servers this occurrence goes without, and the write that follows the
+        // enqueue is allowed to fail.
         ...(admissionFailure
           ? {
               admissionOnly: true,
               error: admissionFailure.error,
               ...(admissionFailure.mcp ? { mcp: admissionFailure.mcp } : {}),
             }
-          : {}),
+          : { ...(mcp.length > 0 ? { mcp } : {}) }),
         deliveryKey,
         // The destination THIS occurrence used. The schedule-level value can move on
         // (a pin redirects later fires, and a paused run does not block them), so a

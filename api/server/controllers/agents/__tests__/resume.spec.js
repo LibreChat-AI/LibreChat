@@ -103,7 +103,6 @@ const mockGetMCPRequestContext = jest.fn();
 const mockCleanupMCPRequestContextForReq = jest.fn();
 const mockRecordScheduleOutcome = jest.fn();
 const mockIsScheduleLive = jest.fn();
-const mockRestoreSkippedServers = jest.fn();
 const mockClaimScheduleResume = jest.fn();
 const mockReleaseScheduleResumeClaim = jest.fn();
 const mockFinalizeScheduleResumeClaim = jest.fn();
@@ -204,7 +203,6 @@ jest.mock('~/server/services/Schedules', () => ({
   finalizeScheduleResumeClaim: (...args) => mockFinalizeScheduleResumeClaim(...args),
   releaseScheduleResumeFence: (...args) => mockReleaseScheduleResumeFence(...args),
   isScheduleLive: (...args) => mockIsScheduleLive(...args),
-  restoreSkippedServers: (...args) => mockRestoreSkippedServers(...args),
 }));
 
 jest.mock('~/server/cleanup', () => ({
@@ -421,7 +419,6 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     mockGenerationJobManager.approvals.finishPausePersistence.mockResolvedValue(true);
     mockRecordScheduleOutcome.mockResolvedValue(true);
     mockIsScheduleLive.mockResolvedValue(true);
-    mockRestoreSkippedServers.mockReset().mockResolvedValue(undefined);
     mockClaimScheduleResume.mockResolvedValue({
       capacitySlot: 0,
       claimToken: 'resume-token',
@@ -1170,26 +1167,6 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
           checkpointNamespace: '1000',
         },
       });
-
-    it('puts back what the occurrence went without before it rebuilds the run', async () => {
-      const job = makeScheduledJob();
-      mockGenerationJobManager.getJob.mockResolvedValue(job);
-      // The rebuilt client loads the run's tools, so the servers must be back by then.
-      mockInitializeClient.mockImplementation(async () => {
-        expect(mockRestoreSkippedServers).toHaveBeenCalledTimes(1);
-        return { client: makeClient(), userMCPAuthMap: {} };
-      });
-      const res = await post(approveBody());
-      expect(res.status).toBe(200);
-      await settled;
-      await flush();
-      expect(mockInitializeClient).toHaveBeenCalled();
-      expect(mockRestoreSkippedServers).toHaveBeenCalledWith(
-        expect.objectContaining({ _isScheduledFire: true }),
-        job.metadata.scheduleId,
-        job.metadata.scheduledFor,
-      );
-    });
 
     it('persists the server namespace when a scheduled approval pauses again', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeScheduledJob());

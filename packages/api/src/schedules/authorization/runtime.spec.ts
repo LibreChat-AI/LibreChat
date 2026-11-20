@@ -1,11 +1,16 @@
 import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-provider';
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
+import {
+  bindScheduledMCPInvocation,
+  getScheduleMCPExecution,
+  narrowScheduledMCPTools,
+} from './execution';
 import {
   restoreExecutionContext,
   createScheduleExecutionContext,
 } from '~/agents/authority/context';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
-import { bindScheduledMCPInvocation, getScheduleMCPExecution } from './execution';
 import { executionFixture, allowOffered, readTool } from './execution.helper';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduleMCPPreflight } from '../mcp';
@@ -79,6 +84,10 @@ async function setup() {
   const getServers = jest.fn(async () => servers);
   const resolveGraphAccess = jest.fn(async () => ({}) as AgentGraphAccessContext);
   const getScheduleById = jest.fn(async () => row);
+  /** What the occurrence's run row holds: its readiness outcomes. None unless a test sets some. */
+  const getScheduleRunMCP = jest.fn(
+    async (_scheduleId: string, _scheduledFor: string | Date): Promise<ScheduleMCPOutcome[]> => [],
+  );
   const getScheduleMCPCompletionState = jest.fn(async () => ({
     identity: fixture.identity,
     enrolled: false,
@@ -87,7 +96,7 @@ async function setup() {
   const host = createScheduleMCPRuntimeHost({
     canPauseRuns: async () => pausable,
     getScheduleMCPCompletionState,
-    methods: { ...fixture.storage, getScheduleById },
+    methods: { ...fixture.storage, getScheduleById, getScheduleRunMCP },
     findUser,
     getRoleByName,
     canViewAgent: async () => true,
@@ -162,6 +171,7 @@ async function setup() {
     findUser,
     getAppConfig,
     getScheduleById,
+    getScheduleRunMCP,
     getScheduleMCPCompletionState,
     servers,
     setCandidates: (names: string[]) => {
@@ -223,6 +233,46 @@ it('returns a structured unsupported-version denial and never probes the provide
     outcomes: [expect.objectContaining({ reason: 'binding_mismatch' })],
   });
   expect(f.connect).not.toHaveBeenCalled();
+});
+
+it('puts back on a resumed run the servers its occurrence went without, read from its run row', async () => {
+  const f = await setup();
+  f.getScheduleRunMCP.mockResolvedValue([
+    { server: 'notes', status: 'mcp_reauth_required', skipped: true },
+    { server: 'warehouse', status: 'ready' },
+  ]);
+  const scheduledFor = '2026-09-09T12:00:00.000Z';
+  const req: {
+    user: typeof f.user;
+    _isScheduledFire: boolean;
+    body: Record<string, unknown>;
+    _scheduleSkippedServers?: string[];
+    _scheduleCheckedServers?: string[];
+  } = { user: f.user, _isScheduledFire: true, body: {} };
+  await f.host.prepare({
+    req,
+    context: f.context,
+    restoredJob: { scheduleId: 'schedule', scheduledFor },
+    executionContext: restoreExecutionContext(req, {
+      userId: 'owner',
+      tenantId: 'tenant',
+      scheduleId: 'schedule',
+      agent_id: 'root',
+    }),
+  });
+  expect(f.getScheduleRunMCP).toHaveBeenCalledWith('schedule', scheduledFor);
+  expect(req._scheduleSkippedServers).toEqual(['notes']);
+  expect(req._scheduleCheckedServers).toEqual(['notes', 'warehouse']);
+  // The resumed run then loads nothing on that server.
+  expect(narrowScheduledMCPTools(req, 'root', ['search_mcp_notes', 'query_mcp_warehouse'])).toEqual(
+    ['query_mcp_warehouse'],
+  );
+});
+
+it('reads no run row for a fresh occurrence, whose trigger already says what it goes without', async () => {
+  const f = await setup();
+  await f.host.prepare({ req: f.req, context: f.context });
+  expect(f.getScheduleRunMCP).not.toHaveBeenCalled();
 });
 
 it('rebuilds the protected root on resume and refuses revoked consent even after approval', async () => {

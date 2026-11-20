@@ -89,7 +89,6 @@ module.exports = {
   finalizeScheduleResumeClaim: invoke('finalizeScheduleResumeClaim'),
   releaseScheduleResumeFence: invoke('releaseScheduleResumeFence'),
   isScheduleLive: invoke('isScheduleLive'),
-  restoreSkippedServers: invoke('restoreSkippedServers'),
   deleteScheduleForOwner: invoke('deleteScheduleForOwner'),
   quiesceUserSchedules: invoke('quiesceUserSchedules'),
   restoreUserSchedulesFromDeletion: invoke('restoreUserSchedulesFromDeletion'),

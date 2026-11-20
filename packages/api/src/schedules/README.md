@@ -54,8 +54,10 @@ unavailable, is not configured or may not be used does not refuse the schedule:
   give, and the rest of the agent runs. A tool key is resolved to its server among the
   servers the check covered, longest name first, as tool loading resolves it.
 - A run that pauses and is resumed rebuilds its tools on a request that is not a trigger. The
-  resume reads the same two lists back from the occurrence's run row
-  (`restoreSkippedServers`), so a resumed run goes without the same servers.
+  run host (`prepare` in `authorization/runtime.ts`) reads the same two lists back from the
+  occurrence's run row before any tool is loaded, so a resumed run goes without the same
+  servers. The outcomes are written with the run's reservation, before its trigger is
+  enqueued, so they are there whatever happens to the bookkeeping that follows.
 - A skipped server is a note, not a denial: it neither fails the run nor suspends the
   schedule. It keeps its `reason` (and an unattended-auth diagnosis as the reason
   `provider_missing`), since the owner's way out depends on it: authorizing the schedule, or

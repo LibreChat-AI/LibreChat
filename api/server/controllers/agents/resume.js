@@ -106,7 +106,6 @@ const {
   finalizeScheduleResumeClaim,
   releaseScheduleResumeFence,
   isScheduleLive,
-  restoreSkippedServers,
 } = require('~/server/services/Schedules');
 const {
   GENERATION_PROTOCOL_HEADER,
@@ -863,7 +862,6 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
   // exposed as `requires_action` again.
   if (scheduleId) {
     req._isScheduledFire = true;
-    await restoreSkippedServers(req, scheduleId, scheduledFor);
   }
   if (
     scheduleId &&
