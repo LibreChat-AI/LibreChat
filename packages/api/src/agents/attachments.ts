@@ -599,6 +599,26 @@ export function collectHistoricalAttachmentIds(
   return fileIds;
 }
 
+/**
+ * The ids of the files a turn carries from earlier ones, for every place that decides it: the
+ * history replay, the final admission once the prompt is built, and a resumed run. `historical`
+ * is what that place knows to be earlier; `attachments` is everything the turn was handed and
+ * `requested` the files the request itself named (see `partitionRequestAttachments`). A file
+ * the request names again is new to the turn wherever else it appears.
+ */
+export function collectTurnHistoricalIds({
+  historical,
+  attachments,
+  requested,
+}: {
+  historical: Iterable<FileWithId | string | null | undefined>;
+  attachments: Iterable<FileWithId | null | undefined>;
+  requested: Iterable<FileWithId | null | undefined> | null | undefined;
+}): Set<string> {
+  const { named, primed } = partitionRequestAttachments(attachments, requested);
+  return collectHistoricalAttachmentIds([...historical, ...primed], named);
+}
+
 interface SteerAttachmentHistory {
   originalHistoricalFileIds: ReadonlySet<string>;
   historicalFileIds: Set<string>;

@@ -7127,6 +7127,63 @@ describe('AgentClient - titleConvo', () => {
         expect(client.processAttachments).not.toHaveBeenCalled();
       });
 
+      /** The earlier-files set is worked out again once the prompt is built, from the same
+       *  mixed list, and the turn has to pass that admission as well as the replay's. */
+      it('lets the turn through the final admission once the prompt is built', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh];
+        const history = thread().map((message, index) => ({
+          ...message,
+          parentMessageId: index === 0 ? null : `msg-${index - 1}`,
+          sender: 'User',
+          text: `screenshot ${index}`,
+        }));
+        const replayed = await client.addPreviousAttachments(history);
+
+        await expect(
+          client.buildMessages(
+            [
+              ...replayed,
+              {
+                messageId: 'msg-new',
+                parentMessageId: 'msg-9',
+                sender: 'User',
+                text: 'now these',
+                isCreatedByUser: true,
+              },
+            ],
+            'msg-new',
+            {},
+          ),
+        ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+        expect(client.turnHistoricalAttachmentIds).toEqual(
+          new Set(earlier.map(({ file_id }) => file_id)),
+        );
+      });
+
+      it('refuses eleven new files at the final admission as it does at the replay', async () => {
+        const many = Array.from({ length: 11 }, (_, index) => screenshot(`fresh-${index}`));
+        client.options.attachments = [...many, ...earlier];
+        client.options.currentRequestAttachments = many;
+        client.authorizedHistoricalFiles = new Map(earlier.map((file) => [file.file_id, file]));
+
+        await expect(
+          client.buildMessages(
+            [
+              {
+                messageId: 'msg-new',
+                parentMessageId: null,
+                sender: 'User',
+                text: 'now these',
+                isCreatedByUser: true,
+              },
+            ],
+            'msg-new',
+            {},
+          ),
+        ).rejects.toMatchObject({ limitType: 'count', observed: 11, limit: 10 });
+      });
+
       it('still counts an earlier file the request names again', async () => {
         mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
         client.options.attachments = [fresh, ...earlier];
@@ -10916,6 +10973,56 @@ describe('AgentClient - resumeCompletion content protection', () => {
     context.options.req.config.fileConfig = {
       endpoints: { agents: { fileLimit: 10 } },
     };
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).resolves.toBeUndefined();
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count history that agent setup primed again as new files on resume', async () => {
+    const historicalFiles = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `resume-primed-${index}`,
+      filename: `screenshot-${index}.png`,
+      source: 'local',
+      type: 'image/png',
+      bytes: 10,
+      llmDeliveryPath: 'provider',
+      metadata: { codeEnvRef: { kind: 'user', id: 'user-123', file_id: `env-${index}` } },
+    }));
+    require('~/models').getMessages.mockResolvedValue(
+      historicalFiles.map((file, index) => ({
+        messageId: index === historicalFiles.length - 1 ? 'parent-123' : `history-${index}`,
+        parentMessageId: index === 0 ? Constants.NO_PARENT : `history-${index - 1}`,
+        isCreatedByUser: true,
+        role: 'user',
+        text: 'inspect file',
+        files: [{ file_id: file.file_id }],
+      })),
+    );
+    require('~/models').getFiles.mockResolvedValue(historicalFiles);
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: historicalFiles.map((file) => ({
+              role: 'human',
+              files: [{ file_id: file.file_id }],
+            })),
+          },
+        },
+      }),
+    });
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
+    const context = makeContext(undefined);
+    context.options.req.body.isTemporary = false;
+    context.options.req.config.fileConfig = {
+      endpoints: { agents: { fileLimit: 10 } },
+    };
+    /** A resumed request names no file of its own; setup hands back the thread's. */
+    context.options.attachments = [...historicalFiles];
+    context.options.currentRequestAttachments = [];
 
     await expect(
       AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
