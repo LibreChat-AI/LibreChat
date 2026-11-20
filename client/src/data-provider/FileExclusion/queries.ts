@@ -1,5 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Constants, MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TFileExclusion, TFileExclusionRequest } from 'librechat-data-provider';
 import type { QueryClient, UseQueryOptions } from '@tanstack/react-query';
 
@@ -35,6 +35,19 @@ const inFlight = (queryClient: QueryClient, conversationId: string): number =>
       (mutation.state.variables as FileExclusionVariables | undefined)?.conversationId ===
       conversationId,
   });
+
+/**
+ * Whether a change to what the conversation leaves out is still being saved. A turn reads the
+ * saved list, so one sent before then would not have the change; whatever sends a message waits
+ * on this the way it waits on an upload.
+ */
+export const useFileExclusionPending = (conversationId: string): boolean =>
+  useIsMutating({
+    mutationKey: [MutationKeys.setFileExclusion],
+    predicate: (mutation) =>
+      (mutation.state.variables as FileExclusionVariables | undefined)?.conversationId ===
+      conversationId,
+  }) > 0;
 
 /**
  * Leaves files out of a conversation or takes them back in. The list is changed at once, so a

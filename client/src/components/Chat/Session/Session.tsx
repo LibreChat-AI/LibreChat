@@ -36,11 +36,17 @@ function Session({
   agentId,
   isSubmitting,
   autoOpen = true,
+  files: listFiles = true,
 }: {
   conversationId: string;
   agentId?: string | null;
   isSubmitting: boolean;
   autoOpen?: boolean;
+  /**
+   * Whether the conversation's files are listed. Off where leaving one out would change nothing:
+   * an assistants thread keeps its own copy of every attachment upstream.
+   */
+  files?: boolean;
 }) {
   const localize = useLocalize();
   const slot = useAtomValue(sessionRailSlot);
@@ -64,7 +70,7 @@ function Session({
   const { activeCount, awaitingCount, failedCount, incomplete } = view;
   useTaskExpiry(view.rows, setNow);
   /** Read only while the rail shows them: a closed rail asks nothing about files. */
-  const files = useSessionFiles({ conversationId, enabled: open });
+  const files = useSessionFiles({ conversationId, enabled: open && listFiles });
 
   /** Never as a sheet: that would cover the conversation the reader is in the middle of. */
   const working = activeCount > 0;

@@ -131,7 +131,10 @@ const renderSession = ({
   wanted,
   dismissed,
   thread = messages,
+  files,
 }: {
+  /** Whether the conversation's files are listed; the control's default when left out. */
+  files?: boolean;
   /** The loaded messages; the fixture's by default. */
   thread?: TMessage[];
   children?: ParentSubagentSummary[];
@@ -169,7 +172,12 @@ const renderSession = ({
             <SubagentIndexHostProvider>
               <ParentSubagentsProvider conversationId={id} enabled>
                 <header>
-                  <Session conversationId={id} isSubmitting={false} autoOpen={autoOpen} />
+                  <Session
+                    conversationId={id}
+                    isSubmitting={false}
+                    autoOpen={autoOpen}
+                    files={files}
+                  />
                 </header>
                 <SessionRailSlot />
               </ParentSubagentsProvider>
@@ -455,6 +463,18 @@ describe('Session', () => {
       const row = within(rail).getByTestId('session-file');
       expect(row).toHaveTextContent('com_ui_session_file_unnamed_image');
       expect(row).toHaveTextContent('com_ui_session_file_made');
+    });
+
+    it('lists no files, and asks about none, where leaving one out would change nothing', async () => {
+      const getFileExclusion = jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockResolvedValue({ excludedFiles: [] });
+      renderSession({ thread, files: false });
+      const rail = await openRail();
+
+      expect(within(rail).queryByTestId('session-file')).toBeNull();
+      expect(rail).toHaveTextContent('com_ui_session_empty');
+      expect(getFileExclusion).not.toHaveBeenCalled();
     });
 
     it('asks nothing about files while the rail is closed, or for a thread that has none', async () => {

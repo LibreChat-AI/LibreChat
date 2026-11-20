@@ -31,6 +31,7 @@ jest.mock('librechat-data-provider', () => ({
   EModelEndpoint: { agents: 'agents' },
   PermissionTypes: { BOOKMARKS: 'bookmarks', MULTI_CONVO: 'multi_convo', TEMPORARY_CHAT: 'temp' },
   Permissions: { USE: 'use' },
+  isAssistantsEndpoint: jest.requireActual('librechat-data-provider').isAssistantsEndpoint,
   isForcedTemporaryRetention:
     jest.requireActual('librechat-data-provider').isForcedTemporaryRetention,
 }));
@@ -137,6 +138,15 @@ describe('Header stacking', () => {
       agentId: 'agent-1',
     });
     expect(backgroundTasks).not.toHaveBeenCalled();
+  });
+
+  test('has the session control list files, except where the endpoint keeps its own copies', () => {
+    render(<Header />);
+    expect(session.mock.calls[0][0]).toMatchObject({ files: true });
+    session.mockClear();
+    mockConversation.current = { ...codeConversation, endpoint: 'assistants' };
+    render(<Header />);
+    expect(session.mock.calls[0][0]).toMatchObject({ files: false });
   });
 
   test('lets the rail show itself unless the deployment says otherwise', () => {

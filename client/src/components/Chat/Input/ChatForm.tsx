@@ -66,6 +66,7 @@ import {
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
 import { onGreetingSettled, canClaimWelcomeFocus, isTouchFirst } from '../welcome';
+import { useFileExclusionPending, useGetStartupConfig } from '~/data-provider';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -78,7 +79,6 @@ import { chatDirectionAtom } from '~/store/chatDirection';
 import ProjectLandingChip from '../ProjectLandingChip';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
-import { useGetStartupConfig } from '~/data-provider';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
 import TextareaHeader from './TextareaHeader';
 import { composerTextareaId } from '~/common';
@@ -233,6 +233,10 @@ const ChatForm = memo(function ChatForm({
     [conversation?.conversationId],
   );
   const isNewConversation = conversationId === '' || conversationId === Constants.NEW_CONVO;
+  /** A file switched off in the session rail is left out once that is saved, and a turn sent
+   *  before then would still carry it, so sending waits for the save as it does for an upload. */
+  const savingFileChoice = useFileExclusionPending(conversationId);
+  const filesBusy = filesLoading || savingFileChoice;
   /**
    * The quote feature merges excerpts server-side in `BaseClient.sendMessage`,
    * which the Assistants endpoints bypass, so hide the UI there rather than
@@ -416,7 +420,7 @@ const ChatForm = memo(function ChatForm({
     composerDisabled: isPreparingFromUrl,
     files,
     setFiles,
-    filesLoading,
+    filesLoading: filesBusy,
     sendNow,
     stopGenerating,
   });
@@ -553,7 +557,7 @@ const ChatForm = memo(function ChatForm({
        which is exactly when speech must still reach it: the send button is
        enabled on the same terms. */
     isSubmitting: (isSubmitting && !dictationAnswerModeActive) || answerMode.composerLocked,
-    filesLoading,
+    filesLoading: filesBusy,
     /* A dictated question answer is cleared by answer mode only after the
        resume succeeds. A transient failure must leave the transcript intact. */
     deferComposerReset: dictationAnswerModeActive,
@@ -597,7 +601,7 @@ const ChatForm = memo(function ChatForm({
         fileCount={submittableFileCount}
         hasInlinePaste={hasInlinePaste}
         sendDisabled={
-          filesLoading ||
+          filesBusy ||
           isPreparingFromUrl ||
           disableInputs ||
           !target.ready ||
@@ -606,7 +610,7 @@ const ChatForm = memo(function ChatForm({
           isNotAppendable ||
           answerMode.composerLocked
         }
-        duringRunDisabled={filesLoading || isPreparingFromUrl}
+        duringRunDisabled={filesBusy || isPreparingFromUrl}
         showStopButton={showStopButton}
         setShowStopButton={setShowStopButton}
         stop={handleStopGenerating}
@@ -626,7 +630,7 @@ const ChatForm = memo(function ChatForm({
       enterToSend,
       submittableFileCount,
       hasInlinePaste,
-      filesLoading,
+      filesBusy,
       isPreparingFromUrl,
       disableInputs,
       target.ready,
