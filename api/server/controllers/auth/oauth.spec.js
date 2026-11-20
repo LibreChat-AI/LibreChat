@@ -8,13 +8,9 @@ const mockSendOpenIDAuthResponse = jest.fn();
 const mockGetLogStores = jest.fn();
 const mockCheckBan = jest.fn();
 const mockGenerateToken = jest.fn();
-const mockMath = jest.fn();
-const mockEstablishOAuthProviderSession = jest.fn();
-const mockPersistOpenIDAdminProviderSessionBinding = jest.fn();
+const mockEstablishOAuthCallback = jest.fn();
+const mockPersistOAuthAdminBinding = jest.fn();
 const mockResolveAuthMethod = jest.fn();
-const mockGetProviderSessionAuthorizer = jest.fn();
-const mockGetProviderSessionClient = jest.fn();
-const mockStoreOpenIDSession = jest.fn();
 const mockLogger = { info: jest.fn(), error: jest.fn(), warn: jest.fn() };
 
 jest.mock('librechat-data-provider', () => ({
@@ -24,7 +20,6 @@ jest.mock('librechat-data-provider', () => ({
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
   DEFAULT_SESSION_EXPIRY: 60000,
-  DEFAULT_REFRESH_TOKEN_EXPIRY: 86400000,
 }));
 
 jest.mock('@librechat/api', () => ({
@@ -32,10 +27,6 @@ jest.mock('@librechat/api', () => ({
   getAdminPanelUrl: (...args) => mockGetAdminPanelUrl(...args),
   isAdminPanelRedirect: (...args) => mockIsAdminPanelRedirect(...args),
   generateAdminExchangeCode: (...args) => mockGenerateAdminExchangeCode(...args),
-  math: (...args) => mockMath(...args),
-  establishOAuthProviderSession: (...args) => mockEstablishOAuthProviderSession(...args),
-  persistOpenIDAdminProviderSessionBinding: (...args) =>
-    mockPersistOpenIDAdminProviderSessionBinding(...args),
   resolveAuthMethod: (...args) => mockResolveAuthMethod(...args),
 }));
 
@@ -45,7 +36,6 @@ jest.mock('~/server/services/PermissionService', () => ({
 
 jest.mock('~/server/services/AuthService', () => ({
   setAuthTokens: (...args) => mockSetAuthTokens(...args),
-  storeOpenIDSession: (...args) => mockStoreOpenIDSession(...args),
 }));
 
 jest.mock('~/server/services/OpenIDRefreshRecovery', () => ({
@@ -53,8 +43,8 @@ jest.mock('~/server/services/OpenIDRefreshRecovery', () => ({
 }));
 
 jest.mock('~/server/services/ProviderSession', () => ({
-  getProviderSessionAuthorizer: (...args) => mockGetProviderSessionAuthorizer(...args),
-  getProviderSessionClient: (...args) => mockGetProviderSessionClient(...args),
+  establishOAuthCallback: (...args) => mockEstablishOAuthCallback(...args),
+  persistOAuthAdminBinding: (...args) => mockPersistOAuthAdminBinding(...args),
 }));
 
 jest.mock(
@@ -105,8 +95,6 @@ function buildRes() {
 }
 
 describe('createOAuthHandler', () => {
-  const authorizerHandle = { getMode: jest.fn().mockResolvedValue('enforce') };
-
   beforeEach(() => {
     jest.clearAllMocks();
     process.env = {
@@ -123,25 +111,18 @@ describe('createOAuthHandler', () => {
     mockGenerateToken.mockResolvedValue('jwt-token');
     mockGenerateAdminExchangeCode.mockResolvedValue('exchange-code');
     mockSendOpenIDAuthResponse.mockResolvedValue('app-token');
-    mockMath.mockReturnValue(86400000);
     mockResolveAuthMethod.mockImplementation((provider) =>
       provider === 'openid' ? 'openid' : 'social',
     );
-    authorizerHandle.getMode.mockResolvedValue('enforce');
-    mockGetProviderSessionAuthorizer.mockReturnValue(authorizerHandle);
-    mockGetProviderSessionClient.mockReturnValue({
-      issuer: 'https://issuer.example.com',
-      clientId: 'client-1',
-    });
-    mockEstablishOAuthProviderSession.mockResolvedValue(null);
-    mockPersistOpenIDAdminProviderSessionBinding.mockResolvedValue(undefined);
+    mockEstablishOAuthCallback.mockResolvedValue(null);
+    mockPersistOAuthAdminBinding.mockResolvedValue(undefined);
   });
 
   afterAll(() => {
     process.env = ORIGINAL_ENV;
   });
 
-  it('delegates the provider-session check with the authorizer, client resolver, refresh-token lifetime, and request', async () => {
+  it('delegates the provider-session check with the request and response', async () => {
     mockIsAdminPanelRedirect.mockReturnValue(false);
     const handler = createOAuthHandler('http://localhost:3080');
     const req = buildReq();
@@ -150,21 +131,13 @@ describe('createOAuthHandler', () => {
 
     await handler(req, res, next);
 
-    expect(mockGetProviderSessionAuthorizer).toHaveBeenCalled();
-    expect(mockEstablishOAuthProviderSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorizer: authorizerHandle,
-        getProviderSessionClient: expect.any(Function),
-        refreshTokenExpiryMs: 86400000,
-      }),
-      expect.objectContaining({ req, res }),
-    );
+    expect(mockEstablishOAuthCallback).toHaveBeenCalledWith(expect.objectContaining({ req, res }));
   });
 
   it('passes the resolved ref into setAuthTokens with the explicit openid auth method', async () => {
     mockIsAdminPanelRedirect.mockReturnValue(false);
     const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
-    mockEstablishOAuthProviderSession.mockResolvedValue(ref);
+    mockEstablishOAuthCallback.mockResolvedValue(ref);
     const handler = createOAuthHandler('http://localhost:3080');
     const req = buildReq();
     const res = buildRes();
@@ -199,7 +172,7 @@ describe('createOAuthHandler', () => {
 
   it('stops without publishing when the provider-session check denies the callback', async () => {
     mockIsAdminPanelRedirect.mockReturnValue(false);
-    mockEstablishOAuthProviderSession.mockResolvedValue(undefined);
+    mockEstablishOAuthCallback.mockResolvedValue(undefined);
     const handler = createOAuthHandler('http://localhost:3080');
     const req = buildReq();
     const res = buildRes();
@@ -216,7 +189,7 @@ describe('createOAuthHandler', () => {
   it('propagates a provider-session check failure that is not caught as a denial', async () => {
     mockIsAdminPanelRedirect.mockReturnValue(false);
     const unrelatedError = new Error('boom');
-    mockEstablishOAuthProviderSession.mockRejectedValue(unrelatedError);
+    mockEstablishOAuthCallback.mockRejectedValue(unrelatedError);
     const handler = createOAuthHandler('http://localhost:3080');
     const req = buildReq();
     const res = buildRes();
@@ -231,7 +204,7 @@ describe('createOAuthHandler', () => {
     process.env.OPENID_REUSE_TOKENS = 'true';
     mockIsAdminPanelRedirect.mockReturnValue(false);
     const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
-    mockEstablishOAuthProviderSession.mockResolvedValue(ref);
+    mockEstablishOAuthCallback.mockResolvedValue(ref);
     const handler = createOAuthHandler('http://localhost:3080');
     const req = buildReq();
     const res = buildRes();
@@ -274,19 +247,13 @@ describe('createOAuthHandler', () => {
     expect(res.redirect).toHaveBeenCalledWith(
       'http://admin.example.com/auth/openid/callback?code=exchange-code',
     );
-    expect(mockPersistOpenIDAdminProviderSessionBinding).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorizer: authorizerHandle,
-        storeOpenIDSession: expect.any(Function),
-      }),
-      {
-        provider: 'openid',
-        refreshToken: undefined,
-        userId: 'user-123',
-        tenantId: undefined,
-        providerSession: null,
-      },
-    );
+    expect(mockPersistOAuthAdminBinding).toHaveBeenCalledWith({
+      provider: 'openid',
+      refreshToken: undefined,
+      userId: 'user-123',
+      tenantId: undefined,
+      providerSession: null,
+    });
     expect(mockSendOpenIDAuthResponse).not.toHaveBeenCalled();
     expect(mockSetAuthTokens).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
@@ -295,7 +262,7 @@ describe('createOAuthHandler', () => {
   it('includes refresh token in admin exchange when OPENID_REUSE_TOKENS is enabled, and delegates binding persistence', async () => {
     process.env.OPENID_REUSE_TOKENS = 'true';
     const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
-    mockEstablishOAuthProviderSession.mockResolvedValue(ref);
+    mockEstablishOAuthCallback.mockResolvedValue(ref);
     const handler = createOAuthHandler('http://admin.example.com/auth/openid/callback');
     const req = buildReq();
     const res = buildRes();
@@ -313,19 +280,13 @@ describe('createOAuthHandler', () => {
       expect.any(Number),
       ref,
     );
-    expect(mockPersistOpenIDAdminProviderSessionBinding).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorizer: authorizerHandle,
-        storeOpenIDSession: expect.any(Function),
-      }),
-      {
-        provider: 'openid',
-        refreshToken: 'openid-refresh-token',
-        userId: 'user-123',
-        tenantId: undefined,
-        providerSession: ref,
-      },
-    );
+    expect(mockPersistOAuthAdminBinding).toHaveBeenCalledWith({
+      provider: 'openid',
+      refreshToken: 'openid-refresh-token',
+      userId: 'user-123',
+      tenantId: undefined,
+      providerSession: ref,
+    });
     expect(res.redirect).toHaveBeenCalledWith(
       'http://admin.example.com/auth/openid/callback?code=exchange-code',
     );
@@ -336,7 +297,7 @@ describe('createOAuthHandler', () => {
 
   it('denies the admin callback before an exchange code is issued when the provider-session check denies', async () => {
     process.env.OPENID_REUSE_TOKENS = 'true';
-    mockEstablishOAuthProviderSession.mockResolvedValue(undefined);
+    mockEstablishOAuthCallback.mockResolvedValue(undefined);
     const handler = createOAuthHandler('http://admin.example.com/auth/openid/callback');
     const req = buildReq();
     const res = buildRes();
@@ -345,7 +306,7 @@ describe('createOAuthHandler', () => {
     await handler(req, res, next);
 
     expect(mockGenerateAdminExchangeCode).not.toHaveBeenCalled();
-    expect(mockPersistOpenIDAdminProviderSessionBinding).not.toHaveBeenCalled();
+    expect(mockPersistOAuthAdminBinding).not.toHaveBeenCalled();
     expect(res.redirect).not.toHaveBeenCalled();
   });
 
@@ -370,11 +331,9 @@ describe('createOAuthHandler', () => {
       expect.any(Number),
       null,
     );
-    expect(mockPersistOpenIDAdminProviderSessionBinding).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(mockPersistOAuthAdminBinding).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'google', refreshToken: 'google-refresh-token' }),
     );
-    expect(mockStoreOpenIDSession).not.toHaveBeenCalled();
   });
 
   it('omits the refresh token when a non-openid admin login has no authInfo', async () => {
