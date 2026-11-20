@@ -81,7 +81,6 @@ jest.mock('~/hooks', () => ({
         count?: number;
         name?: string;
         label?: string;
-        versions?: string;
         versionNumber?: number;
       },
     ) => {
@@ -90,7 +89,6 @@ jest.mock('~/hooks', () => ({
       }
       if (options?.name) return `${key}:${options.name}`;
       if (options?.label) return `${key}:${options.label}`;
-      if (options?.versions) return `${key}:${options.versions}`;
       if (options?.versionNumber != null) return `${key}:${options.versionNumber}`;
       return key;
     },
@@ -114,6 +112,10 @@ jest.mock('~/components/ui', () => ({
 
 function lastQueryParams(): TInsightsParams {
   return mockUseInsightsQuery.mock.calls[mockUseInsightsQuery.mock.calls.length - 1][0];
+}
+
+function queryResult(params: TInsightsParams, data?: TInsightsResponse) {
+  return { data, isLoading: false, isFetching: false, error: null, params };
 }
 
 function renderView(path = '/insights') {
@@ -153,16 +155,12 @@ async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
 
 describe('InsightsView agent selection', () => {
   it('opens with no agents selected and lets admins choose All agents explicitly', async () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
         ...insightsData,
         selectionRequired: !params.agentIds?.length && !params.allAgents,
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+      }),
+    );
     const user = userEvent.setup();
     renderView();
     expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
@@ -181,16 +179,12 @@ describe('InsightsView agent selection', () => {
   });
 
   it('lets admins reach every agent one by one when automatic selection is off', async () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
         ...insightsData,
         selectionRequired: !params.agentIds?.length && !params.allAgents,
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+      }),
+    );
     const user = userEvent.setup();
     renderView();
     await user.click(screen.getByText('com_insights_no_agents_selected'));
@@ -202,17 +196,13 @@ describe('InsightsView agent selection', () => {
   });
 
   it('lets an administrator explicitly select their only available agent', async () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
         ...insightsData,
         agents: [insightsData.agents[0]],
         selectionRequired: !params.agentIds?.length && !params.allAgents,
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+      }),
+    );
     const user = userEvent.setup();
     renderView();
     await user.click(screen.getByText('com_insights_no_agents_selected'));
@@ -225,21 +215,12 @@ describe('InsightsView agent selection', () => {
     mockUseInsightsQuery.mockImplementation((params) => {
       if (params.agentIds?.length === insightsData.agents.length) {
         return {
-          data: undefined,
-          isLoading: false,
-          isFetching: false,
+          ...queryResult(params),
           isError: true,
           error: Object.assign(new Error('Forbidden'), { response: { status: 403 } }),
-          params,
         };
       }
-      return {
-        data: { ...insightsData, selectionRequired: true },
-        isLoading: false,
-        isFetching: false,
-        error: null,
-        params,
-      };
+      return queryResult(params, { ...insightsData, selectionRequired: true });
     });
     renderView('/insights?agentIds=agent-1&agentIds=agent-2&agentIds=agent-3');
     await waitFor(() => expect(lastQueryParams().agentIds).toBeUndefined());
@@ -261,12 +242,9 @@ describe('InsightsView agent selection', () => {
 
   it('keeps agent choices available but hides previous statistics while a new selection loads', () => {
     mockUseInsightsQuery.mockImplementation((params) => ({
-      data: insightsData,
-      isLoading: false,
+      ...queryResult(params, insightsData),
       isFetching: true,
       isPreviousData: true,
-      error: null,
-      params,
     }));
     renderView('/insights?agentIds=agent-2');
     expect(lastQueryParams().agentIds).toEqual(['agent-2']);
@@ -297,18 +275,14 @@ describe('InsightsView agent selection', () => {
   });
 
   it('renders an aggregate-only response without detail tables or identity search', () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
         agents: insightsData.agents,
         summary: insightsData.summary,
         daily: insightsData.daily,
         models: insightsData.models,
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+      }),
+    );
     renderView();
     expect(screen.getByText('com_insights_total_conversations')).toBeInTheDocument();
     expect(screen.queryByText('com_insights_top_users')).not.toBeInTheDocument();
@@ -324,8 +298,8 @@ describe('InsightsView agent selection', () => {
       ['inaccurate', 2],
       ['clear_well_written', 3],
     ]);
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
         agents: insightsData.agents,
         summary: {
           ...insightsData.summary,
@@ -340,12 +314,8 @@ describe('InsightsView agent selection', () => {
         },
         daily: [dailyPoint('2026-10-01', null), dailyPoint('2026-10-02', null)],
         models: [],
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+      }),
+    );
 
     renderView();
 
@@ -379,13 +349,9 @@ describe('InsightsView agent selection', () => {
     [0.0045, '$0.0045'],
     [0.0000000012, '$0.0000000012'],
   ])('shows missing spend as zero and preserves small recorded spend: %s', (spendUSD, expected) => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: { ...insightsData, summary: { ...insightsData.summary, spendUSD } },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, { ...insightsData, summary: { ...insightsData.summary, spendUSD } }),
+    );
 
     renderView();
 
@@ -393,13 +359,12 @@ describe('InsightsView agent selection', () => {
   });
 
   it('shows missing period activity and categorized feedback without inventing values', () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: { ...insightsData, summary: { ...insightsData.summary, lastUsed: null } },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
+        ...insightsData,
+        summary: { ...insightsData.summary, lastUsed: null },
+      }),
+    );
 
     renderView();
 
@@ -417,8 +382,8 @@ describe('InsightsView agent selection', () => {
       thumbsUp: 0,
       thumbsDown: 0,
     };
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
         ...insightsData,
         models: [
           {
@@ -442,12 +407,8 @@ describe('InsightsView agent selection', () => {
             spendUSD: null,
           },
         ],
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+      }),
+    );
 
     renderView();
 
@@ -496,17 +457,16 @@ describe('InsightsView agent selection', () => {
   });
 
   it('marks saved agent versions on every trend chart for one selected agent', () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: versionedData([
-        { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z', active: false },
-        { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T12:00:00.000Z', active: true },
-        { agentId: 'agent-1', version: 3, savedAt: null, active: false },
-      ]),
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(
+        params,
+        versionedData([
+          { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z', active: false },
+          { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T12:00:00.000Z', active: true },
+          { agentId: 'agent-1', version: 3, savedAt: null, active: false },
+        ]),
+      ),
+    );
     renderView('/insights?agentIds=agent-1');
 
     for (const title of ['com_insights_messages', 'com_insights_spend', 'com_insights_failed']) {
@@ -526,17 +486,16 @@ describe('InsightsView agent selection', () => {
   });
 
   it('tags a day with several saves with its last version only', () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: versionedData([
-        { agentId: 'agent-1', version: 1, savedAt: '2026-10-03T09:00:00.000Z', active: false },
-        { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T10:00:00.000Z', active: false },
-        { agentId: 'agent-1', version: 3, savedAt: '2026-10-03T11:00:00.000Z', active: true },
-      ]),
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(
+        params,
+        versionedData([
+          { agentId: 'agent-1', version: 1, savedAt: '2026-10-03T09:00:00.000Z', active: false },
+          { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T10:00:00.000Z', active: false },
+          { agentId: 'agent-1', version: 3, savedAt: '2026-10-03T11:00:00.000Z', active: true },
+        ]),
+      ),
+    );
     renderView('/insights?agentIds=agent-1');
     const trend = metricCard('com_insights_messages').getByRole('img');
     expect(within(trend).getAllByTestId('insights-version-marker')).toHaveLength(1);
@@ -550,16 +509,15 @@ describe('InsightsView agent selection', () => {
   it.each(['/insights', '/insights?agentIds=agent-1&agentIds=agent-2'])(
     'does not mark versions when several agents are selected: %s',
     (path) => {
-      mockUseInsightsQuery.mockImplementation((params) => ({
-        data: versionedData([
-          { agentId: 'agent-1', version: 1, savedAt: '2026-10-02T12:00:00.000Z', active: true },
-          { agentId: 'agent-2', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
-        ]),
-        isLoading: false,
-        isFetching: false,
-        error: null,
-        params,
-      }));
+      mockUseInsightsQuery.mockImplementation((params) =>
+        queryResult(
+          params,
+          versionedData([
+            { agentId: 'agent-1', version: 1, savedAt: '2026-10-02T12:00:00.000Z', active: true },
+            { agentId: 'agent-2', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
+          ]),
+        ),
+      );
       renderView(path);
       const trend = metricCard('com_insights_messages').getByRole('img');
       expect(within(trend).queryByTestId('insights-version-marker')).not.toBeInTheDocument();
@@ -570,13 +528,7 @@ describe('InsightsView agent selection', () => {
   );
 
   it('shows no version markers for an agent without saved versions', () => {
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: versionedData([]),
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+    mockUseInsightsQuery.mockImplementation((params) => queryResult(params, versionedData([])));
     renderView('/insights?agentIds=agent-1');
     const trend = metricCard('com_insights_messages').getByRole('img');
     expect(within(trend).queryByTestId('insights-version-marker')).not.toBeInTheDocument();
@@ -584,17 +536,13 @@ describe('InsightsView agent selection', () => {
 
   it('plots missing daily spend as zero in the line and tooltip', () => {
     const spend = [0.0001, 0.0002, null, 0.0003, 0, null];
-    mockUseInsightsQuery.mockImplementation((params) => ({
-      data: {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
         ...insightsData,
         summary: { ...insightsData.summary, spendUSD: 0.0006 },
         daily: spend.map((value, index) => dailyPoint(`2026-10-0${index + 1}`, value)),
-      },
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      params,
-    }));
+      }),
+    );
 
     renderView();
 
