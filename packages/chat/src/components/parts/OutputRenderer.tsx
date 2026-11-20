@@ -1,19 +1,23 @@
 import { useRef, useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import copy from 'copy-to-clipboard';
-import { Button } from '@librechat/client';
-import { useToolContentPending } from '@librechat/chat/react';
-import { PANE_COPY_REVEAL, CopyButton } from '@librechat/chat/components';
-import { isError, extractText, isStructuredText, hasRenderableOutput } from '@librechat/chat';
+import { cn, Button, useLocalize } from '@librechat/client';
 import type { UIEvent } from 'react';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import {
+  isError,
+  extractText,
+  isStructuredText,
+  hasRenderableOutput,
+} from '../../core/parts/output';
+import { useToolContentPending } from '../../react/parts/disclosure';
+import { PANE_COPY_REVEAL } from './rows';
+import CopyButton from './CopyButton';
 
 export interface OutputSegment {
   text: string;
   className?: string;
 }
 
-interface OutputRendererProps {
+export interface OutputRendererProps {
   text: string;
   copyText?: string;
   /** Forces error styling when the caller detected a failure the text itself does not mark. */
@@ -31,7 +35,7 @@ export default function OutputRenderer({
   error: forceError = false,
   variant = 'default',
   segments,
-}: OutputRendererProps) {
+}: OutputRendererProps): React.JSX.Element | null {
   const localize = useLocalize();
   const terminal = variant === 'terminal';
   const extracted = useMemo(() => extractText(text, terminal), [text, terminal]);

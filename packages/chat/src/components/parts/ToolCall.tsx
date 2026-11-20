@@ -30,6 +30,7 @@ import useRowHandoff from '../../react/parts/handoff';
 import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
 import { useFailedReveal } from './reveal';
+import ToolCallInfo from './ToolCallInfo';
 import { TOOL_ROW_CLASSES } from './rows';
 import { ToolAuthWarning } from './auth';
 
@@ -85,7 +86,6 @@ export default function ToolCall({
     openUrl,
     logError,
     renderProgress,
-    renderInfo,
     renderAttachments,
   } = useMessagePartsHost().useToolCallChrome();
   const [oauthError, setOAuthError] = useState<string | null>(null);
@@ -504,7 +504,9 @@ export default function ToolCall({
       >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasInfo && shouldRenderBody && (
-            <div className={INFO_PANEL_CLASS}>{renderInfo({ input: args ?? '', output })}</div>
+            <div className={INFO_PANEL_CLASS}>
+              <ToolCallInfo input={args ?? ''} output={output} />
+            </div>
           )}
         </div>
       </div>

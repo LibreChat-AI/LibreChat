@@ -16,6 +16,13 @@ import { MessagePartsHostProvider } from '../../../react/host';
 import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 
+jest.mock('../ToolCallInfo', () => ({
+  __esModule: true,
+  default: (props: { input: string; output?: string | null }) => (
+    <div data-testid="tool-call-info">{JSON.stringify(props)}</div>
+  ),
+}));
+
 jest.mock('@librechat/client', () => {
   const { translate: localize } = jest.requireActual(
     '../../../__fixtures__/toolCallLocale',
@@ -60,10 +67,6 @@ function ProgressStub({
   );
 }
 
-function InfoStub(props: { input: string; output?: string | null }) {
-  return <div data-testid="tool-call-info">{JSON.stringify(props)}</div>;
-}
-
 function AttachmentStub({ attachments }: { attachments?: unknown }) {
   return <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>;
 }
@@ -77,7 +80,6 @@ const chrome: ToolCallChrome = {
   openUrl,
   logError,
   renderProgress: (props) => <ProgressStub {...props} />,
-  renderInfo: (props) => <InfoStub input={props.input} output={props.output} />,
   renderAttachments: (attachments) => <AttachmentStub attachments={attachments} />,
 };
 

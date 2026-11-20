@@ -50,13 +50,13 @@ import {
 } from './Parts';
 import { getCachedPreview, getPartKeyIndex } from '~/utils';
 import BackgroundTaskCall from './Parts/BackgroundTaskCall';
-import { isError } from './ToolOutput/OutputRenderer';
 import { ErrorMessage } from './MessageContent';
 import AskUserQuestion from './AskUserQuestion';
 import RetrievalCall from './RetrievalCall';
 import ToolApproval from './ToolApproval';
 import AgentHandoff from './AgentHandoff';
 import CodeAnalyze from './CodeAnalyze';
+import { isError } from './ToolOutput';
 import WebSearch from './WebSearch';
 import Image from './Image';
 import './toolCallSlots';
