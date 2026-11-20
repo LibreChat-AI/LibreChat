@@ -80,6 +80,57 @@ describe('collectFiles', () => {
     ]);
   });
 
+  it('lists a file a message refers to only from its content, such as a generated image', () => {
+    const rows = collectFiles([
+      message({
+        messageId: 'assistant',
+        isCreatedByUser: false,
+        content: [
+          { type: 'text', text: 'Here it is' },
+          { type: 'image_file', image_file: { file_id: 'generated' } },
+          { type: 'file', file: { file_id: 'block' } },
+          { type: 'file', file_id: 'direct' },
+        ] as unknown as TMessage['content'],
+      }),
+    ]);
+
+    expect(rows.map((row) => [row.id, row.name, row.made, row.delivery])).toEqual([
+      ['generated', '', true, 'file'],
+      ['block', '', true, 'file'],
+      ['direct', '', true, 'file'],
+    ]);
+    expect(rows[0].type).toBe('image/*');
+  });
+
+  it('prefers the message that stored a file over one that only points at it', () => {
+    const rows = collectFiles([
+      message({
+        messageId: 'stored',
+        files: [{ file_id: 'chart', filename: 'chart.png', type: 'image/png', bytes: 10 }],
+      }),
+      message({
+        messageId: 'pointer',
+        isCreatedByUser: false,
+        content: [
+          { type: 'image_file', image_file: { file_id: 'chart' } },
+        ] as unknown as TMessage['content'],
+      }),
+      message({
+        messageId: 'both',
+        files: [{ file_id: 'photo', filename: 'photo.png' }],
+        content: [
+          { type: 'image_file', image_file: { file_id: 'photo' } },
+        ] as unknown as TMessage['content'],
+      }),
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => [row.id, row.name])).toEqual([
+      ['photo', 'photo.png'],
+      ['chart', 'chart.png'],
+    ]);
+  });
+
   it('lists the newest first and a file named by several messages once', () => {
     const rows = collectFiles([
       message({ messageId: 'm1', files: [{ file_id: 'a', filename: 'a.txt' }] }),

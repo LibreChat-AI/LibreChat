@@ -29,15 +29,23 @@ function useFileLabels(row: FileRow): string[] {
 const FileItem = memo(function FileItem({
   row,
   excluded,
+  known,
   onChange,
 }: {
   row: FileRow;
   excluded: boolean;
+  /** Whether the conversation's stored choice for this file has been read. */
+  known: boolean;
   onChange: (fileId: string, excluded: boolean) => void;
 }) {
   const localize = useLocalize();
   const labels = useFileLabels(row);
-  const Icon = row.type?.startsWith('image/') ? ImageIcon : FileText;
+  const image = row.type?.startsWith('image/') === true;
+  const Icon = image ? ImageIcon : FileText;
+  /** A file a message refers to only from its content has no name of its own stored with it. */
+  const name =
+    row.name ||
+    localize(image ? 'com_ui_session_file_unnamed_image' : 'com_ui_session_file_unnamed');
   const detail = [
     ...(excluded ? [localize('com_ui_session_file_left_out')] : labels),
     ...(row.bytes != null ? [formatFileSize(row.bytes)] : []),
@@ -58,16 +66,17 @@ const FileItem = memo(function FileItem({
             'block truncate text-sm',
             excluded ? 'text-text-secondary' : 'text-text-primary',
           )}
-          title={row.name}
+          title={name}
         >
-          {row.name}
+          {name}
         </span>
         <span className="text-text-secondary block truncate text-xs">{detail}</span>
       </span>
       <Switch
         checked={!excluded}
+        disabled={!known}
         onCheckedChange={(checked) => onChange(row.id, !checked)}
-        aria-label={localize('com_ui_session_file_include', { 0: row.name })}
+        aria-label={localize('com_ui_session_file_include', { 0: name })}
       />
     </li>
   );
@@ -80,7 +89,7 @@ const FileItem = memo(function FileItem({
  */
 export default function Files({ view }: { view: SessionFilesView }) {
   const localize = useLocalize();
-  const { rows, excluded, setExcluded, failed } = view;
+  const { rows, excluded, known, setExcluded, failed, retry } = view;
   if (rows.length === 0) {
     return null;
   }
@@ -98,7 +107,19 @@ export default function Files({ view }: { view: SessionFilesView }) {
         ) : undefined
       }
     >
-      {failed !== false && (
+      {failed === 'load' && (
+        <li role="alert" className="text-status-error px-2 pb-1 text-xs">
+          <p>{localize('com_ui_session_files_load_failed')}</p>
+          <button
+            type="button"
+            className="text-text-primary focus-visible:ring-focus-control mt-1 rounded underline focus-visible:ring-2 focus-visible:outline-none"
+            onClick={retry}
+          >
+            {localize('com_ui_retry')}
+          </button>
+        </li>
+      )}
+      {(failed === 'error' || failed === 'full') && (
         <li role="alert" className="text-status-error px-2 pb-1 text-xs">
           {localize(
             failed === 'full' ? 'com_ui_session_files_full' : 'com_ui_session_files_failed',
@@ -106,7 +127,13 @@ export default function Files({ view }: { view: SessionFilesView }) {
         </li>
       )}
       {rows.map((row) => (
-        <FileItem key={row.id} row={row} excluded={excluded.has(row.id)} onChange={setExcluded} />
+        <FileItem
+          key={row.id}
+          row={row}
+          excluded={excluded.has(row.id)}
+          known={known}
+          onChange={setExcluded}
+        />
       ))}
     </Section>
   );

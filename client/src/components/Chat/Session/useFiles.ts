@@ -10,10 +10,20 @@ export type SessionFilesView = {
   rows: FileRow[];
   /** Ids the conversation leaves out of later turns. */
   excluded: ReadonlySet<string>;
-  /** Leaves the file out (`true`) or takes it back in. */
+  /**
+   * Whether `excluded` is what the conversation has stored. Until it is, a switch would show a
+   * guess, and moving one would send the opposite of what its reader meant.
+   */
+  known: boolean;
+  /** Leaves the file out (`true`) or takes it back in. Does nothing until the list is known. */
   setExcluded: (fileId: string, excluded: boolean) => void;
-  /** The last change was refused; `full` when because too many files are already left out. */
-  failed: false | 'error' | 'full';
+  /**
+   * `load`: the stored list could not be read. Otherwise the last change was refused, `full`
+   * when because too many files are already left out.
+   */
+  failed: false | 'load' | 'error' | 'full';
+  /** Reads the stored list again. */
+  retry: () => void;
 };
 
 const noRows: FileRow[] = [];
@@ -42,20 +52,31 @@ export default function useSessionFiles({
     enabled: false,
     select,
   });
-  const { data } = useFileExclusionQuery(conversationId, { enabled: enabled && rows.length > 0 });
+  const {
+    data,
+    refetch,
+    isError: loadFailed,
+  } = useFileExclusionQuery(conversationId, { enabled: enabled && rows.length > 0 });
   const { mutate, error, isError } = useFileExclusionMutation();
+  const known = data != null;
   const excluded = useMemo(() => new Set(data?.excludedFiles ?? []), [data?.excludedFiles]);
   const setExcluded = useCallback(
-    (fileId: string, next: boolean) =>
-      mutate({ conversationId, fileIds: [fileId], excluded: next }),
-    [conversationId, mutate],
+    (fileId: string, next: boolean) => {
+      if (known) {
+        mutate({ conversationId, fileIds: [fileId], excluded: next });
+      }
+    },
+    [conversationId, known, mutate],
   );
+  const retry = useCallback(() => void refetch(), [refetch]);
   let failed: SessionFilesView['failed'] = false;
-  if (isError) {
+  if (!known && loadFailed) {
+    failed = 'load';
+  } else if (isError) {
     failed = statusOf(error) === 409 ? 'full' : 'error';
   }
   return useMemo(
-    () => ({ rows, excluded, setExcluded, failed }),
-    [rows, excluded, setExcluded, failed],
+    () => ({ rows, excluded, known, setExcluded, failed, retry }),
+    [rows, excluded, known, setExcluded, failed, retry],
   );
 }

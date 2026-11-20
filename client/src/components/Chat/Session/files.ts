@@ -3,6 +3,7 @@ import type { TFile, TMessage } from 'librechat-data-provider';
 
 export type FileRow = {
   id: string;
+  /** Empty for a file a message refers to only from its content, which stores no name. */
   name: string;
   type?: string;
   bytes?: number;
@@ -54,9 +55,24 @@ function add(rows: FileRow[], file: Ref, made: boolean): void {
   }
   rows.push({
     id: file.file_id,
-    name: file.filename || file.file_id,
+    name: file.filename ?? '',
     ...describe(file, made),
   });
+}
+
+/** The ways a content part names a stored file, as historical replay reads them. */
+type Locator = {
+  files?: Ref[];
+  image_file?: { file_id?: unknown } | null;
+  file?: { file_id?: unknown } | null;
+  file_id?: unknown;
+};
+
+function addLocator(rows: FileRow[], fileId: unknown, made: boolean, type?: string): void {
+  if (typeof fileId !== 'string' || fileId === '' || rows.some((row) => row.id === fileId)) {
+    return;
+  }
+  rows.push({ id: fileId, name: '', type, delivery: 'file', search: false, code: false, made });
 }
 
 const none: readonly FileRow[] = [];
@@ -81,13 +97,21 @@ function messageFiles(message: TMessage): readonly FileRow[] {
     add(rows, attachment as Ref, true);
   }
   if (Array.isArray(message.content)) {
+    const made = message.isCreatedByUser !== true;
     for (const part of message.content) {
-      const files = (part as { files?: Ref[] } | undefined)?.files;
-      if (Array.isArray(files)) {
-        for (const file of files) {
+      const locator = part as Locator | null | undefined;
+      if (locator == null) {
+        continue;
+      }
+      if (Array.isArray(locator.files)) {
+        for (const file of locator.files) {
           add(rows, file, false);
         }
       }
+      /** A part that is itself a stored file: a generated image, a provider file block. */
+      addLocator(rows, locator.image_file?.file_id, made, 'image/*');
+      addLocator(rows, locator.file?.file_id, made);
+      addLocator(rows, locator.file_id, made);
     }
   }
   const result = rows.length === 0 ? none : rows;
@@ -101,12 +125,16 @@ export function collectFiles(messages: TMessage[] | null | undefined): FileRow[]
   if (messages == null) {
     return rows;
   }
-  const listed = new Set<string>();
+  const listed = new Map<string, number>();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     for (const row of messageFiles(messages[index])) {
-      if (!listed.has(row.id)) {
-        listed.add(row.id);
+      const at = listed.get(row.id);
+      if (at == null) {
+        listed.set(row.id, rows.length);
         rows.push(row);
+      } else if (rows[at].name === '' && row.name !== '') {
+        /** An earlier message stored the file itself, where a later one only pointed at it. */
+        rows[at] = row;
       }
     }
   }
