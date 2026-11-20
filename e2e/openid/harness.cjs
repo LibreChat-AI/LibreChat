@@ -502,9 +502,12 @@ async function createHarness(options = {}) {
           }
         }, 'MongoDB did not recover');
       },
-      replay(index) {
+      replay(index, edit) {
         if (!signedBodies[index]) throw new Error('No captured logout at that index');
-        return forward(signedBodies[index]);
+        if (!edit) return forward(signedBodies[index]);
+        const form = new URLSearchParams(signedBodies[index]);
+        form.set('logout_token', edit(form.get('logout_token')));
+        return forward(form.toString());
       },
       gate: {
         arm(kind, sid) {

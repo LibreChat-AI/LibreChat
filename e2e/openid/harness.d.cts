@@ -25,7 +25,11 @@ export type Harness = {
   startKeycloak(): Promise<void>;
   stopMongo(): Promise<void>;
   startMongo(): Promise<void>;
-  replay(index: number): Promise<{ status: number; body: unknown }>;
+  /** Sends a captured logout again; `edit` rewrites its logout token first. */
+  replay(
+    index: number,
+    edit?: (token: string) => string,
+  ): Promise<{ status: number; body: unknown }>;
   gate: {
     arm(kind: QueryKind, sid?: string): void;
     wait(): Promise<{ kind: QueryKind; sid: string; waiting: true }>;

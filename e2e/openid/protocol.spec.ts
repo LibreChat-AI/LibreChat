@@ -336,6 +336,53 @@ for (const reuse of [false, true]) {
   });
 }
 
+/** Flips the first signature byte, so header and claims stay valid and only the signature fails. */
+function tamperSignature(token: string): string {
+  const [header, payload, signature] = token.split('.');
+  const bytes = Buffer.from(signature, 'base64url');
+  bytes[0] ^= 0xff;
+  return `${header}.${payload}.${bytes.toString('base64url')}`;
+}
+
+test('a logout token with a tampered signature is rejected and revokes nothing', async ({
+  browser,
+}, info) => {
+  await harness.startApp({ reuse: false, mode: 'enforce' });
+  const session = await login(browser);
+  const sid = requireSid(session.sid);
+  // Capture a real signed logout token without delivering it: the app is down when Keycloak sends it.
+  await harness.stopApp();
+  await harness.admin(`/sessions/${encodeURIComponent(sid)}`, 'DELETE');
+  await expect
+    .poll(() => harness.deliveries.findIndex((delivery) => delivery.sid === sid))
+    .toBeGreaterThanOrEqual(0);
+  const index = harness.deliveries.findIndex((delivery) => delivery.sid === sid);
+  await expect.poll(() => harness.deliveries[index].status).toBeGreaterThanOrEqual(500);
+  await harness.startApp({ reuse: false, mode: 'enforce' });
+
+  const tampered = await harness.replay(index, tamperSignature);
+  expect(tampered.status).toBe(400);
+  expect(tampered.body).toEqual({ error: 'invalid_request' });
+  const binding = await harness.db.collection('providersessions').findOne({ sid });
+  expect(Boolean(binding)).toBe(true);
+  expect(Boolean(binding?.revokedAt)).toBe(false);
+  expect((await refresh(session.context)).response.status()).toBe(200);
+
+  // The untampered token is accepted, so the rejection above came from the signature alone.
+  expect((await harness.replay(index)).status).toBe(200);
+  const denied = await refresh(session.context);
+  expect(denied.response.status()).toBe(401);
+  expect(denied.body.code).toBe('OPENID_SESSION_ENDED');
+  await evidence(info, 'tampered-signature', {
+    mode: 'enforce',
+    tamperedStatus: tampered.status,
+    revokedByTampered: false,
+    refreshAfterTampered: 200,
+    originalStatus: 200,
+    deniedAfterOriginal: denied.body.code,
+  });
+});
+
 for (const reuse of [false, true]) {
   test(`legacy credentials survive off and record, then require login in enforce (reuse=${reuse})`, async ({
     browser,
