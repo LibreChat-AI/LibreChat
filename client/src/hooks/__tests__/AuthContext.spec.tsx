@@ -1713,40 +1713,65 @@ describe('AuthContextProvider — userQuery session check unavailable', () => {
   });
 
   afterEach(() => {
+    mockUseGetUserQuery.mockReset();
     mockUseGetUserQuery.mockReturnValue({ data: undefined, isError: false, error: null });
     window.history.replaceState({}, '', '/');
   });
 
-  it('shows Retry and keeps the session instead of logging out when the user query fails as unavailable', () => {
-    mockUseGetUserQuery.mockReturnValue({
-      data: undefined,
-      isError: true,
-      error: { response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } } },
+  /** The provider enables the user query only once it holds a token, and it sets the token
+   *  together with `isAuthenticated`, so the query can fail only for a signed-in session. */
+  const failUserQueryWhenEnabled = (error: unknown) =>
+    mockUseGetUserQuery.mockImplementation((options?: { enabled?: boolean }) =>
+      options?.enabled === true
+        ? { data: undefined, isError: true, error }
+        : { data: undefined, isError: false, error: null },
+    );
+
+  const signIn = () => {
+    act(() => {
+      (mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void }).onSuccess({
+        user: { id: 'user-1', role: 'USER' },
+        token: 'session-token',
+      });
     });
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+  };
+
+  const loginNavigations = () =>
+    mockNavigate.mock.calls.filter(([to]) => typeof to === 'string' && to.startsWith('/login'));
+
+  it('keeps the signed-in session when the user query fails because the session check is unavailable', () => {
+    jest.useFakeTimers();
+    /** The 401 that the interceptor rethrows after a refresh it classified as unavailable. */
+    failUserQueryWhenEnabled({ response: { status: 401 }, __authSessionUnavailable: true });
 
     renderProviderLive();
+    signIn();
 
-    expect(mockNavigate).not.toHaveBeenCalled();
-    expect(screen.queryByTestId('consumer')).not.toBeInTheDocument();
+    expect(loginNavigations()).toHaveLength(0);
+    expect(screen.getByTestId('consumer')).toHaveAttribute('data-authenticated', 'true');
     expect(
-      screen.getByRole('heading', { name: "We couldn't verify your session" }),
-    ).toBeInTheDocument();
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+    expect(getDefaultStore().get(authSessionUnavailableAtom)).toBe(true);
+    jest.useRealTimers();
   });
 
   it('ends the session and redirects when the user query fails with a plain error, same as today', () => {
-    mockUseGetUserQuery.mockReturnValue({
-      data: undefined,
-      isError: true,
-      error: new Error('401'),
-    });
+    jest.useFakeTimers();
+    failUserQueryWhenEnabled(new Error('401'));
 
     renderProviderLive();
+    signIn();
 
     expect(mockNavigate).toHaveBeenCalledWith('/login', { replace: true });
     expect(
       screen.queryByRole('heading', { name: "We couldn't verify your session" }),
     ).not.toBeInTheDocument();
     expect(getDefaultStore().get(authSessionUnavailableAtom)).toBe(false);
+    jest.useRealTimers();
   });
 });
 
