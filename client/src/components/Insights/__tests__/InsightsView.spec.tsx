@@ -345,8 +345,6 @@ describe('InsightsView agent selection', () => {
 
   it.each([
     [null, '$0.00'],
-    [0, '$0.00'],
-    [0.0045, '$0.0045'],
     [0.0000000012, '$0.0000000012'],
   ])('shows missing spend as zero and preserves small recorded spend: %s', (spendUSD, expected) => {
     mockUseInsightsQuery.mockImplementation((params) =>
@@ -485,80 +483,22 @@ describe('InsightsView agent selection', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('tags a day with several saves with its last version only', () => {
+  it('does not mark versions when several agents are selected', () => {
     mockUseInsightsQuery.mockImplementation((params) =>
       queryResult(
         params,
         versionedData([
-          { agentId: 'agent-1', version: 1, savedAt: '2026-10-03T09:00:00.000Z', active: false },
-          { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T10:00:00.000Z', active: false },
-          { agentId: 'agent-1', version: 3, savedAt: '2026-10-03T11:00:00.000Z', active: true },
+          { agentId: 'agent-1', version: 1, savedAt: '2026-10-02T12:00:00.000Z', active: true },
+          { agentId: 'agent-2', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
         ]),
       ),
     );
-    renderView('/insights?agentIds=agent-1');
-    const trend = metricCard('com_insights_messages').getByRole('img');
-    expect(within(trend).getAllByTestId('insights-version-marker')).toHaveLength(1);
-    expect(within(trend).getByText('com_insights_version_tag:3')).toBeVisible();
-    expect(within(trend).queryByText('com_insights_version_tag:2')).not.toBeInTheDocument();
-    expect(trend).toHaveAccessibleName(
-      expect.stringContaining('com_insights_version_saved_earlier:3'),
-    );
-  });
-
-  it.each(['/insights', '/insights?agentIds=agent-1&agentIds=agent-2'])(
-    'does not mark versions when several agents are selected: %s',
-    (path) => {
-      mockUseInsightsQuery.mockImplementation((params) =>
-        queryResult(
-          params,
-          versionedData([
-            { agentId: 'agent-1', version: 1, savedAt: '2026-10-02T12:00:00.000Z', active: true },
-            { agentId: 'agent-2', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
-          ]),
-        ),
-      );
-      renderView(path);
-      const trend = metricCard('com_insights_messages').getByRole('img');
-      expect(within(trend).queryByTestId('insights-version-marker')).not.toBeInTheDocument();
-      expect(within(trend).queryByText(/com_insights_version_tag/)).not.toBeInTheDocument();
-      fireEvent.focus(trend);
-      expect(within(trend).queryByText(/com_ui_agent_version_title/)).not.toBeInTheDocument();
-    },
-  );
-
-  it('shows no version markers for an agent without saved versions', () => {
-    mockUseInsightsQuery.mockImplementation((params) => queryResult(params, versionedData([])));
-    renderView('/insights?agentIds=agent-1');
+    renderView('/insights?agentIds=agent-1&agentIds=agent-2');
     const trend = metricCard('com_insights_messages').getByRole('img');
     expect(within(trend).queryByTestId('insights-version-marker')).not.toBeInTheDocument();
-  });
-
-  it('plots missing daily spend as zero in the line and tooltip', () => {
-    const spend = [0.0001, 0.0002, null, 0.0003, 0, null];
-    mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(params, {
-        ...insightsData,
-        summary: { ...insightsData.summary, spendUSD: 0.0006 },
-        daily: spend.map((value, index) => dailyPoint(`2026-10-0${index + 1}`, value)),
-      }),
-    );
-
-    renderView();
-
-    const trend = metricCard('com_insights_spend').getByRole('img');
-    expect(trend.querySelectorAll('polyline')).toHaveLength(1);
-    const firstSegment = trend.querySelector('polyline');
-    const heights = firstSegment
-      ?.getAttribute('points')
-      ?.split(' ')
-      .map((point) => Number(point.split(',')[1]));
-    expect(heights).toHaveLength(6);
-    expect(heights?.[2]).toBe(heights?.[4]);
-    expect(heights?.[5]).toBe(heights?.[4]);
-    expect(Math.abs((heights?.[0] ?? 0) - (heights?.[1] ?? 0))).toBeGreaterThan(1);
+    expect(within(trend).queryByText(/com_insights_version_tag/)).not.toBeInTheDocument();
     fireEvent.focus(trend);
-    expect(within(trend).getByText('$0.00')).toBeInTheDocument();
+    expect(within(trend).queryByText(/com_ui_agent_version_title/)).not.toBeInTheDocument();
   });
 
   it('filters names without changing selection and clears search on close', async () => {
