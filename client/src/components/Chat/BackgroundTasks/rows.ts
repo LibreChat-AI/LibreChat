@@ -132,10 +132,14 @@ const toolRow = (
 
 /**
  * When a child's task began and ended. Its summary's `createdAt` is the time of its newest
- * record, which is its dispatch while it runs and its end once it has replied, so the start of
- * a finished task is known only from `startedAt`. Without one, a server that predates it or a
- * dispatch record the index did not read, a finished task has no duration to show: taking
- * `createdAt` for the start reads every finished task as having taken no time at all.
+ * record, which is its dispatch while it runs and its reply after, so the start of a finished
+ * task is known only from `startedAt`. Without one, a server that predates it or a dispatch
+ * record the index did not read, a finished task has no duration to show: taking `createdAt`
+ * for the start reads every finished task as having taken no time at all.
+ *
+ * The end is the thread's own timestamp, not the reply's. A child that pauses for an approval
+ * writes its reply at the pause and updates that record when it resumes and ends, so the reply
+ * can be much older than the end of the task.
  */
 const subagentTimes = (
   child: ParentSubagentSummary,
@@ -143,15 +147,11 @@ const subagentTimes = (
   running: boolean,
 ): Pick<TaskRow, 'startedAt' | 'settledAt'> => {
   const task = child.tasks.find((candidate) => candidate.taskId === taskId);
-  const created = time(task?.createdAt);
   const started = time(task?.startedAt);
   if (running) {
-    return { startedAt: started ?? created };
+    return { startedAt: started ?? time(task?.createdAt) };
   }
-  /** A task that ended without a reply has only its dispatch record; the thread's own
-   *  timestamp is then the nearest thing to when it ended. */
-  const ended = started != null && created != null && created > started ? created : undefined;
-  return { startedAt: started, settledAt: ended ?? time(child.updatedAt) };
+  return { startedAt: started, settledAt: time(child.updatedAt) };
 };
 
 const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>): TaskRow => {

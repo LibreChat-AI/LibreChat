@@ -124,7 +124,7 @@ describe('buildTaskRows', () => {
    * A child task's summary carries the time of its newest record: its dispatch while it runs,
    * its end once it has replied. Read as the start, that made every finished task take 0s.
    */
-  it('times a finished subagent from its dispatch to its reply', () => {
+  it('times a finished subagent from its dispatch to when its thread was last written', () => {
     const [row] = buildTaskRows({
       now,
       args: new Map(),
@@ -134,8 +134,7 @@ describe('buildTaskRows', () => {
       subagents: [
         child({
           status: 'completed',
-          /** The thread was touched again after the task ended; that is not when it ended. */
-          updatedAt: iso(1_000),
+          updatedAt: iso(58_000),
           tasks: [
             {
               taskId: 'task',
@@ -149,7 +148,42 @@ describe('buildTaskRows', () => {
     });
 
     expect(row.startedAt).toBe(now - 300_000);
-    expect(row.settledAt).toBe(now - 60_000);
+    expect(row.settledAt).toBe(now - 58_000);
+  });
+
+  /**
+   * A child that pauses for an approval writes its reply at the pause and updates that same
+   * record when it resumes and ends, so the reply's creation time is when it stopped to ask,
+   * not when it finished. Taken for the end, it would leave out everything after the approval,
+   * and age a task that just finished out of the list if it had waited over an hour for one.
+   */
+  it('does not take the reply of a child that paused for approval as its end', () => {
+    const rows = buildTaskRows({
+      now,
+      args: new Map(),
+      describe: () => ({}),
+      stoppingThreads: new Set(),
+      tools: [],
+      subagents: [
+        child({
+          status: 'completed',
+          origin: 'event',
+          updatedAt: iso(5_000),
+          tasks: [
+            {
+              taskId: 'task',
+              status: 'completed',
+              startedAt: iso(RECENT_SUBAGENT_WINDOW_MS + 600_000),
+              createdAt: iso(RECENT_SUBAGENT_WINDOW_MS + 300_000),
+            },
+          ],
+        }),
+      ],
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].startedAt).toBe(now - RECENT_SUBAGENT_WINDOW_MS - 600_000);
+    expect(rows[0].settledAt).toBe(now - 5_000);
   });
 
   it('shows no duration for a finished subagent whose dispatch time is unknown', () => {
@@ -199,28 +233,6 @@ describe('buildTaskRows', () => {
       ['named', now - 90_000, undefined],
       ['older-server', now - 120_000, undefined],
     ]);
-  });
-
-  it('times a subagent that ended without a reply by its thread, not as an instant', () => {
-    const [row] = buildTaskRows({
-      now,
-      args: new Map(),
-      describe: () => ({}),
-      stoppingThreads: new Set(),
-      tools: [],
-      subagents: [
-        child({
-          status: 'cancelled',
-          updatedAt: iso(20_000),
-          tasks: [
-            { taskId: 'task', status: 'cancelled', startedAt: iso(80_000), createdAt: iso(80_000) },
-          ],
-        }),
-      ],
-    });
-
-    expect(row.startedAt).toBe(now - 80_000);
-    expect(row.settledAt).toBe(now - 20_000);
   });
 
   it('carries who a subagent runs as, for a surface that names the agent', () => {
