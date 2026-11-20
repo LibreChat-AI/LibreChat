@@ -3,6 +3,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "librechat.fullname" $ }}-images
+  namespace: {{ .Release.Namespace }}
 spec:
   accessModes:
     - {{ .Values.librechat.imageVolume.accessModes }}
