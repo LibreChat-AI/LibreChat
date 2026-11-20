@@ -101,7 +101,7 @@ function ChatViewScreen({
   configuredFooter,
   submission,
 }: ChatViewScreenProps) {
-  const { messages, isLoading } = useChatSessionMessages(conversationId);
+  const { messages, isLoading } = useChatSessionMessages(conversationId, index);
   return (
     <ChatScreen
       index={index}

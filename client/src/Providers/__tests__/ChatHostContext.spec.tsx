@@ -100,6 +100,45 @@ describe('appChatHost.useMessages', () => {
       expect(renders).toBe(settled);
     });
 
+    describe('while a reply is being written', () => {
+      const asked = { ...messages[0], messageId: 'm-1', isCreatedByUser: true } as TMessage;
+      /** The reply as the stream has it so far: not in the stored conversation yet. */
+      const writing = [
+        asked,
+        { messageId: 'm-1_', conversationId: 'convo-1', parentMessageId: 'm-1' } as TMessage,
+      ];
+
+      /** Draws the session's reader and the follower several times, then refetches. */
+      async function refetchBeside(isStreaming: boolean) {
+        const queryClient = new QueryClient();
+        queryClient.setQueryData([QueryKeys.messages, 'convo-1'], writing);
+        /** The server has only the turn's message so far. */
+        getMessages.mockResolvedValue([asked]);
+        const { rerender } = renderHook(
+          () => ({
+            session: appChatHost.useMessages('convo-1', { isStreaming }),
+            reader: follow(),
+          }),
+          { wrapper: wrapperFor(queryClient) },
+        );
+        await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+        queryClient.setQueryData([QueryKeys.messages, 'convo-1'], writing);
+        for (let frame = 0; frame < 3; frame++) {
+          rerender();
+        }
+        await act(() => queryClient.refetchQueries({ queryKey: [QueryKeys.messages, 'convo-1'] }));
+        return queryClient.getQueryData<TMessage[]>([QueryKeys.messages, 'convo-1']);
+      }
+
+      it('leaves the session’s guard on a refetch: a shorter stored copy does not replace the reply', async () => {
+        expect(await refetchBeside(true)).toEqual(writing);
+      });
+
+      it('takes the stored copy once no reply is being written', async () => {
+        expect(await refetchBeside(false)).toEqual([asked]);
+      });
+    });
+
     it('loads nothing where no session does', async () => {
       const { result } = renderHook(follow, { wrapper: wrapperFor(new QueryClient()) });
 

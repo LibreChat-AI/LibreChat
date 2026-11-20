@@ -24,11 +24,14 @@ export type ChatSessionMessages = {
  * provider for readers on every change.
  *
  * It follows what the session loads and loads nothing itself: the session's own query decides
- * when the conversation is fetched.
+ * when the conversation is fetched. It says the same of the pane's stream as the session does,
+ * so the two readers of one query never disagree about whether a reply is being written: which
+ * of them a refetch takes its guard from is the query library's to choose.
  */
-export function useChatSessionMessages(conversationId?: string): ChatSessionMessages {
+export function useChatSessionMessages(conversationId?: string, index = 0): ChatSessionMessages {
+  const isSubmitting = useIsSubmitting(index);
   const { messages, isLoading } = useChatHost().useMessages(conversationId, {
-    isStreaming: false,
+    isStreaming: isSubmitting,
     enabled: false,
   });
   return { messages, isLoading };
