@@ -7,8 +7,8 @@ import { isOpenIdIssuerMatch, resolveProviderSessionIssuer } from '~/auth/openid
 /** Per OIDC Back-Channel Logout 1.0 §2.6; the `events` member that marks a logout token. */
 const BACKCHANNEL_LOGOUT_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
 
-/** Resolves the verification key for a logout token's `kid`; any rejection is treated as a
- *  temporary failure, since a just-rotated IdP key can look identical to a forged one. */
+/** Resolves the verification key for a logout token's `kid`. A `SigningKeyNotFoundError` means
+ *  the IdP's key set has no key for that `kid`; any other rejection is a temporary failure. */
 export type LogoutTokenKeyResolver = (kid: string | undefined) => Promise<string | Buffer>;
 
 export interface ValidateLogoutTokenOptions {
@@ -92,8 +92,7 @@ export async function validateLogoutToken(
   try {
     key = await options.resolveKey(kid);
   } catch (error) {
-    /** The IdP's JWKS was reachable and refetched, but has no key for this `kid`: the token
-     *  was not signed by this IdP, not a transient lookup failure. */
+    /** The IdP's key set, fetched at most one cache period ago, has no key for this `kid`. */
     if (error instanceof jwksRsa.SigningKeyNotFoundError) {
       return invalid('key_not_found');
     }
