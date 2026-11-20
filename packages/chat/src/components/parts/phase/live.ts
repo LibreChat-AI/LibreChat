@@ -1,35 +1,29 @@
-import { firstErrorLine } from '@librechat/chat';
-import { boundIntentLabel, getToolCallIntent } from '@librechat/chat/react';
 import {
   Constants,
   ContentTypes,
   isOpaqueReasoning,
   readableReasoning,
 } from 'librechat-data-provider';
-import {
-  hasPendingApprovalInPart,
-  ASK_USER_QUESTION,
-  getSubmittedAskAnswer,
-  getToolDisplayLabel,
-  parseToolName,
-  getToolIconName,
-  getToolMeta,
-  summarizeSpan,
-  getBatchActivityLabelPart,
-  getActivityLabelText,
-} from '@librechat/chat';
 import type {
   Agents,
   TAttachment,
   PartMetadata,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { SpanOutcome, SpanSummary } from '@librechat/chat';
 import type { TOptions } from 'i18next';
-import type { TranslationKeys } from '~/hooks';
-import { hasPendingAuthInPart } from '~/utils/groupToolCalls';
-
-export { firstErrorLine };
+import type { SpanOutcome, SpanSummary } from '../../../core/parts/outcome';
+import type { ToolFriendlyNameKey } from '../../../core/parts/toolLabels';
+import {
+  getBatchActivityLabelPart,
+  getActivityLabelText,
+} from '../../../core/parts/activityLabels';
+import { getToolIconName, getToolMeta, summarizeSpan } from '../../../core/parts/outcome';
+import { hasPendingApprovalInPart, hasPendingAuthInPart } from '../../../core/pending';
+import { getToolDisplayLabel, parseToolName } from '../../../core/parts/toolLabels';
+import { boundIntentLabel, getToolCallIntent } from '../../../react/parts/intent';
+import { getSubmittedAskAnswer } from '../../../core/parts/questions';
+import { firstErrorLine } from '../../../core/parts/output';
+import { ASK_USER_QUESTION } from '../../../core/ask';
 
 /** How often a live fold's header may repaint. A streamed intent moves the
  *  newest line on nearly every delta; the header is a glanceable status, not a
@@ -61,7 +55,25 @@ export type LiveActivity = {
   total: number;
 };
 
-type Localize = (phraseKey: TranslationKeys, options?: TOptions) => string;
+/** Every key a live header can say, so the host's typed `localize` fits. */
+type LiveActivityKey =
+  | ToolFriendlyNameKey
+  | 'com_assistants_completed_function'
+  | 'com_assistants_preparing_action'
+  | 'com_assistants_running_action'
+  | 'com_assistants_running_var'
+  | 'com_ui_background_finished'
+  | 'com_ui_background_running'
+  | 'com_ui_background_tasks_checked'
+  | 'com_ui_background_tasks_checking'
+  | 'com_ui_cancelled'
+  | 'com_ui_failed'
+  | 'com_ui_failed_subject'
+  | 'com_ui_running'
+  | 'com_ui_thinking'
+  | 'com_ui_tool_preparing';
+
+type Localize = (phraseKey: LiveActivityKey, options?: TOptions) => string;
 
 type LiveToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] } & Pick<
     PartMetadata,

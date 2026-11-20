@@ -8,6 +8,7 @@ import {
 } from '@librechat/chat/react';
 import {
   hasPendingApprovalInPart,
+  hasPendingAuthInPart,
   ASK_USER_QUESTION,
   getSubmittedAskAnswer,
   getToolDisplayLabel,
@@ -41,13 +42,13 @@ import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { cn, hasPendingAuthInPart } from '~/utils';
 import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
+import { cn } from '~/utils';
 
 interface ToolCallGroupProps {
   parts: PartWithIndex[];

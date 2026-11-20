@@ -32,16 +32,14 @@ import {
   useFailedRevealTrigger,
   useExpandCollapse,
   EXPAND_TRANSITION,
-} from '@librechat/chat/components';
-import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { RailHover } from '@librechat/chat/components';
-import type { CSSProperties, ReactNode } from 'react';
-import {
   getLiveActivity,
   getSpanIconNames,
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
-} from './live';
+} from '@librechat/chat/components';
+import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { RailHover } from '@librechat/chat/components';
+import type { CSSProperties, ReactNode } from 'react';
 import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
