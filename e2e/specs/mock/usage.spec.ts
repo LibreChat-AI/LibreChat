@@ -268,6 +268,10 @@ test.describe('context usage gauge', () => {
     await expect(popover.getByRole('progressbar')).toBeVisible();
     await expect(popover.getByTestId('token-usage-totals')).toBeHidden();
     await expect(popover.getByTestId('context-breakdown')).toBeVisible();
+    /** The totals roll in height only: the card is as wide expanded as collapsed. */
+    const cardWidth = () => popover.evaluate((element) => element.clientWidth);
+    const collapsedWidth = await cardWidth();
+    expect(collapsedWidth).toBeGreaterThan(0);
 
     /** Expanding reveals the detail, and the usage section is labelled so its
      *  numbers are not read as part of the context composition. */
@@ -276,6 +280,7 @@ test.describe('context usage gauge', () => {
     const totals = popover.getByTestId('token-usage-totals');
     await expect(totals).toBeVisible({ timeout: 10000 });
     await expect(totals).toHaveAccessibleName('Token totals');
+    expect(await cardWidth()).toBe(collapsedWidth);
     await page.keyboard.press('Escape');
 
     /** The choice is a stored preference, so a reload reopens expanded with no
@@ -290,6 +295,7 @@ test.describe('context usage gauge', () => {
       'true',
     );
     await expect(popover.getByTestId('token-usage-totals')).toBeVisible({ timeout: 10000 });
+    expect(await cardWidth()).toBe(collapsedWidth);
   });
 
   test('reflows condensed sections inside the viewport with keyboard-accessible details @scenario:context-responsive-details', async ({
