@@ -870,6 +870,7 @@ export async function loadWebSearchAuth({
     authResult.safeSearch = webSearchConfig?.safeSearch ?? SafeSearchTypes.MODERATE;
   }
   authResult.scraperTimeout = webSearchConfig?.scraperTimeout ?? scraperOptionsTimeout ?? 7500;
+  authResult.rerankerTimeout = webSearchConfig?.rerankerTimeout;
   authResult.firecrawlOptions = pickOptionFields(
     'firecrawlOptions',
     webSearchConfig?.firecrawlOptions,
