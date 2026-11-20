@@ -139,6 +139,7 @@ function setup(
     enrollment: {
       getAppConfig,
       getModelsConfig: async () => ({ test: ['test'] }),
+      ensureConfigServers: async () => ({}),
       getServers: async () => ({ warehouse: serverConfig }),
       getNodes: async (ids: string[]) =>
         ids.map((id) => ({ id, provider: 'test', model: 'test', tools, agent_ids: [] })),

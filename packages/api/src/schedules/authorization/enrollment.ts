@@ -40,6 +40,14 @@ export interface ScheduleMCPEnrollmentDeps {
   resolveGraphAccess: (user: IUser) => Promise<AgentGraphAccessContext>;
   getNodes: (ids: string[], access?: AgentGraphAccessContext) => Promise<AgentGraphNode[]>;
   getModelsConfig: (user: IUser) => Promise<TModelsConfig>;
+  /**
+   * The operator's servers as the registry holds them, inspected. A server `librechat.yaml`
+   * defines unchanged is left out, since the registry already has it; what comes back is
+   * handed to `getServers`, as a run's readiness check does.
+   */
+  ensureConfigServers: (
+    config: NonNullable<AppConfig['mcpConfig']>,
+  ) => Promise<Record<string, ParsedServerConfig>>;
   getServers: (
     user: IUser,
     config: Record<string, ParsedServerConfig>,
@@ -67,7 +75,8 @@ interface Offer {
 
 /**
  * Resolves what the owner can be offered: the MCP tools the agent graph selects, on servers
- * whose recipient the operator declared. Does not connect or mint.
+ * whose recipient the operator declared. Does not mint, and connects to nothing the registry
+ * has inspected already.
  *
  * A server whose configuration no longer matches the operator's declaration is left out, and
  * the rest is still offered. A grant that lists its tools then does not cover it; a grant of
@@ -137,7 +146,12 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
     if (undeclared && options.otherTools === 'ignore')
       return { targets: [], tools: [], servers: [] };
     const [servers, { tools, candidates: candidateTools }] = await Promise.all([
-      deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
+      // A grant is bound to each server's configuration as a run will see it. Inspection
+      // fills in what the operator left out (whether the server requires OAuth), so the
+      // configuration as written would never match the one a run checks the grant against.
+      deps
+        .ensureConfigServers(appConfig?.mcpConfig ?? {})
+        .then((config) => deps.getServers(user, config)),
       resolveScheduledMCPRequirements(
         identity.agentId,
         user,

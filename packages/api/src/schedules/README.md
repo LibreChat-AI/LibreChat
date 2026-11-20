@@ -49,6 +49,12 @@ re-enable existing schedules automatically or repair credentials on the user's b
 When `interface.schedules.mcpConsent.enabled` is on, the schedule's owner decides, in one of
 two ways.
 
+A consent is bound to its server's configuration as the registry holds it once inspected
+(type, URL, headers, OAuth settings, and whether the server requires OAuth) together with the
+operator's declaration. The offer, a run's readiness check and each call read that same entry,
+so a server whose `librechat.yaml` leaves `requiresOAuth` to be detected is bound to what was
+detected. A change to any of it ends the consent (`binding_mismatch`).
+
 ### The whole agent
 
 The grant a new authorization starts from (`everything: true`). The schedule runs with

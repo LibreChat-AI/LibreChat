@@ -95,6 +95,7 @@ async function setup() {
       findUser,
       getAppConfig,
       getModelsConfig,
+      ensureConfigServers: async () => ({}),
       getServers,
       getNodes,
       resolveGraphAccess,
