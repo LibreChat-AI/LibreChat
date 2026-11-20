@@ -1,4 +1,4 @@
-import { getCodeEnvScope, isCodeRefInScope } from './scope';
+import { getAgentResourceFileIds, getCodeEnvScope, isCodeRefInScope } from './scope';
 
 describe('getCodeEnvScope', () => {
   it("files an agent's own resource under the agent and everything else under the user", () => {
@@ -40,5 +40,30 @@ describe('isCodeRefInScope', () => {
 
   it('leaves a pointer this pipeline does not write to its owner', () => {
     expect(isCodeRefInScope({ kind: 'skill', id: 'skill' }, user)).toBe(true);
+  });
+});
+
+describe('getAgentResourceFileIds', () => {
+  it("collects the files the agent's own code, search and image lists name", () => {
+    expect(
+      getAgentResourceFileIds(
+        {
+          execute_code: { file_ids: ['code'], files: [] },
+          file_search: { file_ids: ['search'] },
+          image_edit: { file_ids: ['image'] },
+          context: { file_ids: ['context'] },
+        },
+        new Set(['known']),
+      ),
+    ).toEqual(new Set(['known', 'code', 'search', 'image']));
+  });
+
+  it('does not treat a file the turn merely carries as one the agent owns', () => {
+    expect(
+      getAgentResourceFileIds({
+        execute_code: { files: [{ file_id: 'attached' }] as never },
+      }),
+    ).toEqual(new Set());
+    expect(getAgentResourceFileIds(undefined)).toEqual(new Set());
   });
 });

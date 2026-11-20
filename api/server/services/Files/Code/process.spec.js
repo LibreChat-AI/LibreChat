@@ -4966,6 +4966,14 @@ describe('Code Process', () => {
         { kind: 'agent', id: 'agent-id' },
         { execute_code: { file_ids: ['snapshot'] } },
       ],
+      [
+        'the executing agent, for one of its search resources',
+        { kind: 'agent', id: 'agent-id' },
+        {
+          execute_code: { files: [{ file_id: 'snapshot' }] },
+          file_search: { file_ids: ['snapshot'] },
+        },
+      ],
     ])(
       'mounts an upload filed under %s without uploading again',
       async (_label, identity, resources) => {
@@ -4997,6 +5005,12 @@ describe('Code Process', () => {
       [
         'another agent',
         { kind: 'agent', id: 'agent-other' },
+        { execute_code: { files: [{ file_id: 'snapshot' }] } },
+        { kind: 'user', id: 'user-123' },
+      ],
+      [
+        'the executing agent, for a file none of its resources name',
+        { kind: 'agent', id: 'agent-id' },
         { execute_code: { files: [{ file_id: 'snapshot' }] } },
         { kind: 'user', id: 'user-123' },
       ],
@@ -5047,5 +5061,27 @@ describe('Code Process', () => {
         );
       },
     );
+
+    it('addresses a first upload on this route from the turn, not from another route pointer', async () => {
+      const record = snapshot({ kind: 'agent', id: 'agent-other' });
+      record.user = 'user-456';
+      record.metadata.codeEnvRefs = {
+        'stateful:other': {
+          ...record.metadata.codeEnvRefs.default,
+          executionProfile: 'stateful',
+          executionRouteKey: 'stateful:other',
+        },
+      };
+      getFiles.mockResolvedValue([record]);
+
+      const result = await prime({ execute_code: { files: [{ file_id: 'snapshot' }] } });
+
+      expect(upload).toHaveBeenCalledWith(
+        expect.objectContaining({ stream: 'primary-bytes', kind: 'user', id: 'user-123' }),
+      );
+      expect(result.files).toEqual([
+        expect.objectContaining({ id: 'fresh-object', kind: 'user', resource_id: 'user-123' }),
+      ]);
+    });
   });
 });

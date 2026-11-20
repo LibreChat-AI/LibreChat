@@ -7,13 +7,17 @@ import {
   getCodeEnvRefForProfile,
   resolveSandboxFilename,
 } from 'librechat-data-provider';
-import type { CodeEnvRef, CodeEnvRefContent, TFile } from 'librechat-data-provider';
+import type {
+  TFile,
+  CodeEnvRef,
+  CodeEnvRefContent,
+  AgentToolResources,
+} from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import type { CodeExecutionRoute } from '../provision/service';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeObjectInfo } from './receipt';
 import type { ServerRequest } from '~/types';
-import type { CodeEnvScope } from './scope';
 import {
   claimCodeDestination,
   createCodeDestinationSet,
@@ -29,9 +33,9 @@ import {
   withCodeApiUploadSlot,
 } from '~/utils/code';
 import { checkCodeFileActive, getSnapshotReceipt, provesStoredContent } from './receipt';
+import { getAgentResourceFileIds, getCodeEnvScope, isCodeRefInScope } from './scope';
 import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from './form';
 import { isStorageNotFoundError } from '~/files/encode/utils';
-import { getCodeEnvScope, isCodeRefInScope } from './scope';
 import { codeExecutionHeaders } from '~/agents/execution';
 import { buildCodeEnvDownloadQuery } from './identity';
 import { isAbortError } from '~/utils/errors';
@@ -145,46 +149,29 @@ interface PrimedCodeFile {
 export interface CodeTurnIdentity {
   userId?: string;
   agentId?: string;
+  /** The agent's resources as the turn loads them. Files its own lists name belong to it. */
+  agentResources?: AgentToolResources | null;
 }
 
 /**
  * The scope a snapshot's upload is filed under this turn, by the rule resource priming queues
- * it with, or nothing when the turn's identity for that scope is unknown.
+ * it with, or nothing when the turn's identity for that scope is unknown. Membership in the
+ * agent's own resources decides it, never a pointer that happens to name the executing agent.
  */
 function getSnapshotScope(
   file: TFile,
-  privateFileIds: ReadonlySet<string> | undefined,
+  agentFileIds: ReadonlySet<string> | undefined,
   identity: CodeTurnIdentity | undefined,
 ): SnapshotCodeOwner | undefined {
   if (!identity) {
     return undefined;
   }
   const { kind, id } = getCodeEnvScope({
-    agentScoped: privateFileIds?.has(file.file_id) === true,
-    ...identity,
+    agentScoped: agentFileIds?.has(file.file_id) === true,
+    agentId: identity.agentId,
+    userId: identity.userId,
   });
   return id ? { kind, id } : undefined;
-}
-
-/**
- * Whether a snapshot's pointer was filed under an identity this turn files that snapshot
- * under. One of the agent's own code resources is filed under the agent alone. Any other file
- * is filed under the requesting user, but resource priming also files the agent's other
- * resources, and code resources it had to rename, under the agent, and those arrive here
- * looking like conversation files. A pointer under the executing agent is therefore one this
- * turn wrote; a pointer under another agent or another user never is.
- */
-function isSnapshotRefInScope(
-  ref: CodeEnvRef,
-  scope: CodeEnvScope,
-  identity: CodeTurnIdentity | undefined,
-): boolean {
-  return (
-    isCodeRefInScope(ref, scope) ||
-    (scope.kind === 'user' &&
-      identity?.agentId != null &&
-      isCodeRefInScope(ref, { kind: 'agent', id: identity.agentId }))
-  );
 }
 
 /** Reserve actual storage destinations before recovery so a failed winner never revives stale content. */
@@ -200,8 +187,8 @@ export async function selectCodeFiles({
   files: Array<TFile | null | undefined>;
   privateFileIds?: ReadonlySet<string>;
   routeKey: string;
-  /** With it, a snapshot pointer filed under another identity is neither mounted nor used to
-   *  address the upload that replaces it. */
+  /** With it, a snapshot is mounted from, and uploaded under, only the identity this turn
+   *  files it under: the agent for its own resource files, the requesting user otherwise. */
   identity?: CodeTurnIdentity;
   getFileInfo: (ref: CodeEnvRef) => Promise<CodeFileInfo | null>;
   concurrency?: number;
@@ -213,6 +200,9 @@ export async function selectCodeFiles({
   const snapshotMounts = planCodeSnapshotMounts(generations.files, privateFileIds, routeKey);
   const candidates = [];
   const registry = createCodeApiUploadRegistry();
+  const agentFileIds = identity
+    ? getAgentResourceFileIds(identity.agentResources, privateFileIds)
+    : undefined;
   for (const file of generations.files) {
     if (!file) {
       continue;
@@ -221,10 +211,11 @@ export async function selectCodeFiles({
     const routeRef = getCodeEnvRefForProfile(file.metadata, routeKey);
     /* A pointer filed under another identity names a storage session this turn does not run
      * as, whatever the Code API would answer for it. The snapshot is then uploaded under this
-     * turn's identity, as resource priming queues it, instead of mounted or re-filed there. */
-    const scope = snapshot ? getSnapshotScope(file, privateFileIds, identity) : undefined;
-    const foreign =
-      scope != null && routeRef != null && !isSnapshotRefInScope(routeRef, scope, identity);
+     * turn's identity, as resource priming queues it, instead of mounted or re-filed there.
+     * The same scope addresses the upload when this route holds no pointer at all, so one
+     * left by another route never decides whose storage the bytes go to. */
+    const scope = snapshot ? getSnapshotScope(file, agentFileIds, identity) : undefined;
+    const foreign = scope != null && routeRef != null && !isCodeRefInScope(routeRef, scope);
     const ownedRef = foreign ? undefined : routeRef;
     /* A snapshot pointer names a mount. Only a receipt for this content version, matched
      * against the stored object below, stands in for uploading the bytes again. */
@@ -232,7 +223,8 @@ export async function selectCodeFiles({
     const probeRef = snapshot ? receipt : ownedRef;
     const sourceRef =
       ownedRef ??
-      (foreign ? scope : getCodeEnvRefs(file.metadata)[0]?.[1]) ??
+      scope ??
+      getCodeEnvRefs(file.metadata)[0]?.[1] ??
       (snapshot
         ? {
             kind: 'user' as const,

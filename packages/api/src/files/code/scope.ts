@@ -1,4 +1,5 @@
-import type { CodeEnvRef } from 'librechat-data-provider';
+import { EToolResources } from 'librechat-data-provider';
+import type { AgentToolResources, CodeEnvRef } from 'librechat-data-provider';
 
 /**
  * The resource identity a code upload is filed under this turn: an agent's own resource file
@@ -35,4 +36,30 @@ export function isCodeRefInScope(
     return true;
   }
   return ref.kind === scope.kind && ref.id === scope.id;
+}
+
+/** Resource lists whose files resource priming files under the agent and leaves in place. */
+const AGENT_FILE_RESOURCES = [
+  EToolResources.execute_code,
+  EToolResources.file_search,
+  EToolResources.image_edit,
+] as const;
+
+/**
+ * The files an agent's own resource lists name, as tool loading sees them. Resource priming
+ * files an upload of any of them under the agent, so a later stage that only receives the
+ * resources can reach the same answer. Context files are absent: their list is consumed
+ * before tools load, and without it such a file is filed under the requesting user.
+ */
+export function getAgentResourceFileIds(
+  resources: AgentToolResources | null | undefined,
+  known?: ReadonlySet<string>,
+): Set<string> {
+  const ids = new Set<string>(known);
+  for (const resource of AGENT_FILE_RESOURCES) {
+    for (const id of resources?.[resource]?.file_ids ?? []) {
+      ids.add(id);
+    }
+  }
+  return ids;
 }
