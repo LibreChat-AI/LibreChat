@@ -1291,6 +1291,16 @@ function createToolInstance({
 
   const normalizedToolKey = `${toolName}${Constants.mcp_delimiter}${normalizeServerName(serverName)}`;
 
+  /** Some models fill every unused optional property with `""` instead of omitting it, and
+   *  servers reject those as invalid values. Omit them; required arguments pass unchanged. */
+  const requiredArgs = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const dropEmptyOptionalArgs = (args) =>
+    args && typeof args === 'object' && !Array.isArray(args)
+      ? Object.fromEntries(
+          Object.entries(args).filter(([key, value]) => value !== '' || requiredArgs.has(key)),
+        )
+      : args;
+
   /** @type {(toolArguments: Object | string, config?: GraphRunnableConfig) => Promise<unknown>} */
   const _call = async (toolArguments, config) => {
     const effectiveUser = config?.configurable?.user ?? capturedUser;
@@ -1379,7 +1389,7 @@ function createToolInstance({
            *  a redundant server-name prefix calls the ORIGINAL tool. */
           toolName: serverToolName,
           provider,
-          toolArguments,
+          toolArguments: dropEmptyOptionalArgs(toolArguments),
           options: {
             signal: derivedSignal,
           },
