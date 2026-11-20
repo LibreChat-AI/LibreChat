@@ -17,7 +17,7 @@
 #     - type: bind
 #       source: ./librechat.yaml
 #       target: /app/librechat.yaml
-#     image: registry.librechat.ai/danny-avila/librechat:latest
+#     image: registry.librechat.ai/librechat-ai/librechat:latest
 
 # ---------------------------------------------------
 
@@ -39,19 +39,19 @@
 
 # # BUILD FROM LATEST IMAGE
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat-dev:latest
+#     image: registry.librechat.ai/librechat-ai/librechat-dev:latest
 
 # # BUILD FROM LATEST IMAGE (NUMBERED RELEASE)
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat:latest
+#     image: registry.librechat.ai/librechat-ai/librechat:latest
 
 # # BUILD FROM LATEST API IMAGE
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat-dev-api:latest
+#     image: registry.librechat.ai/librechat-ai/librechat-dev-api:latest
 
 # # BUILD FROM LATEST API IMAGE (NUMBERED RELEASE)
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat-api:latest
+#     image: registry.librechat.ai/librechat-ai/librechat-api:latest
 
 # # ADD SAML CERT FILE
 #   api:
@@ -62,7 +62,7 @@
 
 # # ADD MONGO-EXPRESS
 #   mongo-express:
-#     image: mongo-express
+#     image: docker.io/library/mongo-express
 #     container_name: mongo-express
 #     environment:
 #       ME_CONFIG_MONGODB_SERVER: mongodb
@@ -76,14 +76,14 @@
 
 # # USE MONGODB V4.4.18 - FOR OLDER CPU WITHOUT AVX SUPPORT
 #   mongodb:
-#     image: mongo:4.4.18
+#     image: docker.io/library/mongo:4.4.18
 
 # # DISABLE THE MONGODB CONTAINER - YOU NEED TO SET AN ALTERNATIVE MONGODB URI IN THE .ENV FILE
 #   api:
 #     environment:
 #       - MONGO_URI=${MONGO_URI}
 #   mongodb:
-#     image: tianon/true
+#     image: docker.io/tianon/true
 #     command: ""
 #     entrypoint: ""
 
@@ -104,14 +104,14 @@
 
 # # USE RAG API IMAGE WITH LOCAL EMBEDDINGS SUPPORT
 #  rag_api:
-#    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev:latest
+#    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev:latest
 # # For Linux user:
 #    extra_hosts:
 #      - "host.docker.internal:host-gateway"
 
 # # ADD OLLAMA
 #  ollama:
-#    image: ollama/ollama:latest
+#    image: docker.io/ollama/ollama:latest
 #    deploy:
 #      resources:
 #        reservations:
@@ -144,7 +144,7 @@
 
 # # ADD LITELLM CACHING
 #  redis:
-#    image: redis:7-alpine
+#    image: docker.io/library/redis:7-alpine
 #    command:
 #    - sh
 #    - -c # this is to evaluate the $REDIS_PASSWORD from the env
@@ -171,7 +171,7 @@
 #      - NEXT_PUBLIC_SIGN_UP_DISABLED=${NEXT_PUBLIC_SIGN_UP_DISABLED:-false}
 #      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-false}
 #  db:
-#    image: postgres
+#    image: docker.io/library/postgres
 #    restart: always
 #    environment:
 #      - POSTGRES_USER=postgres

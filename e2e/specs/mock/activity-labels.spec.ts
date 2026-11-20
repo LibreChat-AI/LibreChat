@@ -54,13 +54,15 @@ async function getLabelRequestsFor(
 
 /** Select the MCP server whose `remember_fact` tool creates the batch boundary. */
 async function selectEphemeralMCP(page: Page) {
-  await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-  const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(MCP_SERVER_TITLE) });
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const serverItem = page
+    .getByRole('dialog', { name: 'Attach and tools' })
+    .getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) });
   await expect(serverItem).toBeVisible();
   await serverItem.click();
-  await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+  await expect(serverItem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: new RegExp(MCP_SERVER_TITLE) })).toBeVisible();
+  await expect(page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true })).toBeVisible();
 }
 
 /** Run one labeled turn: two parallel tool calls => exactly one PostToolBatch. */
@@ -84,7 +86,10 @@ test.describe('activity labels', () => {
    * The header is the feature: once a label lands it REPLACES the generic
    * "Ran N actions" verb above the same tool cards.
    */
-  test('renders the generated label as the tool-group header', async ({ page, request }) => {
+  test('renders the generated label as the tool-group header @scenario:tool-group-body-mounts-on-disclosure', async ({
+    page,
+    request,
+  }) => {
     test.setTimeout(120000);
     const label = uniqueLabel('activity');
     await setLabelBehavior(request, { label: 'Stored two facts in memory' });
@@ -95,6 +100,14 @@ test.describe('activity labels', () => {
       messagesView(page).getByRole('button', { name: 'Stored two facts in memory' }),
     ).toBeVisible({ timeout: 30000 });
     await expect(messagesView(page).getByRole('button', { name: /^Ran 2 actions/ })).toHaveCount(0);
+    const header = messagesView(page).getByRole('button', { name: 'Stored two facts in memory' });
+    const panel = header.locator('xpath=../following-sibling::div[1]');
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(panel.getByTestId('tool-call')).toHaveCount(0);
+    await header.click();
+    await expect(panel.getByTestId('tool-call')).toHaveCount(2);
+    await header.click();
+    await expect(panel.getByTestId('tool-call')).toHaveCount(0);
   });
 
   /**

@@ -1,10 +1,15 @@
+const mockSetDraftEphemeralAgent = jest.fn();
+
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
   useRecoilValue: jest.fn(),
+  useSetRecoilState: () => mockSetDraftEphemeralAgent,
 }));
 
-jest.mock('~/store', () => ({
-  saveDrafts: { key: 'saveDrafts', default: true },
+jest.mock('~/store', () => ({ ephemeralAgentByConvoId: (id: string) => id }));
+
+jest.mock('~/Providers/ChatSettingsContext', () => ({
+  useChatSettings: () => ({ saveDrafts: true }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -34,18 +39,28 @@ import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import { useChatFormContext } from '~/Providers';
 import { useGetFiles } from '~/data-provider';
 import { hasInFlightUpload } from '~/hooks/Files/useFileHandling';
+import { beginFileSearchUpload, captureFileSearchUpload } from '~/hooks/Files/search';
 import {
   encodeBase64,
+  clearDraft,
   clearAllDrafts,
   getAskAnswerDraftId,
   getDraft,
   getFilesDraft,
+  getPendingDraftId,
   setDraft,
   setFilesDraft,
+  renewNewConversationDraftToken,
 } from '~/utils';
+import {
+  bindComposerLaunch,
+  adoptComposerConversation,
+  registerComposerDraft,
+  captureComposerDraft,
+} from '~/utils/drafts';
 import { markPastedTextFile } from '~/utils/files';
-import store from '~/store';
 import { useAutoSave } from '~/hooks';
+import type { ExtendedFile } from '~/common';
 
 const mockSetValue = jest.fn();
 const mockGetDraft = getDraft as jest.Mock;
@@ -65,10 +80,7 @@ const markTabGone = (tabId: string): void => localStorage.removeItem(`librechat-
 
 beforeEach(() => {
   localStorage.clear();
-  (useRecoilValue as jest.Mock).mockImplementation((atom) => {
-    if (atom === store.saveDrafts) return true;
-    return undefined;
-  });
+  (useRecoilValue as jest.Mock).mockReturnValue(undefined);
   (useChatFormContext as jest.Mock).mockReturnValue({ setValue: mockSetValue });
   (useGetFiles as jest.Mock).mockReturnValue({ data: [] });
   (hasInFlightUpload as jest.Mock).mockReturnValue(false);
@@ -76,6 +88,93 @@ beforeEach(() => {
 });
 
 describe('useAutoSave — conversation switching', () => {
+  it('recovers blocked pending drafts when this document sweeps an expired foreign lease', async () => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+    try {
+      markTabLive('expired-owner');
+      const textAreaRef = makeTextAreaRef('');
+      (useGetFiles as jest.Mock).mockReturnValue({ data: [{ file_id: 'lease-file', bytes: 3 }] });
+      const { result, rerender, unmount } = renderHook(
+        ({ isSubmitting }: { isSubmitting: boolean }) => {
+          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          useAutoSave({
+            conversationId: 'lease-destination',
+            isSubmitting,
+            textAreaRef,
+            files,
+            setFiles,
+          });
+          return files;
+        },
+        { initialProps: { isSubmitting: true } },
+      );
+      setFilesDraft(Constants.PENDING_CONVO, { fileIds: ['lease-file'], pendingPastes: {} });
+      setFilesDraft('lease-destination', {
+        fileIds: ['foreign-file'],
+        pendingPastes: {},
+        tabId: 'expired-owner',
+      });
+      act(() => rerender({ isSubmitting: false }));
+      expect(getFilesDraft('lease-destination').tabId).toBe('expired-owner');
+      await act(async () => {
+        jest.advanceTimersByTime(160_000);
+        await Promise.resolve();
+      });
+      expect(localStorage.getItem('librechat-live-tab:expired-owner')).toBeNull();
+      expect(getFilesDraft(Constants.PENDING_CONVO).fileIds).toEqual([]);
+      expect(getFilesDraft('lease-destination').fileIds).toEqual(['lease-file']);
+      expect(result.current.has('lease-file')).toBe(true);
+      unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps a live paste when a same-conversation rerun enters and leaves the pending phase', () => {
+    const textAreaRef = makeTextAreaRef();
+    const paste: ExtendedFile = {
+      file_id: 'unsent-rerun-paste',
+      progress: 0.2,
+      size: 100,
+      type: 'text/plain',
+      pastedText: 'unrelated exact clipboard text',
+    };
+    const hook = renderHook(
+      ({ isSubmitting }) => {
+        const [files, setFiles] = React.useState(new Map<string, ExtendedFile>());
+        useAutoSave({
+          conversationId: 'rerun-conversation',
+          isSubmitting,
+          textAreaRef,
+          files,
+          setFiles,
+        });
+        return { files, setFiles };
+      },
+      { initialProps: { isSubmitting: false } },
+    );
+    act(() => hook.result.current.setFiles(new Map([[paste.file_id, paste]])));
+    setFilesDraft('rerun-conversation', {
+      fileIds: [paste.file_id],
+      pendingPastes: { [paste.file_id]: { text: paste.pastedText!, selectionStart: 0 } },
+    });
+    textAreaRef.current!.value = 'Keep this draft';
+    mockSetValue.mockClear();
+    act(() => hook.rerender({ isSubmitting: true }));
+    expect(hook.result.current.files.get(paste.file_id)).toBe(paste);
+    expect(getFilesDraft(getPendingDraftId()).pendingPastes[paste.file_id]?.text).toBe(
+      paste.pastedText,
+    );
+    expect(mockSetValue).not.toHaveBeenCalledWith('text', '');
+    act(() => hook.rerender({ isSubmitting: false }));
+    expect(hook.result.current.files.get(paste.file_id)).toBe(paste);
+    expect(textAreaRef.current!.value).toBe('Keep this draft');
+    expect(getFilesDraft('rerun-conversation').pendingPastes[paste.file_id]?.text).toBe(
+      paste.pastedText,
+    );
+    hook.unmount();
+  });
+
   it('clears the textarea when switching to a conversation with no draft', () => {
     const { rerender } = renderHook(
       ({ conversationId }: { conversationId: string }) =>
@@ -130,6 +229,145 @@ describe('useAutoSave — conversation switching', () => {
     });
 
     expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'draft in progress' });
+  });
+
+  it('preserves live text before replacement and saves it when switching away', () => {
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string }) =>
+        useAutoSave({ conversationId, textAreaRef, files: new Map(), setFiles: jest.fn() }),
+      { initialProps: { conversationId: 'convo-1' } },
+    );
+    textAreaRef.current.value = 'original unsent draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'URL prompt';
+    mockSetDraft.mockClear();
+    act(() => rerender({ conversationId: 'convo-2' }));
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'original unsent draft' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'URL prompt' });
+  });
+
+  it('flushes an earlier input debounce without persisting the programmatic replacement', () => {
+    jest.useFakeTimers();
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, unmount } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    textAreaRef.current.value = 'unfinished typing';
+    textAreaRef.current.dispatchEvent(new Event('input'));
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'URL prompt';
+    mockSetDraft.mockClear();
+    unmount();
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'unfinished typing' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'URL prompt' });
+    jest.useRealTimers();
+  });
+
+  it('persists a settled replacement in the current draft without native input', () => {
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string }) =>
+        useAutoSave({ conversationId, textAreaRef, files: new Map(), setFiles: jest.fn() }),
+      { initialProps: { conversationId: 'convo-1' } },
+    );
+    textAreaRef.current.value = 'original draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'retained URL prompt';
+    act(() => result.current.settleText('retained URL prompt', 'convo-1'));
+    mockSetDraft.mockClear();
+    act(() => rerender({ conversationId: 'convo-2' }));
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'retained URL prompt' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'original draft' });
+  });
+
+  it('settles into the requested new-chat draft without overwriting the departing source', () => {
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result, rerender } = renderHook(
+      ({ conversationId }: { conversationId: string }) =>
+        useAutoSave({ conversationId, textAreaRef, files: new Map(), setFiles: jest.fn() }),
+      { initialProps: { conversationId: 'convo-1' } },
+    );
+    textAreaRef.current.value = 'original source draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'retained URL prompt';
+    act(() => result.current.settleText('retained URL prompt', Constants.NEW_CONVO));
+    expect(mockSetDraft).toHaveBeenCalledWith({
+      id: Constants.NEW_CONVO,
+      value: 'retained URL prompt',
+    });
+    mockSetDraft.mockClear();
+    act(() => rerender({ conversationId: Constants.NEW_CONVO as string }));
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'convo-1', value: 'original source draft' });
+    expect(mockSetDraft).not.toHaveBeenCalledWith({ id: 'convo-1', value: 'retained URL prompt' });
+  });
+
+  it('does not replace another live tab’s draft during settlement', () => {
+    markTabLive('other-tab');
+    setFilesDraft('convo-1', { fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' });
+    const textAreaRef = { current: document.createElement('textarea') };
+    mockSetDraft.mockImplementation(jest.requireActual('~/utils').setDraft);
+    localStorage.setItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`, encodeBase64('their draft'));
+    const { result } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    act(() => result.current.settleText('our URL prompt', 'convo-1'));
+    expect(localStorage.getItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`)).toBe(
+      encodeBase64('their draft'),
+    );
+    mockSetDraft.mockReset();
+  });
+
+  it('resumes normal persistence when the user edits the programmatically replaced text', () => {
+    jest.useFakeTimers();
+    const textAreaRef = { current: document.createElement('textarea') };
+    const { result } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    textAreaRef.current.value = 'original unsent draft';
+    act(() => result.current.preserveText());
+    textAreaRef.current.value = 'edited URL prompt';
+    textAreaRef.current.dispatchEvent(new Event('input'));
+    act(() => jest.advanceTimersByTime(25));
+    expect(mockSetDraft).toHaveBeenLastCalledWith({ id: 'convo-1', value: 'edited URL prompt' });
+    jest.useRealTimers();
+  });
+
+  it('does not overwrite another live tab’s draft while preserving replacement text', () => {
+    markTabLive('other-tab');
+    setFilesDraft('convo-1', { fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' });
+    const textAreaRef = { current: document.createElement('textarea') };
+    mockSetDraft.mockImplementation(jest.requireActual('~/utils').setDraft);
+    localStorage.setItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`, encodeBase64('their draft'));
+    const { result } = renderHook(() =>
+      useAutoSave({
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+    textAreaRef.current.value = 'our text';
+    act(() => result.current.preserveText());
+    expect(localStorage.getItem(`${LocalStorageKeys.TEXT_DRAFT}convo-1`)).toBe(
+      encodeBase64('their draft'),
+    );
+    mockSetDraft.mockReset();
   });
 
   it('restores an incomplete pasted-text upload into the composer after reload', () => {
@@ -453,6 +691,90 @@ describe('useAutoSave — typing as a run finishes', () => {
     mockSetDraft.mockReset();
   });
 
+  /** A send empties the composer before its run starts. Words still in it when a run starts were
+   * not sent: the reader reran a reply from its row, or a run started somewhere else reached this
+   * conversation. Restoring the (empty) pending record over them took them out of the field, and
+   * the end of the run cleared the conversation's record, their only copy. */
+  it('keeps a draft the composer holds when a run it did not send starts', () => {
+    const textAreaRef = makeTextAreaRef();
+    const { rerender } = renderHook(
+      ({ isSubmitting }: { isSubmitting: boolean }) =>
+        useAutoSave({
+          isSubmitting,
+          conversationId: 'convo-1',
+          textAreaRef,
+          files: new Map(),
+          setFiles: jest.fn(),
+        }),
+      { initialProps: { isSubmitting: false } },
+    );
+    act(() => {
+      type(textAreaRef, 'not sent yet');
+      jest.advanceTimersByTime(50);
+    });
+    mockSetValue.mockClear();
+
+    act(() => {
+      rerender({ isSubmitting: true });
+    });
+
+    /** Nothing is put in the field in their place, and they are kept for the run's duration. */
+    expect(mockSetValue).not.toHaveBeenCalled();
+    expect(textAreaRef.current!.value).toBe('not sent yet');
+    expect(actualUtils.getDraft(actualUtils.getPendingDraftId(0))).toBe('not sent yet');
+
+    act(() => {
+      rerender({ isSubmitting: false });
+    });
+
+    /** And they are the conversation's draft again once it ends. */
+    expect(actualUtils.getDraft('convo-1')).toBe('not sent yet');
+    expect(mockSetValue).not.toHaveBeenCalledWith('text', '');
+  });
+
+  it('still restores the pending draft when a run starts under an empty composer', () => {
+    const textAreaRef = makeTextAreaRef();
+    const { rerender } = renderHook(
+      ({ isSubmitting }: { isSubmitting: boolean }) =>
+        useAutoSave({
+          isSubmitting,
+          conversationId: 'convo-1',
+          textAreaRef,
+          files: new Map(),
+          setFiles: jest.fn(),
+        }),
+      { initialProps: { isSubmitting: false } },
+    );
+    mockSetValue.mockClear();
+
+    act(() => {
+      rerender({ isSubmitting: true });
+    });
+
+    expect(mockSetValue).toHaveBeenLastCalledWith('text', '');
+  });
+
+  /** A composer drawn with words already in it, as one beside the chat is when the layout draws
+   * it again, has no earlier conversation those words could belong to. An empty record is not a
+   * draft to put in their place. */
+  it('keeps the words a composer is drawn with when there is no draft to restore', () => {
+    const textAreaRef = makeTextAreaRef();
+    textAreaRef.current!.value = 'handed to it';
+
+    renderHook(() =>
+      useAutoSave({
+        isSubmitting: true,
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+
+    expect(mockSetValue).not.toHaveBeenCalledWith('text', '');
+    expect(actualUtils.getDraft(actualUtils.getPendingDraftId(0))).toBe('handed to it');
+  });
+
   /** The reported bug. The composer is keyed under PENDING while a run streams and under the
    * conversation once it ends, and the key change tore off whatever the 25ms debounce had not
    * written yet: the pending record still held the previous flush, run end migrated that record,
@@ -509,8 +831,7 @@ describe('useAutoSave — typing as a run finishes', () => {
     expect(mockSetValue).toHaveBeenLastCalledWith('text', 'a whole sentence typed quickly');
   });
 
-  /** A draft of one character is deliberately not persisted, so the record cannot speak for the
-   * composer here. The composer still can, and it is what the user is looking at. */
+  /** A debounced record can still lag the character visible in the composer at run end. */
   it('keeps a single character typed as the run ends', () => {
     const textAreaRef = makeTextAreaRef();
     const { rerender } = renderHook(
@@ -602,6 +923,71 @@ describe('useAutoSave — typing as a run finishes', () => {
 describe('useAutoSave — side-by-side pending drafts', () => {
   const pane0PendingId = Constants.PENDING_CONVO;
   const pane1PendingId = `${Constants.PENDING_CONVO}:1`;
+
+  it.each([0, 1].flatMap((index) => [false, true].map((explicit) => ({ index, explicit }))))(
+    'keeps post-acknowledgement uploads through run end (pane $index, explicit $explicit)',
+    ({ index, explicit }) => {
+      window.history.replaceState({}, '', '/c/new');
+      const file = {
+        file_id: 'after-ack-file',
+        progress: 1,
+        size: 6,
+        type: 'text/plain',
+        ...(explicit ? { embedded: true, tool_resource: 'file_search' } : {}),
+      };
+      (useGetFiles as jest.Mock).mockReturnValue({ data: [{ ...file, bytes: 6 }] });
+      const { result, rerender, unmount } = renderHook(
+        ({ conversationId, isSubmitting }) => {
+          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          useAutoSave({ index, conversationId, isSubmitting, files, setFiles });
+          return { files, setFiles };
+        },
+        { initialProps: { conversationId: 'new', isSubmitting: true } },
+      );
+      const launch = { conversationId: 'new' };
+      bindComposerLaunch(launch, index);
+      expect(adoptComposerConversation(launch, 'saved-after-ack', index)).toBe(true);
+      act(() => {
+        window.history.replaceState({}, '', '/c/saved-after-ack');
+        rerender({ conversationId: 'saved-after-ack', isSubmitting: true });
+      });
+      act(() => result.current.setFiles(new Map([['after-ack-file', file]])));
+      const pendingId = getPendingDraftId(index);
+      expect(getFilesDraft(pendingId).fileIds).toContain('after-ack-file');
+      act(() => rerender({ conversationId: 'saved-after-ack', isSubmitting: false }));
+      expect(result.current.files.get('after-ack-file')?.progress).toBe(1);
+      expect(getFilesDraft('saved-after-ack').fileIds).toContain('after-ack-file');
+      unmount();
+      window.history.replaceState({}, '', '/');
+    },
+  );
+
+  it('does not reattribute a pending draft to an unacknowledged destination', () => {
+    window.history.replaceState({}, '', '/c/new');
+    const { rerender, unmount } = renderHook(
+      ({ conversationId, files }) =>
+        useAutoSave({
+          index: 40,
+          conversationId,
+          isSubmitting: true,
+          files,
+          setFiles: jest.fn(),
+        }),
+      { initialProps: { conversationId: 'new', files: new Map<string, ExtendedFile>() } },
+    );
+    const pendingId = getPendingDraftId(40);
+    setFilesDraft(pendingId, { fileIds: ['original-pending-file'], pendingPastes: {} });
+    act(() => {
+      window.history.replaceState({}, '', '/c/unrelated-destination');
+      rerender({
+        conversationId: 'unrelated-destination',
+        files: new Map([['unrelated-file', { file_id: 'unrelated-file', progress: 1, size: 1 }]]),
+      });
+    });
+    expect(getFilesDraft(pendingId).fileIds).toEqual(['original-pending-file']);
+    unmount();
+    window.history.replaceState({}, '', '/');
+  });
 
   it('migrates only this pane pending file draft when a run finishes', () => {
     const { rerender } = renderHook(
@@ -752,6 +1138,43 @@ describe('useAutoSave — file cache updates', () => {
    * would drop an attachment the user just added (and, with no text typed, leave
    * them with nothing submittable).
    */
+  it.each([true, false])(
+    'restores a completed unsent paste before persisting an empty mount (delayed list: %s)',
+    (delayed) => {
+      const record = { ...persistedRecord, type: 'text/plain', filename: 'pasted-text.txt' };
+      setFilesDraft('new', {
+        fileIds: ['client-temp-id'],
+        pastedTextIds: ['client-temp-id'],
+        textPreviews: { 'client-temp-id': 'exact saved snippet' },
+        pendingPastes: {},
+      });
+      const hook = renderHook(
+        ({ loaded }) => {
+          (useGetFiles as jest.Mock).mockReturnValue({ data: loaded ? [record] : undefined });
+          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          useAutoSave({
+            conversationId: 'new',
+            isSubmitting: false,
+            textAreaRef: makeTextAreaRef(),
+            files,
+            setFiles,
+          });
+          return files;
+        },
+        { initialProps: { loaded: !delayed } },
+      );
+      expect(getFilesDraft('new').fileIds).toContain('client-temp-id');
+      if (delayed) act(() => hook.rerender({ loaded: true }));
+      expect(hook.result.current.get('client-temp-id')).toMatchObject({
+        file_id: record.file_id,
+        progress: 1,
+        textPreview: 'exact saved snippet',
+      });
+      expect(getFilesDraft('new').fileIds).toContain('client-temp-id');
+      hook.unmount();
+    },
+  );
+
   it('leaves live attachments alone when the file cache changes with no saved draft', () => {
     const setFiles = jest.fn();
     const files = new Map([['client-temp-id', liveAttachment]]);
@@ -779,6 +1202,40 @@ describe('useAutoSave — file cache updates', () => {
     });
 
     expect(applySetFiles(setFiles, files).size).toBe(1);
+  });
+
+  /**
+   * After a reload the live file map is empty until the server's file list arrives, and the
+   * restore that rebuilds it needs that list. Saving the draft from the empty map in between
+   * erased every attachment the draft held before it could be restored.
+   */
+  it('keeps the saved files draft until the file list has loaded, then restores it', () => {
+    setFilesDraft('convo-1', { fileIds: ['server-file-id'], pendingPastes: {} });
+
+    const { result, rerender } = renderHook(
+      ({ fileList }: { fileList: unknown[] | undefined }) => {
+        const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+        (useGetFiles as jest.Mock).mockReturnValue({ data: fileList });
+        useAutoSave({
+          conversationId: 'convo-1',
+          textAreaRef: makeTextAreaRef(),
+          files,
+          setFiles,
+        });
+        return files;
+      },
+      { initialProps: { fileList: undefined as unknown[] | undefined } },
+    );
+
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['server-file-id']);
+    expect(result.current.size).toBe(0);
+
+    act(() => {
+      rerender({ fileList: [persistedRecord] });
+    });
+
+    expect(result.current.has('server-file-id')).toBe(true);
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['server-file-id']);
   });
 
   /**
@@ -821,6 +1278,64 @@ describe('useAutoSave — file cache updates', () => {
       attached: false,
     });
     expect(restored?.file).toBeInstanceOf(File);
+  });
+
+  it('rejects a restored file-map updater after its new-chat generation retires', () => {
+    const setFiles = jest.fn();
+    setFilesDraft('new:38', { fileIds: ['client-temp-id'], pendingPastes: {} });
+    const host = renderHook(() => {
+      (useGetFiles as jest.Mock).mockReturnValue({ data: [persistedRecord] });
+      return useAutoSave({ index: 38, conversationId: 'new', files: new Map(), setFiles });
+    });
+    expect(applySetFiles(setFiles, new Map()).get('client-temp-id')?.progress).toBe(1);
+    renewNewConversationDraftToken(38);
+    expect(applySetFiles(setFiles, new Map()).size).toBe(0);
+    host.unmount();
+  });
+
+  it('prunes a retired new-chat intent before cache recovery without live callbacks', () => {
+    beginFileSearchUpload('client-temp-id', 'new');
+    setFilesDraft('new', { fileIds: ['client-temp-id'], pendingPastes: {} });
+    renewNewConversationDraftToken();
+    const setFiles = jest.fn();
+    const host = renderHook(() => {
+      (useGetFiles as jest.Mock).mockReturnValue({
+        data: [{ ...persistedRecord, embedded: true }],
+      });
+      return useAutoSave({ conversationId: 'new', files: new Map(), setFiles });
+    });
+    expect(applySetFiles(setFiles, new Map()).size).toBe(0);
+    expect(getFilesDraft('new').fileIds).toEqual([]);
+    expect(mockSetDraftEphemeralAgent).not.toHaveBeenCalled();
+    host.unmount();
+  });
+
+  it('restores an inactive upload after its owned pending draft migrates home', async () => {
+    const conversationId = 'migrated-saved-owner';
+    const index = 41;
+    window.history.replaceState({}, '', `/c/${conversationId}`);
+    const pendingId = getPendingDraftId(index);
+    const release = registerComposerDraft(index, conversationId, pendingId, {});
+    const owner = captureComposerDraft(index, conversationId);
+    setFilesDraft(pendingId, { fileIds: ['client-temp-id'], pendingPastes: {} });
+    beginFileSearchUpload('client-temp-id', captureFileSearchUpload(conversationId, owner));
+    release();
+    await Promise.resolve();
+    const host = renderHook(() => {
+      const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+      (useGetFiles as jest.Mock).mockReturnValue({
+        data: [{ ...persistedRecord, embedded: true }],
+      });
+      useAutoSave({ index, conversationId, files, setFiles });
+      return files;
+    });
+    expect(owner()).toBe(false);
+    expect(host.result.current.get('client-temp-id')?.progress).toBe(1);
+    expect(getFilesDraft(conversationId).fileIds).toContain('client-temp-id');
+    expect(getFilesDraft(pendingId).fileIds).toEqual([]);
+    expect(mockSetDraftEphemeralAgent).toHaveBeenCalledWith(expect.any(Function));
+    host.unmount();
+    window.history.replaceState({}, '', '/');
   });
 
   it('marks a file restored from a draft alone as attached', () => {
@@ -938,7 +1453,7 @@ describe('useAutoSave — file cache updates', () => {
     localStorage.setItem(pendingTextKey, encodeBase64('submitted text'));
     localStorage.setItem(foreignTextKey, encodeBase64('their text'));
     act(() => rerender({ isSubmitting: false }));
-    act(() => result.current());
+    act(() => result.current.consumeDraft());
     expect(clearAllDrafts).toHaveBeenLastCalledWith(Constants.PENDING_CONVO);
     expect(localStorage.getItem(pendingTextKey)).toBeNull();
     expect(getFilesDraft(Constants.PENDING_CONVO).fileIds).toEqual([]);
@@ -947,6 +1462,71 @@ describe('useAutoSave — file cache updates', () => {
     unmount();
     (clearAllDrafts as jest.Mock).mockReset();
   });
+
+  it.each([false, true])(
+    'bounds blocked destination renders and recovers after ownership release (unstable setter: %s)',
+    (unstable) => {
+      markTabLive('blocking-owner');
+      const textAreaRef = makeTextAreaRef('');
+      const cachedFile = { file_id: 'queued-file', bytes: 3, filename: 'queued.txt' };
+      (useGetFiles as jest.Mock).mockReturnValue({ data: [cachedFile] });
+      let renders = 0;
+      let writes = 0;
+      const { result, rerender, unmount } = renderHook(
+        ({ isSubmitting }: { isSubmitting: boolean }) => {
+          if (++renders > 40) throw new Error('unbounded draft recovery');
+          const [files, updateFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          const stableSetter = React.useCallback(
+            (update: React.SetStateAction<Map<string, ExtendedFile>>) => {
+              writes++;
+              updateFiles(update);
+            },
+            [],
+          );
+          const setFiles = unstable
+            ? (update: React.SetStateAction<Map<string, ExtendedFile>>) => stableSetter(update)
+            : stableSetter;
+          useAutoSave({
+            conversationId: 'blocked-destination',
+            isSubmitting,
+            textAreaRef,
+            files,
+            setFiles,
+          });
+          return files;
+        },
+        { initialProps: { isSubmitting: true } },
+      );
+      setFilesDraft(Constants.PENDING_CONVO, { fileIds: ['queued-file'], pendingPastes: {} });
+      setFilesDraft('blocked-destination', {
+        fileIds: ['foreign-file'],
+        pendingPastes: {},
+        tabId: 'blocking-owner',
+      });
+      const foreign = getFilesDraft('blocked-destination');
+      act(() => rerender({ isSubmitting: false }));
+      expect(result.current.has('queued-file')).toBe(true);
+      const writesAfterBlock = writes;
+      for (let i = 0; i < 3; i++) act(() => rerender({ isSubmitting: false }));
+      expect(writes - writesAfterBlock).toBeLessThan(8);
+      expect(getFilesDraft('blocked-destination')).toEqual(foreign);
+      expect(getFilesDraft(Constants.PENDING_CONVO).fileIds).toEqual(['queued-file']);
+      markTabGone('blocking-owner');
+      act(() =>
+        window.dispatchEvent(
+          new StorageEvent('storage', { key: 'librechat-live-tab:blocking-owner' }),
+        ),
+      );
+      expect(getFilesDraft(Constants.PENDING_CONVO).fileIds).toEqual([]);
+      expect(getFilesDraft('blocked-destination').fileIds).toEqual(['queued-file']);
+      const writesAfterMigration = writes;
+      (useGetFiles as jest.Mock).mockReturnValue({ data: [{ ...cachedFile }] });
+      act(() => rerender({ isSubmitting: false }));
+      expect(writes - writesAfterMigration).toBeLessThan(5);
+      expect(renders).toBeLessThan(35);
+      unmount();
+    },
+  );
 
   it('keeps autosaving to the pending key while the destination is owned by another live tab', () => {
     jest.useFakeTimers();
@@ -1165,4 +1745,51 @@ describe('useAutoSave — file cache updates', () => {
 
     expect(mockSetValue).toHaveBeenCalledWith('text', 'closed tab text');
   });
+});
+
+describe('useAutoSave — exact text across navigation', () => {
+  const draftStorage = jest.requireActual<typeof import('~/utils/drafts')>('~/utils/drafts');
+
+  beforeEach(() => {
+    mockGetDraft.mockImplementation(draftStorage.getDraft);
+    mockSetDraft.mockImplementation(draftStorage.setDraft);
+    (clearDraft as jest.Mock).mockImplementation(draftStorage.clearDraft);
+  });
+
+  afterEach(() => {
+    mockGetDraft.mockReset();
+    mockSetDraft.mockReset();
+    (clearDraft as jest.Mock).mockReset();
+  });
+
+  it.each(['x', '字', ' ', '\n', 'first line\nsecond line'])(
+    'restores %j after switching through an empty conversation and new chat',
+    (value) => {
+      const textarea = document.createElement('textarea');
+      const textAreaRef = { current: textarea };
+      const files = new Map<string, never>();
+      const setFiles = jest.fn();
+      mockSetValue.mockImplementation((_name: string, text: string) => {
+        textarea.value = text;
+      });
+      const { rerender } = renderHook(
+        ({ conversationId }: { conversationId: string }) =>
+          useAutoSave({ conversationId, textAreaRef, files, setFiles }),
+        { initialProps: { conversationId: 'convo-exact' } },
+      );
+      textarea.value = value;
+      act(() => rerender({ conversationId: 'convo-empty' }));
+      expect(textarea.value).toBe('');
+      expect(draftStorage.getDraft('convo-exact')).toBe(value);
+      act(() => rerender({ conversationId: String(Constants.NEW_CONVO) }));
+      expect(textarea.value).toBe('');
+      act(() => rerender({ conversationId: 'convo-exact' }));
+      expect(textarea.value).toBe(value);
+      textarea.value = '';
+      act(() => rerender({ conversationId: 'convo-empty' }));
+      act(() => rerender({ conversationId: 'convo-exact' }));
+      expect(textarea.value).toBe('');
+      mockSetValue.mockReset();
+    },
+  );
 });

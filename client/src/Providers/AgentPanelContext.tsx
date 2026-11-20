@@ -19,6 +19,7 @@ import {
 } from '~/hooks';
 import { isMCPServerReadyForAgent } from '~/components/MCP/mcpServerUtils';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
+import useRevealChat from '~/hooks/Nav/useRevealChat';
 import { Panel } from '~/common';
 import store from '~/store';
 
@@ -42,6 +43,7 @@ export function AgentPanelProvider({
 }) {
   const localize = useLocalize();
   const location = useLocation();
+  const revealChat = useRevealChat();
   /** The panel stays mounted while the sidebar is hidden (collapsed, mobile
    * drawer, or the insights route collapsing it), so only a visible form
    * releases the MCP catalogs ahead of the background warmup schedule */
@@ -53,13 +55,19 @@ export function AgentPanelProvider({
       activateCatalog('mcpTools');
     }
   }, [panelVisible]);
+  const observeVisibleToolAuthorization = panelVisible && observeToolAuthorization;
   const [mcp, setMcp] = useState<MCP | undefined>(undefined);
   const [mcps, setMcps] = useState<MCP[] | undefined>(undefined);
   const [action, setAction] = useState<Action | undefined>(undefined);
   const [activePanel, setActivePanel] = useState<Panel>(Panel.builder);
   const [agent_id, setCurrentAgentId] = useState<string | undefined>(undefined);
-  const { availableMCPServers, isLoading, availableMCPServersMap, connectionStatus } =
-    useMCPServerManager({ observeToolAuthorization });
+  const {
+    availableMCPServers,
+    isLoading,
+    availableMCPServersMap,
+    connectionStatus,
+    connectionViews,
+  } = useMCPServerManager({ observeToolAuthorization: observeVisibleToolAuthorization });
   const { data: startupConfig } = useGetStartupConfig();
   const { data: actions } = useGetActionsQuery(EModelEndpoint.agents, {
     enabled: observeToolAuthorization,
@@ -72,9 +80,8 @@ export function AgentPanelProvider({
   const mcpToolsReady = useCatalogReady('mcpTools');
   useMCPRefresh({
     enabled:
-      panelVisible &&
       mcpToolsReady &&
-      observeToolAuthorization &&
+      observeVisibleToolAuthorization &&
       !isLoading &&
       availableMCPServers.length > 0,
     tools: true,
@@ -82,7 +89,7 @@ export function AgentPanelProvider({
   const { data: mcpData, isFetching: mcpToolsFetching } = useMCPToolsQuery({
     enabled:
       mcpToolsReady &&
-      observeToolAuthorization &&
+      observeVisibleToolAuthorization &&
       !isLoading &&
       availableMCPServers != null &&
       availableMCPServers.length > 0,
@@ -139,6 +146,7 @@ export function AgentPanelProvider({
             serverStatus,
             serverConfig?.requestScoped === true,
             Object.keys(serverConfig?.customUserVars ?? {}).length > 0,
+            connectionViews?.[serverName],
           ),
           requestScoped: serverConfig?.requestScoped,
           metadata,
@@ -177,6 +185,7 @@ export function AgentPanelProvider({
           serverStatus,
           serverConfig?.requestScoped === true,
           Object.keys(serverConfig?.customUserVars ?? {}).length > 0,
+          connectionViews?.[mcpServerName],
         ),
         requestScoped: serverConfig?.requestScoped,
         consumeOnly: serverConfig?.consumeOnly,
@@ -184,9 +193,17 @@ export function AgentPanelProvider({
     }
 
     return serversMap;
-  }, [mcpData, localize, mcpServerNames, connectionStatus, availableMCPServersMap]);
+  }, [
+    mcpData,
+    localize,
+    mcpServerNames,
+    connectionStatus,
+    connectionViews,
+    availableMCPServersMap,
+  ]);
 
   const value: AgentPanelContextType = {
+    revealChat,
     mcp,
     mcps,
     action,

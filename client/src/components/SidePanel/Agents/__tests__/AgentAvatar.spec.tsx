@@ -39,6 +39,8 @@ const defaultFormValues: AgentForm = {
   name: 'Agent',
   description: null,
   instructions: null,
+  instructionsSource: 'inline',
+  instructionsPrompt: null,
   model: 'gpt-4',
   model_parameters: {
     temperature: 1,

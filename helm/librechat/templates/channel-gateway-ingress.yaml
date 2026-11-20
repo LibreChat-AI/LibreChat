@@ -1,0 +1,41 @@
+{{- $ingress := .Values.channelGateway.ingress -}}
+{{- if $ingress.enabled -}}
+{{- if not .Values.channelGateway.enabled -}}
+{{- fail "Enable channelGateway.enabled before enabling its ingress" -}}
+{{- end -}}
+{{- if not (semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion) -}}
+{{- fail "The gateway Ingress requires Kubernetes 1.19 or newer" -}}
+{{- end -}}
+{{- $name := include "librechat.channelGateway.fullname" . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "librechat.channelGateway.labels" . | nindent 4 }}
+  {{- with $ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ingress.className | default .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with $ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "channelGateway.ingress.host is required when its ingress is enabled" $ingress.host | quote }}
+      http:
+        paths:
+          {{- range list "/slack/events" "/slack/interactions" }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  number: 8080
+          {{- end }}
+{{- end }}

@@ -35,9 +35,6 @@
 <a href="https://railway.com/deploy/librechat-official?referralCode=HI9hWz&utm_medium=integration&utm_source=readme&utm_campaign=librechat">
   <img src="https://railway.com/button.svg" alt="Deploy on Railway" height="30">
 </a>
-<a href="https://zeabur.com/templates/0X2ZY8">
-  <img src="https://zeabur.com/button.svg" alt="Deploy on Zeabur" height="30"/>
-</a>
 <a href="https://template.cloud.sealos.io/deploy?templateName=librechat">
   <img src="https://raw.githubusercontent.com/labring-actions/templates/main/Deploy-on-Sealos.svg" alt="Deploy on Sealos" height="30">
 </a>
@@ -51,21 +48,21 @@
   </a>
 </p>
 
-## 🚀 What's New in v0.8.8-rc3
+## 🚀 What's New in v0.8.9
 
-- **Agent Management API (beta):** Create, discover, update, and delete Agents; manage Agent files and Skills; and authenticate machine clients through deployment-bound OIDC identities while preserving existing role and Agent access controls.
-- **Attached workspaces (highly experimental):** Select or save a per-Agent default workspace for each managed or personal code worker, then let Agents inspect trees, read and search files, author changes, and run Bash with bounded timeouts. Personal workers support bounded self-service enrollment, readiness status, and per-Agent Git identity.
-- **Background tool controls:** Optionally cancel ordinary background tools, including attached Bash, while keeping detached Subagent execution independent.
-- **Code approval controls:** Choose **Ask**, **Allow**, or **Deny** for file writes and command execution where administrators permit it, including a **Full access** mode for trusted attached environments. File Search and Run Code also honor role grants.
-- **Manual context compaction:** Start a summarize-only turn before the context window fills while preserving recent conversation content according to the deployment's summarization policy.
-- **Context Usage:** Inspect dialogue, retained tool traffic, Agent instructions, cache, cost, and runway pressure without double-counting category subsets.
-- **Unified attachments:** Upload once and let LibreChat route content to the model or extracted text, then provision File Search and Code tools only when needed.
-- **Models:** Added GPT-6 Astra for the OpenAI and Agents endpoints, with Responses API routing and tool-call support.
-- **Agent and chat UI:** Unified tool activity, reasoning, search, and Agent workflows; added one draggable Pinned section for chats and favorites, morphing state icons, high-contrast themes, rich-text message copying, clearer sidebar titles, and refined live phase layouts.
-- **Observability:** Export correlated application logs through OpenTelemetry, configure allowlisted Langfuse trace identity and metadata, tag browser diagnostics with client build IDs, and scope Insights to authorized Agents.
-- **Reliability and security:** Strengthened Agent continuation and checkpoint recovery, Redis liveness detection, DocumentDB coordination, OpenID and MCP OAuth sessions, shared-link throttling, tenant isolation, attachment bounds, and upload error handling.
+- **Chat Projects:** Organize conversations with shared instructions and reference files.
+- **Account protection:** Register passkeys, change your email, and manage stronger account security controls.
+- **Agent Channels (beta):** Connect Agents to Slack with linked accounts, approvals, and feedback.
+- **Background Responses:** Save, review, cancel, and recover Agent API responses independently of a chat connection.
+- **SDK-backed Agents (experimental):** Register local or remote runtimes with authorized host-tool access.
+- **Tools and prompts:** Use MCP Apps, deferred Tool Search, clearer approvals, and Langfuse prompts in the catalog and Agent instructions.
+- **BYOM (highly experimental):** Enroll personal machines, select per-chat workspaces, copy attachments, and track pull requests.
+- **Agent controls:** Answer inline Ask User questions and follow resumable background Subagents with clearer task progress.
+- **Models:** Added Gemini 4 Hydrogen, GPT-6.1 Terra, Claude Fable 5.2, GPT Image 2.6 Sunburst/Flare, and restricted-access Mythos 5.2/GPT-6 Cyber.
+- **UI polish:** Deployment themes, chat controls, notifications, right-to-left layouts, restored drafts, thinking settings, and Read Aloud.
+- **Performance and security:** Faster chat loading, fewer composer re-renders, Node.js security updates, and stronger auth, file, and tool safeguards.
 
-Read the [full v0.8.8-rc3 changelog](https://www.librechat.ai/changelog/v0.8.8-rc3).
+Read the [full v0.8.9 changelog](https://www.librechat.ai/changelog/v0.8.9).
 
 # ✨ Features
 
@@ -110,7 +107,7 @@ Read the [full v0.8.8-rc3 changelog](https://www.librechat.ai/changelog/v0.8.8-r
 
 - 🎨 **Image Generation & Editing**
   - Text-to-image and image-to-image with [GPT-Image-1](https://www.librechat.ai/docs/features/image_gen#1--openai-image-tools-recommended)
-  - Text-to-image with [DALL-E (3/2)](https://www.librechat.ai/docs/features/image_gen#2--dalle-legacy), [Stable Diffusion](https://www.librechat.ai/docs/features/image_gen#3--stable-diffusion-local), [Flux](https://www.librechat.ai/docs/features/image_gen#4--flux), or any [MCP server](https://www.librechat.ai/docs/features/image_gen#5--model-context-protocol-mcp)
+  - Text-to-image with [Stable Diffusion](https://www.librechat.ai/docs/features/image_gen#3--stable-diffusion-local), [Flux](https://www.librechat.ai/docs/features/image_gen#4--flux), or any [MCP server](https://www.librechat.ai/docs/features/image_gen#5--model-context-protocol-mcp)
   - Produce stunning visuals from prompts or refine existing images with a single instruction
 
 - 💾 **Presets & Context Management**:  
@@ -192,7 +189,7 @@ Open source, actively developed, and built for anyone who values control over th
 ## 🌐 Resources
 
 **GitHub Repo:**
-  - **RAG API:** [github.com/danny-avila/rag_api](https://github.com/danny-avila/rag_api)
+  - **RAG API:** [github.com/LibreChat-AI/rag-api](https://github.com/LibreChat-AI/rag-api)
   - **Website:** [github.com/LibreChat-AI/librechat.ai](https://github.com/LibreChat-AI/librechat.ai)
 
 **Other:**
@@ -205,7 +202,7 @@ Open source, actively developed, and built for anyone who values control over th
 ## 📝 Changelog
 
 Keep up with the latest updates by visiting the releases page and notes:
-- [Releases](https://github.com/danny-avila/LibreChat/releases)
+- [Releases](https://github.com/LibreChat-AI/LibreChat/releases)
 - [Changelog](https://www.librechat.ai/changelog) 
 
 **⚠️ Please consult the [changelog](https://www.librechat.ai/changelog) for breaking changes before updating.**
@@ -226,7 +223,7 @@ Keep up with the latest updates by visiting the releases page and notes:
 
 <p align="center">
   <a href="https://trendshift.io/repositories/4685" target="_blank" style="padding: 10px;">
-    <img src="https://trendshift.io/api/badge/repositories/4685" alt="danny-avila%2FLibreChat | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+    <img src="https://trendshift.io/api/badge/repositories/4685" alt="LibreChat-AI%2FLibreChat | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
   <a href="https://runacap.com/ross-index/q1-24/" target="_blank" rel="noopener" style="margin-left: 20px;">
     <img style="width: 260px; height: 56px" src="https://runacap.com/wp-content/uploads/2024/04/ROSS_badge_white_Q1_2024.svg" alt="ROSS Index - Fastest Growing Open-Source Startups in Q1 2024 | Runa Capital" width="260" height="56"/>
@@ -247,8 +244,8 @@ If you'd like to help translate LibreChat into your language, we'd love your con
 
 ## 💖 This project exists in its current state thanks to all the people who contribute
 
-<a href="https://github.com/danny-avila/LibreChat/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=danny-avila/LibreChat" />
+<a href="https://github.com/LibreChat-AI/LibreChat/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=LibreChat-AI/LibreChat" />
 </a>
 
 ---

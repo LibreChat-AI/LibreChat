@@ -5,12 +5,14 @@ import { useLocalize } from '~/hooks';
 interface ScheduleEmptyStateProps {
   canCreate?: boolean;
   isError?: boolean;
+  isFiltered?: boolean;
   onRetry?: () => void;
 }
 
 export default function ScheduleEmptyState({
   canCreate = false,
   isError = false,
+  isFiltered = false,
   onRetry,
 }: ScheduleEmptyStateProps) {
   const localize = useLocalize();
@@ -27,6 +29,10 @@ export default function ScheduleEmptyState({
         }
       />
     );
+  }
+
+  if (isFiltered) {
+    return <EmptyState icon={CalendarClock} description={localize('com_ui_no_schedules_match')} />;
   }
 
   return (

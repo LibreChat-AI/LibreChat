@@ -1,47 +1,8 @@
 const { logger } = require('@librechat/data-schemas');
-const { getToolkitKey, checkPluginAuth, filterUniquePlugins } = require('@librechat/api');
+const { listAvailableTools } = require('@librechat/api');
 const { getCachedTools, setCachedTools } = require('~/server/services/Config');
 const { availableTools, toolkits } = require('~/app/clients/tools');
 const { getAppConfig } = require('~/server/services/Config');
-
-const getAvailablePluginsController = async (req, res) => {
-  try {
-    const appConfig =
-      req.config ??
-      (await getAppConfig({
-        role: req.user?.role,
-        userId: req.user?.id,
-        tenantId: req.user?.tenantId,
-      }));
-    const { filteredTools = [], includedTools = [] } = appConfig;
-
-    const uniquePlugins = filterUniquePlugins(availableTools);
-    const includeSet = new Set(includedTools);
-    const filterSet = new Set(filteredTools);
-
-    /** includedTools takes precedence — filteredTools ignored when both are set. */
-    const plugins = [];
-    for (const plugin of uniquePlugins) {
-      /** Agents-runtime-only tools (e.g. ask_user_question) never work on the
-       *  legacy plugins endpoint — no run to pause, no resume surface. */
-      if (plugin.agentsOnly === true) {
-        continue;
-      }
-      if (includeSet.size > 0) {
-        if (!includeSet.has(plugin.pluginKey)) {
-          continue;
-        }
-      } else if (filterSet.has(plugin.pluginKey)) {
-        continue;
-      }
-      plugins.push(checkPluginAuth(plugin) ? { ...plugin, authenticated: true } : plugin);
-    }
-
-    res.status(200).json(plugins);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
 
 const getAvailableTools = async (req, res) => {
   try {
@@ -67,10 +28,6 @@ const getAvailableTools = async (req, res) => {
       toolDefinitions = appConfig.availableTools;
     }
 
-    const uniquePlugins = filterUniquePlugins(availableTools);
-    const toolDefKeysList = toolDefinitions ? Object.keys(toolDefinitions) : null;
-    const toolDefKeys = toolDefKeysList ? new Set(toolDefKeysList) : null;
-
     /**
      * `getAvailableTools` serves BOTH tool dialogs — /api/agents/tools and
      * /api/assistants/tools. Tools flagged `agentsOnly` in the manifest (e.g.
@@ -79,27 +36,13 @@ const getAvailableTools = async (req, res) => {
      * run to pause and no resume surface, so attaching one there guarantees a
      * permanent tool error. Scope them out of the assistants listing by route.
      */
-    const isAssistantsRoute = req.baseUrl?.includes('/assistants') === true;
-
-    const toolsOutput = [];
-    for (const plugin of uniquePlugins) {
-      if (plugin.agentsOnly === true && isAssistantsRoute) {
-        continue;
-      }
-      const isToolDefined = toolDefKeys?.has(plugin.pluginKey) === true;
-      const isToolkit =
-        plugin.toolkit === true &&
-        toolDefKeysList != null &&
-        toolDefKeysList.some(
-          (key) => getToolkitKey({ toolkits, toolName: key }) === plugin.pluginKey,
-        );
-
-      if (!isToolDefined && !isToolkit) {
-        continue;
-      }
-
-      toolsOutput.push(checkPluginAuth(plugin) ? { ...plugin, authenticated: true } : plugin);
-    }
+    const toolsOutput = listAvailableTools({
+      manifest: availableTools,
+      toolkits,
+      toolDefinitions,
+      githubCompare: appConfig?.githubCompare,
+      forAssistants: req.baseUrl?.includes('/assistants') === true,
+    });
 
     res.status(200).json(toolsOutput);
   } catch (error) {
@@ -110,5 +53,4 @@ const getAvailableTools = async (req, res) => {
 
 module.exports = {
   getAvailableTools,
-  getAvailablePluginsController,
 };

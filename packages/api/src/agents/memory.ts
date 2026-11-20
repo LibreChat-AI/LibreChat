@@ -30,21 +30,24 @@ import type {
   MemoryMethods,
   IUser,
   FormattedMemoriesResult,
+  AppConfig,
 } from '@librechat/data-schemas';
-import type { TAttachment, FiltersConfig, MemoryArtifact } from 'librechat-data-provider';
+import type { Agent, TAttachment, FiltersConfig, MemoryArtifact } from 'librechat-data-provider';
 import type { BaseMessage, ToolMessage } from '@librechat/agents/langchain/messages';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { Response as ServerResponse } from 'express';
+import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ServerRequest, RunLLMConfig } from '~/types';
-import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata } from '~/utils';
+import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata, writeGuarded } from '~/utils';
 import { contentFilterModelBoundBlockResponse } from '~/middleware/contentFilter';
 import { extractMemoryContent } from '~/protection/adapters/submissions';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { buildLangfuseConfig } from '~/langfuse/config';
 import { inspectContent } from '~/protection/runtime';
 import { checkAccess } from '~/middleware/access';
+import { countTokens } from '~/utils/tokenizer';
 import { isMemoryEnabled } from '~/memory';
-import Tokenizer from '~/utils/tokenizer';
 
 type RequiredMemoryMethods = Pick<
   MemoryMethods,
@@ -74,7 +77,21 @@ function normalizeMemoryLLMConfig(llmConfig?: Partial<LLMConfig>): SanitizedMemo
 }
 
 export const memoryInstructions =
-  'The system automatically stores important user information and can update or delete memories based on user requests, enabling dynamic memory management.';
+  'Persistent memory is available across conversations within the current memory scope. Saved memories, if any, are shown below. No entries shown here does not mean memory is unavailable. Use memory tools only if provided; claim a memory was saved or deleted only after the action is confirmed.';
+
+export function formatMemoryContext(
+  memory: string | undefined,
+  { announceEmpty = true }: { announceEmpty?: boolean } = {},
+): string | undefined {
+  if (memory == null) {
+    return undefined;
+  }
+  if (!memory) {
+    /** An empty store is announced only when the model can use memory: nothing else tells it so. */
+    return announceEmpty ? memoryInstructions : undefined;
+  }
+  return `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`;
+}
 
 export const SET_MEMORY_TOOL_NAME = 'set_memory';
 export const DELETE_MEMORY_TOOL_NAME = 'delete_memory';
@@ -189,7 +206,7 @@ export const createMemoryTool = ({
             return [`Invalid key "${key}". Must be one of: ${validKeys.join(', ')}`, undefined];
           }
 
-          const tokenCount = Tokenizer.getTokenCount(value, 'o200k_base');
+          const tokenCount = await countTokens(value);
           /** Total excluding this key's prior persisted or in-instance value,
            *  so a rewrite is measured as a replacement rather than an addition. */
           const baseTotalTokens = currentTotalTokens - (currentTokensByKey.get(key) ?? 0);
@@ -505,7 +522,7 @@ export function agentHasInlineMemoryTools(agent: InlineMemoryAgent): boolean {
   );
 }
 
-/** Builds the existing-memory system context for an inline-memory agent. */
+/** Builds the memory system context for an inline-memory agent. */
 export async function buildInlineMemoryContext({
   agent,
   req,
@@ -529,9 +546,7 @@ export async function buildInlineMemoryContext({
       agentId: getMemoryAgentId(agent),
       getFormattedMemories,
     });
-    return memories.withKeys
-      ? `${memoryInstructions}\n\n# Existing memory about the user:\n${memories.withKeys}`
-      : '';
+    return formatMemoryContext(memories.withKeys) ?? '';
   } catch (error) {
     logger.error('[memory] Error loading inline agent memory context', error);
     return '';
@@ -691,8 +706,12 @@ export async function buildInlineMemoryTool({
         agentId: memoryAgentId,
         getFormattedMemories: memoryMethods.getFormattedMemories,
       });
-      totalTokens = formatted?.totalTokens ?? 0;
-      tokenCountsByKey = formatted?.tokenCountsByKey;
+      /** A formatted read failure has no trustworthy usage total. */
+      if (formatted.readFailed) {
+        return null;
+      }
+      totalTokens = formatted.totalTokens ?? 0;
+      tokenCountsByKey = formatted.tokenCountsByKey;
     } catch (error) {
       logger.error(
         '[memory] Failed to load memory token count for set_memory',
@@ -750,6 +769,8 @@ export async function processMemory({
   deleteMemory,
   messages,
   inspectionMessages,
+  privateTextTokens,
+  signal,
   memory,
   memoryEntries,
   messageId,
@@ -764,7 +785,11 @@ export async function processMemory({
   streamId = null,
   jobCreatedAt,
   user,
+  primaryAgent,
   tenantId,
+  appConfig,
+  isTemporary,
+  traceContext,
 }: {
   res: ServerResponse;
   setMemory: MemoryMethods['setMemory'];
@@ -772,11 +797,14 @@ export async function processMemory({
   userId: string | ObjectId;
   /** Agent partition; omit for the shared personal pool */
   agentId?: string;
+  primaryAgent?: Partial<Agent>;
   memory: string;
   messageId: string;
   conversationId: string;
   messages: BaseMessage[];
   inspectionMessages?: BaseMessage[];
+  privateTextTokens?: ReadonlySet<string>;
+  signal?: AbortSignal;
   validKeys?: string[];
   instructions: string;
   /** Canonical rows preserve key/value granularity for field-scoped policy. */
@@ -794,8 +822,12 @@ export async function processMemory({
   jobCreatedAt?: number;
   user?: IUser;
   tenantId?: string;
+  appConfig?: AppConfig;
+  isTemporary?: boolean;
+  traceContext?: LangfuseTraceContext;
 }): Promise<(TAttachment | null)[] | undefined> {
   try {
+    signal?.throwIfAborted();
     const submittedMessages = (inspectionMessages ?? messages).filter(
       (message) => message._getType() !== 'ai',
     );
@@ -810,6 +842,7 @@ export async function processMemory({
     }
     assertModelBoundContent({
       filters,
+      privateTextTokens,
       submittedMessages,
       agents: [{ instructions, model_parameters: llmConfig }],
       memories,
@@ -919,6 +952,7 @@ ${memory ?? 'No existing memories'}`;
       user: user ? createSafeUser(user) : undefined,
       tenantId,
       body: { conversationId, messageId },
+      agent: primaryAgent,
     });
 
     const artifactPromises: Promise<TAttachment | null>[] = [];
@@ -981,9 +1015,28 @@ ${memory ?? 'No existing memories'}`;
       },
       customHandlers,
       returnContent: true,
+      langfuse: {
+        ...buildLangfuseConfig({
+          appConfig,
+          runId: messageId,
+          tenantId: tenantId ?? user?.tenantId,
+          isTemporary,
+          user,
+          traceContext: {
+            ...traceContext,
+            conversationId: traceContext?.conversationId ?? conversationId,
+            provider: traceContext?.provider ?? finalLLMConfig.provider,
+            model: traceContext?.model ?? finalLLMConfig.model,
+          },
+        }),
+        // Share response sampling, but not its feedback trace ID. Keep runId for attachments.
+        deterministicTraceId: false,
+      },
     });
 
+    signal?.throwIfAborted();
     const config = {
+      ...(signal != null && { signal }),
       runName: 'MemoryRun',
       configurable: {
         user_id: userId,
@@ -1025,12 +1078,17 @@ export async function createMemoryProcessor({
   messageId,
   memoryMethods,
   conversationId,
+  req,
   config = {},
   filters,
   streamId = null,
   jobCreatedAt,
   user,
+  primaryAgent,
   tenantId,
+  appConfig,
+  isTemporary,
+  traceContext,
 }: {
   res: ServerResponse;
   messageId: string;
@@ -1038,41 +1096,66 @@ export async function createMemoryProcessor({
   userId: string | ObjectId;
   /** Agent partition; omit for the shared personal pool */
   agentId?: string;
+  /** The primary agent whose turn triggered extraction — see {@link processMemory}. */
+  primaryAgent?: Partial<Agent>;
   memoryMethods: RequiredMemoryMethods;
+  /** Reuses the request-scoped formatted snapshot for the chat context. */
+  req?: object;
   config?: MemoryConfig;
   filters?: FiltersConfig;
   streamId?: string | null;
   jobCreatedAt?: number;
   user?: IUser;
   tenantId?: string;
+  appConfig?: AppConfig;
+  isTemporary?: boolean;
+  traceContext?: LangfuseTraceContext;
 }): Promise<
-  [
-    string,
-    (
-      messages: BaseMessage[],
-      inspectionMessages?: BaseMessage[],
-    ) => Promise<(TAttachment | null)[] | undefined>,
-  ]
+  | [undefined, undefined]
+  | [
+      string,
+      (
+        messages: BaseMessage[],
+        inspectionMessages?: BaseMessage[],
+        privateTextTokens?: ReadonlySet<string>,
+        signal?: AbortSignal,
+      ) => Promise<(TAttachment | null)[] | undefined>,
+    ]
 > {
   const { validKeys, instructions, llmConfig, tokenLimit } = config;
   const finalInstructions = instructions || getDefaultInstructions(validKeys, tokenLimit);
 
-  const [{ withKeys, withoutKeys, totalTokens, tokenCountsByKey }, memoryEntries] =
-    await Promise.all([
-      memoryMethods.getFormattedMemories({
-        userId,
-        agentId,
-      }),
-      hasActivePiiPatterns(filters?.memories?.pii)
-        ? memoryMethods.getUserMemories({ userId, agentId })
-        : Promise.resolve(undefined),
-    ]);
+  const [formatted, memoryEntries] = await Promise.all([
+    (req
+      ? getRequestMemories({
+          req,
+          userId,
+          agentId,
+          getFormattedMemories: memoryMethods.getFormattedMemories,
+        })
+      : memoryMethods.getFormattedMemories({ userId, agentId })
+    ).catch((error) => {
+      logger.error('[memory] Error loading automatic memory context', getSafeErrorMetadata(error));
+      return undefined;
+    }),
+    hasActivePiiPatterns(filters?.memories?.pii)
+      ? memoryMethods.getUserMemories({ userId, agentId })
+      : Promise.resolve(undefined),
+  ]);
+  /** Without the current memory snapshot we cannot safely seed token limits
+   *  or assert that no previous memories exist. Skip extraction for this turn. */
+  if (!formatted || formatted.readFailed) {
+    return [undefined, undefined];
+  }
+  const { withKeys, withoutKeys, totalTokens, tokenCountsByKey } = formatted;
 
   return [
     withoutKeys,
     async function (
       messages: BaseMessage[],
       inspectionMessages?: BaseMessage[],
+      privateTextTokens?: ReadonlySet<string>,
+      signal?: AbortSignal,
     ): Promise<(TAttachment | null)[] | undefined> {
       try {
         return await processMemory({
@@ -1081,6 +1164,8 @@ export async function createMemoryProcessor({
           agentId,
           messages,
           inspectionMessages,
+          privateTextTokens,
+          signal,
           validKeys,
           llmConfig,
           messageId,
@@ -1097,7 +1182,11 @@ export async function createMemoryProcessor({
           setMemory: memoryMethods.setMemory,
           deleteMemory: memoryMethods.deleteMemory,
           user,
+          primaryAgent,
           tenantId,
+          appConfig,
+          isTemporary,
+          traceContext,
         });
       } catch (error) {
         logger.error('Memory Agent failed to process memory', getSafeErrorMetadata(error));
@@ -1150,7 +1239,7 @@ async function handleMemoryArtifact({
       { expectedCreatedAt: jobCreatedAt },
     );
   } else {
-    res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
   return attachment;
 }

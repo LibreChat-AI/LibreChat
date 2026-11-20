@@ -1,4 +1,3 @@
-export { default as Advanced } from './Advanced';
 export { default as AssistantsSettings } from './Assistants';
 export { default as BedrockSettings } from './Bedrock';
 export { default as OpenAISettings } from './OpenAI';

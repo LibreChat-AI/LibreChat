@@ -109,11 +109,11 @@ export default function MemoryCreateDialog({
       <OGDialogTemplate
         title={localize('com_ui_create_memory')}
         showCloseButton={false}
-        className="w-11/12 md:max-w-lg"
+        className="w-11/12 md:max-w-2xl"
         main={
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="memory-key" className="text-sm font-medium text-text-primary">
+              <Label htmlFor="memory-key" className="text-sm font-medium">
                 {localize('com_ui_key')}
               </Label>
               <Input
@@ -135,18 +135,19 @@ export default function MemoryCreateDialog({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="memory-value" className="text-sm font-medium text-text-primary">
+              <Label htmlFor="memory-value" className="text-sm font-medium">
                 {localize('com_ui_value')}
               </Label>
               <Textarea
+                variant="transparent"
                 id="memory-value"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 onBlur={() => setTouched((prev) => ({ ...prev, value: true }))}
                 onKeyDown={handleKeyPress}
                 placeholder={localize('com_ui_enter_value')}
-                className="min-h-[100px] w-full resize-none rounded-lg border border-border-light bg-transparent px-3 py-2 text-sm text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border-heavy"
-                rows={4}
+                className="text-text-primary max-h-[45vh] min-h-[11.25rem] w-full resize-y py-2"
+                rows={8}
                 aria-invalid={showValueError && valueError != null}
                 aria-describedby="memory-value-message"
               />

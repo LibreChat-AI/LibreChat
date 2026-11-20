@@ -135,14 +135,6 @@ const cacheConfig: {
    */
   REDIS_DELETE_CHUNK_SIZE: number;
   /**
-   * Number of keys to update in each batch during Redis SET operations.
-   * In cluster mode, keys are updated individually in parallel chunks to avoid CROSSSLOT errors.
-   * In single-node mode, keys are updated in batches using transactions (multi/exec).
-   * Lower values reduce memory usage but increase number of Redis calls.
-   * @default 1000
-   */
-  REDIS_UPDATE_CHUNK_SIZE: number;
-  /**
    * COUNT hint for Redis SCAN operations when scanning keys by pattern.
    * This is a hint to Redis about how many keys to scan in each iteration.
    * Higher values can reduce round trips but increase memory usage and latency per call.
@@ -182,7 +174,7 @@ const cacheConfig: {
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: math(process.env.REDIS_RETRY_MAX_DELAY, 3000),
   /** Max number of reconnection attempts (0 = infinite) */
-  REDIS_RETRY_MAX_ATTEMPTS: math(process.env.REDIS_RETRY_MAX_ATTEMPTS, 10),
+  REDIS_RETRY_MAX_ATTEMPTS: math(process.env.REDIS_RETRY_MAX_ATTEMPTS, 0),
   /** Connection timeout in ms */
   REDIS_CONNECT_TIMEOUT: math(process.env.REDIS_CONNECT_TIMEOUT, 10000),
   /** Min spacing in ms between reconnects forced by READONLY replies after a failover */
@@ -215,15 +207,6 @@ const cacheConfig: {
    * @default 1000
    */
   REDIS_DELETE_CHUNK_SIZE: math(process.env.REDIS_DELETE_CHUNK_SIZE, 1000),
-
-  /**
-   * Number of keys to update in each batch during Redis SET operations.
-   * In cluster mode, keys are updated individually in parallel chunks to avoid CROSSSLOT errors.
-   * In single-node mode, keys are updated in batches using transactions (multi/exec).
-   * Lower values reduce memory usage but increase number of Redis calls.
-   * @default 1000
-   */
-  REDIS_UPDATE_CHUNK_SIZE: math(process.env.REDIS_UPDATE_CHUNK_SIZE, 1000),
 
   /**
    * COUNT hint for Redis SCAN operations when scanning keys by pattern.

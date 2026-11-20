@@ -1,13 +1,21 @@
 import { Readable } from 'node:stream';
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { audioMimeTypes } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
   AttachmentObjectNotFoundError,
+  AttachmentSizeError,
+  appendMissingAttachmentsNote,
+  createMissingAttachmentCollector,
+  replayMessageAttachments,
+  skipMissingAttachment,
   getAudioFormat,
   getFileStream,
+  getConfiguredFileSizeLimit,
   isConfiguredProviderMediaType,
 } from './utils';
+import { outboundRequestBudget } from '~/utils/timeouts';
 
 const file = {
   file_id: 'file-1',
@@ -63,6 +71,41 @@ describe('getFileStream', () => {
     ).resolves.toMatchObject({ content: Buffer.from('data').toString('base64') });
   });
 
+  it('reads an object that fits its byte limit', async () => {
+    const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(Buffer.from('data')));
+
+    await expect(
+      getFileStream({} as ServerRequest, file, {}, () => ({ getDownloadStream }), undefined, 4),
+    ).resolves.toMatchObject({ content: Buffer.from('data').toString('base64') });
+  });
+
+  it('stops reading at the byte limit and never downloads the rest', async () => {
+    let produced = 0;
+    const stream = Readable.from(
+      (function* chunks() {
+        for (let i = 0; i < 1000; i++) {
+          produced++;
+          yield Buffer.alloc(1024);
+        }
+      })(),
+    );
+    const getDownloadStream = jest.fn().mockResolvedValue(stream);
+
+    const read = getFileStream(
+      {} as ServerRequest,
+      { ...file, filename: 'big.csv' },
+      {},
+      () => ({ getDownloadStream }),
+      undefined,
+      4096,
+    );
+
+    await expect(read).rejects.toBeInstanceOf(AttachmentSizeError);
+    await expect(read).rejects.toMatchObject({ status: 413, limit: 4096 });
+    expect(stream.destroyed).toBe(true);
+    expect(produced).toBeLessThan(40);
+  });
+
   it.each([
     '',
     'https://minio.example.com/librechat/uploads/user%201/image%20one.png?X-Amz-Credential=secret&X-Amz-Signature=signed',
@@ -92,9 +135,127 @@ describe('getFileStream', () => {
   });
 });
 
+describe('getFileStream with a read budget', () => {
+  const key = 'uploads/user/image.png';
+  const stored = { ...file, storageKey: key };
+  const req = {} as ServerRequest;
+  const stalledStream = () => new Readable({ read() {} });
+  const strategy = (getDownloadStream: jest.Mock) => () => ({ getDownloadStream });
+  const budgetMs = 25;
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('hands the budget signal to the storage strategy', async () => {
+    const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(Buffer.from('image')));
+    const budget = outboundRequestBudget(1_000, 'imageFetchMs');
+
+    await getFileStream(req, stored, {}, strategy(getDownloadStream), budget);
+
+    expect(getDownloadStream).toHaveBeenCalledWith(req, key, { signal: budget.signal });
+  });
+
+  it('keeps a read that finishes inside the budget', async () => {
+    const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(Buffer.from('image')));
+    const budget = outboundRequestBudget(1_000, 'imageFetchMs');
+
+    await expect(
+      getFileStream(req, stored, {}, strategy(getDownloadStream), budget),
+    ).resolves.toMatchObject({ content: Buffer.from('image').toString('base64') });
+  });
+
+  it('destroys a stream that stalls past the deadline and names the budget to raise', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const stream = stalledStream();
+    const getDownloadStream = jest.fn().mockResolvedValue(stream);
+    const budget = outboundRequestBudget(budgetMs, 'imageFetchMs');
+
+    await expect(
+      getFileStream(req, stored, {}, strategy(getDownloadStream), budget),
+    ).rejects.toMatchObject({
+      name: 'OutboundTimeoutError',
+      message: expect.stringContaining(`timeouts.imageFetchMs (${budgetMs} ms)`),
+    });
+
+    expect(stream.destroyed).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`timeouts.imageFetchMs (${budgetMs} ms)`),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(file.file_id));
+  });
+
+  it('reports a deadline that passes before the strategy answers', async () => {
+    const getDownloadStream = jest.fn(
+      (_req: ServerRequest, _path: string, { signal }: { signal: AbortSignal }) =>
+        new Promise<Readable>((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+    jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const budget = outboundRequestBudget(budgetMs, 'imageFetchMs');
+
+    await expect(
+      getFileStream(req, stored, {}, strategy(getDownloadStream), budget),
+    ).rejects.toMatchObject({ name: 'OutboundTimeoutError' });
+  });
+
+  it('does not report a caller cancellation as a timeout', async () => {
+    const controller = new AbortController();
+    const stream = stalledStream();
+    const getDownloadStream = jest.fn().mockResolvedValue(stream);
+    const budget = outboundRequestBudget(60_000, 'imageFetchMs', controller.signal);
+
+    const pending = getFileStream(req, stored, {}, strategy(getDownloadStream), budget);
+    controller.abort();
+    const error = await pending.then(
+      () => undefined,
+      (rejection: unknown) => rejection,
+    );
+
+    expect(error).toBeDefined();
+    expect(error).not.toMatchObject({ name: 'OutboundTimeoutError' });
+    expect(stream.destroyed).toBe(true);
+  });
+
+  it('still maps a missing object to the attachment error', async () => {
+    const getDownloadStream = jest.fn().mockRejectedValue({ name: 'NoSuchKey' });
+    const budget = outboundRequestBudget(1_000, 'imageFetchMs');
+
+    await expect(
+      getFileStream(req, stored, {}, strategy(getDownloadStream), budget),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_OBJECT_NOT_FOUND', fileId: 'file-1' });
+  });
+});
+
 /** Uses the real data-provider merge logic so the "inherited default" identity check is exercised. */
 const reqWith = (fileConfig: unknown): ServerRequest =>
   ({ config: fileConfig === undefined ? undefined : { fileConfig } }) as unknown as ServerRequest;
+
+describe('getConfiguredFileSizeLimit', () => {
+  const params = { provider: Providers.BEDROCK };
+
+  it('is undefined without any fileConfig', () => {
+    expect(getConfiguredFileSizeLimit(reqWith(undefined), params)).toBeUndefined();
+  });
+
+  it('reports the inherited default as a limit unless only an explicit one is asked for', () => {
+    const req = reqWith({ endpoints: { default: { fileLimit: 3 } } });
+    expect(getConfiguredFileSizeLimit(req, params)).toBe(512 * 1024 * 1024);
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBeUndefined();
+  });
+
+  it.each([
+    ['its own endpoint', { endpoints: { [Providers.BEDROCK]: { fileSizeLimit: 10 } } }],
+    ['the default endpoint', { endpoints: { default: { fileSizeLimit: 10 } } }],
+  ])('returns a limit the operator set on %s', (_name, fileConfig) => {
+    const req = reqWith(fileConfig);
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBe(10 * 1024 * 1024);
+  });
+
+  it('keeps a disabled endpoint at zero', () => {
+    const req = reqWith({ endpoints: { [Providers.BEDROCK]: { disabled: true } } });
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBe(0);
+  });
+});
 
 describe('isConfiguredProviderMediaType', () => {
   const params = { provider: Providers.OPENAI, endpoint: 'MyGateway' };
@@ -196,5 +357,71 @@ describe('getAudioFormat', () => {
       expect(audioMimeTypes.test(mimeType)).toBe(true);
       expect(getAudioFormat(mimeType, 'recording')).toBeDefined();
     }
+  });
+});
+
+describe('missing attachment handling', () => {
+  const missing = { file_id: 'gone-1', filename: 'report.pdf' };
+
+  it('rethrows a miss when no handler is supplied', () => {
+    const error = new AttachmentObjectNotFoundError(missing.file_id);
+    expect(() => skipMissingAttachment(error, missing)).toThrow(error);
+  });
+
+  it('reports a miss to the handler and leaves other errors to the caller', () => {
+    const collector = createMissingAttachmentCollector();
+    const error = new AttachmentObjectNotFoundError(missing.file_id);
+
+    expect(skipMissingAttachment(error, missing, collector.onMissingFile)).toBe(true);
+    expect(skipMissingAttachment(new Error('denied'), missing, collector.onMissingFile)).toBe(
+      false,
+    );
+    expect(collector.files).toEqual([missing]);
+    expect(collector.has(missing.file_id)).toBe(true);
+    expect(collector.has('other')).toBe(false);
+    expect(collector.has(undefined)).toBe(false);
+  });
+
+  it('names the missing files after any extracted text', () => {
+    const note = appendMissingAttachmentsNote('Extracted text', [
+      missing,
+      { file_id: 'gone-2', filename: '' },
+    ]);
+    expect(note).toMatch(/^Extracted text\n\n/);
+    expect(note).toContain('"report.pdf", "gone-2"');
+    expect(note).toContain('deleted from storage');
+    expect(appendMissingAttachmentsNote(undefined, [missing])).not.toMatch(/^\n/);
+    expect(appendMissingAttachmentsNote('kept', [])).toBe('kept');
+  });
+});
+
+describe('replayMessageAttachments', () => {
+  it('notes and excludes files the encoders skipped as missing', async () => {
+    const message: { fileContext?: string } = {};
+    const ids = await replayMessageAttachments({
+      message,
+      addFileContext: async () => {
+        message.fileContext = 'Extracted text';
+      },
+      processAttachments: async (onMissingFile) => {
+        onMissingFile({ file_id: 'gone', filename: 'gone.pdf' });
+        return [{ file_id: 'gone' }, { file_id: 'kept' }, null];
+      },
+    });
+
+    expect([...ids]).toEqual(['kept']);
+    expect(message.fileContext).toMatch(/^Extracted text\n\n.*"gone.pdf"/);
+  });
+
+  it('leaves the file context untouched when nothing is missing', async () => {
+    const message: { fileContext?: string } = {};
+    const ids = await replayMessageAttachments({
+      message,
+      addFileContext: async () => undefined,
+      processAttachments: async () => [{ file_id: 'kept' }],
+    });
+
+    expect([...ids]).toEqual(['kept']);
+    expect(message).not.toHaveProperty('fileContext');
   });
 });

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Keyv } from 'keyv';
 import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
+import { consumeCacheEntry } from '../cache/consume';
 
 /** Default admin panel URL for local development */
 const DEFAULT_ADMIN_PANEL_URL = 'http://localhost:3000';
@@ -131,14 +132,14 @@ export async function generateAdminExchangeCode(
 
   await cache.set(exchangeCode, data);
 
-  logger.info(`[adminExchange] Generated exchange code for user: ${user.email}`);
+  logger.info(`[adminExchange] Generated exchange code for user: ${user._id}`);
 
   return exchangeCode;
 }
 
 /**
  * Exchanges an authorization code for tokens and user data.
- * The code is deleted immediately after retrieval (one-time use).
+ * The code is atomically removed before validation (one-time use).
  * @param cache - The Keyv cache instance for retrieving exchange data
  * @param code - The authorization code to exchange
  * @param requestOrigin - The origin of the requesting client for origin binding
@@ -151,10 +152,7 @@ export async function exchangeAdminCode(
   requestOrigin?: string,
   codeVerifier?: string,
 ): Promise<AdminExchangeResponse | null> {
-  const data = (await cache.get(code)) as AdminExchangeData | undefined;
-
-  /** Delete before validation — ensures one-time use even if subsequent checks throw */
-  await cache.delete(code);
+  const data = await consumeCacheEntry<AdminExchangeData>(cache, code);
 
   if (!data) {
     logger.warn('[adminExchange] Invalid or expired authorization code');
@@ -173,7 +171,7 @@ export async function exchangeAdminCode(
     }
   }
 
-  logger.info(`[adminExchange] Exchanged code for user: ${data.user?.email}`);
+  logger.info(`[adminExchange] Exchanged code for user: ${data.user?.id}`);
 
   return {
     token: data.token,
@@ -277,6 +275,31 @@ export async function storeAndStripChallenge(
     logger.error(`[admin/oauth/${provider}] Failed to store PKCE challenge:`, err);
     return false;
   }
+}
+
+/** The part of an `openid-client` configuration's server metadata that reports PKCE support. */
+export interface PkceSupportMetadata {
+  supportsPKCE(method?: string): boolean;
+}
+
+/**
+ * Keeps the admin route's `state` on an OpenID authorization request.
+ *
+ * openid-client's Passport Strategy replaces the `state` it is given with a random one when the
+ * IdP's discovery metadata does not list S256 in `code_challenge_methods_supported` (Azure Entra
+ * ID omits it) and the request carries no `nonce`. The admin panel's PKCE challenge is cached
+ * under `pkce:<state>`, so a replaced state leaves the callback unable to find it. With a nonce,
+ * openid-client keeps the state and checks the nonce against the ID token on the callback.
+ */
+export function preserveAdminOAuthState(
+  params: URLSearchParams,
+  metadata: PkceSupportMetadata,
+): URLSearchParams {
+  if (!params.has('state') || params.has('nonce') || metadata.supportsPKCE()) {
+    return params;
+  }
+  params.set('nonce', crypto.randomBytes(32).toString('base64url'));
+  return params;
 }
 
 /**

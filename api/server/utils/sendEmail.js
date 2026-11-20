@@ -4,7 +4,12 @@ const FormData = require('form-data');
 const nodemailer = require('nodemailer');
 const handlebars = require('handlebars');
 const { logger } = require('@librechat/data-schemas');
-const { logAxiosError, isEnabled, readFileAsString } = require('@librechat/api');
+const {
+  isEnabled,
+  handleEmailError,
+  readFileAsString,
+  serviceRequestBudget,
+} = require('@librechat/api');
 
 /**
  * Sends an email using Mailgun API.
@@ -34,18 +39,15 @@ const sendEmailViaMailgun = async ({ to, from, subject, html }) => {
   formData.append('html', html);
   formData.append('o:tracking-clicks', 'no');
 
-  try {
-    const response = await axios.post(`${mailgunHost}/v3/${mailgunDomain}/messages`, formData, {
-      headers: {
-        ...formData.getHeaders(),
-        Authorization: `Basic ${Buffer.from(`api:${mailgunApiKey}`).toString('base64')}`,
-      },
-    });
+  const response = await axios.post(`${mailgunHost}/v3/${mailgunDomain}/messages`, formData, {
+    ...serviceRequestBudget(),
+    headers: {
+      ...formData.getHeaders(),
+      Authorization: `Basic ${Buffer.from(`api:${mailgunApiKey}`).toString('base64')}`,
+    },
+  });
 
-    return response.data;
-  } catch (error) {
-    throw new Error(logAxiosError({ error, message: 'Failed to send email via Mailgun' }));
-  }
+  return response.data;
 };
 
 /**
@@ -119,7 +121,7 @@ const sendEmail = async ({ email, subject, payload, template, throwError = true 
       // Use STARTTLS by default instead of obligatory TLS
       secure: process.env.EMAIL_ENCRYPTION === 'tls',
       // If explicit STARTTLS is set, require it when connecting
-      requireTls: process.env.EMAIL_ENCRYPTION === 'starttls',
+      requireTLS: process.env.EMAIL_ENCRYPTION === 'starttls',
       tls: {
         // Whether to accept unsigned certificates
         rejectUnauthorized: !isEnabled(process.env.EMAIL_ALLOW_SELFSIGNED),
@@ -168,11 +170,7 @@ const sendEmail = async ({ email, subject, payload, template, throwError = true 
 
     return await sendEmailViaSMTP({ transporterOptions, mailOptions });
   } catch (error) {
-    if (throwError) {
-      throw error;
-    }
-    logger.error('[sendEmail]', error);
-    return error;
+    return handleEmailError(error, throwError);
   }
 };
 

@@ -14,6 +14,7 @@ import type {
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import { collectModelBoundHistoricalFileIdState } from '~/middleware/modelBoundContent';
+import { registerRuntimeDeliveryRouting } from '~/protection/metadata';
 
 /** The app config a turn's attachment routing reads. */
 export type TurnDeliveryConfig = Pick<AppConfig, 'fileConfig' | 'speech' | 'endpoints'>;
@@ -46,14 +47,14 @@ export function resolveTurnDeliveryRouting({
 }): TurnDeliveryRouting {
   const endpoint = agent.endpoint ?? agent.provider;
   const fileConfig = mergeFileConfig(config?.fileConfig);
-  return {
+  return registerRuntimeDeliveryRouting({
     fileConfig,
     endpointConfig: getEndpointFileConfig({ fileConfig, endpoint }),
     endpoint,
     endpointProvider: getCustomEndpointProvider(config?.endpoints?.custom, endpoint),
     useResponsesApi: resolveUseResponsesApi(agent.model_parameters?.useResponsesApi),
     sttConfigured: isSpeechProviderConfigured(config?.speech?.stt),
-  };
+  });
 }
 
 /** Materialize the exact turn route before admission without mutating stored records. */

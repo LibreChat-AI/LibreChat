@@ -70,7 +70,7 @@ describe('validateImageRequest middleware', () => {
 
   describe('Factory function', () => {
     test('should return a pass-through middleware if secureImageLinks is false', async () => {
-      const middleware = createValidateImageRequest(false);
+      const middleware = createValidateImageRequest({ secureImageLinks: false });
       await middleware(req, res, next);
       expect(next).toHaveBeenCalled();
       expect(res.status).not.toHaveBeenCalled();
@@ -142,7 +142,7 @@ describe('validateImageRequest middleware', () => {
 
   describe('Standard LibreChat token flow', () => {
     beforeEach(() => {
-      validateImageRequest = createValidateImageRequest(true);
+      validateImageRequest = createValidateImageRequest({ secureImageLinks: true });
     });
 
     test('should return 401 if refresh token is not provided', async () => {
@@ -317,7 +317,7 @@ describe('validateImageRequest middleware', () => {
             '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png?manual=true',
           ],
         },
-        { _id: 1, assistant_id: 1, endpoint: 1 },
+        { _id: 1, assistant_id: 1, endpoint: 1, user: 1 },
       );
     });
 
@@ -361,7 +361,7 @@ describe('validateImageRequest middleware', () => {
 
   describe('OpenID token flow', () => {
     beforeEach(() => {
-      validateImageRequest = createValidateImageRequest(true);
+      validateImageRequest = createValidateImageRequest({ secureImageLinks: true });
       // Enable OpenID token reuse
       isEnabled.mockReturnValue(true);
       process.env.OPENID_REUSE_TOKENS = 'true';
@@ -459,7 +459,7 @@ describe('validateImageRequest middleware', () => {
     let validToken;
 
     beforeEach(() => {
-      validateImageRequest = createValidateImageRequest(true);
+      validateImageRequest = createValidateImageRequest({ secureImageLinks: true });
       validToken = jwt.sign(
         { id: validObjectId, exp: Math.floor(Date.now() / 1000) + 3600 },
         process.env.JWT_REFRESH_SECRET,

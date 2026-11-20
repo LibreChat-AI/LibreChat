@@ -1,9 +1,12 @@
 import type {
   TEndpoint,
+  TGoogleEndpoint,
   FileStorage,
   TFileConfig,
   TAzureConfig,
   TCustomConfig,
+  TCredentialsConfig,
+  TChatProjectsConfig,
   TMemoryConfig,
   EModelEndpoint,
   TVertexAIConfig,
@@ -13,6 +16,8 @@ import type {
   TAssistantEndpoint,
   TAnthropicEndpoint,
   SummarizationConfig,
+  TConversationListConfig,
+  TToolCallPreviewsConfig,
   SkillSyncConfig,
   FiltersConfig,
 } from 'librechat-data-provider';
@@ -64,6 +69,21 @@ export interface AppConfig {
   summarization?: SummarizationConfig;
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
+  githubCompare?: TCustomConfig['githubCompare'];
+  /** Outbound call budgets; unset keys fall back to the server defaults */
+  timeouts?: TCustomConfig['timeouts'];
+  /** Violation log retention; unset keeps the server default */
+  violationLog?: TCustomConfig['violationLog'];
+  messages?: TCustomConfig['messages'];
+  /** Bounds on parallel per-request lookups; unset keys fall back to the server defaults */
+  concurrency?: TCustomConfig['concurrency'];
+  skillDeletion?: {
+    finalizationEnabled?: boolean;
+    sweepIntervalMs?: number;
+    claimLeaseMs?: number;
+    batchSize?: number;
+    recheckIntervalMs?: number;
+  };
   /** Source-scoped content filter configuration */
   filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */
@@ -76,10 +96,18 @@ export interface AppConfig {
   fileStrategy: FileStorage;
   /** File strategies configuration */
   fileStrategies?: TCustomConfig['fileStrategies'];
+  /** Maximum rows an explicitly limited GET /files request may return */
+  fileListLimit?: TCustomConfig['fileListLimit'];
   /** CloudFront CDN configuration */
   cloudfront?: CloudFrontConfig;
+  /** Chat Projects limits resolved from the deployment configuration */
+  projects?: TChatProjectsConfig;
   /** Registration configurations */
   registration?: TCustomConfig['registration'];
+  /** Changing the registered email address */
+  emailChange?: TCustomConfig['emailChange'];
+  /** Passkey enrollment configuration */
+  passkeys?: TCustomConfig['passkeys'];
   /** Actions configurations */
   actions?: TCustomConfig['actions'];
   /** Admin-filtered tools */
@@ -102,10 +130,19 @@ export interface AppConfig {
   mcpConfig?: TCustomConfig['mcpServers'] | null;
   /** MCP settings (domain allowlist, etc.) */
   mcpSettings?: TCustomConfig['mcpSettings'] | null;
+  /** Deployment-owned MCP App sandbox transport limits. */
+  mcpAppSandbox?: TCustomConfig['mcpAppSandbox'];
   /** File configuration */
   fileConfig?: TFileConfig;
+  spreadsheetParsing?: TCustomConfig['spreadsheetParsing'];
   /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
+  /** Stored user credential write format, `v3` unless configured */
+  credentials?: TCredentialsConfig;
+  /** Validation limits for the conversation list's filter facets */
+  conversationList?: TConversationListConfig;
+  /** Bounds for the tool-call previews sent on conversation loads */
+  toolCallPreviews?: TToolCallPreviewsConfig;
   /** Processed model specifications */
   modelSpecs?: TCustomConfig['modelSpecs'];
   /** Available tools */
@@ -113,12 +150,14 @@ export interface AppConfig {
   endpoints?: {
     /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
     allowedAddresses?: string[];
+    /** How long the admin config catalog reuses a scope's model lists, in milliseconds */
+    catalogModelsTtlMs?: number;
     /** OpenAI endpoint configuration */
     openAI?: Partial<TEndpoint>;
     /** Google endpoint configuration */
-    google?: Partial<TEndpoint>;
+    google?: Partial<TGoogleEndpoint>;
     /** Bedrock endpoint configuration */
-    bedrock?: Partial<TEndpoint>;
+    bedrock?: Partial<TEndpoint> & { availableRegions?: string[] };
     /** Anthropic endpoint configuration with optional Vertex AI support */
     anthropic?: Partial<TAnthropicEndpoint> & {
       /** Validated Vertex AI configuration */

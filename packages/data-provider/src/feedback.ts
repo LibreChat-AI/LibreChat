@@ -69,7 +69,7 @@ export const FEEDBACK_TAGS: TFeedbackTag[] = [
   },
   {
     key: 'other',
-    label: 'com_ui_feedback_tag_other',
+    label: 'com_ui_feedback_tag_other_issue',
     direction: 'thumbsDown',
     icon: 'HelpCircle',
   },

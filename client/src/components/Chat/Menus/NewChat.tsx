@@ -1,6 +1,6 @@
 import { TooltipAnchor, NewChatIcon, Button } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
-import useNewChat from '~/hooks/Chat/useNewChat';
+import useNewChat from '~/hooks/Conversations/useNewChat';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -22,11 +22,8 @@ export default function NewChat({ className }: { className?: string }) {
         <Button
           asChild
           size="icon"
-          variant="outline"
-          className={cn(
-            'size-9 flex-shrink-0 rounded-xl bg-presentation hover:bg-surface-active-alt',
-            className,
-          )}
+          variant="header-action"
+          className={cn('size-9 shrink-0', className)}
         >
           <a
             href="/c/new"

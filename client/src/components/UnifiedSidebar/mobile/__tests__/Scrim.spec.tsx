@@ -47,22 +47,6 @@ describe('mobile drawer Scrim', () => {
   });
 
   /**
-   * The parent shell is overflow-hidden and the global :focus-visible outline
-   * sits 2px outside the box, so an inset ring is the only indicator that
-   * actually paints.
-   */
-  it('keeps the focus ring inside the overflow-hidden shell', () => {
-    const { scrim } = setup({ expanded: true });
-
-    expect(scrim).toHaveClass(
-      'focus-visible:outline-none',
-      'focus-visible:ring-2',
-      'focus-visible:ring-inset',
-      'focus-visible:ring-text-primary',
-    );
-  });
-
-  /**
    * The state commits before the drawer and pane finish moving, so releasing
    * the pointer target early lets a tap through to a control sliding by
    * underneath.

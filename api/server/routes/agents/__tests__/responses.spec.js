@@ -77,7 +77,9 @@ jest.mock('~/config', () => ({
   createMCPManager: jest.fn().mockResolvedValue({
     getAppToolFunctions: jest.fn().mockResolvedValue({}),
   }),
-  getMCPManager: jest.fn().mockReturnValue({}),
+  getMCPManager: jest.fn(() => ({
+    formatInstructionsForContext: jest.fn().mockResolvedValue(''),
+  })),
 }));
 
 const express = require('express');
@@ -515,7 +517,7 @@ describeIfLive('Open Responses API Integration Tests', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

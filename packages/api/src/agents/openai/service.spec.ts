@@ -1,8 +1,12 @@
 import { GraphEvents } from '@librechat/agents';
+import { SystemMessage } from '@langchain/core/messages';
+import { FakeChatModel } from '@langchain/core/utils/testing';
 import { ErrorTypes, Permissions, PermissionTypes } from 'librechat-data-provider';
+import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { ChatCompletionDependencies } from './service';
-import { createAgentChatCompletion } from './service';
+import type { ChatCompletionChunk } from './types';
+import { createAgentChatCompletion, validateRequest } from './service';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -103,6 +107,277 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
       createRun: createRun as unknown as ChatCompletionDependencies['createRun'],
     };
   });
+
+  it.each([false, true])(
+    'enforces the exact model boundary for embedded callers: blocked=%s',
+    async (blocked) => {
+      deps.appConfig = {
+        filters: {
+          agentInstructions: {
+            pii: {
+              fields: ['instructions'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'private', label: 'private value', regex: 'PRIVATE-INSTRUCTION' },
+              ],
+            },
+          },
+        },
+      };
+      let provider: jest.SpyInstance | undefined;
+      createRun.mockImplementationOnce(
+        async ({
+          modelCallbacks,
+        }: Parameters<NonNullable<ChatCompletionDependencies['createRun']>>[0]) => {
+          const model = new FakeChatModel({
+            callbacks: modelCallbacks as CallbackHandlerMethods[] | undefined,
+          });
+          provider = jest.spyOn(model, '_generate');
+          return {
+            processStream: () =>
+              model.invoke([
+                new SystemMessage(blocked ? 'PRIVATE-INSTRUCTION' : 'safe instruction'),
+              ]),
+          };
+        },
+      );
+      const req = createMockReq({ id: 'user-123' });
+      const res = createMockRes();
+      await createAgentChatCompletion(req, res, deps);
+      expect(provider).toHaveBeenCalledTimes(blocked ? 0 : 1);
+      if (blocked) expectRawFreeFilterError(res, 'PRIVATE-INSTRUCTION');
+      else expect(getResponseMock(res, 'status')).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])(
+    'returns opted-in server results in the packaged service (stream=%s)',
+    async (stream) => {
+      const req = createMockReq(
+        { id: 'user' },
+        {
+          model: 'agent_test',
+          messages: [{ role: 'user', content: 'hi' }],
+          stream,
+          include: ['server_tool_results'],
+        },
+      );
+      const res = createMockRes();
+      processStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers } = createRun.mock.calls[0][0] as Parameters<
+          NonNullable<ChatCompletionDependencies['createRun']>
+        >[0];
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-server',
+          agentId: 'agent_test',
+          toolCalls: [{ id: 'server', name: 'lookup', args: {} }],
+          toolCallDispositions: ['sdk'],
+          invalidToolCalls: [],
+        });
+        await handlers.on_run_step_completed.handle(
+          'on_run_step_completed',
+          {
+            result: {
+              id: 'step',
+              type: 'tool_call',
+              tool_call: { id: 'server', name: 'lookup', args: '{}', output: 'filtered result' },
+            },
+          },
+          { agentId: 'agent_test' },
+        );
+      });
+      await createAgentChatCompletion(req, res, deps);
+      expect(createRun.mock.calls[0][0]).toHaveProperty('eagerToolExecution', false);
+      const expected = {
+        call_id: 'server',
+        name: 'lookup',
+        arguments: '{}',
+        output: 'filtered result',
+      };
+      if (stream) {
+        const chunks: ChatCompletionChunk[] = (res.write as jest.Mock).mock.calls
+          .map(([frame]: [string]) => frame)
+          .filter((frame) => frame !== 'data: [DONE]\n\n')
+          .map((frame) => JSON.parse(frame.slice(6)));
+        expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_results ?? [])).toEqual([
+          { index: 0, ...expected },
+        ]);
+        expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
+        expect(chunks[chunks.length - 1]?.choices[0].finish_reason).toBe('stop');
+      } else {
+        const response = getResponseMock(res, 'json').mock.calls[0][0];
+        expect(response.choices[0].message.tool_results).toEqual([expected]);
+        expect(response.choices[0].message.tool_calls).toBeUndefined();
+        expect(response.choices[0].finish_reason).toBe('stop');
+      }
+    },
+  );
+
+  it.each([null, true, 'server_tool_results', ['unknown'], [3]])(
+    'rejects malformed include before execution (%j)',
+    async (include) => {
+      const req = createMockReq(
+        { id: 'user' },
+        { model: 'agent_test', messages: [{ role: 'user', content: 'hi' }], include },
+      );
+      const res = createMockRes();
+      expect(validateRequest(req.body).valid).toBe(false);
+      await createAgentChatCompletion(req, res, deps);
+      expect(getResponseMock(res, 'status')).toHaveBeenCalledWith(400);
+      expect(createRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])(
+    'keeps graph and provider-owned calls internal (stream=%s)',
+    async (stream) => {
+      const req = createMockReq(
+        { id: 'user' },
+        { model: 'agent_test', messages: [{ role: 'user', content: 'hi' }], stream },
+      );
+      const res = createMockRes();
+      processStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers } = createRun.mock.calls[0][0] as Parameters<
+          NonNullable<ChatCompletionDependencies['createRun']>
+        >[0];
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted',
+          agentId: 'agent_test',
+          messageId: 'message',
+          toolCalls: [
+            { id: 'internal', name: 'get_time', args: { city: 'Madrid' } },
+            { id: 'server', name: 'web_search', args: { query: 'weather' } },
+          ],
+          toolCallDispositions: ['sdk', 'provider'],
+          invalidToolCalls: [],
+        });
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'Finished.' }] },
+        });
+      });
+
+      await createAgentChatCompletion(req, res, deps);
+
+      if (stream) {
+        const chunks: ChatCompletionChunk[] = (res.write as jest.Mock).mock.calls
+          .map(([frame]: [string]) => frame)
+          .filter((frame) => frame !== 'data: [DONE]\n\n')
+          .map((frame) => JSON.parse(frame.slice(6)));
+        expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
+        expect(chunks.some((chunk) => chunk.choices[0].delta.content === 'Finished.')).toBe(true);
+        expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+      } else {
+        expect(getResponseMock(res, 'json')).toHaveBeenCalledWith(
+          expect.objectContaining({
+            choices: [
+              expect.objectContaining({
+                finish_reason: 'stop',
+                message: expect.objectContaining({ content: 'Finished.' }),
+              }),
+            ],
+          }),
+        );
+        const response = getResponseMock(res, 'json').mock.calls[0][0] as ChatCompletionChunk;
+        expect(JSON.stringify(response)).not.toContain('tool_calls');
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'finishes with tool_calls when an accepted client call follows text (stream=%s)',
+    async (stream) => {
+      const req = createMockReq(
+        { id: 'user' },
+        { model: 'agent_test', messages: [{ role: 'user', content: 'hi' }], stream },
+      );
+      const res = createMockRes();
+      processStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers } = createRun.mock.calls[0][0] as Parameters<
+          NonNullable<ChatCompletionDependencies['createRun']>
+        >[0];
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'Checking the weather.' }] },
+        });
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-client',
+          agentId: 'agent_test',
+          toolCalls: [{ id: 'client', name: 'lookup', args: { city: 'Madrid' } }],
+          toolCallDispositions: ['client'],
+          invalidToolCalls: [],
+        });
+      });
+
+      await createAgentChatCompletion(req, res, deps);
+
+      if (stream) {
+        const chunks: ChatCompletionChunk[] = (res.write as jest.Mock).mock.calls
+          .map(([frame]: [string]) => frame)
+          .filter((frame) => frame !== 'data: [DONE]\n\n')
+          .map((frame) => JSON.parse(frame.slice(6)));
+        expect(
+          chunks.some((chunk) => chunk.choices[0].delta.content === 'Checking the weather.'),
+        ).toBe(true);
+        expect(
+          chunks
+            .flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])
+            .some((call) => call.id === 'client'),
+        ).toBe(true);
+        expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('tool_calls');
+      } else {
+        const response = getResponseMock(res, 'json').mock.calls[0][0] as {
+          choices: [
+            { message: { content: string; tool_calls: [{ id: string }] }; finish_reason: string },
+          ];
+        };
+        expect(response.choices[0].message.content).toBe('Checking the weather.');
+        expect(response.choices[0].message.tool_calls[0].id).toBe('client');
+        expect(response.choices[0].finish_reason).toBe('tool_calls');
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'does not publish fallback arguments after provider failure (stream=%s)',
+    async (stream) => {
+      const req = createMockReq(
+        { id: 'user' },
+        { model: 'agent_test', messages: [{ role: 'user', content: 'hi' }], stream },
+      );
+      const res = createMockRes();
+      processStream.mockImplementationOnce(async () => {
+        const { customHandlers: h } = createRun.mock.calls[0][0] as Parameters<
+          NonNullable<ChatCompletionDependencies['createRun']>
+        >[0];
+        await h.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-before-failure',
+          agentId: 'agent_test',
+          toolCalls: [{ id: 'a', name: 'get_time', args: { city: 'DO_NOT_FLUSH' } }],
+          toolCallDispositions: ['client'],
+          invalidToolCalls: [],
+        });
+        throw new Error('provider failed');
+      });
+      await createAgentChatCompletion(req, res, deps);
+      expect(JSON.stringify((res.write as jest.Mock).mock.calls)).not.toContain('DO_NOT_FLUSH');
+      expect(JSON.stringify(getResponseMock(res, 'json').mock.calls)).not.toContain('DO_NOT_FLUSH');
+      const { customHandlers: h } = createRun.mock.calls[0][0] as Parameters<
+        NonNullable<ChatCompletionDependencies['createRun']>
+      >[0];
+      await h.on_model_response.handle('on_model_response', {
+        type: 'model_response',
+        id: 'late',
+        agentId: 'agent_test',
+        toolCalls: [{ id: 'late', name: 'get_time', args: { late: true } }],
+        toolCallDispositions: ['client'],
+        invalidToolCalls: [],
+      });
+      expect(JSON.stringify((res.write as jest.Mock).mock.calls)).not.toContain('late');
+    },
+  );
 
   it('forwards the role-bearing safe user to createRun and configurable.user', async () => {
     const req = createMockReq({
@@ -372,6 +647,17 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
     expect(runArgs.appConfig).not.toHaveProperty('interfaceConfig');
   });
 
+  it('forwards only the retention mode so forced-temporary runs stay untraced', async () => {
+    deps.appConfig = {
+      interfaceConfig: { modelSelect: true, retentionMode: 'ephemeral' },
+    } as never;
+
+    await createAgentChatCompletion(createMockReq({ id: 'user-123' }), createMockRes(), deps);
+
+    const runArgs = createRun.mock.calls[0][0] as CreateRunArgs;
+    expect(runArgs.appConfig).toEqual({ interfaceConfig: { retentionMode: 'ephemeral' } });
+  });
+
   it('forwards the stateful environment allowlist from appConfig to agent initialization', async () => {
     deps.appConfig = {
       endpoints: {
@@ -458,6 +744,21 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
 
     expect(deps.initializeAgent).toHaveBeenCalledWith(
       expect.objectContaining({ resolveWebSearchGrant: undefined }),
+    );
+  });
+
+  /** Unlike `resolveWebSearchGrant`, there is no default DB-backed resolution path
+   *  for a linked agent — the embedder's resolver (and usage-recording flag) must
+   *  reach `initializeAgent` verbatim or a linked agent silently loses its instructions. */
+  it('forwards resolveLinkedInstructions and recordLinkedPromptUsage verbatim to initializeAgent', async () => {
+    const resolveLinkedInstructions = jest.fn();
+    deps.resolveLinkedInstructions = resolveLinkedInstructions as never;
+    deps.recordLinkedPromptUsage = false;
+
+    await createAgentChatCompletion(createMockReq({ id: 'user-123' }), createMockRes(), deps);
+
+    expect(deps.initializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ resolveLinkedInstructions, recordLinkedPromptUsage: false }),
     );
   });
 

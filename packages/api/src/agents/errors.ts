@@ -1,9 +1,13 @@
 import {
   ErrorTypes,
+  DEFAULT_MAX_PROVIDER_ERROR_CHARS,
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
-import { isOwnedAbortError } from '~/utils/errors';
+import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
+import { MCPErrorCodes, isMCPInitializationError } from '~/mcp/errors';
+import { AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED } from './options';
+import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
@@ -11,6 +15,7 @@ export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED'
 const FATAL_AGENT_INITIALIZATION_CODES = new Set(
   [
     AGENT_ATTACHMENT_LIMIT_EXCEEDED,
+    AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED,
     ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
     ErrorTypes.STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED,
     ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
@@ -57,7 +62,8 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
-    isOwnedAbortError(error, options.signal) ||
+    error instanceof ScheduledMCPPolicyError ||
+    isMCPInitializationError(error, options.signal) ||
     FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)
   );
@@ -90,14 +96,107 @@ export function getLangChainErrorCode(error: unknown): string | undefined {
   return parseLangChainErrorCode(message);
 }
 
+export interface LangChainErrorOptions {
+  /**
+   * Whether the provider's own message may ride along as `info`. A gateway in front of the provider
+   * often explains the failure there (a spending limit, where to ask for more), which the localized
+   * copy cannot. Off by default because the text may echo submitted content.
+   */
+  includeProviderMessage?: boolean;
+  maxProviderErrorChars?: number;
+  /** Applies the caller's disclosure policy (for example redaction) to the included message. */
+  formatProviderMessage?: (message: string) => string;
+}
+
+/** A status prefix like `429 ` repeats what the classification already says. */
+const STATUS_PREFIX = /^\d{3}(?:\s+|$)/;
+
 /**
  * Typed payload the client localizes for a classified LangChain failure, or `undefined` when the
  * code has no localized copy and the provider's own message should be shown instead.
  */
-export function resolveLangChainError(error: unknown): string | undefined {
+export function resolveLangChainError(
+  error: unknown,
+  options: LangChainErrorOptions = {},
+): string | undefined {
   const code = getLangChainErrorCode(error);
   const type = code == null ? undefined : LANGCHAIN_ERROR_TYPES[code];
-  return type == null ? undefined : JSON.stringify({ type });
+  if (type == null) {
+    return undefined;
+  }
+  if (options.includeProviderMessage !== true) {
+    return JSON.stringify({ type });
+  }
+  /** Formats a window past the limit before cutting, so redaction sees a whole address or token
+   *  instead of a fragment the cut left behind. */
+  const limit = getProviderErrorLimit(options.maxProviderErrorChars);
+  const message = getProviderErrorMessage(error, limit + PROVIDER_FORMAT_LOOKAHEAD)
+    ?.replace(STATUS_PREFIX, '')
+    .trim();
+  const formatted = message ? (options.formatProviderMessage?.(message) ?? message) : '';
+  const info = formatted.slice(0, limit).trim();
+  return JSON.stringify(info ? { type, info } : { type });
+}
+
+export type ModelStreamFailure = 'closed' | 'stalled';
+
+/** A timeout while reading a response body, not while waiting for its headers. */
+const STALLED_TRANSPORT_CODES = new Set(['UND_ERR_BODY_TIMEOUT']);
+const STALLED_TRANSPORT_NAMES = new Set(['BodyTimeoutError']);
+/** Socket errors only describe a mid-response close when Fetch also reports body termination. */
+const CLOSED_TRANSPORT_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE']);
+
+/**
+ * How a model response died in transit, or `undefined` for any other failure.
+ *
+ * Fetch reports both a provider hanging up mid-stream and our own body timeout as a bare
+ * `TypeError: terminated`; only the undici error in its `cause` tells them apart. A stall wins
+ * over a close found deeper in the chain, since the timeout is what ended the request.
+ */
+export function getModelStreamFailure(error: unknown): ModelStreamFailure | undefined {
+  let current = error;
+  let terminated = false;
+  let closed = false;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current != null; depth++) {
+    if (typeof current !== 'object') {
+      break;
+    }
+    const code = readErrorProperty(current, 'code');
+    const name = readErrorProperty(current, 'name');
+    if (
+      (typeof code === 'string' && STALLED_TRANSPORT_CODES.has(code)) ||
+      (typeof name === 'string' && STALLED_TRANSPORT_NAMES.has(name))
+    ) {
+      return 'stalled';
+    }
+    if (typeof code === 'string' && CLOSED_TRANSPORT_CODES.has(code)) {
+      closed = true;
+    }
+    if (name === 'TypeError' && readErrorProperty(current, 'message') === 'terminated') {
+      terminated = true;
+    }
+    current = readErrorProperty(current, 'cause');
+  }
+  return closed && terminated ? 'closed' : undefined;
+}
+
+const MODEL_STREAM_ERROR_TYPES: Record<ModelStreamFailure, ErrorTypes> = {
+  closed: ErrorTypes.MODEL_STREAM_CLOSED,
+  stalled: ErrorTypes.MODEL_STREAM_STALLED,
+};
+
+/** Safe fallback for an older client that cannot localize these new error types yet. */
+const MODEL_STREAM_FALLBACK: Record<ModelStreamFailure, string> = {
+  closed: 'The model provider closed the connection before the response finished. Try again.',
+  stalled: 'The model provider stopped sending the response, and the request timed out. Try again.',
+};
+
+/** Typed payload for new clients, with useful prose when the client bundle predates these types. */
+export function resolveModelStreamError(error: unknown): string | undefined {
+  const failure = getModelStreamFailure(error);
+  return failure == null
+    ? undefined
+    : `${MODEL_STREAM_FALLBACK[failure]}\n${JSON.stringify({ type: MODEL_STREAM_ERROR_TYPES[failure] })}`;
 }
 
 /**
@@ -112,6 +211,43 @@ export function getUserFacingProviderError(error: unknown, protectionEnabled: bo
     return 'An error occurred';
   }
   return stripLangChainTroubleshootingUrl(error.message) || GENERIC_PROVIDER_ERROR;
+}
+
+/** Bounded lookahead covers LangChain's appended troubleshooting label and URL. */
+const TROUBLESHOOTING_LOOKAHEAD = 256;
+
+/** Characters past the limit a disclosure formatter sees, longer than any address or token. */
+const PROVIDER_FORMAT_LOOKAHEAD = 256;
+
+/** `maxProviderErrorChars` as configured, or the default when it is not a non-negative integer. */
+function getProviderErrorLimit(maxChars: number | undefined): number {
+  return maxChars != null && Number.isSafeInteger(maxChars) && maxChars >= 0
+    ? maxChars
+    : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+}
+
+/**
+ * The provider's own words for a failure, or `undefined` when it has none to give. A gateway,
+ * proxy or OpenAI-compatible endpoint answers a rejection it alone can explain, and that sentence
+ * is more specific than any generic string we could write.
+ *
+ * Read defensively: an SDK error's `message` may be a hostile accessor or a body object rather
+ * than a string, and the docs URL LangChain stamps in is not for a reader.
+ */
+export function getProviderErrorMessage(
+  error: unknown,
+  maxChars: number = DEFAULT_MAX_PROVIDER_ERROR_CHARS,
+): string | undefined {
+  const raw =
+    error != null && typeof error === 'object' ? readErrorProperty(error, 'message') : error;
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const limit = getProviderErrorLimit(maxChars);
+  const message = stripLangChainTroubleshootingUrl(raw.slice(0, limit + TROUBLESHOOTING_LOOKAHEAD))
+    .slice(0, limit)
+    .trim();
+  return message.length === 0 ? undefined : message;
 }
 
 /**
@@ -160,4 +296,30 @@ export function isStepLimitError(error: unknown): boolean {
     current = readErrorProperty(current, 'cause');
   }
   return false;
+}
+
+/** Outward metadata shared by UI generation failures and both remote agent APIs. */
+export function getAgentErrorMetadata(
+  error: unknown,
+): { status?: number; code?: string; retryable?: boolean } | undefined {
+  if (error instanceof OboTokenResolutionError) {
+    return {
+      status: error.retryable ? 503 : 403,
+      code: error.retryable
+        ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
+        : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      retryable: error.retryable,
+    };
+  }
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+  const status = candidate.status ?? candidate.statusCode;
+  return {
+    ...(typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600
+      ? { status }
+      : {}),
+    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+  };
 }

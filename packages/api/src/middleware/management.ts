@@ -21,7 +21,7 @@ type ManagementApi = NonNullable<TAgentsEndpoint['managementApi']>;
 type ManagementAuth = NonNullable<ManagementApi['auth']>;
 type ManagementOidc = NonNullable<ManagementAuth['oidc']>;
 type ManagementClient = ManagementAuth['clients'][number];
-type EnabledManagementOidc = ManagementOidc & { audience: string; issuer: string };
+type EnabledManagementOidc = ManagementOidc & { issuer: string };
 
 type PrincipalResolution =
   | { status: 'resolved'; user: IUser }
@@ -47,15 +47,17 @@ function getEnabledAuth(
   config: AppConfig,
 ): { auth: ManagementAuth; oidc: EnabledManagementOidc } | undefined {
   const auth = config.endpoints?.agents?.managementApi?.auth;
-  if (auth?.oidc?.enabled !== true || !auth.oidc.issuer || !auth.oidc.audience) {
+  const oidc = auth?.oidc;
+  const hasAudience = Boolean(oidc?.audience);
+  const hasScopedAccessToken = oidc?.tokenUse === 'access' && Boolean(oidc.requiredScopes?.length);
+  if (!auth || oidc?.enabled !== true || !oidc.issuer || (!hasAudience && !hasScopedAccessToken)) {
     return;
   }
   return {
     auth,
     oidc: {
-      ...auth.oidc,
-      audience: auth.oidc.audience,
-      issuer: auth.oidc.issuer,
+      ...oidc,
+      issuer: oidc.issuer,
     },
   };
 }
@@ -140,7 +142,10 @@ function continueWithPrincipal(
   tenantContextMiddleware(serverRequest, res, next);
 }
 
-export function createAgentManagementAuth(deps: AgentManagementAuthDeps): RequestHandler {
+export function createAgentManagementAuth(
+  deps: AgentManagementAuthDeps,
+  { requireConversationRead = false }: { requireConversationRead?: boolean } = {},
+): RequestHandler {
   const handler = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const config = await deps.getAppConfig({ baseOnly: true });
@@ -185,6 +190,12 @@ export function createAgentManagementAuth(deps: AgentManagementAuthDeps): Reques
         return;
       }
 
+      if (requireConversationRead && binding.conversationRead !== true) {
+        res
+          .status(403)
+          .json({ error: { code: 'permission_denied', message: 'Permission denied' } });
+        return;
+      }
       const principal = await resolvePrincipal(binding, deps);
       if (principal.status === 'missing') {
         logger.warn('[agentManagementAuth] Client binding has no matching tenant user');

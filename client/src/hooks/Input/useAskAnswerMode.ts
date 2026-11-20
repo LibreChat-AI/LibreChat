@@ -1,28 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
 import {
-  collapsedAskActionsAtom,
+  ASK_USER_DECLINED_ANSWER,
+  findLiveAskUserQuestion,
+  splitOtherOption,
+} from '@librechat/chat';
+import {
+  expandedAskActionsAtom,
   askAnswerSelectionAtom,
   askAnswerCheckedAtom,
   askAnswerTextAtom,
   releasedComposerTextAtom,
   useAskAnswerHost,
-} from '~/components/Chat/ask/state';
+} from '@librechat/chat/react';
 import {
   useAskSubmitStatus,
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
-import {
-  ASK_USER_DECLINED_ANSWER,
-  findLiveAskUserQuestion,
-  splitOtherOption,
-} from '~/utils/approval';
-import { getAskAnswerDraftId, morphTransition, setDraft } from '~/utils';
-import { useGetMessagesByConvoId } from '~/data-provider';
+import { getAskAnswerDraftId, morphTransition, getDraft, setDraft } from '~/utils';
 import { useOptionalChatFormContext } from '~/Providers';
+import { useCachedMessages } from '~/data-provider';
 
 /**
- * First-class "answer mode" for a live `ask_user_question` pause. Clicking an
+ * First-class "answer mode" for a live `ask_user_question` pause. A question
+ * starts in the chat card; answer mode is the opt-in composer popover the
+ * card's chevron (`expand`) moves it into. Clicking an
  * option submits it immediately (multi-select clicks toggle instead, confirmed
  * by an explicit Submit); arrows/digits from the EMPTY composer steer a
  * keyboard highlight that Enter fires — but only while the popover is visible,
@@ -46,12 +48,12 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    * settled ask part untouched, so structural sharing keeps this null (or the
    * same ask object) and the subscription stays quiet until a pause actually
    * starts or resolves. */
-  const { data: liveAskData } = useGetMessagesByConvoId(enabled ? conversationId : '', {
-    enabled,
-    select: findLiveAskUserQuestion,
-  });
+  const { data: liveAskData } = useCachedMessages(
+    enabled ? conversationId : '',
+    findLiveAskUserQuestion,
+  );
   const liveAsk = enabled ? (liveAskData ?? null) : null;
-  const [collapsedIds, setCollapsedIds] = useAtom(collapsedAskActionsAtom);
+  const [expandedIds, setExpandedIds] = useAtom(expandedAskActionsAtom);
   const [selected, setSelected] = useAtom(askAnswerSelectionAtom);
   const [checked, setChecked] = useAtom(askAnswerCheckedAtom);
   const [answerDrafts, setAnswerDrafts] = useAtom(askAnswerTextAtom);
@@ -110,14 +112,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    * answered question with every option greyed out.
    */
   const answerable = liveAsk != null && status !== 'expired' && status !== 'submitted';
-  /** Moved to the chat: the card owns the question and the composer is free. */
-  const collapsed = answerable && collapsedIds.includes(liveAsk.actionId);
+  /** Moved to the composer: the popover owns the question. */
+  const expanded = answerable && expandedIds.includes(liveAsk.actionId);
+  /** In the chat, the default: the card owns the question and the composer is free. */
+  const collapsed = answerable && !expanded;
   /**
    * Answer mode: the popover is up AND the composer is the free-form answer
    * box. The two are deliberately the same condition because the composer's answer
    * role is only discoverable while the popover explains it.
    */
-  const active = answerable && !collapsed;
+  const active = expanded;
   const popoverVisible = active;
   const batchMode = (liveAsk?.questions?.length ?? 0) > 0;
   const composerAnswers = active && !batchMode;
@@ -204,7 +208,33 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     releasedComposerText,
     setReleasedComposerText,
   ]);
-  const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? '') : '';
+  /**
+   * The answer saved under the question's own draft key. Autosave restores it
+   * only into the composer, which answers a question moved there; the chat
+   * card, where a question starts, reads it from here so a reload or a return
+   * to a still-pending question shows what was typed. Once restored it is
+   * held in memory like any typed answer, so turning draft saving off later
+   * leaves the visible answer in place, as it does for the composer.
+   */
+  const savedAnswerActionId = liveAsk != null && !batchMode ? liveAsk.actionId : null;
+  const savedAnswer = useMemo(
+    () =>
+      saveDrafts && savedAnswerActionId != null
+        ? (getDraft(getAskAnswerDraftId(savedAnswerActionId)) ?? '')
+        : '',
+    [saveDrafts, savedAnswerActionId],
+  );
+  useEffect(() => {
+    if (savedAnswerActionId == null || savedAnswer.length === 0) {
+      return;
+    }
+    setAnswerDrafts((current) =>
+      current[savedAnswerActionId] != null
+        ? current
+        : { ...current, [savedAnswerActionId]: savedAnswer },
+    );
+  }, [savedAnswerActionId, savedAnswer, setAnswerDrafts]);
+  const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? savedAnswer) : '';
   const setAnswerText = useCallback(
     (text: string) => {
       if (liveAsk && !batchMode) {
@@ -220,6 +250,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     [batchMode, liveAsk, saveDrafts, setAnswerDrafts],
   );
 
+  /** An expired question can never be answered, so its saved answer has
+   *  nothing left to restore into. */
+  const expiredActionId =
+    liveAsk != null && !batchMode && status === 'expired' ? liveAsk.actionId : null;
+  useEffect(() => {
+    if (expiredActionId != null) {
+      setDraft({ id: getAskAnswerDraftId(expiredActionId), value: '' });
+    }
+  }, [expiredActionId]);
+
   /** Selection state is per-question: a new pause must never inherit a stale
    *  highlight (or checks) whose Enter would submit the previous question's
    *  choice. */
@@ -229,24 +269,11 @@ export default function useAskAnswerMode(conversationId?: string | null) {
   }, [liveAsk?.actionId, setSelected, setChecked]);
 
   /** Popover ⇄ chat-card handoffs run inside a view transition: both
-   *  surfaces carry the same `view-transition-name`, so the browser morphs
-   *  one into the other instead of swapping. Both are user-event driven,
-   *  which morphTransition's synchronous flush requires.
-   *
-   *  Batches opt out: only the single-question surfaces declare
-   *  `view-transition-name: ask-question`, so wrapping a batch handoff would
-   *  give the browser nothing to pair and it would cross-fade the whole root
-   *  (chat plus composer) instead. */
-  const runHandoff = useCallback(
-    (update: () => void) => {
-      if (batchMode) {
-        update();
-        return;
-      }
-      morphTransition(update);
-    },
-    [batchMode],
-  );
+   *  surfaces carry the same `view-transition-name`, single questions and
+   *  batches alike, so the browser morphs one into the other instead of
+   *  swapping. Both are user-event driven, which morphTransition's
+   *  synchronous flush requires. */
+  const runHandoff = morphTransition;
 
   const collapse = useCallback(() => {
     if (liveAsk) {
@@ -274,9 +301,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
             formContext?.reset();
           }
         }
-        setCollapsedIds((prev) =>
-          prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
-        );
+        setExpandedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
       });
     }
   }, [
@@ -288,7 +313,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     releasedComposerText,
     setReleasedComposerText,
     setAnswerDrafts,
-    setCollapsedIds,
+    setExpandedIds,
     runHandoff,
   ]);
 
@@ -318,7 +343,9 @@ export default function useAskAnswerMode(conversationId?: string | null) {
            *  `setAnswerText` writes both while saving is on. */
           setDraft({ id: getAskAnswerDraftId(liveAsk.actionId), value: answerText });
         }
-        setCollapsedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
+        setExpandedIds((prev) =>
+          prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
+        );
       });
     }
   }, [
@@ -329,7 +356,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     formContext,
     answerText,
     setReleasedComposerText,
-    setCollapsedIds,
+    setExpandedIds,
     runHandoff,
   ]);
 
@@ -373,9 +400,17 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       const wasActive = active;
       const submittedConversationId = conversationId;
       const submittedActionId = liveAsk.actionId;
+      const submittedSingle = !batchMode;
       const submittedComposerText = formContext?.getValues('text') ?? '';
       submitAskAnswer(liveAsk.actionId, values.join(', '), {
         onSuccess: () => {
+          /** The question is answered wherever the user went meanwhile, so its
+           *  saved answer goes now. Answered from the composer, autosave would
+           *  clear it with the composer; answered from the card, nothing else
+           *  ever reads that key again. */
+          if (submittedSingle) {
+            setDraft({ id: getAskAnswerDraftId(submittedActionId), value: '' });
+          }
           const currentScope = currentScopeRef.current;
           if (
             !mountedRef.current ||
@@ -431,6 +466,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       liveAsk,
       locked,
       active,
+      batchMode,
       saveDrafts,
       conversationId,
       setReleasedComposerText,
@@ -550,15 +586,9 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       }
       const composerText = e.currentTarget.value;
       if (composerText.trim().length > 0) {
-        // The composer IS the free-form answer box: Enter submits the typed
-        // text (before useTextarea's submitting-lock can swallow it). Not for
-        // a batch, which answers in its card — its Enter belongs to the normal
-        // send path, so leave the event untouched rather than preventDefault
-        // an event we are about to decline.
-        if (e.key === 'Enter' && !e.shiftKey && !batchMode) {
-          e.preventDefault();
-          return submitText(composerText);
-        }
+        /* Typed answers follow the shared composer binding resolver. ChatForm
+           keeps that path live during a single-question pause, so Enter-to-send,
+           its inverse modifier, and a customized submit chord stay consistent. */
         return false;
       }
       /**
@@ -611,12 +641,10 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       active,
       options,
       selected,
-      batchMode,
       multiSelect,
       popoverVisible,
       canSubmit,
       submit,
-      submitText,
       toggleChecked,
       collapse,
       setSelected,

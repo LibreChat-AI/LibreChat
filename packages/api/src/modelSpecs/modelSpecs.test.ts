@@ -45,7 +45,39 @@ describe('modelSpecs helpers', () => {
       model: 'gpt-4o',
       greeting: 'Hello',
     });
-    expect(sanitizedModelSpecs.list[0]).not.toHaveProperty('skills');
+    /** Narrowed to the boolean the chat badge needs; the names never leave the server. */
+    expect(sanitizedModelSpecs.list[0].skills).toBe(true);
+    expect(JSON.stringify(sanitizedModelSpecs.list[0])).not.toContain('private-skill');
+  });
+
+  it('should narrow model spec skills to a boolean without leaking names', () => {
+    const build = (skills?: TModelSpec['skills']) =>
+      ({
+        enforce: false,
+        prioritize: true,
+        list: [
+          {
+            name: 'skills-spec',
+            label: 'Skills Spec',
+            ...(skills === undefined ? {} : { skills }),
+            preset: { endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
+          },
+        ],
+      }) as { enforce: boolean; prioritize: boolean; list: TModelSpec[] };
+
+    /** The client seeds its skills badge from this field, so an enabled spec has
+     *  to stay distinguishable from `skills: false` and from no config at all. */
+    expect(sanitizeModelSpecs(build(['a', 'b'])).list[0].skills).toBe(true);
+    /** An empty allowlist scopes to no skills but keeps `skills_enabled` true,
+     *  which still permits skill authoring — so it must narrow to `true`, the
+     *  same answer `resolveSpecSkillsEnabled` gives the loaders. */
+    expect(sanitizeModelSpecs(build([])).list[0].skills).toBe(true);
+    expect(sanitizeModelSpecs(build(true)).list[0].skills).toBe(true);
+    expect(sanitizeModelSpecs(build(false)).list[0].skills).toBe(false);
+    expect(sanitizeModelSpecs(build()).list[0]).not.toHaveProperty('skills');
+    expect(JSON.stringify(sanitizeModelSpecs(build(['secret-skill'])))).not.toContain(
+      'secret-skill',
+    );
   });
 
   it('should preserve conversation starters on model specs', () => {
@@ -90,7 +122,7 @@ describe('modelSpecs helpers', () => {
       },
     };
 
-    const { parsedBody, appliedPrivateFields } = applyModelSpecPreset({
+    const { parsedBody, appliedPrivateFields, enforcedFields } = applyModelSpecPreset({
       modelSpec,
       parsedBody: {
         endpoint: EModelEndpoint.openAI,
@@ -108,6 +140,9 @@ describe('modelSpecs helpers', () => {
     expect(parsedBody.maxContextTokens).toBeUndefined();
     expect(parsedBody.iconURL).toBe(EModelEndpoint.openAI);
     expect(appliedPrivateFields.has('promptPrefix')).toBe(true);
+    /* The keys an enforced spec locks are exactly its preset's fields: the
+       reasoning-override refusal rule keys off this set. */
+    expect([...enforcedFields].sort()).toEqual([...Object.keys(modelSpec.preset)].sort());
   });
 
   it('should restore preset defaults when model specs are enforced', () => {

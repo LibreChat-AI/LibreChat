@@ -48,8 +48,8 @@ export default function ProviderKeyRow({ endpoint, endpointsConfig }: ProviderKe
             />
           </div>
           <div className="min-w-0">
-            <div className="truncate font-medium text-text-primary">{label}</div>
-            <div className="truncate text-xs text-text-secondary">{expiryLabel}</div>
+            <div className="text-text-primary truncate font-medium">{label}</div>
+            <div className="text-text-secondary truncate text-xs">{expiryLabel}</div>
           </div>
         </div>
         <Button variant="outline" onClick={() => setDialogOpen(true)}>

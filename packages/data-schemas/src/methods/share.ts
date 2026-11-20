@@ -75,7 +75,17 @@ export type SharedLinkContentPreflight = (
   snapshot: SharedLinkContentSnapshot,
 ) => void | Promise<void>;
 
-export type SharedMessagesPreflight = (snapshot: t.SharedMessagesResult) => void | Promise<void>;
+export type SharedMessagesPreflight = (
+  snapshot: t.SharedMessagesResult,
+  context?: {
+    readonly canonicalMessages: readonly {
+      readonly text?: string;
+      readonly isCreatedByUser?: boolean;
+      readonly privacyRevision?: string;
+      readonly privateTextTokens?: readonly string[];
+    }[];
+  },
+) => void | Promise<void>;
 
 export interface GetSharedMessagesOptions {
   readonly snapshotFiles?: boolean;
@@ -698,6 +708,7 @@ function anonymizeMessages(
       ...(message.manualSkills && { manualSkills: message.manualSkills }),
       ...(message.alwaysAppliedSkills && { alwaysAppliedSkills: message.alwaysAppliedSkills }),
       ...(message.quotes && { quotes: message.quotes }),
+      ...(message.reasoningOverride && { reasoningOverride: message.reasoningOverride }),
       ...(files && { files }),
       ...(attachments && { attachments }),
     };
@@ -887,8 +898,27 @@ function getMessagesUpToTarget(messages: t.IMessage[], targetMessageId: string):
   return Array.from(results);
 }
 
+export interface SharedLinkAccessRecord {
+  _id: string;
+  conversationId: string;
+  user?: string;
+  shareId?: string;
+  tenantId?: string;
+  isPublic?: boolean;
+  expiredAt?: Date;
+}
+
 /** Factory function that takes mongoose instance and returns the methods */
 export function createShareMethods(mongoose: typeof import('mongoose')): {
+  findShareConversationRetention: (
+    user: string,
+    conversationId: string,
+  ) => Promise<{ isTemporary?: boolean; expiredAt?: Date } | null>;
+  findActiveSharedLink: (shareId: string) => Promise<SharedLinkAccessRecord | null>;
+  findSharedLinkById: (resourceId: string) => Promise<SharedLinkAccessRecord | null>;
+  findOwnedSharedLink: (user: string, shareId: string) => Promise<SharedLinkAccessRecord | null>;
+  clearSharedLinkLegacyVisibility: (resourceId: string) => Promise<void>;
+  deleteSharedLinkById: (resourceId: string) => Promise<void>;
   getSharedLink: (user: string, conversationId: string) => Promise<t.GetShareLinkResult>;
   getSharedLinks: (
     user: string,
@@ -931,12 +961,80 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
   ) => Promise<t.SharedFileSnapshot | t.SharedFileSnapshot[] | null>;
   deleteAllSharedLinks: (
     user: string,
+    beforeDelete?: (resourceIds: string[]) => Promise<void>,
   ) => Promise<t.DeleteAllSharesResult & { deletedIds: string[] }>;
   deleteConvoSharedLink: (
     user: string,
     conversationId: string,
   ) => Promise<t.DeleteAllSharesResult & { deletedIds: string[] }>;
 } {
+  function accessRecord(share: t.ISharedLink | null): SharedLinkAccessRecord | null {
+    if (!share?._id) {
+      return null;
+    }
+    return {
+      _id: share._id.toString(),
+      conversationId: share.conversationId,
+      user: share.user?.toString(),
+      shareId: share.shareId,
+      tenantId: share.tenantId,
+      expiredAt: share.expiredAt,
+      ...('isPublic' in share
+        ? { isPublic: (share as t.ISharedLink & { isPublic?: boolean }).isPublic }
+        : {}),
+    };
+  }
+
+  async function findShareConversationRetention(
+    user: string,
+    conversationId: string,
+  ): Promise<{ isTemporary?: boolean; expiredAt?: Date } | null> {
+    const Conversation = mongoose.models.Conversation as Model<t.IConversation>;
+    return Conversation.findOne({ conversationId, user })
+      .select('isTemporary expiredAt -_id')
+      .lean();
+  }
+
+  async function findActiveSharedLink(shareId: string): Promise<SharedLinkAccessRecord | null> {
+    const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+    return accessRecord(
+      await SharedLink.findOne({ shareId, ...activeExpirationFilter<t.ISharedLink>() })
+        .select('_id conversationId user shareId tenantId expiredAt isPublic')
+        .lean(),
+    );
+  }
+
+  async function findSharedLinkById(resourceId: string): Promise<SharedLinkAccessRecord | null> {
+    const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+    return accessRecord(
+      await SharedLink.findById(resourceId)
+        .select('_id conversationId user shareId tenantId expiredAt isPublic')
+        .lean(),
+    );
+  }
+
+  async function findOwnedSharedLink(
+    user: string,
+    shareId: string,
+  ): Promise<SharedLinkAccessRecord | null> {
+    const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+    return accessRecord(
+      await SharedLink.findOne({ user, shareId })
+        .select('_id conversationId user tenantId expiredAt')
+        .lean(),
+    );
+  }
+
+  async function clearSharedLinkLegacyVisibility(resourceId: string): Promise<void> {
+    await mongoose.connection
+      .db!.collection('sharedlinks')
+      .updateOne({ _id: new Types.ObjectId(resourceId) }, { $unset: { isPublic: 1 } });
+  }
+
+  async function deleteSharedLinkById(resourceId: string): Promise<void> {
+    await mongoose.models.SharedLink.deleteOne({ _id: resourceId });
+  }
+
   /**
    * Get shared messages for a share link
    */
@@ -955,7 +1053,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const share = (await query
         .populate({
           path: 'messages',
-          select: CLIENT_MESSAGE_SELECT,
+          select: `${CLIENT_MESSAGE_SELECT.replace(' -privateTextTokens', '')} +privateTextTokens`,
         })
         .select('-__v')
         .lean()) as (t.ISharedLink & { messages: t.IMessage[] }) | null;
@@ -1047,7 +1145,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       };
 
       try {
-        await options?.preflight?.(result);
+        await options?.preflight?.(result, { canonicalMessages: messagesToShare });
       } catch (error) {
         preflightFailed = true;
         throw error;
@@ -1192,11 +1290,19 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
    */
   async function deleteAllSharedLinks(
     user: string,
+    beforeDelete?: (resourceIds: string[]) => Promise<void>,
   ): Promise<t.DeleteAllSharesResult & { deletedIds: string[] }> {
+    let cleanupFailed = false;
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
       const links = await SharedLink.find({ user }).select('_id').lean();
       const ids = links.map((l) => l._id.toString());
+      try {
+        await beforeDelete?.(ids);
+      } catch (error) {
+        cleanupFailed = true;
+        throw error;
+      }
       const result = await SharedLink.deleteMany({ user });
       return {
         message: 'All shared links deleted successfully',
@@ -1204,6 +1310,9 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         deletedIds: ids,
       };
     } catch (error) {
+      if (cleanupFailed) {
+        throw error;
+      }
       logger.error('[deleteAllSharedLinks] Error deleting shared links', {
         error: error instanceof Error ? error.message : 'Unknown error',
         user,
@@ -1272,7 +1381,10 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         })
           .select('-_id -__v -user')
           .lean() as Promise<t.ISharedLink | null>,
-        Message.find({ conversationId, user }).sort({ createdAt: 1 }).lean(),
+        Message.find({ conversationId, user })
+          .select('+privateTextTokens')
+          .sort({ createdAt: 1 })
+          .lean(),
       ]);
 
       if (existingShare) {
@@ -1447,6 +1559,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       }
 
       const updatedMessages = await Message.find({ conversationId: share.conversationId, user })
+        .select('+privateTextTokens')
         .sort({ createdAt: 1 })
         .lean();
 
@@ -1653,6 +1766,12 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
 
   // Return all methods
   return {
+    findShareConversationRetention,
+    findActiveSharedLink,
+    findSharedLinkById,
+    findOwnedSharedLink,
+    clearSharedLinkLegacyVisibility,
+    deleteSharedLinkById,
     getSharedLink,
     getSharedLinks,
     createSharedLink,

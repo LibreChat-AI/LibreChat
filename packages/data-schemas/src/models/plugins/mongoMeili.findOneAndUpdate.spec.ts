@@ -14,7 +14,7 @@
  */
 import mongoose from 'mongoose';
 import { EModelEndpoint } from 'librechat-data-provider';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 
 const MEILI_ENV_KEYS = ['SEARCH', 'MEILI_HOST', 'MEILI_MASTER_KEY'] as const;
@@ -56,7 +56,7 @@ jest.mock('meilisearch', () => ({
 }));
 
 describe('mongoMeili findOneAndUpdate with includeResultMetadata (saveConvo path)', () => {
-  let mongoServer: MongoMemoryServer;
+  let mongoServer: MongoMemoryReplSet;
   let createConversationModel: (typeof import('~/models/convo'))['createConversationModel'];
   let conversationModel: SchemaWithMeiliMethods;
 
@@ -69,14 +69,18 @@ describe('mongoMeili findOneAndUpdate with includeResultMetadata (saveConvo path
     process.env.MEILI_MASTER_KEY = 'bar';
 
     ({ createConversationModel } = await import('~/models/convo'));
-    mongoServer = await MongoMemoryServer.create();
+    mongoServer = await MongoMemoryReplSet.create({
+      replSet: { count: 1 },
+      instanceOpts: [{ args: ['--nounixsocket'] }],
+    });
     await mongoose.connect(mongoServer.getUri());
     conversationModel = createConversationModel(mongoose) as unknown as SchemaWithMeiliMethods;
+    await conversationModel.init();
   });
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
     for (const key of MEILI_ENV_KEYS) {
       if (savedMeiliEnv[key] === undefined) {
         delete process.env[key];
@@ -94,6 +98,40 @@ describe('mongoMeili findOneAndUpdate with includeResultMetadata (saveConvo path
     mockWaitForTask.mockReset().mockResolvedValue({ status: 'succeeded' });
     mockGetDocument.mockClear();
     mockGetDocument.mockReset();
+  });
+
+  it('indexes transactional writes only after commit and discards aborted indexing', async () => {
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+      await conversationModel.findOneAndUpdate(
+        { conversationId: 'transactional', user: 'owner' },
+        { $set: { title: 'Private until commit', endpoint: EModelEndpoint.agents } },
+        { new: true, upsert: true, includeResultMetadata: true, session },
+      );
+      await wait(20);
+      expect(mockAddDocuments).not.toHaveBeenCalled();
+      expect(await conversationModel.findOne({ conversationId: 'transactional' })).toBeNull();
+      await session.commitTransaction();
+      await waitForMock(mockAddDocuments);
+      expect(mockAddDocuments).toHaveBeenCalledTimes(1);
+      await waitForIndexAcknowledgment('transactional');
+      mockAddDocuments.mockClear();
+      session.startTransaction();
+      await conversationModel.findOneAndUpdate(
+        { conversationId: 'transactional', user: 'owner' },
+        { $set: { title: 'Aborted candidate' } },
+        { new: true, includeResultMetadata: true, session },
+      );
+      await session.abortTransaction();
+      await wait(20);
+      expect(mockAddDocuments).not.toHaveBeenCalled();
+      expect((await conversationModel.findOne({ conversationId: 'transactional' }))?.title).toBe(
+        'Private until commit',
+      );
+    } finally {
+      await session.endSession();
+    }
   });
 
   const updateTitle = (conversationId: string, user: string, title: string) =>
@@ -116,6 +154,43 @@ describe('mongoMeili findOneAndUpdate with includeResultMetadata (saveConvo path
       await wait(10);
     }
   };
+
+  test('skips indexing for an internal admission fence without disabling later content updates', async () => {
+    const { withoutMeiliIndexing } = await import('./mongoMeili');
+    const conversationId = new mongoose.Types.ObjectId().toString();
+    const user = new mongoose.Types.ObjectId().toString();
+    await conversationModel.create({
+      conversationId,
+      user,
+      title: 'Original Title',
+      endpoint: EModelEndpoint.openAI,
+    });
+    await waitForIndexAcknowledgment(conversationId);
+    const before = await conversationModel.collection.findOne({ conversationId });
+    mockAddDocuments.mockClear();
+    mockUpdateDocuments.mockClear();
+    const result = await withoutMeiliIndexing(
+      conversationModel.findOneAndUpdate(
+        { conversationId, user },
+        { $inc: { codeEnvironmentRevision: 1 } },
+        { new: true, timestamps: false },
+      ),
+    )
+      .select('conversationId codeWorkspaces')
+      .lean();
+    expect(result).toHaveProperty('conversationId', conversationId);
+    expect(result).not.toHaveProperty('codeEnvironmentRevision');
+    const after = await conversationModel.collection.findOne({ conversationId });
+    expect(after?.codeEnvironmentRevision).toBe(1);
+    expect(after?.updatedAt).toEqual(before?.updatedAt);
+    expect(after?._meiliIndexVersion).toEqual(before?._meiliIndexVersion);
+    expect(after?._meiliIndex).toBe(true);
+    expect(mockAddDocuments).not.toHaveBeenCalled();
+    expect(mockUpdateDocuments).not.toHaveBeenCalled();
+    await updateTitle(conversationId, user, 'New title');
+    await waitForMock(mockAddDocuments);
+    expect(mockAddDocuments).toHaveBeenCalledTimes(1);
+  });
 
   test('re-indexes the updated title when the raw result wrapper is returned', async () => {
     const conversationId = new mongoose.Types.ObjectId().toString();

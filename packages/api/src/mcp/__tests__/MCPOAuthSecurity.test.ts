@@ -209,27 +209,60 @@ describe('MCP OAuth SSRF protection', () => {
 });
 
 describe('MCP OAuth redirect_uri enforcement', () => {
-  it('should ignore attacker-supplied redirect_uri and use the server default', async () => {
+  const originalEnv = process.env;
+  let oauthServer: OAuthTestServer;
+
+  beforeAll(async () => {
+    oauthServer = await createOAuthMCPServer({ tokenTTLMs: 60000 });
+  });
+  afterAll(async () => {
+    await oauthServer.close();
+  });
+  beforeEach(() => {
+    process.env = { ...originalEnv, DOMAIN_CLIENT: 'https://client.example/ui/' };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it.each([
+    [undefined, 'http://localhost:3080'],
+    ['https://server.example', 'https://server.example'],
+    ['https://server.example/', 'https://server.example'],
+    ['https://server.example///', 'https://server.example'],
+    ['https://server.example/chat', 'https://server.example/chat'],
+    ['https://server.example/chat/', 'https://server.example/chat'],
+    ['https://server.example/chat///', 'https://server.example/chat'],
+    ['https://server.example/apps/librechat/', 'https://server.example/apps/librechat'],
+  ])('ignores attacker redirects and canonicalizes %s', async (domainServer, baseUrl) => {
+    if (domainServer === undefined) {
+      delete process.env.DOMAIN_SERVER;
+    } else {
+      process.env.DOMAIN_SERVER = domainServer;
+    }
     const attackerRedirectUri = 'https://attacker.example.com/steal-code';
-
-    const result = await MCPOAuthHandler.initiateOAuthFlow(
-      'victim-server',
-      'https://mcp.example.com/',
-      'victim-user-id',
-      {},
-      {
-        authorization_url: 'https://auth.example.com/authorize',
-        token_url: 'https://auth.example.com/token',
-        client_id: 'attacker-client',
-        client_secret: 'attacker-secret',
-        redirect_uri: attackerRedirectUri,
-      },
-    );
-
-    const authUrl = new URL(result.authorizationUrl);
-    const expectedRedirectUri = `${process.env.DOMAIN_SERVER || 'http://localhost:3080'}/api/mcp/victim-server/oauth/callback`;
-    expect(authUrl.searchParams.get('redirect_uri')).toBe(expectedRedirectUri);
-    expect(authUrl.searchParams.get('redirect_uri')).not.toBe(attackerRedirectUri);
+    for (const preconfigured of [true, false]) {
+      const result = await MCPOAuthHandler.initiateOAuthFlow(
+        'victim-server',
+        oauthServer.url,
+        'victim-user-id',
+        {},
+        preconfigured
+          ? {
+              authorization_url: `${oauthServer.url}authorize`,
+              token_url: `${oauthServer.url}token`,
+              client_id: 'test-client',
+              redirect_uri: attackerRedirectUri,
+            }
+          : { redirect_uri: attackerRedirectUri },
+        ['127.0.0.1'],
+      );
+      const authUrl = new URL(result.authorizationUrl);
+      const expectedRedirectUri = `${baseUrl}/api/mcp/victim-server/oauth/callback`;
+      expect(authUrl.searchParams.get('redirect_uri')).toBe(expectedRedirectUri);
+      expect(result.flowMetadata.clientInfo?.redirect_uris).toEqual([expectedRedirectUri]);
+      expect(authUrl.searchParams.get('redirect_uri')).not.toBe(attackerRedirectUri);
+    }
   });
 });
 

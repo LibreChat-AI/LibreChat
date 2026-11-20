@@ -1,14 +1,23 @@
 const fs = require('fs');
 const LdapStrategy = require('passport-ldapauth');
 const { logger } = require('@librechat/data-schemas');
-const { SystemRoles, ErrorTypes } = require('librechat-data-provider');
+const { ErrorTypes } = require('librechat-data-provider');
 const {
   isEnabled,
+  findLdapUser,
   getBalanceConfig,
+  provisionLdapUser,
   isEmailDomainAllowed,
+  resolvePreAuthAppConfig,
   resolveAppConfigForUser,
 } = require('@librechat/api');
-const { createUser, findUser, updateUser, countUsers } = require('~/models');
+const {
+  findUser,
+  updateUser,
+  countUsers,
+  findBalanceByUser,
+  createUserIfAbsent,
+} = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 
 const {
@@ -120,62 +129,45 @@ const ldapLogin = new LdapStrategy(ldapOptions, async (userinfo, done) => {
     // Domain check before findUser for two-phase fast-fail (consistent with SAML/OpenID/social).
     // This means cross-provider users from blocked domains get 'Email domain not allowed'
     // instead of AUTH_FAILED — both deny access.
-    const baseConfig = await getAppConfig({ baseOnly: true });
+    const baseConfig = await resolvePreAuthAppConfig(getAppConfig);
     if (!isEmailDomainAllowed(mail, baseConfig?.registration?.allowedDomains)) {
-      logger.error(
-        `[LDAP Strategy] Authentication blocked - email domain not allowed [Email: ${mail}]`,
-      );
+      logger.error(`[LDAP Strategy] Authentication blocked - email domain not allowed`);
       return done(null, false, { message: 'Email domain not allowed' });
     }
 
-    let user = await findUser({ ldapId });
-    if (user && user.provider !== 'ldap') {
-      logger.info(
-        `[ldapStrategy] User ${user.email} already exists with provider ${user.provider}`,
-      );
-      return done(null, false, {
-        message: ErrorTypes.AUTH_FAILED,
-      });
+    const found = await findLdapUser({ findUser, ldapId });
+    if (found.error) {
+      return done(null, false, { message: ErrorTypes.AUTH_FAILED });
     }
 
-    const appConfig = user?.tenantId
-      ? await resolveAppConfigForUser(getAppConfig, user)
+    const appConfig = found.user
+      ? await resolveAppConfigForUser(getAppConfig, found.user)
       : baseConfig;
 
     if (!isEmailDomainAllowed(mail, appConfig?.registration?.allowedDomains)) {
-      logger.error(
-        `[LDAP Strategy] Authentication blocked - email domain not allowed [Email: ${mail}]`,
-      );
+      logger.error(`[LDAP Strategy] Authentication blocked - email domain not allowed`);
       return done(null, false, { message: 'Email domain not allowed' });
     }
 
-    if (!user) {
-      const isFirstRegisteredUser = (await countUsers()) === 0;
-      const role = isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER;
-
-      user = {
-        provider: 'ldap',
-        ldapId,
-        username,
-        email: mail,
-        emailVerified: true, // The ldap server administrator should verify the email
-        name: fullName,
-        role,
-      };
-      const balanceConfig = getBalanceConfig(appConfig);
-      const userId = await createUser(user, balanceConfig);
-      user._id = userId;
-    } else {
-      // Users registered in LDAP are assumed to have their user information managed in LDAP,
-      // so update the user information with the values registered in LDAP
-      user.provider = 'ldap';
-      user.ldapId = ldapId;
-      user.email = mail;
-      user.username = username;
-      user.name = fullName;
+    const provisioned = await provisionLdapUser({
+      user: found.user,
+      ldapId,
+      email: mail,
+      username,
+      name: fullName,
+      appConfig,
+      getBalanceConfig,
+      getAppConfig,
+      findUser,
+      countUsers,
+      createUserIfAbsent,
+      findBalanceByUser,
+    });
+    if (provisioned.error) {
+      return done(null, false, { message: provisioned.error });
     }
 
-    user = await updateUser(user._id, user);
+    const user = await updateUser(provisioned.user._id, provisioned.user);
     done(null, user);
   } catch (err) {
     logger.error('[ldapStrategy]', err);

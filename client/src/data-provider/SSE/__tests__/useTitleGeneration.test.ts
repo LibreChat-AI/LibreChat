@@ -17,15 +17,17 @@ let mockTiming: 'immediate' | 'final' = 'immediate';
 let mockQueriesResults: Array<{
   isSuccess?: boolean;
   isError?: boolean;
-  data?: { title: string };
+  data?: { title: string; titleSetByUser?: boolean; titleRevision?: number };
   error?: unknown;
 }> = [];
 let mockCapturedQueries: Array<{ queryKey: unknown[] }> = [];
 
 const mockSetQueryData = jest.fn();
+const mockGetQueryData = jest.fn();
 const mockRemoveQueries = jest.fn();
 const mockResetQueries = jest.fn();
 const mockUpdateConvoInAllQueries = jest.fn();
+const mockFindManualTitle = jest.fn();
 
 jest.mock('@tanstack/react-query', () => ({
   useQuery: jest.fn(() => ({ data: { activeJobIds: mockActiveJobIds } })),
@@ -35,6 +37,7 @@ jest.mock('@tanstack/react-query', () => ({
   }),
   useQueryClient: jest.fn(() => ({
     setQueryData: mockSetQueryData,
+    getQueryData: mockGetQueryData,
     removeQueries: mockRemoveQueries,
     resetQueries: mockResetQueries,
   })),
@@ -45,6 +48,7 @@ jest.mock('../../Endpoints', () => ({
 }));
 
 jest.mock('~/utils', () => ({
+  findManualConvoTitleInAllQueries: (...args: unknown[]) => mockFindManualTitle(...args),
   isNotFoundError: (error: unknown): boolean => {
     if (error != null && typeof error === 'object') {
       return (error as { response?: { status?: number } }).response?.status === 404;
@@ -81,6 +85,18 @@ beforeEach(() => {
   mockQueriesResults = [];
   mockCapturedQueries = [];
   jest.clearAllMocks();
+  mockGetQueryData.mockReset();
+  mockFindManualTitle.mockReset().mockImplementation((_client, id, incoming) => {
+    const cached = mockGetQueryData(['conversation', id]);
+    if (
+      cached?.titleSetByUser &&
+      cached.title != null &&
+      (!incoming.titleSetByUser || (cached.titleRevision ?? 0) > (incoming.titleRevision ?? 0))
+    ) {
+      return cached;
+    }
+    return incoming.titleSetByUser ? incoming : undefined;
+  });
 });
 
 describe('useTitleGeneration — eligibility', () => {
@@ -124,6 +140,66 @@ describe('useTitleGeneration — eligibility', () => {
 });
 
 describe('useTitleGeneration — result handling', () => {
+  it('keeps a persisted manual title when an old title poll resolves', () => {
+    const id = 'conv-manual-poll';
+    const owned = { title: 'New Chat', titleSetByUser: true };
+    mockGetQueryData.mockImplementation((key: string[]) => (key[1] === id ? owned : undefined));
+    const { rerender } = renderHook(() => useTitleGeneration(true));
+    act(() => queueTitleGeneration(id));
+    mockQueriesResults = [{ isSuccess: true, data: { title: 'Old generated title' } }];
+    rerender();
+    const call = mockSetQueryData.mock.calls.find(([key]) => key[1] === id);
+    const updater = call?.[1] as (value: typeof owned) => typeof owned;
+    expect(updater(owned)).toEqual(owned);
+  });
+
+  it.each([
+    [1, 2],
+    [3, 2],
+  ])('orders polled manual revisions (cache %s, poll %s)', (cachedRevision, polledRevision) => {
+    const id = `manual-poll-${cachedRevision}-${polledRevision}`;
+    const cached = { title: 'Cached rename', titleSetByUser: true, titleRevision: cachedRevision };
+    mockGetQueryData.mockImplementation((key: string[]) => (key[1] === id ? cached : undefined));
+    const { rerender } = renderHook(() => useTitleGeneration(true));
+    act(() => queueTitleGeneration(id));
+    mockQueriesResults = [
+      {
+        isSuccess: true,
+        data: { title: 'Polled rename', titleSetByUser: true, titleRevision: polledRevision },
+      },
+    ];
+    rerender();
+    const update = mockSetQueryData.mock.calls.find(([key]) => key[1] === id)?.[1];
+    const expected =
+      polledRevision >= cachedRevision
+        ? { title: 'Polled rename', titleSetByUser: true, titleRevision: polledRevision }
+        : cached;
+    expect(update(cached)).toEqual(expected);
+    const updateLists = mockUpdateConvoInAllQueries.mock.calls.find(([, key]) => key === id)?.[2];
+    expect(updateLists(cached)).toEqual(expected);
+    expect(isEligible(id)).toBe(false);
+  });
+
+  it('propagates the highest cached manual revision instead of an older poll', () => {
+    const id = 'manual-list-poll';
+    const newest = { title: 'List rename', titleSetByUser: true, titleRevision: 3 };
+    mockFindManualTitle.mockReturnValue(newest);
+    const { rerender } = renderHook(() => useTitleGeneration(true));
+    act(() => queueTitleGeneration(id));
+    mockQueriesResults = [
+      { isSuccess: true, data: { title: 'Point rename', titleSetByUser: true, titleRevision: 2 } },
+    ];
+    rerender();
+    const update = mockSetQueryData.mock.calls.find(([key]) => key[1] === id)?.[1];
+    expect(update({ title: 'Point rename', titleSetByUser: true, titleRevision: 2 })).toEqual(
+      newest,
+    );
+    const updateLists = mockUpdateConvoInAllQueries.mock.calls.find(([, key]) => key === id)?.[2];
+    expect(updateLists({ title: 'Other rename', titleSetByUser: true, titleRevision: 1 })).toEqual(
+      newest,
+    );
+  });
+
   it('applies the fetched title to the conversation caches on success', () => {
     mockTiming = 'immediate';
     mockActiveJobIds = ['conv-ok'];

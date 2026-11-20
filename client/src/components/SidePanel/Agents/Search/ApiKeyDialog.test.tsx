@@ -1,5 +1,6 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { useForm } from 'react-hook-form';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   AuthType,
   RerankerTypes,
@@ -7,12 +8,15 @@ import {
   SearchCategories,
   ScraperProviders,
 } from 'librechat-data-provider';
+import type { SearchApiKeyFormData } from '~/hooks/Plugins/useAuthSearchTool';
 import { useGetStartupConfig } from '~/data-provider';
 import ApiKeyDialog from './ApiKeyDialog';
 
-// Mock useLocalize to just return the key
+const mockLocalize = jest.fn((key: string) => key);
+const triggerLabel = 'Open search keys';
+
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => mockLocalize,
 }));
 
 jest.mock('~/data-provider', () => ({
@@ -42,10 +46,200 @@ const defaultProps = {
   handleSubmit: (fn: any) => (e: any) => fn(e),
 };
 
+function DialogHarness({
+  triggerMode = 'triggerRef',
+  ...props
+}: Partial<React.ComponentProps<typeof ApiKeyDialog>> & {
+  triggerMode?: 'triggerRef' | 'triggerRefs';
+}) {
+  const [isOpen, setIsOpen] = React.useState(false);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const { register, setValue, handleSubmit } = useForm<SearchApiKeyFormData>();
+
+  return (
+    <>
+      <button ref={triggerRef} onClick={() => setIsOpen(true)}>
+        {triggerLabel}
+      </button>
+      <ApiKeyDialog
+        {...defaultProps}
+        isOpen={isOpen}
+        onOpenChange={setIsOpen}
+        register={register}
+        setValue={setValue}
+        handleSubmit={handleSubmit}
+        {...(triggerMode === 'triggerRef' ? { triggerRef } : { triggerRefs: [triggerRef] })}
+        {...props}
+      />
+    </>
+  );
+}
+
 describe('ApiKeyDialog', () => {
   const mockUseGetStartupConfig = useGetStartupConfig as jest.Mock;
 
   afterEach(() => jest.clearAllMocks());
+
+  it('does not initialize the config subscription, options, or form before first opening', () => {
+    const register = jest.fn(() => {
+      throw new Error('Unexpected field registration before first opening');
+    });
+    const handleSubmit = jest.fn(defaultProps.handleSubmit);
+    const props = { ...defaultProps, isOpen: false, register, handleSubmit };
+    mockUseGetStartupConfig.mockReturnValue({ data: {} });
+    const { container, rerender } = render(<ApiKeyDialog {...props} />);
+
+    rerender(<ApiKeyDialog {...props} searchProvider={SearchProviders.KEENABLE} />);
+
+    expect(container).toBeEmptyDOMElement();
+    expect(mockUseGetStartupConfig).not.toHaveBeenCalled();
+    expect(mockLocalize).not.toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+    expect(defaultProps.setValue).not.toHaveBeenCalled();
+    expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  it('uses current provider props on first opening without writing stale defaults', () => {
+    mockUseGetStartupConfig.mockReturnValue({ data: {} });
+    const { rerender } = render(<ApiKeyDialog {...defaultProps} isOpen={false} />);
+    const providers = {
+      searchProvider: SearchProviders.KEENABLE,
+      scraperProvider: ScraperProviders.TAVILY,
+      rerankerType: RerankerTypes.COHERE,
+    };
+    rerender(<ApiKeyDialog {...defaultProps} {...providers} isOpen={false} />);
+    rerender(<ApiKeyDialog {...defaultProps} {...providers} />);
+
+    expect(defaultProps.setValue.mock.calls).toEqual([
+      ['selectedProvider', SearchProviders.KEENABLE],
+      ['selectedScraper', ScraperProviders.TAVILY],
+      ['selectedReranker', RerankerTypes.COHERE],
+    ]);
+    expect(
+      screen.getByRole('button', { name: 'com_ui_web_search_provider_keenable' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'com_ui_web_search_scraper_tavily' }),
+    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('com_ui_web_search_cohere_key')).toBeInTheDocument();
+  });
+
+  it('uses current pinned config over provider props on first opening', () => {
+    mockUseGetStartupConfig.mockReturnValue({
+      data: { webSearch: { searchProvider: SearchProviders.SERPER } },
+    });
+    const props = { ...defaultProps, searchProvider: SearchProviders.SERPER };
+    const { rerender } = render(<ApiKeyDialog {...props} isOpen={false} />);
+    mockUseGetStartupConfig.mockReturnValue({
+      data: {
+        webSearch: {
+          searchProvider: SearchProviders.KEENABLE,
+          scraperProvider: ScraperProviders.TAVILY,
+          rerankerType: RerankerTypes.NONE,
+        },
+      },
+    });
+
+    rerender(<ApiKeyDialog {...props} />);
+
+    expect(defaultProps.setValue.mock.calls).toEqual([
+      ['selectedProvider', SearchProviders.KEENABLE],
+      ['selectedScraper', ScraperProviders.TAVILY],
+      ['selectedReranker', RerankerTypes.NONE],
+    ]);
+    expect(screen.getByText('com_ui_web_search_provider_keenable')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /provider_keenable/ })).not.toBeInTheDocument();
+    expect(screen.getByText('com_ui_web_search_scraper_tavily')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('com_ui_web_search_jina_key')).not.toBeInTheDocument();
+  });
+
+  it('keeps the initialized content mounted while closed', () => {
+    mockUseGetStartupConfig.mockReturnValue({ data: {} });
+    const { rerender } = render(<ApiKeyDialog {...defaultProps} />);
+    mockUseGetStartupConfig.mockClear();
+    const setValue = jest.fn();
+
+    rerender(<ApiKeyDialog {...defaultProps} isOpen={false} setValue={setValue} />);
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(mockUseGetStartupConfig).toHaveBeenCalled();
+    expect(setValue.mock.calls).toEqual([
+      ['selectedProvider', SearchProviders.SERPER],
+      ['selectedScraper', ScraperProviders.FIRECRAWL],
+      ['selectedReranker', RerankerTypes.JINA],
+    ]);
+  });
+
+  it('preserves entered secrets and URLs while resetting provider selections on reopen', async () => {
+    const onSubmit = jest.fn();
+    mockUseGetStartupConfig.mockReturnValue({ data: {} });
+    render(<DialogHarness onSubmit={onSubmit} />);
+    const trigger = screen.getByRole('button', { name: triggerLabel });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByText('com_ui_web_search_provider_keenable'));
+    fireEvent.click(screen.getByText('com_ui_web_search_reranker_cohere'));
+    fireEvent.change(screen.getByPlaceholderText('com_ui_web_search_keenable_url'), {
+      target: { value: 'https://search.example.test' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('com_ui_enter_api_key_optional'), {
+      target: { value: 'retained-provider-secret' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('com_ui_web_search_cohere_key'), {
+      target: { value: 'retained-reranker-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+    fireEvent.click(trigger);
+
+    expect(
+      screen.getByRole('button', { name: 'com_ui_web_search_provider_serper' }),
+    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('com_ui_web_search_jina_key')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('com_ui_web_search_provider_keenable'));
+    fireEvent.click(screen.getByText('com_ui_web_search_reranker_cohere'));
+    expect(screen.getByPlaceholderText('com_ui_web_search_keenable_url')).toHaveValue(
+      'https://search.example.test',
+    );
+    expect(screen.getByPlaceholderText('com_ui_enter_api_key_optional')).toHaveValue(
+      'retained-provider-secret',
+    );
+    expect(screen.getByPlaceholderText('com_ui_web_search_cohere_key')).toHaveValue(
+      'retained-reranker-secret',
+    );
+    expect(screen.getByPlaceholderText('com_ui_web_search_cohere_key')).toHaveAttribute(
+      'type',
+      'password',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selectedProvider: SearchProviders.KEENABLE,
+          selectedScraper: ScraperProviders.FIRECRAWL,
+          selectedReranker: RerankerTypes.COHERE,
+          keenableApiUrl: 'https://search.example.test',
+          keenableApiKey: 'retained-provider-secret',
+          cohereApiKey: 'retained-reranker-secret',
+        }),
+      ),
+    );
+  });
+
+  it.each(['triggerRef', 'triggerRefs'] as const)(
+    'restores focus through %s after closing and reopening',
+    async (triggerMode) => {
+      mockUseGetStartupConfig.mockReturnValue({ data: {} });
+      render(<DialogHarness triggerMode={triggerMode} />);
+      const trigger = screen.getByRole('button', { name: triggerLabel });
+
+      for (let opening = 0; opening < 2; opening++) {
+        fireEvent.click(trigger);
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+        await waitFor(() => expect(trigger).toHaveFocus());
+      }
+    },
+  );
 
   it('shows all dropdowns and both reranker fields when no config is set', () => {
     mockUseGetStartupConfig.mockReturnValue({ data: {} });

@@ -5,6 +5,7 @@ import type { NextFunction, Response } from 'express';
 import type { Span } from '@opentelemetry/api';
 import type { ServerRequest } from '~/types';
 import { telemetryErrorMiddleware, telemetryMiddleware } from './middleware';
+import { resetConfigDigestForTests, setConfigDigest } from './digest';
 import { observeRedisOperation } from '~/cache/redisTelemetry';
 import { getTelemetryRequestSpan } from './sdk';
 
@@ -116,6 +117,23 @@ describe('telemetryMiddleware', () => {
         'http.route': '/api/messages/:conversationId',
       }),
     );
+  });
+
+  it('names the loaded config on the request span once a digest is recorded', () => {
+    const span = createSpan();
+    mockGetTelemetryRequestSpan.mockReturnValue(span);
+
+    setConfigDigest('0123456789ab');
+    try {
+      telemetryMiddleware(createRequest(), createResponse() as Response, jest.fn());
+    } finally {
+      resetConfigDigestForTests();
+    }
+
+    expect(span.setAttributes).toHaveBeenCalledWith({
+      'http.request.method': 'POST',
+      'librechat.config.digest': '0123456789ab',
+    });
   });
 
   it('adds aggregated Redis activity to the stored request span', async () => {

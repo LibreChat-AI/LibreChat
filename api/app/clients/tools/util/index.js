@@ -1,6 +1,5 @@
-const { validateTools, loadTools } = require('./handleTools');
+const { loadTools } = require('./handleTools');
 
 module.exports = {
-  validateTools,
   loadTools,
 };

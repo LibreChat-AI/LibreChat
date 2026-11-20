@@ -82,11 +82,11 @@ describe('getSafeErrorText', () => {
     expect(text).toContain('at send (/app/api/s3.js:1:1)');
   });
 
-  it('keeps file:// stack frames readable', () => {
+  it.each(['file', 'FILE'])('keeps %s:// stack frames readable', (scheme) => {
     const error = new Error('boom');
-    error.stack = 'Error: boom\n    at run (file:///app/api/server.js:10:5)';
+    error.stack = `Error: boom\n    at run (${scheme}:///app/api/server.js:10:5)`;
 
-    expect(getSafeErrorText(error)).toContain('file:///app/api/server.js:10:5');
+    expect(getSafeErrorText(error)).toContain(`${scheme}:///app/api/server.js:10:5`);
   });
 
   it('redacts bearer credentials echoed into a message', () => {
@@ -127,6 +127,106 @@ describe('getSafeErrorText', () => {
 
   it('bounds the text a very long error can write into the log', () => {
     expect(getSafeErrorText(new Error('x'.repeat(9000))).length).toBeLessThanOrEqual(2000);
+  });
+
+  it.each([
+    { kind: 'string', createError: (text: string) => text, prefix: '' },
+    { kind: 'stack', createError: (text: string) => ({ stack: text }), prefix: '' },
+    {
+      kind: 'message',
+      createError: (text: string) => ({ name: 'RestError', message: text }),
+      prefix: 'RestError: ',
+    },
+    {
+      kind: 'name',
+      createError: (text: string) => ({ name: text, message: 'outside the input limit' }),
+      prefix: '',
+    },
+  ])('truncates oversized $kind input before URL redaction', ({ createError, prefix }) => {
+    const text = `https://minio.example.com/${'x'.repeat(3 * 1024 * 1024)} after the input limit`;
+
+    expect(getSafeErrorText(createError(text))).toBe(
+      `${prefix}https://minio.example.com/[redacted]`,
+    );
+  });
+
+  it('bounds repeated scheme-like prefixes before matching URLs', () => {
+    const text = 'model-'.repeat(512 * 1024);
+
+    expect(getSafeErrorText(text)).toBe(text.slice(0, 2000));
+  });
+
+  it.each([1, 32])('redacts a URL with a %i-character scheme', (length) => {
+    const scheme = 'a'.repeat(length);
+
+    expect(getSafeErrorText(`${scheme}://example.com/private?signature=secret`)).toBe(
+      `${scheme}://example.com/[redacted]`,
+    );
+  });
+
+  it.each([33, 64, 1900])('redacts the entire URL tail for a %i-character scheme', (length) => {
+    const scheme = 'a'.repeat(length);
+    const input = `${scheme}://user:password@example.com/private?signature=secret`;
+
+    expect(getSafeErrorText(input)).toBe(`${scheme}[url]`);
+  });
+
+  it.each(['1+.-', '+file', '.FILE', '-file'])(
+    'does not mistake an overlength scheme suffix (%s) for a separate URL',
+    (suffix) => {
+      const scheme = `${'a'.repeat(33)}${suffix}`;
+      const input = `${scheme}://example.com/private?signature=secret`;
+
+      expect(getSafeErrorText(input)).toBe(`${scheme}[url]`);
+    },
+  );
+
+  it.each([
+    { kind: 'stack', createError: (text: string) => ({ stack: text }), prefix: '' },
+    { kind: 'name', createError: (text: string) => ({ name: text }), prefix: '' },
+    {
+      kind: 'message',
+      createError: (text: string) => ({ message: text }),
+      prefix: 'UnknownError: ',
+    },
+  ])('redacts overlength URL schemes in $kind input', ({ createError, prefix }) => {
+    const scheme = 'a'.repeat(33);
+    const input = `${scheme}://example.com/private?signature=secret`;
+
+    expect(getSafeErrorText(createError(input))).toBe(`${prefix}${scheme}[url]`);
+  });
+
+  it('redacts an overlength URL scheme that crosses the input limit', () => {
+    const prefix = `${'x'.repeat(1940)} `;
+    const scheme = 'a'.repeat(33);
+
+    expect(getSafeErrorText(`${prefix}${scheme}://example.com/private?signature=secret`)).toBe(
+      `${prefix}${scheme}[url]`,
+    );
+  });
+
+  it('redacts a signed URL that crosses the input limit', () => {
+    const prefix = `${'x'.repeat(1950)} `;
+    const text = getSafeErrorText(`${prefix}${signedUrl}`);
+
+    expect(text).toBe(`${prefix}https://minio.example.com/[redacted]`);
+    expect(text).not.toContain('user123');
+  });
+
+  it.each(['Bearer', 'Basic'])('redacts a truncated %s credential', (scheme) => {
+    const prefix = `${'x'.repeat(1980)} `;
+    const text = getSafeErrorText(`${prefix}${scheme} private-credential-crossing-the-limit`);
+
+    expect(text).toBe(`${prefix}${scheme} [redacted]`);
+    expect(text).not.toContain('private');
+  });
+
+  it('keeps the output bounded when redaction expands the truncated input', () => {
+    const text = getSafeErrorText('Bearer x '.repeat(1000));
+
+    expect(text.length).toBe(2000);
+    expect(text).toContain('Bearer [redacted]');
+    expect(text).not.toContain('Bearer x');
   });
 });
 

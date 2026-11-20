@@ -169,7 +169,6 @@ router.post('/', async (req, res) => {
     openSseStreamIfRequested();
     await processImageFile({ req, res, metadata, sseStream });
   } catch (error) {
-    // TODO: delete remote file if it exists
     logger.error('[/files/images] Error processing file:', getSafeErrorMetadata(error));
 
     try {

@@ -1,6 +1,6 @@
 import React from 'react';
-import InputWithLabel from './InputWithLabel';
 import type { TConfigProps } from '~/common';
+import InputWithLabel from './InputWithLabel';
 import { useLocalize } from '~/hooks';
 
 const OtherConfig = ({ userKey, setUserKey, endpoint }: TConfigProps) => {

@@ -1,9 +1,16 @@
+import { AGENT_FADING_TIER_VERSION } from '@librechat/data-schemas';
 import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
-import { createPruneMessages, resolveFadingCaps, seedFadingTier } from '@librechat/agents';
+import {
+  FADING_TIER_VERSION,
+  createPruneMessages,
+  resolveFadingCaps,
+  seedFadingTier,
+} from '@librechat/agents';
 import type { IAgentFadingTier } from '@librechat/data-schemas';
 import type { BaseMessage } from '@langchain/core/messages';
 import {
   isAgentFadingTier,
+  isCurrentAgentFadingTier,
   resolvePersistableFadingTier,
   resolvePersistableFadingTiers,
   resolveRunContextMeta,
@@ -11,12 +18,19 @@ import {
 } from './fading';
 
 describe('isAgentFadingTier', () => {
+  it('matches the actual SDK tier version', () => {
+    expect(AGENT_FADING_TIER_VERSION).toBe(FADING_TIER_VERSION);
+  });
+
   it('accepts a well-formed tier and rejects everything else', () => {
+    expect(isAgentFadingTier({ v: 2, budgetTokens: 20_000, masked: true })).toBe(true);
     expect(isAgentFadingTier({ v: 1, budgetTokens: 20_000, masked: true })).toBe(true);
-    expect(isAgentFadingTier({ v: 2, budgetTokens: 20_000, masked: true })).toBe(false);
-    expect(isAgentFadingTier({ v: 1, budgetTokens: 0, masked: true })).toBe(false);
-    expect(isAgentFadingTier({ v: 1, budgetTokens: 20_000, masked: 'yes' })).toBe(false);
-    expect(isAgentFadingTier({ v: 1, budgetTokens: Number.NaN, masked: false })).toBe(false);
+    expect(isCurrentAgentFadingTier({ v: 2, budgetTokens: 20_000, masked: true })).toBe(true);
+    expect(isCurrentAgentFadingTier({ v: 1, budgetTokens: 20_000, masked: true })).toBe(false);
+    expect(isAgentFadingTier({ v: 3, budgetTokens: 20_000, masked: true })).toBe(false);
+    expect(isAgentFadingTier({ v: 2, budgetTokens: 0, masked: true })).toBe(false);
+    expect(isAgentFadingTier({ v: 2, budgetTokens: 20_000, masked: 'yes' })).toBe(false);
+    expect(isAgentFadingTier({ v: 2, budgetTokens: Number.NaN, masked: false })).toBe(false);
     expect(isAgentFadingTier(null)).toBe(false);
     expect(isAgentFadingTier(undefined)).toBe(false);
   });
@@ -25,28 +39,33 @@ describe('isAgentFadingTier', () => {
 describe('resolvePersistableFadingTier', () => {
   it('strips a valid tier to its fields and drops invalid input', () => {
     expect(
-      resolvePersistableFadingTier({ v: 1, budgetTokens: 50_000, masked: true, extra: 1 }),
-    ).toEqual({ v: 1, budgetTokens: 50_000, masked: true });
+      resolvePersistableFadingTier({ v: 2, budgetTokens: 50_000, masked: true, extra: 1 }),
+    ).toEqual({ v: 2, budgetTokens: 50_000, masked: true });
+    expect(resolvePersistableFadingTier({ v: 1, budgetTokens: 50_000, masked: true })).toEqual({
+      v: 1,
+      budgetTokens: 50_000,
+      masked: true,
+    });
     expect(resolvePersistableFadingTier(undefined)).toBeUndefined();
-    expect(resolvePersistableFadingTier({ v: 1, budgetTokens: -1, masked: true })).toBeUndefined();
+    expect(resolvePersistableFadingTier({ v: 2, budgetTokens: -1, masked: true })).toBeUndefined();
   });
 });
 
 describe('resolvePersistableFadingTiers', () => {
   it('keeps only valid tiers, stripped to the compact shape, from own keys', () => {
     const snapshot = Object.fromEntries([
-      ['agent-a', { v: 1, budgetTokens: 20_000, masked: true, latched: true }],
-      ['agent-b', { v: 1, budgetTokens: 0, masked: false }],
-      ['__proto__', { v: 1, budgetTokens: 10_000, masked: false, latched: true }],
+      ['agent-a', { v: 2, budgetTokens: 20_000, masked: true, latched: true }],
+      ['agent-b', { v: 2, budgetTokens: 0, masked: false }],
+      ['__proto__', { v: 2, budgetTokens: 10_000, masked: false, latched: true }],
     ]);
     expect(resolvePersistableFadingTiers(snapshot)).toEqual([
-      { agentId: 'agent-a', v: 1, budgetTokens: 20_000, masked: true },
-      { agentId: '__proto__', v: 1, budgetTokens: 10_000, masked: false },
+      { agentId: 'agent-a', v: 2, budgetTokens: 20_000, masked: true },
+      { agentId: '__proto__', v: 2, budgetTokens: 10_000, masked: false },
     ]);
   });
 
   it('ignores inherited keys and yields nothing for an empty or invalid snapshot', () => {
-    const inherited = Object.create({ ghost: { v: 1, budgetTokens: 20_000, masked: true } });
+    const inherited = Object.create({ ghost: { v: 2, budgetTokens: 20_000, masked: true } });
     expect(resolvePersistableFadingTiers(inherited)).toBeUndefined();
     expect(resolvePersistableFadingTiers({})).toBeUndefined();
     expect(resolvePersistableFadingTiers(null)).toBeUndefined();
@@ -57,48 +76,57 @@ describe('resolvePersistableFadingTiers', () => {
 describe('resolveRunFadingTiers', () => {
   it('rebuilds a prototype-safe record from persisted entries', () => {
     const tiers = resolveRunFadingTiers([
-      { agentId: 'agent-a', v: 1, budgetTokens: 20_000, masked: true },
-      { agentId: '__proto__', v: 1, budgetTokens: 10_000, masked: false },
+      { agentId: 'agent-a', v: 2, budgetTokens: 20_000, masked: true },
+      { agentId: '__proto__', v: 2, budgetTokens: 10_000, masked: false },
     ]);
 
     expect(tiers).toBeDefined();
     expect(Object.getPrototypeOf(tiers)).toBeNull();
     expect(Object.keys(tiers ?? {})).toEqual(['agent-a', '__proto__']);
     expect(Object.prototype.hasOwnProperty.call(tiers, '__proto__')).toBe(true);
-    expect(tiers?.['agent-a']).toEqual({ v: 1, budgetTokens: 20_000, masked: true });
+    expect(tiers?.['agent-a']).toEqual({ v: 2, budgetTokens: 20_000, masked: true });
     expect('budgetTokens' in {}).toBe(false);
   });
 
   it('rejects duplicate, malformed, or empty entry lists', () => {
     expect(
       resolveRunFadingTiers([
-        { agentId: 'agent-a', v: 1, budgetTokens: 20_000, masked: true },
-        { agentId: 'agent-a', v: 1, budgetTokens: 10_000, masked: true },
+        { agentId: 'agent-a', v: 2, budgetTokens: 20_000, masked: true },
+        { agentId: 'agent-a', v: 2, budgetTokens: 10_000, masked: true },
       ]),
     ).toBeUndefined();
     expect(
-      resolveRunFadingTiers([{ agentId: '', v: 1, budgetTokens: 1, masked: true }]),
+      resolveRunFadingTiers([{ agentId: '', v: 2, budgetTokens: 1, masked: true }]),
     ).toBeUndefined();
     expect(resolveRunFadingTiers([])).toBeUndefined();
     expect(resolveRunFadingTiers(undefined)).toBeUndefined();
   });
 
+  it('keeps legacy entries readable but never seeds them into the v2 SDK', () => {
+    const legacy = { agentId: 'old-agent', v: 1, budgetTokens: 5_000, masked: true };
+    const current = { agentId: 'new-agent', v: 2, budgetTokens: 10_000, masked: false };
+    expect(resolveRunFadingTiers([legacy])).toBeUndefined();
+    const tiers = resolveRunFadingTiers([legacy, current]);
+    expect(Object.getPrototypeOf(tiers)).toBeNull();
+    expect(tiers).toEqual({ 'new-agent': { v: 2, budgetTokens: 10_000, masked: false } });
+  });
+
   it('round-trips a run snapshot through the persisted entries unchanged', () => {
     const snapshot = {
-      'agent-a': { v: 1 as const, budgetTokens: 20_000, masked: true, latched: true as const },
-      'agent-b': { v: 1 as const, budgetTokens: 5_000, masked: false, latched: true as const },
+      'agent-a': { v: 2 as const, budgetTokens: 20_000, masked: true, latched: true as const },
+      'agent-b': { v: 2 as const, budgetTokens: 5_000, masked: false, latched: true as const },
     };
     const entries = resolvePersistableFadingTiers(snapshot);
     const restored = resolveRunFadingTiers(entries);
     expect(restored).toEqual({
-      'agent-a': { v: 1, budgetTokens: 20_000, masked: true },
-      'agent-b': { v: 1, budgetTokens: 5_000, masked: false },
+      'agent-a': { v: 2, budgetTokens: 20_000, masked: true },
+      'agent-b': { v: 2, budgetTokens: 5_000, masked: false },
     });
   });
 });
 
 describe('resolveRunContextMeta', () => {
-  const fading = { v: 1, budgetTokens: 20_000, masked: true };
+  const fading = { v: 2, budgetTokens: 20_000, masked: true };
   const getEncoding = jest.fn(() => 'claude');
 
   beforeEach(() => getEncoding.mockClear());
@@ -109,7 +137,7 @@ describe('resolveRunContextMeta', () => {
       fadingTier: { ...fading, latched: true, messages: ['not persisted'] },
       fadingTiers: {
         'agent-a': { ...fading, latched: true, projection: { truncated: true } },
-        'agent-b': { v: 1, budgetTokens: 5_000, masked: false, latched: true },
+        'agent-b': { v: 2, budgetTokens: 5_000, masked: false, latched: true },
       },
       getEncoding,
     });
@@ -119,8 +147,8 @@ describe('resolveRunContextMeta', () => {
       encoding: 'claude',
       fading,
       fadingTiers: [
-        { agentId: 'agent-a', v: 1, budgetTokens: 20_000, masked: true },
-        { agentId: 'agent-b', v: 1, budgetTokens: 5_000, masked: false },
+        { agentId: 'agent-a', v: 2, budgetTokens: 20_000, masked: true },
+        { agentId: 'agent-b', v: 2, budgetTokens: 5_000, masked: false },
       ],
     });
     expect(Object.keys(meta ?? {})).toEqual([
@@ -136,13 +164,13 @@ describe('resolveRunContextMeta', () => {
       resolveRunContextMeta({
         calibrationRatio: 1,
         fadingTier: undefined,
-        fadingTiers: { 'agent-b': { v: 1, budgetTokens: 5_000, masked: true } },
+        fadingTiers: { 'agent-b': { v: 2, budgetTokens: 5_000, masked: true } },
         getEncoding,
       }),
     ).toEqual({
       calibrationRatio: 1,
       encoding: 'claude',
-      fadingTiers: [{ agentId: 'agent-b', v: 1, budgetTokens: 5_000, masked: true }],
+      fadingTiers: [{ agentId: 'agent-b', v: 2, budgetTokens: 5_000, masked: true }],
     });
   });
 
@@ -160,7 +188,7 @@ describe('resolveRunContextMeta', () => {
 
   it('persists nothing, without resolving the encoding, when there is nothing to keep', () => {
     expect(
-      resolveRunContextMeta({ calibrationRatio: 0, fadingTier: { v: 1 }, getEncoding }),
+      resolveRunContextMeta({ calibrationRatio: 0, fadingTier: { v: 2 }, getEncoding }),
     ).toBeUndefined();
     expect(getEncoding).not.toHaveBeenCalled();
   });
@@ -211,12 +239,15 @@ describe('persisted tier round trip through the SDK pruner', () => {
       summarizationEnabled: true,
       calibrationRatio: overrides.calibrationRatio,
       getInstructionTokens: () => overrides.instructionTokens,
-      ...(overrides.fadingTier == null ? {} : { fadingTier: overrides.fadingTier }),
+      ...(isCurrentAgentFadingTier(overrides.fadingTier)
+        ? { fadingTier: overrides.fadingTier }
+        : {}),
     })({ messages });
 
   it("reproduces the first run's projection bytes when the next run is seeded from contextMeta", () => {
     const turnOne = makeTurnOne();
     const first = prune(turnOne, { calibrationRatio: 1, instructionTokens: 12_000 });
+    expect(first.fadingTier.v).toBe(2);
     expect(first.fadingTier.budgetTokens).toBeLessThan(window);
 
     const meta = resolveRunContextMeta({
@@ -225,7 +256,7 @@ describe('persisted tier round trip through the SDK pruner', () => {
       getEncoding: () => 'claude',
     });
     expect(meta?.fading).toEqual({
-      v: 1,
+      v: 2,
       budgetTokens: first.fadingTier.budgetTokens,
       masked: first.fadingTier.masked,
     });
@@ -240,6 +271,13 @@ describe('persisted tier round trip through the SDK pruner', () => {
       new HumanMessage('Say ok.'),
     ];
     const firstBytes = serializeToolExchange(first.context);
+    const legacySeed = prune(makeTurnTwo(), {
+      calibrationRatio: 1,
+      instructionTokens: 9_000,
+      fadingTier: { v: 1, budgetTokens: first.fadingTier.budgetTokens, masked: true },
+    });
+    expect(legacySeed.fadingTier.v).toBe(2);
+    expect(legacySeed.fadingTier.budgetTokens).toBeGreaterThan(first.fadingTier.budgetTokens);
     const drifted = { calibrationRatio: 1, instructionTokens: 9_000 };
     const seeded = prune(makeTurnTwo(), { ...drifted, fadingTier: meta?.fading });
     expect(serializeToolExchange(seeded.context.slice(0, turnOne.length))).toBe(firstBytes);

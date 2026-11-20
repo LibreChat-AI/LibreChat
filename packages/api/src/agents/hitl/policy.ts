@@ -1,17 +1,15 @@
 import { randomUUID, createHash } from 'crypto';
-import { openAIBaseSchema, googleBaseSchema, anthropicBaseSchema } from 'librechat-data-provider';
-import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
+import {
+  Constants,
+  openAIBaseSchema,
+  googleBaseSchema,
+  anthropicBaseSchema,
+  normalizeServerName,
+  reasoningOverrideSchema,
+} from 'librechat-data-provider';
+import type { Agents, TReasoningOverride, TToolApprovalPolicy } from 'librechat-data-provider';
 import type { ToolPolicyConfig } from '@librechat/agents';
 import type { MCPToolAlias } from '~/tools/classification';
-
-/**
- * Default decisions offered to the user for a paused tool call.
- *
- * `'respond'` is intentionally NOT in the default set: it represents the agent
- * substituting a synthetic tool result, which is rarely the right ergonomic for
- * a stock approval prompt. Hosts that want it can pass an override.
- */
-const DEFAULT_REVIEW_DECISIONS: Agents.ToolApprovalDecisionType[] = ['approve', 'reject', 'edit'];
 
 /**
  * Layered sources that combine into the effective tool-approval policy for a turn.
@@ -44,6 +42,12 @@ export interface ToolApprovalPolicyLayers {
    * an administrator to opt the whole endpoint into prompts.
    */
   attachedCodeEnvironment?: boolean;
+  /**
+   * The run acts under a grant whose owner approves some tools call by call (a scheduled
+   * chat). The owner's choice pauses the run without an administrator opting the whole
+   * endpoint into prompts; a hook supplies the decisions.
+   */
+  ownerApproval?: boolean;
 }
 
 /**
@@ -66,7 +70,7 @@ export function resolveToolApprovalPolicy(
   layers: ToolApprovalPolicyLayers,
 ): TToolApprovalPolicy | undefined {
   if (
-    layers.attachedCodeEnvironment === true &&
+    (layers.attachedCodeEnvironment === true || layers.ownerApproval === true) &&
     layers.endpoint?.enabled !== true &&
     layers.endpoint?.enabled !== false
   ) {
@@ -124,16 +128,14 @@ export function isToolApprovalPauseCapable(
     if (names.length === 0) {
       return false;
     }
-    const matches = (patterns: string[] | undefined, name: string): boolean =>
-      patterns?.some((pattern) => globToRegex(pattern).test(name)) === true;
     return names.some((name) => {
-      if (matches(enabledPolicy.deny, name)) {
+      if (isToolBlockedByApprovalPolicy(enabledPolicy, name)) {
         return false;
       }
-      if (hasProgrammaticHooks || matches(enabledPolicy.ask, name)) {
+      if (hasProgrammaticHooks || matchesToolApprovalPatterns(enabledPolicy.ask, name)) {
         return true;
       }
-      if (matches(enabledPolicy.allow, name)) {
+      if (matchesToolApprovalPatterns(enabledPolicy.allow, name, true)) {
         return false;
       }
       return enabledPolicy.mode !== 'bypass' && enabledPolicy.mode !== 'dontAsk';
@@ -151,17 +153,139 @@ export function isToolApprovalPauseCapable(
   return policy?.allow?.includes('*') !== true;
 }
 
-/**
- * Map a LibreChat tool-approval policy to the SDK's `ToolPolicyConfig`.
- *
- * Returns `undefined` when there's nothing to configure (so the SDK's own
- * defaults apply). The `enabled` field is LibreChat-only and stripped here —
- * it's consumed separately via {@link isHITLEnabled} to gate the SDK opt-out.
- */
+const MCP_PATTERN_PREFIX = 'mcp:';
+const UNSUPPORTED_SERVER_CHARS = /[^a-zA-Z0-9_.-]/g;
+
+interface MCPToolApprovalPattern {
+  tool: RegExp;
+  server: RegExp;
+  /** The one runtime key a glob-free entry names. */
+  key?: string;
+  /** The server glob has optional edge underscores, so it may not grant. */
+  widened?: boolean;
+}
+
 /** Anchored-glob matcher mirroring the SDK's `createToolPolicyHook` semantics exactly. */
 function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp('^' + escaped.replace(/\*/g, '.*') + '$');
+}
+
+/**
+ * Matches a globbed server segment against normalized server keys. `normalizeServerName`
+ * keeps a name of supported characters as is and otherwise replaces unsupported characters
+ * with `_` and trims the name's edges, so which underscores survive at an edge depends on
+ * the full name a `*` stands for. Underscores at the glob's edges or beside a `*` are
+ * therefore optional, a superset of every key a matching name can produce; `widened`
+ * reports that the glob has any, and such a glob may only tighten, never grant.
+ */
+function serverGlobToRegex(server: string): { regex: RegExp; widened: boolean } {
+  const parts = server.split('*').map((part) => part.replace(UNSUPPORTED_SERVER_CHARS, '_'));
+  let widened = false;
+  const source = parts.map((part) => {
+    const match = /^(_*)(.*?)(_*)$/.exec(part);
+    const [, lead = '', body = part, trail = ''] = match ?? [];
+    widened ||= lead.length > 0 || trail.length > 0;
+    const escaped = body.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+    return `${lead ? '_*' : ''}${escaped}${trail ? '_*' : ''}`;
+  });
+  return { regex: new RegExp('^' + source.join('.*') + '$'), widened };
+}
+
+/**
+ * Parses the documented `mcp:<server>:<tool>` form. Server names may contain `:` and MCP
+ * tool names may not, so the tool is the last segment. Anything else is a plain glob.
+ */
+function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | undefined {
+  if (!pattern.startsWith(MCP_PATTERN_PREFIX)) {
+    return undefined;
+  }
+  const rest = pattern.slice(MCP_PATTERN_PREFIX.length);
+  const separator = rest.lastIndexOf(':');
+  if (separator <= 0 || separator === rest.length - 1) {
+    return undefined;
+  }
+  const server = rest.slice(0, separator);
+  const tool = rest.slice(separator + 1);
+  if (server.includes('*')) {
+    const { regex, widened } = serverGlobToRegex(server);
+    return { tool: globToRegex(tool), server: regex, widened };
+  }
+  const serverKey = normalizeServerName(server);
+  return {
+    tool: globToRegex(tool),
+    server: globToRegex(serverKey),
+    ...(tool.includes('*') ? {} : { key: `${tool}${Constants.mcp_delimiter}${serverKey}` }),
+  };
+}
+
+/**
+ * Whether one policy entry matches a runtime tool name. An `mcp:<server>:<tool>` entry is
+ * matched per segment against `<tool>_mcp_<server>`, never as one glob, so `*` cannot
+ * cross the server boundary. A glob-free entry names exactly one key. A key with several
+ * `_mcp_` delimiters is otherwise ambiguous without the server registry (the tool or the
+ * server name may contain the delimiter), so a globbed `grant` (an `allow` entry) never
+ * matches it, while `ask` and `deny` entries match at any delimiter and so err toward
+ * review or refusal. A server glob with optional edge underscores never grants either.
+ */
+function matchesToolApprovalPattern(pattern: string, toolName: string, grant: boolean): boolean {
+  const mcp = parseMCPToolApprovalPattern(pattern);
+  if (!mcp) {
+    return globToRegex(pattern).test(toolName);
+  }
+  if (mcp.key != null) {
+    return mcp.key === toolName;
+  }
+  const delimiter = Constants.mcp_delimiter;
+  const first = toolName.indexOf(delimiter);
+  if (grant && (mcp.widened === true || toolName.indexOf(delimiter, first + 1) !== -1)) {
+    return false;
+  }
+  for (let index = first; index !== -1; index = toolName.indexOf(delimiter, index + 1)) {
+    if (index === 0) {
+      continue;
+    }
+    const tool = toolName.slice(0, index);
+    const server = toolName.slice(index + delimiter.length);
+    if (mcp.tool.test(tool) && mcp.server.test(server)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether any entry of one policy list matches a runtime tool name; see `matchesToolApprovalPattern`. */
+export function matchesToolApprovalPatterns(
+  patterns: readonly string[] | undefined,
+  toolName: string,
+  grant = false,
+): boolean {
+  return patterns?.some((pattern) => matchesToolApprovalPattern(pattern, toolName, grant)) === true;
+}
+
+/**
+ * The SDK globs every entry against the whole tool name, which cannot express a server
+ * boundary. For one concrete call, each `mcp:` entry becomes that tool's literal name when
+ * it matches and is dropped when it does not, so the SDK decides exactly as the local
+ * matchers predict.
+ */
+function resolveToolApprovalPatterns(
+  patterns: string[] | undefined,
+  toolName: string,
+  grant: boolean,
+): string[] | undefined {
+  if (!patterns?.some((pattern) => parseMCPToolApprovalPattern(pattern) != null)) {
+    return patterns;
+  }
+  const resolved: string[] = [];
+  for (const pattern of patterns) {
+    if (parseMCPToolApprovalPattern(pattern) == null) {
+      resolved.push(pattern);
+    } else if (matchesToolApprovalPattern(pattern, toolName, grant)) {
+      resolved.push(toolName);
+    }
+  }
+  return resolved;
 }
 
 /** Whether an enabled static policy unconditionally denies one concrete tool name. */
@@ -169,9 +293,20 @@ export function isToolDeniedByApprovalPolicy(
   policy: TToolApprovalPolicy | undefined,
   toolName: string,
 ): boolean {
+  return isHITLEnabled(policy) && matchesToolApprovalPatterns(policy.deny, toolName);
+}
+
+/** Static deny, including the unmatched `dontAsk` fallback, cannot be tightened into review. */
+export function isToolBlockedByApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  toolName: string,
+): boolean {
+  if (!isHITLEnabled(policy)) return false;
+  if (isToolDeniedByApprovalPolicy(policy, toolName)) return true;
+  if (policy.mode !== 'dontAsk') return false;
   return (
-    isHITLEnabled(policy) &&
-    policy.deny?.some((pattern) => globToRegex(pattern).test(toolName)) === true
+    !matchesToolApprovalPatterns(policy.ask, toolName) &&
+    !matchesToolApprovalPatterns(policy.allow, toolName, true)
   );
 }
 
@@ -193,17 +328,16 @@ export function healToolApprovalPolicy(
   if (!policy || aliases.length === 0) {
     return policy;
   }
-  const healList = (patterns: string[] | undefined): string[] | undefined => {
+  const healList = (patterns: string[] | undefined, grant = false): string[] | undefined => {
     if (!patterns || patterns.length === 0) {
       return patterns;
     }
-    const regexes = patterns.map(globToRegex);
     const appended: string[] = [];
     for (const { name, aliasName } of aliases) {
-      if (name === aliasName || regexes.some((regex) => regex.test(name))) {
+      if (name === aliasName || matchesToolApprovalPatterns(patterns, name, grant)) {
         continue;
       }
-      if (regexes.some((regex) => regex.test(aliasName))) {
+      if (matchesToolApprovalPatterns(patterns, aliasName, grant)) {
         appended.push(name);
       }
     }
@@ -211,53 +345,23 @@ export function healToolApprovalPolicy(
   };
   return {
     ...policy,
-    allow: healList(policy.allow),
+    allow: healList(policy.allow, true),
     deny: healList(policy.deny),
     ask: healList(policy.ask),
   };
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /**
- * Names whose OTHER spelling matches a programmatic hook's regex matcher
- * while their own name does not — the hook must also fire for these or its
- * argument-, user-, or tenant-specific deny/ask decisions are silently
- * skipped for renamed tools. Mirrors the SDK's unanchored `new RegExp(pattern)`
- * matcher semantics; an invalid pattern matches nothing there, so it aliases
- * nothing here.
+ * Map a LibreChat tool-approval policy to the SDK's `ToolPolicyConfig`.
+ *
+ * Returns `undefined` when there's nothing to configure (so the SDK's own
+ * defaults apply). The `enabled` field is LibreChat-only and stripped here;
+ * it's consumed separately via {@link isHITLEnabled} to gate the SDK opt-out.
+ * Pass the called tool's name so `mcp:<server>:<tool>` entries resolve for it.
  */
-export function collectAliasMatcherNames(
-  matcher: string | undefined,
-  aliases: readonly MCPToolAlias[],
-): string[] {
-  if (!matcher || aliases.length === 0) {
-    return [];
-  }
-  let regex: RegExp;
-  try {
-    regex = new RegExp(matcher);
-  } catch {
-    return [];
-  }
-  const names: string[] = [];
-  for (const { name, aliasName } of aliases) {
-    if (name !== aliasName && !regex.test(name) && regex.test(aliasName)) {
-      names.push(name);
-    }
-  }
-  return names;
-}
-
-/** Anchored exact-name pattern for the alias-matched names of one hook matcher. */
-export function buildAliasMatcherPattern(names: readonly string[]): string {
-  return `^(?:${names.map(escapeRegExp).join('|')})$`;
-}
-
 export function mapToolApprovalPolicy(
   policy: TToolApprovalPolicy | undefined,
+  toolName?: string,
 ): ToolPolicyConfig | undefined {
   if (!policy) {
     return undefined;
@@ -266,53 +370,24 @@ export function mapToolApprovalPolicy(
   if (policy.mode) {
     config.mode = policy.mode;
   }
-  if (policy.allow && policy.allow.length > 0) {
-    config.allow = policy.allow;
+  const resolve = (patterns: string[] | undefined, grant = false) =>
+    toolName == null ? patterns : resolveToolApprovalPatterns(patterns, toolName, grant);
+  const allow = resolve(policy.allow, true);
+  const deny = resolve(policy.deny);
+  const ask = resolve(policy.ask);
+  if (allow && allow.length > 0) {
+    config.allow = allow;
   }
-  if (policy.deny && policy.deny.length > 0) {
-    config.deny = policy.deny;
+  if (deny && deny.length > 0) {
+    config.deny = deny;
   }
-  if (policy.ask && policy.ask.length > 0) {
-    config.ask = policy.ask;
+  if (ask && ask.length > 0) {
+    config.ask = ask;
   }
   if (policy.reason) {
     config.reason = policy.reason;
   }
   return Object.keys(config).length > 0 ? config : undefined;
-}
-
-/** Tool-call shape consumed by {@link buildToolApprovalPayload}. */
-export interface ToolApprovalCallInput {
-  name: string;
-  arguments: string | Record<string, unknown>;
-  tool_call_id: string;
-  description?: string;
-}
-
-/**
- * Build a tool-approval interrupt payload from one or more paused tool calls.
- *
- * Mirrors the SDK's `ToolApprovalInterruptPayload` shape so this can be used
- * to synthesize payloads in tests, or by the host before the SDK upgrade ships.
- */
-export function buildToolApprovalPayload(
-  toolCalls: ToolApprovalCallInput[],
-  decisionsByToolName?: Record<string, Agents.ToolApprovalDecisionType[]>,
-): Agents.ToolApprovalInterruptPayload {
-  return {
-    type: 'tool_approval',
-    action_requests: toolCalls.map((tc) => ({
-      name: tc.name,
-      arguments: tc.arguments,
-      tool_call_id: tc.tool_call_id,
-      description: tc.description,
-    })),
-    review_configs: toolCalls.map((tc) => ({
-      action_name: tc.name,
-      tool_call_id: tc.tool_call_id,
-      allowed_decisions: decisionsByToolName?.[tc.name] ?? DEFAULT_REVIEW_DECISIONS,
-    })),
-  };
 }
 
 /** Require one uniquely identified review policy for every paused tool call. */
@@ -351,16 +426,6 @@ export function isToolApprovalPayloadValid(payload: Agents.ToolApprovalInterrupt
   return true;
 }
 
-/** Build an ask-user-question interrupt payload. */
-export function buildAskUserQuestionPayload(
-  question: Agents.AskUserQuestionRequest,
-): Agents.AskUserQuestionInterruptPayload {
-  return {
-    type: 'ask_user_question',
-    question,
-  };
-}
-
 /** Job-context fields wrapped around a {@link Agents.HumanInterruptPayload}. */
 export interface PendingActionContext {
   streamId: string;
@@ -378,14 +443,19 @@ export interface PendingActionContext {
   interruptId?: string;
   /** LangGraph `thread_id` (`RunInterruptResult.threadId`) for cross-process resume. */
   threadId?: string;
+  /** Server-only project context key captured at pause time. */
+  projectContextKey?: string;
   /** Fingerprint of the graph-determining request fields; see {@link computeAgentRequestFingerprint}. */
   requestFingerprint?: string;
   /** Current fingerprint; the legacy field remains populated for rolling-deploy compatibility. */
   requestFingerprintV2?: string;
   /** Graph-determining fields to replay on resume; see {@link RESUME_CONTEXT_KEYS}. */
   resumeContext?: Record<string, unknown>;
+  resumeAgentIds?: string[];
   /** Opaque server-only binding to the stateful code targets selected at pause time. */
   codeExecutionBinding?: Agents.CodeExecutionApprovalBinding;
+  /** Server-only alias pairs of the offered "Always allow" tools; see `collectAllowAlwaysAliases`. */
+  toolApprovalAliases?: Agents.PendingAction['toolApprovalAliases'];
 }
 
 /** Request fields that decide which agent/graph + tool set a turn runs. */
@@ -458,6 +528,9 @@ export const RESUME_CONTEXT_KEYS = [
   // different skill's tools (manualSkills isn't covered by the fingerprint). Replay-only.
   // (alwaysAppliedSkills is NOT here — it's resolved server-side from the DB, not req.body.)
   'manualSkills',
+  // The one-shot reasoning selection is generation-determining and must
+  // survive a HITL continuation across reloads/replicas.
+  'reasoningOverride',
   // Graph-determining for ephemeral agents: `loadEphemeralAgent` encodes the agent id
   // (and thus the LangGraph node name / HITL checkpoint namespace) from
   // `sender = modelLabel ?? modelSpec.label ?? …`. `modelLabel` is stripped from the
@@ -473,6 +546,14 @@ export const RESUME_CONTEXT_KEYS = [
 export type ResumeContext = Partial<Record<(typeof RESUME_CONTEXT_KEYS)[number], unknown>> & {
   /** Resolved model params captured at pause (sanitized); replayed by the resume route. */
   model_parameters?: Record<string, unknown>;
+  /** Original conversation values hidden from the provider runtime override. */
+  reasoningOverrideBase?: {
+    key: TReasoningOverride['key'];
+    hadValue: boolean;
+    value?: unknown;
+    thinkingHadValue?: boolean;
+    thinkingValue?: unknown;
+  };
 };
 
 /** Exact (lowercased) parameter keys that carry credentials or server transport config. */
@@ -694,13 +775,29 @@ export function captureResumeModelParameters(
         captured[key] = sanitizeParamValue(body[key], 1);
       }
     }
+    const reasoningOverride = reasoningOverrideSchema.safeParse(body.reasoningOverride);
+    if (reasoningOverride.success) {
+      captured[reasoningOverride.data.key] = reasoningOverride.data.value;
+      if (
+        reasoningOverride.data.key === 'effort' ||
+        reasoningOverride.data.key === 'thinkingLevel' ||
+        reasoningOverride.data.key === 'thinkingBudget'
+      ) {
+        captured.thinking = true;
+      }
+    }
   }
   return Object.keys(captured).length > 0 ? captured : undefined;
 }
 
-/** Extract the graph-determining fields from a request body for durable replay. */
-export function pickResumeContext(body: Record<string, unknown> | undefined | null): ResumeContext {
-  const ctx: ResumeContext = {};
+/** Extract the graph-determining fields from a request body, and the trusted reasoning
+ *  snapshot when the request resolved one, for durable replay. */
+export function pickResumeContext(
+  body: Record<string, unknown> | undefined | null,
+  reasoningOverrideBase?: ResumeContext['reasoningOverrideBase'] | null,
+): ResumeContext {
+  const ctx: ResumeContext =
+    reasoningOverrideBase != null ? { reasoningOverrideBase: { ...reasoningOverrideBase } } : {};
   if (body == null) {
     return ctx;
   }
@@ -735,6 +832,33 @@ export function applyResumeContext(
       delete body[key];
     }
   }
+}
+
+/**
+ * Restore a paused turn onto its resume request: the graph-determining body fields, the
+ * trusted reasoning-override snapshot that keeps a request-scoped override out of saved
+ * conversation defaults, and the resolved generation parameters.
+ */
+export function applyResumeRequest(
+  req: {
+    body?: Record<string, unknown> | null;
+    reasoningOverrideBase?: ResumeContext['reasoningOverrideBase'];
+    resumeReplayed?: boolean;
+  },
+  ctx: ResumeContext | undefined | null,
+): void {
+  applyResumeContext(req.body, ctx);
+  if (ctx != null) {
+    /* Marks the request as carrying trusted server state rather than fresh
+     * client input: a replayed `reasoningOverride` that no longer validates
+     * (the endpoint's reasoning config changed between pause and resume) is
+     * degraded rather than rejected, because a 400 would brick the checkpoint. */
+    req.resumeReplayed = true;
+  }
+  if (ctx?.reasoningOverrideBase != null) {
+    req.reasoningOverrideBase = { ...ctx.reasoningOverrideBase };
+  }
+  applyResumeModelParameters(req.body, ctx?.model_parameters);
 }
 
 /** Request-envelope fields that resolved provider params must never replace. */
@@ -862,19 +986,21 @@ export function buildPendingAction(
     expiresAt,
     interruptId: ctx.interruptId,
     threadId: ctx.threadId,
+    projectContextKey: ctx.projectContextKey,
     requestFingerprint: ctx.requestFingerprint,
     requestFingerprintV2: ctx.requestFingerprintV2,
     resumeContext: ctx.resumeContext,
+    resumeAgentIds: ctx.resumeAgentIds,
     codeExecutionBinding: ctx.codeExecutionBinding,
+    toolApprovalAliases: ctx.toolApprovalAliases,
   };
 }
 
 /**
- * Client-facing projection of a pending action. `requestFingerprint`, `resumeContext`, and
- * `codeExecutionBinding`
- * are server-only replay state — `resumeContext` in particular carries the resolved
- * model parameters — so every copy that leaves the server (SSE, status, resume state)
- * must go through this. The full record stays in the job store for the resume route.
+ * Client-facing projection of a pending action. `projectContextKey`, `requestFingerprint`,
+ * `resumeContext`, `codeExecutionBinding`, and `toolApprovalAliases` are server-only replay state. `resumeContext`
+ * carries resolved model parameters, so every copy that leaves the server (SSE, status,
+ * resume state) must go through this. The full record stays in the job store for resume.
  */
 export function toClientPendingAction(
   pendingAction: Agents.PendingAction | undefined | null,
@@ -883,10 +1009,14 @@ export function toClientPendingAction(
     return undefined;
   }
   const {
+    projectContextKey: _projectContextKey,
     requestFingerprint: _requestFingerprint,
     requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
+    resumeAgentIds: _resumeAgentIds,
     codeExecutionBinding: _codeExecutionBinding,
+    toolApprovalBindings: _toolApprovalBindings,
+    toolApprovalAliases: _toolApprovalAliases,
     ...clientSafe
   } = pendingAction;
   return clientSafe;

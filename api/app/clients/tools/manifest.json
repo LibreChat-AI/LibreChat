@@ -21,12 +21,12 @@
       {
         "authField": "GOOGLE_CSE_ID",
         "label": "Google CSE ID",
-        "description": "This is your Google Custom Search Engine ID. For instructions on how to obtain this, see <a href='https://github.com/danny-avila/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
+        "description": "This is your Google Custom Search Engine ID. For instructions on how to obtain this, see <a href='https://github.com/LibreChat-AI/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
       },
       {
         "authField": "GOOGLE_SEARCH_API_KEY",
         "label": "Google API Key",
-        "description": "This is your Google Custom Search API Key. For instructions on how to obtain this, see <a href='https://github.com/danny-avila/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
+        "description": "This is your Google Custom Search API Key. For instructions on how to obtain this, see <a href='https://github.com/LibreChat-AI/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
       }
     ]
   },
@@ -58,19 +58,6 @@
     ]
   },
   {
-    "name": "DALL-E-3",
-    "pluginKey": "dalle",
-    "description": "[DALL-E-3] Create realistic images and art from a description in natural language",
-    "icon": "assets/openai.svg",
-    "authConfig": [
-      {
-        "authField": "DALLE3_API_KEY||DALLE_API_KEY",
-        "label": "OpenAI API Key",
-        "description": "You can use DALL-E with your API Key from OpenAI."
-      }
-    ]
-  },
-  {
     "name": "Tavily Search",
     "pluginKey": "tavily_search_results_json",
     "description": "Tavily Search is a robust search API tailored for LLM Agents. It seamlessly integrates with diverse data sources to ensure a superior, relevant search experience.",
@@ -82,6 +69,13 @@
         "description": "Get your API key here: https://app.tavily.com/"
       }
     ]
+  },
+  {
+    "name": "GitHub Compare",
+    "pluginKey": "github_compare",
+    "description": "Compare frozen commit ancestry in a public GitHub repository without a workspace.",
+    "agentsOnly": true,
+    "authConfig": []
   },
   {
     "name": "Calculator",

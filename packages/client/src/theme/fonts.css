@@ -1,0 +1,114 @@
+/**
+ * The font faces the stock theme and the bundled themes name, and the single source for them.
+ *
+ * `tokens.css` imports this file, so the app and a consumer of `@librechat/client/theme.css` load
+ * the same files: Inter for `font-sans` and `font-theme-ui`, Roboto Mono for `font-mono`, and
+ * Inconsolata, which the ClickHouse theme opts into. Each `url()` names the file by its package
+ * export (`@librechat/client/fonts/*`) rather than by a relative path, and the host's bundler
+ * resolves and emits it. A relative path would be read against the wrong file: Vite inlines this
+ * stylesheet before Tailwind runs, and Tailwind reports every declaration it emits as coming from
+ * the stylesheet at the root of the import chain. Browsers fetch a declared face only once text
+ * renders in it, so a family no theme names costs nothing. Every family is under the SIL Open Font License 1.1, whose text ships beside the
+ * files (`fonts/*-OFL.txt`), as the licence requires of any redistribution.
+ */
+@font-face {
+  font-display: swap;
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 400;
+  src: url('@librechat/client/fonts/Inter-Regular.woff2') format('woff2');
+  size-adjust: 94%;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inter;
+  font-style: italic;
+  font-weight: 400;
+  src: url('@librechat/client/fonts/Inter-Italic.woff2') format('woff2');
+  size-adjust: 94%;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 500;
+  src: url('@librechat/client/fonts/Inter-SemiBold.woff2') format('woff2');
+  size-adjust: 94%;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inter;
+  font-style: italic;
+  font-weight: 500;
+  src: url('@librechat/client/fonts/Inter-SemiBoldItalic.woff2') format('woff2');
+  size-adjust: 94%;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 600;
+  src: url('@librechat/client/fonts/Inter-Bold.woff2') format('woff2');
+  size-adjust: 94%;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inter;
+  font-style: italic;
+  font-weight: 600;
+  src: url('@librechat/client/fonts/Inter-BoldItalic.woff2') format('woff2');
+  size-adjust: 94%;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Roboto Mono;
+  font-style: normal;
+  font-weight: 400;
+  src: url('@librechat/client/fonts/roboto-mono-latin-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Roboto Mono;
+  font-style: normal;
+  font-weight: 700;
+  src: url('@librechat/client/fonts/roboto-mono-latin-700-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Roboto Mono;
+  font-style: italic;
+  font-weight: 400;
+  src: url('@librechat/client/fonts/roboto-mono-latin-400-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inconsolata;
+  font-style: normal;
+  font-weight: 400;
+  src: url('@librechat/client/fonts/inconsolata-latin-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inconsolata;
+  font-style: normal;
+  font-weight: 500;
+  src: url('@librechat/client/fonts/inconsolata-latin-500-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Inconsolata;
+  font-style: normal;
+  font-weight: 700;
+  src: url('@librechat/client/fonts/inconsolata-latin-700-normal.woff2') format('woff2');
+}

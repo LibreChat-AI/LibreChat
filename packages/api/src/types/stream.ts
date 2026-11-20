@@ -2,6 +2,7 @@ import type {
   IAgentEventActorContextMeta,
   ICompactionSemanticIndexProjection,
 } from '@librechat/data-schemas';
+import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Agents, UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { EventEmitter } from 'events';
 import type {
@@ -12,6 +13,7 @@ import type {
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { EarlyBufferOverflowState } from './earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
 
@@ -22,6 +24,8 @@ export interface GenerationJobMetadata {
   /** Immutable per-generation saver scope. LangGraph's root `checkpoint_ns`
    * remains empty; the checkpointer adapter maps this scope into storage. */
   checkpointNamespace?: string;
+  /** Server-pinned saver settings retained for expired background-response cleanup. */
+  responseCheckpointConfigJSON?: string;
   /** Immutable generation protocol. Missing on legacy records means v1. */
   generationProtocolVersion?: 1 | 2;
   earlyBufferOverflow?: EarlyBufferOverflowState;
@@ -31,6 +35,9 @@ export interface GenerationJobMetadata {
   responseMessageId?: string;
   /** Whether this generation replaces an existing assistant branch. */
   isRegenerate?: boolean;
+  /** Whether this generation is a manual context compaction; the abort paths
+   * read it to stamp the stopped row with the compaction's identity. */
+  compact?: boolean;
   /** Exact normalized MCP placeholder identity for this turn. Persisted so HITL
    * resume does not reconstruct a different parent or overridden conversation. */
   mcpRequestBody?: MCPRuntimeRequestBody;
@@ -50,6 +57,8 @@ export interface GenerationJobMetadata {
   promptTokens?: number;
   /** Agent that initiated the run; a HITL resume verifies it rebuilds the same agent. */
   agent_id?: string;
+  /** Server-established first turn, permitting recovery before history is persisted. */
+  isNewConversation?: boolean;
   /** Whether the originating turn was a temporary chat; a HITL resume keeps it so. */
   isTemporary?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
@@ -66,6 +75,10 @@ export interface GenerationJobMetadata {
   agentEventDetachedTerminalEvidence?: AgentEventDetachedTerminalEvidence;
   /** Trusted actor binding copied from the authenticated delivery envelope. */
   agentEventBindingId?: string;
+  /** The background subagent task this generation streams; set only by the task store. */
+  subagentTaskId?: string;
+  /** The conversation that dispatched that task. */
+  subagentParentConversationId?: string;
   /** Optional action evidence contract declared by the authenticated event source. */
   agentEventExpectedAction?: AgentTriggerExpectedAction;
   /** Versioned pointer to the canonical signed suspension stored on the Conversation. */
@@ -79,10 +92,14 @@ export interface GenerationJobMetadata {
   scheduledFor?: string;
   scheduleConfigRevision?: number;
   scheduleManual?: boolean;
+  /** Original schedule root for a legacy completion, never occurrence bookkeeping. */
+  scheduleMCPCompletion?: ScheduledMCPIdentity;
   /** Intended terminal classification retained when Mongo outcome persistence
    * fails. The scheduler reconciler consumes this evidence before clearing the job. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';
   scheduleOutcomeError?: string;
+  /** Safe invocation denial retained until schedule settlement, never tool arguments. */
+  scheduleMCPFailure?: ScheduleMCPOutcome;
   /** Prevent normal terminal cleanup until schedule reconciliation has consumed
    * the retained outcome evidence. */
   preserveForScheduleReconcile?: boolean;
@@ -92,6 +109,7 @@ export interface GenerationJobMetadata {
    * without them the rebuilt model would lose the discovered tool schemas.
    */
   discoveredTools?: string[];
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */
@@ -108,6 +126,8 @@ export interface GenerationJobMetadata {
   providerExecutionId?: string;
   /** Exact provider owner that crossed its start fence. */
   providerExecutionStartedId?: string;
+  /** Private receipt for the exact request that won this segment's start CAS. */
+  providerExecutionOwnerId?: string;
   /** False only while that exact provider segment can still mutate user data. */
   providerDrained?: boolean;
   /** Terminal close has atomically stopped new steer acceptance, even if the
@@ -118,6 +138,8 @@ export interface GenerationJobMetadata {
   idempotencyClientRequestId?: string;
   /** Normal FINAL publication is waiting on required durable abort work. */
   terminalPersistencePending?: boolean;
+  /** Server-enrolled external journal owns final publication and barrier release. */
+  terminalPersistenceOwner?: 'external';
   terminalHostActionPending?: boolean;
   terminalPersistenceStartedAt?: number;
   /** Set when the job is paused for human review (status === 'requires_action') */

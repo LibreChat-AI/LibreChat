@@ -287,7 +287,8 @@ export function hasInvalidToolApprovalResolutions(
  * Enforce the policy's per-tool `allowed_decisions`. Returns the `tool_call_id`s
  * whose submitted decision is NOT one the interrupt's `review_configs` permits for
  * that tool — so the resume route can reject a crafted request that, e.g., approves
- * a tool the policy restricted to `reject`/`respond`. A resolution for a tool with
+ * a tool the policy restricted to `reject`/`respond`, or asks to remember an approval
+ * (`scope`) the pause did not offer. A resolution for a tool with
  * no matching review_config (shouldn't happen) is treated as disallowed (fail closed).
  */
 export function findDisallowedDecisions(
@@ -295,11 +296,28 @@ export function findDisallowedDecisions(
   resolutions: readonly Agents.ToolApprovalResolution[],
 ): string[] {
   const allowedByToolCallId = new Map<string, Set<Agents.ToolApprovalDecisionType>>();
+  const allowAlwaysIds = new Set<string>();
   for (const config of payload.review_configs) {
     allowedByToolCallId.set(config.tool_call_id, new Set(config.allowed_decisions));
+    if (config.allow_always === true) {
+      allowAlwaysIds.add(config.tool_call_id);
+    }
   }
   return resolutions
-    .filter((r) => !allowedByToolCallId.get(r.tool_call_id)?.has(r.decision))
+    .filter((r) => {
+      if (!allowedByToolCallId.get(r.tool_call_id)?.has(r.decision)) {
+        return true;
+      }
+      if (r.scope == null || r.scope === 'once') {
+        return false;
+      }
+      // A remembered approval is valid only where the pause itself offered it.
+      return !(
+        r.scope === 'session' &&
+        r.decision === 'approve' &&
+        allowAlwaysIds.has(r.tool_call_id)
+      );
+    })
     .map((r) => r.tool_call_id);
 }
 

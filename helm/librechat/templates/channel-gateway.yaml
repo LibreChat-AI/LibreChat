@@ -1,0 +1,132 @@
+{{- if .Values.channelGateway.enabled }}
+{{- $gateway := .Values.channelGateway }}
+{{- $mode := $gateway.mode | default "single" }}
+{{- if not (has $mode (list "single" "shared")) }}
+{{- fail "channelGateway.mode must be single or shared" }}
+{{- end }}
+{{- if and (eq $mode "shared") (or $gateway.channelId (ne $gateway.tenantId "_")) }}
+{{- fail "Shared gateway mode requires an empty channelId and the default tenantId _" }}
+{{- end }}
+{{- $externalMongo := or (get (default dict .Values.librechat.configEnv) "MONGO_URI") (include "librechat.userEnvHas" (dict "root" . "name" "MONGO_URI")) (eq (toString (default dict .Values.librechat.injectBundledCredentials).mongodb) "false") }}
+{{- if and (eq $mode "shared") .Values.mongodb.enabled (not $externalMongo) (ne (.Values.mongodb.architecture | default "standalone") "replicaset") }}
+{{- fail "Shared Slack workspaces require transaction-capable MongoDB: set mongodb.architecture=replicaset, or configure an external transaction-capable MONGO_URI" }}
+{{- end }}
+{{- $replicas := $gateway.replicaCount | toString }}
+{{- if not (regexMatch "^[1-9][0-9]*$" $replicas) }}
+{{- fail "channelGateway.replicaCount must be a positive integer" }}
+{{- end }}
+{{- if and (eq $mode "single") (ne $replicas "1") }}
+{{- fail "Single gateway mode requires channelGateway.replicaCount: 1" }}
+{{- end }}
+{{- $tag := include "librechat.channelGateway.imageTag" . }}
+{{- $secret := required "channelGateway.existingSecretName or global.librechat.existingSecretName is required" ($gateway.existingSecretName | default .Values.global.librechat.existingSecretName) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "librechat.channelGateway.fullname" . }}
+  labels:
+    {{- merge (include "librechat.channelGateway.labels" . | fromYaml) (default dict .Values.deploymentLabels) | toYaml | nindent 4 }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ $replicas }}
+  strategy:
+    {{- if eq $mode "shared" }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- else }}
+    type: Recreate
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "librechat.channelGateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/channel-gateway: {{ toYaml $gateway | sha256sum }}
+        {{- with mergeOverwrite (deepCopy (default dict .Values.podAnnotations)) (default dict $gateway.podAnnotations) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- merge (include "librechat.channelGateway.labels" . | fromYaml) (default dict .Values.podLabels) | toYaml | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "librechat.podSettings" . | nindent 6 }}
+      securityContext:
+        {{- mergeOverwrite (dict "runAsNonRoot" true "seccompProfile" (dict "type" "RuntimeDefault")) (deepCopy (default dict .Values.podSecurityContext)) | toYaml | nindent 8 }}
+      containers:
+        - name: channel-gateway
+          image: "{{ $gateway.image.repository }}:{{ $tag }}"
+          imagePullPolicy: {{ $gateway.image.pullPolicy }}
+          securityContext:
+            {{- mergeOverwrite (dict "allowPrivilegeEscalation" false "readOnlyRootFilesystem" true "runAsNonRoot" true "runAsUser" 1000 "capabilities" (dict "drop" (list "ALL"))) (deepCopy (default dict .Values.securityContext)) | toYaml | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: APP_TITLE
+              value: {{ include "librechat.channelGateway.appTitle" . | quote }}
+            - name: PORT
+              value: "8080"
+            - name: LISTEN_HOST
+              value: "0.0.0.0"
+            - name: LIBRECHAT_INTERNAL_URL
+              value: {{ $gateway.internalUrl | default (printf "http://%s:%v" (include "librechat.fullname" .) .Values.service.port) | quote }}
+            {{- if eq $mode "single" }}
+            - name: CHANNEL_ID
+              value: {{ required "channelGateway.channelId is required when enabled" $gateway.channelId | quote }}
+            - name: CHANNEL_TENANT_ID
+              value: {{ $gateway.tenantId | quote }}
+            {{- end }}
+            - name: CHANNEL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret | quote }}
+                  key: CHANNEL_SERVICE_TOKEN
+            {{- if eq $mode "single" }}
+            {{- with $gateway.slackAppTokenKey }}
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret | quote }}
+                  key: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          resources:
+            {{- toYaml $gateway.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "librechat.channelGateway.fullname" . }}
+  labels:
+    {{- include "librechat.channelGateway.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    {{- include "librechat.channelGateway.selectorLabels" . | nindent 4 }}
+{{- end }}

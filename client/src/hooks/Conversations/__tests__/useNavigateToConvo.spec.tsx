@@ -1,10 +1,11 @@
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { QueryKeys } from 'librechat-data-provider';
+import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, useLocation, useNavigate } from 'react-router-dom';
 import type { TConversation, TEndpointsConfig } from 'librechat-data-provider';
 import useNavigateToConvo, { supersedeNavigation } from '../useNavigateToConvo';
+import { useRunningConversationsQuery } from '~/data-provider/queries';
 import { SetConvoProvider } from '~/Providers';
 import store from '~/store';
 
@@ -27,6 +28,7 @@ jest.mock('librechat-data-provider', () => ({
   dataService: {
     ...jest.requireActual('librechat-data-provider').dataService,
     getConversationById: (...args: unknown[]) => mockGetConversationById(...(args as [string])),
+    getSharedLink: jest.fn().mockResolvedValue({ shareId: null, success: true }),
   },
 }));
 
@@ -71,7 +73,8 @@ const endpointsConfig = { openAI: {} } as unknown as TEndpointsConfig;
 
 const notFound = () => ({ status: 404, message: 'not found' });
 
-function Harness() {
+function Harness({ runningIds = [] }: { runningIds?: string[] }) {
+  const runningRows = useRunningConversationsQuery(runningIds);
   const { navigateToConvo } = useNavigateToConvo();
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const { setConversation } = store.useSetConversationAtom(0);
@@ -85,6 +88,11 @@ function Harness() {
         onClick={() => navigateToConvo(rowB, { currentConvoId: 'convo-a' })}
       />
       <button data-testid="go-c" onClick={() => navigateToConvo(rowC, { currentConvoId: B })} />
+      <button
+        data-testid="go-running-b"
+        disabled={runningRows.length === 0}
+        onClick={() => navigateToConvo(runningRows[0], { currentConvoId: 'convo-a' })}
+      />
       {/* Every other way out of a conversation — "New chat", a link, a
           redirect, the back button — moves the route without going through
           `navigateToConvo`, exactly like `useNewConvo` does. */}
@@ -117,6 +125,17 @@ function Harness() {
           navigate('/c/new');
         }}
       />
+      <button
+        data-testid="go-removed-endpoint"
+        onClick={() =>
+          navigateToConvo({
+            ...rowB,
+            conversationId: 'new',
+            endpoint: EModelEndpoint.azureOpenAI,
+            model: 'old-model',
+          })
+        }
+      />
       <div data-testid="path">{location.pathname}</div>
       <div data-testid="convo">{JSON.stringify(conversation ?? null)}</div>
     </div>
@@ -125,7 +144,7 @@ function Harness() {
 
 /** A real history, not `MemoryRouter`: the hook abandons superseded work by
  *  reading the browser's own location, so the test has to move it for real. */
-function renderHarness(cached: TConversation[] = []) {
+function renderHarness(cached: TConversation[] = [], runningIds: string[] = []) {
   window.history.pushState({}, '', '/c/convo-a');
 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -143,7 +162,7 @@ function renderHarness(cached: TConversation[] = []) {
       <RecoilRoot>
         <QueryClientProvider client={queryClient}>
           <SetConvoProvider>
-            <Harness />
+            <Harness runningIds={runningIds} />
           </SetConvoProvider>
         </QueryClientProvider>
       </RecoilRoot>
@@ -183,9 +202,77 @@ const settle = async (id: string, outcome: TConversation | { status: number }) =
 };
 
 describe('useNavigateToConvo', () => {
+  it('uses the destination-scoped cache when an endpoint was removed', () => {
+    localStorage.clear();
+    const client = renderHarness();
+    client.setQueryData([QueryKeys.models, 'openAI'], { openAI: ['scoped-model'] });
+    click('go-removed-endpoint');
+    expect(currentConvo()?.endpoint).toBe('openAI');
+    expect(currentConvo()?.model).toBe('scoped-model');
+    expect(client.getQueryData([QueryKeys.models])).toBeUndefined();
+  });
+
+  it('leaves the model unresolved if the fallback endpoint has not been discovered', () => {
+    localStorage.clear();
+    renderHarness();
+    click('go-removed-endpoint');
+    expect(currentConvo()?.endpoint).toBe('openAI');
+    expect(currentConvo()?.model).toBeUndefined();
+  });
+
   afterEach(() => {
     mockGetConversationById.mockClear();
     mockPending.clear();
+  });
+
+  describe('with a fetched Running row', () => {
+    it('keeps a newer approval choice when reopening a running project chat', async () => {
+      const queryClient = renderHarness([], [B]);
+      await waitFor(() =>
+        expect(mockGetConversationById).toHaveBeenCalledWith(B, expect.any(AbortSignal)),
+      );
+      await settle(B, { ...recordB, chatProjectId: 'project-1', codeApprovalMode: 'fullAccess' });
+      await waitFor(() => expect(screen.getByTestId('go-running-b')).not.toBeDisabled());
+
+      act(() =>
+        queryClient.setQueryData<TConversation>([QueryKeys.conversation, B], (record) => ({
+          ...record!,
+          codeApprovalMode: 'ask',
+        })),
+      );
+      click('go-running-b');
+
+      expect(currentPath()).toBe(`/c/${B}`);
+      expect(currentConvo()?.codeApprovalMode).toBe('ask');
+      expect(currentConvo()?.chatProjectId).toBe('project-1');
+    });
+
+    it('keeps chat-owned prompt, sampling and workspace choices while accepting fresh row metadata', async () => {
+      const queryClient = renderHarness([], [B]);
+      await waitFor(() => expect(mockGetConversationById).toHaveBeenCalled());
+      await settle(B, {
+        ...recordB,
+        title: 'Fresh running title',
+        codeEnvironmentMode: 'without_attached',
+      });
+      await waitFor(() => expect(screen.getByTestId('go-running-b')).not.toBeDisabled());
+      act(() =>
+        queryClient.setQueryData<TConversation>([QueryKeys.conversation, B], (record) => ({
+          ...record!,
+          promptPrefix: 'New local instructions',
+          temperature: 0.7,
+          codeEnvironmentMode: 'attached',
+        })),
+      );
+      click('go-running-b');
+
+      expect(currentConvo()).toMatchObject({
+        title: 'Fresh running title',
+        promptPrefix: 'New local instructions',
+        temperature: 0.7,
+        codeEnvironmentMode: 'attached',
+      });
+    });
   });
 
   describe('with the full record already cached', () => {

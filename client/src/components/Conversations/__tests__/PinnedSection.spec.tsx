@@ -3,7 +3,8 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import type { TConversation } from 'librechat-data-provider';
+import type { TConversation, TEndpointsConfig } from 'librechat-data-provider';
+import FavoriteItem from '~/components/Nav/Favorites/FavoriteItem';
 import PinnedSection from '../PinnedSection';
 
 const mockSetExpanded = jest.fn();
@@ -106,22 +107,24 @@ jest.mock('../Convo', () => {
 
 jest.mock('~/components/Nav/Favorites/FavoriteItem', () => ({
   __esModule: true,
-  default: ({
-    item,
-    type,
-    keyShortcuts,
-  }: {
-    item: { model?: string; id?: string; label?: string };
-    type: string;
-    keyShortcuts?: string;
-  }) => {
-    const label = item.id ?? item.label ?? item.model ?? '';
-    return (
-      <div data-testid="favorite-item" data-type={type} aria-keyshortcuts={keyShortcuts}>
-        {label}
-      </div>
-    );
-  },
+  default: jest.fn(
+    ({
+      item,
+      type,
+      keyShortcuts,
+    }: {
+      item: { model?: string; id?: string; label?: string };
+      type: string;
+      keyShortcuts?: string;
+    }) => {
+      const label = item.id ?? item.label ?? item.model ?? '';
+      return (
+        <div data-testid="favorite-item" data-type={type} aria-keyshortcuts={keyShortcuts}>
+          {label}
+        </div>
+      );
+    },
+  ),
 }));
 
 const pinnedConvo = (id: string, title: string) =>
@@ -159,6 +162,7 @@ describe('PinnedSection unified list', () => {
     mockFavoritesData.isAgentsLoading = false;
     mockFavoritesData.agentsMap = {};
     mockFavoritesData.specsMap = {};
+    mockFavoritesData.endpointsConfig = {};
   });
 
   it('renders nothing when there are no favorites or pinned conversations', () => {
@@ -170,6 +174,28 @@ describe('PinnedSection unified list', () => {
     mockFavoritesData.favorites = [{ model: 'gpt-4o', endpoint: 'openAI' }];
     renderSection([pinnedConvo('c1', 'Pinned Chat'), pinnedConvo('c2', 'Another Pin')]);
     expect(itemLabels()).toEqual(['gpt-4o', 'Pinned Chat', 'Another Pin']);
+  });
+
+  it('forwards endpoint config to pinned models when the config loads', () => {
+    const item = { model: 'claude-sonnet-4-5', endpoint: 'AnthropicClaude' };
+    mockFavoritesData.favorites = [item];
+    const { rerender } = renderSection([]);
+
+    expect(FavoriteItem).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'model', item, endpointsConfig: {} }),
+      expect.anything(),
+    );
+
+    const endpointsConfig: TEndpointsConfig = {
+      AnthropicClaude: { iconURL: 'anthropic', order: 0 },
+    };
+    mockFavoritesData.endpointsConfig = endpointsConfig;
+    rerender(renderTree([]));
+
+    expect(FavoriteItem).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'model', item, endpointsConfig }),
+      expect.anything(),
+    );
   });
 
   /* Chats and favorites are two independently ordered groups: an order saved
@@ -479,6 +505,50 @@ describe('PinnedSection unified list', () => {
 
     expect(mockUpdatePinnedOrder).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['crossed', 10, ['Second', 'First']],
+    ['not crossed', 30, ['First', 'Second']],
+  ] as const)(
+    'settles a fast drop with the midpoint %s before the hover frame',
+    (_name, dropY, labels) => {
+      renderSection([pinnedConvo('c1', 'First'), pinnedConvo('c2', 'Second')]);
+      const [target, source] = screen
+        .getAllByTestId('pinned-convo')
+        .map((node) => node.parentElement as HTMLElement);
+      jest.spyOn(target, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        bottom: 40,
+        left: 0,
+        right: 100,
+        width: 100,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      // The HTML5 backend batches hover callbacks on RAF. Keep that callback
+      // pending so only the accepted drop can settle the final pointer position.
+      jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+      const drag = (node: HTMLElement, type: string, clientY: number) =>
+        fireEvent(node, new MouseEvent(type, { bubbles: true, clientX: 10, clientY }));
+      drag(source, 'dragstart', 60);
+      drag(source, 'dragover', 60);
+      drag(target, 'dragover', dropY);
+      drag(target, 'drop', dropY);
+      drag(source, 'dragend', dropY);
+
+      expect(itemLabels()).toEqual(labels);
+      if (dropY < 20) {
+        expect(mockUpdatePinnedOrder).toHaveBeenCalledWith(
+          ['convo:c2', 'convo:c1'],
+          expect.anything(),
+        );
+      } else {
+        expect(mockUpdatePinnedOrder).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   /* An arrangement that arrives while the order is reconciling is held and
    * written when the fresh order lands. The flush runs on every settle, so it

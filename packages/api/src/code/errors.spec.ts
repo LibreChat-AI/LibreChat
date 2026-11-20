@@ -1,6 +1,9 @@
 import { ErrorTypes } from 'librechat-data-provider';
 import {
+  CodeWorkspaceSelectionError,
   getCodeWorkspaceSelectionErrorDetails,
+  describeCodeWorkspaceUnavailableSubagent,
+  getSubagentCodeWorkspaceUnavailableReason,
   shouldPersistCodeWorkspaceInitializationError,
 } from './errors';
 
@@ -61,5 +64,38 @@ describe('shouldPersistCodeWorkspaceInitializationError', () => {
         hasValidatedDecision: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe('subagent workspace unavailability', () => {
+  it.each(['required', 'invalid', 'worker_unavailable', 'unsupported', 'missing'] as const)(
+    'confines %s to the subagent',
+    (reason) => {
+      expect(
+        getSubagentCodeWorkspaceUnavailableReason(new CodeWorkspaceSelectionError(reason)),
+      ).toBe(reason);
+    },
+  );
+
+  it('keeps a locked decision and unrelated errors fatal', () => {
+    expect(
+      getSubagentCodeWorkspaceUnavailableReason(new CodeWorkspaceSelectionError('locked')),
+    ).toBeUndefined();
+    expect(getSubagentCodeWorkspaceUnavailableReason(new Error('boom'))).toBeUndefined();
+    expect(
+      getSubagentCodeWorkspaceUnavailableReason({
+        code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
+        reason: 'missing',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('tells the parent why the subagent cannot run', () => {
+    expect(describeCodeWorkspaceUnavailableSubagent('Reviews PRs.', 'required')).toBe(
+      'Reviews PRs.\n\nUnavailable in this conversation: Choose an attached workspace before using this agent.',
+    );
+    expect(describeCodeWorkspaceUnavailableSubagent(undefined, 'missing')).toMatch(
+      /^Unavailable in this conversation: The selected workspace is no longer registered/,
+    );
   });
 });

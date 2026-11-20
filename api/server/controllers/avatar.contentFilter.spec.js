@@ -131,6 +131,30 @@ describe('entity avatar filename content filtering', () => {
     unlinkSpy.mockRestore();
   });
 
+  it('invalidates the tenant-scoped list avatar cache after an accepted upload', async () => {
+    const { getLogStores } = require('~/cache');
+    const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+    const { resizeAvatar } = require('~/server/services/Files/images/avatar');
+    const avatarCache = { delete: jest.fn().mockResolvedValue(undefined) };
+    getLogStores.mockReturnValue(avatarCache);
+    getStrategyFunctions.mockReturnValue({
+      processAvatar: jest.fn().mockResolvedValue('new-avatar.jpg'),
+    });
+    resizeAvatar.mockResolvedValue(Buffer.from('resized'));
+    db.getAgent.mockResolvedValue({ id: 'agent-1', avatar: null });
+    db.updateAgent.mockResolvedValue({ id: 'agent-1', avatar: { filepath: 'new-avatar.jpg' } });
+    inspectContent.mockReturnValue(null);
+
+    const req = createRequest({ agent_id: 'agent-1' });
+    req.config.fileStrategy = 's3';
+    const res = createResponse();
+    await uploadAgentAvatar(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(db.updateAgent).toHaveBeenCalled();
+    expect(avatarCache.delete).toHaveBeenCalledWith('user-1:tenant-1:agents_avatar_refresh');
+  });
+
   it('blocks an agent avatar filename before database or storage work', async () => {
     const req = createRequest({ agent_id: 'agent-1' });
     const res = createResponse();

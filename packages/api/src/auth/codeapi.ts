@@ -248,12 +248,17 @@ function resolveTenantId(user: CodeApiUserContext): string | undefined {
   return resolveSingleTenantId();
 }
 
-export function getCodeApiTenantId(req: ServerRequest): string {
-  const tenantId = resolveTenantId(resolveUser(req));
+export function getCodeApiTenantIdForUser(user: { tenantId?: string }): string {
+  const tenantId = resolveTenantId(user);
   if (!tenantId) {
     throw new Error('Code API JWT auth requires tenant context');
   }
   return tenantId;
+}
+
+export function getCodeApiTenantId(req: ServerRequest): string {
+  const user = resolveUser(req);
+  return getCodeApiTenantIdForUser({ tenantId: stringifyClaimValue(user.tenantId) });
 }
 
 function isManagedCodeApiJwtMode(): boolean {

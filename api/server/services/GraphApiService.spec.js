@@ -46,7 +46,7 @@ describe('GraphApiService', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   afterEach(() => {
@@ -155,6 +155,56 @@ describe('GraphApiService', () => {
         authProvider: expect.any(Function),
       });
       expect(result).toBe(mockGraphClient);
+    });
+
+    it('does not exchange or cache a token after a cancelled cache read resolves late', async () => {
+      const controller = new AbortController();
+      let complete;
+      mockTokensCache.get.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const work = GraphApiService.createGraphClient(
+        'test-token',
+        'test-subject',
+        controller.signal,
+      );
+      const rejected = work.catch((error) => error);
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort(new Error('Directory deadline'));
+      expect(await rejected).toMatchObject({ message: 'Directory deadline' });
+      complete(null);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(client.genericGrantRequest).not.toHaveBeenCalled();
+      expect(mockTokensCache.set).not.toHaveBeenCalled();
+      expect(Client.init).not.toHaveBeenCalled();
+    });
+
+    it('does not cache a late token after exchange cancellation', async () => {
+      const controller = new AbortController();
+      mockTokensCache.get.mockResolvedValueOnce(null);
+      let complete;
+      client.genericGrantRequest.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const work = GraphApiService.createGraphClient(
+        'test-token',
+        'test-subject',
+        controller.signal,
+      );
+      const rejected = work.catch((error) => error);
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort(new Error('Directory deadline'));
+      expect(await rejected).toMatchObject({ message: 'Directory deadline' });
+      complete({ access_token: 'late-test-token', expires_in: 3600 });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockTokensCache.set).not.toHaveBeenCalled();
+      expect(Client.init).not.toHaveBeenCalled();
     });
 
     it('should handle token exchange errors gracefully', async () => {
@@ -648,158 +698,6 @@ describe('GraphApiService', () => {
       const result = await GraphApiService.getGroupMembers('token', 'user', 'group-id');
 
       expect(result).toEqual([]);
-    });
-  });
-
-  describe('testGraphApiAccess', () => {
-    beforeEach(() => {
-      jest.clearAllMocks();
-    });
-
-    it('should test all permissions and return success results', async () => {
-      // Mock successful responses for all tests
-      mockGraphClient.get
-        .mockResolvedValueOnce({ id: 'user-123', displayName: 'Test User' }) // /me test
-        .mockResolvedValueOnce({ value: [] }) // people OrganizationUser test
-        .mockResolvedValueOnce({ value: [] }) // people UnifiedGroup test
-        .mockResolvedValueOnce({ value: [] }) // /users endpoint test
-        .mockResolvedValueOnce({ value: [] }); // /groups endpoint test
-
-      const result = await GraphApiService.testGraphApiAccess('token', 'user');
-
-      expect(result).toEqual({
-        userAccess: true,
-        peopleAccess: true,
-        groupsAccess: true,
-        usersEndpointAccess: true,
-        groupsEndpointAccess: true,
-        errors: [],
-      });
-
-      // Verify all endpoints were tested
-      expect(mockGraphClient.api).toHaveBeenCalledWith('/me');
-      expect(mockGraphClient.api).toHaveBeenCalledWith('/me/people');
-      expect(mockGraphClient.api).toHaveBeenCalledWith('/users');
-      expect(mockGraphClient.api).toHaveBeenCalledWith('/groups');
-      expect(mockGraphClient.filter).toHaveBeenCalledWith(
-        "personType/subclass eq 'OrganizationUser'",
-      );
-      expect(mockGraphClient.filter).toHaveBeenCalledWith("personType/subclass eq 'UnifiedGroup'");
-      expect(mockGraphClient.search).toHaveBeenCalledWith('"displayName:test"');
-    });
-
-    it('should handle partial failures and record errors', async () => {
-      // Mock mixed success/failure responses
-      mockGraphClient.get
-        .mockResolvedValueOnce({ id: 'user-123', displayName: 'Test User' }) // /me success
-        .mockRejectedValueOnce(new Error('People access denied')) // people OrganizationUser fail
-        .mockResolvedValueOnce({ value: [] }) // people UnifiedGroup success
-        .mockRejectedValueOnce(new Error('Users endpoint access denied')) // /users fail
-        .mockResolvedValueOnce({ value: [] }); // /groups success
-
-      const result = await GraphApiService.testGraphApiAccess('token', 'user');
-
-      expect(result).toEqual({
-        userAccess: true,
-        peopleAccess: false,
-        groupsAccess: true,
-        usersEndpointAccess: false,
-        groupsEndpointAccess: true,
-        errors: [
-          'People.Read (OrganizationUser): People access denied',
-          'Users endpoint: Users endpoint access denied',
-        ],
-      });
-    });
-
-    it('should handle complete Graph client creation failure', async () => {
-      // Mock token exchange failure to test error handling
-      if (client.genericGrantRequest) {
-        client.genericGrantRequest.mockRejectedValue(new Error('Token exchange failed'));
-      }
-
-      const result = await GraphApiService.testGraphApiAccess('invalid-token', 'user');
-
-      expect(result).toEqual({
-        userAccess: false,
-        peopleAccess: false,
-        groupsAccess: false,
-        usersEndpointAccess: false,
-        groupsEndpointAccess: false,
-        errors: ['Token exchange failed'],
-      });
-    });
-
-    it('should record all permission errors', async () => {
-      // Mock all requests to fail
-      mockGraphClient.get
-        .mockRejectedValueOnce(new Error('User.Read denied'))
-        .mockRejectedValueOnce(new Error('People.Read OrganizationUser denied'))
-        .mockRejectedValueOnce(new Error('People.Read UnifiedGroup denied'))
-        .mockRejectedValueOnce(new Error('Users directory access denied'))
-        .mockRejectedValueOnce(new Error('Groups directory access denied'));
-
-      const result = await GraphApiService.testGraphApiAccess('token', 'user');
-
-      expect(result).toEqual({
-        userAccess: false,
-        peopleAccess: false,
-        groupsAccess: false,
-        usersEndpointAccess: false,
-        groupsEndpointAccess: false,
-        errors: [
-          'User.Read: User.Read denied',
-          'People.Read (OrganizationUser): People.Read OrganizationUser denied',
-          'People.Read (UnifiedGroup): People.Read UnifiedGroup denied',
-          'Users endpoint: Users directory access denied',
-          'Groups endpoint: Groups directory access denied',
-        ],
-      });
-    });
-
-    it('should test new endpoints with correct search patterns', async () => {
-      // Mock successful responses for endpoint testing
-      mockGraphClient.get
-        .mockResolvedValueOnce({ id: 'user-123', displayName: 'Test User' }) // /me
-        .mockResolvedValueOnce({ value: [] }) // people OrganizationUser
-        .mockResolvedValueOnce({ value: [] }) // people UnifiedGroup
-        .mockResolvedValueOnce({ value: [] }) // /users
-        .mockResolvedValueOnce({ value: [] }); // /groups
-
-      await GraphApiService.testGraphApiAccess('token', 'user');
-
-      // Verify /users endpoint test
-      expect(mockGraphClient.api).toHaveBeenCalledWith('/users');
-      expect(mockGraphClient.search).toHaveBeenCalledWith('"displayName:test"');
-      expect(mockGraphClient.select).toHaveBeenCalledWith('id,displayName,userPrincipalName');
-
-      // Verify /groups endpoint test
-      expect(mockGraphClient.api).toHaveBeenCalledWith('/groups');
-      expect(mockGraphClient.select).toHaveBeenCalledWith('id,displayName,mail');
-    });
-
-    it('should handle endpoint-specific permission failures', async () => {
-      // Mock specific endpoint failures
-      mockGraphClient.get
-        .mockResolvedValueOnce({ id: 'user-123', displayName: 'Test User' }) // /me success
-        .mockResolvedValueOnce({ value: [] }) // people OrganizationUser success
-        .mockResolvedValueOnce({ value: [] }) // people UnifiedGroup success
-        .mockRejectedValueOnce(new Error('Insufficient privileges')) // /users fail (User.Read.All needed)
-        .mockRejectedValueOnce(new Error('Access denied to groups')); // /groups fail (Group.Read.All needed)
-
-      const result = await GraphApiService.testGraphApiAccess('token', 'user');
-
-      expect(result).toEqual({
-        userAccess: true,
-        peopleAccess: true,
-        groupsAccess: true,
-        usersEndpointAccess: false,
-        groupsEndpointAccess: false,
-        errors: [
-          'Users endpoint: Insufficient privileges',
-          'Groups endpoint: Access denied to groups',
-        ],
-      });
     });
   });
 });

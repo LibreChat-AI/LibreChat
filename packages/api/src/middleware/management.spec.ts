@@ -134,6 +134,39 @@ describe('getMachineClientId', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  it('passes Cognito access-token requirements to the verifier', async () => {
+    const config = createConfig();
+    const oidc = config.endpoints?.agents?.managementApi?.auth?.oidc;
+    if (oidc) {
+      delete oidc.audience;
+      oidc.tokenUse = 'access';
+      oidc.requiredScopes = ['agents-api/manage'];
+    }
+    const deps = createDeps({
+      getAppConfig: jest.fn().mockResolvedValue(config),
+      verifyAccessToken: jest.fn().mockResolvedValue(
+        createPayload({
+          azp: undefined,
+          client_id: CLIENT_ID,
+          sub: CLIENT_ID,
+          token_use: 'access',
+          scope: 'agents-api/manage',
+        }),
+      ),
+    });
+    const next = jest.fn();
+
+    await runMiddleware(deps, createRequest(), createResponse(), next);
+
+    expect(deps.verifyAccessToken).toHaveBeenCalledWith(TOKEN, {
+      enabled: true,
+      issuer: 'https://issuer.example.com',
+      tokenUse: 'access',
+      requiredScopes: ['agents-api/manage'],
+    });
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['the default subject rule', createConfig(), createPayload({ sub: 'auth0|human-user' })],
     [
@@ -239,6 +272,26 @@ describe('createAgentManagementAuth', () => {
 
     expect(deps.findUser).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('rejects audience-less access-token auth without required scopes before verification', async () => {
+    const config = createConfig();
+    const oidc = config.endpoints?.agents?.managementApi?.auth?.oidc;
+    if (oidc) {
+      delete oidc.audience;
+      oidc.tokenUse = 'access';
+      delete oidc.requiredScopes;
+    }
+    const deps = createDeps({ getAppConfig: jest.fn().mockResolvedValue(config) });
+    const res = createResponse();
+    const next = jest.fn();
+
+    await runMiddleware(deps, createRequest(), res, next);
+
+    expect(deps.verifyAccessToken).not.toHaveBeenCalled();
+    expect(deps.findUser).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -423,5 +476,40 @@ describe('createAgentManagementAuth', () => {
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(deps.findUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('conversation metadata admission', () => {
+  it('requires explicit conversation read access on the machine binding', async () => {
+    const deps = createDeps();
+    const res = createResponse();
+    const next = jest.fn();
+    await createAgentManagementAuth(deps, { requireConversationRead: true })(
+      createRequest(),
+      res,
+      next,
+    );
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(deps.findUser).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('shares existing principal resolution for an opted-in machine binding', async () => {
+    const config = createConfig();
+    const binding = config.endpoints?.agents?.managementApi?.auth?.clients[0];
+    if (!binding) throw new Error('Expected the management fixture binding');
+    binding.conversationRead = true;
+    const deps = createDeps({ getAppConfig: jest.fn().mockResolvedValue(config) });
+    const res = createResponse();
+    const next = jest.fn();
+    await createAgentManagementAuth(deps, { requireConversationRead: true })(
+      createRequest(),
+      res,
+      next,
+    );
+    expect(deps.getAppConfig).toHaveBeenCalledTimes(1);
+    expect(deps.findUser).toHaveBeenCalledWith({ _id: USER_ID, tenantId: TENANT_ID });
+    expect(deps.isPrincipalActive).toHaveBeenCalledWith(USER_ID);
+    expect(next).toHaveBeenCalledTimes(1);
   });
 });

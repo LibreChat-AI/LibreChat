@@ -1,6 +1,12 @@
 const { logger } = require('@librechat/data-schemas');
 const { ErrorTypes } = require('librechat-data-provider');
-const { isEnabled, isEmailDomainAllowed, resolveAppConfigForUser } = require('@librechat/api');
+const {
+  isEnabled,
+  findSocialUser,
+  isEmailDomainAllowed,
+  resolvePreAuthAppConfig,
+  resolveAppConfigForUser,
+} = require('@librechat/api');
 const { createSocialUser, handleExistingUser } = require('./process');
 const { getAppConfig } = require('~/server/services/Config');
 const { findUser, updateUser } = require('~/models');
@@ -14,7 +20,7 @@ const socialLogin =
         profile,
       });
 
-      const baseConfig = await getAppConfig({ baseOnly: true });
+      const baseConfig = await resolvePreAuthAppConfig(getAppConfig);
       if (!isEmailDomainAllowed(email, baseConfig?.registration?.allowedDomains)) {
         logger.error(
           `[${provider}Login] Authentication blocked - email domain not allowed [Email: ${email}]`,
@@ -26,22 +32,10 @@ const socialLogin =
       }
 
       const providerKey = `${provider}Id`;
-      let existingUser = null;
+      const lookup = { findUser, provider, providerId: id, email };
+      const existingUser = await findSocialUser(lookup);
 
-      /** First try to find user by provider ID (e.g., googleId, facebookId) */
-      if (id && typeof id === 'string') {
-        existingUser = await findUser({ [providerKey]: id });
-      }
-
-      /** If not found by provider ID, try finding by email */
-      if (!existingUser) {
-        existingUser = await findUser({ email: email?.trim() });
-        if (existingUser) {
-          logger.warn(`[${provider}Login] User found by email: ${email} but not by ${providerKey}`);
-        }
-      }
-
-      const appConfig = existingUser?.tenantId
+      const appConfig = existingUser
         ? await resolveAppConfigForUser(getAppConfig, existingUser)
         : baseConfig;
 
@@ -132,7 +126,7 @@ const socialLogin =
         username,
         name,
         emailVerified,
-        appConfig,
+        lookup,
       });
       return passResult(newUser);
     } catch (err) {

@@ -2,10 +2,10 @@ import * as React from 'react';
 import * as LabelPrimitive from '@radix-ui/react-label';
 import { ClassProp } from 'class-variance-authority/types';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { cn } from '~/utils';
+import { cn, peerDisabledInkClasses } from '~/utils';
 
 type LabelVariantOptions =
-  | ({ variant?: 'default' | 'section' | null | undefined } & ClassProp)
+  | ({ variant?: 'default' | 'secondary' | 'option' | 'section' | null | undefined } & ClassProp)
   | undefined;
 
 /**
@@ -18,7 +18,17 @@ type LabelVariantOptions =
 const labelVariants: (props?: LabelVariantOptions) => string = cva('', {
   variants: {
     variant: {
-      default: 'text-sm leading-none text-text-primary',
+      /** Size, leading and weight are the theme's label roles: `text-sm`, leading 1 and the
+       *  surrounding weight by default. */
+      default:
+        'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-primary',
+      /** The default metrics in the secondary ink, for a label that annotates rather than names. */
+      secondary:
+        'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-secondary',
+      /** The secondary metrics rising to the primary ink under the pointer, for the label of a
+       *  checkbox or radio that is itself a click target for its control. */
+      option:
+        'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-secondary hover:text-text-primary',
       /** Eyebrow above a field or settings group. */
       section: 'text-[11px] font-medium uppercase tracking-wide text-text-secondary',
     },
@@ -44,7 +54,8 @@ const Label: React.ForwardRefExoticComponent<
     {...props}
     {...{
       className: cn(
-        'block w-full break-all peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+        'block w-full wrap-anywhere peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+        peerDisabledInkClasses,
         labelVariants({ variant }),
         className,
       ),

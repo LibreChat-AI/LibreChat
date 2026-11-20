@@ -34,6 +34,7 @@ const getLogStores = require('~/cache/getLogStores');
 const mockCache = { get: jest.fn(), set: jest.fn(), delete: jest.fn() };
 getLogStores.mockReturnValue(mockCache);
 
+const { createMCPCatalogStore } = require('@librechat/api');
 const {
   getCachedTools,
   updateCachedGlobalTools,
@@ -60,6 +61,100 @@ describe('global tool cache write lock', () => {
     mockKeyvRedisClient.eval.mockResolvedValue(1);
     mockCache.set.mockResolvedValue(true);
     mockCache.delete.mockResolvedValue(true);
+  });
+
+  describe.each([
+    { REDIS_KEY_PREFIX: undefined },
+    { REDIS_KEY_PREFIX: '' },
+    { REDIS_KEY_PREFIX: 'myprefix_' },
+    { REDIS_KEY_PREFIX: 'myprefix_', GLOBAL_PREFIX_SEPARATOR: ':' },
+    { REDIS_KEY_PREFIX: 'myprefix_{tenant}', GLOBAL_PREFIX_SEPARATOR: '' },
+    { REDIS_KEY_PREFIX: 'myprefix_{' },
+    { REDIS_KEY_PREFIX: 'myprefix_}' },
+    { REDIS_KEY_PREFIX: 'myprefix_{{tenant}' },
+    { REDIS_KEY_PREFIX: 'myprefix_', GLOBAL_PREFIX_SEPARATOR: '{' },
+  ])('fence key namespace %j', (cacheConfig) => {
+    it.each([
+      ['global', false],
+      ['user', false],
+      ['global', true],
+      ['user', true],
+    ])(
+      'namespaces the %s fence without changing its slot (restricted ACL: %s)',
+      async (scope, restricted) => {
+        mockCache.get.mockResolvedValue(null);
+        const store = createMCPCatalogStore({
+          cacheConfig,
+          getCache: () => mockCache,
+          ioredisClient: mockRedisClient,
+          keyvRedisClient: mockKeyvRedisClient,
+        });
+        const prefix = cacheConfig.REDIS_KEY_PREFIX
+          ? `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR ?? '::'}`
+          : '';
+        const namespace = `${prefix}${CacheKeys.TOOL_CACHE}:`;
+        const guardedKey =
+          scope === 'global'
+            ? `${namespace}tools:global`
+            : `${namespace}tools:metadata:mcp:user-generation:{user-1:server-1}`;
+
+        const opening = guardedKey.indexOf('{');
+        const closing = opening < 0 ? -1 : guardedKey.indexOf('}', opening + 1);
+        const hashTag = closing > opening + 1 ? guardedKey.slice(opening + 1, closing) : guardedKey;
+        const legacyFenceKey = `tools:${scope === 'global' ? 'global' : 'mcp'}:write-fence:{${hashTag}}`;
+        mockKeyvRedisClient.eval.mockImplementation(async (_script, { keys }) => {
+          if (keys.some((key) => calculateSlot(key) !== calculateSlot(keys[0]))) {
+            throw new Error('Redis catalog script keys must share one cluster slot');
+          }
+          if (restricted && keys.includes(legacyFenceKey)) {
+            throw new Error('NOPERM no permissions to access one of the keys used as arguments');
+          }
+          return 1;
+        });
+
+        if (scope === 'global') {
+          await expect(store.setCachedTools({ builtin: {} })).resolves.toBe(true);
+        } else {
+          await expect(
+            store.getMCPToolsCacheGeneration({ userId: 'user-1', serverName: 'server-1' }),
+          ).resolves.toEqual(expect.any(String));
+        }
+
+        const fenceKey = mockKeyvRedisClient.eval.mock.calls[0][1].keys[0];
+        expect(fenceKey.startsWith(namespace)).toBe(true);
+        expect(fenceKey).toContain('write-fence');
+        expect(fenceKey).not.toBe(guardedKey);
+        const fallback = restricted || calculateSlot(legacyFenceKey) !== calculateSlot(guardedKey);
+        const claimKeys = fallback ? [fenceKey] : [fenceKey, legacyFenceKey];
+        const calls = [[fenceKey, legacyFenceKey]];
+        if (fallback) calls.push(claimKeys);
+        calls.push(
+          fallback ? [fenceKey, guardedKey] : [fenceKey, guardedKey, legacyFenceKey],
+          claimKeys,
+        );
+        expect(mockKeyvRedisClient.eval.mock.calls.map(([, options]) => options.keys)).toEqual(
+          calls,
+        );
+        expect(calculateSlot(fenceKey)).toBe(calculateSlot(guardedKey));
+      },
+    );
+  });
+
+  it.each([
+    'READONLY replica is read-only',
+    'ERR Error running script: NOPERM inside script',
+    'connection lost',
+    'CROSSSLOT Keys in request do not hash to the same slot',
+    'Redis catalog script keys must share one cluster slot',
+  ])('does not retry an ambiguous fence claim failure: %s', async (message) => {
+    mockKeyvRedisClient.eval.mockRejectedValue(new Error(message));
+    const operation = jest.fn();
+
+    await expect(runWithGlobalCacheLock(operation)).rejects.toThrow(message);
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(mockKeyvRedisClient.eval).toHaveBeenCalledTimes(1);
+    expect(mockRedisClient.eval).toHaveBeenCalledTimes(1);
   });
 
   it('waits for the shared Redis client before accessing the catalog', async () => {
@@ -147,8 +242,9 @@ describe('global tool cache write lock', () => {
       expect.stringContaining("redis.call('GET', KEYS[1])"),
       expect.objectContaining({
         keys: [
-          `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
+          `${CacheKeys.TOOL_CACHE}:tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
           `${CacheKeys.TOOL_CACHE}:tools:global`,
+          `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
         ],
       }),
     );
@@ -168,8 +264,9 @@ describe('global tool cache write lock', () => {
           expect.stringContaining("redis.call('PSETEX', KEYS[2]"),
           expect.objectContaining({
             keys: [
-              `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
+              `${CacheKeys.TOOL_CACHE}:tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
               `${CacheKeys.TOOL_CACHE}:tools:global`,
+              `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
             ],
             arguments: [
               expect.any(String),
@@ -214,6 +311,7 @@ describe('global tool cache write lock', () => {
     expect(operation).not.toHaveBeenCalled();
     const [claimScript, claimOptions] = mockKeyvRedisClient.eval.mock.calls[0];
     expect(claimScript).toContain('current ~= ARGV[1]');
+    expect(claimOptions.keys).toHaveLength(2);
     expect(claimScript).toContain("redis.call('TIME')");
     expect(claimOptions.arguments).toEqual([
       mockRedisClient.set.mock.calls[0][1],
@@ -339,10 +437,11 @@ describe('global tool cache write lock', () => {
       expect.stringContaining("redis.call('EXISTS', KEYS[2])"),
       expect.objectContaining({
         keys: [
-          `tools:mcp:write-fence:{user-1:server-1}`,
+          `${CacheKeys.TOOL_CACHE}:tools:mcp:write-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-legacy-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-generation:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:mcp:user:{user-1:server-1}:v2:config-current`,
+          `tools:mcp:write-fence:{user-1:server-1}`,
         ],
       }),
     );

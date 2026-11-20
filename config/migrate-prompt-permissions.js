@@ -1,6 +1,6 @@
 const path = require('path');
-const { logger } = require('@librechat/data-schemas');
-const { ensureRequiredCollectionsExist } = require('@librechat/api');
+const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { ensureRequiredCollectionsExist, runResourceMigration } = require('@librechat/api');
 const { AccessRoleIds, ResourceType, PrincipalType } = require('librechat-data-provider');
 
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
@@ -52,8 +52,9 @@ async function migrateToPromptGroupPermissions({ dryRun = true, batchSize = 100 
   const promptGroupsToMigrate = await PromptGroup.find({
     _id: { $nin: migratedGroupIds },
     author: { $exists: true, $ne: null },
+    source: { $in: [null, 'native'] },
   })
-    .select('_id name author authorName category')
+    .select('_id name author authorName category tenantId')
     .lean();
 
   const categories = {
@@ -127,39 +128,41 @@ async function migrateToPromptGroupPermissions({ dryRun = true, batchSize = 100 
 
     for (const group of batch) {
       try {
-        const isGlobalGroup = globalPromptGroupIds.has(group._id.toString());
+        await runResourceMigration(group, async () => {
+          const isGlobalGroup = globalPromptGroupIds.has(group._id.toString());
 
-        await grantPermission({
-          principalType: PrincipalType.USER,
-          principalId: group.author,
-          resourceType: ResourceType.PROMPTGROUP,
-          resourceId: group._id,
-          accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
-          grantedBy: group.author,
-        });
-        results.ownerGrants++;
-
-        if (isGlobalGroup) {
           await grantPermission({
-            principalType: PrincipalType.PUBLIC,
-            principalId: null,
+            principalType: PrincipalType.USER,
+            principalId: group.author,
             resourceType: ResourceType.PROMPTGROUP,
             resourceId: group._id,
-            accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+            accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
             grantedBy: group.author,
           });
-          results.publicViewGrants++;
-        }
+          results.ownerGrants++;
 
-        results.migrated++;
-        logger.debug(
-          `Migrated promptGroup "${group.name}" [${isGlobalGroup ? 'Global View' : 'Private'}]`,
-          {
-            groupId: group._id,
-            author: group.author,
-            isGlobalGroup,
-          },
-        );
+          if (isGlobalGroup) {
+            await grantPermission({
+              principalType: PrincipalType.PUBLIC,
+              principalId: null,
+              resourceType: ResourceType.PROMPTGROUP,
+              resourceId: group._id,
+              accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+              grantedBy: group.author,
+            });
+            results.publicViewGrants++;
+          }
+
+          results.migrated++;
+          logger.debug(
+            `Migrated promptGroup "${group.name}" [${isGlobalGroup ? 'Global View' : 'Private'}]`,
+            {
+              groupId: group._id,
+              author: group.author,
+              isGlobalGroup,
+            },
+          );
+        });
       } catch (error) {
         results.errors++;
         logger.error(`Failed to migrate promptGroup "${group.name}"`, {
@@ -182,7 +185,7 @@ if (require.main === module) {
   const batchSize =
     parseInt(process.argv.find((arg) => arg.startsWith('--batch-size='))?.split('=')[1]) || 100;
 
-  migrateToPromptGroupPermissions({ dryRun, batchSize })
+  runAsSystem(() => migrateToPromptGroupPermissions({ dryRun, batchSize }))
     .then((result) => {
       if (dryRun) {
         console.log('\n=== DRY RUN RESULTS ===');
@@ -216,4 +219,7 @@ if (require.main === module) {
     });
 }
 
-module.exports = { migrateToPromptGroupPermissions };
+module.exports = {
+  migrateToPromptGroupPermissions: (options) =>
+    runAsSystem(() => migrateToPromptGroupPermissions(options)),
+};

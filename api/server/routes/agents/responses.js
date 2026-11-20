@@ -25,7 +25,11 @@ const {
   getResponse,
   listModels,
 } = require('~/server/controllers/agents/responses');
-const { configMiddleware } = require('~/server/middleware');
+const { configMiddleware, requireTermsAcceptance } = require('~/server/middleware');
+const {
+  createBackgroundResponseHandlers,
+  authenticateBackgroundResponses,
+} = require('~/server/services/Responses');
 const {
   checkAgentPermission,
   preAuthTenantMiddleware,
@@ -34,9 +38,14 @@ const {
 } = require('./middleware');
 
 const router = express.Router();
+const background = createBackgroundResponseHandlers({
+  create: createResponse,
+  retrieve: getResponse,
+});
 
 router.use(preAuthTenantMiddleware);
-router.use(requireRemoteAgentAuth);
+router.use(authenticateBackgroundResponses(requireRemoteAgentAuth));
+router.use(requireTermsAcceptance);
 router.use(configMiddleware);
 router.use(checkRemoteAgentsFeature);
 
@@ -81,7 +90,8 @@ router.use(checkRemoteAgentsFeature);
  *   "usage": { ... }
  * }
  */
-router.post('/', checkAgentPermission, createResponse);
+router.post('/', checkAgentPermission, background.create);
+router.post('/:id/cancel', background.cancel);
 
 /**
  * @route GET /v1/responses/models
@@ -120,6 +130,6 @@ router.get('/models', listModels);
  *   "usage": { ... }
  * }
  */
-router.get('/:id', getResponse);
+router.get('/:id', background.retrieve);
 
 module.exports = router;

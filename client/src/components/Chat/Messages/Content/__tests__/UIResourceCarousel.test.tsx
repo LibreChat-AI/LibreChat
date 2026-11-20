@@ -22,6 +22,10 @@ jest.mock('~/hooks', () => ({
     key === 'com_ui_scroll_left' ? 'Scroll left' : 'Scroll right',
 }));
 
+jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
+  useMCPAppsPolicy: () => ({ enabled: true, legacyHtmlEnabled: true }),
+}));
+
 // Mock the UIResourceRenderer component
 jest.mock('@mcp-ui/client', () => ({
   UIResourceRenderer: ({ resource, onUIAction }: any) => (
@@ -87,7 +91,7 @@ describe('UIResourceCarousel', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('filters blocked resources before choosing a single-resource layout', () => {
+  it('filters blocked resources before choosing a single-resource layout', async () => {
     const { container } = render(
       <UIResourceCarousel
         uiResources={[
@@ -102,7 +106,7 @@ describe('UIResourceCarousel', () => {
       />,
     );
 
-    expect(screen.getAllByTestId('ui-resource-renderer')).toHaveLength(1);
+    expect(await screen.findAllByTestId('ui-resource-renderer')).toHaveLength(1);
     expect(screen.getByText('Resource 1')).toBeInTheDocument();
     expect(container.querySelector('.hide-scrollbar')).not.toBeInTheDocument();
   });
@@ -124,9 +128,9 @@ describe('UIResourceCarousel', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders all UI resources', () => {
+  it('renders all UI resources', async () => {
     render(<UIResourceCarousel uiResources={mockUIResources} />);
-    const renderers = screen.getAllByTestId('ui-resource-renderer');
+    const renderers = await screen.findAllByTestId('ui-resource-renderer');
     expect(renderers).toHaveLength(5);
     expect(screen.getByText('Resource 1')).toBeInTheDocument();
     expect(screen.getByText('Resource 5')).toBeInTheDocument();
@@ -234,10 +238,32 @@ describe('UIResourceCarousel', () => {
     });
   });
 
+  it('normalizes negative scrollLeft in RTL', async () => {
+    const { container } = render(<UIResourceCarousel uiResources={mockUIResources} />);
+    const scrollContainer = container.querySelector<HTMLElement>('.hide-scrollbar');
+
+    scrollContainer!.style.direction = 'rtl';
+    // RTL at its start edge: scrollLeft 0 is the physical right end
+    Object.defineProperty(scrollContainer, 'scrollLeft', { configurable: true, value: 0 });
+    Object.defineProperty(scrollContainer, 'scrollWidth', { configurable: true, value: 1000 });
+    fireEvent.scroll(scrollContainer!);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Scroll left')).toBeInTheDocument();
+    });
+
+    // RTL scrolled to the physical left end: scrollLeft is -(scrollWidth - clientWidth)
+    Object.defineProperty(scrollContainer, 'scrollLeft', { configurable: true, value: -500 });
+    fireEvent.scroll(scrollContainer!);
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Scroll left')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Scroll right')).toBeInTheDocument();
+    });
+  });
+
   it('handles UIResource actions using handleUIAction', async () => {
     render(<UIResourceCarousel uiResources={mockUIResources.slice(0, 1)} />);
 
-    const renderer = screen.getByTestId('ui-resource-renderer');
+    const renderer = await screen.findByTestId('ui-resource-renderer');
     fireEvent.click(renderer);
 
     await waitFor(() => {
@@ -248,7 +274,7 @@ describe('UIResourceCarousel', () => {
   it('calls handleUIAction with correct parameters for multiple resources', async () => {
     render(<UIResourceCarousel uiResources={mockUIResources.slice(0, 3)} />);
 
-    const renderers = screen.getAllByTestId('ui-resource-renderer');
+    const renderers = await screen.findAllByTestId('ui-resource-renderer');
 
     // Click the second renderer
     fireEvent.click(renderers[1]);
@@ -269,7 +295,7 @@ describe('UIResourceCarousel', () => {
   it('passes correct ask function to handleUIAction', async () => {
     render(<UIResourceCarousel uiResources={mockUIResources.slice(0, 1)} />);
 
-    const renderer = screen.getByTestId('ui-resource-renderer');
+    const renderer = await screen.findByTestId('ui-resource-renderer');
     fireEvent.click(renderer);
 
     await waitFor(() => {
@@ -278,11 +304,11 @@ describe('UIResourceCarousel', () => {
     });
   });
 
-  it('applies correct dimensions to resource containers', () => {
+  it('applies correct dimensions to resource containers', async () => {
     render(<UIResourceCarousel uiResources={mockUIResources.slice(0, 2)} />);
-    const containers = screen
-      .getAllByTestId('ui-resource-renderer')
-      .map((el) => el.parentElement?.parentElement);
+    const containers = (await screen.findAllByTestId('ui-resource-renderer')).map(
+      (el) => el.parentElement?.parentElement,
+    );
 
     containers.forEach((container, index) => {
       expect(container).toHaveStyle({
@@ -315,11 +341,11 @@ describe('UIResourceCarousel', () => {
     expect(removeEventListenerSpy).toHaveBeenCalledWith('scroll', expect.any(Function));
   });
 
-  it('renders with animation delays for each resource', () => {
+  it('renders with animation delays for each resource', async () => {
     render(<UIResourceCarousel uiResources={mockUIResources.slice(0, 3)} />);
-    const resourceContainers = screen
-      .getAllByTestId('ui-resource-renderer')
-      .map((el) => el.parentElement?.parentElement);
+    const resourceContainers = (await screen.findAllByTestId('ui-resource-renderer')).map(
+      (el) => el.parentElement?.parentElement,
+    );
 
     resourceContainers.forEach((container, index) => {
       expect(container).toHaveStyle({
@@ -328,9 +354,9 @@ describe('UIResourceCarousel', () => {
     });
   });
 
-  it('memoizes component properly', () => {
+  it('memoizes component properly', async () => {
     const { rerender } = render(<UIResourceCarousel uiResources={mockUIResources} />);
-    const firstRender = screen.getAllByTestId('ui-resource-renderer');
+    const firstRender = await screen.findAllByTestId('ui-resource-renderer');
 
     // Re-render with same props
     rerender(<UIResourceCarousel uiResources={mockUIResources} />);

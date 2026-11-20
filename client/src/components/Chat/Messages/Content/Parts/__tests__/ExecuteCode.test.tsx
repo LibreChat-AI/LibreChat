@@ -1,8 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render } from '@testing-library/react';
-import type { PtcTraceEntry } from '~/store/ptc';
-import { ptcTraceByToolCallId, ptcTraceKey } from '~/store/ptc';
+import { createStore, Provider as JotaiProvider } from 'jotai';
+import type { PtcTraceEntry } from '~/common';
+import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { MessageContext } from '~/Providers/MessageContext';
 import ExecuteCode from '../ExecuteCode';
 import store from '~/store';
@@ -12,15 +13,11 @@ jest.mock('~/hooks', () => ({
     () =>
     (key: string): string =>
       key,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useProgress: (initialProgress: number) => initialProgress,
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
 }));
 
 jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
@@ -37,9 +34,17 @@ jest.mock('../Attachment', () => ({
   AttachmentGroup: () => <div data-testid="attachment-group" />,
 }));
 
-jest.mock('../Stdout', () => ({
-  __esModule: true,
-  default: () => <div data-testid="stdout" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: {
+      display: 'grid',
+      gridTemplateRows: isExpanded ? '1fr' : '0fr',
+      opacity: isExpanded ? 1 : 0,
+    },
+    ref: { current: null },
+  }),
+  Stdout: () => <div data-testid="stdout" />,
 }));
 
 jest.mock('../useLazyHighlight', () => {
@@ -58,7 +63,6 @@ jest.mock('../useLazyHighlight', () => {
 });
 
 jest.mock('~/utils', () => ({
-  ...jest.requireActual<typeof import('~/utils/toolLabels')>('~/utils/toolLabels'),
   ...jest.requireActual<typeof import('~/utils/runStepDuration')>('~/utils/runStepDuration'),
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
 }));
@@ -147,25 +151,28 @@ describe('ExecuteCode programmatic tool trace', () => {
   const TOOL_CALL_ID = 'call_ptc_1';
   const MESSAGE_ID = 'response-msg-1';
 
-  const renderWithTrace = (entries: PtcTraceEntry[]) =>
-    render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(store.autoExpandTools, true);
-          set(ptcTraceByToolCallId(ptcTraceKey(MESSAGE_ID, TOOL_CALL_ID)), { entries, dropped: 0 });
-        }}
-      >
-        <MessageContext.Provider value={{ messageId: MESSAGE_ID, isExpanded: true }}>
-          <ExecuteCode
-            initialProgress={0.5}
-            isSubmitting={true}
-            toolCallId={TOOL_CALL_ID}
-            args={{ lang: 'py', code: 'print(1)' }}
-            output=""
-          />
-        </MessageContext.Provider>
+  const renderWithTrace = (entries: PtcTraceEntry[]) => {
+    const traceStore = createStore();
+    traceStore.set(ptcTraceByToolCallId(ptcTraceKey(MESSAGE_ID, TOOL_CALL_ID)), {
+      entries,
+      dropped: 0,
+    });
+    return render(
+      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+        <JotaiProvider store={traceStore}>
+          <MessageContext.Provider value={{ messageId: MESSAGE_ID, isExpanded: true }}>
+            <ExecuteCode
+              initialProgress={0.5}
+              isSubmitting={true}
+              toolCallId={TOOL_CALL_ID}
+              args={{ lang: 'py', code: 'print(1)' }}
+              output=""
+            />
+          </MessageContext.Provider>
+        </JotaiProvider>
       </RecoilRoot>,
     );
+  };
 
   it('lists the inner tool calls the running program has made', () => {
     const { getByText } = renderWithTrace([

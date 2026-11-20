@@ -1,9 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useRecoilState } from 'recoil';
-import { useMediaQuery } from '@librechat/client';
-
 import type { SetterOrUpdater } from 'recoil';
-
+import useDrawerViewport from './useDrawerViewport';
 import store from '~/store';
 
 export type SidebarState = {
@@ -27,7 +25,7 @@ export type SidebarState = {
  * here so they can never disagree about that frame.
  */
 export default function useSidebarState(): SidebarState {
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const [expanded, setExpanded] = useRecoilState(store.sidebarExpanded);
   const wasSmallScreen = useRef(isSmallScreen);
 

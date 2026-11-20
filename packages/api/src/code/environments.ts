@@ -8,6 +8,10 @@ import {
   ResourceType,
   isSecureCodeEnvironmentControlURL,
 } from 'librechat-data-provider';
+import type {
+  CodeEnvironmentSetupBinding,
+  CodeEnvironmentSetupRecord,
+} from '@librechat/data-schemas';
 import type { CodeEnvironmentUserSettings } from 'librechat-data-provider';
 import type { ResolvedPrincipal } from '~/types/principal';
 import { AccessControlService } from '~/acl/accessControlService';
@@ -43,6 +47,15 @@ export type CodeEnvironmentRegistration = {
   };
 };
 
+/** Retry identity for browser setup. Every stage supplies the same complete binding. */
+export type CodeEnvironmentSetupInput = {
+  actor: { userId: string };
+  environment: CodeEnvironmentRegistration;
+  setupAttemptId: string;
+  requestHash: string;
+  maxOwned?: number;
+};
+
 export type AccessibleCodeEnvironmentConfiguration = {
   id: string;
   name: string;
@@ -73,7 +86,7 @@ export type CodeEnvironmentLifecycleTarget = CodeEnvironmentSummary & {
 
 function agentReferenceFilter(environmentId: string, tenantId?: string) {
   return {
-    code_environment_id: environmentId,
+    $or: [{ code_environment_id: environmentId }, { code_environment_ids: environmentId }],
     ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }),
   };
 }
@@ -176,6 +189,9 @@ export function createCodeEnvironmentRegistry(
   mongoose: typeof import('mongoose'),
   options: CodeEnvironmentRegistryOptions = {},
 ): {
+  reserveSetup: (params: CodeEnvironmentSetupInput) => Promise<CodeEnvironmentSummary>;
+  completeSetup: (params: CodeEnvironmentSetupInput) => Promise<CodeEnvironmentSummary>;
+  discardSetup: (params: CodeEnvironmentSetupInput) => Promise<void>;
   register: (params: {
     actor: CodeEnvironmentPrincipalContext;
     environment: CodeEnvironmentRegistration;
@@ -241,6 +257,98 @@ export function createCodeEnvironmentRegistry(
     }
     await configurationCache.set(key, environmentIds, CONFIGURATION_CACHE_TTL_MS);
     return environmentIds;
+  }
+
+  function setupBinding({
+    actor,
+    environment: input,
+    setupAttemptId,
+    requestHash,
+    maxOwned,
+  }: CodeEnvironmentSetupInput): CodeEnvironmentSetupBinding {
+    if (
+      !/^[A-Za-z0-9_-]{1,128}$/.test(setupAttemptId) ||
+      !/^[a-f0-9]{64}$/.test(requestHash) ||
+      !Types.ObjectId.isValid(actor.userId)
+    ) {
+      throw new CodeEnvironmentValidationError('Browser setup registry identity is invalid');
+    }
+    if (maxOwned != null && (!Number.isSafeInteger(maxOwned) || maxOwned < 1))
+      throw new CodeEnvironmentValidationError('Browser setup owner limit is invalid');
+    const environment = normalizeRegistration(input);
+    return {
+      setupAttemptId,
+      requestHash,
+      ownerId: actor.userId,
+      environmentId: environment.id,
+      name: environment.name,
+      type: environment.type,
+      baseURL: environment.baseURL,
+      controlPlaneId: environment.controlPlaneId,
+      workerId: environment.workerId,
+      revocationTokenEnv: environment.revocationTokenEnv,
+      workerPrincipal: environment.workerPrincipal,
+    };
+  }
+
+  function setupSummary(record: CodeEnvironmentSetupRecord): CodeEnvironmentSummary {
+    return {
+      resourceId: record.resourceId,
+      id: record.id,
+      name: record.name,
+      type: record.type,
+      canEdit: true,
+      canDelete: true,
+    };
+  }
+
+  async function reserveSetup(params: CodeEnvironmentSetupInput): Promise<CodeEnvironmentSummary> {
+    const reserved = await methods.reserveSetupEnvironment(setupBinding(params), params.maxOwned);
+    if (reserved == null) throw new CodeEnvironmentLimitError();
+    return setupSummary(reserved);
+  }
+
+  async function completeSetup(params: CodeEnvironmentSetupInput): Promise<CodeEnvironmentSummary> {
+    const binding = setupBinding(params);
+    const reserved = await methods.findSetupEnvironment(binding);
+    if (reserved == null)
+      throw new CodeEnvironmentValidationError('Browser setup reservation is unavailable');
+    if (!reserved.pending) {
+      // A completed replay must not restore an ownership grant that was subsequently revoked.
+      const allowed = await access.checkPermission({
+        userId: params.actor.userId,
+        resourceType: ResourceType.CODE_ENVIRONMENT,
+        resourceId: reserved.resourceId,
+        requiredPermission: PermissionBits.DELETE,
+      });
+      if (!allowed)
+        throw new CodeEnvironmentValidationError('Browser setup ownership is unavailable');
+      return setupSummary(reserved);
+    }
+    const permission = await access.grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: params.actor.userId,
+      resourceType: ResourceType.CODE_ENVIRONMENT,
+      resourceId: reserved.resourceId,
+      accessRoleId: AccessRoleIds.CODE_ENVIRONMENT_OWNER,
+      grantedBy: params.actor.userId,
+    });
+    if (permission == null) throw new Error('Unable to grant code environment ownership');
+    // Do not roll back setup reservations. The durable pending row is the retry journal.
+    await invalidateAccessibleConfigurations();
+    return setupSummary(await methods.completeSetupEnvironment(binding, reserved.resourceId));
+  }
+
+  async function discardSetup(params: CodeEnvironmentSetupInput): Promise<void> {
+    const binding = setupBinding(params);
+    const discarded = await methods.beginDiscardSetupEnvironment(binding);
+    if (discarded == null) return;
+    await access.removeAllPermissions({
+      resourceType: ResourceType.CODE_ENVIRONMENT,
+      resourceId: discarded.resourceId,
+    });
+    await invalidateAccessibleConfigurations();
+    await methods.finishDiscardSetupEnvironment(binding, discarded.resourceId);
   }
 
   async function register({
@@ -615,6 +723,9 @@ export function createCodeEnvironmentRegistry(
   }
 
   return {
+    reserveSetup,
+    completeSetup,
+    discardSetup,
     register,
     markRevocationPending,
     listAccessible,

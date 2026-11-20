@@ -26,12 +26,12 @@ async function startConversation(page: Page) {
 }
 
 /**
- * Appends a turn whose only content is a summary part, cloning the endpoint and
+ * Appends a turn whose content is the given parts, cloning the endpoint and
  * model of the turn it hangs off. A summarize round that streamed deltas and
  * then errored cannot be produced through the composer, and the behavior under
  * test is what the *next* turn sends once such a turn is persisted.
  */
-async function appendSummaryTurn(conversationId: string, part: Record<string, unknown>) {
+async function appendSummaryTurn(conversationId: string, ...parts: Record<string, unknown>[]) {
   await withMongo(async (db) => {
     const rows = await db
       .collection('messages')
@@ -53,7 +53,7 @@ async function appendSummaryTurn(conversationId: string, part: Record<string, un
       parentMessageId: leaf.messageId,
       isCreatedByUser: false,
       text: '',
-      content: [part],
+      content: parts,
       createdAt: now,
       updatedAt: now,
     });
@@ -168,6 +168,34 @@ test.describe('failed summary history', () => {
 
     await expect(
       messagesView(page).getByText(`E2E history assertion absent: ${token}`),
+    ).toBeVisible({ timeout: 30000 });
+  });
+
+  /**
+   * A response that summarized mid-run keeps producing after the summary, and
+   * those parts are not covered by it. The text the turn wrote after its summary
+   * has to reach the model on the next turn.
+   */
+  test('a turn after a mid-response summary still sends what the response wrote after it @scenario:parts-after-summary-reach-next-turn', async ({
+    page,
+  }) => {
+    const { conversationId } = await startConversation(page);
+    conversationIds.push(conversationId);
+    const laterFact = `LATERFACT-${randomUUID().slice(0, 8)}`;
+    await appendSummaryTurn(
+      conversationId,
+      summaryPart('The user shared a passphrase and it was acknowledged.', {
+        boundary: completedBoundary,
+      }),
+      { type: 'text', text: `The deploy code is ${laterFact}.` },
+    );
+
+    await page.goto(`/c/${conversationId}`);
+    await expect(messagesView(page).getByText(laterFact)).toBeVisible();
+    await sendMessageAndWaitForCompletion(page, `E2E_ASSERT_HISTORY:${laterFact}`);
+
+    await expect(
+      messagesView(page).getByText(`E2E history assertion present: ${laterFact}`),
     ).toBeVisible({ timeout: 30000 });
   });
 });

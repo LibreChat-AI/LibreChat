@@ -67,7 +67,7 @@ const Theme = ({
     <Button
       variant="ghost"
       size="icon"
-      className="h-auto w-auto p-2 text-text-primary"
+      className="text-text-primary h-auto w-auto p-2"
       aria-label={localize('com_ui_toggle_theme')}
       aria-keyshortcuts="Ctrl+Shift+T"
       onClick={(e) => {
@@ -110,7 +110,7 @@ const ContrastToggle = ({
     <Button
       variant="ghost"
       size="icon"
-      className="h-auto w-auto p-2 text-text-primary"
+      className="text-text-primary h-auto w-auto p-2"
       aria-label={localize('com_ui_toggle_high_contrast')}
       aria-pressed={highContrast}
       onClick={(e) => {
@@ -174,8 +174,8 @@ const ThemeSelector = ({ returnThemeOnly }: { returnThemeOnly?: boolean }): JSX.
   }
 
   return (
-    <div className="flex flex-col items-center justify-center bg-surface-primary pt-6 sm:pt-0">
-      <div className="absolute bottom-0 left-0 m-4 flex items-center">
+    <div className="bg-surface-primary flex flex-col items-center justify-center pt-6 sm:pt-0">
+      <div className="absolute inset-s-0 bottom-0 m-4 flex items-center">
         <Theme theme={theme} highContrast={highContrast} onChange={changeScheme} />
         <ContrastToggle theme={theme} highContrast={highContrast} onChange={changeContrast} />
       </div>

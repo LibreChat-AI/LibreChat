@@ -1,6 +1,8 @@
 export * from './classify';
 export * from './artifactDelivery';
+export * from './batch';
 export * from './destinations';
+export * from './delete';
 export * from './errors';
 export * from './extract';
 export * from './form';
@@ -11,4 +13,6 @@ export * from './preflight';
 export * from './priming';
 export * from './process';
 export * from './publication';
+export * from './receipt';
 export * from './snapshot';
+export * from './text';

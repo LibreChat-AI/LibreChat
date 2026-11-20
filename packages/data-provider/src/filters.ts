@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { RE2JS } from 're2js';
 
 export const FILTER_PII_STARTER_PATTERNS = [
   'sk_prefix',
@@ -18,23 +17,29 @@ export const MAX_PII_CUSTOM_PATTERNS_TOTAL = 256;
 const MAX_PII_REGEX_SIZE_CACHE_ENTRIES = 512;
 const PII_REGEX_PROGRAM_SIZE_CACHE = new Map<string, number | null>();
 
+/** Measures a pattern in the runtime engine's instructions, or returns null when it cannot compile. */
+export type PiiRegexProgramSizer = (pattern: string) => number | null;
+
+/**
+ * The runtime engine (RE2) lives with the server, which registers it at startup: importing it
+ * here put the engine in every browser bundle, although only the server validates these patterns.
+ * Until one is registered every custom pattern is rejected, so a process that forgot to register
+ * fails its config load loudly instead of accepting patterns the runtime cannot run.
+ */
+let piiRegexProgramSizer: PiiRegexProgramSizer = () => null;
+
+export function setPiiRegexProgramSizer(sizer: PiiRegexProgramSizer): void {
+  piiRegexProgramSizer = sizer;
+  PII_REGEX_PROGRAM_SIZE_CACHE.clear();
+}
+
 export function getPiiRegexProgramSize(pattern: string): number | null {
   if (PII_REGEX_PROGRAM_SIZE_CACHE.has(pattern)) {
     return PII_REGEX_PROGRAM_SIZE_CACHE.get(pattern) ?? null;
   }
-  let programSize: number | null = null;
-  let compiled: RE2JS | undefined;
-  try {
-    compiled = RE2JS.compile(pattern);
-    const candidate = compiled.programSize();
-    if (Number.isSafeInteger(candidate) && candidate > 0) {
-      programSize = candidate;
-    }
-  } catch {
-    programSize = null;
-  } finally {
-    compiled?.reset();
-  }
+  const candidate = piiRegexProgramSizer(pattern);
+  const programSize =
+    candidate != null && Number.isSafeInteger(candidate) && candidate > 0 ? candidate : null;
   if (PII_REGEX_PROGRAM_SIZE_CACHE.size >= MAX_PII_REGEX_SIZE_CACHE_ENTRIES) {
     PII_REGEX_PROGRAM_SIZE_CACHE.clear();
   }
@@ -162,7 +167,10 @@ export const fileFilterFieldSchema = z.enum(FILE_FILTER_FIELDS);
 export const toolArgumentFilterFieldSchema = z.enum(TOOL_ARGUMENT_FILTER_FIELDS);
 export const modelParameterFilterFieldSchema = z.enum(MODEL_PARAMETER_FILTER_FIELDS);
 export const filterPiiStarterPatternSchema = z.enum(FILTER_PII_STARTER_PATTERNS);
-export const filterPiiActionSchema = z.enum(['block', 'audit']);
+export const filterPiiActionSchema = z.enum(['block', 'audit', 'redact']);
+export const filterPiiCategorySchema = z.enum(['email', 'phone', 'name', 'credential', 'custom']);
+export const DEFAULT_PII_REDACTION_MAX_CHARACTERS = 65_536;
+export const DEFAULT_PII_REDACTION_MAX_MATCHES = 256;
 export const actionMetadataFilterFieldSchema = z.enum(ACTION_METADATA_FILTER_FIELDS);
 export const unattributedAssistantContentSchema = z.enum(['model_output', 'inspect']);
 export type UnattributedAssistantContent = z.infer<typeof unattributedAssistantContentSchema>;
@@ -180,6 +188,7 @@ export type ToolArgumentFilterField = z.infer<typeof toolArgumentFilterFieldSche
 export type ModelParameterFilterField = z.infer<typeof modelParameterFilterFieldSchema>;
 export type ActionMetadataFilterField = z.infer<typeof actionMetadataFilterFieldSchema>;
 export type FilterPiiAction = z.infer<typeof filterPiiActionSchema>;
+export type FilterPiiCategory = z.infer<typeof filterPiiCategorySchema>;
 
 export const userSubmittedMessageFieldPathSchema = z
   .object({
@@ -279,6 +288,7 @@ export const filterPiiCustomPatternSchema = z
     id: z.string().min(1).max(MAX_PII_PATTERN_ID_LENGTH),
     label: z.string().min(1).max(MAX_PII_PATTERN_LABEL_LENGTH),
     regex: filterPiiRegexSchema,
+    category: filterPiiCategorySchema.optional(),
   })
   .strict();
 
@@ -288,6 +298,8 @@ function createPiiFilterSchema<Field extends z.ZodTypeAny>(fieldSchema: Field) {
   return z
     .object({
       action: filterPiiActionSchema.optional(),
+      maxCharacters: z.number().int().positive().max(262_144).optional(),
+      maxMatches: z.number().int().positive().max(4_096).optional(),
       fields: z.array(fieldSchema).min(1).max(MAX_PII_PATTERNS_PER_SOURCE).optional(),
       starterPatterns: z
         .array(filterPiiStarterPatternSchema)

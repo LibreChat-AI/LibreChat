@@ -119,6 +119,10 @@ test.describe('series-eight theme resolution', () => {
     const messagesSwatch = popover.locator('span.bg-series-1');
     await expect(messagesSwatch).toHaveCount(1);
     await expect(messagesSwatch).toHaveCSS('background-color', 'rgb(120, 200, 255)');
+    const totals = popover.getByTestId('token-usage-totals');
+    await expect(totals.locator('dt').first()).toHaveCSS('color', 'rgb(215, 215, 215)');
+    await expect(totals.locator('dd').first()).toHaveCSS('color', 'rgb(250, 250, 250)');
+    await expect(totals.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
   });
 
   test('named series eight overrides fallback @scenario:named-series-eight-overrides-fallback', async ({

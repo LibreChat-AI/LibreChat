@@ -1,0 +1,12 @@
+version: 1.3.17
+cache: true
+interface:
+  modelSelect: true
+  theme:
+    version: 1
+    name: acme
+    modes:
+      light:
+        appearance:
+          controlRadius: 2px
+          futureSpacing: 3rem

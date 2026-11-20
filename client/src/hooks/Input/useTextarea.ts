@@ -3,6 +3,7 @@ import { v4 } from 'uuid';
 import debounce from 'lodash/debounce';
 import { useToastContext } from '@librechat/client';
 import { useRecoilValue, useRecoilState } from 'recoil';
+import { resolveComposerKeyDown } from '@librechat/chat';
 import { Constants, EToolResources, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TEndpointOption } from 'librechat-data-provider';
 import type { KeyboardEvent } from 'react';
@@ -31,10 +32,10 @@ import { useChatFormContext, useUploadModalContext } from '~/Providers';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
 import useFileUploadRouter from '~/hooks/Files/useFileUploadRouter';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import useUploadOptions from '~/hooks/Files/useUploadOptions';
 import { useInteractionHealthCheck } from '~/data-provider';
-import { resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useChatContext } from '~/Providers/ChatContext';
 import { globalAudioId } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -51,6 +52,7 @@ export default function useTextarea({
   allowSubmitWhileGenerating = false,
   onDuringRunModifier,
   answerModeActive = false,
+  enterToSend,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   submitButtonRef: React.RefObject<HTMLButtonElement>;
@@ -64,6 +66,8 @@ export default function useTextarea({
   onDuringRunModifier?: (kind: 'other' | 'interrupt' | 'preempt') => void;
   /** Keeps pasted text inline while the composer is answering a paused question. */
   answerModeActive?: boolean;
+  /** Host-owned: whether Enter sends. The hint advertises the same value. */
+  enterToSend: boolean;
 }) {
   const localize = useLocalize();
   const getSender = useGetSender();
@@ -82,8 +86,7 @@ export default function useTextarea({
   const { openModal } = useUploadModalContext();
   const assistantMap = useAssistantsMapContext();
   const checkHealth = useInteractionHealthCheck();
-  const enterToSend = useRecoilValue(store.enterToSend);
-  const saveDrafts = useRecoilValue(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const pasteLongTextAsFile = useRecoilValue(store.pasteLongTextAsFile);
   const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
 
@@ -154,12 +157,26 @@ export default function useTextarea({
    *  navigation that resolves its record before moving the route. */
   useEffect(() => {
     const text = pendingComposerText ?? '';
-    if (text === '' || !insertComposerText(text)) {
+    if (text === '') {
+      return;
+    }
+    /* A reclaimed steer must not overwrite a draft the user typed while the
+     * cancel request was in flight. Keep both messages distinct when the
+     * composer already owns text; an empty composer receives the exact steer. */
+    const currentText = textAreaRef.current?.value ?? '';
+    /* The words can reach this composer twice: handed over, and restored from the draft saved
+     * for the conversation. When it already holds exactly them, there is nothing to add. */
+    if (currentText === text) {
+      setPendingComposerText(undefined);
+      return;
+    }
+    const handoffText = currentText.length > 0 ? `\n${text}` : text;
+    if (!insertComposerText(handoffText)) {
       return;
     }
 
     setPendingComposerText(undefined);
-  }, [insertComposerText, pendingComposerText, setPendingComposerText]);
+  }, [insertComposerText, pendingComposerText, setPendingComposerText, textAreaRef]);
 
   useEffect(() => {
     const currentValue = textAreaRef.current?.value ?? '';
@@ -191,10 +208,12 @@ export default function useTextarea({
         return placeholder;
       }
 
-      const sender =
-        isAssistant || isAgent
-          ? getEntityName({ name: entityName, isAgent, localize })
-          : getSender(conversation as TEndpointOption);
+      let sender: string | undefined;
+      if (isAssistant || isAgent) {
+        sender = getEntityName({ name: entityName, isAgent, localize });
+      } else if (conversation) {
+        sender = getSender(conversation as TEndpointOption);
+      }
 
       return `${localize('com_endpoint_message_new', {
         0: sender ? sender : localize('com_endpoint_ai'),
@@ -324,7 +343,11 @@ export default function useTextarea({
         /** Held until the upload is accepted so a rejected file (a duplicate, an oversized one)
          * reports only its own error instead of pairing it with a success message. */
         const accepted = await routeFiles(clipboardFiles, destination, uploadLifecycle);
-        if (accepted && destination === EToolResources.context) {
+        if (
+          accepted &&
+          destination === EToolResources.context &&
+          uploadLifecycle?.pastedText == null
+        ) {
           showToast({ message: localize('com_ui_file_attached_as_text'), status: 'info' });
         }
         return accepted;
@@ -471,7 +494,7 @@ export default function useTextarea({
       if (saveDrafts && isFilesDraftOwnedByThisTab(getFilesDraft(draftId))) {
         addPastedTextDraftFile({ id: draftId, fileId: pendingFileId });
         try {
-          setDraft({ id: draftId, value: composerValue, persistExact: true });
+          setDraft({ id: draftId, value: composerValue });
           setPendingTextAttachmentDraft({
             id: draftId,
             fileId: pendingFileId,
@@ -506,9 +529,15 @@ export default function useTextarea({
         const { pendingPastes } = getFilesDraft(draftId);
         return pendingPastes[fileId] != null || pendingPastes[pendingFileId] != null;
       };
+      let canceled = false;
       const restorePasteAfterUploadFailure = (fileId: string): boolean => {
         const currentTextArea = textAreaRef.current;
-        if (!currentTextArea || answerModeActiveRef.current || !isOriginatingComposer()) {
+        if (
+          canceled ||
+          !currentTextArea ||
+          answerModeActiveRef.current ||
+          !isOriginatingComposer()
+        ) {
           return false;
         }
         const composerUnchanged = currentTextArea.value === composerValue;
@@ -557,6 +586,10 @@ export default function useTextarea({
       };
       const uploadLifecycle: UploadLifecycleCallbacks = {
         fileId: pendingFileId,
+        pastedText,
+        onRecoveryTransferred: () => {
+          canceled = true;
+        },
         shouldCommit: isOriginatingComposer,
         onStart: (fileId) => {
           markPastedTextFile(fileId);
@@ -599,6 +632,7 @@ export default function useTextarea({
           }
         },
         onAbort: (fileId) => {
+          canceled = true;
           clearPendingPasteDraft(fileId, true);
         },
       };
@@ -606,7 +640,7 @@ export default function useTextarea({
         (accepted) => {
           /** The name is either attached now or was never taken, so stop reserving it. */
           reservedPasteFilenames.current.delete(pastedFilename);
-          if (!accepted) {
+          if (!accepted && !canceled) {
             const restored = restorePasteAfterUploadFailure(pendingFileId);
             if (restored || getNewConversationDraftToken(index) !== draftToken) {
               clearPendingPasteDraft(pendingFileId, true);

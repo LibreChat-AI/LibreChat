@@ -116,12 +116,13 @@ describe('CodeApprovalMenu', () => {
   test('draws the trigger from the shared composer control appearance', () => {
     renderMenu();
 
-    expect(screen.getByTestId('code-approval-mode')).toHaveClass(
-      'h-theme-control',
-      'rounded-theme-control-round',
-      'gap-theme-compact',
-      'border-border-medium',
-    );
+    const trigger = screen.getByTestId('code-approval-mode');
+    expect(trigger).toHaveClass('rounded-theme-control-round', 'border-border-medium');
+    /** The context rail's compact pill overrides the control's height and gap, and the
+     *  theme-aware merge must drop the theme-token pair it replaces rather than keep both. */
+    expect(trigger).toHaveClass('h-8', 'gap-1.5');
+    expect(trigger).not.toHaveClass('h-theme-control');
+    expect(trigger).not.toHaveClass('gap-theme-control-gap');
   });
 
   test('offers only the modes the conversation allows', async () => {

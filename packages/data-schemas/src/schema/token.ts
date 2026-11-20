@@ -20,6 +20,9 @@ const tokenSchema: Schema<IToken> = new Schema({
   type: {
     type: String,
   },
+  scope: {
+    type: String,
+  },
   identifier: {
     type: String,
   },
@@ -47,6 +50,7 @@ const tokenSchema: Schema<IToken> = new Schema({
 });
 
 tokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+tokenSchema.index({ scope: 1 }, { unique: true, sparse: true, name: 'unique_token_scope' });
 tokenSchema.index({ userId: 1, type: 1, identifier: 1, tenantId: 1 });
 
 export default tokenSchema;

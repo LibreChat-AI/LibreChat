@@ -2,6 +2,11 @@ const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-prov
 const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
+  createPrivateTextIngress,
+  createModelBoundChatModelCallback,
+  getPrivateTextAdmission,
+  getPrivateTextInspectionTokens,
+  assertModelBoundContent,
   resolveTurnDeliveryRouting,
   buildSteerMedia,
   Tokenizer,
@@ -36,13 +41,12 @@ jest.mock('~/models', () => ({
   getMessages: jest.fn().mockResolvedValue([]),
   saveMessage: jest.fn(),
   updateMessage: jest.fn(),
-  deleteMessagesSince: jest.fn(),
   deleteMessages: jest.fn(),
   getConvoTitle: jest.fn(),
   getConvo: jest.fn(),
   saveConvo: jest.fn(),
+  stampConvoLastResponse: jest.fn(),
   deleteConvos: jest.fn(),
-  getPreset: jest.fn(),
   getPresets: jest.fn(),
   savePreset: jest.fn(),
   deletePresets: jest.fn(),
@@ -68,6 +72,7 @@ const {
   saveConvo,
   getFiles,
   getConvo,
+  stampConvoLastResponse,
 } = require('~/models');
 
 jest.mock('@librechat/agents', () => {
@@ -326,6 +331,133 @@ describe('BaseClient', () => {
       receiver.addPreviousAttachments = async (messages) => messages;
       receiver.previous_summary = undefined;
     });
+
+    describe('with the link rows the request middleware already read', () => {
+      const conversationId = 'convo-1';
+      const row = (messageId, parentMessageId, isCreatedByUser = false) => ({
+        messageId,
+        parentMessageId,
+        isCreatedByUser,
+        conversationId,
+        user: 'user-1',
+        text: `text ${messageId}`,
+      });
+      const linear = [
+        row('u1', Constants.NO_PARENT, true),
+        row('a1', 'u1'),
+        row('u2', 'a1', true),
+        row('a2', 'u2'),
+      ];
+      const branched = [...linear, row('u2b', 'a1', true), row('a2b', 'u2b')];
+      const broken = [
+        row('a1', 'gone'),
+        row('u2', 'a1', true),
+        row('a2', 'u2'),
+        row('x', 'a1', true),
+      ];
+      const looped = [row('a', 'b'), row('b', 'a'), row('c', 'a')];
+      const linksFor = (parentMessageId, rows) => ({
+        user: 'user-1',
+        conversationId,
+        parentMessageId,
+        rows: rows.map((stored) => ({
+          messageId: stored.messageId,
+          parentMessageId: stored.parentMessageId,
+          isCreatedByUser: stored.isCreatedByUser,
+        })),
+      });
+      /** Answers the filters `loadHistory` issues from the conversation as stored. */
+      const storedConversation = (rows) => async (filter) =>
+        rows.filter(
+          (stored) =>
+            stored.conversationId === filter.conversationId &&
+            stored.user === filter.user &&
+            (filter.messageId == null || filter.messageId.$in.includes(stored.messageId)),
+        );
+      const clientFor = (req) =>
+        Object.assign(Object.create(BaseClientClass.prototype), {
+          user: 'user-1',
+          options: { req },
+          getMessageMapMethod: null,
+          shouldSummarize: false,
+          addPreviousAttachments: async (messages) => messages,
+          onHistoryLoaded: jest.fn(),
+        });
+      const wholeConversationQuery = [{ conversationId, user: 'user-1' }, '+privateTextTokens'];
+      const messageIds = (messages) => messages.map((message) => message.messageId);
+
+      test('fetches only the active branch, and hands that branch to the history consumer', async () => {
+        const req = { branchLinks: linksFor('a2b', branched) };
+        const client = clientFor(req);
+        getMessages.mockImplementationOnce(storedConversation(branched));
+
+        const result = await client.loadHistory(conversationId, 'a2b');
+
+        expect(getMessages).toHaveBeenCalledTimes(1);
+        const [filter, select] = getMessages.mock.calls[0];
+        expect(filter).toMatchObject({ conversationId, user: 'user-1' });
+        expect([...filter.messageId.$in].sort()).toEqual(['a1', 'a2b', 'u1', 'u2b']);
+        expect(select).toBe('+privateTextTokens');
+        expect(messageIds(result)).toEqual(['u1', 'a1', 'u2b', 'a2b']);
+        expect(messageIds(client.onHistoryLoaded.mock.calls[0][0])).toEqual([
+          'u1',
+          'a1',
+          'u2b',
+          'a2b',
+        ]);
+        expect(req.branchLinks).toBeUndefined();
+      });
+
+      test('reads the whole conversation when the request carries no links', async () => {
+        getMessages.mockImplementationOnce(storedConversation(branched));
+
+        await clientFor({}).loadHistory(conversationId, 'a2b');
+
+        expect(getMessages).toHaveBeenCalledWith(...wholeConversationQuery);
+      });
+
+      test.each([
+        ['a linear conversation', linear, linear, 'a2', false],
+        ['a branched conversation', branched, branched, 'a2b', true],
+        ['a broken chain', broken, broken, 'a2', true],
+        ['a cycle', looped, looped, 'b', true],
+        ['a head the links do not know', [...branched, row('a3', 'a2b')], branched, 'a3', false],
+        [
+          'a message deleted between the two reads',
+          branched.filter((stored) => stored.messageId !== 'a1'),
+          branched,
+          'a2b',
+          true,
+        ],
+      ])(
+        'returns the history a whole read returns for %s',
+        async (_label, stored, linked, head, narrowed) => {
+          const req = { branchLinks: linksFor(head, linked) };
+          getMessages
+            .mockImplementationOnce(storedConversation(stored))
+            .mockImplementationOnce(storedConversation(stored));
+
+          const fromLinks = await clientFor(req).loadHistory(conversationId, head);
+          const fromWholeRead = await clientFor({}).loadHistory(conversationId, head);
+
+          expect(fromWholeRead.length).toBeGreaterThan(0);
+          expect(messageIds(fromLinks)).toEqual(messageIds(fromWholeRead));
+          expect(fromLinks).toEqual(fromWholeRead);
+          expect(getMessages.mock.calls[0][0].messageId != null).toBe(narrowed);
+          expect(getMessages.mock.calls[1]).toEqual(wholeConversationQuery);
+        },
+      );
+
+      test('reads the whole conversation when the history starts from another head, as an edit does', async () => {
+        const req = { branchLinks: linksFor('a2b', branched) };
+        getMessages.mockImplementationOnce(storedConversation(branched));
+
+        await clientFor(req).loadHistory(conversationId, 'a2');
+
+        expect(getMessages).toHaveBeenCalledWith(...wholeConversationQuery);
+        expect(req.branchLinks).toBeUndefined();
+      });
+    });
   });
 
   describe('getMessagesForConversation', () => {
@@ -548,9 +680,10 @@ describe('BaseClient', () => {
         summary: true,
       });
       expect(result).toHaveLength(2);
-      expect(result[0].role).toBe('system');
-      expect(result[0].content).toEqual([{ type: 'text', text: 'Content block summary' }]);
-      expect(result[0].tokenCount).toBe(42);
+      expect(result[0].role).toBeUndefined();
+      expect(result[0].content).toEqual([
+        { type: 'summary', text: 'Content block summary', tokenCount: 42 },
+      ]);
     });
 
     it('should prefer content block summary over legacy summary field', () => {
@@ -571,8 +704,9 @@ describe('BaseClient', () => {
         summary: true,
       });
       expect(result).toHaveLength(2);
-      expect(result[0].content).toEqual([{ type: 'text', text: 'Content block summary' }]);
-      expect(result[0].tokenCount).toBe(20);
+      expect(result[0].content).toEqual([
+        { type: 'summary', text: 'Content block summary', tokenCount: 20 },
+      ]);
     });
 
     it('should fallback to legacy summary when no content block exists', () => {
@@ -594,6 +728,34 @@ describe('BaseClient', () => {
       expect(result).toHaveLength(2);
       expect(result[0].content).toEqual([{ type: 'text', text: 'Legacy summary only' }]);
       expect(result[0].tokenCount).toBe(15);
+    });
+
+    it('keeps the parts a response produced after its summary (summary mode)', () => {
+      const trailingText = { type: 'text', text: 'Answer after summarizing' };
+      const messagesWithTrailingParts = [
+        { id: '1', parentMessageId: null, text: 'Message 1' },
+        {
+          id: '2',
+          parentMessageId: '1',
+          text: 'Before summarizing',
+          content: [
+            { type: 'text', text: 'Before summarizing' },
+            { type: 'summary', text: 'Earlier context', tokenCount: 6 },
+            trailingText,
+          ],
+        },
+        { id: '3', parentMessageId: '2', text: 'Message 3' },
+      ];
+      const result = TestClient.constructor.getMessagesForConversation({
+        messages: messagesWithTrailingParts,
+        parentMessageId: '3',
+        summary: true,
+      });
+      expect(result.map((message) => message.id)).toEqual(['2', '3']);
+      expect(result[0].content).toEqual([
+        { type: 'summary', text: 'Earlier context', tokenCount: 6 },
+        trailingText,
+      ]);
     });
 
     it('should not stop traversal at a failed summary, keeping the prior history', () => {
@@ -837,6 +999,124 @@ describe('BaseClient', () => {
       expect(saveMessage.mock.calls.some(([, message]) => message.isCreatedByUser === true)).toBe(
         true,
       );
+    });
+
+    describe('seeding the conversation for a deferred user message', () => {
+      const seedContext = 'api/app/clients/BaseClient.js - sendMessage #seedConversation';
+      const flush = () => new Promise((resolve) => setImmediate(resolve));
+      const savedUserMessage = () =>
+        saveMessage.mock.calls.some(([, message]) => message.isCreatedByUser === true);
+
+      beforeEach(() => {
+        saveMessage.mockReset();
+        saveConvo.mockReset().mockImplementation(async (_ctx, fields) => ({ ...fields }));
+        getConvo.mockReset().mockResolvedValue(null);
+        /** A fresh options object: the suite-level one is shared by reference across clients. */
+        TestClient.options = {
+          ...TestClient.options,
+          req: { user: { id: 'seed-user' }, body: {} },
+        };
+        TestClient.shouldDeferUserMessagePersistence = jest.fn(() => true);
+        TestClient.shouldSeedDeferredConversation = jest.fn(() => true);
+      });
+
+      afterEach(() => {
+        saveMessage.mockReset();
+        saveConvo.mockReset();
+        getConvo.mockReset();
+      });
+
+      test('creates a new conversation row while the message itself waits for admission', async () => {
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          expect(savedUserMessage()).toBe(false);
+          expect(saveConvo).toHaveBeenCalledTimes(1);
+          const [, fields, seedOptions] = saveConvo.mock.calls[0];
+          expect(fields).toEqual(expect.objectContaining({ conversationId: expect.any(String) }));
+          expect(seedOptions).toEqual(expect.objectContaining({ context: seedContext }));
+          /** An empty append set spares `saveConvo` the read of a message list the seed lacks. */
+          expect(seedOptions).toEqual(expect.objectContaining({ appendMessageIds: [] }));
+          return { completion: 'Safe response', metadata: undefined };
+        });
+
+        await TestClient.sendMessage('Message with an attachment');
+
+        expect(savedUserMessage()).toBe(true);
+        /** The message save reuses the seeded row instead of looking the conversation up again. */
+        expect(getConvo).toHaveBeenCalledTimes(1);
+      });
+
+      test('leaves an existing conversation to the deferred message write', async () => {
+        getConvo.mockResolvedValue({ conversationId: 'existing-convo', endpoint: 'openAI' });
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          expect(saveConvo).not.toHaveBeenCalled();
+          return { completion: 'Safe response', metadata: undefined };
+        });
+
+        await TestClient.sendMessage('Message with an attachment');
+
+        expect(savedUserMessage()).toBe(true);
+        expect(saveConvo.mock.calls.every(([, , opts]) => opts.context !== seedContext)).toBe(true);
+      });
+
+      test('holds the deferred message write until an in-flight seed lands', async () => {
+        const seedWrite = deferred();
+        saveConvo.mockImplementationOnce(() => seedWrite.promise);
+        const completionStarted = deferred();
+        const completionResult = deferred();
+        const abortController = new AbortController();
+        TestClient.sendCompletion.mockImplementation(() => {
+          completionStarted.resolve();
+          return completionResult.promise;
+        });
+
+        const sendPromise = TestClient.sendMessage('Message with an attachment', {
+          abortController,
+        });
+        await completionStarted.promise;
+        await flush();
+        expect(saveConvo).toHaveBeenCalledTimes(1);
+
+        abortController.abort();
+        await flush();
+        expect(savedUserMessage()).toBe(false);
+
+        seedWrite.resolve({ conversationId: 'seeded-convo' });
+        await flush();
+        expect(savedUserMessage()).toBe(true);
+
+        completionResult.resolve({ completion: 'Partial response', metadata: undefined });
+        await sendPromise;
+      });
+
+      test('keeps the deferral cancellable after seeding when the model boundary rejects content', async () => {
+        const policyError = new ContentFilterError({ source: 'message', field: 'text' });
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          throw policyError;
+        });
+
+        await expect(TestClient.sendMessage('Message with an attachment')).rejects.toBe(
+          policyError,
+        );
+
+        expect(savedUserMessage()).toBe(false);
+        expect(saveConvo).toHaveBeenCalledTimes(1);
+      });
+
+      test('does not seed when the client holds back every write', async () => {
+        TestClient.shouldSeedDeferredConversation = jest.fn(() => false);
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          expect(saveConvo).not.toHaveBeenCalled();
+          return { completion: 'Safe response', metadata: undefined };
+        });
+
+        await TestClient.sendMessage('Message with an attachment');
+
+        expect(savedUserMessage()).toBe(true);
+      });
     });
 
     test('preserves eager user-message persistence for non-policy provider failures', async () => {
@@ -1447,7 +1727,7 @@ describe('BaseClient', () => {
 
       const chatMessages = await TestClient.loadHistory(conversationId, '1');
 
-      expect(getMessages).toHaveBeenCalledWith({ conversationId, user });
+      expect(getMessages).toHaveBeenCalledWith({ conversationId, user }, '+privateTextTokens');
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');
     });
@@ -1584,6 +1864,195 @@ describe('BaseClient', () => {
       );
     });
 
+    function protectedClient(history = [], legacyPii) {
+      const filters = {
+        messages: {
+          pii: {
+            action: 'redact',
+            fields: ['text'],
+            starterPatterns: [],
+            customPatterns: [
+              { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            ],
+          },
+        },
+      };
+      const req = {
+        user: { id: 'owner' },
+        path: '/',
+        body: { text: 'alice@example.com', clientRequestId: 'created-privacy' },
+        config: { filters, messageFilter: { pii: legacyPii } },
+      };
+      const next = jest.fn();
+      createPrivateTextIngress({
+        getFilters: () => filters,
+        getLegacyPii: () => legacyPii,
+        getKey: () => 'ab'.repeat(32),
+      })(req, { status: jest.fn().mockReturnThis(), json: jest.fn() }, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      const client = initializeFakeClient(apiKey, { ...options, req }, history);
+      client.shouldDeferUserMessagePersistence = () => true;
+      client.assertStoredModelBoundContent = () =>
+        assertModelBoundContent({
+          legacyPii,
+          storedMessages: client.modelBoundStoredMessages,
+        });
+      client.assertBuiltModelBoundContent = () => {};
+      client.saveMessageToDatabase = jest.fn(async (message) => ({ message }));
+      const provider = jest.fn();
+      client.sendCompletion = jest.fn(async (payload) => {
+        const callback = createModelBoundChatModelCallback(
+          {
+            filters,
+            legacyPii,
+            storedMessages: client.modelBoundStoredMessages,
+            privateTextTokens: getPrivateTextInspectionTokens(client.modelBoundStoredMessages),
+          },
+          {
+            onContentRejected: client.modelBoundUserMessagePersistence?.cancel,
+            onContentAllowed: getPrivateTextAdmission(
+              req,
+              client.modelBoundUserMessagePersistence?.start,
+              client.privateTextStart,
+            ),
+          },
+        );
+        await callback.handleChatModelStart(undefined, [payload]);
+        provider();
+        return { completion: 'Safe reply' };
+      });
+      return { client, req, provider };
+    }
+
+    test('protected startup remains deferred until exact admission and the atomic write finishes', async () => {
+      const { client, req, provider } = protectedClient();
+      const committed = deferred();
+      let written;
+      client.saveMessageToDatabase.mockImplementationOnce((message) => {
+        written = message;
+        return committed.promise;
+      });
+      const onStart = jest.fn();
+      const sent = client.sendMessage(req.body.text, { onStart });
+      // Wait for the admission callback to begin the real deferred write.
+      for (let i = 0; i < 30 && !written; i++) {
+        await Promise.resolve();
+      }
+      expect(written).toBeDefined();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+      committed.resolve({ message: written });
+      await sent;
+      expect(onStart).toHaveBeenCalledTimes(1);
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(onStart.mock.invocationCallOrder[0]).toBeLessThan(
+        provider.mock.invocationCallOrder[0],
+      );
+    });
+
+    test('protected write failure prevents created and the provider call', async () => {
+      const { client, req, provider } = protectedClient();
+      client.saveMessageToDatabase.mockResolvedValueOnce({});
+      const onStart = jest.fn();
+      await expect(client.sendMessage(req.body.text, { onStart })).rejects.toThrow();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+    });
+
+    test.each([false, true])(
+      'cancels protected Stop before native admission, pre-aborted: %s',
+      async (preAborted) => {
+        const { client, req, provider } = protectedClient();
+        const controller = new AbortController();
+        if (preAborted) {
+          controller.abort();
+        }
+        const ready = deferred();
+        const completion = deferred();
+        const onStart = jest.fn();
+        client.sendCompletion = jest.fn(async () => {
+          ready.resolve();
+          return completion.promise;
+        });
+        const sent = client.sendMessage(req.body.text, { abortController: controller, onStart });
+        const observed = sent.catch((error) => error);
+        await ready.promise;
+        if (!preAborted) {
+          controller.abort();
+        }
+        completion.resolve({ completion: 'Stopped before model' });
+        expect(await observed).toEqual(expect.objectContaining({ code: 'content_filter_block' }));
+        expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+        expect(onStart).not.toHaveBeenCalled();
+        expect(provider).not.toHaveBeenCalled();
+      },
+    );
+
+    test.each(['user-id', 'user-id__1', 'user-id__invalid'])(
+      'rejects a protected persistence-skipping override %s before model invocation',
+      async (overrideUserMessageId) => {
+        const { client, req, provider } = protectedClient();
+        req.body.overrideUserMessageId = overrideUserMessageId;
+        const onStart = jest.fn();
+        await expect(client.sendMessage(req.body.text, { onStart })).rejects.toMatchObject({
+          code: 'content_filter_block',
+        });
+        expect(client.skipSaveUserMessage).toBe(true);
+        expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+        expect(onStart).not.toHaveBeenCalled();
+        expect(provider).not.toHaveBeenCalled();
+      },
+    );
+
+    test('retains protected admission for the normal browser override with writer index zero', async () => {
+      const { client, req, provider } = protectedClient();
+      req.body.overrideUserMessageId = 'normal-user-id__0';
+      const onStart = jest.fn();
+      await expect(client.sendMessage(req.body.text, { onStart })).resolves.toBeDefined();
+      expect(client.skipSaveUserMessage).toBe(false);
+      expect(onStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: 'normal-user-id',
+          privacyRevision: expect.any(String),
+        }),
+        expect.any(String),
+        true,
+      );
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+
+    test('a legacy history rejection leaves a transformed turn and conversation unsaved', async () => {
+      const history = [{ messageId: 'prior', text: 'LEGACY-SECRET', isCreatedByUser: true }];
+      const { client, req, provider } = protectedClient(history, {
+        starterPatterns: [],
+        customPatterns: [{ id: 'legacy', label: 'Legacy', regex: 'LEGACY-SECRET' }],
+      });
+      const onStart = jest.fn();
+      await expect(
+        client.sendMessage(req.body.text, {
+          conversationId: 'conversation',
+          parentMessageId: 'prior',
+          onStart,
+        }),
+      ).rejects.toThrow();
+      expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+    });
+
+    test('an exact model-input rejection cancels the protected deferred write before created', async () => {
+      const { client, req, provider } = protectedClient();
+      const onStart = jest.fn();
+      client.buildMessages.mockResolvedValueOnce({
+        prompt: [{ role: 'user', content: 'alice@example.com' }],
+      });
+      await expect(client.sendMessage(req.body.text, { onStart })).rejects.toThrow();
+      expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+      expect(client.modelBoundUserMessagePersistence.isPending()).toBe(false);
+    });
+
     test('onStart is called with the correct arguments', async () => {
       const onStart = jest.fn();
       const opts = { onStart };
@@ -1615,6 +2084,123 @@ describe('BaseClient', () => {
         saveOptions,
         user,
       );
+    });
+
+    test('asks saveConvo to stamp the assistant reply but never the user turn', async () => {
+      /* The timestamp itself is assigned inside `saveConvo`, past its own awaited reads, so a
+         catch-up recorded while one of them is in flight cannot outrank the reply. */
+      saveMessage.mockImplementation(async (_ctx, message) => message);
+      const saveOptions = TestClient.getSaveOptions();
+      TestClient.skipSaveConvo = false;
+      saveConvo.mockClear();
+
+      await TestClient.saveMessageToDatabase(
+        { conversationId: 'convo-unseen', messageId: 'm1', isCreatedByUser: true, text: 'hi' },
+        saveOptions,
+        TestClient.user,
+      );
+      await TestClient.saveMessageToDatabase(
+        { conversationId: 'convo-unseen', messageId: 'm2', isCreatedByUser: false, text: 'hello' },
+        saveOptions,
+        TestClient.user,
+      );
+
+      const [userTurn, reply] = saveConvo.mock.calls;
+      /* A user turn stamping this would light the unseen dot the moment they press Enter. */
+      expect(userTurn[1].lastResponseAt).toBeUndefined();
+      expect(userTurn[2].stampReply).toBeUndefined();
+      expect(reply[2].stampReply).toBe(true);
+      expect(reply[2].replyMessageId).toBe('m2');
+    });
+
+    test('never stamps a reply whose message write resolved empty', async () => {
+      /* Duplicate-key recovery that cannot re-read the row leaves no message to open, so an
+         indicator would point at a reply that is not in the history. */
+      saveMessage.mockResolvedValueOnce(undefined);
+      const saveOptions = TestClient.getSaveOptions();
+      TestClient.skipSaveConvo = false;
+      saveConvo.mockClear();
+
+      await TestClient.saveMessageToDatabase(
+        { conversationId: 'convo-unseen', messageId: 'm7', isCreatedByUser: false, text: 'hello' },
+        saveOptions,
+        TestClient.user,
+      );
+
+      expect(saveConvo.mock.calls[0][2].stampReply).toBeUndefined();
+    });
+
+    test('stamps the reply of a response that skips the conversation save', async () => {
+      /* The secondary response of an override pair persists its message and returns before the
+         conversation-field save. Without its own stamp, a reply that finishes after the primary
+         one, or is the only one that persisted, would never light an indicator. */
+      saveMessage.mockImplementation(async (_ctx, message) => message);
+      const saveOptions = TestClient.getSaveOptions();
+      TestClient.skipSaveConvo = true;
+      saveConvo.mockClear();
+      stampConvoLastResponse.mockClear();
+
+      await TestClient.saveMessageToDatabase(
+        { conversationId: 'convo-override', messageId: 'm4', isCreatedByUser: true, text: 'hi' },
+        saveOptions,
+        'user-override',
+      );
+      await TestClient.saveMessageToDatabase(
+        { conversationId: 'convo-override', messageId: 'm5', isCreatedByUser: false, text: 'yo' },
+        saveOptions,
+        'user-override',
+      );
+
+      TestClient.skipSaveConvo = false;
+      expect(saveConvo).not.toHaveBeenCalled();
+      expect(stampConvoLastResponse).toHaveBeenCalledTimes(1);
+      expect(stampConvoLastResponse).toHaveBeenCalledWith('user-override', 'convo-override', 'm5');
+    });
+
+    test('never fails a persisted reply because its indicator stamp failed', async () => {
+      saveMessage.mockImplementation(async (_ctx, message) => message);
+      const saveOptions = TestClient.getSaveOptions();
+      TestClient.skipSaveConvo = true;
+      stampConvoLastResponse.mockClear();
+      stampConvoLastResponse.mockRejectedValueOnce(new Error('mongo is down'));
+
+      await expect(
+        TestClient.saveMessageToDatabase(
+          { conversationId: 'convo-override', messageId: 'm6', isCreatedByUser: false, text: 'yo' },
+          saveOptions,
+          'user-override',
+        ),
+      ).resolves.toBeDefined();
+      expect(stampConvoLastResponse).toHaveBeenCalledTimes(1);
+
+      TestClient.skipSaveConvo = false;
+    });
+
+    test('keeps the unseen timestamps out of the user turn’s unsetFields', async () => {
+      /* The real wipe threat: a user turn whose endpointOptions omit these fields builds an
+         unsetFields list from the fetched conversation. excludedKeys must keep them out. */
+      getConvo.mockResolvedValue({
+        conversationId: 'convo-unseen',
+        endpoint: 'openai',
+        model: 'gpt-3.5-turbo',
+        lastResponseAt: new Date(),
+        lastResponseMessageId: 'reply-unseen',
+        lastSeenAt: new Date(),
+      });
+      const saveOptions = TestClient.getSaveOptions();
+      TestClient.skipSaveConvo = false;
+      saveConvo.mockClear();
+
+      await TestClient.saveMessageToDatabase(
+        { conversationId: 'convo-unseen', messageId: 'm3', isCreatedByUser: true, text: 'again' },
+        saveOptions,
+        TestClient.user,
+      );
+
+      const [, , convoOptions] = saveConvo.mock.calls[0];
+      expect(convoOptions.unsetFields).not.toHaveProperty('lastResponseAt');
+      expect(convoOptions.unsetFields).not.toHaveProperty('lastSeenAt');
+      expect(convoOptions.unsetFields).not.toHaveProperty('lastResponseMessageId');
     });
 
     test('does not start the completed response write when terminal ownership is denied', async () => {
@@ -2661,14 +3247,30 @@ describe('BaseClient', () => {
         metadata: { destinationChosen: false },
       };
 
+      /** A tool serves a file only once it holds it, so a record left to the sandbox needs the
+       *  reference provisioning writes for that tool to count as its reader. */
+      const sandboxCsv = {
+        ...routedCsv,
+        metadata: {
+          destinationChosen: false,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'session-1',
+            file_id: 'sandbox-csv-file',
+          },
+        },
+      };
+
       const replayCsv = async (
         fileConsumers,
         endpointConfig = {
           defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
           textFallbackWithoutTools: true,
         },
+        file = routedCsv,
       ) => {
-        getFiles.mockResolvedValueOnce([routedCsv]);
+        getFiles.mockResolvedValueOnce([file]);
         TestClient.options.req.config = {
           fileConfig: { endpoints: { [EModelEndpoint.openAI]: endpointConfig } },
         };
@@ -2743,12 +3345,29 @@ describe('BaseClient', () => {
         ]);
       });
 
-      test('keeps the file off the prompt when this turn can read it with code', async () => {
-        const message = await replayCsv({ executeCode: true, fileSearch: false });
+      test('keeps the file off the prompt when the sandbox running it holds the file', async () => {
+        const message = await replayCsv(
+          { executeCode: true, fileSearch: false },
+          undefined,
+          sandboxCsv,
+        );
 
         expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([]);
         expect(TestClient.addFileContextToMessage).not.toHaveBeenCalled();
         expect(message.fileContext).toBeUndefined();
+      });
+
+      test('replays the stored text when file search never received the file', async () => {
+        /* An earlier turn's upload that named no destination was filed under no tool, so the
+         * vector store holds nothing to search. Withholding the text for the enabled tool left
+         * the file unreadable on every later turn as well as the one it arrived on. */
+        const message = await replayCsv({ executeCode: false, fileSearch: true });
+        const replayed = { ...routedCsv, llmDeliveryPath: 'text' };
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([replayed]);
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [replayed]);
+        expect(message.fileContext).toBe('region,total');
+        expect(routedCsv.llmDeliveryPath).toBe('none');
       });
     });
 
@@ -2794,7 +3413,12 @@ describe('BaseClient', () => {
         {},
       );
       expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [ownerFile]);
-      expect(TestClient.processAttachments).toHaveBeenCalledWith(message, [ownerFile]);
+      expect(TestClient.processAttachments).toHaveBeenCalledWith(
+        message,
+        [ownerFile],
+        undefined,
+        expect.any(Function),
+      );
       expect(message.fileContext).toBe('authorized owner text');
       expect(message.files).toEqual([
         expect.objectContaining({
@@ -3189,6 +3813,83 @@ describe('BaseClient', () => {
     });
   });
 
+  describe('sendMessage skill metadata', () => {
+    test.each([
+      [
+        'manual',
+        { manualSkills: ['manual-skill', '', 42] },
+        {},
+        { manualSkills: ['manual-skill'] },
+      ],
+      [
+        'always-applied',
+        { alwaysAppliedSkills: ['untrusted-skill'] },
+        { alwaysApplySkillPrimes: [{ name: 'always-skill' }, { name: '' }, {}] },
+        { alwaysAppliedSkills: ['always-skill'] },
+      ],
+      [
+        'combined',
+        { manualSkills: ['manual-skill'] },
+        { alwaysApplySkillPrimes: [{ name: 'always-skill' }] },
+        { manualSkills: ['manual-skill'], alwaysAppliedSkills: ['always-skill'] },
+      ],
+    ])(
+      'attaches %s skills before start callbacks and preserves them on save',
+      async (_label, body, agent, expected) => {
+        TestClient.options = { ...TestClient.options, req: { body }, agent };
+        TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+        const starts = [];
+        const capture = (message) =>
+          starts.push({
+            manualSkills: message.manualSkills,
+            alwaysAppliedSkills: message.alwaysAppliedSkills,
+          });
+
+        await TestClient.sendMessage('Hello with skills', {
+          getReqData: ({ userMessage: message }) => {
+            if (message) capture(message);
+          },
+          onStart: capture,
+        });
+
+        expect(starts.length).toBeGreaterThanOrEqual(2);
+        for (const start of starts) {
+          expect(start).toMatchObject(expected);
+        }
+        const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+          ([message]) => message.isCreatedByUser,
+        );
+        expect(userSave[0]).toMatchObject(expected);
+      },
+    );
+
+    test('preserves historical skill metadata on a rerun', async () => {
+      const historical = [
+        ...messageHistory.map((message) => ({ ...message })),
+        { role: 'assistant', messageId: 'response-0', parentMessageId: '3', text: 'Previous' },
+      ];
+      historical[2].manualSkills = ['original-manual'];
+      historical[2].alwaysAppliedSkills = ['original-always'];
+      const client = initializeFakeClient(apiKey, options, historical);
+      client.options = {
+        ...client.options,
+        req: { body: { manualSkills: ['new-manual'] } },
+        agent: { alwaysApplySkillPrimes: [{ name: 'new-always' }] },
+      };
+
+      const result = await client.handleStartMethods('Rerun', {
+        conversationId: 'conversation-1',
+        parentMessageId: '3',
+        responseMessageId: 'response-0',
+        isEdited: true,
+        isContinued: true,
+      });
+
+      expect(result.userMessage.manualSkills).toEqual(['original-manual']);
+      expect(result.userMessage.alwaysAppliedSkills).toEqual(['original-always']);
+    });
+  });
+
   describe('sendMessage quote references', () => {
     // The blockquote merge itself lives in AgentClient.buildMessages / prependQuotes
     // (covered by packages/api specs). BaseClient's job is to attach the normalized
@@ -3242,6 +3943,62 @@ describe('BaseClient', () => {
       );
       expect(userSave[0].text).toBe('Just a question');
       expect(userSave[0].quotes).toBeUndefined();
+      expect(userSave[0].reasoningOverride).toBeUndefined();
+    });
+
+    test('persists only a validated request-scoped reasoning override on the user turn', async () => {
+      TestClient.options.req = {
+        body: { reasoningOverride: { key: 'reasoning_effort', value: 'high' } },
+      };
+      TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+      await TestClient.sendMessage('Think carefully');
+
+      const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+        ([message]) => message.isCreatedByUser === true,
+      );
+      expect(userSave[0].reasoningOverride).toEqual({
+        key: 'reasoning_effort',
+        value: 'high',
+      });
+    });
+
+    test('drops an invalid request-scoped reasoning override from message metadata', async () => {
+      TestClient.options.req = {
+        body: { reasoningOverride: { key: 'model', value: 'secret-model' } },
+      };
+      TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+      await TestClient.sendMessage('Do not trust this');
+
+      const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+        ([message]) => message.isCreatedByUser === true,
+      );
+      expect(userSave[0].reasoningOverride).toBeUndefined();
+    });
+
+    test('does not add a request-scoped reasoning override to a rerun turn', async () => {
+      const rerunClient = initializeFakeClient(apiKey, options, [
+        ...messageHistory,
+        {
+          role: 'assistant',
+          isCreatedByUser: false,
+          text: 'Previous response',
+          messageId: 'response-0',
+          parentMessageId: '3',
+        },
+      ]);
+      rerunClient.options.req = {
+        body: { reasoningOverride: { key: 'reasoning_effort', value: 'high' } },
+      };
+
+      const result = await rerunClient.handleStartMethods('Rerun this', {
+        conversationId: 'conversation-1',
+        parentMessageId: '3',
+        responseMessageId: 'response-0',
+        isEdited: true,
+        isContinued: true,
+      });
+
+      expect(result.userMessage.reasoningOverride).toBeUndefined();
     });
   });
 
@@ -3389,12 +4146,13 @@ describe('BaseClient', () => {
     /* The stored path is an upload-time inference, so delivery resolves it again by the
      * routing settled for the agent running the turn. A test asserting a route has to
      * configure that route rather than rely on the stored value alone. */
-    const routeTo = (path, ...mimeTypes) => {
+    const routeTo = (path, mimeTypes, endpointConfig = {}) => {
       TestClient.options.req = {
         config: {
           fileConfig: {
             endpoints: {
               [EModelEndpoint.openAI]: {
+                ...endpointConfig,
                 defaultLLMDeliveryPath: {
                   overrides: Object.fromEntries(mimeTypes.map((mime) => [mime, path])),
                 },
@@ -3410,7 +4168,7 @@ describe('BaseClient', () => {
     };
 
     test('keeps a none image in returned files without adding image URLs', async () => {
-      routeTo('none', 'image/*');
+      routeTo('none', ['image/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -3431,7 +4189,7 @@ describe('BaseClient', () => {
     });
 
     test('does not inject extracted text after the current provider resolves none', () => {
-      routeTo('none', 'application/pdf');
+      routeTo('none', ['application/pdf']);
       const file = {
         file_id: 'none-pdf',
         filename: 'report.pdf',
@@ -3444,10 +4202,7 @@ describe('BaseClient', () => {
     });
 
     const routeCsvToTools = ({ textFallbackWithoutTools = true } = {}) => {
-      routeTo('none', 'text/csv');
-      TestClient.options.req.config.fileConfig.endpoints[
-        EModelEndpoint.openAI
-      ].textFallbackWithoutTools = textFallbackWithoutTools;
+      routeTo('none', ['text/csv'], { textFallbackWithoutTools });
     };
 
     test('injects the text stored for a tool-routed file when this turn runs no reader', () => {
@@ -3520,7 +4275,7 @@ describe('BaseClient', () => {
       });
     });
 
-    test('keeps a tool-routed file off the prompt when this turn can read it with code', () => {
+    test('keeps a tool-routed file off the prompt when the sandbox running it holds the file', () => {
       routeCsvToTools();
       TestClient.options.agent = {
         provider: EModelEndpoint.openAI,
@@ -3536,11 +4291,75 @@ describe('BaseClient', () => {
         type: 'text/csv',
         text: 'region,total',
         llmDeliveryPath: 'none',
+        metadata: {
+          destinationChosen: false,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'session-1',
+            file_id: 'sandbox-code-csv',
+          },
+        },
+      };
+
+      expect(TestClient.getAttachmentDeliveryPath(file)).toBe('none');
+      expect(TestClient.getTextContextAttachments([file])).toEqual([]);
+    });
+
+    test('delivers the text when File Search has yet to receive the file', () => {
+      /* An upload that named no destination is filed under no tool, so an enabled search tool
+       * alone cannot serve it and withholding the text left it readable by nothing. */
+      routeCsvToTools();
+      TestClient.options.agent = {
+        provider: EModelEndpoint.openAI,
+        fileConsumers: { executeCode: false, fileSearch: true },
+      };
+      TestClient.options.agent.deliveryRouting = resolveTurnDeliveryRouting({
+        agent: TestClient.options.agent,
+        config: TestClient.options.req?.config,
+      });
+      const file = {
+        file_id: 'unprovisioned-csv',
+        filename: 'sales.csv',
+        type: 'text/csv',
+        text: 'region,total',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+      };
+
+      expect(TestClient.getAttachmentDeliveryPath(file)).toBe('text');
+      /* The filter selects records by the route this turn resolves, so it returns the record as
+       * stored; marking the copy admission reads is `resolveTurnAttachments`. */
+      expect(TestClient.getTextContextAttachments([file])).toEqual([file]);
+      expect(TestClient.resolveTurnAttachments([file])).toEqual([
+        { ...file, llmDeliveryPath: 'text' },
+      ]);
+    });
+
+    test('leaves a file Run Code can read with Run Code before the sandbox holds it', () => {
+      /* Run Code uploads the file on its first call, so the text stays off the prompt, where it
+       * would otherwise count toward the history limits until that call. */
+      routeCsvToTools();
+      TestClient.options.agent = {
+        provider: EModelEndpoint.openAI,
+        fileConsumers: { executeCode: true, fileSearch: true },
+      };
+      TestClient.options.agent.deliveryRouting = resolveTurnDeliveryRouting({
+        agent: TestClient.options.agent,
+        config: TestClient.options.req?.config,
+      });
+      const file = {
+        file_id: 'unprovisioned-csv',
+        filename: 'sales.csv',
+        type: 'text/csv',
+        text: 'region,total',
+        llmDeliveryPath: 'none',
         metadata: { destinationChosen: false },
       };
 
       expect(TestClient.getAttachmentDeliveryPath(file)).toBe('none');
       expect(TestClient.getTextContextAttachments([file])).toEqual([]);
+      expect(TestClient.resolveTurnAttachments([file])).toEqual([file]);
     });
 
     test('does not fall back on an endpoint that has not enabled it', () => {
@@ -3582,7 +4401,7 @@ describe('BaseClient', () => {
     });
 
     test('does not inject extracted text when the current provider resolves native delivery', () => {
-      routeTo('provider', 'application/pdf');
+      routeTo('provider', ['application/pdf']);
       const file = {
         file_id: 'provider-pdf',
         filename: 'report.pdf',
@@ -3602,7 +4421,7 @@ describe('BaseClient', () => {
        * extracted text, and extraction at delivery is Phase 2 work. So the model receives
        * nothing here either way, which the assertions state rather than imply, and the
        * change is limited to not downloading and encoding a file to no purpose. */
-      routeTo('text', 'audio/*');
+      routeTo('text', ['audio/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -3626,7 +4445,7 @@ describe('BaseClient', () => {
     test('re-resolves a converted image against the type it was routed on', async () => {
       /* Conversion rewrote the stored type, so resolving against that asks about a format
        * the administrator never configured a route for and delivers what they excluded. */
-      routeTo('none', 'image/png');
+      routeTo('none', ['image/png']);
       const message = {};
       const file = {
         user: 'user1',
@@ -3759,7 +4578,7 @@ describe('BaseClient', () => {
     test('keeps an explicitly named destination even under a different provider', async () => {
       /* The user named this one, through the chooser or by requesting a tool resource,
        * and that decision is not this endpoint's to re-derive. */
-      routeTo('text', 'audio/*');
+      routeTo('text', ['audio/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -3779,7 +4598,7 @@ describe('BaseClient', () => {
     });
 
     test('keeps a none PDF in returned files without adding documents', async () => {
-      routeTo('none', 'application/pdf');
+      routeTo('none', ['application/pdf']);
       const message = {};
       const file = {
         user: 'user1',
@@ -3860,6 +4679,29 @@ describe('BaseClient', () => {
       expect(message.image_urls).toEqual(['encoded-image']);
     });
 
+    test('keeps a code output out of the prompt once its expired sandbox reference is cleared', async () => {
+      /* Priming clears a dead sandbox reference on the turn's copy of the record so the file
+       * is re-provisioned. The output still belongs to the sandbox that wrote it. */
+      const message = {};
+      const file = {
+        user: 'user1',
+        file_id: 'code-output-chart',
+        filename: 'chart.png',
+        filepath: '/uploads/chart.png',
+        type: 'image/png',
+        bytes: 100,
+        source: 'local',
+        context: 'execute_code',
+        metadata: {},
+      };
+
+      const result = await TestClient.processAttachments(message, [file]);
+
+      expect(result).toEqual([file]);
+      expect(TestClient.addImageURLs).not.toHaveBeenCalled();
+      expect(message.image_urls).toBeUndefined();
+    });
+
     test('keeps excluding embedded legacy files that have no delivery path', async () => {
       const message = {};
       const file = {
@@ -3895,7 +4737,7 @@ describe('BaseClient', () => {
 
       expect(result).toEqual([file]);
       expect(message.documents).toEqual([{ type: 'file' }]);
-      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file]);
+      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file], undefined);
     });
   });
 });
@@ -3921,6 +4763,9 @@ describe('BaseClient compaction turns', () => {
   });
 
   test('presents the leaf as the user message and never re-saves it', async () => {
+    CompactClient.options.req = {
+      body: { reasoningOverride: { key: 'reasoning_effort', value: 'high' } },
+    };
     const result = await CompactClient.handleStartMethods('', {
       conversationId: 'convo-compact',
       parentMessageId: 'a1',

@@ -5,7 +5,9 @@ import {
   NEW_CHAT_PATH,
   uniqueName,
   sendMessage,
+  getRagQueries,
   getRagEmbedded,
+  sendMessageAndWaitForCompletion,
   enableFileSearch,
   selectMockEndpoint,
   resetProvisioning,
@@ -21,10 +23,10 @@ import {
  *
  * Two trigger points are covered end to end (real backend + DB + provisioning HTTP):
  *
- * - Immediate (legacy dropdown, Mock Provider A): choosing "Upload to Code
+ * - Immediate (legacy destination rows, Mock Provider A): choosing "Upload to Code
  *   Environment" / "Upload for File Search" provisions at upload time
  *   (`uploadCodeEnvFile` / `uploadVectors`).
- * - Lazy (unified button, Mock Provider B): a plain attachment routes to `none` and
+ * - Lazy (unified palette source row, Mock Provider B): a plain attachment routes to `none` and
  *   is NOT provisioned at upload; it is uploaded to the code env / embedded only
  *   when a tool that needs it runs (`provisionFiles` at ON_TOOL_EXECUTE). This is the
  *   headline behavior — "all uploaded files available to the tool at execute time".
@@ -33,14 +35,14 @@ import {
  * actually reached the target env, independent of the deferred DB write.
  */
 
-test.describe('file provisioning — immediate (legacy dropdown)', () => {
+test.describe('file provisioning — immediate (legacy destination rows)', () => {
   test('"Upload to Code Environment" provisions the file to the code env', async ({ page }) => {
     test.setTimeout(120000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await resetProvisioning(page);
-    // The legacy "Upload to Code Environment" option only appears once the
-    // ephemeral execute_code capability is enabled.
+    // The Code Environment destination row appears once the ephemeral
+    // execute_code capability is enabled.
     await enableCodeInterpreter(page);
 
     const fileName = `${uniqueName('code')}.csv`;
@@ -64,7 +66,7 @@ test.describe('file provisioning — immediate (legacy dropdown)', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await resetProvisioning(page);
-    // The legacy "Upload for File Search" option only appears once the ephemeral
+    // The File Search destination row appears once the ephemeral
     // file_search capability is enabled.
     await enableFileSearch(page);
 
@@ -104,7 +106,11 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
       (await getCodeProvisionedUploads(page)).map((u) => u.filename),
       'unified upload must not provision to the code env until a tool runs',
     ).not.toContain(fileName);
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
+    /* Scoped to the tray: the palette lists the same file under its recent
+       uploads, and it is still in the DOM while its close animation runs. */
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName }),
+    ).toBeVisible({ timeout: 15000 });
 
     // A tool run triggers lazy provisioning: the fake model emits an execute_code call.
     // Provisioning fires at ON_TOOL_EXECUTE, before the execute_code tool itself runs,
@@ -118,10 +124,10 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
       .toContain(fileName);
   });
 
-  test('a unified attachment is embedded into the vector DB when file_search runs', async ({
+  test('a unified attachment stays searchable after lazy embedding on a later turn', async ({
     page,
   }) => {
-    test.setTimeout(120000);
+    test.setTimeout(180000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
     await resetProvisioning(page);
@@ -142,13 +148,26 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
       (await getRagEmbedded(page)).map((e) => e.file_id),
       'unified upload must not embed until file_search runs',
     ).not.toContain(fileId);
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
+    /* Scoped to the tray: the palette lists the same file under its recent
+       uploads, and it is still in the DOM while its close animation runs. */
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName }),
+    ).toBeVisible({ timeout: 15000 });
 
-    // Embedding fires at ON_TOOL_EXECUTE, independent of the file_search tool result.
-    await sendMessage(page, `E2E_FILE_SEARCH:${uniqueName('q')}`);
-
+    // The first tool call lazily embeds the attachment and searches it.
+    await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${uniqueName('first')}`);
     await expect
       .poll(async () => (await getRagEmbedded(page)).map((e) => e.file_id), { timeout: 30000 })
       .toContain(fileId);
+    await expect
+      .poll(async () => (await getRagQueries(page)).filter((q) => q.file_id === fileId).length)
+      .toBe(1);
+
+    // A completed, persisted turn must still expose the embedded file to the next call.
+    await sendMessageAndWaitForCompletion(page, `E2E_FILE_SEARCH:${uniqueName('second')}`);
+    await expect
+      .poll(async () => (await getRagQueries(page)).filter((q) => q.file_id === fileId).length)
+      .toBe(2);
+    expect((await getRagEmbedded(page)).filter((e) => e.file_id === fileId)).toHaveLength(1);
   });
 });

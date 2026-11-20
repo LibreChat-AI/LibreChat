@@ -4,10 +4,18 @@ import {
   PermissionBits,
   ResourceType,
   SystemCategories,
+  PromptGroupSources,
   Time,
 } from 'librechat-data-provider';
 import type { Model, Types } from 'mongoose';
-import type { IAclEntry, CacheStore, IPrompt, IPromptGroup, IPromptGroupDocument } from '~/types';
+import type {
+  IAclEntry,
+  CacheStore,
+  IPrompt,
+  IPromptGroup,
+  IPromptRecord,
+  IPromptGroupDocument,
+} from '~/types';
 import { getTenantId, scopedCacheKey, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { escapeRegExp } from '~/utils/string';
@@ -91,6 +99,18 @@ async function readAccessGeneration(cache: CacheStore): Promise<string | undefin
   }
 }
 
+/**
+ * Plain listing inputs. `name` is a case-insensitive substring; `category` is the stored
+ * category value, where an empty string selects groups without a category.
+ */
+export interface PromptGroupListParams {
+  accessibleIds?: Array<string | Types.ObjectId>;
+  name?: string;
+  category?: string;
+  limit?: number | string | null;
+  after?: string | null;
+}
+
 export interface PromptMethods {
   getPromptGroups(filter: Record<string, unknown>): Promise<
     | {
@@ -105,12 +125,7 @@ export interface PromptMethods {
   getAllPromptGroups(
     filter: Record<string, unknown>,
   ): Promise<Record<string, unknown>[] | { message: string }>;
-  getListPromptGroupsByAccess(params: {
-    accessibleIds?: Types.ObjectId[];
-    otherParams?: Record<string, unknown>;
-    limit?: number | null;
-    after?: string | null;
-  }): Promise<{
+  getListPromptGroupsByAccess(params: PromptGroupListParams): Promise<{
     object: 'list';
     data: Record<string, unknown>[];
     first_id: string | null;
@@ -128,20 +143,9 @@ export interface PromptMethods {
   savePrompt(saveData: {
     prompt: Record<string, unknown>;
     author: string | Types.ObjectId;
-  }): Promise<{ prompt: IPrompt } | { message: string }>;
-  getPrompts(
-    filter: Record<string, unknown>,
-  ): Promise<Record<string, unknown>[] | { message: string }>;
-  getPrompt(
-    filter: Record<string, unknown>,
-  ): Promise<Record<string, unknown> | null | { message: string }>;
-  getRandomPromptGroups(filter: {
-    skip: number | string;
-    limit: number | string;
-  }): Promise<{ prompts: unknown[] } | { message: string }>;
-  getPromptGroupsWithPrompts(
-    filter: Record<string, unknown>,
-  ): Promise<Record<string, unknown> | null | { message: string }>;
+  }): Promise<{ prompt: IPromptRecord }>;
+  getPrompts(filter: Record<string, unknown>): Promise<IPromptRecord[]>;
+  getPrompt(filter: Record<string, unknown>): Promise<IPromptRecord | null>;
   getPromptGroup(filter: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   getOwnedPromptGroupIds(author: string, readPrimary?: boolean): Promise<Types.ObjectId[]>;
   getPromptGroupAccessContext(params: { userId: string; role?: string }): Promise<{
@@ -158,9 +162,22 @@ export interface PromptMethods {
   updatePromptGroup(
     filter: Record<string, unknown>,
     data: Record<string, unknown>,
-  ): Promise<IPromptGroupDocument | { message: string }>;
+  ): Promise<IPromptGroup>;
   makePromptProduction(promptId: string): Promise<{ message: string }>;
   updatePromptLabels(_id: string, labels: unknown): Promise<{ message: string }>;
+  findLangfusePromptGroup(identity: {
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string } | null>;
+  createLangfusePromptGroup(input: {
+    name: string;
+    author: string;
+    authorName: string;
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string }>;
 }
 
 export function createPromptMethods(
@@ -231,7 +248,7 @@ export function createPromptMethods(
       const groups = await PromptGroup.find(query)
         .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
         .select(
-          'name numberOfGenerations oneliner category author authorName createdAt updatedAt command productionId',
+          'name numberOfGenerations oneliner category author authorName createdAt updatedAt command productionId source sourcePromptName sourceProjectId sourceDestination',
         )
         .lean();
       return await attachProductionPrompts(groups as unknown as Array<Record<string, unknown>>);
@@ -300,7 +317,7 @@ export function createPromptMethods(
           .skip(skip)
           .limit(limit)
           .select(
-            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt',
+            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command source sourcePromptName sourceProjectId sourceDestination',
           )
           .lean(),
         PromptGroup.countDocuments(query),
@@ -365,15 +382,11 @@ export function createPromptMethods(
    */
   async function getListPromptGroupsByAccess({
     accessibleIds = [],
-    otherParams = {},
+    name,
+    category,
     limit = null,
     after = null,
-  }: {
-    accessibleIds?: Types.ObjectId[];
-    otherParams?: Record<string, unknown>;
-    limit?: number | null;
-    after?: string | null;
-  }): Promise<{
+  }: PromptGroupListParams): Promise<{
     object: 'list';
     data: Record<string, unknown>[];
     first_id: string | null;
@@ -388,9 +401,14 @@ export function createPromptMethods(
       : null;
 
     const baseQuery: Record<string, unknown> = {
-      ...otherParams,
       _id: { $in: accessibleIds },
     };
+    if (name) {
+      baseQuery.name = new RegExp(escapeRegExp(name), 'i');
+    }
+    if (category != null) {
+      baseQuery.category = category;
+    }
 
     let matchQuery: Record<string, unknown> = baseQuery;
 
@@ -439,7 +457,7 @@ export function createPromptMethods(
     const findQuery = PromptGroup.find(matchQuery)
       .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
       .select(
-        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt',
+        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command source sourcePromptName sourceProjectId sourceDestination',
       );
 
     if (isPaginated && normalizedLimit) {
@@ -522,7 +540,17 @@ export function createPromptMethods(
       const { prompt, group, author, authorName } = saveData;
 
       let newPromptGroup = await PromptGroup.findOneAndUpdate(
-        { ...group, author, authorName, productionId: null },
+        /**
+         * Only reuse native groups, including legacy groups with no source. Mirrored
+         * groups can also lack a productionId, but must not receive a native prompt.
+         */
+        {
+          ...group,
+          author,
+          authorName,
+          productionId: null,
+          source: { $in: [PromptGroupSources.native, null] },
+        },
         { $setOnInsert: { ...group, author, authorName, productionId: null } },
         { new: true, upsert: true },
       )
@@ -564,167 +592,147 @@ export function createPromptMethods(
   }
 
   /**
+   * Finds the pointer-only PromptGroup mirrored from a Langfuse prompt, if one
+   * already exists for this identity. `null` means no prior sync found it, not
+   * a query failure — the caller lets a database error propagate.
+   */
+  async function findLangfusePromptGroup({
+    sourceDestination,
+    sourceProjectId,
+    sourcePromptName,
+  }: {
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string } | null> {
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+    const doc = await PromptGroup.findOne(
+      { source: 'langfuse', sourceDestination, sourceProjectId, sourcePromptName },
+      { _id: 1 },
+    ).lean<{ _id: Types.ObjectId }>();
+    return doc ? { _id: String(doc._id) } : null;
+  }
+
+  /**
+   * Creates a pointer-only PromptGroup mirrored from a Langfuse prompt: name and
+   * source identity only, never content. No `productionId` — a synced group has
+   * no production prompt. No `tenantId` here; the tenant-isolation plugin stamps
+   * it from the active request context. Throws on failure, including a
+   * duplicate-key error from the partial unique source-identity index, which the
+   * caller maps to `unchanged`.
+   */
+  async function createLangfusePromptGroup({
+    name,
+    author,
+    authorName,
+    sourceDestination,
+    sourceProjectId,
+    sourcePromptName,
+  }: {
+    name: string;
+    author: string;
+    authorName: string;
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string }> {
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+    const doc = await PromptGroup.create({
+      source: 'langfuse',
+      sourceDestination,
+      sourceProjectId,
+      sourcePromptName,
+      name,
+      author: new ObjectId(author),
+      authorName,
+      category: '',
+      oneliner: '',
+      numberOfGenerations: 0,
+    });
+    return { _id: String(doc._id) };
+  }
+
+  /**
    * Save a prompt.
    */
   async function savePrompt(saveData: {
     prompt: Record<string, unknown>;
     author: string | Types.ObjectId;
-  }) {
+  }): Promise<{ prompt: IPromptRecord }> {
+    const Prompt = mongoose.models.Prompt as Model<IPrompt>;
+    const { prompt, author } = saveData;
+    const newPromptData = { ...prompt, author };
+
+    let newPrompt;
     try {
-      const Prompt = mongoose.models.Prompt as Model<IPrompt>;
-      const { prompt, author } = saveData;
-      const newPromptData = { ...prompt, author };
-
-      let newPrompt;
-      try {
-        newPrompt = await Prompt.create(newPromptData);
-      } catch (error: unknown) {
-        if ((error as Error)?.message?.includes('groupId_1_version_1')) {
-          await Prompt.db.collection('prompts').dropIndex('groupId_1_version_1');
-        } else {
-          throw error;
-        }
-        newPrompt = await Prompt.create(newPromptData);
+      newPrompt = await Prompt.create(newPromptData);
+    } catch (error: unknown) {
+      if (!(error as Error)?.message?.includes('groupId_1_version_1')) {
+        throw error;
       }
-
-      return { prompt: newPrompt };
-    } catch (error) {
-      logger.error('Error saving prompt', error);
-      return { message: 'Error saving prompt' };
+      await Prompt.db.collection('prompts').dropIndex('groupId_1_version_1');
+      newPrompt = await Prompt.create(newPromptData);
     }
+
+    return { prompt: newPrompt.toObject<IPromptRecord>() };
   }
 
   /**
    * Get prompts by filter.
    */
-  async function getPrompts(filter: Record<string, unknown>) {
-    try {
-      const Prompt = mongoose.models.Prompt as Model<IPrompt>;
-      return await Prompt.find(filter).sort({ createdAt: -1 }).lean();
-    } catch (error) {
-      logger.error('Error getting prompts', error);
-      return { message: 'Error getting prompts' };
-    }
+  async function getPrompts(filter: Record<string, unknown>): Promise<IPromptRecord[]> {
+    const Prompt = mongoose.models.Prompt as Model<IPrompt>;
+    return await Prompt.find(filter).sort({ createdAt: -1 }).lean<IPromptRecord[]>();
   }
 
   /**
    * Get a single prompt by filter.
    */
-  async function getPrompt(filter: Record<string, unknown>) {
-    try {
-      const Prompt = mongoose.models.Prompt as Model<IPrompt>;
-      if (filter.groupId) {
-        filter.groupId = new ObjectId(filter.groupId as string);
-      }
-      return await Prompt.findOne(filter).lean();
-    } catch (error) {
-      logger.error('Error getting prompt', error);
-      return { message: 'Error getting prompt' };
+  async function getPrompt(filter: Record<string, unknown>): Promise<IPromptRecord | null> {
+    const Prompt = mongoose.models.Prompt as Model<IPrompt>;
+    if (filter.groupId) {
+      filter.groupId = new ObjectId(filter.groupId as string);
     }
-  }
-
-  /**
-   * Get random prompt groups from distinct categories.
-   */
-  async function getRandomPromptGroups(filter: { skip: number | string; limit: number | string }) {
-    try {
-      const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
-      const categories = await PromptGroup.distinct('category', { category: { $ne: '' } });
-
-      for (let i = categories.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [categories[i], categories[j]] = [categories[j], categories[i]];
-      }
-
-      const skip = +filter.skip;
-      const limit = +filter.limit;
-      const selectedCategories = categories.slice(skip, skip + limit);
-
-      if (selectedCategories.length === 0) {
-        return { prompts: [] };
-      }
-
-      const groups = await PromptGroup.find({ category: { $in: selectedCategories } }).lean();
-
-      const groupByCategory = new Map<string, unknown>();
-      for (const group of groups) {
-        if (!groupByCategory.has(group.category)) {
-          groupByCategory.set(group.category, group);
-        }
-      }
-
-      const prompts = selectedCategories
-        .map((cat: string) => groupByCategory.get(cat))
-        .filter(Boolean);
-
-      return { prompts };
-    } catch (error) {
-      logger.error('Error getting prompt groups', error);
-      return { message: 'Error getting prompt groups' };
-    }
-  }
-
-  /**
-   * Get prompt groups with populated prompts.
-   */
-  async function getPromptGroupsWithPrompts(filter: Record<string, unknown>) {
-    try {
-      const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
-      return await PromptGroup.findOne(filter)
-        .populate({
-          path: 'prompts',
-          select: '-_id -__v -user',
-        })
-        .select('-_id -__v -user')
-        .lean();
-    } catch (error) {
-      logger.error('Error getting prompt groups', error);
-      return { message: 'Error getting prompt groups' };
-    }
+    return await Prompt.findOne(filter).lean<IPromptRecord>();
   }
 
   /**
    * Get a single prompt group by filter, with productionPrompt populated via $lookup.
    */
   async function getPromptGroup(filter: Record<string, unknown>) {
-    try {
-      const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
-      // Cast string _id to ObjectId for aggregation (findOne auto-casts, aggregate does not)
-      const matchFilter = { ...filter };
-      if (typeof matchFilter._id === 'string') {
-        matchFilter._id = new ObjectId(matchFilter._id);
-      }
-      const tenantId = getTenantId();
-      const useTenantFilter = tenantId && tenantId !== SYSTEM_TENANT_ID;
-
-      const result = await PromptGroup.aggregate([
-        { $match: matchFilter },
-        {
-          $lookup: {
-            from: 'prompts',
-            localField: 'productionId',
-            foreignField: '_id',
-            as: 'productionPrompt',
-          },
-        },
-        { $unwind: { path: '$productionPrompt', preserveNullAndEmptyArrays: true } },
-      ]);
-      const group = result[0] || null;
-      if (
-        group?.productionPrompt &&
-        useTenantFilter &&
-        group.productionPrompt.tenantId !== tenantId
-      ) {
-        group.productionPrompt = null;
-      }
-      if (group?.author) {
-        group.author = group.author.toString();
-      }
-      return group;
-    } catch (error) {
-      logger.error('Error getting prompt group', error);
-      return null;
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+    // Cast string _id to ObjectId for aggregation (findOne auto-casts, aggregate does not)
+    const matchFilter = { ...filter };
+    if (typeof matchFilter._id === 'string') {
+      matchFilter._id = new ObjectId(matchFilter._id);
     }
+    const tenantId = getTenantId();
+    const useTenantFilter = tenantId && tenantId !== SYSTEM_TENANT_ID;
+
+    const result = await PromptGroup.aggregate([
+      { $match: matchFilter },
+      {
+        $lookup: {
+          from: 'prompts',
+          localField: 'productionId',
+          foreignField: '_id',
+          as: 'productionPrompt',
+        },
+      },
+      { $unwind: { path: '$productionPrompt', preserveNullAndEmptyArrays: true } },
+    ]);
+    const group = result[0] || null;
+    if (
+      group?.productionPrompt &&
+      useTenantFilter &&
+      group.productionPrompt.tenantId !== tenantId
+    ) {
+      group.productionPrompt = null;
+    }
+    if (group?.author) {
+      group.author = group.author.toString();
+    }
+    return group;
   }
 
   /**
@@ -1061,70 +1069,58 @@ export function createPromptMethods(
         return;
       }
 
+      /** ACL entries are the retry discovery key for sole-owned groups, so they go last. */
+      await Prompt.deleteMany({ groupId: { $in: allGroupIdsToDelete } });
+      await PromptGroup.deleteMany({ _id: { $in: allGroupIdsToDelete } });
       await AclEntry.deleteMany({
         resourceType: ResourceType.PROMPTGROUP,
         resourceId: { $in: allGroupIdsToDelete },
       });
-
-      await PromptGroup.deleteMany({ _id: { $in: allGroupIdsToDelete } });
-      await Prompt.deleteMany({ groupId: { $in: allGroupIdsToDelete } });
       await invalidatePromptGroupAccessContext();
     } catch (error) {
       logger.error('[deleteUserPrompts] General error:', error);
+      throw error;
     }
   }
 
   /**
    * Update a prompt group.
    */
-  async function updatePromptGroup(filter: Record<string, unknown>, data: Record<string, unknown>) {
-    try {
-      const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
-      const updateOps = {};
-      const updateData = { ...data, ...updateOps };
-      const updatedDoc = await PromptGroup.findOneAndUpdate(filter, updateData, {
-        new: true,
-        upsert: false,
-      });
+  async function updatePromptGroup(
+    filter: Record<string, unknown>,
+    data: Record<string, unknown>,
+  ): Promise<IPromptGroup> {
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+    const updatedDoc = await PromptGroup.findOneAndUpdate(filter, data, {
+      new: true,
+      upsert: false,
+    }).lean();
 
-      if (!updatedDoc) {
-        throw new Error('Prompt group not found');
-      }
-
-      return updatedDoc;
-    } catch (error) {
-      logger.error('Error updating prompt group', error);
-      return { message: 'Error updating prompt group' };
+    if (!updatedDoc) {
+      throw new Error('Prompt group not found');
     }
+
+    return updatedDoc as unknown as IPromptGroup;
   }
 
   /**
    * Make a prompt the production prompt for its group.
    */
-  async function makePromptProduction(promptId: string) {
-    try {
-      const Prompt = mongoose.models.Prompt as Model<IPrompt>;
-      const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+  async function makePromptProduction(promptId: string): Promise<{ message: string }> {
+    const Prompt = mongoose.models.Prompt as Model<IPrompt>;
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
 
-      const prompt = await Prompt.findById(promptId).lean();
+    const prompt = await Prompt.findById(promptId).lean();
 
-      if (!prompt) {
-        throw new Error('Prompt not found');
-      }
-
-      await PromptGroup.findByIdAndUpdate(
-        prompt.groupId,
-        { productionId: prompt._id },
-        { new: true },
-      )
-        .lean()
-        .exec();
-
-      return { message: 'Prompt production made successfully' };
-    } catch (error) {
-      logger.error('Error making prompt production', error);
-      return { message: 'Error making prompt production' };
+    if (!prompt) {
+      throw new Error('Prompt not found');
     }
+
+    await PromptGroup.findByIdAndUpdate(prompt.groupId, { productionId: prompt._id }, { new: true })
+      .lean()
+      .exec();
+
+    return { message: 'Prompt production made successfully' };
   }
 
   /**
@@ -1156,11 +1152,11 @@ export function createPromptMethods(
     getListPromptGroupsByAccess,
     incrementPromptGroupUsage,
     createPromptGroup,
+    findLangfusePromptGroup,
+    createLangfusePromptGroup,
     savePrompt,
     getPrompts,
     getPrompt,
-    getRandomPromptGroups,
-    getPromptGroupsWithPrompts,
     getPromptGroup,
     getOwnedPromptGroupIds,
     getPromptGroupAccessContext,

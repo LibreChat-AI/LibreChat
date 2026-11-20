@@ -48,4 +48,36 @@ describe('SecretInput', () => {
     });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('secret-value');
   });
+
+  /** A secret sits beside plain inputs in forms, so it composes the shared field and takes the
+   *  theme's field height and focus treatment with them. */
+  it('draws the shared field with its height and focus roles', () => {
+    render(<SecretInput value="secret" showCopy readOnly aria-label="token" />);
+    const field = screen.getByLabelText('token');
+
+    expect(field).toHaveClass(
+      'lc-field',
+      'h-theme-field',
+      'focus-visible:ring-focus-control',
+      'theme-field-border:focus:border-border-field-focus',
+      'pe-20',
+    );
+    expect(field).not.toHaveClass('h-10');
+  });
+
+  /** The sign-in form's field carries its edge, label and controls with it, so a form names the
+   *  variant rather than restating them. */
+  it('draws the floating variant with its label and show control', () => {
+    render(<SecretInput id="pw" variant="floating" label="Password" />);
+    const field = document.getElementById('pw');
+
+    expect(field).toHaveClass('peer', 'rounded-theme-auth-control', 'pe-11');
+    expect(field).toHaveAttribute('placeholder', ' ');
+    expect(screen.getByText('Password')).toHaveClass('peer-placeholder-shown:top-1/2');
+    expect(screen.getByRole('button', { name: 'Show secret' })).toHaveClass(
+      'size-theme-auth-field-action',
+      'rounded-xl',
+    );
+    expect(screen.getByRole('button', { name: 'Show secret' })).not.toHaveClass('size-7');
+  });
 });

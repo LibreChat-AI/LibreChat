@@ -1,24 +1,18 @@
-import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { memo, useEffect, useMemo, useCallback } from 'react';
 import { ScrollText } from 'lucide-react';
 import { useSetRecoilState } from 'recoil';
-import { useAtomValue, useSetAtom } from 'jotai';
-import { AutoSizer, List } from 'react-virtualized';
-import { Input, Spinner, useCombobox } from '@librechat/client';
+import { useSetAtom, useAtomValue } from 'jotai';
+import { SkillsPopover } from '@librechat/chat/components';
 import { SkillsScope, resolveAgentSkillsScope } from 'librechat-data-provider';
+import { pendingManualSkillsByConvoId, showSkillsPopoverFamily } from '@librechat/chat/react';
 import type { TSkillSummary } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
-import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
 import { useLocalize, useSkillActiveState } from '~/hooks';
 import { useSkillsInfiniteQuery } from '~/data-provider';
-import { showSkillsPopoverFamily } from './skillsState';
 import { useAgentsMapContext } from '~/Providers';
 import { ephemeralAgentByConvoId } from '~/store';
 import { isEphemeralAgent } from '~/common';
-import MentionItem from './MentionItem';
-import store from '~/store';
 
-const commandChar = '$';
-const ROW_HEIGHT = 44;
 const skillIcon = <ScrollText className="icon-md text-status-info" />;
 
 /**
@@ -91,9 +85,7 @@ function SkillsCommandContent({
   const localize = useLocalize();
   const setShowSkillsPopover = useSetAtom(showSkillsPopoverFamily(index));
   const setEphemeralAgent = useSetRecoilState(ephemeralAgentByConvoId(conversationId));
-  const setPendingManualSkills = useSetRecoilState(
-    store.pendingManualSkillsByConvoId(conversationId),
-  );
+  const setPendingManualSkills = useSetAtom(pendingManualSkillsByConvoId(conversationId));
 
   const agentsMap = useAgentsMapContext();
   const { isActive } = useSkillActiveState();
@@ -171,34 +163,8 @@ function SkillsCommandContent({
     return options;
   }, [data?.pages, agentSkillIds, isActive]);
 
-  const [activeIndex, setActiveIndex] = useState(0);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  const { open, setOpen, searchValue, setSearchValue, matches } = useCombobox({
-    value: '',
-    options: skillOptions,
-  });
-
-  const initInputRef = useInitPopoverInput({
-    inputRef,
-    textAreaRef,
-    commandChar,
-    preserveTextAfterCursor: true,
-    setSearchValue,
-    setOpen,
-  });
-
   const handleSelect = useCallback(
-    (mention?: MentionOption) => {
-      if (!mention) {
-        return;
-      }
-
-      setSearchValue('');
-      setOpen(false);
-      setShowSkillsPopover(false);
-
+    (mention: { value: string }) => {
       setEphemeralAgent((prev) => {
         if (prev?.skills) {
           return prev;
@@ -216,160 +182,25 @@ function SkillsCommandContent({
       setPendingManualSkills((prev) =>
         prev.includes(mention.value) ? prev : [...prev, mention.value],
       );
-
-      textAreaRef.current?.focus();
     },
-    [
-      setSearchValue,
-      setOpen,
-      setShowSkillsPopover,
-      textAreaRef,
-      setEphemeralAgent,
-      setPendingManualSkills,
-    ],
+    [setEphemeralAgent, setPendingManualSkills],
   );
 
-  useEffect(() => {
-    if (!open) {
-      setActiveIndex(0);
-    }
-  }, [open]);
-
-  useEffect(() => {
-    setActiveIndex((prev) => Math.min(prev, Math.max(matches.length - 1, 0)));
-  }, [matches.length]);
-
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const el = document.getElementById(`skill-item-${activeIndex}`);
-    el?.scrollIntoView({ behavior: 'instant', block: 'nearest' });
-  }, [activeIndex]);
-
-  const rowRenderer = ({
-    index,
-    key,
-    style,
-  }: {
-    index: number;
-    key: string;
-    style: React.CSSProperties;
-  }) => {
-    const mention = matches[index] as MentionOption;
-    return (
-      <MentionItem
-        index={index}
-        type="skill"
-        key={key}
-        style={style}
-        onClick={() => {
-          if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-          }
-          timeoutRef.current = null;
-          handleSelect(mention);
-        }}
-        name={mention.label ?? ''}
-        icon={mention.icon}
-        description={mention.description}
-        isActive={index === activeIndex}
-      />
-    );
-  };
-
   return (
-    <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-token-border-light rounded-2xl border bg-surface-tertiary-alt p-2 shadow-lg">
-        <Input
-          ref={initInputRef}
-          placeholder={localize('com_ui_skills_command_placeholder')}
-          className="mb-1 h-auto w-full rounded-none border-0 bg-surface-tertiary-alt p-2 text-sm text-text-primary focus:outline-none"
-          autoComplete="off"
-          value={searchValue}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              setOpen(false);
-              setShowSkillsPopover(false);
-              textAreaRef.current?.focus();
-              return;
-            }
-            if (e.key === 'ArrowDown') {
-              if (matches.length === 0) {
-                return;
-              }
-              setActiveIndex((prevIndex) => (prevIndex + 1) % matches.length);
-            } else if (e.key === 'ArrowUp') {
-              if (matches.length === 0) {
-                return;
-              }
-              setActiveIndex((prevIndex) => (prevIndex - 1 + matches.length) % matches.length);
-            } else if (e.key === 'Enter' || e.key === 'Tab') {
-              if (matches.length === 0) {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                }
-                setOpen(false);
-                setShowSkillsPopover(false);
-                textAreaRef.current?.focus();
-                return;
-              }
-              e.preventDefault();
-              handleSelect(matches[activeIndex] as MentionOption | undefined);
-            } else if (e.key === 'Backspace' && searchValue === '') {
-              setOpen(false);
-              setShowSkillsPopover(false);
-              textAreaRef.current?.focus();
-            }
-          }}
-          onChange={(e) => setSearchValue(e.target.value)}
-          onFocus={() => setOpen(true)}
-          onBlur={() => {
-            timeoutRef.current = setTimeout(() => {
-              setOpen(false);
-              setShowSkillsPopover(false);
-            }, 150);
-          }}
-        />
-        {open && (isLoading || isFetchingNextPage) && matches.length === 0 && (
-          <div className="flex h-32 items-center justify-center text-text-primary">
-            <Spinner />
-          </div>
-        )}
-        {open && isError && (
-          <div className="p-4 text-center text-sm text-text-secondary">
-            {localize('com_ui_skills_load_error')}
-          </div>
-        )}
-        {open && !isLoading && !isFetchingNextPage && !isError && matches.length === 0 && (
-          <div className="p-4 text-center text-sm text-text-secondary">
-            {localize(searchValue ? 'com_ui_no_skills_found' : 'com_ui_skills_empty')}
-          </div>
-        )}
-        {open && matches.length > 0 && (
-          <div className="max-h-40">
-            <AutoSizer disableHeight>
-              {({ width }) => (
-                <List
-                  width={width}
-                  overscanRowCount={5}
-                  rowHeight={ROW_HEIGHT}
-                  rowCount={matches.length}
-                  rowRenderer={rowRenderer}
-                  scrollToIndex={activeIndex}
-                  height={Math.min(matches.length * ROW_HEIGHT, 160)}
-                />
-              )}
-            </AutoSizer>
-          </div>
-        )}
-      </div>
-    </div>
+    <SkillsPopover
+      textAreaRef={textAreaRef}
+      placeholder={localize('com_ui_skills_command_placeholder')}
+      skills={skillOptions}
+      isLoading={isLoading || isFetchingNextPage}
+      isError={isError}
+      notices={{
+        error: localize('com_ui_skills_load_error'),
+        empty: localize('com_ui_skills_empty'),
+        noMatch: localize('com_ui_no_skills_found'),
+      }}
+      onSelectSkill={handleSelect}
+      onClose={() => setShowSkillsPopover(false)}
+    />
   );
 }
 

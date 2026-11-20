@@ -6,6 +6,7 @@ import agentCategorySchema from '~/schema/agentCategory';
 import { buildIndexWithRetry } from '~/utils/retry';
 import accessRoleSchema from '~/schema/accessRole';
 import mcpServerSchema from '~/schema/mcpServer';
+import { mcpNameSchema } from '~/models/mcpName';
 import messageSchema from '~/schema/message';
 import presetSchema from '~/schema/preset';
 import agentSchema from '~/schema/agent';
@@ -27,6 +28,7 @@ const TENANT_SCHEMAS = {
   accessroles: accessRoleSchema,
   conversationtags: conversationTagSchema,
   mcpservers: mcpServerSchema,
+  mcpnames: mcpNameSchema,
   files: fileSchema,
   groups: groupSchema,
   skillsyncstatuses: skillSyncStatusSchema,
@@ -64,6 +66,7 @@ const SUPERSEDED_INDEXES: Record<string, string[]> = {
   accessroles: ['accessRoleId_1'],
   conversationtags: ['tag_1_user_1'],
   mcpservers: ['serverName_1'],
+  mcpnames: ['name_1'],
   files: ['filename_1_conversationId_1_context_1'],
   groups: ['idOnTheSource_1_source_1'],
   skillsyncstatuses: ['provider_1_sourceId_1'],
@@ -142,6 +145,27 @@ export async function dropSupersededTenantIndexes(
   );
 
   return result;
+}
+
+/** Suggest the offline migration only for index conflicts in collections it covers. */
+export function getTenantIndexMigrationHint(
+  collectionName: string,
+  error: Error,
+): string | undefined {
+  if (
+    !Object.prototype.hasOwnProperty.call(SUPERSEDED_INDEXES, collectionName) ||
+    !('code' in error) ||
+    (error.code !== 85 && error.code !== 86)
+  ) {
+    return;
+  }
+
+  return (
+    'This may be a legacy tenant-index conflict. See UPGRADING.md: back up MongoDB, ' +
+    'stop all API replicas and other database writers, then run ' +
+    '`npm run migrate:tenant-indexes:dry-run` and `npm run migrate:tenant-indexes` ' +
+    'from the updated application root. Keep writers stopped until the migration succeeds.'
+  );
 }
 
 /** Exported for testing — the raw index map */

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { FilesHostProvider } from '@librechat/chat/react';
 import { FileSources, EToolResources } from 'librechat-data-provider';
 import { render, screen, act, renderHook } from '@testing-library/react';
+import type { FilesHost } from '@librechat/chat/react';
 import type { ExtendedFile } from '~/common';
 import {
   clearRetainedFileDeletion,
@@ -22,11 +24,8 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useToastContext: () => ({ showToast: jest.fn() }),
-}));
-
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
 }));
 
 jest.mock('~/utils', () => ({
@@ -41,25 +40,14 @@ jest.mock('../useSetFilesToDelete', () => ({
   default: () => jest.fn(),
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => {
-  return function MockFileContainer({
-    file,
-    onDelete,
-  }: {
-    file: ExtendedFile;
-    onDelete: () => void;
-  }) {
-    return <button data-testid={`del-${file.file_id}`} onClick={onDelete} />;
-  };
-});
-
-jest.mock('~/components/Chat/Input/Files/Image', () => {
-  return function MockImage() {
-    return null;
-  };
-});
-
 const mockClearUploadRecovery = jest.requireMock('../useFileHandling').clearUploadRecovery;
+
+/** The app's host wiring: the row's deletion runs through the real `useFileDeletion`. */
+const host: FilesHost = {
+  renderEndpointIcon: () => null,
+  useDeleteFile: (scope) => useFileDeletion({ mutateAsync: mockMutateAsync, ...scope }).deleteFile,
+  getPreviewUrl: () => undefined,
+};
 
 /** Mirrors the shape `utils/forms.tsx` builds for agent Context/File Search panels */
 const makeFile = (file_id: string): ExtendedFile =>
@@ -79,12 +67,14 @@ function ConditionalPanel({ initial }: { initial: ExtendedFile[] }) {
   return (
     <>
       {files.size > 0 && (
-        <FileRow
-          files={files}
-          setFiles={setFiles}
-          agent_id="agent-123"
-          tool_resource={EToolResources.context}
-        />
+        <FilesHostProvider host={host}>
+          <FileRow
+            files={files}
+            setFiles={setFiles}
+            agent_id="agent-123"
+            tool_resource={EToolResources.context}
+          />
+        </FilesHostProvider>
       )}
     </>
   );
@@ -106,7 +96,11 @@ describe('useFileDeletion', () => {
 
   const clickDelete = (file_id: string) => {
     act(() => {
-      screen.getByTestId(`del-${file_id}`).click();
+      const remove = screen
+        .getByText(`${file_id}.pdf`)
+        .closest('.shrink-0')
+        ?.querySelector<HTMLElement>('[data-remove-file]');
+      remove?.click();
     });
     act(() => {
       jest.advanceTimersByTime(3000);

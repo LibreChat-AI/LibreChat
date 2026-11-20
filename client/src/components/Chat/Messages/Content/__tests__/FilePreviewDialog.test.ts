@@ -4,7 +4,7 @@ import {
   isExtractedTextPreviewLoading,
   shouldUseExtractedTextPreview,
   shouldUseSharedFileDownload,
-} from '../preview';
+} from '@librechat/chat';
 import { getDownloadFilename } from '~/utils/downloadFile';
 
 describe('FilePreviewDialog text-source behavior', () => {

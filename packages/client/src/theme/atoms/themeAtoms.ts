@@ -2,8 +2,8 @@
 // Theme state is now managed via React useState + localStorage in ThemeProvider.
 
 import { WritableAtom } from 'jotai';
+import { IThemeRGB } from 'librechat-data-provider';
 import { atomWithStorage, RESET } from 'jotai/utils';
-import { IThemeRGB } from '../types';
 
 /**
  * @deprecated Use ThemeContext instead. This atom is no longer used internally.

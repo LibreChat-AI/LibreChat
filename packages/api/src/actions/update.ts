@@ -7,6 +7,16 @@ import { mergeAgentActionTools } from './tools';
 export const ACTION_CREDENTIAL_REFRESH_MESSAGE =
   'Action credentials must be re-entered when changing the domain, OpenAPI server URL, or authentication settings';
 
+/** Map a lost agent revision to a retryable conflict without exposing database errors. */
+export function getAgentActionWriteStatus(error: unknown): 409 | 500 {
+  return error != null &&
+    typeof error === 'object' &&
+    'statusCode' in error &&
+    error.statusCode === 409
+    ? 409
+    : 500;
+}
+
 type StoredActionForUpdate = {
   metadata?: ActionMetadata | null;
 };

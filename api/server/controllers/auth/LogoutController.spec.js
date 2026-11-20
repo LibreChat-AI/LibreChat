@@ -10,6 +10,7 @@ const mockRevokeOpenIDRefreshTokenChain = jest.fn();
 
 jest.mock('cookie');
 jest.mock('@librechat/api', () => ({
+  clearSessionHintCookie: (res) => res.clearCookie('session_hint'),
   isEnabled: (...args) => mockIsEnabled(...args),
   math: (_value, fallback) => fallback,
   clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
@@ -360,6 +361,7 @@ describe('LogoutController', () => {
       expect(res.clearCookie).toHaveBeenCalledWith('openid_access_token');
       expect(res.clearCookie).toHaveBeenCalledWith('openid_id_token');
       expect(res.clearCookie).toHaveBeenCalledWith('openid_user_id');
+      expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
       expect(res.clearCookie).toHaveBeenCalledWith('token_provider');
     });
 

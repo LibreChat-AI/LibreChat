@@ -1,13 +1,14 @@
 import { memo, useId, useMemo, useState } from 'react';
 import { Button, IconButton } from '@librechat/client';
 import { ChevronDown, Download, Files } from 'lucide-react';
+import { useExpandCollapse } from '@librechat/chat/components';
 import type {
   TAttachment,
   TFile,
   WorkspaceChange as WorkspaceChangeMetadata,
 } from 'librechat-data-provider';
-import { useExpandCollapse, useLocalize } from '~/hooks';
 import { useAttachmentLink } from './LogLink';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 type StatefulWorkspaceAttachment = TAttachment & {
@@ -51,13 +52,13 @@ const WorkspaceChange = memo(({ attachment }: { attachment: StatefulWorkspaceAtt
   });
 
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-lg bg-surface-secondary px-3 py-2">
+    <div className="bg-surface-secondary flex min-w-0 items-center gap-2 rounded-lg px-3 py-2">
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium text-text-primary" title={filename}>
+        <div className="text-text-primary truncate text-sm font-medium" title={filename}>
           {filename}
         </div>
         {path !== filename && (
-          <div className="truncate text-xs text-text-secondary" title={path}>
+          <div className="text-text-secondary truncate text-xs" title={path}>
             {path}
           </div>
         )}
@@ -79,7 +80,7 @@ const WorkspaceChange = memo(({ attachment }: { attachment: StatefulWorkspaceAtt
 
 WorkspaceChange.displayName = 'WorkspaceChange';
 
-export default function WorkspaceChanges({
+export default memo(function WorkspaceChanges({
   attachments,
 }: {
   attachments: StatefulWorkspaceAttachment[];
@@ -104,12 +105,12 @@ export default function WorkspaceChanges({
   return (
     <div className="my-2 max-w-xl">
       <Button
-        variant="ghost"
+        variant="disclosure"
         aria-expanded={isExpanded}
         aria-controls={panelId}
         aria-label={`${localize('com_ui_workspace_changes')}: ${countLabel}`}
         onClick={() => setIsExpanded((previous) => !previous)}
-        className="h-auto max-w-full justify-start py-1 pl-0 pr-2 font-normal text-text-secondary"
+        className="text-text-secondary max-w-full py-1 pr-2 font-normal"
       >
         <Files className="size-4 shrink-0" aria-hidden="true" />
         <span className="shrink-0 font-medium">{localize('com_ui_workspace_changes')}</span>
@@ -127,7 +128,7 @@ export default function WorkspaceChanges({
       </Button>
       <div id={panelId} style={style} inert={!isExpanded ? '' : undefined}>
         <div className="overflow-hidden" ref={ref} aria-hidden={!isExpanded}>
-          <div className="flex flex-col gap-2 pt-2">
+          <div className="flex flex-col gap-2 pt-1">
             {attachments.map((attachment) => (
               <WorkspaceChange
                 key={`${attachment.filepath}:${attachment.workspaceChange.path}`}
@@ -139,4 +140,4 @@ export default function WorkspaceChanges({
       </div>
     </div>
   );
-}
+});

@@ -1,10 +1,19 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
+import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { TAttachment, SearchResultData, ValidSource } from 'librechat-data-provider';
+import { ROW_GLYPH_SLOT, FailedRevealContext } from '@librechat/chat/components';
+import type {
+  TAttachment,
+  SearchResultData,
+  ValidSource,
+  PartMetadata,
+} from 'librechat-data-provider';
+import { HeaderActionSlotContext } from '../slot';
 import { SearchContext } from '~/Providers';
-import { ROW_GLYPH_SLOT } from '../rows';
+import '~/Providers/MessagePartsHostContext';
 import WebSearch from '../WebSearch';
 
 jest.mock('~/hooks', () => ({
@@ -22,15 +31,29 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
+    const translations: Record<string, string> = {
+      com_ui_web_searching: 'Searching the web',
+      com_ui_web_searching_again: 'Searching again',
+      com_ui_web_search_processing: 'Processing results',
+      com_ui_web_search_reading: 'Reading sources',
+      com_ui_web_searched: 'Searched the web',
+      com_ui_web_search_source: `${values?.count ?? 1} source`,
+      com_ui_web_search_sources: `${values?.count ?? 0} sources`,
+      com_ui_web_search_details: 'Search details',
+      com_ui_search_query: 'Query',
+    };
+    return translations[key] || key;
+  },
+}));
+
+jest.mock('~/hooks/MCP', () => ({
+  useMCPIconMap: () => new Map(),
+  useMCPServerNames: () => [],
 }));
 
 jest.mock('~/utils/cn', () => ({
@@ -96,6 +119,8 @@ function renderWebSearch({
   initialProgress = 1,
   args,
   output,
+  runStepStatus,
+  revealTick = 0,
 }: {
   searchResults?: Record<string, SearchResultData>;
   attachments?: TAttachment[];
@@ -104,21 +129,28 @@ function renderWebSearch({
   initialProgress?: number;
   args?: string | Record<string, unknown>;
   output?: string | null;
+  runStepStatus?: PartMetadata['runStepStatus'];
+  revealTick?: number;
 }) {
-  return render(
+  const tree = (tick: number) => (
     <RecoilRoot>
       <SearchContext.Provider value={{ searchResults }}>
-        <WebSearch
-          initialProgress={initialProgress}
-          isSubmitting={isSubmitting}
-          isLast={isLast}
-          args={args}
-          output={output}
-          attachments={attachments}
-        />
+        <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
+          <WebSearch
+            initialProgress={initialProgress}
+            isSubmitting={isSubmitting}
+            isLast={isLast}
+            args={args}
+            output={output}
+            attachments={attachments}
+            runStepStatus={runStepStatus}
+          />
+        </FailedRevealContext.Provider>
       </SearchContext.Provider>
-    </RecoilRoot>,
+    </RecoilRoot>
   );
+  const result = render(tree(revealTick));
+  return { ...result, reveal: (tick: number) => result.rerender(tree(tick)) };
 }
 
 describe('WebSearch', () => {
@@ -298,6 +330,53 @@ describe('WebSearch', () => {
       expect(container.innerHTML).toBe('');
     });
 
+    it('reveals schema-validation feedback even if the step closed as completed', () => {
+      const output = 'Error: Invalid search arguments\n Please fix your mistakes.';
+      const { reveal } = renderWebSearch({
+        output,
+        args: '{"query":"x"}',
+        runStepStatus: 'completed',
+      });
+      const button = screen.getByTestId('tool-call').querySelector('button');
+      expect(button).toHaveAttribute('aria-expanded', 'false');
+      expect(button).toHaveTextContent('failed');
+      expect(screen.queryByText('Searched the web')).not.toBeInTheDocument();
+
+      reveal(1);
+
+      expect(button).toHaveAttribute('aria-expanded', 'true');
+      expect(button).toHaveFocus();
+      expect(screen.getByText('Error: Invalid search arguments')).toBeInTheDocument();
+    });
+
+    it('keeps a status-failed search visible even with ordinary output', () => {
+      const { reveal } = renderWebSearch({
+        output: 'Partial data',
+        args: '{"query":"x"}',
+        runStepStatus: 'failed',
+      });
+      const button = screen.getByTestId('tool-call').querySelector('button');
+      expect(button).toHaveTextContent('failed');
+      reveal(1);
+      expect(button).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('honors a cancelled step over error-shaped output', () => {
+      const { container } = renderWebSearch({
+        output: 'Error: Invalid search arguments\n Please fix your mistakes.',
+        runStepStatus: 'cancelled',
+      });
+      expect(container.innerHTML).toBe('');
+    });
+
+    it('still hides unclassified legacy search errors on a completed step', () => {
+      const { container } = renderWebSearch({
+        output: 'Error processing search results',
+        runStepStatus: 'completed',
+      });
+      expect(container.innerHTML).toBe('');
+    });
+
     it('renders completed state with source count', () => {
       const searchResults = makeSearchResults({
         0: { organic: [makeSource('https://example.com', 'Example')] },
@@ -366,6 +445,28 @@ describe('WebSearch', () => {
       expect(screen.getByText('1 source')).toBeInTheDocument();
     });
 
+    it('asks for the stored call when the details card opens', async () => {
+      const request = jest.fn();
+      render(
+        <RecoilRoot>
+          <SearchContext.Provider value={{ searchResults: undefined }}>
+            <ToolContentRequestContext.Provider value={request}>
+              <WebSearch
+                initialProgress={1}
+                isSubmitting={false}
+                args={{ query: 'shortened quer…' }}
+                output="done"
+              />
+            </ToolContentRequestContext.Provider>
+          </SearchContext.Provider>
+        </RecoilRoot>,
+      );
+      expect(request).not.toHaveBeenCalled();
+      fireEvent.focus(screen.getByLabelText('Search details'));
+      await screen.findByText('shortened quer…');
+      expect(request).toHaveBeenCalled();
+    });
+
     it('renders shopping, image, and place verticals in the expanded panel', () => {
       const attachment = {
         type: Tools.web_search,
@@ -431,7 +532,7 @@ describe('WebSearch', () => {
       expect(screen.getByText('(812)')).toBeInTheDocument();
     });
 
-    it('uses standard tool-row spacing and reveals its chevron on hover or focus', () => {
+    it('uses standard tool-row spacing and always shows its chevron', () => {
       const searchResults = makeSearchResults({
         0: { organic: [makeSource('https://example.com', 'Example')] },
       });
@@ -439,16 +540,11 @@ describe('WebSearch', () => {
       renderWebSearch({ searchResults });
 
       const button = screen.getByRole('button', { name: /Searched the web/ });
-      expect(button.parentElement).toHaveClass('h-5');
-      expect(button.parentElement?.parentElement).toHaveClass('my-1');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
       expect(button).not.toHaveClass('py-1');
       expect(button).not.toHaveClass('transition-colors');
       const chevron = screen.getByTestId('chevron-icon');
-      expect(chevron).toHaveClass(
-        'opacity-0',
-        'group-hover/disclosure:opacity-100',
-        'group-focus-within/disclosure:opacity-100',
-      );
+      expect(chevron).not.toHaveClass('opacity-0');
       expect(chevron).toHaveClass('transition-transform');
       expect(chevron.className).not.toContain('transition-opacity');
     });
@@ -510,5 +606,57 @@ describe('WebSearch', () => {
       const matches = screen.getAllByText('Searching again');
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
+  });
+});
+
+describe('generated single-search label', () => {
+  const search = () =>
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <GeneratedToolLabelContext.Provider value>
+            <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+          </GeneratedToolLabelContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+  it('does not render a redundant searched-the-web disclosure', () => {
+    search();
+    expect(screen.queryByRole('button', { name: /Searched the web/ })).not.toBeInTheDocument();
+  });
+  it('shows the source links directly', () => {
+    search();
+    expect(screen.getByRole('link', { name: /Example result/ })).toBeInTheDocument();
+  });
+  it('puts its details on the title line when the header offers a slot', () => {
+    const slot = document.createElement('span');
+    document.body.appendChild(slot);
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <HeaderActionSlotContext.Provider value={slot}>
+            <GeneratedToolLabelContext.Provider value>
+              <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+            </GeneratedToolLabelContext.Provider>
+          </HeaderActionSlotContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+    const details = screen.getByRole('button', { name: 'Search details' });
+    expect(slot).toContainElement(details);
+    expect(details).not.toHaveClass('opacity-0');
+    slot.remove();
   });
 });
