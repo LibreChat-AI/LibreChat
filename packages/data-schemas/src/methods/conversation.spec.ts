@@ -1460,6 +1460,13 @@ describe('Conversation Operations', () => {
         expect(getMessages).not.toHaveBeenCalled();
       });
 
+      it('reads the list only for its owner when a user is named', async () => {
+        const conversationId = await seedConvo('user123', ['file-a']);
+
+        expect(await methods.getConvoExcludedFiles(conversationId, 'user123')).toEqual(['file-a']);
+        expect(await methods.getConvoExcludedFiles(conversationId, 'other-user')).toEqual([]);
+      });
+
       it('reads no list for a conversation that never left a file out', async () => {
         const conversationId = await seedConvo();
 

@@ -91,6 +91,9 @@ module.exports = {
     createFileExclusionHandler: jest.requireActual(
       '../../../../packages/api/src/conversations/exclusion.ts',
     ).createFileExclusionHandler,
+    createFileExclusionReadHandler: jest.requireActual(
+      '../../../../packages/api/src/conversations/exclusion.ts',
+    ).createFileExclusionReadHandler,
     withToolCallPreviews: (_req, result) => result,
     createGeneratedTitleHandler: jest.fn(() => jest.fn()),
     createRenameConversationHandler: jest.fn((deps) => {
@@ -301,6 +304,7 @@ module.exports = {
     markConvoSeen: jest.fn(),
     markConvoUnread: jest.fn(),
     setConvoFileExclusion: jest.fn(),
+    getConvoExcludedFiles: jest.fn(),
     deleteAllSharedLinks: jest.fn(),
     deleteConvoSharedLink: jest.fn(),
     deleteToolCalls: jest.fn(),

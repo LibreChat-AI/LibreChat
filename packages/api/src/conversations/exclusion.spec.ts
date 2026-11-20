@@ -2,7 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import type { FileExclusionResult } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
-import { createFileExclusionHandler } from './exclusion';
+import { createFileExclusionHandler, createFileExclusionReadHandler } from './exclusion';
 
 jest.mock('@librechat/data-schemas', () => ({
   MAX_EXCLUDED_FILES: 500,
@@ -130,5 +130,33 @@ describe('createFileExclusionHandler', () => {
     expect(res.statusCode).toBe(500);
     expect(res.body).toEqual({ error: 'Error updating excluded files' });
     expect(logger.error).toHaveBeenCalledWith('Error updating excluded files', failure);
+  });
+});
+
+describe('createFileExclusionReadHandler', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('answers with the list of the caller’s conversation', async () => {
+    const getConvoExcludedFiles = jest.fn().mockResolvedValue(['file-a']);
+    const res = mockResponse();
+
+    await createFileExclusionReadHandler({ getConvoExcludedFiles })(mockRequest(undefined), res);
+
+    expect(getConvoExcludedFiles).toHaveBeenCalledWith('convo-1', 'user-123');
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ excludedFiles: ['file-a'] });
+  });
+
+  it('answers a storage failure without its details', async () => {
+    const failure = new Error('connection string mongodb://user:secret@host');
+    const res = mockResponse();
+
+    await createFileExclusionReadHandler({
+      getConvoExcludedFiles: jest.fn().mockRejectedValue(failure),
+    })(mockRequest(undefined), res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: 'Error reading excluded files' });
+    expect(logger.error).toHaveBeenCalledWith('Error reading excluded files', failure);
   });
 });

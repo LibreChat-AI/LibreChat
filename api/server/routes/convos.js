@@ -41,6 +41,7 @@ const {
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
   createFileExclusionHandler,
+  createFileExclusionReadHandler,
   createGetConversationHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
@@ -210,6 +211,9 @@ const markConvoUnreadHandler = createMarkConvoUnreadHandler({
 const fileExclusionHandler = createFileExclusionHandler({
   setConvoFileExclusion: db.setConvoFileExclusion,
 });
+const fileExclusionReadHandler = createFileExclusionReadHandler({
+  getConvoExcludedFiles: db.getConvoExcludedFiles,
+});
 const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
 const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
   registry: backgroundTaskRegistry,
@@ -324,6 +328,7 @@ router.post(
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
 router.post('/pull-requests', conversationPullRequestsHandler);
 router.get('/:conversationId/pull-request', conversationPullRequestHandler);
+router.get('/:conversationId/files/exclusion', fileExclusionReadHandler);
 router.post('/:conversationId/files/exclusion', fileExclusionHandler);
 router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
 router.post(

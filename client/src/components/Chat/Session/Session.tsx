@@ -16,6 +16,7 @@ import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useBackgroundTasks from '../BackgroundTasks/useTasks';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useTaskExpiry } from '../BackgroundTasks/clock';
+import useSessionFiles from './useFiles';
 import { useLocalize } from '~/hooks';
 import SessionRail from './Rail';
 import { cn } from '~/utils';
@@ -62,6 +63,8 @@ function Session({
   const view = useBackgroundTasks({ conversationId, isSubmitting, now, details: open });
   const { activeCount, awaitingCount, failedCount, incomplete } = view;
   useTaskExpiry(view.rows, setNow);
+  /** Read only while the rail shows them: a closed rail asks nothing about files. */
+  const files = useSessionFiles({ conversationId, enabled: open });
 
   /** Never as a sheet: that would cover the conversation the reader is in the middle of. */
   const working = activeCount > 0;
@@ -144,6 +147,7 @@ function Session({
         createPortal(
           <SessionRail
             view={view}
+            files={files}
             conversationId={conversationId}
             agentId={agentId}
             sheet={sheet}

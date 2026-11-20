@@ -4,6 +4,7 @@ import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
 
 type ExclusionHandlerDependencies = Pick<ConversationMethods, 'setConvoFileExclusion'>;
+type ExclusionReadDependencies = Pick<ConversationMethods, 'getConvoExcludedFiles'>;
 
 /** Longer than any file id the app issues; keeps one id from being an arbitrary payload. */
 const MAX_FILE_ID_LENGTH = 256;
@@ -62,6 +63,28 @@ export function createFileExclusionHandler(
     } catch (error) {
       logger.error('Error updating excluded files', error);
       return res.status(500).json({ error: 'Error updating excluded files' });
+    }
+  };
+}
+
+/**
+ * The files the caller's conversation leaves out. A conversation that is not theirs, or does not
+ * exist, answers as one that leaves nothing out, so the route says nothing about what exists.
+ */
+export function createFileExclusionReadHandler(
+  deps: ExclusionReadDependencies,
+): (req: ServerRequest, res: Response) => Promise<Response> {
+  return async function fileExclusionReadHandler(req: ServerRequest, res: Response) {
+    const { conversationId } = req.params as { conversationId?: string };
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+    try {
+      const excludedFiles = await deps.getConvoExcludedFiles(conversationId, req.user!.id);
+      return res.status(200).json({ excludedFiles });
+    } catch (error) {
+      logger.error('Error reading excluded files', error);
+      return res.status(500).json({ error: 'Error reading excluded files' });
     }
   };
 }
