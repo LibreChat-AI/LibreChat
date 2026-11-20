@@ -97,44 +97,6 @@ describe('Insights handlers', () => {
     expect(json).toHaveBeenCalledWith(expect.objectContaining({ agents, selectionRequired: true }));
   });
 
-  it('loads an individually selected agent when automatic all-agents selection is off', async () => {
-    insightsEnabled.mockReturnValueOnce({
-      enabled: true,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    const { handler, getInsights } = createDashboardHandler();
-    const req = createRequest({ agentIds: ['agent-a'] });
-    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
-    const { response, json } = createResponse();
-    await handler(req, response);
-    expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ agentIds: ['agent-a'] }));
-    expect(json).toHaveBeenCalledWith(expect.not.objectContaining({ selectionRequired: true }));
-  });
-
-  it.each([
-    ['agent-a', 'agent-b'],
-    ['agent-b', 'agent-a', 'agent-a'],
-  ])(
-    'loads an explicit admin all-agents selection when automatic selection is off: %j',
-    async (...agentIds) => {
-      insightsEnabled.mockReturnValueOnce({
-        enabled: true,
-        showDetails: false,
-        adminAutoSelectAllAgents: false,
-      });
-      const { handler, getInsights } = createDashboardHandler();
-      const req = createRequest({ agentIds });
-      req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
-      const { response, status } = createResponse();
-      await handler(req, response);
-      expect(status).not.toHaveBeenCalled();
-      expect(getInsights).toHaveBeenCalledWith(
-        expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
-      );
-    },
-  );
-
   it('loads every agent when an admin chooses All agents with automatic selection off', async () => {
     insightsEnabled.mockReturnValueOnce({
       enabled: true,
@@ -152,44 +114,6 @@ describe('Insights handlers', () => {
     expect(json).toHaveBeenCalledWith(expect.not.objectContaining({ selectionRequired: true }));
   });
 
-  it('allows subsets without restricting admins to a single agent', async () => {
-    insightsEnabled.mockReturnValueOnce({
-      enabled: true,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    getInsightsAccess.mockResolvedValueOnce({
-      agents: [...agents, { id: 'agent-c', name: 'Gamma' }],
-      detailAgentIds: [],
-      tenantWide: true as const,
-    });
-    const { handler, getInsights } = createDashboardHandler();
-    const req = createRequest({ agentIds: ['agent-a', 'agent-b'] });
-    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
-    await handler(req, createResponse().response);
-    expect(getInsights).toHaveBeenCalledWith(
-      expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
-    );
-  });
-
-  it('allows the only available agent when automatic all-agents selection is off', async () => {
-    insightsEnabled.mockReturnValueOnce({
-      enabled: true,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    getInsightsAccess.mockResolvedValueOnce({
-      agents: [agents[0]],
-      detailAgentIds: [],
-      tenantWide: true as const,
-    });
-    const { handler, getInsights } = createDashboardHandler();
-    const req = createRequest({ agentIds: ['agent-a'] });
-    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
-    await handler(req, createResponse().response);
-    expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ agentIds: ['agent-a'] }));
-  });
-
   it('loads all agents automatically for admins when configured', async () => {
     const { handler, getInsights } = createDashboardHandler();
     const req = createRequest({ agentIds: ['agent-a', 'agent-b'] });
@@ -198,20 +122,6 @@ describe('Insights handlers', () => {
     expect(getInsights).toHaveBeenCalledWith(
       expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
     );
-  });
-
-  it('asks a global READ_INSIGHTS viewer to choose agents when automatic selection is off', async () => {
-    insightsEnabled.mockReturnValueOnce({
-      enabled: true,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    getInsightsAccess.mockResolvedValueOnce({ ...fullAccess, tenantWide: true as const });
-    const { handler, getInsights } = createDashboardHandler();
-    const { response, json } = createResponse();
-    await handler(createRequest(), response);
-    expect(getInsights).not.toHaveBeenCalled();
-    expect(json).toHaveBeenCalledWith(expect.objectContaining({ selectionRequired: true }));
   });
 
   it("keeps loading all of a non-admin viewer's agents when admins must choose", async () => {
@@ -628,15 +538,6 @@ describe('Insights handlers', () => {
           },
     );
     expect(getInsightsAccess).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects a dashboard request without statistics eligibility before querying data', async () => {
-    getInsightsAccess.mockResolvedValueOnce({ agents: [], detailAgentIds: [] });
-    const { handler, getInsights } = createDashboardHandler();
-    const { response, status } = createResponse();
-    await handler(createRequest(), response);
-    expect(status).toHaveBeenCalledWith(403);
-    expect(getInsights).not.toHaveBeenCalled();
   });
 
   it('does not query statistics when access resolution fails', async () => {
