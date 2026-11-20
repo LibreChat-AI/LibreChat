@@ -72,6 +72,17 @@ describe('preflightCodeOutputBatch Code API routing', () => {
     });
   });
 
+  it('passes the configured code output download concurrency to the batch', async () => {
+    await preflightCodeOutputBatch({
+      req: { config: { concurrency: { codeOutputDownloads: 2 } }, user: { id: 'user-1' } },
+      artifact: { files: [{ id: 'file-1', name: 'output.txt' }] },
+    });
+
+    expect(mockRunCodeOutputBatchPreflight).toHaveBeenCalledWith(
+      expect.objectContaining({ concurrency: 2 }),
+    );
+  });
+
   /* The batch degrades an uninspectable artifact to the download fallback and
    * the turn still succeeds, so this warning is the only trace it leaves.
    * Without the cause, a refused download, a misrouted execution profile and

@@ -7,6 +7,7 @@ import {
   getBlockedUninspectableFileField,
 } from '../../protection/files';
 import { extractFileContent } from '../../protection/adapters/submissions';
+import { DEFAULT_LOOKUP_CONCURRENCY } from '../../utils/concurrency';
 import { ContentFilterError } from '../../middleware/contentFilter';
 import { inspectContent } from '../../protection/runtime';
 
@@ -18,8 +19,6 @@ const GENERATED_FILE_CONTENT_FIELDS = [
 
 export const CODE_OUTPUT_PREFLIGHT_MAX_COUNT: number = 10;
 export const CODE_OUTPUT_PREFLIGHT_MAX_BYTES: number = 64 * 1024 * 1024;
-/** Downloads started at once by the prefetch that precedes the budgeted pass. */
-export const CODE_OUTPUT_PREFLIGHT_CONCURRENCY: number = 4;
 /** Below this per-slot cap a prefetch would mostly hit the cap, so the batch stays serial. */
 const MIN_PREFETCH_SLOT_BYTES = 1024 * 1024;
 
@@ -67,6 +66,8 @@ export interface PreflightCodeOutputBatchInput {
   readonly artifact?: CodeOutputArtifact | null;
   readonly limits: CodeOutputPreflightLimits;
   readonly prepare: (input: PrepareCodeOutputInput) => Promise<PreparedCodeOutput>;
+  /** Downloads prefetched at once (`concurrency.codeOutputDownloads`); `1` keeps the batch serial. */
+  readonly concurrency?: number;
   /** Reports an artifact whose bytes could not be fetched for inspection.
    *  The batch degrades that entry to the download fallback and the turn
    *  still succeeds, so this callback is the only trace the failure leaves;
@@ -130,7 +131,7 @@ type PrefetchAttempt =
   | { readonly maxBytes: number; readonly error: unknown };
 
 /**
- * Downloads the batch concurrently with a small per-file cap so the budgeted
+ * Downloads an uninspected batch concurrently with a small per-file cap so the budgeted
  * pass below can reuse the bytes instead of waiting on one download at a
  * time. Every slot is capped at a fraction of the batch budget and a slot
  * only starts while the finished bytes plus the open slots fit the budget, so
@@ -139,7 +140,8 @@ type PrefetchAttempt =
  * pass allows, is simply prepared again by that pass, which keeps its result
  * identical to a serial run. Before such a second download the pass releases
  * the prefetched bytes of that file and every later one, so a retry never
- * holds more than the serial pass would.
+ * holds more than the serial pass would. Batches under active content
+ * inspection stay serial, as do batches with a concurrency of one.
  */
 async function prefetchCodeOutputs(
   entries: readonly PreparedCodeOutputEntry[],
@@ -148,7 +150,12 @@ async function prefetchCodeOutputs(
   inspectContent: boolean,
 ): Promise<Array<PrefetchAttempt | undefined>> {
   const attempts: Array<PrefetchAttempt | undefined> = new Array(entries.length);
-  const slots = Math.min(CODE_OUTPUT_PREFLIGHT_CONCURRENCY, entries.length);
+  if (inspectContent) {
+    return attempts;
+  }
+  const configured = input.concurrency ?? DEFAULT_LOOKUP_CONCURRENCY.codeOutputDownloads;
+  const concurrency = Number.isInteger(configured) && configured > 0 ? configured : 1;
+  const slots = Math.min(concurrency, entries.length);
   const slotBytes = Math.min(limits.fileSizeLimit, Math.floor(limits.maxBytes / (slots * 2)));
   if (slots < 2 || !Number.isFinite(slotBytes) || slotBytes < MIN_PREFETCH_SLOT_BYTES) {
     return attempts;

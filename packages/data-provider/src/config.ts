@@ -3118,6 +3118,8 @@ export const lookupConcurrencySchema = z.object({
   skillFileInspections: lookupConcurrency,
   /** Agent reads while building the resume snapshot of a paused run. */
   resumeAgentLoads: lookupConcurrency,
+  /** Generated code output downloads prefetched before a tool result returns to the model. */
+  codeOutputDownloads: lookupConcurrency,
 });
 
 export type TLookupConcurrency = z.infer<typeof lookupConcurrencySchema>;
