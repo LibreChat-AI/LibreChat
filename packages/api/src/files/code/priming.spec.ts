@@ -781,6 +781,133 @@ describe('selectCodeFiles snapshot receipts', () => {
   });
 });
 
+describe('selectCodeFiles snapshot pointers and the turn identity', () => {
+  const content = digestCodeUpload(Buffer.from('captured bytes'));
+  const stored: CodeFileInfo = {
+    lastModified: new Date().toISOString(),
+    etag: content.md5,
+    size: content.bytes,
+  };
+  const identity = { userId: 'user', agentId: 'agent' };
+  const snapshot = (pointer: Partial<CodeEnvRef>): TFile =>
+    ({
+      ...file('snapshot', 'chart.csv'),
+      context: FileContext.execute_code_snapshot,
+      metadata: {
+        codeOutput: { messageId: 'message', sha256: content.sha256 },
+        sourceDispatchedAt: 1,
+        codeEnvRefs: {
+          default: {
+            kind: 'user',
+            id: 'user',
+            storage_session_id: 'upload-session',
+            file_id: 'upload-object',
+            sandboxFilename: 'chart.csv',
+            provisionedAt: Date.now(),
+            content,
+            ...pointer,
+          } as CodeEnvRef,
+        },
+      },
+    }) as TFile;
+  const select = (target: TFile, privateFileIds?: ReadonlySet<string>) => {
+    const getFileInfo = jest.fn(async () => stored);
+    return selectCodeFiles({
+      files: [target],
+      privateFileIds,
+      routeKey: 'default',
+      identity,
+      getFileInfo,
+    }).then(({ selected }) => ({ entry: selected[0], getFileInfo }));
+  };
+
+  it.each([
+    ['the requesting user', { kind: 'user', id: 'user' }, false],
+    ['the executing agent, for one of its code resources', { kind: 'agent', id: 'agent' }, true],
+    [
+      'the executing agent, for a resource it files outside its code set',
+      { kind: 'agent', id: 'agent' },
+      false,
+    ],
+  ] as const)('still mounts an upload filed under %s', async (_label, pointer, agentScoped) => {
+    const target = snapshot(pointer);
+    const { entry, getFileInfo } = await select(
+      target,
+      agentScoped ? new Set([target.file_id]) : undefined,
+    );
+
+    expect(getFileInfo).toHaveBeenCalledTimes(1);
+    expect(entry).toMatchObject({
+      isActive: true,
+      ref: { ...pointer, file_id: 'upload-object' },
+      sourceRef: { ...pointer, storage_session_id: 'upload-session' },
+    });
+  });
+
+  it.each([
+    ['another user', { kind: 'user', id: 'other-user' }, false, { kind: 'user', id: 'user' }],
+    ['another agent', { kind: 'agent', id: 'other-agent' }, false, { kind: 'user', id: 'user' }],
+    [
+      'another agent, for one of the executing agent code resources',
+      { kind: 'agent', id: 'other-agent' },
+      true,
+      { kind: 'agent', id: 'agent' },
+    ],
+    [
+      'the requesting user, for one of the agent code resources',
+      { kind: 'user', id: 'user' },
+      true,
+      { kind: 'agent', id: 'agent' },
+    ],
+  ] as const)(
+    'uploads under this turn identity instead of mounting one filed under %s',
+    async (_label, pointer, agentScoped, scope) => {
+      const target = snapshot(pointer);
+      const { entry, getFileInfo } = await select(
+        target,
+        agentScoped ? new Set([target.file_id]) : undefined,
+      );
+
+      expect(getFileInfo).not.toHaveBeenCalled();
+      expect(entry).toMatchObject({ ref: undefined, isActive: false, sandboxName: 'chart.csv' });
+      expect(entry.sourceRef).toEqual(scope);
+    },
+  );
+
+  it('applies the same rule to a snapshot pointer that carries no digest', async () => {
+    const { entry } = await select(
+      snapshot({ kind: 'user', id: 'other-user', content: undefined }),
+    );
+    expect(entry.sourceRef).toEqual({ kind: 'user', id: 'user' });
+    expect(entry).toMatchObject({ ref: undefined, isActive: false });
+  });
+
+  it('leaves a file that is not a snapshot on its existing pointer', async () => {
+    const attachment = {
+      ...snapshot({ kind: 'agent', id: 'other-agent' }),
+      context: FileContext.message_attachment,
+    } as TFile;
+    const { entry } = await select(attachment);
+    expect(entry).toMatchObject({
+      isActive: true,
+      ref: { kind: 'agent', id: 'other-agent' },
+      sourceRef: { kind: 'agent', id: 'other-agent' },
+    });
+  });
+
+  it('cannot judge a scope whose identity the caller did not supply', async () => {
+    const target = snapshot({ kind: 'user', id: 'other-user' });
+    const { selected } = await selectCodeFiles({
+      files: [target],
+      privateFileIds: new Set([target.file_id]),
+      routeKey: 'default',
+      identity: { userId: 'user' },
+      getFileInfo: async () => stored,
+    });
+    expect(selected[0]).toMatchObject({ isActive: true, ref: { id: 'other-user' } });
+  });
+});
+
 describe('createCodeFileUploadRef content', () => {
   it('records what the upload stored only when the uploader digested it', () => {
     const content = digestCodeUpload(Buffer.from('captured bytes'));

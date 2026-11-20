@@ -13,6 +13,7 @@ import type { CodeExecutionRoute } from '../provision/service';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeObjectInfo } from './receipt';
 import type { ServerRequest } from '~/types';
+import type { CodeEnvScope } from './scope';
 import {
   claimCodeDestination,
   createCodeDestinationSet,
@@ -30,6 +31,7 @@ import {
 import { checkCodeFileActive, getSnapshotReceipt, provesStoredContent } from './receipt';
 import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from './form';
 import { isStorageNotFoundError } from '~/files/encode/utils';
+import { getCodeEnvScope, isCodeRefInScope } from './scope';
 import { codeExecutionHeaders } from '~/agents/execution';
 import { buildCodeEnvDownloadQuery } from './identity';
 import { isAbortError } from '~/utils/errors';
@@ -123,7 +125,7 @@ export async function getCodeFileInfo({
 }
 
 interface SnapshotCodeOwner {
-  kind: 'user';
+  kind: 'agent' | 'user';
   id: string;
   storage_session_id?: undefined;
   file_id?: undefined;
@@ -139,11 +141,58 @@ interface PrimedCodeFile {
   getUploadTime: () => Promise<string | undefined>;
 }
 
+/** Who a turn runs as: the requesting user, and the agent executing for them. */
+export interface CodeTurnIdentity {
+  userId?: string;
+  agentId?: string;
+}
+
+/**
+ * The scope a snapshot's upload is filed under this turn, by the rule resource priming queues
+ * it with, or nothing when the turn's identity for that scope is unknown.
+ */
+function getSnapshotScope(
+  file: TFile,
+  privateFileIds: ReadonlySet<string> | undefined,
+  identity: CodeTurnIdentity | undefined,
+): SnapshotCodeOwner | undefined {
+  if (!identity) {
+    return undefined;
+  }
+  const { kind, id } = getCodeEnvScope({
+    agentScoped: privateFileIds?.has(file.file_id) === true,
+    ...identity,
+  });
+  return id ? { kind, id } : undefined;
+}
+
+/**
+ * Whether a snapshot's pointer was filed under an identity this turn files that snapshot
+ * under. One of the agent's own code resources is filed under the agent alone. Any other file
+ * is filed under the requesting user, but resource priming also files the agent's other
+ * resources, and code resources it had to rename, under the agent, and those arrive here
+ * looking like conversation files. A pointer under the executing agent is therefore one this
+ * turn wrote; a pointer under another agent or another user never is.
+ */
+function isSnapshotRefInScope(
+  ref: CodeEnvRef,
+  scope: CodeEnvScope,
+  identity: CodeTurnIdentity | undefined,
+): boolean {
+  return (
+    isCodeRefInScope(ref, scope) ||
+    (scope.kind === 'user' &&
+      identity?.agentId != null &&
+      isCodeRefInScope(ref, { kind: 'agent', id: identity.agentId }))
+  );
+}
+
 /** Reserve actual storage destinations before recovery so a failed winner never revives stale content. */
 export async function selectCodeFiles({
   files,
   privateFileIds,
   routeKey,
+  identity,
   getFileInfo,
   concurrency,
   signal,
@@ -151,6 +200,9 @@ export async function selectCodeFiles({
   files: Array<TFile | null | undefined>;
   privateFileIds?: ReadonlySet<string>;
   routeKey: string;
+  /** With it, a snapshot pointer filed under another identity is neither mounted nor used to
+   *  address the upload that replaces it. */
+  identity?: CodeTurnIdentity;
   getFileInfo: (ref: CodeEnvRef) => Promise<CodeFileInfo | null>;
   concurrency?: number;
   signal?: AbortSignal;
@@ -166,14 +218,21 @@ export async function selectCodeFiles({
       continue;
     }
     const snapshot = file.context === FileContext.execute_code_snapshot;
-    const ownedRef = getCodeEnvRefForProfile(file.metadata, routeKey);
+    const routeRef = getCodeEnvRefForProfile(file.metadata, routeKey);
+    /* A pointer filed under another identity names a storage session this turn does not run
+     * as, whatever the Code API would answer for it. The snapshot is then uploaded under this
+     * turn's identity, as resource priming queues it, instead of mounted or re-filed there. */
+    const scope = snapshot ? getSnapshotScope(file, privateFileIds, identity) : undefined;
+    const foreign =
+      scope != null && routeRef != null && !isSnapshotRefInScope(routeRef, scope, identity);
+    const ownedRef = foreign ? undefined : routeRef;
     /* A snapshot pointer names a mount. Only a receipt for this content version, matched
      * against the stored object below, stands in for uploading the bytes again. */
-    const receipt = snapshot ? getSnapshotReceipt(file, routeKey) : undefined;
+    const receipt = snapshot && !foreign ? getSnapshotReceipt(file, routeKey) : undefined;
     const probeRef = snapshot ? receipt : ownedRef;
     const sourceRef =
       ownedRef ??
-      getCodeEnvRefs(file.metadata)[0]?.[1] ??
+      (foreign ? scope : getCodeEnvRefs(file.metadata)[0]?.[1]) ??
       (snapshot
         ? {
             kind: 'user' as const,
