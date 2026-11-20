@@ -17,29 +17,36 @@ function Observer({ fact }: { fact: BrowserProductFact }) {
   return <button>{'Chat remains usable'}</button>;
 }
 
-const opened: BrowserProductFact = {
-  name: 'librechat.session.activity',
-  feature: 'session',
-  sessionId: 'aef33490-7e1a-4786-9ac6-d45dd28ca281',
-  startedAt: '2026-01-01T00:00:00.000Z',
-  lastActivityAt: '2026-01-01T00:05:00.000Z',
+const submission: BrowserProductFact = {
+  name: 'librechat.chat.message.submitted',
+  feature: 'chat',
+  submissionId: 'aef33490-7e1a-4786-9ac6-d45dd28ca281',
+  kind: 'send',
+  model: 'private-model',
+  provider: 'private-endpoint',
+  agentId: 'private__model___Sender',
 };
 
-it('passes valid facts to the browser host callback once', async () => {
+it('normalizes chat labels before invoking the browser host callback', async () => {
   const track = jest.fn();
   render(
     <TrackingProvider track={track}>
-      <Observer fact={opened} />
+      <Observer fact={submission} />
     </TrackingProvider>,
   );
   await act(async () => {});
   expect(track).toHaveBeenCalledTimes(1);
-  expect(track.mock.calls[0][0]).toEqual(opened);
+  expect(track.mock.calls[0][0]).toMatchObject({
+    model: 'custom',
+    provider: 'custom',
+    agentId: undefined,
+  });
+  expect(JSON.stringify(track.mock.calls)).not.toContain('private');
 });
 
 it('drops malformed facts without interrupting the browser action', async () => {
   const track = jest.fn();
-  const malformed = { ...opened, arguments: 'private' };
+  const malformed = { ...submission, arguments: 'private' };
   const view = render(
     <TrackingProvider track={track}>
       <Observer fact={malformed} />

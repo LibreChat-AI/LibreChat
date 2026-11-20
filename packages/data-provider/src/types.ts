@@ -23,6 +23,7 @@ import type {
 } from './config';
 import type { BalanceRefillMode, RefillIntervalUnit } from './balance';
 import type { StatefulCodeEnvironment } from './stateful-code';
+import type { ProductTrackingContext } from './tracking';
 import type { CodeApprovalMode } from './code/approval';
 import type { EToolResources } from './types/tools';
 import type { SettingDefinition } from './generate';
@@ -202,6 +203,8 @@ export type TEditedContent =
     };
 
 export type TSubmission = {
+  /** Analytics correlation only; never used for authorization or generation identity. */
+  productTrackingContext?: ProductTrackingContext;
   userMessage: TMessage;
   isEdited?: boolean;
   isContinued?: boolean;

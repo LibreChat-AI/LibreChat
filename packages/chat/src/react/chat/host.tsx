@@ -10,6 +10,8 @@ import type {
   TEphemeralAgent,
   TEndpointsConfig,
   TAgentQueuedTurnReceipt,
+  ChatSubmissionKind,
+  ProductTrackingContext,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { ExtendedFile, TurnCodeInputs } from '../../core';
@@ -74,6 +76,11 @@ export type TurnLogger = {
  */
 export type TurnServices = {
   logger: TurnLogger;
+  /** Synchronous context joins the request. An async observer never delays submission. */
+  onProductSubmission?: (
+    submission: TSubmission,
+    kind: ChatSubmissionKind,
+  ) => ProductTrackingContext | undefined | Promise<ProductTrackingContext | undefined>;
   isTemporary: boolean;
   user?: TUser;
   modelSpecs?: TModelSpec[];

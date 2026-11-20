@@ -5064,6 +5064,7 @@ class AgentClient extends BaseClient {
         const createRunPromise = createRun({
           sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
           sdkFiles: this.options.sdkFiles,
+          productTrackingRequest: this.options.req,
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
             getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5883,6 +5884,7 @@ class AgentClient extends BaseClient {
       run = await createRun({
         sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
         sdkFiles: this.options.sdkFiles,
+        productTrackingRequest: this.options.req,
         sdkResumeState: { content: seedContent, steps: runSteps },
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
