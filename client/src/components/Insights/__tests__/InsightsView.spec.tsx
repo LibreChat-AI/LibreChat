@@ -267,7 +267,8 @@ describe('InsightsView agent selection', () => {
 
   it('shows the aggregate response, outcome, feedback and period-activity fields', () => {
     const categoryCounts = new Map([
-      ['inaccurate', 2],
+      ['inaccurate', 1],
+      ['other', 1],
       ['clear_well_written', 3],
     ]);
     mockUseInsightsQuery.mockImplementation((params) =>
@@ -298,12 +299,15 @@ describe('InsightsView agent selection', () => {
     expect(metricCard('com_insights_thumbs_up').getByText('5')).toBeInTheDocument();
     expect(metricCard('com_insights_thumbs_down').getByText('2')).toBeInTheDocument();
     expect(screen.getByText('com_ui_feedback_tag_inaccurate').nextElementSibling).toHaveTextContent(
-      '2',
+      '1',
     );
+    expect(
+      screen.getByText('com_ui_feedback_tag_other_issue').nextElementSibling,
+    ).toHaveTextContent('1');
     expect(
       screen.getByText('com_ui_feedback_tag_clear_well_written').nextElementSibling,
     ).toHaveTextContent('3');
-    expect(screen.queryByText('com_ui_feedback_tag_other')).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_feedback_tag_bad_style')).not.toBeInTheDocument();
     expect(screen.getByText('com_insights_last_used').querySelector('time')).toHaveAttribute(
       'datetime',
       insightsData.summary.lastUsed,

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
-import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
+import { FEEDBACK_TAGS } from 'librechat-data-provider';
 import type { TInsightsFeedback } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
 import { formatExactValue } from './format';
 import { useLocalize } from '~/hooks';
 import { Panel } from './Panel';
@@ -15,9 +16,11 @@ export default function FeedbackCategories({
   const localize = useLocalize();
   const recorded = useMemo(() => {
     const counts = new Map(categories.map(({ key, count }) => [key, count]));
-    return FEEDBACK_REASON_KEYS.map((key) => ({ key, count: counts.get(key) ?? 0 })).filter(
-      ({ count }) => count > 0,
-    );
+    return FEEDBACK_TAGS.map(({ key, label }) => ({
+      key,
+      label,
+      count: counts.get(key) ?? 0,
+    })).filter(({ count }) => count > 0);
   }, [categories]);
 
   return (
@@ -29,9 +32,9 @@ export default function FeedbackCategories({
         </p>
       ) : (
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
-          {recorded.map(({ key, count }) => (
+          {recorded.map(({ key, label, count }) => (
             <div key={key} className="flex items-start justify-between gap-4 text-sm">
-              <dt>{localize(`com_ui_feedback_tag_${key}`)}</dt>
+              <dt>{localize(label as TranslationKeys)}</dt>
               <dd className="font-semibold tabular-nums">{formatExactValue(count, locale)}</dd>
             </div>
           ))}
