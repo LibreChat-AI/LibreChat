@@ -376,3 +376,52 @@ test('copies the temporary selection code explicitly and offers manual copy on f
   await f.user.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
 });
+
+test('shows an active link as a grouped row with its state chip and a labelled action', async () => {
+  page();
+  const row = await screen.findByRole('group', { name: /agent/i });
+  expect(within(row).getByText('Active')).toBeVisible();
+  expect(within(row).getByText(/789/)).toBeVisible();
+  expect(
+    within(row).getByRole('button', { name: /^Use for DMs: agent agent, Discord user 789/ }),
+  ).toBeVisible();
+});
+
+test.each([
+  ['active', 'Active'],
+  ['revoked', 'Revoked'],
+  ['expired', 'Expired'],
+  ['unavailable', 'Unavailable'],
+] as const)('shows a %s selection as a chip beside its destination', async (state, label) => {
+  jest
+    .mocked(dataService.listDiscordDmSelections)
+    .mockResolvedValue({ enabled: true, selections: [{ ...selection, state }] });
+  jest.mocked(dataService.channelIdentityClient.list).mockResolvedValue([]);
+  page();
+  const row = await screen.findByText('Discord DM channel: 999');
+  const group = within(row.closest('[role="group"]') as HTMLElement);
+  expect(group.getByText(label)).toBeVisible();
+  expect(group.getByText(/^Expires:/)).toBeVisible();
+  const revoke = group.queryByRole('button', { name: /^Revoke DM Selection: agent agent/ });
+  if (state === 'revoked') expect(revoke).toBeNull();
+  else expect(revoke).toBeVisible();
+});
+
+test('reveals the link details only when their disclosure is opened', async () => {
+  const f = page();
+  await openCode(f.user);
+  const toggle = await screen.findByRole('button', { name: 'Connection details' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  const dialog = within(screen.getByRole('dialog'));
+  expect(dialog.queryByText(/789/)).toBeNull();
+  await f.user.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(dialog.getByText(/789/)).toBeVisible();
+});
+
+test('offers an icon-only copy control for the selection code', async () => {
+  const f = page();
+  await openCode(f.user);
+  const copy = await screen.findByRole('button', { name: 'Copy code' });
+  expect(copy).toHaveTextContent('');
+});

@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { atom, Provider, useAtom } from 'jotai';
+import { ChevronRight, Link2Off } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
 import {
   useInfiniteQuery,
@@ -18,20 +20,28 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  Chip,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  IconButton,
   Input,
   Label,
   OGDialog,
   OGDialogTemplate,
   Spinner,
+  TooltipAnchor,
 } from '@librechat/client';
 import type {
   ChannelLinkView,
   DiscordDmIssuedCode,
   DiscordDmSelectionView,
 } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { LinkAgentName } from './Links';
+import Loading from './Loading';
 
 const editorAtom = atom<ChannelLinkView | null>(null);
 const confirmAtom = atom<DiscordDmSelectionView | null>(null);
@@ -43,6 +53,15 @@ const states: Record<DiscordDmSelectionView['state'], TranslationKeys> = {
   expired: 'com_ui_channel_link_status_expired',
   unavailable: 'com_ui_channels_workspace_unavailable_status',
 };
+const tones = {
+  active: 'success',
+  revoked: 'neutral',
+  expired: 'warning',
+  unavailable: 'error',
+} as const satisfies Record<
+  DiscordDmSelectionView['state'],
+  'success' | 'neutral' | 'warning' | 'error'
+>;
 function errorKey(error: unknown): TranslationKeys {
   if (error instanceof Error && 'code' in error) {
     if (error.code === 'disabled') return 'com_ui_discord_dm_disabled';
@@ -62,6 +81,33 @@ export default function Dm({ principalKey }: { principalKey: string }) {
   );
 }
 
+/** A name with its state and detail on the left and its actions on the right. */
+function Row({
+  name,
+  chip,
+  detail,
+  action,
+}: {
+  name: ReactNode;
+  chip: ReactNode;
+  detail: ReactNode;
+  action: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div role="group" aria-labelledby={`${id}-name`} className="flex items-center gap-3 py-2">
+      <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
+        <p id={`${id}-name`} className="text-sm font-medium break-words">
+          {name}
+        </p>
+        {chip}
+        {detail}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">{action}</div>
+    </div>
+  );
+}
+
 function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: string }) {
   const localize = useLocalize();
   const id = useId();
@@ -72,6 +118,7 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
   const [expired, setExpired] = useAtom(expiredAtom);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const copyCode = useCopyToClipboard({ text: code?.code });
   useEffect(() => {
     mounted.current = true;
@@ -124,22 +171,36 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
         <LinkAgentName agentId={link.identity.agentId} />
       </p>
       {link.identity.provider === 'discord' && (
-        <details className="text-text-secondary text-xs">
-          <summary className="cursor-pointer">{localize('com_ui_channel_link_details')}</summary>
-          <p className="mt-2 break-all">
-            {localize('com_ui_channel_link_discord_ids', {
-              0: link.identity.externalUserId,
-              1: localize('com_ui_discord_binding_server_named', {
-                0: link.identity.guildId,
-                1: link.identity.applicationId,
-              }),
-            })}
-          </p>
-        </details>
+        <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm">
+              <ChevronRight
+                className={detailsOpen ? 'size-4 shrink-0 rotate-90' : 'size-4 shrink-0'}
+                aria-hidden="true"
+              />
+              {localize('com_ui_channel_link_details')}
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <p className="text-text-secondary mt-2 text-xs break-all">
+              {localize('com_ui_channel_link_discord_ids', {
+                0: link.identity.externalUserId,
+                1: localize('com_ui_discord_binding_server_named', {
+                  0: link.identity.guildId,
+                  1: link.identity.applicationId,
+                }),
+              })}
+            </p>
+          </CollapsibleContent>
+        </Collapsible>
       )}
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_code_help')}</p>
       {issue.isError && <Alert variant="error">{localize(errorKey(issue.error))}</Alert>}
-      {expired && <p role="status">{localize('com_ui_discord_dm_code_expired')}</p>}
+      {expired && (
+        <Alert variant="warning" role="status">
+          {localize('com_ui_discord_dm_code_expired')}
+        </Alert>
+      )}
       {code && (
         <div role="status" className="space-y-2">
           <Label htmlFor={`${id}-code`}>{localize('com_ui_discord_dm_code')}</Label>
@@ -155,17 +216,15 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
               onFocus={(event) => event.currentTarget.select()}
               aria-describedby={`${id}-expires`}
             />
-            <Button
-              type="button"
-              variant="ghost"
-              className="shrink-0"
+            <CopyButton
+              isCopied={copied}
+              iconOnly
+              label={localize('com_ui_discord_dm_copy_code')}
               onClick={() => {
                 setCopied(false);
                 setCopyFailed(!copyCode(setCopied));
               }}
-            >
-              {localize(copied ? 'com_ui_copied' : 'com_ui_discord_dm_copy_code')}
-            </Button>
+            />
           </div>
           <p id={`${id}-expires`} className="text-text-secondary text-xs">
             {localize('com_ui_discord_dm_expires', {
@@ -265,14 +324,9 @@ function Selections({ principalKey }: { principalKey: string }) {
         {localize('com_ui_discord_dm_title')}
       </h3>
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_description')}</p>
-      {selections.isLoading && (
-        <div role="status">
-          <Spinner className="size-4" />
-          {localize('com_ui_channel_link_loading')}
-        </div>
-      )}
+      {selections.isLoading && <Loading />}
       {selections.isError && (
-        <div className="space-y-2">
+        <div className="flex flex-col items-start gap-2">
           <Alert variant="error">{localize('com_ui_discord_error')}</Alert>
           <Button
             type="button"
@@ -292,7 +346,7 @@ function Selections({ principalKey }: { principalKey: string }) {
         </p>
       )}
       {enabled && links.isError && (
-        <div>
+        <div className="flex flex-col items-start gap-2">
           <Alert variant="error">{localize('com_ui_channel_link_error')}</Alert>
           <Button type="button" variant="outline" onClick={() => void links.refetch()}>
             {localize('com_ui_retry')}
@@ -302,90 +356,99 @@ function Selections({ principalKey }: { principalKey: string }) {
       {enabled && links.isSuccess && active.length === 0 && (
         <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_link_first')}</p>
       )}
-      {enabled && active.length > 0 && (
-        <ul className="space-y-2">
-          {active.map((link) => (
-            <li key={link.linkId} className="flex flex-wrap items-center justify-between gap-2">
-              <div className="min-w-0 text-sm">
-                <LinkAgentName agentId={link.identity.agentId} />
-                <p className="text-text-secondary text-xs break-all">
-                  {localize('com_ui_channel_link_discord_ids', {
-                    0: link.identity.externalUserId,
-                    1:
-                      link.identity.provider === 'discord'
-                        ? localize('com_ui_discord_binding_server_named', {
-                            0: link.identity.guildId,
-                            1: link.identity.applicationId,
-                          })
-                        : '',
-                  })}
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                aria-label={localize('com_ui_discord_dm_select_for', {
-                  0: link.identity.agentId,
-                  1: link.identity.externalUserId,
-                  2:
-                    link.identity.provider === 'discord'
-                      ? localize('com_ui_discord_binding_server_named', {
-                          0: link.identity.guildId,
-                          1: link.identity.applicationId,
-                        })
-                      : '',
-                })}
-                onClick={(event) => {
-                  trigger.current = event.currentTarget;
-                  setEditor(link);
-                }}
-              >
-                {localize('com_ui_discord_dm_select')}
-              </Button>
-            </li>
+      {(enabled && active.length > 0) || rows.length > 0 ? (
+        <div className="border-border-light divide-border-light divide-y rounded-lg border px-3">
+          {enabled &&
+            active.map((link) => {
+              const server =
+                link.identity.provider === 'discord'
+                  ? localize('com_ui_discord_binding_server_named', {
+                      0: link.identity.guildId,
+                      1: link.identity.applicationId,
+                    })
+                  : '';
+              return (
+                <Row
+                  key={link.linkId}
+                  name={<LinkAgentName agentId={link.identity.agentId} />}
+                  chip={<Chip tone="success">{localize('com_ui_channel_link_active')}</Chip>}
+                  detail={
+                    <p className="text-text-secondary text-xs break-all">
+                      {localize('com_ui_channel_link_discord_ids', {
+                        0: link.identity.externalUserId,
+                        1: server,
+                      })}
+                    </p>
+                  }
+                  action={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      aria-label={localize('com_ui_discord_dm_select_for', {
+                        0: link.identity.agentId,
+                        1: link.identity.externalUserId,
+                        2: server,
+                      })}
+                      onClick={(event) => {
+                        trigger.current = event.currentTarget;
+                        setEditor(link);
+                      }}
+                    >
+                      {localize('com_ui_discord_dm_select')}
+                    </Button>
+                  }
+                />
+              );
+            })}
+          {rows.map((selection) => (
+            <Row
+              key={selection.selectionId}
+              name={<LinkAgentName agentId={selection.agentId} />}
+              chip={<Chip tone={tones[selection.state]}>{localize(states[selection.state])}</Chip>}
+              detail={
+                <>
+                  <p className="text-text-secondary text-xs break-all">
+                    {localize('com_ui_discord_dm_destination', { 0: selection.dmChannelId })}
+                  </p>
+                  <p className="text-text-secondary text-xs">
+                    {localize('com_ui_discord_dm_expires', {
+                      0: new Date(selection.expiresAtMs).toLocaleString(),
+                    })}
+                  </p>
+                </>
+              }
+              action={
+                selection.state !== 'revoked' && (
+                  <TooltipAnchor
+                    description={localize('com_ui_discord_dm_revoke')}
+                    render={
+                      <IconButton
+                        label={localize('com_ui_discord_dm_revoke_for', {
+                          0: selection.agentId,
+                          1: selection.dmChannelId,
+                        })}
+                        variant="ghost"
+                        size="sm"
+                        shape="control"
+                        disabled={busy}
+                        onClick={(event) => {
+                          trigger.current = event.currentTarget;
+                          revoke.reset();
+                          setConfirm(selection);
+                        }}
+                      >
+                        <Link2Off className="size-4" aria-hidden="true" />
+                      </IconButton>
+                    }
+                  />
+                )
+              }
+            />
           ))}
-        </ul>
-      )}
-      <ul className="space-y-2">
-        {rows.map((selection) => (
-          <li
-            key={selection.selectionId}
-            className="flex flex-wrap items-center justify-between gap-2"
-          >
-            <div className="min-w-0 text-sm">
-              <LinkAgentName agentId={selection.agentId} />
-              <p className="text-text-secondary text-xs break-all">
-                {localize('com_ui_discord_dm_destination', { 0: selection.dmChannelId })}
-              </p>
-              <p role="status">{localize(states[selection.state])}</p>
-              <p className="text-text-secondary text-xs">
-                {localize('com_ui_discord_dm_expires', {
-                  0: new Date(selection.expiresAtMs).toLocaleString(),
-                })}
-              </p>
-            </div>
-            {selection.state !== 'revoked' && (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                aria-label={localize('com_ui_discord_dm_revoke_for', {
-                  0: selection.agentId,
-                  1: selection.dmChannelId,
-                })}
-                onClick={(event) => {
-                  trigger.current = event.currentTarget;
-                  revoke.reset();
-                  setConfirm(selection);
-                }}
-              >
-                {localize('com_ui_discord_dm_revoke')}
-              </Button>
-            )}
-          </li>
-        ))}
-      </ul>
+        </div>
+      ) : null}
       {selections.hasNextPage && (
         <Button
           type="button"

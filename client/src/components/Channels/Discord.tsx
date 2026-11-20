@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useId, useRef } from 'react';
-import { Pencil } from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { atom, Provider, useAtom } from 'jotai';
+import { ExternalLink, Plus } from 'lucide-react';
 import {
   useInfiniteQuery,
   useIsMutating,
@@ -10,9 +10,7 @@ import {
 } from '@tanstack/react-query';
 import {
   DISCORD_COMMAND_MANIFEST_VERSION,
-  channelSnowflakeSchema,
   configureDiscordApplicationSchema,
-  discordCredentialHealthSchema,
   dataService,
   MutationKeys,
   QueryKeys,
@@ -29,72 +27,43 @@ import {
   AlertDialogTitle,
   Button,
   DiscordIcon,
-  IconButton,
-  TooltipAnchor,
-  Input,
-  Label,
   OGDialog,
   OGDialogTemplate,
   OGDialogTrigger,
-  Spinner,
 } from '@librechat/client';
 import type {
   ConfigureDiscordApplication,
   DiscordApplicationPage,
   RegisterDiscordCommands,
   DiscordOAuthErrorCode,
-  DiscordCredentialState,
   DiscordApplication,
   DiscordGuild,
 } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
-import type { TranslationKeys } from '~/hooks';
+import type { Fields } from './discord/Editor';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
-import { discordCallbackLabels } from '~/components/OAuth/discord';
 import { settingsTargetAtom } from '~/components/Nav/Settings';
 import { useAuthContext, useLocalize } from '~/hooks';
+import Editor, { empty } from './discord/Editor';
+import { errorLabel } from './discord/errors';
+import Settings from './discord/Settings';
+import Connect from './discord/Connect';
+import Server from './discord/Server';
+import Card from './discord/Card';
+import Loading from './Loading';
 import Dm from './Dm';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
 const confirmAtom = atom<DiscordGuild | null>(null);
 const flowAtom = atom<'pending' | 'cancelling' | 'failed' | null>(null);
 const openAtom = atom(false);
+/** The application whose connection settings are open. */
+const settingsAtom = atom<string | null>(null);
 /** Why the callback failed, when its notice named an approved code; it explains the failed notice and nothing else. */
 const reasonAtom = atom<DiscordOAuthErrorCode | null>(null);
 /** Set when a dismissal removes the control the user was on; focus returns to `trigger` once the reads settle. */
 const restoreAtom = atom<{ trigger: HTMLButtonElement | null; servers?: boolean } | null>(null);
-const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
-type Fields = typeof empty;
 type Attempt = { popup: Window; flowId?: string; cancelling: boolean };
-
-/** Safe codes only; error messages are never shown, and unknown codes stay unconfirmed. */
-function errorLabel(error: unknown): TranslationKeys {
-  if (!(error instanceof Error)) return 'com_ui_discord_error';
-  if ('status' in error && error.status === 403) return 'com_ui_discord_admin';
-  if ('status' in error && error.status === 404) return 'com_ui_discord_disabled';
-  if (!('code' in error)) return 'com_ui_discord_error';
-  switch (error.code) {
-    case 'transactions_unavailable':
-      return 'com_ui_channels_transaction_required';
-    case 'application_changed':
-    case 'installation_changed':
-      return 'com_ui_discord_changed';
-    case 'provider_refused':
-      return 'com_ui_discord_refused';
-    case 'unsupported_installation':
-      return 'com_ui_discord_code_grant';
-    case 'application_in_use':
-      return 'com_ui_discord_in_use';
-    case 'rate_limited':
-      return 'com_ui_discord_rate_limited';
-    case 'provider_unavailable':
-      return 'com_ui_discord_provider_unavailable';
-    case 'timeout':
-      return 'com_ui_discord_timeout';
-    default:
-      return 'com_ui_discord_error';
-  }
-}
 
 const controls =
   'a[href],button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
@@ -103,43 +72,6 @@ const controls =
 function movedOn(trigger: HTMLButtonElement | null): boolean {
   const active = document.activeElement;
   return active instanceof HTMLElement && active !== trigger && active.matches(controls);
-}
-
-/** The last bot-token observation, or null when it is absent, legacy or malformed. */
-function observation(
-  app: DiscordApplication,
-): { state: DiscordCredentialState; checked: Date } | null {
-  const health = discordCredentialHealthSchema.safeParse(app.credentialHealth);
-  if (!health.success) return null;
-  const checked = new Date(health.data.checkedAt);
-  return Number.isNaN(checked.getTime()) ? null : { state: health.data.state, checked };
-}
-
-/** An absolute server time, never aged against the browser clock. */
-function CredentialHealth({ app }: { app: DiscordApplication }) {
-  const localize = useLocalize();
-  const health = observation(app);
-  let key: TranslationKeys = 'com_ui_discord_health_unknown';
-  if (health) {
-    key =
-      health.state === 'valid' ? 'com_ui_discord_health_valid' : 'com_ui_discord_health_invalid';
-  }
-  return (
-    <div className="space-y-0.5 text-xs">
-      <p
-        role="status"
-        className={health?.state === 'invalid' ? 'text-text-destructive' : 'text-text-secondary'}
-      >
-        {localize(key)}
-      </p>
-      {health && (
-        <p className="text-text-secondary">
-          {localize('com_ui_discord_health_checked')}{' '}
-          <time dateTime={health.checked.toISOString()}>{health.checked.toLocaleString()}</time>
-        </p>
-      )}
-    </div>
-  );
 }
 
 /** A fresh feature store and form belong to exactly one signed-in account. */
@@ -217,12 +149,15 @@ function SettingsControl({
         </OGDialogTrigger>
       </section>
       <OGDialogTemplate
-        title={localize('com_ui_discord_title')}
-        description={localize('com_ui_discord_description')}
+        title={localize('com_ui_discord_manage_title')}
         className="max-w-2xl"
         mainClassName="max-h-[70dvh] overflow-y-auto"
-        showCloseButton
         showCancelButton={false}
+        selection={
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            {localize('com_ui_close')}
+          </Button>
+        }
         main={
           open ? (
             <div className="space-y-6">
@@ -246,12 +181,13 @@ function Setup({
   showDescription: boolean;
 }) {
   const localize = useLocalize();
-  const id = useId();
   const client = useQueryClient();
   const [editor, setEditor] = useAtom(editorAtom);
   const [confirm, setConfirm] = useAtom(confirmAtom);
   const [flow, setFlow] = useAtom(flowAtom);
   const [reason, setReason] = useAtom(reasonAtom);
+  const [settings, setSettings] = useAtom(settingsAtom);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [restore, setRestore] = useAtom(restoreAtom);
   const attempt = useRef<Attempt | null>(null);
   const submission = useRef<ConfigureDiscordApplication | null>(null);
@@ -259,13 +195,16 @@ function Setup({
   const deadline = useRef<ReturnType<typeof setTimeout>>();
   const editorTrigger = useRef<HTMLButtonElement | null>(null);
   const commandTrigger = useRef<HTMLButtonElement | null>(null);
+  const settingsTrigger = useRef<HTMLButtonElement | null>(null);
   const connectTrigger = useRef<HTMLButtonElement | null>(null);
+  const lastStart = useRef<{ applicationId: string; installationId?: string } | null>(null);
   const flowAlert = useRef<HTMLDivElement | null>(null);
   const disconnectTrigger = useRef<HTMLButtonElement | null>(null);
   const guildHeading = useRef<HTMLHeadingElement | null>(null);
   const appsHeading = useRef<HTMLHeadingElement | null>(null);
   const loadFailure = useRef<HTMLDivElement | null>(null);
   const readHint = useRef<HTMLDivElement | null>(null);
+  const settingsFailure = useRef<HTMLDivElement | null>(null);
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const busy = useIsMutating({ mutationKey: [MutationKeys.discordSetup, principalKey] }) > 0;
   const apps = useInfiniteQuery(
@@ -297,14 +236,6 @@ function Setup({
   const reveal = useCallback((node: HTMLDivElement | null) => {
     node?.focus();
   }, []);
-  const revealCommand = useCallback(
-    (node: HTMLDivElement | null) => {
-      const details = node?.closest('details');
-      if (details) details.open = true;
-      reveal(node);
-    },
-    [reveal],
-  );
   const revealFlow = useCallback(
     (node: HTMLDivElement | null) => {
       flowAlert.current = node;
@@ -338,6 +269,11 @@ function Setup({
   });
   const commands = useMutation({
     ...lifecycle,
+    /** A failure answers an action inside the settings, so it is shown there even if they were closed meanwhile. */
+    onError: async (_error, input) => {
+      await cancelReads();
+      if (mounted.current) setSettings(input.applicationId);
+    },
     retry: false,
     mutationKey: [MutationKeys.discordSetup, principalKey, 'commands'],
     mutationFn: async (input: RegisterDiscordCommands) => {
@@ -449,6 +385,7 @@ function Setup({
   ) => {
     if (attempt.current) return;
     connectTrigger.current = trigger;
+    lastStart.current = { applicationId, installationId };
     connect.reset();
     cancel.reset();
     setReason(null);
@@ -519,6 +456,10 @@ function Setup({
   const ready = apps.isSuccess && guilds.isSuccess && !apps.isFetching && !guilds.isFetching;
   const disabled = busy || !ready || flow !== null;
   const setup = apps.data?.pages[0].setup;
+  const settingsApp = settings
+    ? applications.find((app) => app.applicationId === settings)
+    : undefined;
+  const settingsOpen = settingsApp !== undefined;
   const confirmed = confirm
     ? installations.find((item) => item.installationId === confirm.installationId)
     : undefined;
@@ -528,26 +469,42 @@ function Setup({
     disconnect.isError &&
     ready &&
     !(confirmed?.status === 'active' && confirmed.revision === confirm.revision);
-  const { setFocus } = form;
-  useEffect(() => {
-    if (editor) setFocus(editor === 'new' ? 'applicationId' : 'botToken');
-  }, [editor, setFocus]);
   useEffect(() => {
     if (!restore || editor || busy || flow) return;
     const { trigger, servers } = restore;
-    if (ready) {
-      if (!movedOn(trigger)) {
-        if (trigger?.isConnected && !trigger.disabled) trigger.focus();
-        else (servers ? guildHeading : appsHeading).current?.focus();
+    /** A dialog that just closed still traps focus for this commit; focus moves once it has unmounted. */
+    const timer = setTimeout(() => {
+      if (ready) {
+        if (!movedOn(trigger)) {
+          if (trigger?.isConnected && !trigger.disabled) trigger.focus();
+          else (servers ? guildHeading : appsHeading).current?.focus();
+        }
+        setRestore(null);
+      } else if (apps.isError || guilds.isError) {
+        /** Behind an open confirmation the page-level error is unreachable: its hint is the visible one. */
+        let failure = loadFailure.current;
+        if (settingsOpen) failure = settingsFailure.current;
+        if (confirm) failure = readHint.current;
+        if (failure && !failure.contains(document.activeElement) && !movedOn(trigger))
+          failure.focus();
       }
-      setRestore(null);
-    } else if (apps.isError || guilds.isError) {
-      /** Behind an open confirmation the page-level error is unreachable: its hint is the visible one. */
-      const failure = (confirm ? readHint : loadFailure).current;
-      if (failure && !failure.contains(document.activeElement) && !movedOn(trigger))
-        failure.focus();
-    }
-  }, [restore, setRestore, confirm, editor, ready, busy, flow, apps.isError, guilds.isError]);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [
+    restore,
+    setRestore,
+    confirm,
+    editor,
+    ready,
+    busy,
+    flow,
+    settingsOpen,
+    apps.isError,
+    guilds.isError,
+  ]);
+  useEffect(() => {
+    if (settings && ready && !settingsApp) setSettings(null);
+  }, [settings, settingsApp, ready, setSettings]);
   const edit = (app: DiscordApplication | 'new', trigger: HTMLButtonElement) => {
     editorTrigger.current = trigger;
     save.reset();
@@ -558,7 +515,8 @@ function Setup({
   };
   const submit = form.handleSubmit((fields) => {
     const parsed = configureDiscordApplicationSchema.safeParse({
-      applicationId: fields.applicationId.trim(),
+      applicationId:
+        editor && editor !== 'new' ? editor.applicationId : fields.applicationId.trim(),
       name: fields.name.trim(),
       ...(fields.botToken.trim() ? { botToken: fields.botToken.trim() } : {}),
       ...(fields.clientSecret.trim() ? { clientSecret: fields.clientSecret.trim() } : {}),
@@ -573,7 +531,6 @@ function Setup({
     form.resetField('clientSecret');
     save.mutate();
   });
-  const mutationError = save.error || connect.error || cancel.error;
   const commandAppId = commands.variables?.applicationId;
   /** A failed next page is retried alone; a failed reread, even right after one, is read again. The query
    * records how its last fetch started and every later fetch replaces that, so nothing here can go stale. */
@@ -597,19 +554,54 @@ function Setup({
     (error) =>
       typeof error === 'object' && error !== null && 'status' in error && error.status === 403,
   );
+  const linkError = connect.error || cancel.error;
+  /** A failure is shown beside the action that caused it: inside its dialog while open, else on the page. */
+  const pageError = (editor ? null : save.error) || (flow ? null : linkError);
+  const refreshAfterError = () => {
+    form.reset(empty);
+    setRestore({
+      trigger: editor !== null || save.error ? editorTrigger.current : connectTrigger.current,
+    });
+    setEditor(null);
+    save.reset();
+    connect.reset();
+    cancel.reset();
+    reconcile.mutate();
+    flowAlert.current?.focus();
+  };
+  const cancelAttempt = () => {
+    setRestore({ trigger: connectTrigger.current });
+    if (attempt.current) void retire(attempt.current);
+    else finish();
+  };
+  const connectAgain = () => {
+    const last = lastStart.current;
+    const trigger = connectTrigger.current;
+    if (!last || !trigger) return;
+    finish();
+    start(last.applicationId, last.installationId, trigger);
+  };
+  const commandRef = useCallback((node: HTMLButtonElement | null) => {
+    commandTrigger.current = node;
+  }, []);
+  const commandFailed = settings !== null && commandAppId === settings && commands.isError;
+  const known = new Set(applications.map((app) => app.applicationId));
+  const orphans = installations.filter((guild) => !known.has(guild.applicationId));
+  const reconnect = (guild: DiscordGuild, trigger: HTMLButtonElement) =>
+    start(guild.applicationId, guild.installationId, trigger);
+  const disconnectGuild = (guild: DiscordGuild, trigger: HTMLButtonElement) => {
+    disconnectTrigger.current = trigger;
+    disconnect.reset();
+    setConfirm(guild);
+  };
   if (forbidden) return null;
   return (
     <div className="space-y-4">
       {showDescription && (
         <p className="text-text-secondary text-sm">{localize('com_ui_discord_description')}</p>
       )}
-      {(apps.isLoading || guilds.isLoading) && (
-        <p role="status">
-          <Spinner className="size-4" />
-          {localize('com_ui_channels_loading')}
-        </p>
-      )}
-      {(apps.isError || guilds.isError) && (
+      {(apps.isLoading || guilds.isLoading) && <Loading />}
+      {(apps.isError || guilds.isError) && !settingsOpen && (
         <Alert ref={loadFailure} tabIndex={-1} variant="error">
           {localize(errorLabel(apps.error || guilds.error))}
           <Button type="button" variant="outline" onClick={() => retry()}>
@@ -617,294 +609,89 @@ function Setup({
           </Button>
         </Alert>
       )}
-      {Boolean(mutationError) && (
+      {Boolean(pageError) && (
         <Alert ref={reveal} tabIndex={-1} variant="error">
-          {localize(errorLabel(mutationError))}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => {
-              form.reset(empty);
-              setRestore({
-                trigger:
-                  editor !== null || save.error ? editorTrigger.current : connectTrigger.current,
-              });
-              setEditor(null);
-              save.reset();
-              connect.reset();
-              cancel.reset();
-              reconcile.mutate();
-              flowAlert.current?.focus();
-            }}
-          >
+          {localize(errorLabel(pageError))}
+          <Button type="button" variant="outline" disabled={busy} onClick={refreshAfterError}>
             {localize('com_ui_refresh')}
           </Button>
         </Alert>
       )}
-      {save.isSuccess && <p role="status">{localize('com_ui_discord_saved')}</p>}
-      {flow && (
-        <Alert
-          ref={flow === 'failed' ? revealFlow : undefined}
-          tabIndex={flow === 'failed' ? -1 : undefined}
-          variant={flow === 'failed' ? 'warning' : 'info'}
-        >
-          {flow === 'failed' && reason && <p>{localize(discordCallbackLabels[reason])}</p>}
-          <p>
-            {localize(flow === 'failed' ? 'com_ui_discord_unconfirmed' : 'com_ui_discord_pending')}
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={flow === 'cancelling'}
-            onClick={() => {
-              setRestore({ trigger: connectTrigger.current });
-              if (attempt.current) void retire(attempt.current);
-              else finish();
-            }}
-          >
-            {localize('com_ui_cancel')}
-          </Button>
+      {save.isSuccess && (
+        <Alert variant="success" role="status">
+          {localize('com_ui_discord_saved')}
         </Alert>
       )}
-      <div className="flex items-center justify-between gap-2">
-        <h3 ref={appsHeading} tabIndex={-1} className="text-sm font-semibold">
-          {localize('com_ui_discord_apps')}
-        </h3>
+      <h3 ref={appsHeading} tabIndex={-1} className="sr-only">
+        {localize('com_ui_discord_apps')}
+      </h3>
+      <div className="flex items-center justify-between gap-3">
+        <Button asChild variant="inline-link" className="w-fit">
+          <a
+            href="https://discord.com/developers/applications"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {localize('com_ui_discord_developer_portal')}
+            <ExternalLink className="size-3.5" aria-hidden="true" />
+          </a>
+        </Button>
         <Button
           type="button"
           variant="outline"
           disabled={disabled}
           onClick={(event) => edit('new', event.currentTarget)}
         >
+          <Plus className="size-4" aria-hidden="true" />
           {localize('com_ui_discord_app_create')}
         </Button>
       </div>
       {ready && !applications.length && (
         <p className="text-text-secondary text-sm">{localize('com_ui_discord_empty')}</p>
       )}
-      {editor && (
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.stopPropagation();
-            void submit(event);
+      <h3 ref={guildHeading} tabIndex={-1} className="sr-only">
+        {localize('com_ui_discord_guilds')}
+      </h3>
+      {applications.map((app) => (
+        <Card
+          key={app.applicationId}
+          app={app}
+          servers={installations.filter((guild) => guild.applicationId === app.applicationId)}
+          open={!collapsed[app.applicationId]}
+          disabled={disabled}
+          onOpenChange={(open) =>
+            setCollapsed((current) => ({ ...current, [app.applicationId]: !open }))
+          }
+          onEdit={edit}
+          onSettings={(item, trigger) => {
+            settingsTrigger.current = trigger;
+            setSettings(item.applicationId);
           }}
-        >
-          <p className="text-text-secondary text-sm">
-            {localize(editor === 'new' ? 'com_ui_discord_credentials' : 'com_ui_discord_rotation')}
+          onConnect={(item, trigger) => start(item.applicationId, undefined, trigger)}
+          onReconnect={reconnect}
+          onDisconnect={disconnectGuild}
+        />
+      ))}
+      {orphans.length > 0 && (
+        <div className="border-border-light space-y-1 rounded-lg border p-3">
+          <h4 className="text-sm font-medium">{localize('com_ui_discord_guilds_other')}</h4>
+          <p className="text-text-secondary text-xs">
+            {localize('com_ui_discord_guilds_other_help')}
           </p>
-          {editor === 'new' && setup?.oauthCallbackUrl && (
-            <div>
-              <Label htmlFor={`${id}-callback`}>{localize('com_ui_discord_callback')}</Label>
-              <Input id={`${id}-callback`} readOnly value={setup.oauthCallbackUrl} />
-            </div>
-          )}
-          {(['applicationId', 'name', 'botToken', 'clientSecret'] as const).map((field) => {
-            const secret = field === 'botToken' || field === 'clientSecret';
-            const labels = {
-              applicationId: 'com_ui_discord_application_id',
-              name: 'com_ui_name',
-              botToken: 'com_ui_discord_bot_token',
-              clientSecret: 'com_ui_discord_client_secret',
-            } as const;
-            return (
-              <div key={field}>
-                <Label htmlFor={`${id}-${field}`}>{localize(labels[field])}</Label>
-                <Input
-                  id={`${id}-${field}`}
-                  type={secret ? 'password' : 'text'}
-                  autoComplete={secret ? 'new-password' : 'off'}
-                  readOnly={field === 'applicationId' && editor !== 'new'}
-                  disabled={disabled}
-                  aria-invalid={Boolean(form.formState.errors[field])}
-                  aria-describedby={
-                    form.formState.errors[field] ? `${id}-${field}-error` : undefined
-                  }
-                  {...form.register(field, {
-                    required: field === 'applicationId' || (secret && editor === 'new'),
-                    maxLength: { applicationId: 20, name: 100, botToken: 512, clientSecret: 512 }[
-                      field
-                    ],
-                    ...(field === 'applicationId'
-                      ? {
-                          validate: (value) =>
-                            channelSnowflakeSchema.safeParse(value.trim()).success,
-                        }
-                      : {}),
-                  })}
-                />
-                {form.formState.errors[field] && (
-                  <p
-                    id={`${id}-${field}-error`}
-                    role="alert"
-                    className="text-text-destructive text-sm"
-                  >
-                    {localize('com_ui_discord_invalid')}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-          {form.formState.errors.root && (
-            <Alert variant="error">{form.formState.errors.root.message}</Alert>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                form.reset(empty);
-                setRestore({ trigger: editorTrigger.current });
-                setEditor(null);
-              }}
-            >
-              {localize('com_ui_cancel')}
-            </Button>
-            <Button type="submit" variant="submit" disabled={disabled}>
-              {localize('com_ui_save')}
-            </Button>
-          </div>
-        </form>
+          {orphans.map((guild) => (
+            <Server
+              key={guild.installationId}
+              guild={guild}
+              disabled={disabled}
+              onReconnect={reconnect}
+              onDisconnect={disconnectGuild}
+            />
+          ))}
+        </div>
       )}
-      <ul className="space-y-3">
-        {applications.map((app) => (
-          <li
-            key={app.applicationId}
-            className="border-border-light space-y-2 rounded-lg border p-3"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <p className="min-w-0 truncate text-sm font-medium">
-                {app.name || app.applicationId}
-              </p>
-              <TooltipAnchor
-                description={localize('com_ui_discord_app_rotate')}
-                render={
-                  <IconButton
-                    label={localize('com_ui_discord_rotate_named', {
-                      0: app.name || app.applicationId,
-                    })}
-                    variant="ghost"
-                    size="sm"
-                    shape="control"
-                    disabled={disabled}
-                    onClick={(event) => edit(app, event.currentTarget)}
-                  >
-                    <Pencil className="size-4" aria-hidden="true" />
-                  </IconButton>
-                }
-              />
-            </div>
-            <CredentialHealth app={app} />
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                disabled={disabled}
-                aria-label={localize('com_ui_discord_connect_named', {
-                  0: app.name || app.applicationId,
-                })}
-                onClick={(event) => start(app.applicationId, undefined, event.currentTarget)}
-              >
-                {localize('com_ui_discord_connect')}
-              </Button>
-            </div>
-            <details className="group border-border-light border-t pt-2">
-              <summary className="text-text-secondary cursor-pointer text-sm">
-                {localize('com_ui_discord_setup_details')}
-              </summary>
-              <div className="mt-3 space-y-3">
-                {app.name && (
-                  <p className="text-text-secondary text-xs break-all">
-                    {localize('com_ui_discord_application_id')}: {app.applicationId}
-                  </p>
-                )}
-                <p className="text-text-secondary text-xs">
-                  {localize('com_ui_discord_health_help')}
-                </p>
-                {setup?.oauthCallbackUrl && (
-                  <div>
-                    <Label htmlFor={`${id}-callback-${app.applicationId}`}>
-                      {localize('com_ui_discord_callback')}
-                    </Label>
-                    <Input
-                      id={`${id}-callback-${app.applicationId}`}
-                      readOnly
-                      value={setup.oauthCallbackUrl}
-                    />
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <Button
-                    type="button"
-                    variant="submit"
-                    disabled={disabled || (commands.isError && commandAppId === app.applicationId)}
-                    aria-label={localize('com_ui_discord_commands_named', {
-                      0: app.name || app.applicationId,
-                    })}
-                    aria-busy={commandAppId === app.applicationId && commands.isLoading}
-                    onClick={(event) => {
-                      commandTrigger.current = event.currentTarget;
-                      commands.mutate({
-                        applicationId: app.applicationId,
-                        expectedRevision: app.revision,
-                        manifestVersion: DISCORD_COMMAND_MANIFEST_VERSION,
-                      });
-                    }}
-                  >
-                    {localize(
-                      commandAppId === app.applicationId && commands.isLoading
-                        ? 'com_ui_discord_commands_registering'
-                        : 'com_ui_discord_commands_register',
-                    )}
-                  </Button>
-                  <p className="text-text-secondary text-xs">
-                    {localize('com_ui_discord_commands_help')}
-                  </p>
-                  {commands.isSuccess &&
-                    commandAppId === app.applicationId &&
-                    commands.variables?.expectedRevision === app.revision && (
-                      <p role="status">{localize('com_ui_discord_commands_success')}</p>
-                    )}
-                  {commandAppId === app.applicationId && commands.isError && (
-                    <Alert ref={revealCommand} tabIndex={-1} variant="error">
-                      <p>{localize(errorLabel(commands.error))}</p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => {
-                          setRestore({ trigger: commandTrigger.current });
-                          commands.reset();
-                          reconcile.mutate();
-                        }}
-                      >
-                        {localize('com_ui_refresh')}
-                      </Button>
-                    </Alert>
-                  )}
-                </div>
-                {setup?.interactionBaseUrl ? (
-                  <div>
-                    <Label htmlFor={`${id}-ingress-${app.applicationId}`}>
-                      {localize('com_ui_discord_interactions')}
-                    </Label>
-                    <Input
-                      id={`${id}-ingress-${app.applicationId}`}
-                      readOnly
-                      value={`${setup.interactionBaseUrl}${encodeURIComponent(app.applicationId)}/interactions`}
-                    />
-                  </div>
-                ) : (
-                  <p className="text-text-secondary text-xs">
-                    {localize('com_ui_discord_ingress_required')}
-                  </p>
-                )}
-              </div>
-            </details>
-          </li>
-        ))}
-      </ul>
+      {(apps.hasNextPage || guilds.hasNextPage) && (
+        <p className="text-text-secondary text-xs">{localize('com_ui_discord_more_hint')}</p>
+      )}
       {apps.hasNextPage && (
         <Button
           type="button"
@@ -918,57 +705,6 @@ function Setup({
           {localize('com_ui_discord_more_apps')}
         </Button>
       )}
-      <h3 ref={guildHeading} tabIndex={-1} className="text-sm font-semibold">
-        {localize('com_ui_discord_guilds')}
-      </h3>
-      {ready && !installations.length && (
-        <p className="text-text-secondary text-sm">{localize('com_ui_discord_guilds_empty')}</p>
-      )}
-      <ul className="space-y-3">
-        {installations.map((guild) => (
-          <li
-            key={guild.installationId}
-            className="border-border-light space-y-2 rounded-lg border p-3"
-          >
-            <p className="text-sm font-medium">{guild.guildName}</p>
-            <p role="status" className="text-text-secondary text-xs">
-              {localize(
-                guild.status === 'active'
-                  ? 'com_ui_discord_connected'
-                  : 'com_ui_discord_disconnected',
-              )}
-            </p>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={disabled}
-                aria-label={localize('com_ui_discord_reconnect_named', { 0: guild.guildName })}
-                onClick={(event) =>
-                  start(guild.applicationId, guild.installationId, event.currentTarget)
-                }
-              >
-                {localize('com_ui_discord_reconnect')}
-              </Button>
-              {guild.status === 'active' && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={disabled}
-                  aria-label={localize('com_ui_discord_disconnect_named', { 0: guild.guildName })}
-                  onClick={(event) => {
-                    disconnectTrigger.current = event.currentTarget;
-                    disconnect.reset();
-                    setConfirm(guild);
-                  }}
-                >
-                  {localize('com_ui_discord_disconnect')}
-                </Button>
-              )}
-            </div>
-          </li>
-        ))}
-      </ul>
       {guilds.hasNextPage && (
         <Button
           type="button"
@@ -982,15 +718,74 @@ function Setup({
           {localize('com_ui_discord_more_guilds')}
         </Button>
       )}
-      <Button asChild variant="link">
-        <a
-          href="https://discord.com/developers/applications"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {localize('com_ui_discord_developer_portal')}
-        </a>
-      </Button>
+      <Editor
+        editor={editor}
+        form={form}
+        disabled={disabled}
+        busy={busy}
+        saving={save.isLoading}
+        error={save.error}
+        alertRef={reveal}
+        onSubmit={(event) => void submit(event)}
+        onClose={() => {
+          form.reset(empty);
+          setRestore({ trigger: editorTrigger.current });
+          setEditor(null);
+        }}
+        onRefresh={refreshAfterError}
+      />
+      <Settings
+        app={settingsApp}
+        setup={setup}
+        open={settingsOpen}
+        disabled={disabled}
+        busy={busy}
+        registering={commandAppId === settings && commands.isLoading}
+        registered={
+          commandAppId === settings &&
+          commands.isSuccess &&
+          commands.variables?.expectedRevision === settingsApp?.revision
+        }
+        failure={commandFailed ? { error: commands.error } : null}
+        loadError={apps.isError || guilds.isError ? apps.error || guilds.error : null}
+        loadRef={settingsFailure}
+        alertRef={reveal}
+        commandRef={commandRef}
+        onOpenChange={(open) => {
+          if (!open) setSettings(null);
+        }}
+        onClosed={(event) => {
+          event.preventDefault();
+          const trigger = settingsTrigger.current;
+          if (!restore && trigger?.isConnected && !trigger.disabled) trigger.focus();
+        }}
+        onRegister={() => {
+          if (!settingsApp) return;
+          commands.mutate({
+            applicationId: settingsApp.applicationId,
+            expectedRevision: settingsApp.revision,
+            manifestVersion: DISCORD_COMMAND_MANIFEST_VERSION,
+          });
+        }}
+        onRefresh={() => {
+          setRestore({ trigger: commandTrigger.current });
+          commands.reset();
+          reconcile.mutate();
+        }}
+        onRetry={() => retry()}
+      />
+      <Connect
+        flow={flow}
+        reason={reason}
+        error={linkError}
+        busy={busy}
+        retryable={!attempt.current && lastStart.current !== null}
+        alertRef={revealFlow}
+        errorRef={reveal}
+        onCancel={cancelAttempt}
+        onRetry={connectAgain}
+        onRefresh={refreshAfterError}
+      />
       <AlertDialog
         open={confirm !== null}
         onOpenChange={(open) => {
