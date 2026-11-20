@@ -400,30 +400,32 @@ export default function InsightsView() {
     enabled: !!user && insightsFeatureEnabled,
     retry: false,
   });
-  const data = insights.data;
+  const response = insights.data;
+  const selectionRequired = response != null && 'selectionRequired' in response;
+  const data = selectionRequired ? undefined : response;
   const insightsStatus = responseStatus(insights.error);
   const isRecoveringAgentFilters = shouldRecoverAgentFilters(insightsStatus, selectedAgentIds);
   const agentItems = useMemo(() => {
-    if (!data) {
+    if (!response) {
       return [];
     }
     const duplicateNames = new Map<string, number>();
-    for (const agent of data.agents) {
+    for (const agent of response.agents) {
       duplicateNames.set(agent.name, (duplicateNames.get(agent.name) ?? 0) + 1);
     }
-    return data.agents.map((agent) => ({
+    return response.agents.map((agent) => ({
       value: agent.id,
       label:
         (duplicateNames.get(agent.name) ?? 0) > 1
           ? `${agent.name} (${agent.id.slice(-6)})`
           : agent.name,
     }));
-  }, [data]);
+  }, [response]);
   const effectiveAgentIds = useMemo(() => {
     if (selectedAgentIds.length > 0) return selectedAgentIds;
-    if (data?.selectionRequired) return [];
+    if (selectionRequired) return [];
     return agentItems.map((agent) => agent.value);
-  }, [agentItems, selectedAgentIds, data?.selectionRequired]);
+  }, [agentItems, selectedAgentIds, selectionRequired]);
   const displayedAgentIds = pendingAgentIds ?? effectiveAgentIds;
 
   useDocumentTitle(`${localize('com_insights_title')} | LibreChat`);
@@ -486,7 +488,7 @@ export default function InsightsView() {
   };
 
   const handleAgentSelection = (agentIds: string[]) => {
-    if (!data) {
+    if (!response) {
       return;
     }
     if (agentIds.length === 0) {
@@ -495,7 +497,7 @@ export default function InsightsView() {
     }
     setPendingAgentIds(null);
     const normalizedIds = [...new Set(agentIds)].sort();
-    const allAgentIds = data.agents.map((agent) => agent.id).sort();
+    const allAgentIds = response.agents.map((agent) => agent.id).sort();
     const nextParams = clearAgentFilters(urlSearchParams);
     const everyAgent =
       allAgentIds.length > 1 &&
@@ -537,7 +539,7 @@ export default function InsightsView() {
           <h1 className="text-base font-semibold">{localize('com_insights_title')}</h1>
         </div>
         <div className="flex max-w-full flex-wrap items-center gap-2 md:flex-nowrap">
-          {data && (
+          {response && (
             <MultiSelect
               placeholder={localize('com_ui_agents')}
               items={agentItems}
@@ -673,14 +675,14 @@ export default function InsightsView() {
               </span>
             </Panel>
           )}
-          {data?.selectionRequired && !insights.isPreviousData && (
+          {selectionRequired && !insights.isPreviousData && (
             <Panel>
               <p className="text-text-secondary text-sm">
                 {localize('com_insights_select_agents_to_load')}
               </p>
             </Panel>
           )}
-          {data && !data.selectionRequired && !insights.isPreviousData && (
+          {data && !insights.isPreviousData && (
             <>
               <p className="text-text-secondary text-sm">
                 {localize('com_insights_last_used')}{' '}

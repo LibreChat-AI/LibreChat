@@ -3,13 +3,8 @@ import {
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
   INSIGHTS_AGENT_ID_MAX_LENGTH,
-  FEEDBACK_REASON_KEYS,
 } from 'librechat-data-provider';
-import type {
-  TInsightsParams,
-  TInsightsAggregateResponse,
-  TInsightsAgent,
-} from 'librechat-data-provider';
+import type { TInsightsSelectionResponse, TInsightsParams } from 'librechat-data-provider';
 import type { InsightsMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { InsightsConfigResolver } from './config';
@@ -71,32 +66,6 @@ const timeZoneValue = (value: unknown): string | undefined => {
     return undefined;
   }
 };
-
-function selectionResponse(agents: TInsightsAgent[]): TInsightsAggregateResponse {
-  return {
-    agents: agents.map(({ id, name }) => ({ id, name })),
-    selectionRequired: true,
-    summary: {
-      totalUsers: 0,
-      totalConversations: 0,
-      totalMessages: 0,
-      totalTokens: 0,
-      totalResponses: 0,
-      completedResponses: 0,
-      failedResponses: 0,
-      interruptedResponses: 0,
-      lastUsed: null,
-      spendUSD: null,
-      feedback: {
-        thumbsUp: 0,
-        thumbsDown: 0,
-        categories: FEEDBACK_REASON_KEYS.map((key) => ({ key, count: 0 })),
-      },
-    },
-    daily: [],
-    models: [],
-  };
-}
 
 export function createInsightsAccessHandler({
   resolveInsightsConfig,
@@ -167,7 +136,8 @@ export function createInsightsHandler({
       const requiresSelection = tenantWide === true && !adminAutoSelectAllAgents;
       const allAgentsRequested = stringValue(req.query.allAgents) === 'true';
       if (requiresSelection && requestedAgentIds.length === 0 && !allAgentsRequested) {
-        res.json(selectionResponse(agents));
+        const selection: TInsightsSelectionResponse = { selectionRequired: true, agents };
+        res.json(selection);
         return;
       }
       const agentIds = requestedAgentIds.length > 0 ? requestedAgentIds : [...authorizedAgentIds];

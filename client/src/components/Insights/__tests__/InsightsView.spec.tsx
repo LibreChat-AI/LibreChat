@@ -4,10 +4,11 @@ import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
+  TInsightsSelectionResponse,
   TInsightsAgentVersion,
   TInsightsDailyPoint,
-  TInsightsParams,
   TInsightsResponse,
+  TInsightsParams,
 } from 'librechat-data-provider';
 import InsightsView from '../InsightsView';
 
@@ -40,13 +41,17 @@ const insightsData: TInsightsResponse = {
   topUsers: [],
   churnedUsers: [],
 };
+const selection: TInsightsSelectionResponse = {
+  selectionRequired: true,
+  agents: insightsData.agents,
+};
 
 const mockUseInsightsQuery = jest.fn(
   (
     params: TInsightsParams,
     _options?: { enabled?: boolean; retry?: boolean },
   ): {
-    data?: TInsightsResponse;
+    data?: TInsightsResponse | TInsightsSelectionResponse;
     isLoading: boolean;
     isFetching: boolean;
     isPreviousData?: boolean;
@@ -114,7 +119,10 @@ function lastQueryParams(): TInsightsParams {
   return mockUseInsightsQuery.mock.calls[mockUseInsightsQuery.mock.calls.length - 1][0];
 }
 
-function queryResult(params: TInsightsParams, data?: TInsightsResponse) {
+function queryResult(
+  params: TInsightsParams,
+  data?: TInsightsResponse | TInsightsSelectionResponse,
+) {
   return { data, isLoading: false, isFetching: false, error: null, params };
 }
 
@@ -156,10 +164,7 @@ async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
 describe('InsightsView agent selection', () => {
   it('opens with no agents selected and lets admins choose All agents explicitly', async () => {
     mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(params, {
-        ...insightsData,
-        selectionRequired: !params.agentIds?.length && !params.allAgents,
-      }),
+      queryResult(params, params.agentIds?.length || params.allAgents ? insightsData : selection),
     );
     const user = userEvent.setup();
     renderView();
@@ -187,7 +192,7 @@ describe('InsightsView agent selection', () => {
           error: Object.assign(new Error('Forbidden'), { response: { status: 403 } }),
         };
       }
-      return queryResult(params, { ...insightsData, selectionRequired: true });
+      return queryResult(params, selection);
     });
     renderView('/insights?agentIds=agent-1&agentIds=agent-2&agentIds=agent-3');
     await waitFor(() => expect(lastQueryParams().agentIds).toBeUndefined());

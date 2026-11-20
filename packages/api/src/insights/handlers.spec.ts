@@ -94,7 +94,7 @@ describe('Insights handlers', () => {
     const { response, json } = createResponse();
     await handler(req, response);
     expect(getInsights).not.toHaveBeenCalled();
-    expect(json).toHaveBeenCalledWith(expect.objectContaining({ agents, selectionRequired: true }));
+    expect(json).toHaveBeenCalledWith({ selectionRequired: true, agents });
   });
 
   it('loads every agent when an admin chooses All agents with automatic selection off', async () => {

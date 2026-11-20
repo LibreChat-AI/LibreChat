@@ -111,8 +111,13 @@ export type TInsightsModel = TInsightsResponseOutcomes & {
   spendUSD: number | null;
 };
 
+/** Sent instead of statistics while an admin still has to choose agents. */
+export type TInsightsSelectionResponse = {
+  selectionRequired: true;
+  agents: TInsightsAgent[];
+};
+
 export type TInsightsAggregateResponse = {
-  selectionRequired?: boolean;
   agents: TInsightsAgent[];
   summary: TInsightsSummary;
   daily: TInsightsDailyPoint[];
