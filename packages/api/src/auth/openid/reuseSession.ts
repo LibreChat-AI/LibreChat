@@ -1,10 +1,14 @@
 import { AUTH_SESSION_CHECK_UNAVAILABLE, OPENID_SESSION_ENDED } from 'librechat-data-provider';
 import type { ProviderSessionRef } from 'librechat-data-provider';
-import type { ResolvedBackchannelLogoutConfig } from './providerSession';
-import type { ProviderSessionAuthorizer } from './providerSession';
+import type {
+  ProviderSessionAuthorizer,
+  ProviderSessionBinding,
+  ResolvedBackchannelLogoutConfig,
+} from './providerSession';
 import type { OpenIDReuseCredential } from './reuseCredential';
 import type { OpenIDLogger } from './types';
 import {
+  ProviderSessionUnavailableError,
   isProviderSessionUnavailableError,
   isSameProviderSessionRef,
   providerSessionCredentialExpiry,
@@ -49,19 +53,54 @@ export function resolveBoundProviderSession(
   return merged.ref;
 }
 
-/** Resolves the provider session bound to a refresh token's reuse-identity marker, honoring the
- *  session's existing association; mode `'off'` carries whichever one is already bound forward. */
-export function resolveBoundProviderSessionForToken(
+export type FindProviderSessionBinding = (
+  refreshToken: string,
+) => Promise<ProviderSessionBinding | null>;
+
+/** Reads the Session row's ref for `refreshToken` only when it can decide the result: mode is
+ *  not `'off'` and neither the marker nor the Express session has a ref. A failed read throws
+ *  `ProviderSessionUnavailableError` (`503`, cookies kept). */
+async function findSessionDocProviderSession(
+  mode: ResolvedBackchannelLogoutConfig['mode'],
+  markerRef: ProviderSessionRef | null,
+  sessionRef: ProviderSessionRef | null,
+  refreshToken: string | undefined,
+  findProviderSessionBinding: FindProviderSessionBinding,
+): Promise<ProviderSessionRef | null> {
+  if (mode === 'off' || markerRef || sessionRef || !refreshToken) {
+    return null;
+  }
+  try {
+    return (await findProviderSessionBinding(refreshToken))?.providerSession ?? null;
+  } catch (error) {
+    throw new ProviderSessionUnavailableError('Session provider-session lookup failed', {
+      cause: error,
+    });
+  }
+}
+
+/** Resolves the provider session bound to a refresh token: the bound reuse-identity marker's ref,
+ *  then the Express session's ref, then the Session row's ref for that token. Mode `'off'`
+ *  carries the marker or Express session ref forward and reads no Session row. */
+export async function resolveBoundProviderSessionForToken(
   mode: ResolvedBackchannelLogoutConfig['mode'],
   parsedCookies: { openid_user_id?: string },
   jwtRefreshSecret: string | undefined,
   refreshToken: string | undefined,
   sessionProviderSession: ProviderSessionRef | null,
-): ProviderSessionRef | null {
+  findProviderSessionBinding: FindProviderSessionBinding,
+): Promise<ProviderSessionRef | null> {
   const markerRef =
     getValidOpenIDReuseCredential(parsedCookies, jwtRefreshSecret, refreshToken)?.providerSession ??
     null;
-  return resolveBoundProviderSession(mode, markerRef, sessionProviderSession);
+  const sessionDocRef = await findSessionDocProviderSession(
+    mode,
+    markerRef,
+    sessionProviderSession,
+    refreshToken,
+    findProviderSessionBinding,
+  );
+  return resolveBoundProviderSession(mode, markerRef, sessionProviderSession, sessionDocRef);
 }
 
 export interface AuthorizeCachedReuseSessionDeps {
@@ -144,6 +183,8 @@ export interface OpenIDRefreshProviderSessionDeps {
   jwtRefreshSecret: string | undefined;
   /** Removes the reuse-mode Session doc keyed by a denied refresh token's hash. */
   deleteOpenIDSession: (refreshToken: string) => Promise<unknown>;
+  /** Reads the Session row's provider-session binding by refresh token hash. */
+  findProviderSessionBinding: FindProviderSessionBinding;
   logger: Pick<OpenIDLogger, 'warn'>;
   providerSessionExpiryMs: number;
 }
@@ -159,6 +200,12 @@ export interface OpenIDRefreshProviderSessionContext {
     sessionProviderSession: ProviderSessionRef | null,
     session?: AuthorizeCachedReuseSessionInput['session'],
   ) => Promise<void>;
+  /** `resolveBoundProviderSessionForToken` for this request's mode and cookies. Reads the
+   *  Session row at most once for each token. */
+  resolveBoundProviderSession: (
+    refreshToken: string | undefined,
+    sessionProviderSession: ProviderSessionRef | null,
+  ) => Promise<ProviderSessionRef | null>;
 }
 
 /** Resolves the OpenID refresh path's provider-session mode and reuse-credential binding for a
@@ -175,11 +222,22 @@ export async function resolveOpenIDRefreshProviderSession(
     ? getReuseCredentialForMode(mode, deps.parsedCookies, deps.jwtRefreshSecret, refreshToken)
     : null;
 
-  const authorizeReuse = (
+  const bindingLookups = new Map<string, Promise<ProviderSessionBinding | null>>();
+  const findProviderSessionBinding: FindProviderSessionBinding = (token) => {
+    let lookup = bindingLookups.get(token);
+    if (!lookup) {
+      lookup = deps.findProviderSessionBinding(token);
+      bindingLookups.set(token, lookup);
+    }
+    return lookup;
+  };
+
+  const authorizeReuse = async (
     sessionProviderSession: ProviderSessionRef | null,
     session?: AuthorizeCachedReuseSessionInput['session'],
-  ) =>
-    authorizeCachedReuseSession(
+  ) => {
+    const markerProviderSession = reuseCredential?.providerSession ?? null;
+    await authorizeCachedReuseSession(
       {
         authorizer: deps.authorizer,
         deleteOpenIDSession: deps.deleteOpenIDSession,
@@ -187,14 +245,40 @@ export async function resolveOpenIDRefreshProviderSession(
         providerSessionExpiryMs: deps.providerSessionExpiryMs,
       },
       {
-        markerProviderSession: reuseCredential?.providerSession ?? null,
+        markerProviderSession,
         sessionProviderSession,
+        sessionDocProviderSession: await findSessionDocProviderSession(
+          mode,
+          markerProviderSession,
+          sessionProviderSession,
+          refreshToken,
+          findProviderSessionBinding,
+        ),
         refreshToken,
         session,
       },
     );
+  };
 
-  return { mode, reuseCredential, authorizeReuse };
+  const resolveBoundProviderSessionFor = (
+    token: string | undefined,
+    sessionProviderSession: ProviderSessionRef | null,
+  ) =>
+    resolveBoundProviderSessionForToken(
+      mode,
+      deps.parsedCookies,
+      deps.jwtRefreshSecret,
+      token,
+      sessionProviderSession,
+      findProviderSessionBinding,
+    );
+
+  return {
+    mode,
+    reuseCredential,
+    authorizeReuse,
+    resolveBoundProviderSession: resolveBoundProviderSessionFor,
+  };
 }
 
 /** No cookie clearing here: the denial path already cleaned up; an unavailable check has nothing
