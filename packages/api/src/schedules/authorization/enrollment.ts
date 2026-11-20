@@ -40,6 +40,14 @@ export interface ScheduleMCPEnrollmentDeps {
   resolveGraphAccess: (user: IUser) => Promise<AgentGraphAccessContext>;
   getNodes: (ids: string[], access?: AgentGraphAccessContext) => Promise<AgentGraphNode[]>;
   getModelsConfig: (user: IUser) => Promise<TModelsConfig>;
+  /**
+   * The operator's servers as the registry holds them, inspected. A server `librechat.yaml`
+   * defines unchanged is left out, since the registry already has it; what comes back is
+   * handed to `getServers`, as a run's readiness check does.
+   */
+  ensureConfigServers: (
+    config: NonNullable<AppConfig['mcpConfig']>,
+  ) => Promise<Record<string, ParsedServerConfig>>;
   getServers: (
     user: IUser,
     config: Record<string, ParsedServerConfig>,
@@ -67,7 +75,8 @@ interface Offer {
 
 /**
  * Resolves what the owner can be offered: the MCP tools the agent graph selects, on servers
- * whose recipient the operator declared. Does not connect or mint.
+ * whose recipient the operator declared. Does not mint, and connects to nothing the registry
+ * has inspected already.
  *
  * A server whose configuration no longer matches the operator's declaration is left out, and
  * the rest is still offered. A grant that lists its tools then does not cover it; a grant of
@@ -84,6 +93,49 @@ export function createScheduleMCPEnrollmentResolver<
   options: OfferOptions = {},
 ): ScheduleMCPEnrollmentResolver<Identity> {
   return createScheduleMCPOffer<Identity>(deps, options).targets;
+}
+
+/**
+ * Whether a key selects something on an MCP server: a tool, or every tool there. The marker
+ * that only attaches a server to an agent, with no tool selected, does not.
+ */
+const selectsTool = (key: string): boolean =>
+  key.includes(Constants.mcp_delimiter) &&
+  !key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`);
+
+/**
+ * The operator's servers to hand the registry, so that a declared server the agents use comes
+ * back as a run will see it. A grant is bound to that configuration, and inspection fills in
+ * what the operator left out (whether the server requires OAuth): the entry as written would
+ * never match the one a run checks the grant against.
+ *
+ * Only the declared servers the agents select are inspected, as a run's readiness check
+ * inspects only what it needs: a cold or unreachable server nobody selected must not hold up
+ * an offer. A declared server is never handed over as written. The rest are, since nothing
+ * is bound to them and only their names are read.
+ */
+async function configured(
+  deps: Pick<ScheduleMCPEnrollmentDeps, 'ensureConfigServers'>,
+  raw: NonNullable<AppConfig['mcpConfig']>,
+  declared: ReadonlySet<string>,
+  tools: ReadonlyArray<{ name: string }>,
+): Promise<Record<string, ParsedServerConfig>> {
+  const names = Object.keys(raw);
+  const aliases = buildServerNameAliases(names);
+  const candidates = [...names, ...aliases.keys()];
+  const selected = new Set<string>();
+  for (const { name: key } of tools) {
+    if (!selectsTool(key)) continue;
+    const [tool, alias] = splitMCPToolKey(key, candidates);
+    const name = alias && (raw[alias] ? alias : aliases.get(alias));
+    if (tool && name && declared.has(name)) selected.add(name);
+  }
+  const entries = Object.entries(raw);
+  const rest = Object.fromEntries(entries.filter(([name]) => !declared.has(name)));
+  const inspected = await deps.ensureConfigServers(
+    Object.fromEntries(entries.filter(([name]) => selected.has(name))),
+  );
+  return { ...(rest as Record<string, ParsedServerConfig>), ...inspected };
 }
 
 /**
@@ -136,20 +188,27 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
     const undeclared = !mcp || Object.keys(bindings).length === 0;
     if (undeclared && options.otherTools === 'ignore')
       return { targets: [], tools: [], servers: [] };
-    const [servers, { tools, candidates: candidateTools }] = await Promise.all([
-      deps.getServers(user, (appConfig?.mcpConfig ?? {}) as Record<string, ParsedServerConfig>),
-      resolveScheduledMCPRequirements(
-        identity.agentId,
-        user,
-        {
-          getAgentGraphNodes: deps.getNodes,
-          resolveAgentGraphAccess: () => deps.resolveGraphAccess(user),
-          getModelsConfig: deps.getModelsConfig,
-        },
-        async () => appConfig,
-        signal,
+    const { tools, candidates: candidateTools } = await resolveScheduledMCPRequirements(
+      identity.agentId,
+      user,
+      {
+        getAgentGraphNodes: deps.getNodes,
+        resolveAgentGraphAccess: () => deps.resolveGraphAccess(user),
+        getModelsConfig: deps.getModelsConfig,
+      },
+      async () => appConfig,
+      signal,
+    );
+    signal?.throwIfAborted();
+    const servers = await deps.getServers(
+      user,
+      await configured(
+        deps,
+        appConfig?.mcpConfig ?? {},
+        new Set(mcp ? Object.keys(bindings) : []),
+        tools,
       ),
-    ]);
+    );
     const names = Object.keys(servers);
     const aliases = buildServerNameAliases(names);
     const candidates = [...names, ...aliases.keys()];
@@ -170,11 +229,7 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
      */
     const used = new Set<string>();
     for (const { name: key, agentId } of tools) {
-      if (
-        !key.includes(Constants.mcp_delimiter) ||
-        key.startsWith(`${Constants.mcp_server}${Constants.mcp_delimiter}`)
-      )
-        continue;
+      if (!selectsTool(key)) continue;
       // A selection of every tool on a server is kept under its marker (`mcp_all`): it names
       // no tool to tick, but the server is in use, and a whole-agent grant covers it.
       const [tool, alias] = splitMCPToolKey(key, candidates);

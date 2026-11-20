@@ -717,6 +717,7 @@ it('runs a completion turn under the grant the schedule holds when the turn star
       resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
       getNodes: async () => [],
       getModelsConfig: async () => ({}),
+      ensureConfigServers: async () => ({}),
       getServers: async () => ({}),
     },
   });
@@ -868,6 +869,7 @@ it('keeps a legacy continuation guarded if confirmation lands after request admi
       resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
       getNodes: async () => [],
       getModelsConfig: async () => ({}),
+      ensureConfigServers: async () => ({}),
       getServers: async () => ({}),
     },
   });
@@ -970,6 +972,7 @@ it('gives a resumed completion turn nothing to act with once the schedule was au
       resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
       getNodes: async () => [],
       getModelsConfig: async () => ({}),
+      ensureConfigServers: async () => ({}),
       getServers: async () => ({}),
     },
   });
@@ -1028,6 +1031,7 @@ it('persists completion identity before tool construction and restores its monit
       resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
       getNodes: async () => [],
       getModelsConfig: async () => ({}),
+      ensureConfigServers: async () => ({}),
       getServers: async () => ({}),
     },
   });
@@ -1218,6 +1222,7 @@ it('stores only a safe preparation outage when initial authorization fails after
       resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
       getNodes: async () => [],
       getModelsConfig: async () => ({}),
+      ensureConfigServers: async () => ({}),
       getServers: async () => ({}),
     },
   });
@@ -1306,6 +1311,7 @@ it.each(
         resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
         getNodes: async () => [],
         getModelsConfig: async () => ({}),
+        ensureConfigServers: async () => ({}),
         getServers: async () => ({}),
       },
     });

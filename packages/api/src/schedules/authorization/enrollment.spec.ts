@@ -6,6 +6,7 @@ import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { createScheduleMCPEnrollmentResolver, createScheduleMCPOffer } from './enrollment';
+import { getScheduledMCPConfigurationRevision } from './configuration';
 import { allowOffered, pinStorage } from './execution.helper';
 import { createScheduleMCPConsentService } from './service';
 import { createResolveAgentFireAccess } from '../access';
@@ -49,6 +50,10 @@ function setup() {
     getNodes: jest.fn(async (ids) =>
       ids.map((id) => ({ id, provider: 'test', model: 'test', tools: ['query_mcp_warehouse'] })),
     ),
+    ensureConfigServers: jest.fn(
+      async (config: NonNullable<AppConfig['mcpConfig']>) =>
+        config as Record<string, ParsedServerConfig>,
+    ),
     getServers: jest.fn(async (_user, config) => config),
   };
   return { deps, resolve: createScheduleMCPEnrollmentResolver(deps) };
@@ -61,6 +66,70 @@ it('resolves the configured root and declared resource without credentials or a 
   expect(targets[0].resource.audience).toBe('warehouse');
   expect(targets[0].resource.configurationRevision).toMatch(/^[a-f0-9]{64}$/);
   expect(deps.getServers).toHaveBeenCalledTimes(1);
+});
+it('binds the configuration a run will see, which inspection completes, not the one as written', async () => {
+  const { deps, resolve } = setup();
+  // The registry holds a server `librechat.yaml` defines unchanged, inspected: whether it
+  // requires OAuth is filled in where the operator left it out. It hands that entry back
+  // unless it is given another configuration for the name, which then stands in its place.
+  const inspected = {
+    type: 'streamable-http',
+    url: 'https://warehouse.example/mcp',
+    requiresOAuth: true,
+  } as ParsedServerConfig;
+  jest.mocked(deps.ensureConfigServers).mockResolvedValue({});
+  jest
+    .mocked(deps.getServers)
+    .mockImplementation(async (_user, config) => ({ warehouse: inspected, ...config }));
+  const [target] = await resolve(identity, {});
+  const { serverName: _name, configurationRevision, ...binding } = target.resource;
+  expect(configurationRevision).toBe(getScheduledMCPConfigurationRevision(inspected, binding));
+  expect(deps.getServers).toHaveBeenCalledWith(expect.anything(), {});
+});
+it('inspects only the declared servers the agents select, and hands over no declared server as written', async () => {
+  const { deps, resolve } = setup();
+  const server = (host: string) => ({
+    type: 'streamable-http',
+    url: `https://${host}.example/mcp`,
+  });
+  const resource = (host: string) => ({
+    url: `https://${host}.example/mcp`,
+    credentialMode: 'resource_bearer',
+    issuer: 'https://issuer.example/',
+    audience: host,
+    scopes: ['read'],
+  });
+  jest.mocked(deps.getAppConfig).mockResolvedValue(
+    Object.assign({} as AppConfig, {
+      interfaceConfig: {
+        schedules: {
+          mcpConsent: {
+            enabled: true,
+            resources: { warehouse: resource('warehouse'), idle: resource('idle') },
+          },
+        },
+      },
+      // The agents select a tool on `warehouse` alone. `idle` is declared and attached with
+      // no tool selected, which leaves its marker among the agent's tools; nothing is
+      // declared for `notes`.
+      mcpConfig: { warehouse: server('warehouse'), idle: server('idle'), notes: server('notes') },
+    }),
+  );
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools: ['query_mcp_warehouse', 'sys__server__sys_mcp_idle'],
+    })),
+  );
+  expect(await resolve(identity, {})).toHaveLength(1);
+  expect(deps.ensureConfigServers).toHaveBeenCalledTimes(1);
+  expect(deps.ensureConfigServers).toHaveBeenCalledWith({ warehouse: server('warehouse') });
+  expect(deps.getServers).toHaveBeenCalledWith(expect.anything(), {
+    warehouse: server('warehouse'),
+    notes: server('notes'),
+  });
 });
 it('binds reachable persisted child selections without transferring the enrolled root', async () => {
   const { deps, resolve } = setup();
