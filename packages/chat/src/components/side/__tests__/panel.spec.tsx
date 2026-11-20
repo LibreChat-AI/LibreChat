@@ -47,6 +47,19 @@ import { initEnglish } from '../../../__fixtures__/i18n';
 import { useFollowChat } from '../../../react/follow';
 import SideChatPanel from '../panel';
 
+/** The header's own icon, counted: the header is drawn when its title is, not with the thread. */
+const mockHeaderIcon = jest.fn();
+jest.mock('lucide-react', () => {
+  const actual = jest.requireActual('lucide-react');
+  return {
+    ...actual,
+    ArrowUpRight: (props: object) => {
+      mockHeaderIcon();
+      return <actual.ArrowUpRight {...props} />;
+    },
+  };
+});
+
 beforeAll(initEnglish);
 
 const conversationId = 'side-conversation';
@@ -234,7 +247,11 @@ function setup({
         settlesLost: true,
         ...options,
       }),
-    useOpenConversation: () => openConversation,
+    /** A new function on every render, as a host's may be: nothing is to be redrawn for it. */
+    useOpenConversation:
+      () =>
+      (...args: Parameters<typeof openConversation>) =>
+        openConversation(...args),
     useSheetLayout: () => false,
     useClearsFooter: () => false,
     Surface,
@@ -1024,14 +1041,16 @@ describe('SideChatPanel', () => {
       await waitFor(() => expect(rows().slice(-1)[0]).toBe('reply=Two'));
       await settle();
 
-      /** The reply goes on being written: the list shows it, and the composer is left alone. */
+      /** The reply goes on being written: the list shows it, and the rest is left alone. */
       const before = drawn.length;
+      const headers = mockHeaderIcon.mock.calls.length;
       for (const text of [' fixes', ' so', ' far.']) {
         act(() => streams[0].push(word(text)));
         await settle();
       }
       expect(rows().slice(-1)[0]).toBe('reply=Two fixes so far.');
       expect(drawn).toHaveLength(before);
+      expect(mockHeaderIcon.mock.calls.length).toBe(headers);
 
       /** A key pressed in it redraws it, around the same list and on the same contract. */
       const held = drawn[drawn.length - 1];
@@ -1039,6 +1058,7 @@ describe('SideChatPanel', () => {
       await waitFor(() => expect(drawn[drawn.length - 1].draft).toBe('Half a thought'));
       expect(drawn[drawn.length - 1].children).toBe(held.children);
       expect(drawn[drawn.length - 1].contract).toBe(held.contract);
+      expect(mockHeaderIcon.mock.calls.length).toBe(headers);
     });
 
     it('starts with the words handed over as its draft, and lets go of them once they are sent', async () => {

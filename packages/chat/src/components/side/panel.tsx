@@ -1,4 +1,4 @@
-import { memo, useRef, useMemo, useEffect, useCallback } from 'react';
+import { memo, useRef, useEffect, useCallback } from 'react';
 import { ArrowUpRight, X } from 'lucide-react';
 import { useAtom, useStore, useSetAtom } from 'jotai';
 import { cn, Button, Composer, useLocalize, useFocusTrap } from '@librechat/client';
@@ -184,6 +184,51 @@ function SideChatComposer({
     </div>
   );
 }
+
+/**
+ * The subagent panel's header, which is main chat's: a bar that floats over the thread and
+ * fades into it, so the conversation scrolls under it. Drawn again for another title and for
+ * nothing else: not for a reply being written under it, nor for a key pressed below.
+ */
+const PanelHeader = memo(function PanelHeader({
+  title,
+  onOpenAsMain,
+  onClose,
+}: {
+  title: string;
+  onOpenAsMain: () => void;
+  onClose: () => void;
+}): ReactElement {
+  const localize = useLocalize();
+  return (
+    <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
+      <h2 className="min-w-0 flex-1 truncate ps-2 text-sm font-semibold" title={title}>
+        {title}
+      </h2>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        onClick={onOpenAsMain}
+        aria-label={localize('com_ui_side_chat_open_main')}
+        title={localize('com_ui_side_chat_open_main')}
+        className="h-8 w-8 shrink-0"
+      >
+        <ArrowUpRight className="size-[1.0625rem]" aria-hidden="true" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        onClick={onClose}
+        aria-label={localize('com_ui_close')}
+        className="h-8 w-8 shrink-0"
+      >
+        <X className="size-[1.0625rem]" aria-hidden="true" />
+      </Button>
+    </header>
+  );
+});
 
 type PanelSurfaceProps = Pick<
   SideChatComposerProps,
@@ -433,38 +478,14 @@ export default function SideChatPanel({
     takeDraft,
   ]);
 
-  /** The same bar for as long as its title and controls are, whatever the thread is doing. */
-  const header = useMemo(
-    () => (
-      <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
-        <h2 className="min-w-0 flex-1 truncate ps-2 text-sm font-semibold" title={title}>
-          {title}
-        </h2>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={openAsMain}
-          aria-label={localize('com_ui_side_chat_open_main')}
-          title={localize('com_ui_side_chat_open_main')}
-          className="h-8 w-8 shrink-0"
-        >
-          <ArrowUpRight className="size-[1.0625rem]" aria-hidden="true" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={onClose}
-          aria-label={localize('com_ui_close')}
-          className="h-8 w-8 shrink-0"
-        >
-          <X className="size-[1.0625rem]" aria-hidden="true" />
-        </Button>
-      </header>
-    ),
-    [title, openAsMain, onClose, localize],
-  );
+  /**
+   * What the header's controls do now, behind functions that are the same for the panel's life:
+   * a host's own callbacks need not be, and the header is not redrawn for a new one.
+   */
+  const controls = useRef({ openAsMain, onClose });
+  controls.current = { openAsMain, onClose };
+  const pressOpenAsMain = useCallback(() => controls.current.openAsMain(), []);
+  const pressClose = useCallback(() => controls.current.onClose(), []);
 
   let body: ReactNode;
   if (followed.isLoadError) {
@@ -522,9 +543,7 @@ export default function SideChatPanel({
       data-chat-pane={SIDE_CHAT_PANE}
       className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
-      {/* The subagent panel's header, which is main chat's: a bar that floats over the thread
-          and fades into it, so the conversation scrolls under it. */}
-      {header}
+      <PanelHeader title={title} onOpenAsMain={pressOpenAsMain} onClose={pressClose} />
       {/* The gutter a list beside a chat needs; see `FollowedChildThread`. A size container, as
           main chat's column is: a composer caps its width against the panel, not the window. */}
       <div className="@container flex min-h-0 flex-1 flex-col sm:px-2">{body}</div>
