@@ -435,6 +435,29 @@ describe('preflightCodeOutputBatch', () => {
       }
     });
 
+    it('releases later prefetched bytes before downloading a large output again', async () => {
+      const sizes = [60 * MB, ...Array.from({ length: 9 }, () => 6 * MB)];
+      const { prepare, calls } = sizedPrepare(sizes);
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+      });
+
+      expect(outcome(result)).toEqual(serialOutcome(sizes, 64 * MB, 64 * MB));
+      const fullCapRetry = calls.findIndex(
+        (call) => call.id === 'file-0' && call.maxBytes === 64 * MB,
+      );
+      expect(fullCapRetry).toBeGreaterThan(-1);
+      const reusedAfterRetry = result
+        .slice(1)
+        .filter((entry) => entry.preparedBuffer != null)
+        .map((entry) => entry.file.id)
+        .filter((id) => !calls.slice(fullCapRetry).some((call) => call.id === id));
+      expect(reusedAfterRetry).toEqual([]);
+    });
+
     it('reports a failed prefetch once, from the budgeted pass, with its original cause', async () => {
       const cause = new Error('code api unavailable');
       const onInspectionUnavailable = jest.fn();
