@@ -4,6 +4,7 @@ import { JSX } from 'react/jsx-runtime';
 import { cx } from 'class-variance-authority';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import type { FocusOutline } from './Focus';
+import { usePortalContainer } from '~/Providers/PortalContext';
 import { focusOutlineVariants } from './Focus';
 import { cn } from '~/utils';
 
@@ -147,7 +148,11 @@ const DialogTrigger: React.ForwardRefExoticComponent<
   DialogPrimitive.DialogTriggerProps & React.RefAttributes<HTMLButtonElement>
 > = DialogPrimitive.Trigger;
 
-const DialogPortal: React.FC<DialogPrimitive.DialogPortalProps> = DialogPrimitive.Portal;
+/** Radix's portal, into the element a `PortalProvider` names where the caller names none. */
+const DialogPortal: React.FC<DialogPrimitive.DialogPortalProps> = ({ container, ...props }) => {
+  const fallback = usePortalContainer();
+  return <DialogPrimitive.Portal container={container ?? fallback} {...props} />;
+};
 
 const DialogClose: React.ForwardRefExoticComponent<
   DialogPrimitive.DialogCloseProps & {
