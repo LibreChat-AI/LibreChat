@@ -733,9 +733,14 @@ describe('Prompt method failure contracts', () => {
 
     await expect(methods.makePromptProduction(String(prompt._id))).resolves.toEqual({
       message: 'Prompt production made successfully',
+      changed: true,
     });
     const group = (await methods.getPromptGroup({ _id: groupId })) as { productionId: unknown };
     expect(String(group.productionId)).toBe(String(prompt._id));
+    await expect(methods.makePromptProduction(String(prompt._id))).resolves.toEqual({
+      message: 'Prompt production made successfully',
+      changed: false,
+    });
 
     await expect(methods.makePromptProduction(new ObjectId().toString())).rejects.toThrow(
       'Prompt not found',

@@ -1248,6 +1248,7 @@ export type TMakePromptProductionResponse = {
 
 export type TMakePromptProductionRequest = {
   id: string;
+  deployment?: 'explicit' | 'automatic';
   groupId: string;
   productionPrompt: Pick<TPrompt, 'prompt'>;
 };

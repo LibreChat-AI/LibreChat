@@ -141,6 +141,8 @@ export type ImportSourceGroupInput = {
   readonly name: string;
   readonly author: string;
   readonly authorName: string;
+  /** Runs after a new pointer group and its initial access grant are saved. */
+  readonly onImported?: (groupId: string) => void | Promise<void>;
 };
 
 /** `created` is a new group; `unchanged` covers both an existing match and a
@@ -189,7 +191,12 @@ export type PromptServiceResult<T> =
  * `groupId` is absent when the promoted revision does not exist.
  */
 export type MakePromptProductionResult =
-  | { readonly ok: true; readonly value: TMakePromptProductionResponse; readonly groupId?: string }
+  | {
+      readonly ok: true;
+      readonly value: TMakePromptProductionResponse;
+      readonly groupId?: string;
+      readonly changed?: boolean;
+    }
   | { readonly ok: false; readonly error: PromptServiceError };
 
 export type ResolvePromptInput = PromptReference & {
@@ -244,7 +251,9 @@ export interface PromptStore {
   createPromptGroup(input: CreatePromptGroupInput): Promise<PromptCreationResult>;
   savePrompt?(input: AddPromptRevisionInput): Promise<{ readonly prompt: PromptRecord }>;
   /** Throws when the revision does not exist. */
-  makePromptProduction?(promptId: string): Promise<TMakePromptProductionResponse>;
+  makePromptProduction?(
+    promptId: string,
+  ): Promise<TMakePromptProductionResponse & { readonly changed?: boolean }>;
   deletePrompt?(input: {
     readonly groupId: string;
     readonly promptId: string;
@@ -266,7 +275,7 @@ export interface PromptDatabase {
     prompt: Record<string, unknown>;
     author: string;
   }): Promise<{ prompt: object }>;
-  makePromptProduction(promptId: string): Promise<{ message: string }>;
+  makePromptProduction(promptId: string): Promise<{ message: string; changed?: boolean }>;
   deletePrompt(input: {
     promptId: string;
     groupId: string;

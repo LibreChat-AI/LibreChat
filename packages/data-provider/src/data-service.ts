@@ -1688,8 +1688,11 @@ export function deletePrompt(payload: t.TDeletePromptVariables): Promise<t.TDele
   return request.delete(endpoints.deletePrompt(payload));
 }
 
-export function makePromptProduction(id: string): Promise<t.TMakePromptProductionResponse> {
-  return request.patch(endpoints.updatePromptTag(id));
+export function makePromptProduction(
+  id: string,
+  deployment?: 'explicit' | 'automatic',
+): Promise<t.TMakePromptProductionResponse> {
+  return request.patch(endpoints.updatePromptTag(id), deployment ? { deployment } : undefined);
 }
 
 export function updatePromptLabels(

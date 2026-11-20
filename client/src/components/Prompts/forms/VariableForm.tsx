@@ -6,12 +6,14 @@ import ReactMarkdown from 'react-markdown';
 import { replaceSpecialVars } from 'librechat-data-provider';
 import { TextareaAutosize, InputCombobox, Button } from '@librechat/client';
 import { useForm, useFieldArray, Controller, useWatch } from 'react-hook-form';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type { ProductPromptReference, TPromptGroup } from 'librechat-data-provider';
+import type { PromptEntryPoint } from '~/hooks/Prompts/usePromptTracking';
 import {
   PROMPT_HIGHLIGHT,
   toRehypePlugins,
   useRehypeModules,
 } from '~/components/Chat/Messages/Content/rehype';
+import { getProductPromptReference, usePromptResolved } from '~/hooks/Prompts/usePromptTracking';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
 import { cn, wrapVariable, defaultTextProps, extractVariableInfo } from '~/utils';
 import { useAuthContext, useLocalize, useSubmitMessage } from '~/hooks';
@@ -69,11 +71,15 @@ export default function VariableForm({
   group,
   onClose,
   promptText,
+  promptReference,
+  entryPoint = 'preview',
 }: {
   group: TPromptGroup;
   onClose: () => void;
   /** Resolved prompt text; falls back to the production prompt when absent. */
   promptText?: string;
+  promptReference?: ProductPromptReference;
+  entryPoint?: PromptEntryPoint;
 }) {
   const localize = useLocalize();
   const { user } = useAuthContext();
@@ -90,6 +96,7 @@ export default function VariableForm({
 
   const { submitPrompt } = useSubmitMessage();
   const recordUsage = useRecordPromptUsage();
+  const trackResolved = usePromptResolved(entryPoint);
   const { control, handleSubmit } = useForm<FormValues>({
     defaultValues: {
       fields: uniqueVariables.map((variable) => ({
@@ -141,6 +148,9 @@ export default function VariableForm({
       text = text.replace(regex, () => value);
     });
 
+    if (text.trim()) {
+      trackResolved(promptReference ?? getProductPromptReference(group), true);
+    }
     submitPrompt(text);
     if (group._id) {
       recordUsage.mutate(group._id);
