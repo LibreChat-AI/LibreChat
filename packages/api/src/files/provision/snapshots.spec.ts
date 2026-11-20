@@ -73,7 +73,7 @@ function parseMultipart(body: Buffer, contentType: string): MultipartPart[] {
 /** A Code API stand-in: object storage that reports MD5 entity tags, and a counting limiter. */
 function createCodeApiFixture() {
   const objects = new Map<string, StoredObject>();
-  const uploads: Array<{ path: string; files: string[]; status: number }> = [];
+  const uploads: Array<{ path: string; files: string[]; status: number; bytes: number }> = [];
   const probes: string[] = [];
   const state = {
     /** Upload requests to answer 429 before accepting again. */
@@ -81,6 +81,8 @@ function createCodeApiFixture() {
     retryAfterSeconds: 1,
     /** Names the service reports as failed inside an otherwise stored batch. */
     rejectNames: new Set<string>(),
+    /** Names the service stores but leaves out of its batch answer. */
+    omitNames: new Set<string>(),
     /** Answer session listings with a server error. */
     failListings: false,
     sessions: 0,
@@ -103,7 +105,7 @@ function createCodeApiFixture() {
       const body = await buffer(request);
       if (state.refuse > 0) {
         state.refuse--;
-        uploads.push({ path: url.pathname, files: [], status: 429 });
+        uploads.push({ path: url.pathname, files: [], status: 429, bytes: body.length });
         return send(
           429,
           { error: `Too many file uploads. Please retry in ${state.retryAfterSeconds} seconds.` },
@@ -129,7 +131,12 @@ function createCodeApiFixture() {
       });
       const failed = results.filter((result) => result.status === 'error').length;
       const status = upload[1] && failed === results.length ? 400 : 200;
-      uploads.push({ path: url.pathname, files: files.map((part) => part.filename!), status });
+      uploads.push({
+        path: url.pathname,
+        files: files.map((part) => part.filename!),
+        status,
+        bytes: body.length,
+      });
       if (!upload[1]) {
         return send(200, { message: 'success', storage_session_id: session, files: results });
       }
@@ -137,7 +144,7 @@ function createCodeApiFixture() {
       return send(status, {
         message: failed === 0 ? 'success' : partial,
         storage_session_id: session,
-        files: results,
+        files: results.filter((result) => !state.omitNames.has(result.filename)),
         succeeded: results.length - failed,
         failed,
       });
@@ -396,6 +403,7 @@ describe('generated-file snapshots in the code environment', () => {
     fixture.state.refuse = 0;
     fixture.state.retryAfterSeconds = 1;
     fixture.state.rejectNames.clear();
+    fixture.state.omitNames.clear();
     fixture.state.failListings = false;
     jest.clearAllMocks();
   });
@@ -659,6 +667,52 @@ describe('generated-file snapshots in the code environment', () => {
     expect(next.uploads).toHaveLength(1);
     expect(next.uploads[0].files).toEqual(['edit-2.png']);
     expectStoredBytes(next.mounted, files);
+  });
+
+  it('keeps the claim of a file the service stored a batch without answering for', async () => {
+    const files = snapshots(3);
+    fixture.state.omitNames.add('edit-1.png');
+
+    const partial = await turn();
+    expect(partial.uploads.map(({ path, status }) => [path, status])).toEqual([
+      ['/v1/upload/batch', 200],
+    ]);
+    expect((partial.error as { errors: unknown[] }).errors).toEqual([
+      expect.any(FileProvisionOutcomeUnknownError),
+    ]);
+    expect(fileStorage.releaseFileProvision).toHaveBeenCalledTimes(2);
+    expectStoredBytes(
+      partial.mounted,
+      files.filter((file) => file.file_id !== files[1].file_id),
+    );
+
+    fixture.state.omitNames.clear();
+    const next = await turn();
+    expect(next.queued).toEqual([files[1].file_id]);
+    expect(next.uploads).toEqual([]);
+    expect((next.error as { errors: unknown[] }).errors).toEqual([
+      expect.any(FileProvisionOutcomeUnknownError),
+    ]);
+  });
+
+  it('never holds more than one request may carry, however many records understate their size', async () => {
+    const half = Math.floor(CODE_UPLOAD_BATCH_MAX_BYTES / 2);
+    const files = Array.from({ length: 4 }, (_, index) =>
+      addFile(`grown-${index}.bin`, Buffer.alloc(half - 1024, index + 1), { bytes: 1024 }),
+    );
+
+    const first = await turn();
+    expect(first.error).toBeUndefined();
+    const batches = first.uploads.filter(({ path }) => path === '/v1/upload/batch');
+    expect(batches).toHaveLength(1);
+    expect(batches[0].files).toHaveLength(2);
+    expect(batches[0].bytes).toBeLessThanOrEqual(CODE_UPLOAD_BATCH_MAX_BYTES + 4096);
+    expect(first.uploads.filter(({ path }) => path === '/v1/upload')).toHaveLength(2);
+    for (const file of files) {
+      const ref = records.get(file.file_id)!.metadata!.codeEnvRefs!.default!;
+      const object = fixture.objects.get(`${ref.storage_session_id}/${ref.file_id}`)!;
+      expect(object.bytes.equals(stored.get(file.filepath)!)).toBe(true);
+    }
   });
 
   it('leaves an attached file on its existing liveness rule and batches it with snapshots', async () => {

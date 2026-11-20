@@ -174,8 +174,29 @@ describe('uploadCodeEnvBatch', () => {
 
     await expect(send()).resolves.toMatchObject({
       files: [
-        { status: 'error', error: 'the Code API returned no result' },
+        { status: 'unknown', error: 'the Code API returned no result' },
         { status: 'success', fileId: 'two' },
+      ],
+    });
+  });
+
+  it('does not read a refusal into an answer that confirms nothing', async () => {
+    respond = () => ({
+      status: 200,
+      body: {
+        message: 'success',
+        storage_session_id: 'session',
+        files: [
+          { status: 'success', filename: 'plots/a.png' },
+          { status: 'stored', filename: 'b.txt', fileId: 'two' },
+        ],
+      },
+    });
+
+    await expect(send()).resolves.toMatchObject({
+      files: [
+        { status: 'unknown', error: 'the Code API returned an unusable result' },
+        { status: 'unknown', error: 'the Code API returned an unusable result' },
       ],
     });
   });

@@ -67,10 +67,15 @@ export interface CodeBatchUploadFile {
   buffer: Buffer;
 }
 
-/** What the Code API answered for one file of a batch. */
+/**
+ * What the Code API answered for one file of a batch. Only an entry the service marked as an
+ * error is a refusal; a file it left out, or a success without an object id, may still have
+ * been stored, so its outcome stays `unknown`.
+ */
 export type CodeBatchUploadOutcome =
   | { status: 'success'; fileId: string; filename: string }
-  | { status: 'error'; error: string };
+  | { status: 'error'; error: string }
+  | { status: 'unknown'; error: string };
 
 export interface CodeBatchUploadResponse {
   /** One storage session holds every file the request stored. */
@@ -110,16 +115,19 @@ function toOutcome(entry: BatchResponseEntry | undefined): CodeBatchUploadOutcom
   if (entry?.status === 'success' && typeof entry.fileId === 'string' && entry.fileId !== '') {
     return { status: 'success', fileId: entry.fileId, filename: entry.filename ?? '' };
   }
+  if (entry?.status === 'error') {
+    return { status: 'error', error: entry.error || 'upload failed' };
+  }
   return {
-    status: 'error',
-    error: entry?.error || (entry ? 'upload failed' : 'the Code API returned no result'),
+    status: 'unknown',
+    error: entry ? 'the Code API returned an unusable result' : 'the Code API returned no result',
   };
 }
 
 /**
  * The service answers in part order. When it reports a different number of files than were
- * sent, as it does past its per-request cap, results are paired by name instead and a file it
- * never mentions is a failure.
+ * sent, as it does past its per-request cap, results are paired by name instead and the
+ * outcome of a file it never mentions is unknown.
  */
 function alignOutcomes(
   sent: readonly CodeBatchUploadFile[],

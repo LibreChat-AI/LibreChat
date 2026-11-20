@@ -119,7 +119,7 @@ export interface CodeBatchProvisionFile {
   onUploadStart?: FileStorageUploadObserver;
 }
 
-/** A batched file whose stored bytes outgrew what a batch may hold in memory. */
+/** A batched file whose stored bytes would take its batch past what it may hold in memory. */
 class CodeBatchOverflowError extends Error {
   constructor() {
     super('Stored file exceeds the batched upload size');
@@ -432,10 +432,15 @@ export function createProvisionService({
     };
   }
 
-  /** Reads a stored file into memory, refusing one that outgrew the batch allowance. */
+  /**
+   * Reads a stored file into memory against the allowance its batch shares. Sizes come from
+   * the bytes actually read, not the record, so however many files understate theirs the
+   * batch never holds more than one request may carry.
+   */
   async function readStoredFile(
     file: TFile,
     req: ServerRequest,
+    held: { bytes: number },
     signal?: AbortSignal,
   ): Promise<Buffer> {
     const stream = await getStorageStream(file, req, signal);
@@ -452,16 +457,20 @@ export function createProvisionService({
       for await (const chunk of stream) {
         const buffer: Buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
         bytes += buffer.byteLength;
-        if (bytes > CODE_UPLOAD_BATCH_MAX_BYTES) {
+        held.bytes += buffer.byteLength;
+        if (held.bytes > CODE_UPLOAD_BATCH_MAX_BYTES) {
           stream.destroy();
           throw new CodeBatchOverflowError();
         }
         chunks.push(buffer);
       }
+      signal?.throwIfAborted();
+    } catch (error) {
+      held.bytes -= bytes;
+      throw error;
     } finally {
       signal?.removeEventListener('abort', abort);
     }
-    signal?.throwIfAborted();
     return Buffer.concat(chunks, bytes);
   }
 
@@ -488,6 +497,7 @@ export function createProvisionService({
     const settled = new Array<PromiseSettledResult<ProvisionedCodeFile> | undefined>(files.length);
     /** Files whose record understated their size; a stream keeps their bytes out of memory. */
     const overflowed: number[] = [];
+    const held = { bytes: 0 };
     let prepared: PreparedCodeUpload[] | undefined;
 
     /* Runs inside the upload slot, so only as many batches as may upload at once are ever
@@ -503,7 +513,7 @@ export function createProvisionService({
           const index = next++;
           const { file, sandboxFilename } = files[index];
           try {
-            const buffer = await readStoredFile(file, req, signal);
+            const buffer = await readStoredFile(file, req, held, signal);
             read.push({
               index,
               buffer,
@@ -581,12 +591,15 @@ export function createProvisionService({
         const { file, onUploadStart } = files[index];
         const outcome = outcomes[i];
         if (outcome.status !== 'success') {
-          /* The service answered for this file alone, so its outcome is known. */
-          onUploadStart?.('rejected');
+          /* Only the service's own refusal of this file establishes that nothing was stored.
+           * A file it did not answer for keeps its claim, like any upload with a lost reply. */
+          if (outcome.status === 'error') {
+            onUploadStart?.('rejected');
+          }
           settled[index] = {
             status: 'rejected',
             reason: new Error(
-              `Code API did not store "${file.filename}" (${file.file_id}): ${outcome.error}`,
+              `Code API did not confirm "${file.filename}" (${file.file_id}): ${outcome.error}`,
             ),
           };
           continue;
