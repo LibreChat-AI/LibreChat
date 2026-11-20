@@ -270,6 +270,21 @@ describe('Insights handlers', () => {
     expect(getInsightsAccess).not.toHaveBeenCalled();
   });
 
+  it('returns a generic error from the access endpoint when access resolution fails', async () => {
+    getInsightsAccess.mockRejectedValueOnce(new Error('private ACL error'));
+    const handler = createInsightsAccessHandler({
+      resolveInsightsConfig: insightsEnabled,
+      getInsightsAccess,
+    });
+    const { response, status, json } = createResponse();
+
+    await handler(createRequest(), response);
+
+    expect(status).toHaveBeenCalledWith(500);
+    expect(json).toHaveBeenCalledWith({ message: 'Failed to load insights access' });
+    expect(JSON.stringify(json.mock.calls)).not.toContain('private ACL error');
+  });
+
   it('returns 404 without resolving access when Insights is disabled', async () => {
     const getInsights = jest.fn();
     const handler = createInsightsHandler({

@@ -9,6 +9,10 @@ let mockResolverCreateCount = 0;
 let mockAccessHandlerDeps;
 let mockDashboardHandlerDeps;
 let mockUser = { id: 'user-id', role: 'USER' };
+const mockStrictConfig = jest.fn((req, _res, next) => {
+  req.config = { interfaceConfig: { insights: { enabled: true, showDetails: false } } };
+  next();
+});
 
 jest.mock('@librechat/api', () => ({
   createInsightsAccessHandler: (...args) => {
@@ -28,14 +32,14 @@ jest.mock('@librechat/api', () => ({
 }));
 
 jest.mock('~/server/middleware', () => ({
-  requireJwtAuth: (req, _res, next) => {
+  requireJwtAuth: (req, res, next) => {
+    if (!mockUser) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
     req.user = mockUser;
     next();
   },
-  strictConfigMiddleware: (req, _res, next) => {
-    req.config = { interfaceConfig: { insights: { enabled: true, showDetails: false } } };
-    next();
-  },
+  strictConfigMiddleware: (...args) => mockStrictConfig(...args),
 }));
 
 jest.mock('~/models', () => ({
@@ -57,6 +61,7 @@ function createApp() {
 describe('Insights routes', () => {
   beforeEach(() => {
     mockUser = { id: 'user-id', role: 'USER' };
+    mockStrictConfig.mockClear();
   });
 
   it('serves the access probe and dashboard for authenticated users', async () => {
@@ -71,6 +76,21 @@ describe('Insights routes', () => {
       body: { summary: {} },
     });
   });
+
+  it.each(['/api/insights/access', '/api/insights'])(
+    'authenticates before loading the scoped configuration on %s',
+    async (path) => {
+      const app = createApp();
+
+      mockUser = undefined;
+      await expect(request(app).get(path)).resolves.toMatchObject({ status: 401 });
+      expect(mockStrictConfig).not.toHaveBeenCalled();
+
+      mockUser = { id: 'user-id', role: 'USER' };
+      await expect(request(app).get(path)).resolves.toMatchObject({ status: 200 });
+      expect(mockStrictConfig).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('uses one shared agent access resolver for both handlers', () => {
     expect(mockResolverCreateCount).toBe(1);
