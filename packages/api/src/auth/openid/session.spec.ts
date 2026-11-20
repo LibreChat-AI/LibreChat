@@ -247,95 +247,83 @@ describe('OpenID session refresh: provider-session authorization', () => {
     }
   });
 
-  it('stores the rotated-token bridge before authorize can reject with ProviderSessionUnavailableError', async () => {
+  describe('flight-path recovery bridge', () => {
     const boundRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };
-    const { deps, service, user } = setup();
-    deps.openIdClient.refreshTokenGrant.mockResolvedValue({
-      access_token: 'new-access',
-      id_token: 'new-id',
-      refresh_token: 'refresh-token-2',
-    });
-    let bridgeCallsBeforeAuthorize = -1;
-    deps.providerSessionAuthorizer.authorize.mockImplementation(async () => {
-      bridgeCallsBeforeAuthorize = deps.storeRefreshTokenBridge.mock.calls.length;
-      throw new ProviderSessionUnavailableError('Provider session check unavailable');
-    });
-    const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
 
-    await expect(
-      service.refreshOpenIDSession(req, undefined, user, 'access_token', undefined, {
-        forceRefresh: true,
-      }),
-    ).rejects.toBeInstanceOf(ProviderSessionUnavailableError);
+    function setupRotatingFlight() {
+      const ctx = setup();
+      ctx.deps.createOpenIDRefreshFlightKey.mockReturnValue('flight-key');
+      ctx.deps.acquireOpenIDRefreshFlight.mockResolvedValue({
+        acquired: true,
+        ownerId: 'owner-1',
+        key: 'flight-key',
+      });
+      ctx.deps.openIdClient.refreshTokenGrant.mockResolvedValue({
+        access_token: 'new-access',
+        id_token: 'new-id',
+        refresh_token: 'refresh-token-2',
+      });
+      return ctx;
+    }
 
-    expect(bridgeCallsBeforeAuthorize).toBe(1);
-    expect(deps.storeRefreshTokenBridge).toHaveBeenCalledWith(
-      expect.objectContaining({
-        oldRefreshToken: 'refresh-token-1',
-        newRefreshToken: 'refresh-token-2',
-        userId: 'user-1',
-        providerSession: boundRef,
-      }),
-    );
-    expect(deps.deleteRefreshTokenBridges).not.toHaveBeenCalled();
-  });
+    it('stores the rotated-token bridge before authorize rejects with ProviderSessionUnavailableError, and keeps it', async () => {
+      const { deps, service, user } = setupRotatingFlight();
+      let bridgeCallsBeforeAuthorize = -1;
+      deps.providerSessionAuthorizer.authorize.mockImplementation(async () => {
+        bridgeCallsBeforeAuthorize = deps.storeRefreshTokenBridge.mock.calls.length;
+        throw new ProviderSessionUnavailableError('Provider session check unavailable');
+      });
+      const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
 
-  it('mode off: stores no pre-authorize bridge for a rotated token', async () => {
-    const boundRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };
-    const { deps, service, user } = setup();
-    deps.providerSessionAuthorizer.getMode.mockResolvedValue('off');
-    deps.openIdClient.refreshTokenGrant.mockResolvedValue({
-      access_token: 'new-access',
-      id_token: 'new-id',
-      refresh_token: 'refresh-token-2',
-    });
-    let bridgeCallsBeforeAuthorize = -1;
-    deps.providerSessionAuthorizer.authorize.mockImplementation(async () => {
-      bridgeCallsBeforeAuthorize = deps.storeRefreshTokenBridge.mock.calls.length;
-      return { ok: true };
-    });
-    const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
+      await expect(
+        service.refreshOpenIDSession(req, undefined, user, 'access_token', undefined, {
+          forceRefresh: true,
+        }),
+      ).rejects.toBeInstanceOf(ProviderSessionUnavailableError);
 
-    await service.refreshOpenIDSession(req, undefined, user, 'access_token', undefined, {
-      forceRefresh: true,
+      expect(bridgeCallsBeforeAuthorize).toBe(1);
+      expect(deps.storeRefreshTokenBridge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldRefreshToken: 'refresh-token-1',
+          newRefreshToken: 'refresh-token-2',
+          userId: 'user-1',
+          providerSession: boundRef,
+        }),
+      );
+      expect(deps.deleteRefreshTokenBridges).not.toHaveBeenCalled();
     });
 
-    expect(bridgeCallsBeforeAuthorize).toBe(0);
-  });
+    it('deletes the rotated-token bridge when authorize denies the publication', async () => {
+      const { deps, service, user } = setupRotatingFlight();
+      deps.providerSessionAuthorizer.authorize.mockResolvedValue({
+        ok: false,
+        code: 'OPENID_SESSION_ENDED',
+      });
+      const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
 
-  it('deletes the pre-authorize bridge when authorize denies the renewal', async () => {
-    const boundRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };
-    const { deps, service, user } = setup();
-    deps.openIdClient.refreshTokenGrant.mockResolvedValue({
-      access_token: 'new-access',
-      id_token: 'new-id',
-      refresh_token: 'refresh-token-2',
+      await expect(
+        service.refreshOpenIDSession(req, undefined, user, 'access_token', undefined, {
+          forceRefresh: true,
+        }),
+      ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED' });
+
+      expect(deps.storeRefreshTokenBridge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldRefreshToken: 'refresh-token-1',
+          newRefreshToken: 'refresh-token-2',
+        }),
+      );
+      expect(deps.deleteRefreshTokenBridges).toHaveBeenCalledWith(
+        expect.objectContaining({
+          refreshTokens: ['refresh-token-1'],
+          userId: 'user-1',
+          version: 'bridge-version',
+        }),
+      );
+      expect(deps.failOpenIDRefreshFlight).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'flight-key', ownerId: 'owner-1' }),
+      );
     });
-    deps.providerSessionAuthorizer.authorize.mockResolvedValue({
-      ok: false,
-      code: 'OPENID_SESSION_ENDED',
-    });
-    const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
-
-    await expect(
-      service.refreshOpenIDSession(req, undefined, user, 'access_token', undefined, {
-        forceRefresh: true,
-      }),
-    ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED' });
-
-    expect(deps.storeRefreshTokenBridge).toHaveBeenCalledWith(
-      expect.objectContaining({
-        oldRefreshToken: 'refresh-token-1',
-        newRefreshToken: 'refresh-token-2',
-      }),
-    );
-    expect(deps.deleteRefreshTokenBridges).toHaveBeenCalledWith(
-      expect.objectContaining({
-        refreshTokens: ['refresh-token-1'],
-        userId: 'user-1',
-        version: 'bridge-version',
-      }),
-    );
   });
 
   it('never calls the provider-session authorizer or the IdP when the live token is still valid', async () => {
