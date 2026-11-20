@@ -306,4 +306,80 @@ test.describe('a reader scrolling up while a long conversation mounts', () => {
       .evaluate((row) => row.getBoundingClientRect().top);
     expect(Math.abs(top - marked.top)).toBeLessThanOrEqual(2);
   });
+
+  /**
+   * Scrolling past the rows mounted so far, or pressing Home, puts the reader at the very top
+   * of the scroller, which is the one place a browser's scroll anchoring holds nothing: it
+   * selects no anchor at the scroll origin. Left to it, the reader stays at the top of each chunk as it arrives and
+   * the row they had reached moves away below them.
+   */
+  test('keeps the row they reached when they scroll past the rows mounted so far @scenario:reader-keeps-row-after-scrolling-past-mounted-rows', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+    await page.waitForFunction(() => {
+      const scroller = document.getElementById('messages-end')?.parentElement?.parentElement;
+      return (
+        scroller != null &&
+        document.getElementsByClassName('message-render').length >= 40 &&
+        scroller.scrollTop > 0 &&
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1
+      );
+    });
+    /** Home, in effect: straight to the top, and the row found there read in the same turn,
+     *  before the next chunk can arrive. */
+    const marked = await page.evaluate(() => {
+      const scroller = document.getElementById('messages-end')?.parentElement?.parentElement;
+      if (scroller) {
+        scroller.scrollTop = 0;
+      }
+      const rows = document.getElementsByClassName('message-render');
+      rows[0]?.setAttribute('data-reached', '');
+      return { top: rows[0]?.getBoundingClientRect().top ?? Number.NaN, mounted: rows.length };
+    });
+    /** Read while the thread was still arriving, or the wait below proves nothing. */
+    expect(marked.mounted).toBeLessThan(MANY);
+
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(MANY, { timeout: 60_000 });
+    const reached = page.locator('[data-reached]');
+    await expect(reached).toBeInViewport();
+    const top = await reached.evaluate((row) => row.getBoundingClientRect().top);
+    expect(Math.abs(top - marked.top)).toBeLessThanOrEqual(2);
+  });
+});
+
+/**
+ * In a window tall enough that the rows a long thread opens on do not fill it, there is nothing
+ * to scroll yet and the scroller sits at its origin, where a browser's scroll anchoring holds
+ * nothing. The rows that mount above must still leave the thread on its latest turn.
+ */
+test.describe('a long conversation opened in a tall window', () => {
+  test.use({ viewport: { width: 1280, height: 2400 }, isMobile: false, hasTouch: false });
+
+  let conversationId: string;
+
+  test.beforeEach(async () => {
+    conversationId = await seedLongChat();
+  });
+
+  test.afterEach(async () => {
+    await deleteMessagesByConversation([conversationId]);
+    await deleteConversations([conversationId]);
+  });
+
+  test('stays on its latest turn as the rest mounts above @scenario:long-conversation-in-a-tall-window-stays-on-its-latest-turn', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(TURNS);
+    await expect(
+      thread.getByText(`Turn ${TURNS} of the long conversation`, { exact: true }),
+    ).toBeInViewport();
+    await expect(
+      thread.getByText('Turn 1 of the long conversation', { exact: true }),
+    ).not.toBeInViewport();
+  });
 });

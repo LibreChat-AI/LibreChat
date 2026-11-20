@@ -126,10 +126,13 @@ export function useWidenedRow(): boolean {
  * of. Writing the scroll position by hand can do neither, so the hook pins the anchor row only
  * where this is missing, or cannot be relied on (see `pinsByHand`).
  */
-const NATIVE_SCROLL_ANCHORING: boolean =
-  typeof CSS !== 'undefined' &&
-  typeof CSS.supports === 'function' &&
-  CSS.supports('overflow-anchor', 'auto');
+function anchorsNatively(): boolean {
+  return (
+    typeof CSS !== 'undefined' &&
+    typeof CSS.supports === 'function' &&
+    CSS.supports('overflow-anchor', 'auto')
+  );
+}
 
 /**
  * Whether the mount holds the reader itself rather than leaving it to the browser.
@@ -141,7 +144,7 @@ const NATIVE_SCROLL_ANCHORING: boolean =
  * true, so the two never both react to the same rows.
  */
 export function pinsByHand(isSubmitting: boolean): boolean {
-  return isSubmitting || !NATIVE_SCROLL_ANCHORING;
+  return isSubmitting || !anchorsNatively();
 }
 
 /**
@@ -229,7 +232,12 @@ export function useProgressiveRowMount({
   const [mountWindow, setMountWindow] = useState<RowMountWindow>(() =>
     initialWindow(tailDepth, anchorBottom),
   );
-  const anchorRef = useRef<{ element: Element; documentOffset: number } | null>(null);
+  const anchorRef = useRef<{
+    element: Element;
+    documentOffset: number;
+    /** Whether the mount is the one holding the reader for this step (`pinsByHand`). */
+    byHand: boolean;
+  } | null>(null);
   /** The thread's height before the step in flight, while one is. */
   const heightRef = useRef<number | null>(null);
   const onInsertAboveRef = useRef(onInsertAbove);
@@ -287,10 +295,12 @@ export function useProgressiveRowMount({
   const captureAnchor = useCallback(() => {
     const container = scrollableRef.current;
     heightRef.current = container && anchorBottom ? container.scrollHeight : null;
-    if (!container || !anchorBottom || !pinsByHand(isSubmitting)) {
+    if (!container || !anchorBottom) {
       anchorRef.current = null;
       return;
     }
+    /** Taken even where the browser anchors: whether it will for this step is only known once
+     *  the rows are in, by where the reader is then. */
     const element = container.querySelector('.message-render');
     /** Document-space offset (viewport top + scrollTop): the widening commit
      *  is transition-deferred, so the user may scroll between capture and
@@ -298,7 +308,11 @@ export function useProgressiveRowMount({
      *  ones, so measuring here isolates the inserted-row shift and never
      *  folds the user's own movement into the correction. */
     anchorRef.current = element
-      ? { element, documentOffset: element.getBoundingClientRect().top + container.scrollTop }
+      ? {
+          element,
+          documentOffset: element.getBoundingClientRect().top + container.scrollTop,
+          byHand: pinsByHand(isSubmitting),
+        }
       : null;
   }, [anchorBottom, isSubmitting, scrollableRef]);
 
@@ -348,9 +362,19 @@ export function useProgressiveRowMount({
     if (!captured || !container || !captured.element.isConnected) {
       return;
     }
-    /** Rows added above do not move the scroll position, so what it reads now is where the
-     *  reader was before the step, and this is where the anchor sat on their screen. */
     const before = container.scrollTop;
+    /**
+     * A browser that anchors has already held the reader, unless they are at the very top:
+     * scroll anchoring selects no anchor at the scroll origin. A reader who scrolled past the
+     * rows mounted so far, or pressed Home, is exactly there, and would stay at the top of each
+     * chunk as it arrived while the row they had reached moved out of view below. There the
+     * mount pins them as it does where nothing else would.
+     */
+    if (!captured.byHand && before > 0) {
+      return;
+    }
+    /** Rows added above have not moved the scroll position, so what it reads is where the
+     *  reader was before the step, and this is where the anchor sat on their screen. */
     const restingTop = captured.documentOffset - before;
     const shift = captured.element.getBoundingClientRect().top + before - captured.documentOffset;
     if (shift !== 0) {

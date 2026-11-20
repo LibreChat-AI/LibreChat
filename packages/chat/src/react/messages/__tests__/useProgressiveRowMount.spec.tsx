@@ -5,6 +5,7 @@ import React from 'react';
 import { act, render, renderHook } from '@testing-library/react';
 import type { RowMountWindow } from '../useProgressiveRowMount';
 import {
+  pinsByHand,
   useWidenedRow,
   useRowMounted,
   createRowGates,
@@ -192,32 +193,32 @@ describe('useProgressiveRowMount', () => {
   });
 });
 
-describe('pinsByHand', () => {
-  const original = (globalThis as { CSS?: unknown }).CSS;
-  const load = (anchors: boolean) => {
-    (globalThis as { CSS?: unknown }).CSS = { supports: () => anchors };
-    let pins: (isSubmitting: boolean) => boolean = () => false;
-    jest.isolateModules(() => {
-      pins = jest.requireActual('../useProgressiveRowMount').pinsByHand;
-    });
-    return pins;
-  };
+/** What the browser says of `overflow-anchor`, for the tests that depend on it. */
+const originalCSS = (globalThis as { CSS?: unknown }).CSS;
+const browserAnchors = (anchors: boolean) => {
+  (globalThis as { CSS?: unknown }).CSS = { supports: () => anchors };
+};
+const restoreCSS = () => {
+  (globalThis as { CSS?: unknown }).CSS = originalCSS;
+};
 
-  afterEach(() => {
-    (globalThis as { CSS?: unknown }).CSS = original;
-  });
+describe('pinsByHand', () => {
+  afterEach(restoreCSS);
 
   it('leaves an idle thread to a browser that anchors scroll itself', () => {
-    expect(load(true)(false)).toBe(false);
+    browserAnchors(true);
+    expect(pinsByHand(false)).toBe(false);
   });
 
   it('holds the reader itself beside a reply in flight, even there', () => {
-    expect(load(true)(true)).toBe(true);
+    browserAnchors(true);
+    expect(pinsByHand(true)).toBe(true);
   });
 
   it('holds the reader itself wherever the browser does not anchor', () => {
-    expect(load(false)(false)).toBe(true);
-    expect(load(false)(true)).toBe(true);
+    browserAnchors(false);
+    expect(pinsByHand(false)).toBe(true);
+    expect(pinsByHand(true)).toBe(true);
   });
 });
 
@@ -464,6 +465,37 @@ describe('row gates', () => {
       } finally {
         now.mockRestore();
       }
+    });
+
+    describe('in a browser that anchors scroll itself', () => {
+      beforeEach(() => browserAnchors(true));
+      afterEach(restoreCSS);
+
+      it('writes no scroll position for a reader anywhere below the top', async () => {
+        const write = jest.fn();
+        let top = 5000;
+        Object.defineProperty(container, 'scrollTop', {
+          get: () => top,
+          set: (value: number) => {
+            write(value);
+            top = value;
+          },
+          configurable: true,
+        });
+        render(<Reading />, { container });
+        await mountLongMessage();
+        expect(container.getElementsByClassName('message-render')).toHaveLength(48);
+        expect(write).not.toHaveBeenCalled();
+      });
+
+      /** Scroll anchoring selects no anchor at the scroll origin. A reader who scrolled past
+       *  the rows mounted so far is there, and nothing else would hold the row they reached. */
+      it('holds a reader at the very top itself', async () => {
+        container.scrollTop = 0;
+        render(<Reading />, { container });
+        await mountLongMessage();
+        expect(container.scrollTop).toBe(CLAMPED);
+      });
     });
 
     it('leaves a reader on the end where the browser put them as the content shrank', async () => {
