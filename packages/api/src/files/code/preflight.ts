@@ -18,6 +18,10 @@ const GENERATED_FILE_CONTENT_FIELDS = [
 
 export const CODE_OUTPUT_PREFLIGHT_MAX_COUNT: number = 10;
 export const CODE_OUTPUT_PREFLIGHT_MAX_BYTES: number = 64 * 1024 * 1024;
+/** Downloads started at once by the prefetch that precedes the budgeted pass. */
+export const CODE_OUTPUT_PREFLIGHT_CONCURRENCY: number = 4;
+/** Below this per-slot cap a prefetch would mostly hit the cap, so the batch stays serial. */
+const MIN_PREFETCH_SLOT_BYTES = 1024 * 1024;
 
 export interface CodeOutputArtifactFile extends FileContentInput {
   readonly id: string;
@@ -121,6 +125,63 @@ export function getBoundedCodeOutputByteLimit(
   return Math.min(configured, hardLimit);
 }
 
+type PrefetchAttempt =
+  | { readonly maxBytes: number; readonly prepared: PreparedCodeOutput }
+  | { readonly maxBytes: number; readonly error: unknown };
+
+/**
+ * Downloads the batch concurrently with a small per-file cap so the budgeted
+ * pass below can reuse the bytes instead of waiting on one download at a
+ * time. Every slot is capped at a fraction of the batch budget and a slot
+ * only starts while the finished bytes plus the open slots fit the budget, so
+ * the prefetch never holds more than the serial pass could. A file the
+ * prefetch could not fetch, or fetched under a smaller cap than the serial
+ * pass allows, is simply prepared again by that pass, which keeps its result
+ * identical to a serial run.
+ */
+async function prefetchCodeOutputs(
+  entries: readonly PreparedCodeOutputEntry[],
+  input: PreflightCodeOutputBatchInput,
+  limits: { readonly maxBytes: number; readonly fileSizeLimit: number },
+  inspectContent: boolean,
+): Promise<ReadonlyArray<PrefetchAttempt | undefined>> {
+  const attempts: Array<PrefetchAttempt | undefined> = new Array(entries.length);
+  const slots = Math.min(CODE_OUTPUT_PREFLIGHT_CONCURRENCY, entries.length);
+  const slotBytes = Math.min(limits.fileSizeLimit, Math.floor(limits.maxBytes / (slots * 2)));
+  if (slots < 2 || !Number.isFinite(slotBytes) || slotBytes < MIN_PREFETCH_SLOT_BYTES) {
+    return attempts;
+  }
+  let next = 0;
+  let open = 0;
+  let finishedBytes = 0;
+  const worker = async (): Promise<void> => {
+    while (next < entries.length && finishedBytes + (open + 1) * slotBytes <= limits.maxBytes) {
+      const index = next++;
+      const entry = entries[index];
+      open++;
+      try {
+        const prepared = await input.prepare({
+          file: entry.file,
+          sessionId: entry.sessionId,
+          maxBytes: slotBytes,
+          inspectContent,
+        });
+        attempts[index] = { maxBytes: slotBytes, prepared };
+        const bytes = prepared.buffer.length;
+        finishedBytes +=
+          Number.isFinite(bytes) && bytes >= 0 ? Math.min(bytes, slotBytes) : slotBytes;
+      } catch (error) {
+        attempts[index] = { maxBytes: slotBytes, error };
+        finishedBytes += slotBytes;
+      } finally {
+        open--;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: slots }, worker));
+  return attempts;
+}
+
 /**
  * Prepares an all-or-nothing inspection batch. No persistence callback is
  * accepted here by design: callers cannot write one artifact before every
@@ -168,6 +229,34 @@ export async function preflightCodeOutputBatch(
     return entries.map((entry) => ({ ...entry, downloadFallback: true }));
   }
 
+  const prefetched = await prefetchCodeOutputs(
+    entries,
+    input,
+    { maxBytes, fileSizeLimit },
+    inspectionActive,
+  );
+  const prepareEntry = async (
+    index: number,
+    entry: PreparedCodeOutputEntry,
+    transportBytes: number,
+  ): Promise<PreparedCodeOutput> => {
+    const attempt = prefetched[index];
+    if (attempt != null && 'prepared' in attempt) {
+      const bytes = attempt.prepared.buffer.length;
+      if (Number.isFinite(bytes) && bytes >= 0 && bytes <= transportBytes) {
+        return attempt.prepared;
+      }
+    } else if (attempt != null && transportBytes <= attempt.maxBytes) {
+      throw attempt.error;
+    }
+    return input.prepare({
+      file: entry.file,
+      sessionId: entry.sessionId,
+      maxBytes: transportBytes,
+      inspectContent: inspectionActive,
+    });
+  };
+
   let inspectedBytes = 0;
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index];
@@ -183,12 +272,7 @@ export async function preflightCodeOutputBatch(
 
     let prepared: PreparedCodeOutput;
     try {
-      prepared = await input.prepare({
-        file: entry.file,
-        sessionId: entry.sessionId,
-        maxBytes: transportBytes,
-        inspectContent: inspectionActive,
-      });
+      prepared = await prepareEntry(index, entry, transportBytes);
     } catch (error) {
       inspectedBytes += transportBytes;
       if (inspectionActive) {
