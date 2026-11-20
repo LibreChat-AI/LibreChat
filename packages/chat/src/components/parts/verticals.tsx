@@ -1,15 +1,15 @@
 import { Star, MapPin } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
-import { isMacPlatform } from '@librechat/chat';
+import { cn, useLocalize } from '@librechat/client';
 import type {
   TAttachment,
   ImageResult,
   PlaceResult,
   ShoppingResult,
 } from 'librechat-data-provider';
-import { isSafeUrl } from '~/utils/markdown';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import type { CSSProperties, ReactElement } from 'react';
+import { isMacPlatform } from '../../core/shortcuts';
+import { isSafeUrl } from '../../core/url';
 
 /**
  * Provider result payloads are copied into the attachment without URL
@@ -128,8 +128,8 @@ function ImageStrip({ images, label }: { images: ImageResult[]; label: string })
               target="_blank"
               rel="noopener noreferrer"
               aria-label={image.title || image.domain || label}
-              className="border-border-light focus-visible:ring-focus-subtle block h-28 overflow-hidden rounded-xl border no-underline focus-visible:ring-2 focus-visible:outline-hidden"
-              style={{ aspectRatio: ratio }}
+              className="border-border-light focus-visible:ring-focus-subtle block aspect-[var(--vertical-ratio)] h-28 overflow-hidden rounded-xl border no-underline focus-visible:ring-2 focus-visible:outline-hidden"
+              style={{ '--vertical-ratio': ratio } as CSSProperties}
             >
               <img
                 src={imageSource(image)}
@@ -233,7 +233,11 @@ function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) 
 /** Always-visible search verticals. Rendered under the web search row when
  *  ungrouped, and hoisted below the group (like attachments) when the call
  *  lives inside a collapsed tool group. */
-export default function SearchVerticals({ attachments }: { attachments?: TAttachment[] }) {
+export default function SearchVerticals({
+  attachments,
+}: {
+  attachments?: TAttachment[];
+}): ReactElement | null {
   const localize = useLocalize();
   const { images, shopping, places } = collectSearchVerticals(attachments);
 

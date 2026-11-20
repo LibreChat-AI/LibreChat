@@ -1,5 +1,5 @@
+import { foldHolds } from '@librechat/chat/components';
 import type { TaskRow } from './rows';
-import { foldHolds } from '~/components/Chat/Messages/Content/fold';
 
 /**
  * The rendered call a tool row points at, when the loaded messages hold it and it can be

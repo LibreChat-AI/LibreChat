@@ -10,13 +10,13 @@ import {
   useFailedReveal,
   FoldHeaderContext,
   ToolAuthWarning,
+  HeaderActionSlotContext,
+  foldHolds,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { visitTaskTarget } from '~/components/Chat/BackgroundTasks/jump';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
-import { HeaderActionSlotContext } from '../slot';
 import ToolCallGroup from '../ToolCallGroup';
-import { foldHolds } from '../fold';
 
 const mockMCPServerNames: string[] = [];
 

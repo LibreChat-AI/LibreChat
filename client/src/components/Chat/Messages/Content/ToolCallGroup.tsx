@@ -34,6 +34,9 @@ import {
   useExpandCollapse,
   ToolGroupHeader,
   ToolGroupBody,
+  useFoldParts,
+  SearchVerticals,
+  HeaderActionSlotContext,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { ToolMeta } from '@librechat/chat';
@@ -42,13 +45,10 @@ import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import { AttachmentGroup } from './Parts';
-import SearchVerticals from './verticals';
-import { useFoldParts } from './fold';
 import { cn } from '~/utils';
 
 interface ToolCallGroupProps {

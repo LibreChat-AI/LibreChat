@@ -393,3 +393,7 @@ export {
   LIVE_REASONING_HOLD_MS,
 } from './components/parts/phase/live';
 export type { LiveActivity } from './components/parts/phase/live';
+/** Which calls each fold holds, so a reader can open the fold around one call. */
+export { recordFold, useFoldParts, foldHolds } from './components/parts/fold';
+export { HeaderActionSlotContext } from './components/parts/slot';
+export { default as SearchVerticals } from './components/parts/verticals';
