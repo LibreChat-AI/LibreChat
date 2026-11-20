@@ -338,6 +338,7 @@ export default [
             'animate-fadeIn',
             'slow-pulse',
             'hide-scrollbar',
+            'custom-icon-tint',
             'scrollbar-gutter-spacer',
             'progress-text-wrapper',
             'progress-text-content',

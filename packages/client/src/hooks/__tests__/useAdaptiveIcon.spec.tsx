@@ -4,7 +4,7 @@ import {
   registerFakeIcon,
   resetFakeIcons,
   getImageLoadCount,
-} from 'test/canvasMock';
+} from '~/test/canvasMock';
 import useAdaptiveIcon from '../useAdaptiveIcon';
 
 const BLACK = { width: 24, height: 24, pixels: [0, 0, 0, 0, 0, 0, 0, 255] };

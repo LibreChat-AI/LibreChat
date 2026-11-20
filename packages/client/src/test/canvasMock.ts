@@ -72,6 +72,10 @@ class MockImage {
   }
 }
 
+/** One row of pixels in the shape `getImageData` returns; jsdom has no `ImageData` to build. */
+const pixels = (data: Uint8ClampedArray): ImageData =>
+  ({ data, width: data.length / 4, height: 1, colorSpace: 'srgb' }) as ImageData;
+
 class FakeContext {
   private drawn: MockImage | null = null;
 
@@ -85,10 +89,9 @@ class FakeContext {
       throw new DOMException('tainted canvas', 'SecurityError');
     }
     if (!icon?.pixels || icon.pixels.length === 0) {
-      return new ImageData(1, 1);
+      return pixels(new Uint8ClampedArray(4));
     }
-    const data = Uint8ClampedArray.from(icon.pixels);
-    return new ImageData(data, data.length / 4, 1);
+    return pixels(Uint8ClampedArray.from(icon.pixels));
   }
 }
 

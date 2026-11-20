@@ -1,9 +1,8 @@
 import React, { memo, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
-import { pxToRem, ProviderIcon } from '@librechat/client';
 import { resolveProviderId } from 'librechat-data-provider';
+import { pxToRem, ProviderIcon, CustomIcon } from '@librechat/client';
 import { EntityEndpointMark, isEntityEndpoint } from '~/components/Endpoints/EntityEndpointMark';
-import CustomIcon from '~/components/ui/CustomIcon';
 import { isImageURL } from '~/utils/icons';
 
 interface GroupIconProps {
