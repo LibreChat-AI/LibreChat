@@ -3539,6 +3539,63 @@ describe('scheduled MCP failure policy', () => {
     expect(updated.disabledReason).toBeUndefined();
   });
 
+  it('finds what an occurrence went without by the conversation it started, for its schedule and owner alone', async () => {
+    const owner = new mongoose.Types.ObjectId();
+    const schedule = await methods.createSchedule(scheduleData({ user: owner }));
+    const other = await methods.createSchedule(scheduleData({ user: owner }));
+    const skipped = {
+      server: 'Notion',
+      status: 'mcp_reauth_required' as const,
+      skipped: true as const,
+    };
+    const ready = { server: 'Linear', status: 'ready' as const };
+    await methods.insertScheduleRun(
+      runData(schedule, {
+        scheduledFor: new Date('2026-09-09T13:00:00Z'),
+        conversationId: 'conversation-a',
+        // Settled, so the next occurrence can be on record beside it.
+        status: 'success',
+        mcp: [skipped, ready],
+      }),
+    );
+    await methods.insertScheduleRun(
+      runData(schedule, {
+        scheduledFor: new Date('2026-09-10T13:00:00Z'),
+        conversationId: 'conversation-b',
+        mcp: [ready],
+      }),
+    );
+    const scope = { scheduleId: schedule.id, ownerId: String(owner), tenantId: null };
+    expect(await methods.getScheduleConversationMCP(scope, 'conversation-a')).toEqual([
+      expect.objectContaining(skipped),
+      expect.objectContaining(ready),
+    ]);
+    // Another occurrence of the same schedule started another conversation.
+    expect(await methods.getScheduleConversationMCP(scope, 'conversation-b')).toEqual([
+      expect.objectContaining(ready),
+    ]);
+    // The conversation alone names no run: not for another schedule, nor another owner.
+    expect(
+      await methods.getScheduleConversationMCP(
+        { ...scope, scheduleId: other.id },
+        'conversation-a',
+      ),
+    ).toEqual([]);
+    expect(
+      await methods.getScheduleConversationMCP(
+        { ...scope, ownerId: String(new mongoose.Types.ObjectId()) },
+        'conversation-a',
+      ),
+    ).toEqual([]);
+    expect(
+      await methods.getScheduleConversationMCP(
+        { ...scope, tenantId: 'another-tenant' },
+        'conversation-a',
+      ),
+    ).toEqual([]);
+    expect(await methods.getScheduleConversationMCP(scope, 'conversation-unknown')).toEqual([]);
+  });
+
   it('stores whether a schedule runs only with every server ready', async () => {
     const strict = await methods.createSchedule({ ...scheduleData(), mcpStrict: true });
     const plain = await methods.createSchedule(scheduleData());

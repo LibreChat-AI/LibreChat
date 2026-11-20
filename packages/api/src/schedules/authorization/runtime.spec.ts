@@ -88,6 +88,13 @@ async function setup() {
   const getScheduleRunMCP = jest.fn(
     async (_scheduleId: string, _scheduledFor: string | Date): Promise<ScheduleMCPOutcome[]> => [],
   );
+  /** The same, found by the conversation an occurrence started. */
+  const getScheduleConversationMCP = jest.fn(
+    async (
+      _scope: Pick<typeof fixture.identity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+      _conversationId: string,
+    ): Promise<ScheduleMCPOutcome[]> => [],
+  );
   const getScheduleMCPCompletionState = jest.fn(async () => ({
     identity: fixture.identity,
     enrolled: false,
@@ -96,7 +103,12 @@ async function setup() {
   const host = createScheduleMCPRuntimeHost({
     canPauseRuns: async () => pausable,
     getScheduleMCPCompletionState,
-    methods: { ...fixture.storage, getScheduleById, getScheduleRunMCP },
+    methods: {
+      ...fixture.storage,
+      getScheduleById,
+      getScheduleRunMCP,
+      getScheduleConversationMCP,
+    },
     findUser,
     getRoleByName,
     canViewAgent: async () => true,
@@ -173,6 +185,7 @@ async function setup() {
     getAppConfig,
     getScheduleById,
     getScheduleRunMCP,
+    getScheduleConversationMCP,
     getScheduleMCPCompletionState,
     servers,
     setCandidates: (names: string[]) => {
@@ -274,6 +287,90 @@ it('reads no run row for a fresh occurrence, whose trigger already says what it 
   const f = await setup();
   await f.host.prepare({ req: f.req, context: f.context });
   expect(f.getScheduleRunMCP).not.toHaveBeenCalled();
+});
+
+describe('a turn that reports on a task a scheduled run started', () => {
+  type Marked = { _scheduleSkippedServers?: string[]; _scheduleCheckedServers?: string[] };
+  /** As the signed host delivers it: in the conversation the occurrence started. */
+  const completionRequest = (f: Awaited<ReturnType<typeof setup>>, origin = true) => ({
+    ...f.req,
+    _isScheduledFire: false,
+    body: {
+      conversationId: 'occurrence-conversation',
+      agent_id: 'root',
+      agentCompletion: {
+        version: 1,
+        sourceId: 'background-tool-completion',
+        ...(origin && { scheduleMCPIdentity: f.identity }),
+      },
+    },
+  });
+  const wentWithout = (server: string): ScheduleMCPOutcome[] => [
+    { server, status: 'mcp_reauth_required', skipped: true },
+    { server: 'ledger', status: 'ready' },
+  ];
+
+  it.each([
+    { name: 'under the grant its schedule holds', grant: true },
+    { name: 'with no grant', grant: false },
+  ])('goes without the servers its occurrence went without, $name', async ({ grant }) => {
+    const f = await setup();
+    if (!grant) {
+      f.snapshot.enrollment = null;
+      f.row.mcpConsent = undefined;
+    }
+    f.getScheduleConversationMCP.mockResolvedValue(wentWithout('warehouse'));
+    const req: ReturnType<typeof completionRequest> & Marked = completionRequest(f);
+    const keys = ['query_mcp_warehouse', 'post_mcp_ledger'];
+    await f.host.prepare({ req, context: f.context });
+    expect(f.getScheduleConversationMCP).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduleId: f.identity.scheduleId,
+        ownerId: f.identity.ownerId,
+        tenantId: f.identity.tenantId,
+      }),
+      'occurrence-conversation',
+    );
+    expect(req._scheduleSkippedServers).toEqual(['warehouse']);
+    expect(req._scheduleCheckedServers).toEqual(['warehouse', 'ledger']);
+    expect(narrowScheduledMCPTools(req, 'root', keys)).not.toContain('query_mcp_warehouse');
+  });
+
+  it('loads what it would have without that record: the grant alone decides', async () => {
+    const f = await setup();
+    const req: ReturnType<typeof completionRequest> & Marked = completionRequest(f);
+    await f.host.prepare({ req, context: f.context });
+    expect(req._scheduleSkippedServers).toBeUndefined();
+    expect(narrowScheduledMCPTools(req, 'root', ['query_mcp_warehouse'])).toEqual([
+      'query_mcp_warehouse',
+    ]);
+  });
+
+  it('reads the conversation from the saved job when the turn is resumed, not from the request', async () => {
+    const f = await setup();
+    f.getScheduleConversationMCP.mockResolvedValue(wentWithout('warehouse'));
+    const req: Marked & { user: typeof f.user; body: Record<string, unknown> } = {
+      user: f.user,
+      body: { conversationId: 'another-conversation' },
+    };
+    await f.host.prepare({
+      req,
+      context: f.context,
+      restoredJob: { scheduleMCPCompletion: f.identity, conversationId: 'occurrence-conversation' },
+    });
+    expect(f.getScheduleConversationMCP).toHaveBeenCalledTimes(1);
+    expect(f.getScheduleConversationMCP).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduleId: f.identity.scheduleId }),
+      'occurrence-conversation',
+    );
+    expect(req._scheduleSkippedServers).toEqual(['warehouse']);
+  });
+
+  it('reads no run for a turn whose task no schedule started', async () => {
+    const f = await setup();
+    await f.host.prepare({ req: completionRequest(f, false), context: f.context });
+    expect(f.getScheduleConversationMCP).not.toHaveBeenCalled();
+  });
 });
 
 it('rebuilds the protected root on resume and refuses revoked consent even after approval', async () => {

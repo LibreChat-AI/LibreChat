@@ -58,6 +58,13 @@ unavailable, is not configured or may not be used does not refuse the schedule:
   occurrence's run row before any tool is loaded, so a resumed run goes without the same
   servers. The outcomes are written with the run's reservation, before its trigger is
   enqueued, so they are there whatever happens to the bookkeeping that follows.
+- A background task or a subagent that the run starts reports back in a later turn, which
+  is a request of its own: neither the occurrence's trigger nor its saved job. That turn
+  runs in the conversation the occurrence started (each occurrence starts its own), so the
+  run host finds the occurrence's run row by that conversation, for the schedule and owner
+  the task captured (`getScheduleConversationMCP`), and the turn goes without the same
+  servers. The conversation is the signed host's, or the saved job's when the turn is itself
+  resumed. With no such row on record the turn loads what the schedule's grant allows.
 - A skipped server is a note, not a denial: it neither fails the run nor suspends the
   schedule. It keeps its `reason` (and an unattended-auth diagnosis as the reason
   `provider_missing`), since the owner's way out depends on it: authorizing the schedule, or
