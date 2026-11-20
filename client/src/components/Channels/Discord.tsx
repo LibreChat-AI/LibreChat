@@ -51,6 +51,7 @@ import type { InfiniteData } from '@tanstack/react-query';
 import type { TranslationKeys } from '~/hooks';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { discordCallbackLabels } from '~/components/OAuth/discord';
+import { settingsTargetAtom } from '~/components/Nav/Settings';
 import { useAuthContext, useLocalize } from '~/hooks';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
@@ -160,15 +161,36 @@ export default function Discord({
 
 export function DiscordSettings() {
   const { user } = useAuthContext();
+  const [target, setTarget] = useAtom(settingsTargetAtom);
+  const autoOpen = target?.entry === 'discordApps';
   return user ? (
     <Provider key={JSON.stringify([user.tenantId, user.id])}>
-      <SettingsControl userId={user.id} tenantId={user.tenantId} />
+      <SettingsControl
+        userId={user.id}
+        tenantId={user.tenantId}
+        autoOpen={autoOpen}
+        onAutoOpened={() => setTarget(null)}
+      />
     </Provider>
   ) : null;
 }
-function SettingsControl(props: { userId: string; tenantId?: string }) {
+function SettingsControl({
+  autoOpen,
+  onAutoOpened,
+  ...props
+}: {
+  userId: string;
+  tenantId?: string;
+  autoOpen: boolean;
+  onAutoOpened: () => void;
+}) {
   const localize = useLocalize();
   const [open, setOpen] = useAtom(openAtom);
+  useEffect(() => {
+    if (!autoOpen) return;
+    setOpen(true);
+    onAutoOpened();
+  }, [autoOpen, onAutoOpened, setOpen]);
   return (
     <OGDialog open={open} onOpenChange={setOpen}>
       <OGDialogTrigger asChild>

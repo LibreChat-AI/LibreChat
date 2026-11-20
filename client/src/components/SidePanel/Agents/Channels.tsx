@@ -1,7 +1,8 @@
 import { useId, useRef, useState, useEffect, useCallback } from 'react';
+import { useSetAtom } from 'jotai';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
 import { X, Info, Plus, Power, User, Users, Pencil, Link2Off, Settings } from 'lucide-react';
+import { dataService, MutationKeys, QueryKeys, SettingsTabValues } from 'librechat-data-provider';
 import {
   Alert,
   Button,
@@ -19,6 +20,7 @@ import {
 import type { AgentChannel, ListedAgentChannel } from 'librechat-data-provider';
 import type { SetupStep } from './ChannelSetup';
 import type { TranslationKeys } from '~/hooks';
+import { settingsOpenAtom, settingsTargetAtom } from '~/components/Nav/Settings';
 import { useSlackWorkspaces } from '~/components/Channels/useSlackWorkspaces';
 import ChannelSetup, { ManifestView, SetupActions } from './ChannelSetup';
 import ChannelStatus, { statusColors } from './ChannelStatus';
@@ -496,6 +498,13 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
     setContentElement(element);
   }, []);
   const [dialog, setDialog] = useState<string | null>(null);
+  const setSettingsOpen = useSetAtom(settingsOpenAtom);
+  const setSettingsTarget = useSetAtom(settingsTargetAtom);
+  const openDiscordServers = useCallback(() => {
+    setDialog(null);
+    setSettingsTarget({ tab: SettingsTabValues.ACCOUNT, entry: 'discordApps' });
+    setSettingsOpen(true);
+  }, [setSettingsOpen, setSettingsTarget]);
   const [newWorkspaceConnection, setNewWorkspaceConnection] = useState<string | null>(null);
   const [credentialMode, setCredentialMode] = useState<AgentChannel['credentialMode']>('per_user');
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -929,6 +938,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                     channel={selected?.type === 'discord' ? selected : undefined}
                     enabled={channels.isSuccess && !channels.isFetching}
                     onClose={() => setDialog(null)}
+                    onOpenServers={openDiscordServers}
                   />
                 </div>
               )}

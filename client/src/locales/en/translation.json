@@ -34,6 +34,7 @@
   "com_ui_discord_binding_channel": "Discord channel ID",
   "com_ui_discord_binding_channel_help": "Enable Developer Mode in Discord, then copy the text channel ID. Threads and direct messages are not supported for binding.",
   "com_ui_discord_binding_empty": "No active Discord servers are available. Connect a server in Settings > Account > Discord.",
+  "com_ui_take_me_there": "Take me there",
   "com_ui_discord_binding_missing": "This server installation is no longer available. Ask an organization administrator to reconnect Discord.",
   "com_ui_discord_binding_forbidden": "Managing a Discord binding requires organization installation management and permission to share this agent.",
   "com_ui_discord_binding_unsupported": "Choose a regular server text channel. Threads and other channel types cannot be bound.",

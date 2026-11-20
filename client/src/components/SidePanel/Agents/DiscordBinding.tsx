@@ -49,6 +49,8 @@ interface Props {
   enabled: boolean;
   portalElement?: HTMLElement | null;
   onClose: () => void;
+  /** Leaves the dialog for Settings > Account > Discord to connect a server. */
+  onOpenServers?: () => void;
 }
 /** The server returns a provider failure before it writes, so one can be named; anything else stays uncertain. */
 function label(error: unknown): TranslationKeys {
@@ -91,7 +93,16 @@ export default function DiscordBinding(props: Props) {
     </Provider>
   );
 }
-function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, onClose }: Props) {
+function Binding({
+  agentId,
+  userId,
+  tenantId,
+  channel,
+  enabled,
+  portalElement,
+  onClose,
+  onOpenServers,
+}: Props) {
   useHydrateAtoms([
     [
       targetAtom,
@@ -299,7 +310,14 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
         </Alert>
       )}
       {noActiveServers && (
-        <Alert variant="warning">{localize('com_ui_discord_binding_empty')}</Alert>
+        <Alert variant="warning">
+          <p>{localize('com_ui_discord_binding_empty')}</p>
+          {onOpenServers && (
+            <Button type="button" variant="inline-link" onClick={onOpenServers}>
+              {localize('com_ui_take_me_there')}
+            </Button>
+          )}
+        </Alert>
       )}
       {guilds.isSuccess && immutable && !selected && !guilds.hasNextPage && (
         <Alert variant="warning">{localize('com_ui_discord_binding_missing')}</Alert>

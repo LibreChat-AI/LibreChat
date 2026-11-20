@@ -200,6 +200,28 @@ test('disables both fields and keeps the empty warning through a background refe
   expect(screen.getByText('com_ui_discord_binding_empty')).toBeVisible();
 });
 
+test('links to the Discord server settings when no active server exists', async () => {
+  jest
+    .mocked(dataService.getDiscordGuilds)
+    .mockResolvedValue({ guilds: [{ ...guild, status: 'disconnected' }] });
+  const onOpenServers = jest.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <DiscordBinding
+        agentId="agent-1"
+        userId="admin"
+        tenantId="org"
+        enabled
+        onClose={jest.fn()}
+        onOpenServers={onOpenServers}
+      />
+    </QueryClientProvider>,
+  );
+  await userEvent.click(await screen.findByRole('button', { name: 'com_ui_take_me_there' }));
+  expect(onOpenServers).toHaveBeenCalledTimes(1);
+});
+
 test('keeps the channel ID field disabled until a server is selected', async () => {
   const { user } = await page(null);
   const input = await screen.findByLabelText('com_ui_discord_binding_channel');
