@@ -626,12 +626,20 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
         </p>
       )}
       {channels.isError && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">{localize('com_ui_channels_list_error')}</Alert>
-          <Button type="button" variant="outline" onClick={() => void channels.refetch()}>
-            {localize('com_ui_channels_retry')}
-          </Button>
-        </div>
+        <Alert variant="error" className="w-full">
+          <div className="flex items-center justify-between gap-2">
+            <span>{localize('com_ui_channels_list_error')}</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => void channels.refetch()}
+            >
+              {localize('com_ui_channels_retry')}
+            </Button>
+          </div>
+        </Alert>
       )}
       {channels.data != null && channels.data.length > 0 && (
         <ul className="flex flex-col gap-0.5">
