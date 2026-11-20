@@ -20,6 +20,7 @@ import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
 import { useFilesHost } from '../../react/files';
+import OutputRenderer from './OutputRenderer';
 import ToolIcon from './ToolIcon';
 
 export type RetrievalProgress = {
@@ -43,7 +44,6 @@ export type RetrievalCallProps = {
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
   renderProgress: (progress: RetrievalProgress) => ReactNode;
-  renderOutput: (text: string) => ReactNode;
 };
 
 function sortPagesByRelevance(pages: number[], pageRelevance: Record<number, number>): number[] {
@@ -380,7 +380,6 @@ export default function RetrievalCall({
   runStepStatus,
   runStepDurationMs,
   renderProgress,
-  renderOutput,
 }: RetrievalCallProps): ReactNode {
   const isClosed = runStepStatus != null;
   const useKnownFiles = useFilesHost().useKnownFiles;
@@ -541,7 +540,7 @@ export default function RetrievalCall({
                     />
                     {item.content && (
                       <div className="border-border-inset border-t px-3 py-3">
-                        {renderOutput(item.content)}
+                        <OutputRenderer text={item.content} />
                       </div>
                     )}
                   </div>

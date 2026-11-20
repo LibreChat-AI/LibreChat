@@ -88,7 +88,6 @@ function renderRetrieval({ files, onPreview, props }: Options = {}) {
             {progress.finishedText}
           </button>
         )}
-        renderOutput={(text) => <p>{text}</p>}
         {...props}
       />
     </MessagePartsHostProvider>
@@ -98,6 +97,11 @@ function renderRetrieval({ files, onPreview, props }: Options = {}) {
   }
   return render(<FilesHostProvider host={files}>{row}</FilesHostProvider>);
 }
+
+jest.mock('../OutputRenderer', () => ({
+  __esModule: true,
+  default: ({ text }: { text: string }) => <p>{text}</p>,
+}));
 
 describe('RetrievalCall', () => {
   it('lists the matched files from the attachment sources once opened', () => {

@@ -95,15 +95,9 @@ export type ToolCallProgressProps = {
   isExpanded: boolean;
 };
 
-/** What the app's parameter and output panel draws for one tool call. */
-export type ToolCallInfoProps = {
-  input: string;
-  output?: string | null;
-};
-
 /**
- * App services and renderers for a generic tool call card. The progress row, parameter panel
- * and attachment stack stay in the app because other cards still share them.
+ * App services and renderers for a generic tool call card. The progress row and attachment
+ * stack stay in the app because other cards still share them.
  */
 export type ToolCallChrome = {
   localize: ToolCallLocalize;
@@ -117,7 +111,6 @@ export type ToolCallChrome = {
   openUrl: (url: string) => void;
   logError: (message: string, error?: unknown) => void;
   renderProgress: (props: ToolCallProgressProps) => ReactNode;
-  renderInfo: (props: ToolCallInfoProps) => ReactNode;
   renderAttachments: (attachments: TAttachment[]) => ReactNode;
 };
 
@@ -130,7 +123,6 @@ const emptyChrome: ToolCallChrome = {
   openUrl: () => undefined,
   logError: () => undefined,
   renderProgress: () => null,
-  renderInfo: () => null,
   renderAttachments: () => null,
 };
 

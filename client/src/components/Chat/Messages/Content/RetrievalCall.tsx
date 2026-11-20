@@ -1,16 +1,14 @@
 import { RetrievalCall as PackageRetrievalCall } from '@librechat/chat/components';
 import type { RetrievalCallProps } from '@librechat/chat/components';
-import { OutputRenderer } from './ToolOutput';
 import ProgressText from './ProgressText';
 
-type RetrievalCallAdapterProps = Omit<RetrievalCallProps, 'renderProgress' | 'renderOutput'>;
+type RetrievalCallAdapterProps = Omit<RetrievalCallProps, 'renderProgress'>;
 
-/** App adapter: progress and output stay the app's tool-card pieces. */
+/** App adapter: the progress row stays the app's tool-card piece. */
 export default function RetrievalCall(props: RetrievalCallAdapterProps) {
   return (
     <PackageRetrievalCall
       {...props}
-      renderOutput={(text) => <OutputRenderer text={text} />}
       renderProgress={(progress) => <ProgressText {...progress} />}
     />
   );

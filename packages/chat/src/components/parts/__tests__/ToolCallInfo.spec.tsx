@@ -1,35 +1,18 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import ToolCallInfo from '~/components/Chat/Messages/Content/ToolCallInfo';
+import ToolCallInfo from '../ToolCallInfo';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => {
-    const translations: Record<string, string> = {
-      com_ui_parameters: 'Parameters',
-    };
-    return translations[key] || key;
-  },
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => (key === 'com_ui_parameters' ? 'Parameters' : key),
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
-}));
-
-jest.mock('../ToolOutput/OutputRenderer', () => ({
+jest.mock('../OutputRenderer', () => ({
   __esModule: true,
   default: ({ text }: { text: string }) => <div data-testid="output-renderer">{text}</div>,
-}));
-
-jest.mock('~/utils', () => ({
-  cn: (...classes: string[]) => classes.filter(Boolean).join(' '),
 }));
 
 jest.mock('lucide-react', () => ({

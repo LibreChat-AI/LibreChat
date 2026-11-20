@@ -334,6 +334,9 @@ export type {
 } from './components/parts/ToolCallGroup';
 export type { StackedToolIconsProps } from './components/parts/StackedToolIcons';
 export { default as FaviconImage } from './components/parts/Favicon';
+export { default as OutputRenderer } from './components/parts/OutputRenderer';
+export type { OutputRendererProps, OutputSegment } from './components/parts/OutputRenderer';
+export { default as ToolCallInfo } from './components/parts/ToolCallInfo';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
 export { default as RetrievalCall } from './components/parts/Retrieval';
 export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';

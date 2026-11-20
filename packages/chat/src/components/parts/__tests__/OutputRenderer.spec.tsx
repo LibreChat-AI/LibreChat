@@ -1,12 +1,16 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import copy from 'copy-to-clipboard';
-import { ToolContentPendingContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import OutputRenderer, { isError } from '../OutputRenderer';
+import { ToolContentPendingContext } from '../../../react/parts/disclosure';
+import { isError } from '../../../core/parts/output';
+import OutputRenderer from '../OutputRenderer';
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  CopyButton: ({
+jest.mock('../CopyButton', () => ({
+  __esModule: true,
+  default: ({
     onClick,
     className,
     disabled,
@@ -27,7 +31,8 @@ jest.mock('@librechat/chat/components', () => ({
 
 jest.mock('copy-to-clipboard', () => jest.fn());
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 
