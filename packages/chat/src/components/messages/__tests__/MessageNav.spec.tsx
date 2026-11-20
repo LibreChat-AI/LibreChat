@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 import React from 'react';
-import { render, act, fireEvent, screen } from '@testing-library/react';
 import { PortalProvider } from '@librechat/client';
+import { render, act, fireEvent, screen } from '@testing-library/react';
 
 type RefObject<T> = React.RefObject<T>;
 

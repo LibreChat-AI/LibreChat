@@ -1,20 +1,20 @@
 import React from 'react';
 import * as Ariakit from '@ariakit/react';
 import { cleanup, render, screen } from '@testing-library/react';
-import { OGDialog, OGDialogContent, OGDialogTitle } from '~/components/OriginalDialog';
-import { Popover, PopoverContent, PopoverPortal, PopoverTrigger } from '~/components/Popover';
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardPortal,
-  HoverCardTrigger,
-} from '~/components/HoverCard';
 import {
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogTitle,
 } from '~/components/AlertDialog';
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardPortal,
+  HoverCardTrigger,
+} from '~/components/HoverCard';
+import { Popover, PopoverContent, PopoverPortal, PopoverTrigger } from '~/components/Popover';
+import { OGDialog, OGDialogContent, OGDialogTitle } from '~/components/OriginalDialog';
 import { PortalProvider } from './PortalContext';
 
 /** One of each kind of surface that leaves the document flow, all open. */
