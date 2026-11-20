@@ -12,8 +12,6 @@ on:
       - '.nvmrc'
       - '.github/workflows/openid.yml'
       - '!**.md'
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
