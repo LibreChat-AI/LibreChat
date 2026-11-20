@@ -1387,6 +1387,107 @@ it('refuses a worker factory that drops the required host model', async () => {
 });
 
 describe('saved-agent builder host model', () => {
+  it.each([false, true])(
+    'records one usage fact per remote model call with hostModel=%s',
+    async (hostModel) => {
+      const native = new TestModel({});
+      native._streamResponseChunks = async function* () {
+        yield new ChatGenerationChunk({
+          text: 'tracked reply',
+          message: new AIMessageChunk({
+            content: 'tracked reply',
+            usage_metadata: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+          }),
+        });
+      };
+      const runtime = await fixture(async (input) => {
+        const run = await factory(input);
+        run.Graph!.overrideModel = hostModel ? input.hostModel : native;
+        return run;
+      });
+      try {
+        const endpoint = agentsEndpointSchema.parse({
+          sdkHostModels: {},
+          sdkRuntimes: {
+            custom: { remote: { ...runtime.remote, hostModel }, roles: ['ADMIN'] },
+          },
+        });
+        const productTracker = jest.fn();
+        const modelEnd = jest.fn();
+        const run = await createHostRun({
+          runId: identity.runId,
+          conversationId: identity.conversationId,
+          signal: new AbortController().signal,
+          tokenCounter: () => 1,
+          user: { id: identity.userId, role: 'ADMIN', tenantId: identity.tenantId } as IUser,
+          appConfig: {
+            config: {},
+            fileStrategy: FileSources.local,
+            imageOutputType: 'png',
+            endpoints: { agents: endpoint },
+          },
+          productTrackingRequest: {
+            productTracking: { enabled: true },
+            productTracker,
+          },
+          sdkModelHost: createSdkModelHost(endpoint.sdkHostModels, ({ clientOptions }) => {
+            Object.assign(native, {
+              callbacks:
+                clientOptions != null &&
+                typeof clientOptions === 'object' &&
+                'callbacks' in clientOptions
+                  ? clientOptions.callbacks
+                  : undefined,
+            });
+            return native;
+          }),
+          agents: [
+            {
+              id: identity.agentId,
+              name: 'Tracked remote agent',
+              description: '',
+              created_at: 0,
+              avatar: null,
+              provider: Providers.OPENAI,
+              model: 'gpt-4.1',
+              model_parameters: {
+                model: 'gpt-4.1',
+                temperature: null,
+                maxContextTokens: null,
+                max_context_tokens: null,
+                max_output_tokens: null,
+                top_p: null,
+                frequency_penalty: null,
+                presence_penalty: null,
+              },
+              sdk_runtime: { id: 'custom', protocolVersion: 1 },
+            },
+          ],
+          customHandlers: { [GraphEvents.CHAT_MODEL_END]: { handle: modelEnd } },
+        });
+        await run.processStream({ messages: [new HumanMessage('hello')] }, invocation());
+        expect(modelEnd).toHaveBeenCalledTimes(1);
+        const facts = productTracker.mock.calls.map(([fact]) => fact);
+        expect(facts.filter((fact) => fact.name === 'librechat.chat.model.usage.recorded')).toEqual(
+          [
+            expect.objectContaining({
+              runId: identity.runId,
+              conversationId: identity.conversationId,
+              agentId: identity.agentId,
+              model: 'gpt-4.1',
+              outcome: 'completed',
+              input_tokens: 3,
+              output_tokens: 2,
+              total_tokens: 5,
+            }),
+          ],
+        );
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+
   it('uses the resolved saved-agent configuration through the production createRun path', async () => {
     const runtime = await fixture(async (input) => {
       const run = await factory(input);

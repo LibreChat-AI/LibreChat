@@ -1,6 +1,14 @@
+import { Constants, GraphEvents } from '@librechat/agents';
+import { AIMessage } from '@librechat/agents/langchain/messages';
 import { serverProductFactSchema } from 'librechat-data-provider';
+import type { ChatGeneration } from '@langchain/core/outputs';
 import type { ProductTrackingRequest } from './product';
-import { observeProductRun, observeProductRunSetup } from './product';
+import {
+  createProductModelCallback,
+  createProductRemoteModelHandlers,
+  observeProductRun,
+  observeProductRunSetup,
+} from './product';
 
 const trackers: jest.Mock[] = [];
 afterEach(() => {
@@ -22,9 +30,82 @@ function request() {
   return { req, track: productTracker };
 }
 
+function generation(message: AIMessage): ChatGeneration {
+  return { text: '', message };
+}
+
 const context = { runId: 'generation', conversationId: 'conversation', agentId: 'agent_root' };
 
 describe('product execution facts', () => {
+  it('does not install callbacks when tracking is disabled', () => {
+    const { req } = request();
+    expect(
+      createProductModelCallback(
+        { ...req, productTracking: undefined },
+        context,
+        new AbortController().signal,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('records actual call attribution and measured zero without inventing missing usage', async () => {
+    const { req, track } = request();
+    const callback = createProductModelCallback(req, context, new AbortController().signal)!;
+    await callback.handleChatModelStart?.(
+      { id: [], lc: 1, type: 'not_implemented' },
+      [],
+      'call',
+      'parent-call',
+      undefined,
+      undefined,
+      {
+        ls_model_name: 'fallback-model',
+        [Constants.INVOKED_PROVIDER]: 'anthropic',
+        agentId: 'agent_nested',
+      },
+    );
+    await callback.handleLLMEnd?.(
+      {
+        generations: [
+          [
+            generation(
+              new AIMessage({
+                content: 'private response',
+                usage_metadata: {
+                  input_tokens: 0,
+                  output_tokens: 5,
+                  total_tokens: 5,
+                  input_token_details: { cache_read: 0 },
+                },
+              }),
+            ),
+          ],
+        ],
+      },
+      'call',
+    );
+    expect(track).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: 'librechat.chat.model.usage.recorded',
+        model: 'custom',
+        provider: 'anthropic',
+        agentId: 'agent_nested',
+        input_tokens: 0,
+        output_tokens: 5,
+        parentCallId: 'parent-call',
+      }),
+      req.productTrackingContext,
+    );
+    await callback.handleLLMEnd?.(
+      {
+        generations: [[generation(new AIMessage('private'))]],
+      },
+      'missing',
+    );
+    expect(track.mock.calls[1][0].input_tokens).toBeUndefined();
+    expect(JSON.stringify(track.mock.calls)).not.toContain('private');
+  });
+
   it('does not treat a paused run as a response completion; resume finishes once', async () => {
     const { req, track } = request();
     let interrupted = true;
@@ -68,6 +149,26 @@ describe('product execution facts', () => {
     });
   });
 
+  it('tracks a remote model result without retaining its content', async () => {
+    const { req, track } = request();
+    const handlers = createProductRemoteModelHandlers(undefined, req, context)!;
+    await handlers[GraphEvents.CHAT_MODEL_END].handle(
+      GraphEvents.CHAT_MODEL_END,
+      {
+        output: new AIMessage({
+          content: 'secret',
+          usage_metadata: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+        }),
+      },
+      { ls_model_name: 'remote-model', [Constants.INVOKED_PROVIDER]: 'openAI' },
+    );
+    expect(track.mock.calls[0][0]).toMatchObject({
+      name: 'librechat.chat.model.usage.recorded',
+      input_tokens: 2,
+      model: 'custom',
+    });
+    expect(JSON.stringify(track.mock.calls)).not.toContain('secret');
+  });
   it('reports setup failures without inventing an agent or model invocation', async () => {
     const { req, track } = request();
     const error = new Error('secret provider config');
@@ -144,4 +245,45 @@ it('records a halted run as incomplete, not failed', async () => {
   expect(track.mock.calls.map(([fact]) => [fact.name, fact.outcome])).toEqual([
     ['librechat.chat.response.finished', 'incomplete'],
   ]);
+});
+
+it('keeps execution correlation without ephemeral labels, custom models or provider names', async () => {
+  const { req, track } = request();
+  const callback = createProductModelCallback(
+    req,
+    { ...context, agentId: 'private-endpoint__private-model___private-customer' },
+    new AbortController().signal,
+  )!;
+  await callback.handleChatModelStart?.(
+    { id: [], lc: 1, type: 'not_implemented' },
+    [],
+    'correlated-call',
+    'parent-call',
+    undefined,
+    undefined,
+    {
+      ls_model_name: 'private-model',
+      [Constants.INVOKED_PROVIDER]: 'private-endpoint',
+      messageId: 'private-unused-message',
+    },
+  );
+  await callback.handleLLMEnd?.(
+    { generations: [[generation(new AIMessage('private-completion'))]] },
+    'correlated-call',
+  );
+  expect(track).toHaveBeenCalledTimes(1);
+  const facts = track.mock.calls.map(([fact]) => fact);
+  expect(facts[0]).toMatchObject({
+    runId: context.runId,
+    callId: 'correlated-call',
+    parentCallId: 'parent-call',
+    model: 'custom',
+    provider: 'custom',
+  });
+  for (const fact of facts) {
+    expect(fact.agentId).toBeUndefined();
+    expect(fact).not.toHaveProperty('messageId');
+    expect(fact).not.toHaveProperty('responseMessageId');
+  }
+  expect(JSON.stringify(facts)).not.toContain('private-');
 });

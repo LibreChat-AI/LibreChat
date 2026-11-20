@@ -4155,8 +4155,7 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   return { responses: [MOCK_REPLY] };
 }
 
-/** @type {import('@librechat/api').TestRunHook} */
-module.exports = function fakeModelHook(run, context) {
+function fakeModelHook(run, context) {
   const graph = run?.Graph;
   if (!graph || typeof graph.overrideTestModel !== 'function') {
     console.warn('[e2e] fake-model hook: run.Graph.overrideTestModel unavailable');
@@ -4224,4 +4223,38 @@ module.exports = function fakeModelHook(run, context) {
       null,
     modelCallbacks: context?.modelCallbacks,
   });
+}
+
+/** Keep the callbacks that the real model would receive for this agent. */
+function preserveModelCallbacks(graph) {
+  const model = graph?.overrideModel;
+  if (!model) {
+    return;
+  }
+  for (const method of ['_streamIterator', 'generate']) {
+    const original = model[method];
+    model[method] = function (input, options, ...args) {
+      const agentId = options?.metadata?.agentId;
+      let agent;
+      if (typeof agentId === 'string') {
+        agent = graph.agentContexts?.get(agentId);
+      } else if (graph.agentContexts?.size === 1) {
+        agent = graph.agentContexts.values().next().value;
+      }
+      const callbacks = agent?.clientOptions?.callbacks ?? this.callbacks;
+      // A view keeps callbacks local to each call while retaining the fake's shared cursor.
+      const invocation = new Proxy(this, {
+        get(target, property, receiver) {
+          return property === 'callbacks' ? callbacks : Reflect.get(target, property, receiver);
+        },
+      });
+      return original.call(invocation, input, options, ...args);
+    };
+  }
+}
+
+/** @type {import('@librechat/api').TestRunHook} */
+module.exports = function (run, context) {
+  fakeModelHook(run, context);
+  preserveModelCallbacks(run?.Graph);
 };
