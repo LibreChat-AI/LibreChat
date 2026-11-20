@@ -1,6 +1,7 @@
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { CodeOutputArtifact, PrepareCodeOutputInput, PreparedCodeOutput } from './preflight';
 import { preflightCodeOutputBatch, CODE_OUTPUT_PREFLIGHT_MAX_BYTES } from './preflight';
+import { getPreparedCodeOutputBuffer, cachePreparedCodeOutputBuffer } from './cache';
 import { DEFAULT_LOOKUP_CONCURRENCY } from '../../utils/concurrency';
 
 const BLOCK_PATTERN = {
@@ -455,34 +456,49 @@ describe('preflightCodeOutputBatch', () => {
       expect(reusedAfterRetry).toEqual([]);
     });
 
-    it('evicts every discarded prefetch from the caller cache before the full-cap retry', async () => {
+    it('evicts every discarded prefetch from the request cache before the full-cap retry', async () => {
       const sizes = [60 * MB, ...Array.from({ length: 3 }, () => 1 * MB)];
-      const { prepare, calls } = sizedPrepare(sizes);
-      const events: string[] = [];
-      const tracked = jest.fn(async (input: PrepareCodeOutputInput) => {
-        events.push(`prepare:${input.file.id}:${input.maxBytes}`);
-        return prepare(input);
-      });
-      const release = jest.fn(({ file }: { file: { id: string } }) => {
-        events.push(`release:${file.id}`);
+      const req = {};
+      const bufferCache = { req, executionRouteKey: 'route' };
+      const cachedAtRetry: Array<string | null> = [];
+      const { prepare } = sizedPrepare(sizes);
+      const caching = jest.fn(async (input: PrepareCodeOutputInput) => {
+        if (input.file.id === 'file-0' && input.maxBytes === 64 * MB) {
+          for (let index = 1; index < sizes.length; index++) {
+            const buffer = getPreparedCodeOutputBuffer({
+              ...bufferCache,
+              file_path: `file-${index}.txt`,
+              files: [
+                {
+                  id: `file-${index}`,
+                  name: `file-${index}.txt`,
+                  storage_session_id: `storage-${index}`,
+                },
+              ],
+            });
+            cachedAtRetry.push(buffer == null ? null : `file-${index}`);
+          }
+        }
+        const result = await prepare(input);
+        cachePreparedCodeOutputBuffer({
+          ...bufferCache,
+          id: input.file.id,
+          name: input.file.name,
+          session_id: input.sessionId,
+          buffer: result.buffer,
+        });
+        return result;
       });
 
-      await preflightCodeOutputBatch({
+      const result = await preflightCodeOutputBatch({
         artifact: artifact(sizes.length),
         limits: largeLimits,
-        prepare: tracked,
-        release,
+        prepare: caching,
+        bufferCache,
       });
 
-      const retry = events.indexOf(`prepare:file-0:${64 * MB}`);
-      expect(retry).toBeGreaterThan(-1);
-      expect(events.slice(0, retry)).toEqual(
-        expect.arrayContaining(['release:file-1', 'release:file-2', 'release:file-3']),
-      );
-      expect(release).not.toHaveBeenCalledWith(
-        expect.objectContaining({ file: expect.objectContaining({ id: 'file-0' }) }),
-      );
-      expect(calls.length).toBeGreaterThan(sizes.length);
+      expect(cachedAtRetry).toEqual([null, null, null]);
+      expect(outcome(result)).toEqual(serialOutcome(sizes, 64 * MB, 64 * MB));
     });
 
     it('reports a failed prefetch once, from the budgeted pass, with its original cause', async () => {

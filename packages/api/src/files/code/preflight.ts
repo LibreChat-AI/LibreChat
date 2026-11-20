@@ -1,14 +1,17 @@
 import { hasActivePiiPatterns } from 'librechat-data-provider';
 import type { FileFilterField, FiltersConfig } from 'librechat-data-provider';
 import type { FileContentInput } from '../../protection/adapters/submissions';
+import type { CodeOutputRoute } from './cache';
 import {
   UninspectableFileError,
   assertHydratedFileInspectable,
   getBlockedUninspectableFileField,
 } from '../../protection/files';
+import { CODE_OUTPUT_PREFLIGHT_MAX_COUNT, CODE_OUTPUT_PREFLIGHT_MAX_BYTES } from './limits';
 import { extractFileContent } from '../../protection/adapters/submissions';
 import { DEFAULT_LOOKUP_CONCURRENCY } from '../../utils/concurrency';
 import { ContentFilterError } from '../../middleware/contentFilter';
+import { releasePreparedCodeOutputBuffer } from './cache';
 import { inspectContent } from '../../protection/runtime';
 
 const GENERATED_FILE_CONTENT_FIELDS = [
@@ -17,8 +20,7 @@ const GENERATED_FILE_CONTENT_FIELDS = [
   'transcript',
 ] as const satisfies readonly FileFilterField[];
 
-export const CODE_OUTPUT_PREFLIGHT_MAX_COUNT: number = 10;
-export const CODE_OUTPUT_PREFLIGHT_MAX_BYTES: number = 64 * 1024 * 1024;
+export { CODE_OUTPUT_PREFLIGHT_MAX_COUNT, CODE_OUTPUT_PREFLIGHT_MAX_BYTES } from './limits';
 /** Below this per-slot cap a prefetch would mostly hit the cap, so the batch stays serial. */
 const MIN_PREFETCH_SLOT_BYTES = 1024 * 1024;
 
@@ -68,12 +70,9 @@ export interface PreflightCodeOutputBatchInput {
   readonly prepare: (input: PrepareCodeOutputInput) => Promise<PreparedCodeOutput>;
   /** Downloads prefetched at once (`concurrency.codeOutputDownloads`); `1` keeps the batch serial. */
   readonly concurrency?: number;
-  /** Drops whatever a `prepare` call retained outside the batch (a request-scoped
-   *  buffer cache) for a prefetched file the batch discards before a full-cap retry. */
-  readonly release?: (input: {
-    readonly file: CodeOutputArtifactFile;
-    readonly sessionId?: string;
-  }) => void;
+  /** The request-scoped buffer cache `prepare` fills, so the batch can evict a
+   *  prefetched file it discards before a full-cap retry. */
+  readonly bufferCache?: CodeOutputRoute & { readonly req: unknown };
   /** Reports an artifact whose bytes could not be fetched for inspection.
    *  The batch degrades that entry to the download fallback and the turn
    *  still succeeds, so this callback is the only trace the failure leaves;
@@ -145,8 +144,8 @@ type PrefetchAttempt =
  * prefetch could not fetch, or fetched under a smaller cap than the serial
  * pass allows, is simply prepared again by that pass, which keeps its result
  * identical to a serial run. Before such a second download the pass releases
- * the prefetched bytes of that file and every later one, including the copies
- * `release` evicts from the caller's cache, so a retry never holds more than
+ * the prefetched bytes of that file and every later one, including their
+ * copies in the request buffer cache, so a retry never holds more than
  * the serial pass would. Batches under active content
  * inspection stay serial, as do batches with a concurrency of one.
  */
@@ -268,7 +267,13 @@ export async function preflightCodeOutputBatch(
     for (let later = index; later < prefetched.length; later++) {
       const discarded = prefetched[later];
       if (discarded != null && 'prepared' in discarded) {
-        input.release?.({ file: entries[later].file, sessionId: entries[later].sessionId });
+        if (input.bufferCache != null) {
+          releasePreparedCodeOutputBuffer({
+            ...input.bufferCache,
+            id: entries[later].file.id,
+            session_id: entries[later].sessionId,
+          });
+        }
       }
       prefetched[later] = undefined;
     }
