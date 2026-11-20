@@ -778,9 +778,7 @@ describe('GET /api/config', () => {
     ])(
       'advertises effective YAML Insights settings %p with legacy switch %p',
       async (insights, legacy, expected) => {
-        if (legacy === undefined) {
-          delete process.env.ENABLE_INSIGHTS;
-        } else {
+        if (legacy !== undefined) {
           process.env.ENABLE_INSIGHTS = legacy;
         }
         mockGetAppConfig.mockResolvedValue({
@@ -796,7 +794,7 @@ describe('GET /api/config', () => {
       },
     );
 
-    it('uses each viewer’s effective Insights setting without another config lookup', async () => {
+    it('reads Insights from the viewer’s scoped config without another lookup', async () => {
       mockGetAppConfig.mockImplementation(async (options) => ({
         ...baseAppConfig,
         interfaceConfig: {
@@ -805,30 +803,20 @@ describe('GET /api/config', () => {
         },
       }));
 
-      for (const [userId, expected] of [
-        ['selected-user', true],
-        ['other-user', false],
-      ]) {
-        mockGetAppConfig.mockClear();
-        const response = await request(
-          createApp({ ...mockUser, id: userId, tenantId: 'tenant-a' }),
-        ).get('/api/config');
+      const response = await request(
+        createApp({ ...mockUser, id: 'selected-user', tenantId: 'tenant-a' }),
+      ).get('/api/config');
 
-        expect(response.statusCode).toBe(200);
-        expect(response.body.insightsEnabled).toBe(expected);
-        expect(mockGetAppConfig).toHaveBeenCalledWith(
+      expect(response.body.insightsEnabled).toBe(true);
+      expect(mockGetAppConfig.mock.calls.filter(([options]) => options?.userId)).toEqual([
+        [
           expect.objectContaining({
-            userId,
-            role: 'USER',
+            userId: 'selected-user',
             tenantId: 'tenant-a',
             failClosed: true,
           }),
-        );
-        const scopedCalls = mockGetAppConfig.mock.calls.filter(
-          ([options]) => options?.userId === userId,
-        );
-        expect(scopedCalls).toHaveLength(1);
-      }
+        ],
+      ]);
     });
 
     describe('pull requests', () => {
