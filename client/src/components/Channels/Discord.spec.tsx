@@ -183,7 +183,7 @@ test.each([404])(
     expect(
       await screen.findByText(status === 403 ? 'com_ui_discord_admin' : 'com_ui_discord_disabled'),
     ).toBeVisible();
-    expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'com_ui_discord_app_create' })).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: 'com_ui_retry' }));
     expect(await screen.findByText('Engineering')).toBeVisible();
   },
@@ -1405,12 +1405,14 @@ test('leaves focus alone when the user moved on while an initial retry waited', 
   const reads = deferred<DiscordApplicationPage>();
   jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
   await user.click(retryOf(failure));
-  const link = screen.getByRole('link', { name: 'com_ui_discord_developer_portal' });
+  // The user moves on to a control outside the Discord view.
+  const link = document.body.appendChild(document.createElement('button'));
   link.focus();
   await act(async () => reads.resolve({ applications: [app] }));
   expect(await screen.findByText('Engineering')).toBeVisible();
   expect(link).toHaveFocus();
   expect(appsHeading()).not.toHaveFocus();
+  link.remove();
 });
 
 test('does not move focus in the next account when an initial retry settles after the switch', async () => {
@@ -1542,12 +1544,14 @@ test.each(sections)(
     await user.click(button);
     await waitFor(() => expect(button).toBeDisabled());
     dropsFocus();
-    const link = screen.getByRole('link', { name: 'com_ui_discord_developer_portal' });
+    // The user moves on to a control outside the Discord view.
+    const link = document.body.appendChild(document.createElement('button'));
     link.focus();
     await act(async () => reads.resolve({ next: 'c3' }));
     expect(await screen.findByText(added)).toBeVisible();
     expect(link).toHaveFocus();
     expect(button).not.toHaveFocus();
+    link.remove();
   },
 );
 

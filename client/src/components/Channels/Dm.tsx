@@ -318,8 +318,14 @@ function Selections({ principalKey }: { principalKey: string }) {
   };
   // Nothing to show or revoke while new selections are off: stay out of the way.
   if (selections.isSuccess && !enabled && rows.length === 0) return null;
+  // Without a confirmed Discord link there is nothing to choose yet; linking happens in Discord.
+  if (selections.isSuccess && links.isSuccess && active.length === 0 && rows.length === 0)
+    return null;
   return (
-    <section className="space-y-3" aria-labelledby={`${id}-heading`}>
+    <section
+      className="border-border-light space-y-3 not-first:border-t not-first:pt-6"
+      aria-labelledby={`${id}-heading`}
+    >
       <h3 id={`${id}-heading`} ref={heading} tabIndex={-1} className="text-sm font-semibold">
         {localize('com_ui_discord_dm_title')}
       </h3>

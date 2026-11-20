@@ -162,9 +162,7 @@ function SettingsControl({
           open ? (
             <div className="space-y-6">
               <Discord {...props} showDescription={false} />
-              <div className="border-border-light border-t pt-6">
-                <Dm principalKey={JSON.stringify([props.tenantId ?? '_', props.userId])} />
-              </div>
+              <Dm principalKey={JSON.stringify([props.tenantId ?? '_', props.userId])} />
             </div>
           ) : null
         }
@@ -453,7 +451,8 @@ function Setup({
   };
   const applications = apps.data?.pages.flatMap((page) => page.applications) ?? [];
   const installations = guilds.data?.pages.flatMap((page) => page.guilds) ?? [];
-  const ready = apps.isSuccess && guilds.isSuccess && !apps.isFetching && !guilds.isFetching;
+  const listed = apps.isSuccess && guilds.isSuccess;
+  const ready = listed && !apps.isFetching && !guilds.isFetching;
   const disabled = busy || !ready || flow !== null;
   const setup = apps.data?.pages[0].setup;
   const settingsApp = settings
@@ -625,29 +624,54 @@ function Setup({
       <h3 ref={appsHeading} tabIndex={-1} className="sr-only">
         {localize('com_ui_discord_apps')}
       </h3>
-      <div className="flex items-center justify-between gap-3">
-        <Button asChild variant="inline-link" className="w-fit">
-          <a
-            href="https://discord.com/developers/applications"
-            target="_blank"
-            rel="noopener noreferrer"
+      {/* Loaded state, not "not fetching": a focus refetch must not swap the layout. */}
+      {listed && !applications.length ? (
+        <div className="border-border-light flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-8 text-center">
+          <span
+            className="border-border-light bg-surface-secondary flex size-10 items-center justify-center rounded-lg border"
+            aria-hidden="true"
           >
-            {localize('com_ui_discord_developer_portal')}
-            <ExternalLink className="size-3.5" aria-hidden="true" />
-          </a>
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={disabled}
-          onClick={(event) => edit('new', event.currentTarget)}
-        >
-          <Plus className="size-4" aria-hidden="true" />
-          {localize('com_ui_discord_app_create')}
-        </Button>
-      </div>
-      {ready && !applications.length && (
-        <p className="text-text-secondary text-sm">{localize('com_ui_discord_empty')}</p>
+            <DiscordIcon mark className="size-5" />
+          </span>
+          <div className="space-y-1">
+            <p className="text-text-primary text-sm font-medium">
+              {localize('com_ui_discord_empty_title')}
+            </p>
+            <p className="text-text-secondary text-sm">{localize('com_ui_discord_empty')}</p>
+          </div>
+          <Button
+            type="button"
+            disabled={disabled}
+            onClick={(event) => edit('new', event.currentTarget)}
+          >
+            <Plus className="size-4" aria-hidden="true" />
+            {localize('com_ui_discord_app_create')}
+          </Button>
+          <Button asChild variant="inline-link" className="w-fit">
+            <a
+              href="https://discord.com/developers/applications"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {localize('com_ui_discord_developer_portal')}
+              <ExternalLink className="size-3.5" aria-hidden="true" />
+            </a>
+          </Button>
+        </div>
+      ) : (
+        listed && (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={disabled}
+              onClick={(event) => edit('new', event.currentTarget)}
+            >
+              <Plus className="size-4" aria-hidden="true" />
+              {localize('com_ui_discord_app_create')}
+            </Button>
+          </div>
+        )
       )}
       <h3 ref={guildHeading} tabIndex={-1} className="sr-only">
         {localize('com_ui_discord_guilds')}

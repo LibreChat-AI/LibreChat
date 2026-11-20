@@ -187,9 +187,9 @@ test.each(['pending', 'accepted', 'expired', 'revoked', 'unavailable'] as const)
   async (state) => {
     jest.mocked(dataService.channelIdentityClient.list).mockResolvedValue([{ ...link, state }]);
     page();
-    await screen.findByText(
-      'Link your Discord account to an agent in a server channel and confirm it in Discord before selecting that agent for direct messages.',
-    );
+    await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalled());
+    await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalled());
+    expect(screen.queryByRole('heading', { name: 'Direct messages' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', {
         name: /^Use for DMs: agent agent, Discord user 789/,
@@ -213,9 +213,9 @@ test('does not offer Slack links for Discord selection', async () => {
     },
   ]);
   page();
-  await screen.findByText(
-    'Link your Discord account to an agent in a server channel and confirm it in Discord before selecting that agent for direct messages.',
-  );
+  await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalled());
+  await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalled());
+  expect(screen.queryByRole('heading', { name: 'Direct messages' })).not.toBeInTheDocument();
   expect(
     screen.queryByRole('button', {
       name: /^Use for DMs: agent agent, Discord user 789/,
