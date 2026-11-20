@@ -53,11 +53,11 @@ describe('createBackchannelLogoutLimiter', () => {
       },
     );
 
-    for (let i = 0; i < 5; i++) {
-      await request(app).post('/').expect(200);
+    const statuses: number[] = [];
+    for (const path of ['/', '/', '/', '/', '/', '/?reject=1', '/?reject=1', '/']) {
+      statuses.push((await request(app).post(path)).status);
     }
-    await request(app).post('/?reject=1').expect(400);
-    await request(app).post('/?reject=1').expect(400);
-    await request(app).post('/').expect(429);
+
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 400, 400, 429]);
   });
 });
