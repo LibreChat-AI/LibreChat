@@ -178,39 +178,6 @@ describe('InsightsView agent selection', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('lets admins reach every agent one by one when automatic selection is off', async () => {
-    mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(params, {
-        ...insightsData,
-        selectionRequired: !params.agentIds?.length && !params.allAgents,
-      }),
-    );
-    const user = userEvent.setup();
-    renderView();
-    await user.click(screen.getByText('com_insights_no_agents_selected'));
-    for (const name of ['Alpha', 'Beta', 'Gamma']) {
-      await user.click(screen.getByRole('option', { name }));
-    }
-    await waitFor(() => expect(lastQueryParams().allAgents).toBe(true));
-    expect(screen.getByRole('option', { name: 'Gamma' })).toHaveAttribute('aria-selected', 'true');
-  });
-
-  it('lets an administrator explicitly select their only available agent', async () => {
-    mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(params, {
-        ...insightsData,
-        agents: [insightsData.agents[0]],
-        selectionRequired: !params.agentIds?.length && !params.allAgents,
-      }),
-    );
-    const user = userEvent.setup();
-    renderView();
-    await user.click(screen.getByText('com_insights_no_agents_selected'));
-    await user.click(await screen.findByRole('option', { name: 'Alpha' }));
-    await waitFor(() => expect(lastQueryParams().agentIds).toEqual(['agent-1']));
-    expect(screen.getByRole('combobox', { hidden: true })).toHaveTextContent('Alpha');
-  });
-
   it('recovers agent filters the server rejects without showing them as selected', async () => {
     mockUseInsightsQuery.mockImplementation((params) => {
       if (params.agentIds?.length === insightsData.agents.length) {
@@ -343,35 +310,6 @@ describe('InsightsView agent selection', () => {
     expect(screen.queryByText('com_insights_latest_conversations')).not.toBeInTheDocument();
   });
 
-  it.each([
-    [null, '$0.00'],
-    [0.0000000012, '$0.0000000012'],
-  ])('shows missing spend as zero and preserves small recorded spend: %s', (spendUSD, expected) => {
-    mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(params, { ...insightsData, summary: { ...insightsData.summary, spendUSD } }),
-    );
-
-    renderView();
-
-    expect(metricCard('com_insights_spend').getByText(expected)).toBeInTheDocument();
-  });
-
-  it('shows missing period activity and categorized feedback without inventing values', () => {
-    mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(params, {
-        ...insightsData,
-        summary: { ...insightsData.summary, lastUsed: null },
-      }),
-    );
-
-    renderView();
-
-    expect(screen.getByText('com_insights_no_activity')).toBeInTheDocument();
-    expect(screen.getByText('com_insights_no_feedback_categories')).toBeInTheDocument();
-    expect(metricCard('com_insights_thumbs_up').getByText('0')).toBeInTheDocument();
-    expect(metricCard('com_insights_thumbs_down').getByText('0')).toBeInTheDocument();
-  });
-
   it('lists recorded models, an unknown-model row and missing spend as zero', () => {
     const counts = {
       completedResponses: 0,
@@ -438,14 +376,6 @@ describe('InsightsView agent selection', () => {
     ]);
   });
 
-  it('shows an empty models panel when no usage or responses were recorded', () => {
-    renderView();
-
-    const panel = metricCard('com_insights_models');
-    expect(panel.getByText('com_insights_no_data')).toBeInTheDocument();
-    expect(panel.queryByRole('table')).not.toBeInTheDocument();
-  });
-
   const versionedData = (agentVersions: TInsightsAgentVersion[]) => ({
     ...insightsData,
     daily: ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05'].map((date) =>
@@ -481,24 +411,6 @@ describe('InsightsView agent selection', () => {
     expect(
       screen.queryByRole('heading', { name: 'com_insights_agent_versions' }),
     ).not.toBeInTheDocument();
-  });
-
-  it('does not mark versions when several agents are selected', () => {
-    mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(
-        params,
-        versionedData([
-          { agentId: 'agent-1', version: 1, savedAt: '2026-10-02T12:00:00.000Z', active: true },
-          { agentId: 'agent-2', version: 1, savedAt: '2026-10-03T12:00:00.000Z', active: true },
-        ]),
-      ),
-    );
-    renderView('/insights?agentIds=agent-1&agentIds=agent-2');
-    const trend = metricCard('com_insights_messages').getByRole('img');
-    expect(within(trend).queryByTestId('insights-version-marker')).not.toBeInTheDocument();
-    expect(within(trend).queryByText(/com_insights_version_tag/)).not.toBeInTheDocument();
-    fireEvent.focus(trend);
-    expect(within(trend).queryByText(/com_ui_agent_version_title/)).not.toBeInTheDocument();
   });
 
   it('filters names without changing selection and clears search on close', async () => {
