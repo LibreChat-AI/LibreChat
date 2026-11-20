@@ -3,6 +3,9 @@ import type { TProductTrackingPolicy, TTelemetryConfig } from './config';
 import { chatBrowserFacts, chatServerFacts } from './tracking/chat';
 import { PRODUCT_TRACKING_SESSION_DEFAULTS } from './config';
 
+export { productBuiltinToolNameSchema } from './tracking/privacy';
+export type { ProductBuiltinToolName } from './tracking/privacy';
+
 export type { ChatSubmissionKind, ChatBrowserFact, ChatServerFact } from './tracking/chat';
 
 /** Product events are off unless the deployment explicitly enables them. */

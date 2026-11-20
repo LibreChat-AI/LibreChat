@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { productProviderSchema, productAgentIdSchema, productModelSchema } from './privacy';
+import {
+  productBuiltinToolNameSchema,
+  productProviderSchema,
+  productAgentIdSchema,
+  productModelSchema,
+} from './privacy';
 
 const id = z.string().min(1).max(256);
 const feature = z.literal('chat');
@@ -89,6 +94,55 @@ export const chatServerFacts = [
       .optional(),
     outcome,
   }),
+  z.strictObject({
+    name: z.literal('librechat.chat.agent.invoked'),
+    feature,
+    ...context,
+    runId: id,
+    agentId: productAgentIdSchema.optional(),
+    agentInvocationId: id,
+  }),
+  z.strictObject({
+    name: z.literal('librechat.chat.agent.finished'),
+    feature,
+    ...context,
+    runId: id,
+    agentId: productAgentIdSchema.optional(),
+    agentInvocationId: id,
+    outcome,
+  }),
+  z
+    .strictObject({
+      name: z.literal('librechat.chat.tool.invoked'),
+      feature,
+      ...context,
+      toolCallId: id,
+      toolCategory: z.enum(['builtin', 'mcp', 'action', 'custom']),
+      toolName: productBuiltinToolNameSchema.optional(),
+      parentToolCallId: id.optional(),
+      mode: z.enum(['foreground', 'background', 'programmatic']),
+    })
+    .refine((fact) => (fact.toolCategory === 'builtin') === (fact.toolName !== undefined), {
+      message: 'Only built-in tools carry a public name',
+      path: ['toolName'],
+    }),
+  z
+    .strictObject({
+      name: z.literal('librechat.chat.tool.finished'),
+      feature,
+      ...context,
+      toolCallId: id,
+      toolCategory: z.enum(['builtin', 'mcp', 'action', 'custom']),
+      toolName: productBuiltinToolNameSchema.optional(),
+      parentToolCallId: id.optional(),
+      mode: z.enum(['foreground', 'background', 'programmatic']),
+      outcome,
+      durationMs: z.number().finite().nonnegative(),
+    })
+    .refine((fact) => (fact.toolCategory === 'builtin') === (fact.toolName !== undefined), {
+      message: 'Only built-in tools carry a public name',
+      path: ['toolName'],
+    }),
 ] as const;
 
 export type ChatBrowserFact = z.infer<(typeof chatBrowserFacts)[number]>;
