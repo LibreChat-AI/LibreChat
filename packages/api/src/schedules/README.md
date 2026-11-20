@@ -374,9 +374,29 @@ endpoints:
 applies. Under `delegated` with no `resources` declared there is nothing an owner can grant, so
 every key run's MCP tools are refused; the config loader warns about that configuration.
 
-Under `delegated`, a run started with a personal key (chat completions, Responses, and a
-background Responses worker) is put under that key's grant for the agent before any tool is
-loaded. A key with no grant for the agent may not use MCP tools at all (`consent_missing`).
+Under `delegated`, a run started with a personal key is put under that key's grant for the
+agent before any tool is loaded. A key with no grant for the agent may not use MCP tools at all
+(`consent_missing`). A key starts a run in two ways:
+
+- Directly: chat completions, Responses, and a background Responses worker. The run's source is
+  `remote_api`, and each controller calls the key host's `prepare`.
+- By posting an event to `/api/agents/v1/events`. The trigger engine delivers it to the chat
+  route, where the run's source is `{ type: 'trigger', subject: { kind: 'key', id }, delivery }`
+  (`createTriggerExecutionContext`, `packages/api/src/agents/authority/context.ts`). The subject
+  is read from the verified trigger request, whose event source the events route stamps with the
+  authenticated key; a request the trigger engine did not sign never gets one. The chat route
+  reaches the same `prepare` through `initializeWithAuthority`
+  (`packages/api/src/agents/authority/host.ts`). This covers a delivery that starts a turn and
+  one that continues the conversation bound to its source.
+
+`getSourceKey` names the key for both, so the lookup, the integration-key exemption and the
+refusal of an unknown key are one code path.
+
+An event delivery is restricted on the request that carries it. Later requests of the same run
+are not yet restricted by the key's grant: a run resumed after it paused for an approval, a
+request a detached subagent makes for the run, and the turn that reports a background task's
+result. These build their context without the trigger's subject.
+
 What differs from a schedule's grant:
 
 - It limits MCP tools only. The agent's other tools are untouched, and an agent that has them

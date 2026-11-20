@@ -52,7 +52,7 @@ const {
   extractFileContext,
   createScheduleUpstreamTokenProviderResolver,
   initializeWithScheduledMCPBearer,
-  initializeWithScheduleMCPExecution,
+  initializeWithAuthority,
   retainScheduleMCPCompletion,
   getScheduleMCPExecution,
   getMCPRequestContext,
@@ -2167,7 +2167,7 @@ function createInitializeClient(dependencies = {}) {
       params.signal,
       params.executionContext,
     );
-    return initializeWithScheduleMCPExecution(
+    return initializeWithAuthority(
       {
         req: params.req,
         signal: params.signal,
@@ -2179,7 +2179,10 @@ function createInitializeClient(dependencies = {}) {
         restoredJob: params.scheduleJobIdentity,
         approvedToolCalls: params.approvedToolCalls,
       },
-      () => require('~/server/services/Schedules/consent'),
+      () => ({
+        schedule: require('~/server/services/Schedules/consent'),
+        key: require('~/server/services/ApiKeys/grants'),
+      }),
       () =>
         initializeWithScheduledMCPBearer(
           {
