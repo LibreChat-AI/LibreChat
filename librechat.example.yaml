@@ -1221,6 +1221,9 @@ endpoints:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
   # google:
+  #   # (optional) List the Gemini chat models your server GOOGLE_KEY can access,
+  #   # so new releases appear without a config change. GOOGLE_MODELS still wins.
+  #   fetch: true
   #   # (optional) Override USD rates per million tokens for your billing tier.
   #   # Set all three rates to 0 for the Gemini Developer API free tier.
   #   tokenConfig:

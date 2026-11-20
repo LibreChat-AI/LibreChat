@@ -589,16 +589,49 @@ export async function getAnthropicModels(
   }
 }
 
+/** Gemini API's OpenAI-compatible base URL, whose `/models` lists what the key can access. */
+const GOOGLE_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+/** Versioned Gemini IDs; aliases such as `gemini-flash-latest` miss the version-based request rules. */
+const GOOGLE_CHAT_MODEL = /^gemini-\d/;
+const GOOGLE_NON_CHAT_MODEL = /-(?:tts|image|live|audio|transcribe|translate|computer-use)(?:-|$)/;
+
 /**
- * Gets Google models from environment or defaults.
- * @returns Array of model IDs
+ * Gets Google models from config, environment, or defaults. With `fetch`, Gemini API models the
+ * defaults lack are appended; defaults are never removed, since Vertex validates against them too.
+ * @param opts - Options for getting models
+ * @returns Promise resolving to array of model IDs
  */
-export function getGoogleModels(): string[] {
-  let models = defaultModels[EModelEndpoint.google];
-  if (process.env.GOOGLE_MODELS) {
-    models = splitAndTrim(process.env.GOOGLE_MODELS);
+export async function getGoogleModels(
+  opts: {
+    /** A model list configured for the endpoint; when set, it is returned without discovery. */
+    configuredModels?: string[];
+    /** Discover models from the Gemini API when a server `GOOGLE_KEY` is set. */
+    fetch?: boolean;
+  } = {},
+): Promise<string[]> {
+  if (opts.configuredModels) {
+    return opts.configuredModels;
   }
-  return models;
+  const models = defaultModels[EModelEndpoint.google];
+  if (process.env.GOOGLE_MODELS) {
+    return splitAndTrim(process.env.GOOGLE_MODELS);
+  }
+
+  const apiKey = process.env.GOOGLE_KEY?.trim();
+  if (!opts.fetch || !apiKey || isUserProvided(apiKey) || process.env.GOOGLE_REVERSE_PROXY) {
+    return models;
+  }
+
+  const listed = await fetchModels({
+    apiKey,
+    baseURL: GOOGLE_OPENAI_BASE_URL,
+    name: EModelEndpoint.google,
+    createTokenConfig: false,
+  });
+  const chat = listed
+    .map((id) => id.replace(/^models\//, ''))
+    .filter((id) => GOOGLE_CHAT_MODEL.test(id) && !GOOGLE_NON_CHAT_MODEL.test(id));
+  return [...new Set([...models, ...chat])];
 }
 
 /**
