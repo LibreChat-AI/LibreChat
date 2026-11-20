@@ -118,7 +118,7 @@ export const TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE =
 /** A back-channel logout notification already ended the provider session carrying this credential. */
 export const OPENID_SESSION_ENDED = 'OPENID_SESSION_ENDED' as const;
 
-/** The provider-session record could not be read or written; retry, this is not a logout. */
+/** The session check could not be completed; retry, this is not a logout. */
 export const AUTH_SESSION_CHECK_UNAVAILABLE = 'AUTH_SESSION_CHECK_UNAVAILABLE' as const;
 
 /** The provider session a login verified or a logout notification targets: `(issuer, clientId, sid)`.
