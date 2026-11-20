@@ -149,6 +149,7 @@ function Header({
             conversationId={routeConversationId ?? Constants.NEW_CONVO}
             agentId={conversation?.agent_id}
             isSubmitting={isSubmitting}
+            autoOpen={interfaceConfig.sessionRailAutoOpen !== false}
           />
         )}
         {startupConfig != null && !sessionRail && !isNewChat && parentConversationId == null && (

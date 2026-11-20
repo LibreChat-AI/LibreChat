@@ -272,6 +272,24 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.sessionRail).toBe(true);
   });
 
+  it('carries a disabled session rail auto-open flag to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { sessionRailAutoOpen: false } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRailAutoOpen).toBe(false);
+  });
+
+  it('opens the session rail by itself by default', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.sessionRailAutoOpen).toBe(true);
+  });
+
   it('carries a disabled analytics consent prompt to the clients', async () => {
     const interfaceConfig = await loadDefaultInterface({
       config: { interface: { analyticsConsent: false } },

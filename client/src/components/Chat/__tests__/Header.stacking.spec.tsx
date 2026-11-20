@@ -139,6 +139,15 @@ describe('Header stacking', () => {
     expect(backgroundTasks).not.toHaveBeenCalled();
   });
 
+  test('lets the rail show itself unless the deployment says otherwise', () => {
+    render(<Header />);
+    expect(session.mock.calls[0][0]).toMatchObject({ autoOpen: true });
+    session.mockClear();
+    mockStartupConfig.current = { interface: { sessionRailAutoOpen: false } };
+    render(<Header />);
+    expect(session.mock.calls[0][0]).toMatchObject({ autoOpen: false });
+  });
+
   test('offers the session control on a chat that has not been saved yet', () => {
     mockRoute.current = undefined;
     render(<Header />);

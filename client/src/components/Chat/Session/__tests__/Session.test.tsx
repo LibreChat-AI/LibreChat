@@ -7,10 +7,15 @@ import { ContentTypes, QueryKeys, dataService } from 'librechat-data-provider';
 import { activeSubagentPanel, ParentSubagentsProvider } from '@librechat/chat/react';
 import type { ParentSubagentSummary, BackgroundTaskIndex, TMessage } from 'librechat-data-provider';
 import type { JotaiStore } from 'test/harness';
+import {
+  sessionRailOpen,
+  sessionRailAutoOpen,
+  sessionRailDismissed,
+  SESSION_RAIL_DISMISSED_LIMIT,
+} from '../state';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { SubagentIndexHostProvider } from 'test/streamHost';
 import { ChatSurfaceHarness } from 'test/harness';
-import { sessionRailOpen } from '../state';
 import SessionRailSlot from '../Slot';
 import Session from '../Session';
 
@@ -122,11 +127,20 @@ const renderSession = ({
   children = [],
   remembered,
   id = conversationId,
+  autoOpen = false,
+  wanted,
+  dismissed,
 }: {
   children?: ParentSubagentSummary[];
   /** The reader's stored choice for the docked rail. */
   remembered?: boolean;
   id?: string;
+  /** Off unless a test is about the rail showing itself, so the others open it by hand. */
+  autoOpen?: boolean;
+  /** The reader's own setting for the rail showing itself. */
+  wanted?: boolean;
+  /** Conversations the reader has already closed the rail in. */
+  dismissed?: string[];
 } = {}) => {
   jest.spyOn(dataService, 'getSubagentThread').mockImplementation(() => new Promise(() => {}));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -142,6 +156,8 @@ const renderSession = ({
       seed={(store) => {
         atoms = store;
         if (remembered != null) store.set(sessionRailOpen, remembered);
+        if (wanted != null) store.set(sessionRailAutoOpen, wanted);
+        if (dismissed != null) store.set(sessionRailDismissed, dismissed);
       }}
     >
       <RecoilRoot>
@@ -150,7 +166,7 @@ const renderSession = ({
             <SubagentIndexHostProvider>
               <ParentSubagentsProvider conversationId={id} enabled>
                 <header>
-                  <Session conversationId={id} isSubmitting={false} />
+                  <Session conversationId={id} isSubmitting={false} autoOpen={autoOpen} />
                 </header>
                 <SessionRailSlot />
               </ParentSubagentsProvider>
@@ -165,6 +181,7 @@ const renderSession = ({
     queryClient,
     getSelection: () => atoms.get(activeSubagentPanel),
     isRemembered: () => atoms.get(sessionRailOpen),
+    dismissedIn: () => atoms.get(sessionRailDismissed),
   };
 };
 
@@ -469,6 +486,125 @@ describe('Session', () => {
     expect(within(rail).getByRole('button', { name: 'com_ui_session_close' })).toHaveFocus();
     await userEvent.tab();
     expect(rail).not.toContainElement(document.activeElement as HTMLElement);
+  });
+
+  describe('showing itself when work starts', () => {
+    it('opens for running work without being asked, and without that becoming the remembered choice', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      const { isRemembered } = renderSession({ autoOpen: true });
+      const rail = await screen.findByTestId('session-rail');
+      await waitFor(() => expect(within(rail).getAllByTestId('session-row')).toHaveLength(2));
+      expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+      /** Focus stays where the reader had it. */
+      expect(rail).not.toContainElement(document.activeElement as HTMLElement);
+      expect(isRemembered()).toBe(false);
+    });
+
+    it('stays closed for a conversation that only has finished work to list', async () => {
+      jest
+        .spyOn(dataService, 'getBackgroundTasks')
+        .mockResolvedValue(index({ tasks: [index().tasks[1]] }));
+      renderSession({ autoOpen: true });
+      await waitFor(() => expect(toggle()).toHaveAccessibleName('com_ui_session_label_pending'));
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+    });
+
+    it('takes closing as an answer for the conversation, whatever starts next', async () => {
+      const running = index();
+      const getTasks = jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(running);
+      const { queryClient, isRemembered } = renderSession({ autoOpen: true });
+      const rail = await screen.findByTestId('session-rail');
+      await userEvent.click(within(rail).getByRole('button', { name: 'com_ui_session_close' }));
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+      expect(isRemembered()).toBe(false);
+
+      /** Everything finishes, then something new starts running. */
+      getTasks.mockResolvedValue(index({ tasks: [running.tasks[1]] }));
+      await queryClient.refetchQueries([QueryKeys.backgroundTasks, conversationId]);
+      await waitFor(() => expect(toggle()).toHaveAccessibleName('com_ui_session_label_pending'));
+      getTasks.mockResolvedValue(
+        index({ tasks: [{ ...running.tasks[0], taskId: 'task-later', toolCallId: 'call-later' }] }),
+      );
+      await queryClient.refetchQueries([QueryKeys.backgroundTasks, conversationId]);
+      await waitFor(() => expect(toggle()).toHaveAccessibleName('com_ui_session_label_running'));
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+    });
+
+    it('remembers that answer when the reader leaves the conversation and comes back', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      const first = renderSession({ autoOpen: true });
+      const rail = await screen.findByTestId('session-rail');
+      await userEvent.click(within(rail).getByRole('button', { name: 'com_ui_session_close' }));
+      expect(first.dismissedIn()).toEqual([conversationId]);
+      first.unmount();
+
+      /** A fresh visit: nothing of the first is left but what was stored. */
+      const second = renderSession({ autoOpen: true });
+      await waitFor(() =>
+        expect(toggle()).toHaveAccessibleName(
+          'com_ui_session_label_running; com_ui_session_label_pending',
+        ),
+      );
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+      second.unmount();
+
+      /** It was an answer for that conversation, not for every one. */
+      renderSession({ autoOpen: true, id: 'convo-2' });
+      expect(await screen.findByTestId('session-rail')).toBeInTheDocument();
+    });
+
+    it('takes the answer back when the reader opens the rail by hand', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      const { dismissedIn } = renderSession({
+        autoOpen: true,
+        dismissed: ['convo-0', conversationId],
+      });
+      await waitFor(() => expect(toggle()).not.toHaveAccessibleName('com_ui_session'));
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+      await userEvent.click(toggle());
+      expect(await screen.findByTestId('session-rail')).toBeInTheDocument();
+      expect(dismissedIn()).toEqual(['convo-0']);
+    });
+
+    it('keeps a bounded memory of where it was closed, dropping the oldest', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      const earlier = Array.from(
+        { length: SESSION_RAIL_DISMISSED_LIMIT },
+        (_, position) => `earlier-${position}`,
+      );
+      const { dismissedIn } = renderSession({ autoOpen: true, dismissed: earlier });
+      const rail = await screen.findByTestId('session-rail');
+      await userEvent.click(within(rail).getByRole('button', { name: 'com_ui_session_close' }));
+      expect(dismissedIn()).toHaveLength(SESSION_RAIL_DISMISSED_LIMIT);
+      expect(dismissedIn()[0]).toBe('earlier-1');
+      expect(dismissedIn()[SESSION_RAIL_DISMISSED_LIMIT - 1]).toBe(conversationId);
+    });
+
+    it('stays out of the way of a reader who turned this off in their settings', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      renderSession({ autoOpen: true, wanted: false });
+      await waitFor(() => expect(toggle()).not.toHaveAccessibleName('com_ui_session'));
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+      /** The control still opens it. */
+      await userEvent.click(toggle());
+      expect(await screen.findByTestId('session-rail')).toBeInTheDocument();
+    });
+
+    it('does not cover the conversation on a small screen', async () => {
+      mockSheet.current = true;
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      renderSession({ autoOpen: true });
+      await waitFor(() => expect(toggle()).not.toHaveAccessibleName('com_ui_session'));
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('leaves the rail to the control when the deployment turns this off', async () => {
+      jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+      renderSession({ autoOpen: false });
+      await waitFor(() => expect(toggle()).not.toHaveAccessibleName('com_ui_session'));
+      expect(screen.queryByTestId('session-rail')).toBeNull();
+    });
   });
 
   describe('on a small screen', () => {

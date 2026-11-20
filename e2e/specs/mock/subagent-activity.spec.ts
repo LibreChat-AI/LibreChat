@@ -284,9 +284,11 @@ test.describe('detached subagent activity', () => {
       );
       expect(response.ok()).toBeTruthy();
 
-      /** The children outlive the parent's turn, and the control counts them from the header. */
+      /** The children outlive the parent's turn. The control counts them from the header, and
+       *  the rail shows itself for them: it was closed above, but for the unsaved chat. */
       await expect(toggle).toHaveAccessibleName(/^Session, 2 running/, { timeout: 30_000 });
-      await toggle.click();
+      await expect(rail).toBeVisible();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
       const rows = rail.getByTestId('session-row');
       await expect(rows).toHaveCount(2);
       for (const childName of childNames) {
@@ -324,8 +326,15 @@ test.describe('detached subagent activity', () => {
       await expect(rail.getByRole('button', { name: /^Stop/ })).toHaveCount(0);
       await expect(rail.getByTestId('session-row-now')).toHaveCount(0);
 
-      /** The docked rail is a layout choice: it is still there after a reload. */
+      /** Showing itself for running work is not a remembered choice: after a reload nothing
+       *  is running, and the rail is closed. Opened by hand it is a layout choice, and it is
+       *  still there after the next one. */
       await panel.getByRole('button', { name: 'Close' }).click();
+      await page.reload();
+      await expect(toggle).toHaveAccessibleName('Session');
+      await expect(rail).toHaveCount(0);
+      await toggle.click();
+      await expect(rows).toHaveCount(2);
       await page.reload();
       await expect(rail).toBeVisible();
       await expect(rows).toHaveCount(2);

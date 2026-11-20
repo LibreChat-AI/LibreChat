@@ -26,6 +26,7 @@ const settingsContext: SettingsContextValue = {
   allowAccountDeletion: true,
   aboutEnabled: false,
   mascotAllowed: true,
+  sessionRailAutoOpenAllowed: true,
   engineSTT: 'browser',
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
@@ -74,6 +75,12 @@ describe('settings registry', () => {
     const entry = registry.find((e) => e.id === 'analyticsConsent');
     expect(entry?.show?.(settingsContext)).toBe(false);
     expect(entry?.show?.({ ...settingsContext, analyticsConfigured: true })).toBe(true);
+  });
+
+  it('offers the session rail switch only where the deployment lets the rail show itself', () => {
+    const entry = registry.find((e) => e.id === 'sessionRailAutoOpen');
+    expect(entry?.show?.(settingsContext)).toBe(true);
+    expect(entry?.show?.({ ...settingsContext, sessionRailAutoOpenAllowed: false })).toBe(false);
   });
 
   describe('setting applicability', () => {

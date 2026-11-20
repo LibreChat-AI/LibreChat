@@ -334,6 +334,9 @@ interface:
   # List a conversation's subagents and background tasks in a rail beside the chat, opened
   # from the chat header. Set false to list them in a header popover instead. Default: true.
   sessionRail: true
+  # Show the session rail by itself when work starts running in a conversation (desktop only;
+  # closing it keeps it closed for that conversation). Default: true.
+  sessionRailAutoOpen: true
   # Ask each viewer before loading Google Tag Manager (ANALYTICS_GTM_ID).
   # Set false when the deployment settles consent itself, e.g. internal use. Default: true.
   # analyticsConsent: true

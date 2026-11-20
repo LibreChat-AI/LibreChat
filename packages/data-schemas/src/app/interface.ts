@@ -104,6 +104,7 @@ export async function loadDefaultInterface({
     artifactUndocking: interfaceConfig?.artifactUndocking ?? defaults.artifactUndocking,
     sideChat: interfaceConfig?.sideChat ?? defaults.sideChat,
     sessionRail: interfaceConfig?.sessionRail ?? defaults.sessionRail,
+    sessionRailAutoOpen: interfaceConfig?.sessionRailAutoOpen ?? defaults.sessionRailAutoOpen,
     analyticsConsent: interfaceConfig?.analyticsConsent,
     contextCost: interfaceConfig?.contextCost ?? defaults.contextCost,
     feedback: interfaceConfig?.feedback ?? defaults.feedback,
