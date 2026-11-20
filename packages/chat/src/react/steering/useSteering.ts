@@ -417,6 +417,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     interruptSteer,
     submitDuringRun,
   } = useDuringRunActions({
+    conversationId,
     composerDisabledRef,
     filesLoading,
     canSteer,
