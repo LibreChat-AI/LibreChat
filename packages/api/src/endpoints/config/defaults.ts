@@ -53,7 +53,10 @@ export async function loadDefaultEndpointModels(
       loaders.getOpenAIModels({ user: req.user?.id, azure: true }),
     [EModelEndpoint.assistants]: () => loaders.getOpenAIModels({ assistants: true }),
     [EModelEndpoint.azureAssistants]: () => loaders.getOpenAIModels({ azure: true }),
-    [EModelEndpoint.google]: () => loaders.getGoogleModels(),
+    [EModelEndpoint.google]: () =>
+      loaders.getGoogleModels({
+        configuredModels: configuredModelList(appConfig, EModelEndpoint.google),
+      }),
     [EModelEndpoint.bedrock]: () => loaders.getBedrockModels(),
   };
   if (!Object.prototype.hasOwnProperty.call(sources, endpoint)) {

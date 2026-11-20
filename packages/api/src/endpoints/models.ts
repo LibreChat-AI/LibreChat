@@ -589,16 +589,54 @@ export async function getAnthropicModels(
   }
 }
 
+/** Gemini API's OpenAI-compatible base URL, whose `/models` lists what the key can access. */
+const GOOGLE_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+/** Listed models that cannot serve a text chat. */
+const GOOGLE_NON_CHAT_MODEL =
+  /tts|image|embedding|live|audio|robotics|computer-use|transcribe|translate|nano-banana/;
+
 /**
- * Gets Google models from environment or defaults.
- * @returns Array of model IDs
+ * Gets Google models from config, environment, or the Gemini API, falling back to defaults.
+ * Discovered models the defaults already list keep the default order; newer ones follow.
+ * @param opts - Options for getting models
+ * @returns Promise resolving to array of model IDs
  */
-export function getGoogleModels(): string[] {
-  let models = defaultModels[EModelEndpoint.google];
-  if (process.env.GOOGLE_MODELS) {
-    models = splitAndTrim(process.env.GOOGLE_MODELS);
+export async function getGoogleModels(
+  opts: {
+    /** A model list configured for the endpoint; when set, it is returned without discovery. */
+    configuredModels?: string[];
+  } = {},
+): Promise<string[]> {
+  if (opts.configuredModels) {
+    return opts.configuredModels;
   }
-  return models;
+  const models = defaultModels[EModelEndpoint.google];
+  if (process.env.GOOGLE_MODELS) {
+    return splitAndTrim(process.env.GOOGLE_MODELS);
+  }
+
+  const apiKey = process.env.GOOGLE_KEY?.trim();
+  if (!apiKey || isUserProvided(apiKey) || process.env.GOOGLE_REVERSE_PROXY) {
+    return models;
+  }
+
+  const discovered = (
+    await fetchModels({
+      apiKey,
+      baseURL: GOOGLE_OPENAI_BASE_URL,
+      name: EModelEndpoint.google,
+      createTokenConfig: false,
+    })
+  ).map((id) => id.replace(/^models\//, ''));
+  if (discovered.length === 0) {
+    return models;
+  }
+
+  const available = new Set(discovered);
+  const added = discovered.filter(
+    (id) => id.startsWith('gemini-') && !GOOGLE_NON_CHAT_MODEL.test(id) && !models.includes(id),
+  );
+  return [...models.filter((id) => available.has(id)), ...added];
 }
 
 /**

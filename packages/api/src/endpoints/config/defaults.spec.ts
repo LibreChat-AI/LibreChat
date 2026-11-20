@@ -7,7 +7,7 @@ function loaders() {
   return {
     getOpenAIModels: jest.fn().mockResolvedValue(['gpt']),
     getAnthropicModels: jest.fn().mockResolvedValue(['claude']),
-    getGoogleModels: jest.fn().mockReturnValue(['gemini']),
+    getGoogleModels: jest.fn().mockResolvedValue(['gemini']),
     getBedrockModels: jest.fn().mockReturnValue(['nova']),
   };
 }

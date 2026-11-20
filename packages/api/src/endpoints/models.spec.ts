@@ -1194,16 +1194,79 @@ describe('getGoogleModels', () => {
     process.env = originalEnv;
   });
 
-  it('returns default models when GOOGLE_MODELS is not set', () => {
+  it('returns default models without discovery when GOOGLE_KEY is not set', async () => {
     delete process.env.GOOGLE_MODELS;
-    const models = getGoogleModels();
+    delete process.env.GOOGLE_KEY;
+    mockedAxios.get.mockClear();
+    const models = await getGoogleModels();
+    expect(models).toEqual(defaultModels[EModelEndpoint.google]);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('returns models from GOOGLE_MODELS when set', async () => {
+    process.env.GOOGLE_MODELS = 'gemini-pro, bard ';
+    const models = await getGoogleModels();
+    expect(models).toEqual(['gemini-pro', 'bard']);
+  });
+
+  it('returns default models without discovery when the key is user provided', async () => {
+    delete process.env.GOOGLE_MODELS;
+    process.env.GOOGLE_KEY = 'user_provided';
+    mockedAxios.get.mockClear();
+    const models = await getGoogleModels();
+    expect(models).toEqual(defaultModels[EModelEndpoint.google]);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('discovers Gemini chat models, keeping known models first in default order', async () => {
+    delete process.env.GOOGLE_MODELS;
+    process.env.GOOGLE_KEY = 'test-google-key';
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        data: [
+          { id: 'models/gemini-2.5-flash' },
+          { id: 'models/gemini-2.5-flash-preview-tts' },
+          { id: 'models/gemini-3.1-pro-preview-customtools' },
+          { id: 'models/gemini-3.1-flash-image' },
+          { id: 'models/gemini-3.8-live' },
+          { id: 'models/gemini-embedding-2' },
+          { id: 'models/gemini-4-argon' },
+          { id: 'models/gemini-4-neon' },
+          { id: 'models/gemma-4-31b-it' },
+        ],
+      },
+    });
+    const models = await getGoogleModels();
+    expect(models).toEqual([
+      'gemini-4-argon',
+      'gemini-3.1-pro-preview-customtools',
+      'gemini-2.5-flash',
+      'gemini-4-neon',
+    ]);
+    expect(mockedAxios.get).toHaveBeenLastCalledWith(
+      'https://generativelanguage.googleapis.com/v1beta/openai/models',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer test-google-key' }),
+      }),
+    );
+  });
+
+  it('falls back to default models when discovery fails', async () => {
+    delete process.env.GOOGLE_MODELS;
+    process.env.GOOGLE_KEY = 'test-google-key';
+    mockedAxios.get.mockRejectedValueOnce(new Error('network down'));
+    const models = await getGoogleModels();
     expect(models).toEqual(defaultModels[EModelEndpoint.google]);
   });
 
-  it('returns models from GOOGLE_MODELS when set', () => {
-    process.env.GOOGLE_MODELS = 'gemini-pro, bard ';
-    const models = getGoogleModels();
-    expect(models).toEqual(['gemini-pro', 'bard']);
+  it('skips discovery behind GOOGLE_REVERSE_PROXY', async () => {
+    delete process.env.GOOGLE_MODELS;
+    process.env.GOOGLE_KEY = 'test-google-key';
+    process.env.GOOGLE_REVERSE_PROXY = 'https://proxy.example.com';
+    mockedAxios.get.mockClear();
+    const models = await getGoogleModels();
+    expect(models).toEqual(defaultModels[EModelEndpoint.google]);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 });
 
@@ -1414,6 +1477,13 @@ describe('configured model lists skip provider discovery', () => {
   it('returns the configured Anthropic list without requesting /models', async () => {
     const models = await getAnthropicModels({ user: 'user-1', configuredModels: ['claude-a'] });
     expect(models).toEqual(['claude-a']);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('returns the configured Google list without requesting /models', async () => {
+    process.env.GOOGLE_KEY = 'test-google-key';
+    const models = await getGoogleModels({ configuredModels: ['gemini-a'] });
+    expect(models).toEqual(['gemini-a']);
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
