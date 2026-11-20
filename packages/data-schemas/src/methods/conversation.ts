@@ -3031,9 +3031,11 @@ export function createConversationMethods(
    * overwrite each other. `timestamps: false` because choosing files is not activity and must
    * not reorder the sidebar.
    *
-   * The list is bounded: an exclusion that could carry it past `MAX_EXCLUDED_FILES` matches no
-   * document. Only then is the conversation read again, to tell a full list from one that is
-   * not this user's or does not exist.
+   * The list is bounded: an exclusion that would carry it past `MAX_EXCLUDED_FILES` matches no
+   * document. The bound is on the list as it would be afterwards, so ids that are on it already
+   * take no room and repeating a change that landed succeeds again. Only when nothing matched is
+   * the conversation read again, to tell a full list from one that is not this user's or does
+   * not exist.
    */
   async function setConvoFileExclusion(
     user: string,
@@ -3054,14 +3056,16 @@ export function createConversationMethods(
           ? { ok: false, error: { code: 'not_found' } }
           : { ok: true, value: updated.excludedFiles ?? [] };
       }
-      if (fileIds.length > MAX_EXCLUDED_FILES) {
-        return { ok: false, error: { code: 'limit_exceeded' } };
-      }
       const updated = await Conversation.findOneAndUpdate(
         {
           conversationId,
           user,
-          [`excludedFiles.${MAX_EXCLUDED_FILES - fileIds.length}`]: { $exists: false },
+          $expr: {
+            $lte: [
+              { $size: { $setUnion: [{ $ifNull: ['$excludedFiles', []] }, fileIds] } },
+              MAX_EXCLUDED_FILES,
+            ],
+          },
         },
         { $addToSet: { excludedFiles: { $each: fileIds } } },
         options,

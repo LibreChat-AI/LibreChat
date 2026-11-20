@@ -22,7 +22,7 @@ const {
   collectModelBoundHistoricalFileIdState,
   projectModelBoundSourceFiles,
   scopeHistoricalReplay,
-  withoutExcludedFiles,
+  withoutUnsentFiles,
   isModelBoundAttachmentFile,
   isToolOwnedAttachment,
   withBalanceReservations,
@@ -66,28 +66,6 @@ const {
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
-
-const omitUnreplayedHistoricalFiles = (messages) =>
-  messages.map(({ files: _files, attachments: _attachments, ...message }) => ({
-    ...message,
-    ...(Array.isArray(message.content)
-      ? {
-          content: message.content.map((part) => {
-            if (part == null || typeof part !== 'object') {
-              return part;
-            }
-            const {
-              file: _partFile,
-              files: _partFiles,
-              image_file: _imageFile,
-              file_id: _fileId,
-              ...rest
-            } = part;
-            return rest;
-          }),
-        }
-      : {}),
-  }));
 
 const mergeUserSubmittedPaths = (...pathLists) => [
   ...new Set(
@@ -264,9 +242,10 @@ class BaseClient {
   }
 
   getModelBoundStoredMessages(messages) {
-    return this.options.resendFiles === false
-      ? omitUnreplayedHistoricalFiles(messages)
-      : withoutExcludedFiles(messages, this.options.excludedFiles);
+    return withoutUnsentFiles(messages, {
+      resendFiles: this.options.resendFiles,
+      excluded: this.options.excludedFiles,
+    });
   }
 
   /** @param {TMessage[]} messages */

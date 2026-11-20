@@ -3,6 +3,7 @@ import type { TAttachment, TConversation, TMessage } from 'librechat-data-provid
 import {
   forkFileScope,
   withoutMessageFiles,
+  withoutUnsentFiles,
   withoutExcludedFiles,
   scopeHistoricalReplay,
   withoutConversationFiles,
@@ -206,6 +207,55 @@ describe('withoutExcludedFiles', () => {
     ]);
     expect(message.content?.[0]).toBe(content?.[0]);
     expect(message.content?.[2]).toBe(content?.[2]);
+  });
+});
+
+describe('withoutUnsentFiles', () => {
+  const kept = { file_id: 'kept-1', filename: 'notes.pdf', type: 'application/pdf' };
+  const content = [
+    { type: ContentTypes.TEXT, text: 'Generated:' },
+    { type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'image-1' } },
+    { type: 'file', file: { file_id: 'kept-1' }, file_id: 'direct-1' },
+    { type: ContentTypes.STEER, steer: 'use this instead', files: [upload, kept] },
+  ] as unknown as TMessage['content'];
+  const history: Partial<TMessage>[] = [
+    { messageId: 'user-1', text: 'Compare these', files: [upload, kept], tokenCount: 1600 },
+    { messageId: 'assistant-1', text: 'Here', attachments: [output], content },
+    { messageId: 'user-2', text: 'Thanks' },
+  ];
+
+  it('drops every file reference when the endpoint does not send earlier files again', () => {
+    const view = withoutUnsentFiles(history, { resendFiles: false, excluded: ['upload-1'] });
+
+    expect(view).toEqual([
+      { messageId: 'user-1', text: 'Compare these', tokenCount: 1600 },
+      {
+        messageId: 'assistant-1',
+        text: 'Here',
+        content: [
+          { type: ContentTypes.TEXT, text: 'Generated:' },
+          { type: ContentTypes.IMAGE_FILE },
+          { type: 'file' },
+          { type: ContentTypes.STEER, steer: 'use this instead' },
+        ],
+      },
+      { messageId: 'user-2', text: 'Thanks' },
+    ]);
+    expect(history[0].files).toEqual([upload, kept]);
+    expect(history[1].content).toBe(content);
+  });
+
+  it('drops only the left-out files when earlier files are sent again', () => {
+    const view = withoutUnsentFiles(history, { resendFiles: true, excluded: ['upload-1'] });
+
+    expect(view[0].files).toEqual([kept]);
+    expect(view[1].attachments).toEqual([output]);
+    expect(view[2]).toBe(history[2]);
+  });
+
+  it('is the stored messages themselves when files are resent and none is left out', () => {
+    expect(withoutUnsentFiles(history, {})).toBe(history);
+    expect(withoutUnsentFiles(history, { resendFiles: true, excluded: [] })).toBe(history);
   });
 });
 
