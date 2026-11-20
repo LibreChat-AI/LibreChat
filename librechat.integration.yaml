@@ -1,0 +1,13 @@
+# Minimal LibreChat config for integration-gateway local testing.
+# Mount this file in docker-compose.override.yml (see integration-gateway setup).
+
+version: 1.3.12
+
+interface:
+  remoteAgents:
+    use: true
+    create: true
+
+registration:
+  allowedDomains:
+    - integration.internal
