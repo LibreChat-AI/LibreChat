@@ -25,7 +25,6 @@ export type {
   MessagePartsUserTextPreferences,
   ToolCallChrome,
   ToolCallLocalize,
-  ToolCallProgressProps,
 } from './react/host';
 export { emptyToolCallChrome } from './react/host';
 export {

@@ -40,7 +40,6 @@ import {
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
@@ -151,7 +150,6 @@ function useAppToolCallChrome(): ToolCallChrome {
       bindActionOAuth,
       openUrl: openInNewTab,
       logError: logToolCallError,
-      renderProgress: (props) => <ProgressText {...props} />,
       renderAttachments: (attachments) => getToolCallAttachments()(attachments),
     }),
     [localize, mcpServerNames, mcpIconMap],

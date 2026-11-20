@@ -4,7 +4,6 @@ import { TooltipAnchor, useLocalize } from '@librechat/client';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { ToolCallPhase } from '../../core/parts/toolCallPhase';
 import {
   useToolExpansion,
   useToolContentRequest,
@@ -21,18 +20,8 @@ import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
 import { useFilesHost } from '../../react/files';
 import OutputRenderer from './OutputRenderer';
+import ProgressText from './ProgressText';
 import ToolIcon from './ToolIcon';
-
-export type RetrievalProgress = {
-  phase: ToolCallPhase;
-  onClick?: () => void;
-  inProgressText: string;
-  finishedText: string;
-  durationMs?: number;
-  hasInput: boolean;
-  isExpanded: boolean;
-  icon: ReactNode;
-};
 
 export type RetrievalCallProps = {
   initialProgress: number;
@@ -43,7 +32,6 @@ export type RetrievalCallProps = {
   onExpand?: () => void;
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
-  renderProgress: (progress: RetrievalProgress) => ReactNode;
 };
 
 function sortPagesByRelevance(pages: number[], pageRelevance: Record<number, number>): number[] {
@@ -379,7 +367,6 @@ export default function RetrievalCall({
   onExpand,
   runStepStatus,
   runStepDurationMs,
-  renderProgress,
 }: RetrievalCallProps): ReactNode {
   const isClosed = runStepStatus != null;
   const useKnownFiles = useFilesHost().useKnownFiles;
@@ -503,21 +490,22 @@ export default function RetrievalCall({
       </span>
       {!bare && (
         <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
-          {renderProgress({
-            phase,
-            onClick: hasExpandableContent ? handleToggleOutput : undefined,
-            inProgressText: intent ?? localize('com_ui_searching_files'),
+          <ProgressText
+            phase={phase}
+            onClick={hasExpandableContent ? handleToggleOutput : undefined}
+            inProgressText={intent ?? localize('com_ui_searching_files')}
             /** A cancelled step must not read "Retrieved files" beside a
              *  cancellation icon while the live region says "Cancelled". */
-            finishedText:
+            finishedText={
               phase === 'cancelled'
                 ? localize('com_ui_cancelled')
-                : (intent ?? localize('com_ui_retrieved_files')),
-            durationMs: runStepDurationMs,
-            icon: <ToolIcon type="file_search" isAnimating={phase === 'running'} />,
-            hasInput: hasExpandableContent,
-            isExpanded: showOutput,
-          })}
+                : (intent ?? localize('com_ui_retrieved_files'))
+            }
+            durationMs={runStepDurationMs}
+            icon={<ToolIcon type="file_search" isAnimating={phase === 'running'} />}
+            hasInput={hasExpandableContent}
+            isExpanded={showOutput}
+          />
         </div>
       )}
       <div className="part-fold" data-open={showOutput ? 'true' : 'false'}>

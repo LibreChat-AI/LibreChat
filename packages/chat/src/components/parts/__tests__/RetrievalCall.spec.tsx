@@ -1,12 +1,16 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { FilesHostProvider } from '@librechat/chat/react';
-import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { FilesHost, MessagePartsFilePreviewProps } from '@librechat/chat/react';
 import type { TAttachment, TFile } from 'librechat-data-provider';
-import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import RetrievalCall from '../RetrievalCall';
+import type { MessagePartsFilePreviewProps } from '../../../react/host';
+import type { FilesHost } from '../../../react/files';
+import { GeneratedToolLabelContext } from '../../../react/parts/disclosure';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { FilesHostProvider } from '../../../react/files';
+import RetrievalCall from '../Retrieval';
 
 const knownFiles: { current: TFile[] } = { current: [] };
 
@@ -17,17 +21,17 @@ const filesHost: FilesHost = {
   useKnownFiles: () => knownFiles.current,
 };
 
-const partsHost = {
-  ...appMessagePartsHost,
+const partsHost = createMessagePartsHost({
   renderFilePreview: ({ open, fileId, fileName, fileSource }: MessagePartsFilePreviewProps) =>
     open ? (
       <div data-testid="file-preview-dialog" data-file-id={fileId} data-file-source={fileSource}>
         {fileName}
       </div>
     ) : null,
-};
+});
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => {
     const translations: Record<string, string> = {
       com_ui_searching_files: 'Searching your files',
@@ -42,9 +46,10 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  useExpandCollapse: (isExpanded: boolean) => ({
+jest.mock('../useExpandCollapse', () => ({
+  __esModule: true,
+  ...jest.requireActual('../useExpandCollapse'),
+  default: (isExpanded: boolean) => ({
     style: isExpanded
       ? { display: 'grid', gridTemplateRows: '1fr', opacity: 1 }
       : { display: 'grid', gridTemplateRows: '0fr', opacity: 0 },
@@ -52,9 +57,9 @@ jest.mock('@librechat/chat/components', () => ({
   }),
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
+jest.mock('../../../react/parts/useProgress', () => ({
+  __esModule: true,
+  default: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
 jest.mock('../ProgressText', () => ({
@@ -94,35 +99,9 @@ jest.mock('../ProgressText', () => ({
   ),
 }));
 
-jest.mock('../ToolOutput', () => ({
-  OutputRenderer: ({ text }: { text: string }) => <pre data-testid="output-renderer">{text}</pre>,
-  isError: (output: string) => typeof output === 'string' && output.toLowerCase().includes('error'),
-}));
-
-jest.mock('~/utils', () => ({
-  cn: (...classes: (string | boolean | undefined)[]) => classes.filter(Boolean).join(' '),
-  sortPagesByRelevance: (pages: number[]) => pages,
-  logger: { error: jest.fn(), debug: jest.fn() },
-}));
-
-jest.mock('../FilePreviewDialog', () => ({
+jest.mock('../OutputRenderer', () => ({
   __esModule: true,
-  default: ({
-    open,
-    fileId,
-    fileName,
-    fileSource,
-  }: {
-    open: boolean;
-    fileId?: string;
-    fileName: string;
-    fileSource?: string;
-  }) =>
-    open ? (
-      <div data-testid="file-preview-dialog" data-file-id={fileId} data-file-source={fileSource}>
-        {fileName}
-      </div>
-    ) : null,
+  default: ({ text }: { text: string }) => <pre data-testid="output-renderer">{text}</pre>,
 }));
 
 const defaultProps = {
@@ -136,9 +115,7 @@ const renderRetrievalCall = (
   render(
     <MessagePartsHostProvider host={partsHost}>
       <FilesHostProvider host={filesHost}>
-        <RecoilRoot>
-          <RetrievalCall {...defaultProps} {...props} />
-        </RecoilRoot>
+        <RetrievalCall {...defaultProps} {...props} />
       </FilesHostProvider>
     </MessagePartsHostProvider>,
   );
@@ -345,7 +322,7 @@ describe('RetrievalCall - file preview resolution', () => {
             ],
           },
         },
-      ] as any,
+      ] as unknown as TAttachment[],
     });
 
     fireEvent.click(screen.getByTestId('progress-text'));
@@ -360,15 +337,13 @@ it('shows file search results directly beneath a generated single-tool title', (
   render(
     <MessagePartsHostProvider host={partsHost}>
       <FilesHostProvider host={filesHost}>
-        <RecoilRoot>
-          <GeneratedToolLabelContext.Provider value>
-            <RetrievalCall
-              initialProgress={1}
-              isSubmitting={false}
-              output="File: notes.txt\nRelevance: 0.8\nContent: file results here"
-            />
-          </GeneratedToolLabelContext.Provider>
-        </RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <RetrievalCall
+            initialProgress={1}
+            isSubmitting={false}
+            output="File: notes.txt\nRelevance: 0.8\nContent: file results here"
+          />
+        </GeneratedToolLabelContext.Provider>
       </FilesHostProvider>
     </MessagePartsHostProvider>,
   );

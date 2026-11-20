@@ -1331,7 +1331,9 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     const toggle = screen.getByRole('button', { name: /^Running 2 actions/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
-    fireEvent.click(screen.getAllByTestId('progress-text')[0]);
+    /** The first call's own row: the package's tool call card draws it. */
+    const row = document.querySelector<HTMLElement>('[data-tool-call-id]');
+    fireEvent.click(within(row as HTMLElement).getAllByRole('button')[0]);
 
     rerender(
       <RecoilRoot>

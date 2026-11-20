@@ -78,16 +78,6 @@ function renderRetrieval({ files, onPreview, props }: Options = {}) {
         isSubmitting={false}
         output={OUTPUT}
         attachments={attachments}
-        renderProgress={(progress) => (
-          <button
-            type="button"
-            aria-expanded={progress.isExpanded}
-            disabled={progress.onClick == null}
-            onClick={progress.onClick}
-          >
-            {progress.finishedText}
-          </button>
-        )}
         {...props}
       />
     </MessagePartsHostProvider>
@@ -97,6 +87,20 @@ function renderRetrieval({ files, onPreview, props }: Options = {}) {
   }
   return render(<FilesHostProvider host={files}>{row}</FilesHostProvider>);
 }
+
+jest.mock('../ProgressText', () => ({
+  __esModule: true,
+  default: (progress: { isExpanded: boolean; onClick?: () => void; finishedText: string }) => (
+    <button
+      type="button"
+      aria-expanded={progress.isExpanded}
+      disabled={progress.onClick == null}
+      onClick={progress.onClick}
+    >
+      {progress.finishedText}
+    </button>
+  ),
+}));
 
 jest.mock('../OutputRenderer', () => ({
   __esModule: true,
