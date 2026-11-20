@@ -124,15 +124,18 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
         <LinkAgentName agentId={link.identity.agentId} />
       </p>
       {link.identity.provider === 'discord' && (
-        <p className="text-text-secondary text-sm break-all">
-          {localize('com_ui_channel_link_discord_ids', {
-            0: link.identity.externalUserId,
-            1: localize('com_ui_discord_binding_server_named', {
-              0: link.identity.guildId,
-              1: link.identity.applicationId,
-            }),
-          })}
-        </p>
+        <details className="text-text-secondary text-xs">
+          <summary className="cursor-pointer">{localize('com_ui_channel_link_details')}</summary>
+          <p className="mt-2 break-all">
+            {localize('com_ui_channel_link_discord_ids', {
+              0: link.identity.externalUserId,
+              1: localize('com_ui_discord_binding_server_named', {
+                0: link.identity.guildId,
+                1: link.identity.applicationId,
+              }),
+            })}
+          </p>
+        </details>
       )}
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_code_help')}</p>
       {issue.isError && <Alert variant="error">{localize(errorKey(issue.error))}</Alert>}
@@ -140,32 +143,40 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
       {code && (
         <div role="status" className="space-y-2">
           <Label htmlFor={`${id}-code`}>{localize('com_ui_discord_dm_code')}</Label>
-          <Input
-            ref={codeInput}
-            id={`${id}-code`}
-            value={code.code}
-            readOnly
-            autoComplete="off"
-            spellCheck={false}
-            onFocus={(event) => event.currentTarget.select()}
-            aria-describedby={`${id}-expires`}
-          />
-          <p id={`${id}-expires`} className="text-text-secondary text-sm">
+          <div className="flex items-center gap-2">
+            <Input
+              ref={codeInput}
+              id={`${id}-code`}
+              value={code.code}
+              readOnly
+              autoComplete="off"
+              spellCheck={false}
+              className="min-w-0 flex-1"
+              onFocus={(event) => event.currentTarget.select()}
+              aria-describedby={`${id}-expires`}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              className="shrink-0"
+              onClick={() => {
+                setCopied(false);
+                setCopyFailed(!copyCode(setCopied));
+              }}
+            >
+              {localize(copied ? 'com_ui_copied' : 'com_ui_discord_dm_copy_code')}
+            </Button>
+          </div>
+          <p id={`${id}-expires`} className="text-text-secondary text-xs">
             {localize('com_ui_discord_dm_expires', {
               0: new Date(code.expiresAtMs).toLocaleString(),
             })}
           </p>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              setCopied(false);
-              setCopyFailed(!copyCode(setCopied));
-            }}
-          >
-            {localize('com_ui_discord_dm_copy_code')}
-          </Button>
-          {copied && <p role="status">{localize('com_ui_copied')}</p>}
+          {copied && (
+            <span role="status" className="sr-only">
+              {localize('com_ui_copied')}
+            </span>
+          )}
           {copyFailed && (
             <Alert variant="warning">{localize('com_ui_channel_handoff_copy_failed')}</Alert>
           )}
@@ -333,9 +344,6 @@ function Selections({ principalKey }: { principalKey: string }) {
             </li>
           ))}
         </ul>
-      )}
-      {selections.isSuccess && rows.length === 0 && (
-        <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_empty')}</p>
       )}
       <ul className="space-y-2">
         {rows.map((selection) => (

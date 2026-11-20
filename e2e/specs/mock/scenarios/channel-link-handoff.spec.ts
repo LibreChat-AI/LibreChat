@@ -89,8 +89,27 @@ async function mockLinkApi(page: Page) {
   return fixture;
 }
 
-async function openHandoff(page: Page) {
-  await page.goto(`/channels/link#${ticket}`);
+/** Serve synthetic hostnames from the configured local app without contacting those hosts. */
+async function useHandoffHost(page: Page, hostname = 'handoff.example') {
+  const baseURL = test.info().project.use.baseURL;
+  if (!baseURL) throw new Error('The handoff fixture requires a local baseURL');
+  const origin = `http://${hostname}`;
+  await page.route(
+    (url) => url.origin === origin,
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.startsWith('/api/')) return route.fallback();
+      const response = await route.fetch({
+        url: new URL(`${url.pathname}${url.search}`, baseURL).href,
+      });
+      await route.fulfill({ response });
+    },
+  );
+  return origin;
+}
+
+async function openHandoff(page: Page, origin = '') {
+  await page.goto(`${origin}/channels/link#${ticket}`);
   await expect(page.getByRole('heading', { name: 'Connect to LibreChat' })).toBeVisible();
   expect(page.url()).not.toContain(ticket);
 }
@@ -109,7 +128,8 @@ for (const theme of ['light', 'dark'] as const) {
   }) => {
     const fixture = await mockLinkApi(page);
     await page.addInitScript((mode) => localStorage.setItem('color-theme', mode), theme);
-    await openHandoff(page);
+    const origin = await useHandoffHost(page);
+    await openHandoff(page, origin);
     expect(fixture.previews).toEqual([]);
     await expect(page.getByText(account.email)).toHaveCount(0);
     await page.keyboard.press('Tab');
@@ -120,10 +140,9 @@ for (const theme of ['light', 'dark'] as const) {
     await page.keyboard.press('Enter');
     await expect(phone).toHaveAttribute('aria-expanded', 'true');
     await expect(
-      page.getByText('This address only works on this computer.', { exact: false }),
+      page.locator('svg').filter({ hasText: 'Private account linking QR code' }),
     ).toBeVisible();
-    await page.keyboard.press('Tab');
-    await expect(page.getByLabel('Private account linking URL')).toBeFocused();
+    await expect(page.getByLabel('Private account linking URL')).toHaveCount(0);
     await page.keyboard.press('Tab');
     await expect(page.getByRole('button', { name: 'Copy link', exact: true })).toBeFocused();
     await expectPhoneLayout(page);
@@ -183,16 +202,16 @@ test('failed clipboard copying leaves a selectable private link @scenario:channe
     document.execCommand = () => false;
     window.prompt = () => null;
   });
-  await openHandoff(page);
+  const origin = await useHandoffHost(page);
+  await openHandoff(page, origin);
   await page.getByRole('button', { name: 'Use my phone', exact: true }).click();
+  await expect(page.getByLabel('Private account linking URL')).toHaveCount(0);
   await page.getByRole('button', { name: 'Copy link', exact: true }).click();
-  await expect(
-    page.getByText('Copy did not work. Select the text above and copy it manually.'),
-  ).toBeVisible();
+  await expect(page.getByRole('status')).toHaveText('Select the link below to copy it manually.');
   const input = page.getByLabel('Private account linking URL');
   await input.focus();
   expect(
-    await input.evaluate((node: HTMLInputElement) => ({
+    await input.evaluate((node: HTMLTextAreaElement) => ({
       start: node.selectionStart,
       end: node.selectionEnd,
       length: node.value.length,
@@ -219,11 +238,17 @@ test('an expired ticket closes the phone handoff and offers safe recovery @scena
     },
     { key: storageKey, value: ticket },
   );
-  await page.goto('/channels/link');
+  const origin = await useHandoffHost(page);
+  await page.goto(`${origin}/channels/link`);
   await page.getByRole('button', { name: 'Use my phone', exact: true }).click();
-  await expect(page.getByLabel('Private account linking URL')).toBeVisible();
+  await expect(
+    page.locator('svg').filter({ hasText: 'Private account linking QR code' }),
+  ).toBeVisible();
   await page.clock.fastForward(60_001);
   await expect(page.getByRole('heading', { name: "This link can't be used" })).toBeVisible();
+  await expect(
+    page.locator('svg').filter({ hasText: 'Private account linking QR code' }),
+  ).toHaveCount(0);
   await expect(page.getByLabel('Private account linking URL')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Go to LibreChat' })).toHaveAttribute('href', '/');
   expect(fixture.previews).toEqual([]);
@@ -234,3 +259,20 @@ test('an expired ticket closes the phone handoff and offers safe recovery @scena
     fullPage: true,
   });
 });
+
+for (const hostname of ['localhost', 'app.localhost', '127.0.0.1', '[::1]']) {
+  test(`loopback handoff hides phone controls (${hostname}) @scenario:channel-link-loopback-${hostname}`, async ({
+    page,
+  }) => {
+    const fixture = await mockLinkApi(page);
+    const origin = await useHandoffHost(page, hostname);
+    await openHandoff(page, origin);
+    await expect(page.getByRole('button', { name: 'Continue here', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Use my phone', exact: true })).toHaveCount(0);
+    await expect(
+      page.locator('svg').filter({ hasText: 'Private account linking QR code' }),
+    ).toHaveCount(0);
+    await expect(page.getByLabel('Private account linking URL')).toHaveCount(0);
+    expect(fixture.previews).toEqual([]);
+  });
+}

@@ -480,7 +480,7 @@ describe('Discord durable worker delivery', () => {
     expect(f.writes.map((write) => write.method)).toEqual(['POST', 'PATCH', 'POST', 'DELETE']);
     expect(f.writes.map((write) => write.body.content)).toEqual([
       'Working...',
-      'The agent finished. Delivery is not confirmed yet. If the reply does not arrive, use /librechat status to open the saved session.',
+      'Reply ready; delivery is not confirmed yet. Use /librechat status if it does not arrive.',
       'Final answer',
       undefined,
     ]);
@@ -695,7 +695,7 @@ describe('Discord durable worker delivery', () => {
     };
     const plan = f.provider.makePlan(f.state, f.bundle);
     expect(plan.parts.every((part) => part.kind === 'message')).toBe(true);
-    expect(plan.parts[0].text).toContain('Attachments are unavailable');
+    expect(plan.parts[0].text).toContain('For attachments, open the saved session');
     expect(JSON.stringify(plan)).not.toContain('private.txt');
   });
 
@@ -712,8 +712,9 @@ describe('Discord durable worker delivery', () => {
       elapsedMs: 10,
       pendingAction: { kind: 'oauth', actionId: 'private', expiresAt: Date.now() + 60_000 },
     };
-    expect(discordProgressText(f.state)).toContain('I cannot confirm this request’s status');
+    expect(discordProgressText(f.state)).toContain('Status unavailable');
     expect(discordProgressText(f.state)).toContain('some actions may already have run');
+    expect(discordProgressText(f.state)).toContain('Ask an administrator if it stays unavailable.');
     expect(discordProgressText(f.state)).not.toContain('private review');
   });
 
@@ -736,7 +737,11 @@ describe('Discord durable worker delivery', () => {
       elapsedMs: 10,
       pendingAction: { kind: 'tool_approval', actionId: 'private', expiresAt: Date.now() + 60000 },
     };
-    expect(discordProgressText(f.state)).toContain('/librechat status');
+    expect(discordProgressText(f.state)).toBe('Waiting for your review.');
+    await f.provider.writeProgress(f.state, f.bundle, f.controller.signal);
+    expect(f.writes.at(-1)?.body.components?.[0].components).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: 'Review request' })]),
+    );
   });
 
   test('progress address validation prevents edits or deletes in another channel', async () => {
@@ -1590,9 +1595,7 @@ describe('Discord quiet drafts and complete documents', () => {
     };
     expect(f.provider.progressText(f.state, f.bundle)).toBe('Working...');
     f.bundle.discord.streaming.mode = 'partial';
-    expect(f.provider.progressText(f.state, f.bundle)).toBe(
-      'Draft reply, still working:\n\nHello @\u200beveryone 😀',
-    );
+    expect(f.provider.progressText(f.state, f.bundle)).toBe('_Draft_\n\nHello @\u200beveryone 😀');
     f.state.cancellationRequested = true;
     expect(f.provider.progressText(f.state, f.bundle)).not.toContain('Hello');
     f.state.cancellationRequested = false;
@@ -1707,7 +1710,7 @@ it('coalesces saturated drafts into one edited message and removes it after the 
   };
   await f.execute();
   expect(f.writes.filter((write) => write.method === 'POST')).toHaveLength(2);
-  const drafts = f.writes.filter((write) => write.body.content?.startsWith('Draft reply'));
+  const drafts = f.writes.filter((write) => write.body.content?.startsWith('_Draft_'));
   expect(drafts).toHaveLength(1);
   expect(drafts[0].method).toBe('PATCH');
   expect(drafts[0].body.content!.length).toBeLessThanOrEqual(2000);
@@ -1731,7 +1734,7 @@ it('keeps an honest progress message and full source when Discord rejects the do
   f.hooks.write = () => json({ message: 'private provider error' }, 403);
   await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
   expect(f.state.receipts[0].outcome).toBe('permanent_failure');
-  expect(f.state.progress.text).toContain('Delivery is not confirmed');
+  expect(f.state.progress.text).toContain('delivery is not confirmed');
   expect(f.state.snapshot?.text).toBe(text);
   expect(f.writes).toHaveLength(1);
   expect(f.writes[0].method).toBe('POST');

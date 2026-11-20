@@ -14,6 +14,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   page,
 }) => {
   let failed = true;
+  let failedCommands = true;
   let app: DiscordApplication = {
     applicationId: '123456789012345678',
     botUserId: '223456789012345678',
@@ -71,6 +72,10 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
     }
     if (method === 'POST' && path.endsWith('/commands')) {
       writes.push({ method, path, body: request.postDataJSON() });
+      if (failedCommands) {
+        failedCommands = false;
+        return route.fulfill({ status: 503, json: { code: 'provider_unavailable' } });
+      }
       return route.fulfill({
         json: {
           applicationId: app.applicationId,
@@ -103,6 +108,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await expect(discord.getByRole('button', { name: 'Add application' })).toBeDisabled();
   failed = false;
   await discord.getByRole('button', { name: 'Retry', exact: true }).click();
+  await discord.getByText('Setup details', { exact: true }).click();
   await expect(discord.getByLabel('Interactions endpoint URL')).toHaveValue(
     `https://gateway.example/discord/${app.applicationId}/interactions`,
   );
@@ -110,7 +116,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   const recorded = discord.locator(`time[datetime="${new Date(observedBefore).toISOString()}"]`);
   await expect(recorded).toBeVisible();
   /** The time is when the status was last recorded, not a promise of a live or most recent check. */
-  await expect(recorded.locator('..')).toContainText('Last recorded check');
+  await expect(recorded.locator('..')).toContainText('Checked:');
   const update = discord.getByRole('button', {
     name: 'Update credentials for Browser application',
   });
@@ -118,9 +124,7 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await expect(discord.getByLabel('Application ID')).toHaveAttribute('readonly');
   await discord.getByLabel('Bot token', { exact: true }).fill('browser-test-placeholder-token');
   await discord.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(
-    discord.getByText('Application saved. Credentials are never returned.'),
-  ).toBeVisible();
+  await expect(discord.getByText('Application saved.')).toBeVisible();
   await expect(discord.getByText(translations.com_ui_discord_health_valid)).toBeVisible();
   await expect(discord.getByText(translations.com_ui_discord_health_invalid)).toHaveCount(0);
   await expect(
@@ -138,13 +142,21 @@ test('Discord setup recovers, replaces credentials and confirms disconnection in
   await update.click();
   await expect(discord.getByLabel('Bot token', { exact: true })).toHaveValue('');
   await discord.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await discord
-    .getByRole('button', { name: 'Register or update /librechat commands for Browser application' })
-    .click();
+  const commands = discord.getByRole('button', {
+    name: 'Update commands for Browser application',
+  });
+  await commands.click();
+  const commandFailure = discord.getByRole('alert');
+  await expect(commandFailure).toBeFocused();
+  await commandFailure.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(commands.locator('xpath=ancestor::details')).toHaveAttribute('open', '');
+  await expect(commands).toBeVisible();
+  await expect(commands).toBeFocused();
+  await commands.click();
   await expect(
     discord.getByText('Registered /librechat commands. Discord may take time to show the update.'),
   ).toBeVisible();
-  expect(writes[1]).toMatchObject({
+  expect(writes[2]).toMatchObject({
     method: 'POST',
     body: {
       applicationId: app.applicationId,

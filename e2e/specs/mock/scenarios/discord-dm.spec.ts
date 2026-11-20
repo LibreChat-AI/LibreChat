@@ -65,12 +65,12 @@ for (const [theme, scenario] of scenarios) {
     await settings.getByRole('tab', { name: 'Account', exact: true }).click();
     const dm = settings.getByRole('region', { name: 'Discord Direct Messages' });
     const select = dm.getByRole('button', {
-      name: 'Use in Direct Messages: agent Browser agent, Discord user 323456789012345678, server 223456789012345678 (application 123456789012345678)',
+      name: 'Use for DMs: agent Browser agent, Discord user 323456789012345678, server 223456789012345678 (application 123456789012345678)',
     });
     await select.click();
-    const codeDialog = page.getByRole('dialog', { name: 'Use in Direct Messages', exact: true });
+    const codeDialog = page.getByRole('dialog', { name: 'Use for DMs', exact: true });
     await expect(
-      codeDialog.getByText('The selection starts only after you confirm the code in Discord.', {
+      codeDialog.getByText('Confirm in Discord to switch the agent for your DMs with this bot.', {
         exact: false,
       }),
     ).toBeVisible();

@@ -27,8 +27,7 @@ const contextSchema = z.object({
     .optional(),
 });
 const unavailable: DiscordPrivateReply = {
-  content:
-    'This review is no longer available to you. Use /librechat status for the current request.',
+  content: 'This review is no longer available. Use /librechat status to check.',
 };
 // Preserve complete short values. Complex or long requests need the full browser form.
 function safeText(value: string): string {
@@ -66,7 +65,7 @@ export function projectDiscordReview(view: ResponseReviewView): {
     )
       return null;
     return {
-      content: `Review tool request: ${safeText(request.name)}\nArguments (JSON):\n\`\`\`json\n${argumentsText}\n\`\`\`\nApprove once permits only this request. Decline refuses it.`,
+      content: `Allow ${safeText(request.name)}?\n\`\`\`json\n${argumentsText}\n\`\`\``,
       labels: ['Approve once', 'Decline'],
       choices: decisions.map((decision) => ({
         actionId: action.actionId,
@@ -178,8 +177,7 @@ export function createDiscordReviewHandler(deps: {
       if (saved.receipt)
         return saved.receipt.choice === action.choice
           ? {
-              content:
-                'Your decision was already recorded. This request will not be submitted again.',
+              content: 'Decision already recorded.',
             }
           : unavailable;
       // The canonical service rechecks expiry, action identity, source authority and equivalent retries.
@@ -210,7 +208,7 @@ export function createDiscordReviewHandler(deps: {
     )
       return unavailable;
     const browser: DiscordPrivateReply = {
-      content: 'This request needs the full private review in LibreChat. Open it to continue.',
+      content: 'Continue this review in LibreChat.',
       actions: [{ label: 'Open in LibreChat', url }],
     };
     if (!responseId) return browser;
@@ -246,7 +244,7 @@ export function createDiscordReviewHandler(deps: {
     const immutable = contextSchema.parse(JSON.parse(await deps.decrypt(persisted.value)));
     if (JSON.stringify(immutable) !== JSON.stringify(context)) return unavailable;
     return {
-      content: `${projection.content}\nThese controls expire with this private interaction.`,
+      content: projection.content,
       actions: [
         ...projection.labels.map((label, choice) => ({
           label,
@@ -262,7 +260,7 @@ function receiptReply(status: 'queued' | 'settled'): DiscordPrivateReply {
   return {
     content:
       status === 'settled'
-        ? 'Your decision was already recorded and processing has finished.'
-        : 'Your decision is recorded and queued for processing. It has not completed yet.',
+        ? 'Decision recorded and processed.'
+        : 'Decision recorded, queued for processing.',
   };
 }

@@ -242,6 +242,7 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
     !uncertain;
   const canBind = ready && selected?.status === 'active' && status.data?.canReplace === true;
   const immutable = Boolean(channel);
+  const channelHelp = immutable ? undefined : `${id}-channel-help`;
   const choose = (installationId: string, externalChannelId = target.externalChannelId) => {
     mutation.reset();
     setTarget({ installationId, externalChannelId });
@@ -268,7 +269,9 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
   if (status.data?.assignedToThisAgent) statusText = localize('com_ui_discord_binding_assigned');
   return (
     <div className="space-y-4 text-sm">
-      <p className="text-text-secondary">{localize('com_ui_discord_binding_help')}</p>
+      {!immutable && (
+        <p className="text-text-secondary">{localize('com_ui_discord_binding_help')}</p>
+      )}
       {guilds.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
       {guilds.isError && (
         <Alert variant="error">
@@ -361,9 +364,7 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
           maxLength={20}
           autoComplete="off"
           aria-invalid={invalidChannel}
-          aria-describedby={
-            invalidChannel ? `${id}-channel-help ${id}-channel-error` : `${id}-channel-help`
-          }
+          aria-describedby={invalidChannel ? `${id}-channel-help ${id}-channel-error` : channelHelp}
           onChange={(event) => choose(target.installationId, event.target.value)}
         />
         {invalidChannel && (
@@ -371,9 +372,11 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
             {localize('com_ui_discord_invalid')}
           </p>
         )}
-        <p id={`${id}-channel-help`} className="text-text-secondary text-xs">
-          {localize('com_ui_discord_binding_channel_help')}
-        </p>
+        {(!immutable || invalidChannel) && (
+          <p id={`${id}-channel-help`} className="text-text-secondary text-xs">
+            {localize('com_ui_discord_binding_channel_help')}
+          </p>
+        )}
       </div>
       {guildReady && selected && valid && settled && status.isLoading && (
         <p role="status">{localize('com_ui_channels_loading')}</p>
