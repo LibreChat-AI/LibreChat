@@ -1049,7 +1049,27 @@ describe('createAdminLangfuseHandlers', () => {
       expect(res.body).toMatchObject({ enabled: true, promptSync: { enabled: true } });
       expect(productTracker.mock.calls).toEqual([
         [{ name: 'librechat.langfuse.connection.updated', configured: true, enabled: true }],
-        [{ name: 'librechat.langfuse.promptSync.changed', enabled: true }],
+        [{ name: 'librechat.langfuse.promptSync.updated', enabled: true }],
+      ]);
+    });
+
+    it('records the committed change when a fail-closed audit write fails', async () => {
+      const { handlers } = createHandlers({
+        recordAuditEntry: jest.fn().mockRejectedValue(new Error('audit down')),
+        auditFailClosed: true,
+      });
+      const productTracker = jest.fn();
+      const res = mockRes();
+      await handlers.updateConnection(
+        mockReq({
+          productTracker,
+          body: { enabled: true, destination: 'eu', publicKey: 'pk-lf-1', secretKey: 'sk-lf-2' },
+        }),
+        res,
+      );
+      expect(res.statusCode).toBe(500);
+      expect(productTracker.mock.calls).toEqual([
+        [{ name: 'librechat.langfuse.connection.updated', configured: true, enabled: true }],
       ]);
     });
 
@@ -1528,7 +1548,7 @@ describe('createAdminLangfuseHandlers', () => {
         expect(productTracker.mock.calls).toEqual([
           [
             {
-              name: 'librechat.langfuse.promptSync.changed',
+              name: 'librechat.langfuse.promptSync.updated',
               enabled,
             },
           ],

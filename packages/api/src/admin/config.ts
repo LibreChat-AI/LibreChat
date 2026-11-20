@@ -4851,15 +4851,16 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         return configNotFoundResponse(res);
       }
 
+      /** Recorded before the audit, which can fail closed after the delete has committed. */
+      if (isBaseConfigPrincipal({ principalType, principalId })) {
+        trackLangfuseTransition(req, config, null, isLangfusePromptSyncAvailable());
+      }
       await invalidateCaches(user.tenantId, 'config delete');
       await emitAudit(req, {
         action: 'config.deleted',
         severity: 'warning',
         target: configTarget(principalType, principalId),
       });
-      if (isBaseConfigPrincipal({ principalType, principalId })) {
-        trackLangfuseTransition(req, config, null, isLangfusePromptSyncAvailable());
-      }
       return res.status(200).json({ success: true });
     } catch (error) {
       logger.error('[adminConfig] deleteConfigOverrides error:', getSafeErrorMetadata(error));
@@ -5079,12 +5080,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       await invalidateCaches(user.tenantId, 'toggle');
       /** A retry that finds the requested state already set changed nothing and is not recorded. */
       if (changed) {
-        await emitAudit(req, {
-          action: 'config.toggled',
-          severity: 'warning',
-          target: configTarget(principalType, principalId),
-          metadata: { isActive },
-        });
+        /** Recorded before the audit, which can fail closed after the toggle has committed. */
         if (isBaseConfigPrincipal({ principalType, principalId })) {
           trackLangfuseTransition(
             req,
@@ -5093,6 +5089,12 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
             isLangfusePromptSyncAvailable(),
           );
         }
+        await emitAudit(req, {
+          action: 'config.toggled',
+          severity: 'warning',
+          target: configTarget(principalType, principalId),
+          metadata: { isActive },
+        });
       }
       return sendWrittenConfig(
         res,

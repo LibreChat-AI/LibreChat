@@ -164,3 +164,90 @@ it('starts a new session and flushes the old one when the identity changes', asy
   await pagehide();
   expect(activityFacts(track).map((fact) => fact.sessionId)).toEqual([before, after]);
 });
+
+it('reports on pagehide in the same task when locks are granted in a later task', async () => {
+  /** Browsers grant a Web Lock in a queued task, which an unloading page may never run. */
+  const request = jest.fn(
+    (_name: string, work: () => unknown) =>
+      new Promise((resolve) => setTimeout(() => resolve(work()), 0)),
+  );
+  Object.defineProperty(navigator, 'locks', { value: { request }, configurable: true });
+  try {
+    const track = jest.fn();
+    render(
+      <TrackingProvider track={track}>
+        <span />
+      </TrackingProvider>,
+    );
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(request).toHaveBeenCalled();
+    expect(activityFacts(track)).toEqual([]);
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
+    expect(activityFacts(track)).toHaveLength(1);
+  } finally {
+    delete (navigator as { locks?: unknown }).locks;
+  }
+});
+
+function setVisibility(state: DocumentVisibilityState) {
+  Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+}
+
+it('keeps one session when the host passes a new track on each render', async () => {
+  const calls: unknown[] = [];
+  const view = render(
+    <TrackingProvider track={(fact) => void calls.push(fact)}>
+      <span />
+    </TrackingProvider>,
+  );
+  await act(async () => {});
+  for (let i = 0; i < 3; i++) {
+    view.rerender(
+      <TrackingProvider track={(fact) => void calls.push(fact)}>
+        <span />
+      </TrackingProvider>,
+    );
+    await act(async () => {});
+  }
+  expect(calls).toEqual([]);
+  await pagehide();
+  expect(calls).toHaveLength(1);
+});
+
+it('does not mark activity when it mounts in a hidden tab', async () => {
+  setVisibility('hidden');
+  try {
+    const track = jest.fn();
+    render(
+      <TrackingProvider track={track}>
+        <span />
+      </TrackingProvider>,
+    );
+    await act(async () => {});
+    await pagehide();
+    expect(activityFacts(track)).toEqual([]);
+  } finally {
+    setVisibility('visible');
+  }
+});
+
+it('reports when the page becomes hidden', async () => {
+  const track = jest.fn();
+  render(
+    <TrackingProvider track={track}>
+      <span />
+    </TrackingProvider>,
+  );
+  await act(async () => {});
+  setVisibility('hidden');
+  try {
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(activityFacts(track)).toHaveLength(1);
+  } finally {
+    setVisibility('visible');
+  }
+});

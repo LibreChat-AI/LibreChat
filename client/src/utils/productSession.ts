@@ -100,22 +100,28 @@ export function createProductSession(options: SessionOptions) {
     return context;
   };
 
-  /**
-   * Passes the record to `emit` when its latest activity is not reported yet, and marks it
-   * reported in the same locked update. Only one tab reports each activity timestamp.
-   */
+  /** Passes the record to `emit` when its latest activity is not reported yet, and marks it. */
+  const reportNow = (emit: (record: SessionRecord) => void) => {
+    const record = read();
+    if (!record || record.lastReportedActivityAt === record.lastActivityAt) return;
+    write({ ...record, lastReportedActivityAt: record.lastActivityAt });
+    emit(record);
+  };
+
+  /** Reports inside the cross-tab lock, so only one tab reports each activity timestamp. */
   const report = (emit: (record: SessionRecord) => void): Promise<void> =>
-    serialized(() => {
-      const record = read();
-      if (!record || record.lastReportedActivityAt === record.lastActivityAt) return;
-      write({ ...record, lastReportedActivityAt: record.lastActivityAt });
-      emit(record);
-    });
+    serialized(() => reportNow(emit));
 
   return {
     activity,
     activityNow,
     report,
+    /**
+     * Reports in the current task without the lock. A browser grants a lock in a later task,
+     * which an unloading page may never run. Two tabs reporting at the same moment can both
+     * emit the same marker.
+     */
+    reportNow,
     snapshot: read,
     peek(): ProductTrackingContext | undefined {
       const record = read();

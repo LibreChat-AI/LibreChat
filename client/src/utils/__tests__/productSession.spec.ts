@@ -152,3 +152,23 @@ it('reports each activity marker from one tab only', async () => {
     { sessionId: first, startedAt: 1000, lastActivityAt: 1050, lastReportedActivityAt: 1000 },
   ]);
 });
+
+it('reports without waiting for the lock and marks the marker for locked reports', async () => {
+  const { options } = setup();
+  let release = () => {};
+  const exclusive = <T>(work: () => T): Promise<T> =>
+    new Promise((resolve) => {
+      release = () => resolve(work());
+    });
+  const session = createProductSession({ ...options, exclusive });
+  session.activityNow();
+  const reported: unknown[] = [];
+  const emit = (record: unknown) => reported.push(record);
+  const locked = session.report(emit);
+  session.reportNow(emit);
+  expect(reported).toEqual([{ sessionId: first, startedAt: 1000, lastActivityAt: 1000 }]);
+  await Promise.resolve();
+  release();
+  await locked;
+  expect(reported).toHaveLength(1);
+});

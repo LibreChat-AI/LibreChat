@@ -140,7 +140,7 @@ describe('admin config writes against a real Config collection', () => {
     const params = { principalType: ROLE, principalId: '__base__' };
     const disabledFacts = [
       [{ name: 'librechat.langfuse.connection.updated', configured: false, enabled: false }],
-      [{ name: 'librechat.langfuse.promptSync.changed', enabled: false }],
+      [{ name: 'librechat.langfuse.promptSync.updated', enabled: false }],
     ];
 
     async function storeConnection(principalId = '__base__', isActive = true) {
@@ -179,7 +179,7 @@ describe('admin config writes against a real Config collection', () => {
       );
       expect(productTracker.mock.calls).toEqual([
         [{ name: 'librechat.langfuse.connection.updated', configured: true, enabled: true }],
-        [{ name: 'librechat.langfuse.promptSync.changed', enabled: true }],
+        [{ name: 'librechat.langfuse.promptSync.updated', enabled: true }],
       ]);
       expect(JSON.stringify(productTracker.mock.calls)).not.toContain('private-');
     });
@@ -242,7 +242,7 @@ describe('admin config writes against a real Config collection', () => {
       );
       expect(productTracker.mock.calls).toEqual([
         [{ name: 'librechat.langfuse.connection.updated', configured: true, enabled: true }],
-        [{ name: 'librechat.langfuse.promptSync.changed', enabled: true }],
+        [{ name: 'librechat.langfuse.promptSync.updated', enabled: true }],
       ]);
       expect(isLangfusePromptSyncAvailable).toHaveBeenCalledTimes(2);
     });

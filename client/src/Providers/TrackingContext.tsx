@@ -1,4 +1,4 @@
-import { createContext, useContext, useLayoutEffect, useMemo } from 'react';
+import { createContext, useContext, useLayoutEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { v4 as uuid } from 'uuid';
 import {
@@ -15,6 +15,7 @@ import type {
   ProductTrackingContext,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { SessionRecord } from '~/utils/productSession';
 import {
   ACTIVITY_THROTTLE_MS,
   createProductSession,
@@ -42,12 +43,17 @@ export function TrackingProvider({
   enabled?: boolean;
   children: ReactNode;
 }) {
+  /** Read through a ref, so a host that passes a new `track` on each render keeps its session. */
+  const trackRef = useRef(track);
+  useLayoutEffect(() => {
+    trackRef.current = track;
+  }, [track]);
   const dispatch = useMemo<ProductTracker<BrowserProductFact>>(
     () => (fact, context) => {
       const parsed = browserProductFactSchema.safeParse(fact);
-      if (parsed.success) return track(parsed.data, context);
+      if (parsed.success) return trackRef.current(parsed.data, context);
     },
-    [track],
+    [],
   );
   const { data: startup } = useGetStartupConfig();
   const enabled = available && startup?.productTracking?.enabled === true;
@@ -87,24 +93,32 @@ export function TrackingProvider({
           : undefined,
     });
     holder.session = session;
-    holder.ready = session.activity().catch(() => undefined);
+    /** Mounting is not user activity in a hidden tab, as `onActivity` also ignores hidden tabs. */
+    holder.ready =
+      document.visibilityState === 'hidden'
+        ? Promise.resolve(session.peek())
+        : session.activity().catch(() => undefined);
+    const emit = (record: SessionRecord) =>
+      safelyTrack(
+        dispatch,
+        {
+          name: 'librechat.session.activity',
+          feature: 'session',
+          sessionId: record.sessionId,
+          startedAt: new Date(record.startedAt).toISOString(),
+          lastActivityAt: new Date(record.lastActivityAt).toISOString(),
+        },
+        { sessionId: record.sessionId },
+      );
     /** Any tab, visible or hidden, can report; the shared record lets only one report each marker. */
     const checkpoint = () => {
-      void session
-        .report((record) =>
-          safelyTrack(
-            dispatch,
-            {
-              name: 'librechat.session.activity',
-              feature: 'session',
-              sessionId: record.sessionId,
-              startedAt: new Date(record.startedAt).toISOString(),
-              lastActivityAt: new Date(record.lastActivityAt).toISOString(),
-            },
-            { sessionId: record.sessionId },
-          ),
-        )
-        .catch(() => {});
+      void session.report(emit).catch(() => {});
+    };
+    /** The page can unload before a lock is granted, so the last report does not wait for one. */
+    const flush = () => session.reportNow(emit);
+    /** Mobile browsers often skip `pagehide`, but they hide the page first. */
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
     };
     let lastActivityAt = 0;
     const onActivity = (event: Event) => {
@@ -120,7 +134,8 @@ export function TrackingProvider({
       checkpoint,
       Math.min(activityIntervalMs, holder.idleTimeoutMs),
     );
-    window.addEventListener('pagehide', checkpoint);
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibility);
     const interceptor = axios.interceptors.request.use((config) => {
       try {
         const base = new URL(config.baseURL ?? '.', window.location.href);
@@ -135,12 +150,13 @@ export function TrackingProvider({
       return config;
     });
     return () => {
-      checkpoint();
+      flush();
       session.stop();
       holder.session = undefined;
       window.clearInterval(timer);
       axios.interceptors.request.eject(interceptor);
-      window.removeEventListener('pagehide', checkpoint);
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
       for (const event of events) window.removeEventListener(event, onActivity);
     };
   }, [activityIntervalMs, holder, dispatch]);

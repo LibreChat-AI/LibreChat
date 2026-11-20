@@ -66,7 +66,7 @@ export const serverProductFactSchema = z.discriminatedUnion('name', [
     configured: z.boolean(),
   }),
   z.strictObject({
-    name: z.literal('librechat.langfuse.promptSync.changed'),
+    name: z.literal('librechat.langfuse.promptSync.updated'),
     enabled: z.boolean(),
   }),
 ]);

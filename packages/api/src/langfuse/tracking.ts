@@ -40,7 +40,7 @@ export function trackLangfuseTransition(
   }
   if (before.promptSyncEnabled !== after.promptSyncEnabled) {
     trackRequestProductFact(req, {
-      name: 'librechat.langfuse.promptSync.changed',
+      name: 'librechat.langfuse.promptSync.updated',
       enabled: after.promptSyncEnabled,
     });
   }
