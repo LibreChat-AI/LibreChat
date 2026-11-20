@@ -66,6 +66,17 @@ for (const theme of themes) {
     let current = app;
     let failing = true;
     let connectFails = false;
+    let server: DiscordGuild = guild;
+    let disconnectCommits = false;
+    let readsDown = false;
+    let guildsDown = false;
+    let paged = false;
+    let pageFails = false;
+    const further: Record<string, DiscordApplication> = {
+      c2: { ...app, applicationId: '423456789012345678', name: 'Second application' },
+      c3: { ...app, applicationId: '523456789012345678', name: 'Third application' },
+    };
+    const following: Record<string, string> = { '': 'c2', c2: 'c3' };
     const writes: Record<string, unknown>[] = [];
     await page.addInitScript((mode) => localStorage.setItem('color-theme', mode), theme);
     /** The authorization popup navigates to Discord: serve a stub so nothing leaves the machine. */
@@ -82,15 +93,34 @@ for (const theme of themes) {
       const path = new URL(request.url()).pathname;
       const method = request.method();
       if (method === 'GET' && path.endsWith('/apps')) {
+        const cursor = new URL(request.url()).searchParams.get('cursor') ?? '';
+        if (readsDown) return route.fulfill({ status: 503, json: { message: 'Unavailable' } });
+        if (paged && pageFails && cursor === 'c3') {
+          pageFails = false;
+          return route.fulfill({ status: 503, json: { message: 'Unavailable' } });
+        }
+        const next = paged ? following[cursor] : undefined;
         return route.fulfill({
           json: {
-            applications: [current],
+            applications: paged && cursor ? [further[cursor]] : [current],
+            ...(next ? { next } : {}),
             setup: { oauthCallbackUrl: 'https://chat.example/api/channels/discord/callback' },
           },
         });
       }
       if (method === 'GET' && path.endsWith('/guilds')) {
-        return route.fulfill({ json: { guilds: [guild] } });
+        if (readsDown || guildsDown) {
+          return route.fulfill({ status: 503, json: { message: 'Unavailable' } });
+        }
+        return route.fulfill({ json: { guilds: [server] } });
+      }
+      if (method === 'DELETE' && path.endsWith(`/guilds/${guild.installationId}`)) {
+        /** The write may have landed before the failure was reported: the reads then show a new revision. */
+        if (disconnectCommits) server = { ...guild, status: 'disconnected', revision: 'guild-r2' };
+        return route.fulfill({
+          status: disconnectCommits ? 504 : 429,
+          json: { ok: false, error: { code: disconnectCommits ? 'timeout' : 'rate_limited' } },
+        });
       }
       if (method === 'PUT' && path.endsWith('/apps')) {
         writes.push(request.postDataJSON());
@@ -207,6 +237,26 @@ for (const theme of themes) {
     await expect(pending).toHaveCount(0);
     await expect.soft(connect, 'Cancel returns focus to Connect').toBeFocused();
 
+    /** The callback landing page names its failure to the dialog that started the authorization. */
+    await connect.focus();
+    await page.keyboard.press('Enter');
+    await expect(pending).toBeVisible();
+    const landing = await page.context().newPage();
+    await landing.goto('/oauth/error?error=discord_provider_refused&flow=browser-flow');
+    const refusedByDiscord = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_oauth_refused });
+    await expect(refusedByDiscord).toBeVisible();
+    await expect(refusedByDiscord).toContainText(translations.com_ui_discord_unconfirmed);
+    await expect(refusedByDiscord).toBeFocused();
+    await landing.close();
+    await refusedByDiscord.getByRole('button', { name: 'Cancel', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(refusedByDiscord).toHaveCount(0);
+    await expect
+      .soft(connect, 'Cancel returns focus to Connect after a callback failure')
+      .toBeFocused();
+
     /** A rejected connection leaves two notices: dismissing the first hands focus to the second. */
     connectFails = true;
     await expect(connect).toBeEnabled();
@@ -232,6 +282,130 @@ for (const theme of themes) {
     await expect(unconfirmed).toHaveCount(0);
     await expect
       .soft(connect, 'Cancel returns focus to Connect after a failed connection')
+      .toBeFocused();
+
+    /** A rejected disconnection: the failure takes focus inside the dialog and Escape hands it back. */
+    const disconnect = discord.getByRole('button', { name: 'Disconnect Browser server' });
+    const confirmation = page.getByRole('alertdialog', {
+      name: translations.com_ui_discord_disconnect,
+    });
+    const confirmAction = confirmation.getByRole('button', {
+      name: translations.com_ui_discord_disconnect,
+      exact: true,
+    });
+    const reopen = async () => {
+      await expect(disconnect).toBeEnabled();
+      await disconnect.focus();
+      await page.keyboard.press('Enter');
+      await expect(confirmation).toBeVisible();
+      await page.keyboard.press('Tab');
+      await expect(confirmAction).toBeFocused();
+      await page.keyboard.press('Enter');
+    };
+    await reopen();
+    const refused = confirmation
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_rate_limited });
+    await expect(refused).toBeFocused();
+    /** The reads behind the failure show the same revision, so a retry is still meaningful. */
+    await expect(confirmAction).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toHaveCount(0);
+    await expect
+      .soft(disconnect, 'Escape returns focus to Disconnect after a failed disconnection')
+      .toBeFocused();
+
+    /** A disconnection that committed before its failure was reported cannot be retried from the stale dialog. */
+    disconnectCommits = true;
+    await reopen();
+    const changedServer = confirmation
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_disconnect_stale });
+    await expect(changedServer).toBeFocused();
+    await expect(confirmAction).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toHaveCount(0);
+    await expect(disconnect).toHaveCount(0);
+    await expect
+      .soft(
+        discord.getByRole('heading', { name: translations.com_ui_discord_guilds }),
+        'Escape falls back to the Servers heading once the server changed',
+      )
+      .toBeFocused();
+
+    /** A remount brings the active server back, then a failed reread behind the dialog is explained inside it. */
+    const reopenDiscord = async () => {
+      await page.keyboard.press('Escape');
+      await expect(discord).toHaveCount(0);
+      await page.getByRole('dialog').getByRole('button', { name: 'Discord', exact: true }).click();
+      await expect(discord).toBeVisible();
+    };
+    server = guild;
+    disconnectCommits = false;
+    await reopenDiscord();
+    guildsDown = true;
+    await reopen();
+    const unread = confirmation
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_disconnect_unread });
+    await expect(unread).toBeVisible();
+    await expect(confirmAction).toBeDisabled();
+    /** The hint is announced, not focused: the failure the user is reading keeps focus. */
+    await expect(refused).toBeFocused();
+    guildsDown = false;
+    await page.keyboard.press('Tab');
+    await expect(unread.getByRole('button', { name: 'Retry', exact: true })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(unread).toHaveCount(0);
+    await expect
+      .soft(
+        confirmation.getByRole('button', { name: 'Cancel', exact: true }),
+        'a reread that succeeds returns focus to Cancel',
+      )
+      .toBeFocused();
+    await expect(confirmAction).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toHaveCount(0);
+    await expect
+      .soft(disconnect, 'Escape returns focus to Disconnect after the reread')
+      .toBeFocused();
+
+    /** A first load that fails lands on the Applications heading after Retry, and paged reads keep focus in place. */
+    readsDown = true;
+    paged = true;
+    pageFails = true;
+    await reopenDiscord();
+    const unreadable = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_error });
+    const applicationsHeading = discord.getByRole('heading', {
+      name: translations.com_ui_discord_apps,
+    });
+    await expect(unreadable).toBeVisible();
+    readsDown = false;
+    await unreadable.getByRole('button', { name: 'Retry', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(discord.getByText('Browser application')).toBeVisible();
+    await expect.soft(applicationsHeading, 'Retry lands on the Applications heading').toBeFocused();
+    const moreApplications = discord.getByRole('button', {
+      name: translations.com_ui_discord_more_apps,
+    });
+    await moreApplications.focus();
+    await page.keyboard.press('Enter');
+    await expect(discord.getByText('Second application')).toBeVisible();
+    await expect.soft(moreApplications, 'Load more keeps focus while pages remain').toBeFocused();
+    await page.keyboard.press('Enter');
+    const pageFailed = discord
+      .getByRole('alert')
+      .filter({ hasText: translations.com_ui_discord_error });
+    await expect(pageFailed).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(pageFailed.getByRole('button', { name: 'Retry', exact: true })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(discord.getByText('Third application')).toBeVisible();
+    await expect(moreApplications).toHaveCount(0);
+    await expect
+      .soft(applicationsHeading, 'the last page hands focus to the Applications heading')
       .toBeFocused();
   });
 

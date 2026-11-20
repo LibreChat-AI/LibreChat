@@ -11,6 +11,7 @@ import {
   DISCORD_COMMAND_MANIFEST_VERSION,
   channelSnowflakeSchema,
   configureDiscordApplicationSchema,
+  discordCredentialHealthSchema,
   dataService,
   MutationKeys,
   QueryKeys,
@@ -38,20 +39,25 @@ import type {
   ConfigureDiscordApplication,
   DiscordApplicationPage,
   RegisterDiscordCommands,
+  DiscordOAuthErrorCode,
+  DiscordCredentialState,
   DiscordApplication,
   DiscordGuild,
 } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
 import type { TranslationKeys } from '~/hooks';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
+import { discordCallbackLabels } from '~/components/OAuth/discord';
 import { useAuthContext, useLocalize } from '~/hooks';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
 const confirmAtom = atom<DiscordGuild | null>(null);
 const flowAtom = atom<'pending' | 'cancelling' | 'failed' | null>(null);
 const openAtom = atom(false);
+/** Why the callback failed, when its notice named an approved code; it explains the failed notice and nothing else. */
+const reasonAtom = atom<DiscordOAuthErrorCode | null>(null);
 /** Set when a dismissal removes the control the user was on; focus returns to `trigger` once the reads settle. */
-const restoreAtom = atom<{ trigger: HTMLButtonElement | null } | null>(null);
+const restoreAtom = atom<{ trigger: HTMLButtonElement | null; servers?: boolean } | null>(null);
 const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
 type Fields = typeof empty;
 type Attempt = { popup: Window; flowId?: string; cancelling: boolean };
@@ -83,6 +89,52 @@ function errorLabel(error: unknown): TranslationKeys {
     default:
       return 'com_ui_discord_error';
   }
+}
+
+const controls =
+  'a[href],button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
+
+/** Whether the user put focus on a control of their own, which a waiting restore must not take back. */
+function movedOn(trigger: HTMLButtonElement | null): boolean {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active !== trigger && active.matches(controls);
+}
+
+/** The last bot-token observation, or null when it is absent, legacy or malformed. */
+function observation(
+  app: DiscordApplication,
+): { state: DiscordCredentialState; checked: Date } | null {
+  const health = discordCredentialHealthSchema.safeParse(app.credentialHealth);
+  if (!health.success) return null;
+  const checked = new Date(health.data.checkedAt);
+  return Number.isNaN(checked.getTime()) ? null : { state: health.data.state, checked };
+}
+
+/** An absolute server time, never aged against the browser clock. */
+function CredentialHealth({ app }: { app: DiscordApplication }) {
+  const localize = useLocalize();
+  const health = observation(app);
+  let key: TranslationKeys = 'com_ui_discord_health_unknown';
+  if (health) {
+    key =
+      health.state === 'valid' ? 'com_ui_discord_health_valid' : 'com_ui_discord_health_invalid';
+  }
+  return (
+    <div className="space-y-0.5 text-xs">
+      <p
+        role="status"
+        className={health?.state === 'invalid' ? 'text-text-destructive' : 'text-text-secondary'}
+      >
+        {localize(key)}
+      </p>
+      {health && (
+        <p className="text-text-secondary">
+          {localize('com_ui_discord_health_checked')}{' '}
+          <time dateTime={health.checked.toISOString()}>{health.checked.toLocaleString()}</time>
+        </p>
+      )}
+    </div>
+  );
 }
 
 /** A fresh feature store and form belong to exactly one signed-in account. */
@@ -145,10 +197,10 @@ function Setup({
   const localize = useLocalize();
   const id = useId();
   const client = useQueryClient();
-  const failedNextPage = useRef({ apps: false, guilds: false });
   const [editor, setEditor] = useAtom(editorAtom);
   const [confirm, setConfirm] = useAtom(confirmAtom);
   const [flow, setFlow] = useAtom(flowAtom);
+  const [reason, setReason] = useAtom(reasonAtom);
   const [restore, setRestore] = useAtom(restoreAtom);
   const attempt = useRef<Attempt | null>(null);
   const submission = useRef<ConfigureDiscordApplication | null>(null);
@@ -162,6 +214,8 @@ function Setup({
   const guildHeading = useRef<HTMLHeadingElement | null>(null);
   const appsHeading = useRef<HTMLHeadingElement | null>(null);
   const loadFailure = useRef<HTMLDivElement | null>(null);
+  const readHint = useRef<HTMLDivElement | null>(null);
+  const cancelButton = useRef<HTMLButtonElement | null>(null);
   const busy = useIsMutating({ mutationKey: [MutationKeys.discordSetup, principalKey] }) > 0;
   const apps = useInfiniteQuery(
     [QueryKeys.discordApps, principalKey],
@@ -182,7 +236,6 @@ function Setup({
   }, [client, principalKey]);
   const refresh = useCallback(async () => {
     await cancelReads();
-    failedNextPage.current = { apps: false, guilds: false };
     await Promise.all([
       client.invalidateQueries([QueryKeys.discordApps, principalKey]),
       client.invalidateQueries([QueryKeys.discordGuilds, principalKey]),
@@ -283,8 +336,11 @@ function Setup({
     clearTimeout(deadline.current);
     attempt.current?.popup.close();
     attempt.current = null;
-    if (mounted.current) setFlow(null);
-  }, [setFlow]);
+    if (mounted.current) {
+      setFlow(null);
+      setReason(null);
+    }
+  }, [setFlow, setReason]);
   const retire = async (current: Attempt) => {
     current.cancelling = true;
     current.popup.close();
@@ -310,7 +366,10 @@ function Setup({
     const stop = watchOAuthSettlements((notice) => {
       if (!attempt.current?.flowId || notice.flowId !== attempt.current.flowId) return;
       finish();
-      if (notice.outcome === 'failed') setFlow('failed');
+      if (notice.outcome === 'failed') {
+        setReason(notice.errorCode ?? null);
+        setFlow('failed');
+      }
       void refresh();
     });
     return () => {
@@ -323,7 +382,7 @@ function Setup({
       current?.popup.close();
       if (current?.flowId) void dataService.cancelDiscordInstall(current.flowId).catch(() => {});
     };
-  }, [finish, refresh, setFlow]);
+  }, [finish, refresh, setFlow, setReason]);
   const start = (
     applicationId: string,
     installationId: string | undefined,
@@ -333,6 +392,7 @@ function Setup({
     connectTrigger.current = trigger;
     connect.reset();
     cancel.reset();
+    setReason(null);
     const popup = window.open('', '_blank');
     if (!popup) {
       setFlow('failed');
@@ -400,22 +460,35 @@ function Setup({
   const ready = apps.isSuccess && guilds.isSuccess && !apps.isFetching && !guilds.isFetching;
   const disabled = busy || !ready || flow !== null;
   const setup = apps.data?.pages[0].setup;
+  const confirmed = confirm
+    ? installations.find((item) => item.installationId === confirm.installationId)
+    : undefined;
+  /** The reads behind a failure are current, so only the record the user confirmed can be retried. */
+  const stale =
+    confirm !== null &&
+    disconnect.isError &&
+    ready &&
+    !(confirmed?.status === 'active' && confirmed.revision === confirm.revision);
   const { setFocus } = form;
   useEffect(() => {
     if (editor) setFocus(editor === 'new' ? 'applicationId' : 'botToken');
   }, [editor, setFocus]);
   useEffect(() => {
     if (!restore || editor || busy || flow) return;
+    const { trigger, servers } = restore;
     if (ready) {
-      const { trigger } = restore;
-      if (trigger?.isConnected && !trigger.disabled) trigger.focus();
-      else appsHeading.current?.focus();
+      if (!movedOn(trigger)) {
+        if (trigger?.isConnected && !trigger.disabled) trigger.focus();
+        else (servers ? guildHeading : appsHeading).current?.focus();
+      }
       setRestore(null);
     } else if (apps.isError || guilds.isError) {
-      const failure = loadFailure.current;
-      if (failure && !failure.contains(document.activeElement)) failure.focus();
+      /** Behind an open confirmation the page-level error is unreachable: its hint is the visible one. */
+      const failure = (confirm ? readHint : loadFailure).current;
+      if (failure && !failure.contains(document.activeElement) && !movedOn(trigger))
+        failure.focus();
     }
-  }, [restore, setRestore, editor, ready, busy, flow, apps.isError, guilds.isError]);
+  }, [restore, setRestore, confirm, editor, ready, busy, flow, apps.isError, guilds.isError]);
   const edit = (app: DiscordApplication | 'new', trigger: HTMLButtonElement) => {
     editorTrigger.current = trigger;
     save.reset();
@@ -443,17 +516,22 @@ function Setup({
   });
   const mutationError = save.error || connect.error || cancel.error;
   const commandAppId = commands.variables?.applicationId;
-  const retry = () => {
-    if (apps.isError)
-      void (failedNextPage.current.apps ? apps.fetchNextPage() : apps.refetch()).then((result) => {
-        failedNextPage.current.apps = result.isError && failedNextPage.current.apps;
-      });
-    if (guilds.isError)
-      void (failedNextPage.current.guilds ? guilds.fetchNextPage() : guilds.refetch()).then(
-        (result) => {
-          failedNextPage.current.guilds = result.isError && failedNextPage.current.guilds;
-        },
-      );
+  /** A failed next page is retried alone; a failed reread, even right after one, is read again. The query
+   * records how its last fetch started and every later fetch replaces that, so nothing here can go stale. */
+  const failedNextPage = (key: readonly unknown[]) =>
+    client.getQueryState(key)?.fetchMeta?.fetchMore?.direction === 'forward';
+  const retry = (target: HTMLButtonElement | null = null) => {
+    setRestore((current) => current ?? { trigger: target });
+    if (apps.isError) {
+      void (failedNextPage([QueryKeys.discordApps, principalKey])
+        ? apps.fetchNextPage()
+        : apps.refetch());
+    }
+    if (guilds.isError) {
+      void (failedNextPage([QueryKeys.discordGuilds, principalKey])
+        ? guilds.fetchNextPage()
+        : guilds.refetch());
+    }
   };
   return (
     <div className="space-y-4">
@@ -469,7 +547,7 @@ function Setup({
       {(apps.isError || guilds.isError) && (
         <Alert ref={loadFailure} tabIndex={-1} variant="error">
           {localize(errorLabel(apps.error || guilds.error))}
-          <Button type="button" variant="outline" onClick={retry}>
+          <Button type="button" variant="outline" onClick={() => retry()}>
             {localize('com_ui_retry')}
           </Button>
         </Alert>
@@ -506,6 +584,7 @@ function Setup({
           tabIndex={flow === 'failed' ? -1 : undefined}
           variant={flow === 'failed' ? 'warning' : 'info'}
         >
+          {flow === 'failed' && reason && <p>{localize(discordCallbackLabels[reason])}</p>}
           <p>
             {localize(flow === 'failed' ? 'com_ui_discord_unconfirmed' : 'com_ui_discord_pending')}
           </p>
@@ -632,6 +711,7 @@ function Setup({
           >
             <p className="text-sm font-medium">{app.name || app.applicationId}</p>
             <p className="text-text-secondary text-xs break-all">{app.applicationId}</p>
+            <CredentialHealth app={app} />
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -729,11 +809,9 @@ function Setup({
           type="button"
           variant="outline"
           disabled={disabled || apps.isFetchingNextPage}
-          onClick={() => {
-            failedNextPage.current.apps = true;
-            void apps.fetchNextPage().then((result) => {
-              failedNextPage.current.apps = result.isError;
-            });
+          onClick={(event) => {
+            setRestore({ trigger: event.currentTarget });
+            void apps.fetchNextPage();
           }}
         >
           {localize('com_ui_discord_more_apps')}
@@ -795,11 +873,9 @@ function Setup({
           type="button"
           variant="outline"
           disabled={disabled || guilds.isFetchingNextPage}
-          onClick={() => {
-            failedNextPage.current.guilds = true;
-            void guilds.fetchNextPage().then((result) => {
-              failedNextPage.current.guilds = result.isError;
-            });
+          onClick={(event) => {
+            setRestore({ trigger: event.currentTarget, servers: true });
+            void guilds.fetchNextPage();
           }}
         >
           {localize('com_ui_discord_more_guilds')}
@@ -824,9 +900,7 @@ function Setup({
           className="w-11/12 max-w-md"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            const trigger = disconnectTrigger.current;
-            if (trigger?.isConnected && !trigger.disabled) trigger.focus();
-            else guildHeading.current?.focus();
+            if (mounted.current) setRestore({ trigger: disconnectTrigger.current, servers: true });
           }}
         >
           <AlertDialogHeader>
@@ -836,17 +910,27 @@ function Setup({
             </AlertDialogDescription>
           </AlertDialogHeader>
           {disconnect.isError && (
-            <Alert variant="error">{localize(errorLabel(disconnect.error))}</Alert>
+            <Alert ref={reveal} tabIndex={-1} variant={stale ? 'warning' : 'error'}>
+              {localize(stale ? 'com_ui_discord_disconnect_stale' : errorLabel(disconnect.error))}
+            </Alert>
+          )}
+          {confirm !== null && (apps.isError || guilds.isError) && (
+            <Alert ref={readHint} tabIndex={-1} variant="warning">
+              <p>{localize('com_ui_discord_disconnect_unread')}</p>
+              <Button type="button" variant="outline" onClick={() => retry(cancelButton.current)}>
+                {localize('com_ui_retry')}
+              </Button>
+            </Alert>
           )}
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={disconnect.isLoading}>
+            <AlertDialogCancel ref={cancelButton} disabled={disconnect.isLoading}>
               {localize('com_ui_cancel')}
             </AlertDialogCancel>
             <AlertDialogAction asChild>
               <Button
                 type="button"
                 variant="destructive"
-                disabled={disconnect.isLoading || !ready}
+                disabled={disconnect.isLoading || !ready || stale}
                 onClick={(event) => {
                   event.preventDefault();
                   if (confirm) disconnect.mutate(confirm);
