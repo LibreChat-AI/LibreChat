@@ -49,26 +49,36 @@ interface Props {
   portalElement?: HTMLElement | null;
   onClose: () => void;
 }
+/** The server returns a provider failure before it writes, so one can be named; anything else stays uncertain. */
 function label(error: unknown): TranslationKeys {
-  if (error instanceof Error) {
-    if ('status' in error && error.status === 403) return 'com_ui_discord_binding_forbidden';
-    if ('status' in error && error.status === 404) return 'com_ui_discord_disabled';
-    if ('code' in error) {
-      if (error.code === 'unsupported_channel') return 'com_ui_discord_binding_unsupported';
-      if (error.code === 'missing_permissions') return 'com_ui_discord_binding_permissions';
-      if (error.code === 'transactions_unavailable') return 'com_ui_channels_transaction_required';
-      if (
-        [
-          'route_changed',
-          'application_changed',
-          'installation_unavailable',
-          'guild_changed',
-        ].includes(String(error.code))
-      )
-        return 'com_ui_discord_changed';
-    }
+  if (!(error instanceof Error)) return 'com_ui_discord_binding_uncertain';
+  if ('status' in error && error.status === 403) return 'com_ui_discord_binding_forbidden';
+  if ('status' in error && error.status === 404) return 'com_ui_discord_disabled';
+  if (!('code' in error)) return 'com_ui_discord_binding_uncertain';
+  switch (error.code) {
+    case 'unsupported_channel':
+      return 'com_ui_discord_binding_unsupported';
+    case 'missing_permissions':
+      return 'com_ui_discord_binding_permissions';
+    case 'transactions_unavailable':
+      return 'com_ui_channels_transaction_required';
+    case 'route_changed':
+    case 'application_changed':
+    case 'installation_unavailable':
+    case 'guild_changed':
+      return 'com_ui_discord_changed';
+    case 'provider_refused':
+      return 'com_ui_discord_binding_refused';
+    case 'unsupported_installation':
+      return 'com_ui_discord_code_grant';
+    case 'rate_limited':
+      return 'com_ui_discord_rate_limited';
+    case 'provider_unavailable':
+    case 'timeout':
+      return 'com_ui_discord_provider_unavailable';
+    default:
+      return 'com_ui_discord_binding_uncertain';
   }
-  return 'com_ui_discord_binding_uncertain';
 }
 /** Account, agent and immutable channel identity each own a fresh feature store. */
 export default function DiscordBinding(props: Props) {

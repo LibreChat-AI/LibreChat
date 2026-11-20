@@ -33,6 +33,32 @@ export default function OAuthError() {
       case 'slack_stale_install':
       case 'slack_invalid_install':
         return localize('com_ui_slack_workspaces_restart');
+      case 'discord_forbidden':
+        return localize('com_ui_discord_admin');
+      case 'discord_not_configured':
+        return localize('com_ui_discord_disabled');
+      case 'discord_invalid_state':
+      case 'discord_invalid_input':
+      case 'discord_invalid_grant':
+        return localize('com_ui_discord_oauth_restart');
+      case 'discord_application_changed':
+      case 'discord_installation_changed':
+        return localize('com_ui_discord_oauth_changed');
+      case 'discord_guild_changed':
+        return localize('com_ui_discord_guild_changed');
+      case 'discord_missing_permissions':
+        return localize('com_ui_discord_permissions');
+      case 'discord_unsupported_installation':
+        return localize('com_ui_discord_code_grant');
+      case 'discord_provider_refused':
+        return localize('com_ui_discord_oauth_refused');
+      case 'discord_rate_limited':
+        return localize('com_ui_discord_rate_limited');
+      case 'discord_provider_unavailable':
+      case 'discord_timeout':
+        return localize('com_ui_discord_provider_unavailable');
+      case 'discord_transactions_unavailable':
+        return localize('com_ui_channels_transaction_required');
       case 'missing_code':
         return localize('com_ui_oauth_error_missing_code');
       case 'missing_state':
