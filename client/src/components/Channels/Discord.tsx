@@ -49,6 +49,7 @@ import { errorLabel } from './discord/errors';
 import Settings from './discord/Settings';
 import Connect from './discord/Connect';
 import Server from './discord/Server';
+import Notice from './discord/Notice';
 import Card from './discord/Card';
 import Loading from './Loading';
 import Dm from './Dm';
@@ -153,11 +154,7 @@ function SettingsControl({
         className="max-w-2xl"
         mainClassName="max-h-[70dvh] overflow-y-auto"
         showCancelButton={false}
-        selection={
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            {localize('com_ui_close')}
-          </Button>
-        }
+        showCloseButton
         main={
           open ? (
             <div className="space-y-6">
@@ -601,20 +598,21 @@ function Setup({
       )}
       {(apps.isLoading || guilds.isLoading) && <Loading />}
       {(apps.isError || guilds.isError) && !settingsOpen && (
-        <Alert ref={loadFailure} tabIndex={-1} variant="error">
-          {localize(errorLabel(apps.error || guilds.error))}
-          <Button type="button" variant="outline" onClick={() => retry()}>
-            {localize('com_ui_retry')}
-          </Button>
-        </Alert>
+        <Notice
+          ref={loadFailure}
+          message={localize(errorLabel(apps.error || guilds.error))}
+          action={localize('com_ui_retry')}
+          onAction={() => retry()}
+        />
       )}
       {Boolean(pageError) && (
-        <Alert ref={reveal} tabIndex={-1} variant="error">
-          {localize(errorLabel(pageError))}
-          <Button type="button" variant="outline" disabled={busy} onClick={refreshAfterError}>
-            {localize('com_ui_refresh')}
-          </Button>
-        </Alert>
+        <Notice
+          ref={reveal}
+          message={localize(errorLabel(pageError))}
+          action={localize('com_ui_refresh')}
+          disabled={busy}
+          onAction={refreshAfterError}
+        />
       )}
       {save.isSuccess && (
         <Alert variant="success" role="status">
@@ -626,19 +624,16 @@ function Setup({
       </h3>
       {/* Loaded state, not "not fetching": a focus refetch must not swap the layout. */}
       {listed && !applications.length ? (
-        <div className="border-border-light flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-8 text-center">
+        <div className="border-border-light flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-6 text-center">
           <span
             className="border-border-light bg-surface-secondary flex size-10 items-center justify-center rounded-lg border"
             aria-hidden="true"
           >
             <DiscordIcon mark className="size-5" />
           </span>
-          <div className="space-y-1">
-            <p className="text-text-primary text-sm font-medium">
-              {localize('com_ui_discord_empty_title')}
-            </p>
-            <p className="text-text-secondary text-sm">{localize('com_ui_discord_empty')}</p>
-          </div>
+          <p className="text-text-primary text-sm font-medium">
+            {localize('com_ui_discord_empty_title')}
+          </p>
           <Button
             type="button"
             disabled={disabled}

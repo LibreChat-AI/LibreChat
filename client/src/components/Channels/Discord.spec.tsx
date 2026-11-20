@@ -147,7 +147,7 @@ test('loads independent metadata, server URLs and configuration-needed state', a
   expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
   expect(dataService.getDiscordGuilds).toHaveBeenCalled();
   await act(async () => apps.resolve({ applications: [] }));
-  expect(await screen.findByText('com_ui_discord_empty')).toBeVisible();
+  expect(await screen.findByText('com_ui_discord_empty_title')).toBeVisible();
   expect(screen.queryByLabelText('com_ui_discord_callback')).toBeNull();
 });
 

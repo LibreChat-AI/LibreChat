@@ -16,6 +16,7 @@ import type { UseFormReturn } from 'react-hook-form';
 import type { FormEvent, ReactNode } from 'react';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
+import Notice from './Notice';
 
 export const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
 export type Fields = typeof empty;
@@ -139,12 +140,13 @@ export default function Editor({
           </Button>
         </form>
         {Boolean(error) && (
-          <Alert ref={alertRef} tabIndex={-1} variant="error">
-            {localize(errorLabel(error))}
-            <Button type="button" variant="outline" disabled={busy} onClick={onRefresh}>
-              {localize('com_ui_refresh')}
-            </Button>
-          </Alert>
+          <Notice
+            ref={alertRef}
+            message={localize(errorLabel(error))}
+            action={localize('com_ui_refresh')}
+            disabled={busy}
+            onAction={onRefresh}
+          />
         )}
       </div>
     );
@@ -167,7 +169,7 @@ export default function Editor({
         onCloseAutoFocus={(event) => event.preventDefault()}
         main={body}
         selection={
-          <Button type="submit" form={`${id}-form`} disabled={disabled}>
+          <Button type="submit" variant="submit" form={`${id}-form`} disabled={disabled}>
             {saving && <Spinner className="size-4" aria-hidden="true" />}
             {localize('com_ui_save')}
           </Button>

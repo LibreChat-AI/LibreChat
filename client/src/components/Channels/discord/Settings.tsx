@@ -1,11 +1,12 @@
 import { useId } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Alert, Button, Label, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
-import type { RefObject } from 'react';
 import type { DiscordApplication, DiscordApplicationPage } from 'librechat-data-provider';
-import Callback from '../Callback';
+import type { RefObject } from 'react';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
+import Callback from '../Callback';
+import Notice from './Notice';
 
 /** What the administrator copies into the Discord Developer Portal, and the command registration. */
 export default function Settings({
@@ -61,12 +62,12 @@ export default function Settings({
           app && (
             <div className="space-y-4">
               {Boolean(loadError) && (
-                <Alert ref={loadRef} tabIndex={-1} variant="error">
-                  {localize(errorLabel(loadError))}
-                  <Button type="button" variant="outline" onClick={onRetry}>
-                    {localize('com_ui_retry')}
-                  </Button>
-                </Alert>
+                <Notice
+                  ref={loadRef}
+                  message={localize(errorLabel(loadError))}
+                  action={localize('com_ui_retry')}
+                  onAction={onRetry}
+                />
               )}
               {setup?.oauthCallbackUrl && (
                 <div className="space-y-1">
@@ -123,12 +124,13 @@ export default function Settings({
                   </Alert>
                 )}
                 {failure && (
-                  <Alert ref={alertRef} tabIndex={-1} variant="error">
-                    <p>{localize(errorLabel(failure.error))}</p>
-                    <Button type="button" variant="outline" disabled={busy} onClick={onRefresh}>
-                      {localize('com_ui_refresh')}
-                    </Button>
-                  </Alert>
+                  <Notice
+                    ref={alertRef}
+                    message={localize(errorLabel(failure.error))}
+                    action={localize('com_ui_refresh')}
+                    disabled={busy}
+                    onAction={onRefresh}
+                  />
                 )}
               </div>
               <Button asChild variant="inline-link" className="w-fit">
