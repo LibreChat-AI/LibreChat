@@ -375,6 +375,15 @@ export function buildLoginRedirectUrl(pathname?: string, search?: string, hash?:
   return `/login?${REDIRECT_PARAM}=${encodeURIComponent(currentPath)}`;
 }
 
+/** Adds a server denial code to a login URL so the login page can show why the session ended. */
+export function withLoginError(loginUrl: string, code?: string): string {
+  if (!code) {
+    return loginUrl;
+  }
+  const separator = loginUrl.includes('?') ? '&' : '?';
+  return `${loginUrl}${separator}error=${encodeURIComponent(code)}`;
+}
+
 export const resendVerificationEmail = () => `${BASE_URL}/api/user/verify/resend`;
 
 export const mcpReinitialize = (serverName: string) =>
