@@ -26,7 +26,7 @@ const oauthErrorKeys: Record<string, TranslationKeys> = {
   [ErrorTypes.AUTH_RATE_LIMITED]: 'com_auth_error_login_rl',
   [ErrorTypes.AUTH_BANNED]: 'com_auth_error_login_ban',
   [OPENID_SESSION_ENDED]: 'com_auth_openid_session_ended',
-  [AUTH_SESSION_CHECK_UNAVAILABLE]: 'com_auth_session_check_unavailable_toast',
+  [AUTH_SESSION_CHECK_UNAVAILABLE]: 'com_auth_session_check_unavailable_login',
 };
 
 function Login() {
