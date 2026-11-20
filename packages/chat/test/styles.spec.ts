@@ -42,26 +42,23 @@ const named = (name: string): boolean =>
 
 /**
  * Names the package's source uses that the app's stylesheets still have rules for. Each is a
- * difference an app outside LibreChat would see (the scrollbar gutters, `tooltip`), or
+ * difference an app outside LibreChat would see (the sizes of a code block under
+ * `message-content`), or
  * a word that only reads like a class in a string here (`css`, `nav`, `config`). The list may
  * only shrink: moving the rules into a shipped stylesheet takes a name off, and a new name on
  * it means a component leans on the app's stylesheet again.
  */
 const APP_STYLED = [
   'active',
-  'azure-bg-color',
   'config',
   'css',
   'dark',
   'gray',
   'group',
-  'hide-scrollbar',
   'high-contrast',
   'message-content',
   'nav',
   'overflow-y-auto',
-  'scrollbar-gutter-spacer',
-  'scrollbar-gutter-stable',
   'tooltip',
   'whitespace-pre-wrap',
 ];
@@ -82,6 +79,8 @@ describe('the stylesheets behind the package’s classes', () => {
       'composer-slot-resize',
       'composer-effort-thumb',
       'composer-label-in-up',
+      'scrollbar-gutter-spacer',
+      'azure-bg-color',
     ]) {
       expect(classesIn(read(require.resolve('@librechat/chat/style.css')))).toContain(name);
       expect(app).not.toContain(name);
@@ -95,6 +94,19 @@ describe('the stylesheets behind the package’s classes', () => {
     for (const [, animation] of css.matchAll(/animation:\s*([\w-]+)/g)) {
       expect(css).toMatch(new RegExp(`@keyframes ${animation}\\s*\\{`));
     }
+  });
+
+  it('finds a class the app’s components carry too in the client package’s stylesheet', () => {
+    expect(named('hide-scrollbar')).toBe(true);
+    expect(classesIn(read(require.resolve('@librechat/client/style.css')))).toContain(
+      'hide-scrollbar',
+    );
+    expect(app).not.toContain('hide-scrollbar');
+  });
+
+  it('leaves the reserved scrollbar gutter to Tailwind’s own utility', () => {
+    expect(named('scrollbar-gutter-stable')).toBe(true);
+    expect(app).not.toContain('scrollbar-gutter-stable');
   });
 
   it('finds how written content reads in the client package’s stylesheet, not the app’s', () => {
