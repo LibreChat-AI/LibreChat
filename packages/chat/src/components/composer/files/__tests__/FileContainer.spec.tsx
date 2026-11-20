@@ -192,3 +192,156 @@ describe('FileContainer subtitle action', () => {
     expect(screen.queryByText('Move back into message')).not.toBeInTheDocument();
   });
 });
+
+describe('FileContainer text preview', () => {
+  const textFile = (overrides: Partial<TFile> = {}) =>
+    baseFile({ type: 'text/plain', filename: 'pasted-text.txt', ...overrides });
+
+  it('renders a persisted snippet without full text or the upload cache', () => {
+    const preview = 'This text survives a conversation reload.';
+    render(<FileContainer file={textFile({ textPreview: preview })} />);
+    expect(screen.getByText(preview)).toBeInTheDocument();
+    expect(screen.queryByTestId('file-preview')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'pasted-text.txt' })).toHaveAccessibleDescription(
+      preview,
+    );
+  });
+
+  it('shows stored plain text instead of the colored file tile', () => {
+    const text = 'The actual clipboard content\nwith a second line';
+    render(<FileContainer file={textFile({ text })} />);
+
+    const preview = screen.getByText('The actual clipboard content with a second line');
+    expect(preview).toHaveAttribute('title', text);
+    expect(preview.textContent).toBe(text);
+    expect(screen.getByRole('button', { name: 'pasted-text.txt' })).toHaveAccessibleDescription(
+      text,
+    );
+    expect(screen.getByText('pasted-text.txt')).toBeInTheDocument();
+    expect(screen.queryByTestId('file-preview')).not.toBeInTheDocument();
+    expect(screen.queryByText('Plain')).not.toBeInTheDocument();
+  });
+
+  it('prefers an explicit original-text preview over the stored copy', () => {
+    render(
+      <FileContainer
+        file={textFile({ text: 'Stored transformed text' })}
+        textPreview="Original paste"
+      />,
+    );
+
+    expect(screen.getByText('Original paste')).toBeInTheDocument();
+    expect(screen.queryByText('Stored transformed text')).not.toBeInTheDocument();
+  });
+
+  it('updates the snippet when the attachment text changes', () => {
+    const { rerender } = render(<FileContainer file={textFile({ text: 'First paste' })} />);
+
+    rerender(<FileContainer file={textFile({ text: 'Edited paste' })} />);
+
+    expect(screen.getByText('Edited paste')).toBeInTheDocument();
+    expect(screen.queryByText('First paste')).not.toBeInTheDocument();
+  });
+
+  it('does not infer content from a pasted-text filename', () => {
+    render(<FileContainer file={textFile()} />);
+
+    expect(screen.getByTestId('file-preview')).toBeInTheDocument();
+    expect(screen.getByText('Plain')).toBeInTheDocument();
+  });
+
+  it('allows callers to disable a stored preview', () => {
+    render(<FileContainer file={textFile({ text: 'Deliberate upload' })} textPreview={null} />);
+
+    expect(screen.queryByText('Deliberate upload')).not.toBeInTheDocument();
+    expect(screen.getByTestId('file-preview')).toBeInTheDocument();
+  });
+
+  it.each([
+    { type: 'application/pdf', text: 'Extracted document text' },
+    { type: 'text/html', text: '<p>HTML document</p>' },
+    { type: 'text/plain', textFormat: 'html' as const, text: '<p>HTML preview</p>' },
+  ])('leaves non-plain-text previews on the ordinary card: %j', (file) => {
+    render(<FileContainer file={baseFile(file)} />);
+
+    expect(screen.queryByText(file.text)).not.toBeInTheDocument();
+    expect(screen.getByTestId('file-preview')).toBeInTheDocument();
+  });
+
+  it.each(['', ' \n\t '])('falls back to the file tile for empty content: %j', (text) => {
+    render(<FileContainer file={textFile({ text })} />);
+
+    expect(screen.getByTestId('file-preview')).toBeInTheDocument();
+    expect(screen.getByText('Plain')).toBeInTheDocument();
+  });
+
+  it('bounds the rendered snippet without changing the original content', () => {
+    const file = textFile({ text: 'a'.repeat(10000) });
+    render(<FileContainer file={file} />);
+
+    expect(screen.getByText('a'.repeat(240))).toBeInTheDocument();
+    expect(file.text).toHaveLength(10000);
+  });
+
+  it('skips leading blank space before bounding the snippet', () => {
+    render(<FileContainer file={textFile({ text: `${'\n'.repeat(300)}Actual pasted content` })} />);
+
+    expect(screen.getByText('Actual pasted content')).toBeInTheDocument();
+    expect(screen.queryByTestId('file-preview')).not.toBeInTheDocument();
+  });
+
+  it('renders pasted markup as text, not HTML', () => {
+    const text = '<img src=x onerror="alert(1)">';
+    const { container } = render(<FileContainer file={textFile({ text })} />);
+
+    expect(screen.getByText(text)).toBeInTheDocument();
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('preserves explicit subtitle content alongside the snippet', () => {
+    render(<FileContainer file={textFile({ text: 'Actual content' })} subtitle="Preview status" />);
+
+    expect(screen.getByText('Actual content')).toBeInTheDocument();
+    expect(screen.getByText('Preview status')).toBeInTheDocument();
+  });
+
+  it('keeps edit and move controls independently keyboard accessible beside the snippet', async () => {
+    const onEdit = jest.fn();
+    const onMove = jest.fn();
+    const { container } = render(
+      <FileContainer
+        file={textFile({ text: 'Actual content' })}
+        onClick={onEdit}
+        ariaLabel="Edit pasted text"
+        subtitleAction={{ label: 'Move back into message', onClick: onMove }}
+      />,
+    );
+
+    await userEvent.tab();
+    expect(screen.getByRole('button', { name: 'Edit pasted text' })).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(onEdit).toHaveBeenCalledTimes(1);
+    expect(onMove).not.toHaveBeenCalled();
+    await userEvent.tab();
+    expect(screen.getByRole('button', { name: 'Move back into message' })).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(onMove).toHaveBeenCalledTimes(1);
+    expect(onEdit).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Actual content')).toBeInTheDocument();
+    expect(container.querySelector('button button')).toBeNull();
+  });
+
+  it('keeps a themed loading indicator during upload without restoring the icon tile', () => {
+    const file = { ...textFile({ text: 'Uploading clipboard content' }), progress: 0.4 };
+    const { container, rerender } = render(<FileContainer file={file} />);
+
+    expect(container.querySelector('[aria-busy="true"]')).toBeInTheDocument();
+    expect(container.querySelector('svg.spinner')).toHaveClass('size-3');
+    expect(screen.queryByTestId('file-preview')).not.toBeInTheDocument();
+
+    rerender(<FileContainer file={{ ...file, progress: 1 }} />);
+
+    expect(container.querySelector('[aria-busy="true"]')).toBeNull();
+    expect(container.querySelector('svg.spinner')).toBeNull();
+  });
+});

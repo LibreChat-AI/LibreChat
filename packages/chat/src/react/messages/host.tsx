@@ -1,25 +1,46 @@
 import { useRef, createContext, useContext } from 'react';
 import type {
   Agent,
+  AgentDisplay,
   TFile,
   TMessage,
   Assistant,
+  TAttachment,
   TConversation,
   SearchResultData,
   TForkConvoRequest,
+  TUpdateFeedbackRequest,
+  TUpdateFeedbackResponse,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
+import type { WakeupDisplay } from '../../core/parts/wakeup';
+import type { TAskFunction } from '../../core';
 
-/** What the message slot renders one visible row of the thread from. */
-export type MessageRowSlotProps = {
+/** What a row's text body renders from. */
+export type MessageBodySlotProps = {
+  ask: TAskFunction;
+  edit: boolean;
+  isLast: boolean;
+  text: string;
   message: TMessage;
-  /** Position of the message among its siblings, oldest first. */
+  enterEdit: (cancel: boolean) => void;
+  error: boolean;
+  isSubmitting: boolean;
+  unfinished: boolean;
+  isCreatedByUser: boolean;
   siblingIdx: number;
-  siblingCount: number;
-  /** Shows the sibling at the given position, oldest first. */
   setSiblingIdx: (value: number) => void;
-  currentEditId: string | number | null;
-  setCurrentEditId: Dispatch<SetStateAction<string | number | null>>;
+};
+
+/** What the wake-up card renders from. */
+export type WakeupSlotProps = {
+  display: WakeupDisplay;
+  conversationId?: string | null;
+};
+
+/** The message a row hands a slot that draws one piece of it. */
+export type MessageSlotProps = {
+  message: TMessage;
 };
 
 /** What the activity slot renders the background activity of a row from. */
@@ -90,12 +111,24 @@ export type ForkEvents = {
 /** Starts a fork of a conversation. */
 export type ForkConversation = (request: TForkConvoRequest, events: ForkEvents) => void;
 
+/** What a feedback write reports back. */
+export type MessageFeedbackEvents = {
+  onSuccess: (data: TUpdateFeedbackResponse) => void;
+  onError: (error: unknown) => void;
+};
+
+/** Writes a message's feedback to the server. */
+export type MessageFeedbackWrite = (
+  payload: TUpdateFeedbackRequest,
+  events: MessageFeedbackEvents,
+) => void;
+
 /** The renderer a message is displayed with: `full` for model text, `lite` for user markdown. */
 export type MarkdownVariant = 'full' | 'lite';
 
 /** What a row asks the host to copy. */
 export type MessageCopyInput = {
-  message: TMessage;
+  message: TMessage | null | undefined;
   /** Search results the message cites, resolved into the copied text. */
   searchResults?: { [key: string]: SearchResultData };
   /** The renderer the row displayed the message with, when it is not the authorship default. */
@@ -120,7 +153,7 @@ export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: bool
 export type MessageIconProps = {
   iconData?: MessageIconData;
   assistant?: Assistant;
-  agent?: Agent;
+  agent?: AgentDisplay;
 };
 
 /** The button a read-aloud control draws, through the row's toolbar styling. */
@@ -181,10 +214,39 @@ export interface MessagesHost {
     isStreaming: boolean,
   ) => TMessage[] | undefined;
 
+  /** The assistant a reply on an assistants endpoint came from, by endpoint and assistant id. */
+  useAssistant: (
+    endpoint: string | null | undefined,
+    model: string | null | undefined,
+  ) => Assistant | undefined;
+  /**
+   * Reads the second pane's conversation at call time, without subscribing to it, so a row does
+   * not re-render when that conversation changes. `null` where there is no second pane.
+   */
+  useGetAddedConvo: () => () => TConversation | null;
+  /** The attachments that arrived while a message streamed; `useStreamedAttachments` reads them. */
+  useStreamedAttachments: (messageId: string) => TAttachment[] | undefined;
+  /** Writes feedback on one message of a conversation. */
+  useMessageFeedback: (conversationId: string, messageId: string) => MessageFeedbackWrite;
+
   /** Renders a message author's icon with the app's endpoint and avatar icons. */
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
-  /** Renders one message of the thread: its header, body and controls. */
-  renderMessageRow: (props: MessageRowSlotProps) => ReactNode;
+  /** Whether rows drop the reading-width cap and fill the pane. */
+  useMaximizeChatSpace: () => boolean;
+  /** Whether the thread renders as a flat row list. The flat renderer is the default;
+   *  an app turns it off for the recursive tree. */
+  useFlatThread: () => boolean;
+  /** Whether a response by the agent the header's model selector shows drops its avatar and name
+   *  (`interface.messageAuthor: whenDifferent`). */
+  useHideSelectedAuthor: () => boolean;
+  /** The agents the viewer can see by id, or `undefined` until they load. */
+  useAgentsMap: () => Record<string, Agent | undefined> | undefined;
+  /** Renders a row's text body when it has no content parts. */
+  renderMessageBody: (props: MessageBodySlotProps) => ReactNode;
+  /** Renders the card of a wake-up turn a background task posted. */
+  renderWakeup: (props: WakeupSlotProps) => ReactNode;
+  /** Renders the owner's original text of a message stored with a privacy revision. */
+  renderPrivateText: (props: MessageSlotProps) => ReactNode;
   /** Renders the background activity (subagent runs) launched from a row. */
   renderActivity: (props: ActivitySlotProps) => ReactNode;
   /** The conversation's files by id, which hydrate the files of a thread row. */
@@ -205,12 +267,17 @@ const fallbackForkPreferences: ForkPreferences = {
 };
 
 /** Read state with nothing behind it: no conversation is ever unseen, so nothing is written. */
-const inertSeenSource: ConversationSeenSource = {
+/** A seen source that records nothing, for a list whose conversation has no read state. */
+export const inertSeenSource: ConversationSeenSource = {
   readReply: () => undefined,
   hasReplyProof: () => false,
   markSeen: noop,
   consumeFocusSuppression: () => false,
 };
+
+const noAddedConvo = (): TConversation | null => null;
+
+const noFeedback: MessageFeedbackWrite = noop;
 
 const noMessages = (): TMessage[] | undefined => undefined;
 
@@ -229,8 +296,18 @@ const fallbackHost: MessagesHost = {
   useAutoScroll: () => false,
   useSeenSource: () => inertSeenSource,
   useConversationMessages: () => undefined,
+  useAssistant: () => undefined,
+  useGetAddedConvo: () => noAddedConvo,
+  useStreamedAttachments: () => undefined,
+  useMessageFeedback: () => noFeedback,
   renderMessageIcon: () => null,
-  renderMessageRow: () => null,
+  useMaximizeChatSpace: () => false,
+  useFlatThread: () => true,
+  useHideSelectedAuthor: () => false,
+  useAgentsMap: () => undefined,
+  renderMessageBody: () => null,
+  renderWakeup: () => null,
+  renderPrivateText: () => null,
   renderActivity: () => null,
   useFileMap: () => undefined,
 };

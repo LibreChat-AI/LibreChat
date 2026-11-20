@@ -74,6 +74,7 @@ export function measureFunctions(
   file: string,
   source: string,
   coverage?: unknown,
+  root = ROOT,
 ): FunctionReport[] {
   const absoluteFile = resolve(file);
   const functions: MeasuredFunction[] = [];
@@ -99,7 +100,7 @@ export function measureFunctions(
     }
     return offsets[line - 1] + column;
   };
-  const displayFile = relative(ROOT, absoluteFile);
+  const displayFile = relative(root, absoluteFile);
   const name = displayFile.startsWith(`..${sep}`) ? absoluteFile : displayFile.split(sep).join('/');
   const linter = new Linter();
   const messages = linter.verify(
@@ -235,7 +236,7 @@ export function measureFunctions(
   });
 }
 
-export function createReport(coverageFile: string, sources: string[] = [FAVORITES]) {
+export function createReport(coverageFile: string, sources: string[] = [FAVORITES], root = ROOT) {
   const coverage: unknown = JSON.parse(readFileSync(resolve(coverageFile), 'utf8'));
   if (!isRecord(coverage)) throw new Error('Expected an Istanbul coverage object');
   const entries = new Map<string, unknown>();
@@ -248,7 +249,7 @@ export function createReport(coverageFile: string, sources: string[] = [FAVORITE
     complexityMetric: 'eslint/classic',
     coverageMetric: 'per-function statement fraction (nested functions excluded)',
     functions: [...new Set(sources.map((file) => resolve(file)))].flatMap((file) =>
-      measureFunctions(file, readFileSync(file, 'utf8'), entries.get(file)),
+      measureFunctions(file, readFileSync(file, 'utf8'), entries.get(file), root),
     ),
   };
 }
@@ -275,7 +276,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       mkdirSync(dirname(output), { recursive: true });
       writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`);
       console.log(
-        'Advisory CRAP baseline | CC: ESLint classic | Coverage: statements, excluding nested functions',
+        'Refactor hints (advisory) | CC: ESLint classic | Coverage: whole-function statements, excluding nested functions',
       );
       console.log('File\tFunction\tLine:Column\tCC\tStatement coverage\tCRAP');
       for (const row of report.functions) {

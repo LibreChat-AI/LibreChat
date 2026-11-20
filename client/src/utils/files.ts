@@ -1,3 +1,4 @@
+import { isInlineablePastedText } from '@librechat/chat';
 import {
   Tools,
   LocalStorageKeys,
@@ -31,7 +32,7 @@ export type { FileDeliveryMetadataMap } from '@librechat/chat';
 
 export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
   for (const file of files.values()) {
-    if (file.progress < 1) {
+    if (file.progress < 1 && !isInlineablePastedText(file)) {
       return true;
     }
   }

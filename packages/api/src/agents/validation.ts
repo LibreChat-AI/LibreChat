@@ -12,6 +12,7 @@ import {
   ErrorTypes,
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_GRAPH_SUBAGENT_MEMBERS,
+  sdkRuntimeBindingSchema,
 } from 'librechat-data-provider';
 import type {
   Agent,
@@ -458,6 +459,7 @@ type AgentBaseShape = {
   code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
   repositoryInstructions: z.ZodOptional<EnumOf<'prefer' | 'defer' | 'off'>>;
   git_identity: typeof agentGitIdentitySchema;
+  sdk_runtime: z.ZodOptional<z.ZodNullable<typeof sdkRuntimeBindingSchema>>;
   artifacts: z.ZodOptional<z.ZodString>;
   recursion_limit: z.ZodOptional<z.ZodNumber>;
   conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -469,6 +471,7 @@ type AgentBaseShape = {
 };
 
 export const agentBaseSchema: z.ZodObject<AgentBaseShape> = z.object({
+  sdk_runtime: sdkRuntimeBindingSchema.nullable().optional(),
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   instructions: z.string().nullable().optional(),
@@ -539,7 +542,11 @@ export interface ValidateAgentModelParams {
   req: LooseRequest;
   res: Response;
   agent: Agent;
-  modelsConfig: TModelsConfig;
+  /**
+   * Loads the model catalog entry for an endpoint. Only the agent's own provider is requested,
+   * so a request never loads the model lists of endpoints none of its agents use.
+   */
+  getEndpointModels: (endpoint: string) => Promise<TModelsConfig>;
   logViolation: (
     req: LooseRequest,
     res: Response,
@@ -567,7 +574,7 @@ interface ValidateAgentModelResult {
 export async function validateAgentModel(
   params: ValidateAgentModelParams,
 ): Promise<ValidateAgentModelResult> {
-  const { req, res, agent, modelsConfig, logViolation } = params;
+  const { req, res, agent, getEndpointModels, logViolation } = params;
   const { model, provider: endpoint } = agent;
 
   if (!model) {
@@ -579,6 +586,7 @@ export async function validateAgentModel(
     };
   }
 
+  const modelsConfig = await getEndpointModels(endpoint);
   if (!modelsConfig) {
     return {
       isValid: false,

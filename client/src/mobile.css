@@ -31,13 +31,6 @@
   }
 }
 
-@media (max-width: 1024px) {
-  .hover-button {
-    display: block;
-    visibility: visible;
-  }
-}
-
 .hide-scrollbar {
   /* Hide scrollbar for Chrome, Safari, and Opera */
   scrollbar-width: none; /* For Firefox */

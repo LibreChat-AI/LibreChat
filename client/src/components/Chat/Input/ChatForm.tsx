@@ -1,10 +1,16 @@
-import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
+import { memo, useRef, useMemo, useEffect, useState, Suspense, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { isInlineablePastedText } from '@librechat/chat';
 import { useDirection } from '@radix-ui/react-direction';
-import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
+import {
+  submitFromComposer,
+  composerClearance,
+  ComposerField,
+  ComposerFrame,
+} from '@librechat/chat/components';
 import {
   PastedTextDialog,
   QuoteButton,
@@ -12,19 +18,18 @@ import {
   ComposerHints as Hints,
 } from '@librechat/chat/components';
 import {
+  useSteering,
+  useComposerItems,
+  showStopButtonByIndex,
+  useComposerRestoreHost,
+} from '@librechat/chat/react';
+import {
   Constants,
   Permissions,
   PermissionTypes,
   isAgentsEndpoint,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
-import {
-  submitFromComposer,
-  composerClearance,
-  ComposerField,
-  ComposerFrame,
-  ComposerActions,
-} from '@librechat/chat/components';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
 import type { QueuedMessageContext } from '@librechat/chat';
 import type { SetterOrUpdater } from 'recoil';
@@ -54,38 +59,48 @@ import {
   useChatContext,
   useChatFormContext,
   useAddedChatContext,
-  useAssistantsMapContext,
   BadgeRowProvider,
 } from '~/Providers';
 import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import { onGreetingSettled, canClaimWelcomeFocus, isTouchFirst } from '../welcome';
+import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
-import AskUserQuestionPopover from './AskUserQuestionPopover';
-import useComposerItems from '~/hooks/Input/useComposerItems';
+import { useTargetContext } from '~/Providers/TargetContext';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
+import { handedComposerFilesFamily } from '~/store/handoff';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import ProjectLandingChip from '../ProjectLandingChip';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
 import { useGetStartupConfig } from '~/data-provider';
-import CodeWorkspaceMenu from './CodeWorkspaceMenu';
-import CodeApprovalMenu from './CodeApprovalMenu';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import TextareaHeader from './TextareaHeader';
-import PromptsCommand from './PromptsCommand';
-import SkillsCommand from './SkillsCommand';
+import { composerTextareaId } from '~/common';
 import AutoPlayAudio from './AutoPlayAudio';
-import { mainTextareaId } from '~/common';
-import ToolDialogs from './ToolDialogs';
+import Actions from './Composer/Actions';
 import Queue from './Composer/Queue';
 import Tray from './Composer/Tray';
 import Bar from './Composer/Bar';
-import Mention from './Mention';
 import store from '~/store';
+
+/**
+ * The composer's popovers, dialogs and code-workspace controls render nothing until a trigger
+ * (`/`, `@`, `+`, an ask, an approval, a workspace), so they load after the chat has painted
+ * instead of with it. Each sits under a null Suspense fallback: it shows nothing either way.
+ */
+const AskUserQuestionPopover = lazyWithRecovery(() => import('./AskUserQuestionPopover'));
+const CodeWorkspaceMenu = lazyWithRecovery(() => import('./CodeWorkspaceMenu'));
+const CodeApprovalMenu = lazyWithRecovery(() => import('./CodeApprovalMenu'));
+const PromptsCommand = lazyWithRecovery(() => import('./PromptsCommand'));
+const SkillsCommand = lazyWithRecovery(() => import('./SkillsCommand'));
+const ToolDialogs = lazyWithRecovery(() => import('./ToolDialogs'));
+const Mention = lazyWithRecovery(() => import('./Mention'));
 
 interface ChatFormProps {
   index: number;
@@ -123,6 +138,12 @@ interface ChatFormProps {
   newConversation: ConvoGenerator;
   handleStopGenerating: (e: React.MouseEvent<HTMLButtonElement>) => void;
   stopGenerating: () => void;
+  /** From ChatContext: the chat stops a reply whether or not its generation has been named. */
+  stopsUnnamed: boolean;
+  /** From ChatContext: the chat takes the composer's during-run actions though not main chat. */
+  steers: boolean;
+  /** From ChatContext: the chat changes its conversation's model in place though not main chat. */
+  retargets: boolean;
 }
 
 const ChatForm = memo(function ChatForm({
@@ -145,6 +166,9 @@ const ChatForm = memo(function ChatForm({
   newConversation,
   handleStopGenerating,
   stopGenerating,
+  stopsUnnamed,
+  steers,
+  retargets,
 }: ChatFormProps) {
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -152,7 +176,12 @@ const ChatForm = memo(function ChatForm({
   /** The palette anchors to the whole composer, not to its own button, so it
    *  spans the composer width and sits flush above it. */
   const composerBoxRef = useRef<HTMLDivElement>(null);
-  useFocusChatEffect(textAreaRef);
+  /**
+   * The composer the page's route, its query, its focus requests and its one textarea id speak
+   * to. A conversation beside the chat has a composer of its own, which none of those address.
+   */
+  const routed = index === 0;
+  useFocusChatEffect(textAreaRef, routed);
   const localize = useLocalize();
 
   const [, setIsScrollable] = useState(false);
@@ -170,13 +199,13 @@ const ChatForm = memo(function ChatForm({
   const mentionPopoverAtom = useMemo(() => store.showMentionPopoverFamily(index), [index]);
 
   const { requiresKey } = useRequiresKey();
+  const target = useTargetContext();
   const methods = useChatFormContext();
   const {
     generateConversation,
     conversation: addedConvo,
     setConversation: setAddedConvo,
   } = useAddedChatContext();
-  const assistantMap = useAssistantsMapContext();
   const { data: startupConfig } = useGetStartupConfig();
 
   const endpoint = useMemo(
@@ -211,17 +240,7 @@ const ChatForm = memo(function ChatForm({
    */
   const quotesEnabled = useMemo(() => !isAssistantsEndpoint(endpoint), [endpoint]);
 
-  const invalidAssistant = useMemo(
-    () =>
-      isAssistantsEndpoint(endpoint) &&
-      (!(conversation?.assistant_id ?? '') ||
-        !assistantMap?.[endpoint ?? '']?.[conversation?.assistant_id ?? '']),
-    [conversation?.assistant_id, endpoint, assistantMap],
-  );
-  const disableInputs = useMemo(
-    () => requiresKey || invalidAssistant,
-    [requiresKey, invalidAssistant],
-  );
+  const disableInputs = !!requiresKey;
 
   /** Skipped on touchscreens so a tap does not raise the keyboard. */
   const focusTextArea = useCallback(() => {
@@ -230,6 +249,21 @@ const ChatForm = memo(function ChatForm({
     }
     textAreaRef.current?.focus();
   }, []);
+
+  /** The welcome screen hands the composer its focus once the greeting has finished
+   * landing, so the caret arrives as the screen settles rather than before it. The cue
+   * is a timer, so it is honoured only while nothing else holds focus or has a popup
+   * open (`canClaimWelcomeFocus`), and never on a touchscreen, where focus would raise
+   * the keyboard over the welcome screen. Only the welcome screen announces it. */
+  useEffect(
+    () =>
+      onGreetingSettled(() => {
+        if (!isTouchFirst() && canClaimWelcomeFocus()) {
+          textAreaRef.current?.focus();
+        }
+      }),
+    [],
+  );
 
   /** Actions that consume the composer from inside a popup (the during-run
    * hovercard) sit in exempted popup content, so they restore focus themselves. */
@@ -274,12 +308,28 @@ const ChatForm = memo(function ChatForm({
     settingsError: urlSettingsError,
     clearSettingsError,
   } = useQueryParams({
+    routed,
     textAreaRef,
     routePending,
+    targetReady: target.ready,
     onBeforePrompt: preserveText,
     onPromptSettled: settleText,
   });
 
+  /**
+   * Files staged for this conversation beside the chat arrive here when it becomes the main
+   * chat: put with whatever this composer holds, once, by the composer the route addresses.
+   */
+  const [handedFiles, setHandedFiles] = useAtom(handedComposerFilesFamily(conversationId));
+  useEffect(() => {
+    if (!routed || handedFiles == null) {
+      return;
+    }
+    setHandedFiles(null);
+    setFiles((current) => new Map([...current, ...handedFiles]));
+  }, [handedFiles, routed, setFiles, setHandedFiles]);
+
+  const discardFiles = useDiscardPastedFiles(index, conversationId);
   const pastedTextEdit = usePastedTextEdit({ index, files, setFiles, textAreaRef });
 
   /** Provenance, not the filename, decides which chips are pastes: a user can deliberately
@@ -302,7 +352,7 @@ const ChatForm = memo(function ChatForm({
    * same original cannot be acted on twice. */
   const { isActionPending } = pastedTextEdit;
   const isPasteActionPending = useCallback(
-    (file: ExtendedFile) => isActionPending(file.file_id),
+    (file: ExtendedFile) => isActionPending(file),
     [isActionPending],
   );
 
@@ -353,9 +403,11 @@ const ChatForm = memo(function ChatForm({
     return () => publishComposerRestore(null);
   }, [publishComposerRestore, restoreReclaimedSteer]);
   const steering = useSteering({
+    discardFiles,
     consumeDraft,
     addedConversation: addedConvo,
     index,
+    duringRun: routed || steers,
     conversationId,
     conversation,
     codeEnvironmentMode: codeWorkspace.mode,
@@ -428,6 +480,11 @@ const ChatForm = memo(function ChatForm({
    *  values and cannot consume files, so an empty draft must stay unsubmittable
    *  there rather than enabling a button whose submit is silently dropped. */
   const submittableFileCount = composerReserved ? 0 : files.size;
+  const hasInlinePaste = useMemo(() => {
+    if (composerReserved || filesLoading) return false;
+    for (const file of files.values()) if (isInlineablePastedText(file)) return true;
+    return false;
+  }, [composerReserved, filesLoading, files]);
 
   const { ref, ...registerProps } = methods.register('text', {
     required: submittableFileCount === 0,
@@ -455,10 +512,18 @@ const ChatForm = memo(function ChatForm({
   const idleActions = useMemo(
     () => ({
       prompts: hasPromptsAccess && slashCommandEnabled,
-      mentions: atCommandEnabled,
+      /* A mention picks the conversation's model: main chat's, or one that is changed in place. */
+      mentions: atCommandEnabled && (routed || retargets),
       attach: attachTarget.canAttach,
     }),
-    [hasPromptsAccess, slashCommandEnabled, atCommandEnabled, attachTarget.canAttach],
+    [
+      routed,
+      retargets,
+      hasPromptsAccess,
+      atCommandEnabled,
+      slashCommandEnabled,
+      attachTarget.canAttach,
+    ],
   );
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
@@ -503,7 +568,7 @@ const ChatForm = memo(function ChatForm({
   const uploadingCount = useMemo(() => {
     let count = 0;
     for (const file of files.values()) {
-      if (file.progress < 1) {
+      if (file.progress < 1 && !isInlineablePastedText(file)) {
         count++;
       }
     }
@@ -512,14 +577,14 @@ const ChatForm = memo(function ChatForm({
 
   /* The abort is generation-scoped and inert until the start POST installs the
      epoch; assistants abort through their own path and need no epoch. */
-  const canStop = steering.canControlGeneration || isAssistantsEndpoint(endpoint);
+  const canStop = stopsUnnamed || steering.canControlGeneration || isAssistantsEndpoint(endpoint);
 
   /* Memoized for `memo(Bar)`: an inline element is a new identity every render,
-     and this component re-renders on every keystroke. */
+     and this component re-renders on every keystroke. `Actions` reads the draft
+     itself, so nothing here changes with it. */
   const actionSlot = useMemo(
     () => (
-      <ComposerActions
-        text={textValue ?? ''}
+      <Actions
         submitButtonRef={submitButtonRef}
         isSubmitting={isSubmitting}
         answersAsk={answerMode.composerAnswers}
@@ -530,10 +595,13 @@ const ChatForm = memo(function ChatForm({
         onConsumed={consumeComposer}
         enterToSend={enterToSend}
         fileCount={submittableFileCount}
+        hasInlinePaste={hasInlinePaste}
         sendDisabled={
           filesLoading ||
           isPreparingFromUrl ||
           disableInputs ||
+          !target.ready ||
+          routePending ||
           !codeWorkspace.canSubmit ||
           isNotAppendable ||
           answerMode.composerLocked
@@ -547,7 +615,6 @@ const ChatForm = memo(function ChatForm({
       />
     ),
     [
-      textValue,
       isSubmitting,
       answerMode.composerAnswers,
       answerMode.composerLocked,
@@ -558,15 +625,49 @@ const ChatForm = memo(function ChatForm({
       consumeComposer,
       enterToSend,
       submittableFileCount,
+      hasInlinePaste,
       filesLoading,
       isPreparingFromUrl,
       disableInputs,
+      target.ready,
+      routePending,
       codeWorkspace.canSubmit,
       isNotAppendable,
       showStopButton,
       setShowStopButton,
       handleStopGenerating,
       canStop,
+    ],
+  );
+
+  const approvalSlot = useMemo(
+    () => (
+      <div className="flex items-center gap-1.5 empty:hidden">
+        <Suspense fallback={null}>
+          <CodeApprovalMenu
+            conversation={conversation}
+            addedConversation={addedConvo}
+            codeEnvironmentMode={codeWorkspace.mode}
+            setConversation={setConversation}
+            disabled={disableInputs}
+          />
+        </Suspense>
+        {index === 0 && conversationId != null && (
+          <PendingToolApprovalButton
+            conversationId={conversationId}
+            triggerRef={approvalTriggerRef}
+          />
+        )}
+      </div>
+    ),
+    [
+      conversation,
+      addedConvo,
+      codeWorkspace.mode,
+      setConversation,
+      disableInputs,
+      index,
+      conversationId,
     ],
   );
 
@@ -581,22 +682,24 @@ const ChatForm = memo(function ChatForm({
    *  for typed, dictated, and shortcut-bound submissions. */
   const submitComposerText = useCallback(
     (data: { text: string }): false | void =>
-      submitFromComposer(
-        {
-          answerMode,
-          steering,
-          submitMessage: (message) => {
-            const result = submitMessage(message);
-            if (result !== false) {
-              clearAllDrafts(getPendingDraftId(index));
-            }
-            return result;
-          },
-          reset: () => methods.reset(),
-        },
-        data,
-      ),
-    [answerMode, steering, submitMessage, methods, index],
+      !target.ready || routePending
+        ? false
+        : submitFromComposer(
+            {
+              answerMode,
+              steering,
+              submitMessage: (message) => {
+                const result = submitMessage(message);
+                if (result !== false) {
+                  clearAllDrafts(getPendingDraftId(index));
+                }
+                return result;
+              },
+              reset: () => methods.reset(),
+            },
+            data,
+          ),
+    [answerMode, steering, submitMessage, methods, index, target.ready, routePending],
   );
 
   return (
@@ -632,11 +735,13 @@ const ChatForm = memo(function ChatForm({
             {project ? <ProjectLandingChip project={project} /> : null}
             {codeWorkspace.visible ? (
               <div className="min-w-0">
-                <CodeWorkspaceMenu
-                  setConversation={setConversation}
-                  workspace={codeWorkspace}
-                  disabled={disableInputs || isSubmitting}
-                />
+                <Suspense fallback={null}>
+                  <CodeWorkspaceMenu
+                    setConversation={setConversation}
+                    workspace={codeWorkspace}
+                    disabled={disableInputs || isSubmitting}
+                  />
+                </Suspense>
               </div>
             ) : null}
           </>
@@ -644,24 +749,37 @@ const ChatForm = memo(function ChatForm({
       }
       popovers={
         <>
-          <Mention
-            index={index}
-            popoverAtom={plusPopoverAtom}
-            newConversation={generateConversation}
-            textAreaRef={textAreaRef}
-            commandChar="+"
-            placeholder="com_ui_add_model_preset"
-            includeAssistants={false}
-          />
-          <Mention
-            index={index}
-            popoverAtom={mentionPopoverAtom}
-            newConversation={newConversation}
-            textAreaRef={textAreaRef}
-          />
-          <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
+          {routed && (
+            <Suspense fallback={null}>
+              <Mention
+                index={index}
+                popoverAtom={plusPopoverAtom}
+                newConversation={generateConversation}
+                textAreaRef={textAreaRef}
+                commandChar="+"
+                placeholder="com_ui_add_model_preset"
+                includeAssistants={false}
+              />
+            </Suspense>
+          )}
+          {(routed || retargets) && (
+            <Suspense fallback={null}>
+              <Mention
+                index={index}
+                popoverAtom={mentionPopoverAtom}
+                newConversation={newConversation}
+                textAreaRef={textAreaRef}
+                inPlace={!routed}
+              />
+            </Suspense>
+          )}
+          <Suspense fallback={null}>
+            <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
+          </Suspense>
           {index === 0 && (
-            <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
+            <Suspense fallback={null}>
+              <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
+            </Suspense>
           )}
           {index === 0 && conversationId != null && (
             <PendingToolApprovalPanel
@@ -669,12 +787,14 @@ const ChatForm = memo(function ChatForm({
               triggerRef={approvalTriggerRef}
             />
           )}
-          <SkillsCommand
-            index={index}
-            textAreaRef={textAreaRef}
-            conversationId={conversationId}
-            agentId={conversation?.agent_id}
-          />
+          <Suspense fallback={null}>
+            <SkillsCommand
+              index={index}
+              textAreaRef={textAreaRef}
+              conversationId={conversationId}
+              agentId={conversation?.agent_id}
+            />
+          </Suspense>
         </>
       }
       hints={
@@ -740,7 +860,7 @@ const ChatForm = memo(function ChatForm({
             onKeyUp: handleKeyUp,
             onCompositionStart: handleCompositionStart,
             onCompositionEnd: handleCompositionEnd,
-            id: mainTextareaId,
+            id: composerTextareaId(index),
             tabIndex: 0,
             'data-testid': 'text-input',
             onFocus: handleTextareaFocus,
@@ -752,6 +872,14 @@ const ChatForm = memo(function ChatForm({
             ),
           }}
         />
+      )}
+      {target.failed && (
+        <p role="alert" className="text-text-secondary px-5 pb-2 text-sm">
+          {localize('com_ui_chat_target_failed')}{' '}
+          <button type="button" className="underline" onClick={target.retry}>
+            {localize('com_ui_retry')}
+          </button>
+        </p>
       )}
       {(isPreparingFromUrl || urlSettingsError) && (
         <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
@@ -802,29 +930,16 @@ const ChatForm = memo(function ChatForm({
           showSpeech={SpeechToText}
           speechDisabled={speechDisabled}
           dictation={dictation}
-          approvalSlot={
-            <div className="flex items-center gap-1.5">
-              <CodeApprovalMenu
-                conversation={conversation}
-                addedConversation={addedConvo}
-                codeEnvironmentMode={codeWorkspace.mode}
-                setConversation={setConversation}
-                disabled={disableInputs}
-              />
-              {index === 0 && conversationId != null && (
-                <PendingToolApprovalButton
-                  conversationId={conversationId}
-                  triggerRef={approvalTriggerRef}
-                />
-              )}
-            </div>
-          }
+          approvalSlot={approvalSlot}
           actionSlot={actionSlot}
           hasAddedConversation={addedConvo != null}
         />
-        <ToolDialogs />
+        <Suspense fallback={null}>
+          <ToolDialogs />
+        </Suspense>
       </BadgeRowProvider>
-      {TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
+      {/* Reads main chat's run and owns the page's one audio element. */}
+      {routed && TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
     </ComposerFrame>
   );
 });
@@ -873,6 +988,9 @@ function ChatFormWrapper({
     newConversation,
     handleStopGenerating,
     stopGenerating,
+    stopsUnnamed = false,
+    steers = false,
+    retargets = false,
   } = useChatContext();
 
   /**
@@ -953,6 +1071,9 @@ function ChatFormWrapper({
       newConversation={stableNewConversation}
       handleStopGenerating={stableHandleStop}
       stopGenerating={stableStop}
+      stopsUnnamed={stopsUnnamed}
+      steers={steers}
+      retargets={retargets}
     />
   );
 }

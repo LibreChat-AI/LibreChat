@@ -1,7 +1,8 @@
 import React from 'react';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EModelEndpoint, QueryKeys, dataService } from 'librechat-data-provider';
+import { activateCatalog, resetCatalogWarmup } from '~/hooks/useCatalogWarmup';
 import useAgentsMap from '../useAgentsMap';
 
 /** `dataService` methods are non-configurable, so the HTTP boundary is mocked
@@ -48,6 +49,8 @@ describe('useAgentsMap', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    resetCatalogWarmup();
+    activateCatalog('agents');
   });
 
   it('keeps the agents map referentially stable across unrelated re-renders', async () => {
@@ -58,5 +61,14 @@ describe('useAgentsMap', () => {
     rerender();
 
     expect(result.current).toBe(first);
+  });
+
+  it('waits for idle before warming the root map', async () => {
+    resetCatalogWarmup();
+    const { result } = setup();
+    expect(dataService.listAgents).not.toHaveBeenCalled();
+    expect(result.current).toBeUndefined();
+    act(() => activateCatalog('agents'));
+    await waitFor(() => expect(result.current?.agent_1).toBeDefined());
   });
 });

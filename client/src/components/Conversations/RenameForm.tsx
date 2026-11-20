@@ -50,7 +50,8 @@ const RenameForm: React.FC<RenameFormProps> = ({
       <Input
         ref={inputRef}
         type="text"
-        className={cn('h-auto w-full rounded border-0 bg-transparent p-0.5 text-sm leading-tight')}
+        variant="flush"
+        className={cn('h-auto w-full rounded p-0.5 text-sm leading-tight')}
         value={titleInput}
         onChange={(e) => setTitleInput(e.target.value)}
         onKeyDown={handleKeyDown}

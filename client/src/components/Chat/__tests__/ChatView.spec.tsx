@@ -20,7 +20,13 @@ jest.mock('~/hooks/AuthContext', () => ({
   useAuthContext: () => ({ isAuthenticated: false, user: null, roles: {} }),
 }));
 
+jest.mock('~/hooks/Chat/target', () => ({
+  __esModule: true,
+  default: () => ({ ready: true, pending: false, failed: false, retry: jest.fn() }),
+}));
+
 jest.mock('~/data-provider', () => ({
+  useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
 }));
 
@@ -33,15 +39,12 @@ jest.mock('@librechat/chat/react', () => {
   const actual = jest.requireActual('@librechat/chat/react');
   return {
     ...actual,
-    ChatSessionProvider: ({
-      children,
-    }: {
-      children: (session: { messages: null; isLoading: boolean }) => React.ReactNode;
-    }) => (
+    ChatSessionProvider: ({ children }: { children: React.ReactNode }) => (
       <actual.ChatContext.Provider value={{ conversation: mockConversation() }}>
-        {children({ messages: null, isLoading: false })}
+        {children}
       </actual.ChatContext.Provider>
     ),
+    useChatSessionMessages: () => ({ messages: null, isLoading: false }),
   };
 });
 
@@ -56,7 +59,7 @@ jest.mock('../Presentation', () => ({
 }));
 jest.mock('../Header', () => ({ __esModule: true, default: () => <div /> }));
 let mockConfiguredFooter = false;
-let mockLandingFooter = true;
+let mockLandingFooter: boolean | 'composer' = true;
 jest.mock('../Footer', () => ({
   __esModule: true,
   default: ({ configuredOnly }: { configuredOnly?: boolean }) => (
@@ -67,7 +70,6 @@ jest.mock('../Footer', () => ({
 }));
 jest.mock('../Landing', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('~/components/Lia', () => ({ __esModule: true, default: () => null }));
-jest.mock('../Messages/MessagesView', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('../Input/ChatForm', () => ({
   __esModule: true,
   default: (props: Record<string, unknown>) => {
@@ -248,6 +250,17 @@ describe('ChatView landing footer', () => {
     expect(screen.queryByTestId('configured-footer')).not.toBeInTheDocument();
     expect(mockChatFormProps).toHaveBeenLastCalledWith(
       expect.objectContaining({ footerBelow: true }),
+    );
+  });
+
+  test('gives the footer its own room when the deployment places it under the composer', () => {
+    mockLandingFooter = 'composer';
+
+    render(<ChatView />);
+
+    expect(screen.getByTestId('landing-footer')).toBeInTheDocument();
+    expect(mockChatFormProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({ footerBelow: false }),
     );
   });
 

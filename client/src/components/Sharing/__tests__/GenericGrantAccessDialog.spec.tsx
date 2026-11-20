@@ -6,6 +6,7 @@ import GenericGrantAccessDialog from '../GenericGrantAccessDialog';
 import translationEn from '~/locales/en/translation.json';
 
 const mockShowToast = jest.fn();
+const mockLocalize = jest.fn((key: string) => key);
 const mockRefetchPermissions = jest.fn();
 const mockUseResourcePermissionState = jest.fn();
 const mockUseAuthContext = jest.fn(() => ({ user: { role: 'ADMIN' } }));
@@ -43,7 +44,7 @@ const baseState = (overrides: Record<string, unknown> = {}) => ({
 
 jest.mock('~/hooks', () => ({
   useAuthContext: () => mockUseAuthContext(),
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => mockLocalize,
   useResourcePermissionState: () => mockUseResourcePermissionState(),
   usePeoplePickerPermissions: () => mockUsePeoplePickerPermissions(),
   useCanSharePublic: () => mockUseCanSharePublic(),
@@ -72,18 +73,22 @@ jest.mock('../PeoplePicker', () => ({
   SelectedPrincipalsList: () => <div data-testid="principals-list" />,
 }));
 
-const renderDialog = () =>
+const renderDialog = (
+  onGrantAccess?: React.ComponentProps<typeof GenericGrantAccessDialog>['onGrantAccess'],
+) =>
   render(
     <GenericGrantAccessDialog
       resourceDbId="agent-db-1"
       resourceId="agent-1"
       resourceName="Test Agent"
       resourceType={ResourceType.AGENT}
+      onGrantAccess={onGrantAccess}
     />,
   );
 
 describe('GenericGrantAccessDialog - permissions load failure', () => {
   beforeEach(() => {
+    mockLocalize.mockReset().mockImplementation((key: string) => key);
     mockUseResourcePermissionState.mockReset();
     mockRefetchPermissions.mockReset();
     mockUseAuthContext.mockReturnValue({ user: { role: 'ADMIN' } });
@@ -148,7 +153,7 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_share_var' }));
     const dialog = screen.getByRole('dialog');
 
-    expect(dialog).toHaveClass('max-w-5xl', 'overflow-hidden', 'p-0');
+    expect(dialog).toHaveClass('max-w-5xl', 'overflow-visible', 'p-0');
     expect(
       screen.getByRole('heading', { level: 3, name: 'com_ui_user_group_permissions' }),
     ).toBeInTheDocument();
@@ -202,9 +207,17 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     ['RESOURCE_PERMISSIONS_BUSY', 'com_ui_permissions_busy'],
     ['RESOURCE_PERMISSIONS_UNAVAILABLE', 'com_ui_permissions_unavailable'],
     ['PERMISSION_AUDIT_UNAVAILABLE', 'com_ui_permissions_audit_unavailable'],
+    ['PRINCIPAL_PREPARATION_FAILED', 'com_ui_permissions_principal_preparation_failed'],
+    ['DIRECTORY_VERIFICATION_UNAVAILABLE', 'com_ui_permissions_directory_verification_unavailable'],
     ['SOMETHING_ELSE', 'com_ui_permissions_failed_update'],
   ])('shows the localized message for the %s failure code on save', async (code, key) => {
-    const mutateAsync = jest.fn().mockRejectedValue({ response: { data: { code } } });
+    const diagnostic = 'Internal database or directory provider diagnostic';
+    const mutateAsync = jest.fn().mockRejectedValue({
+      message: diagnostic,
+      response: { data: { code, message: diagnostic, details: diagnostic } },
+    });
+    const onGrantAccess = jest.fn();
+    mockLocalize.mockImplementation((key) => (translationEn as Record<string, string>)[key] ?? key);
     mockUseResourcePermissionState.mockReturnValue(
       baseState({
         isPublic: true,
@@ -215,13 +228,18 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     mockShowToast.mockClear();
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    renderDialog();
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_share_var' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    renderDialog(onGrantAccess);
+    fireEvent.click(screen.getByRole('button', { name: translationEn.com_ui_share_var }));
+    fireEvent.click(screen.getByRole('button', { name: translationEn.com_ui_save }));
 
-    await waitFor(() =>
-      expect(mockShowToast).toHaveBeenCalledWith({ message: key, status: 'error' }),
-    );
-    expect((translationEn as Record<string, string>)[key]).toEqual(expect.any(String));
+    const message = (translationEn as Record<string, string>)[key];
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith({ message, status: 'error' }));
+    expect(message).toEqual(expect.any(String));
+    expect(message).not.toContain(diagnostic);
+    expect(mockLocalize).toHaveBeenCalledWith(key);
+    expect(mockShowToast).toHaveBeenCalledTimes(1);
+    expect(onGrantAccess).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: translationEn.com_ui_save })).toBeEnabled();
   });
 });

@@ -10,6 +10,7 @@ import {
 import {
   Tools,
   Constants,
+  AgentCapabilities,
   CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
   CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
   normalizeActionToolName,
@@ -28,9 +29,11 @@ import {
   buildAttachedWorkspaceBashSchema,
   buildAttachedWorkspaceBashDescription,
 } from '~/code/command';
+import { TOOL_SELECTION_WILDCARD, resolveToolOption } from './selection';
 import { toolkitExpansion } from '~/tools/toolkits/mapping';
 import { normalizeAgentToolKeys } from '~/mcp/utils';
 import { collectReachableAgents } from './traversal';
+import { isDeferrableToolName } from './deferral';
 
 export const CREATE_FILE_TOOL_NAME = 'create_file';
 export const EDIT_FILE_TOOL_NAME = 'edit_file';
@@ -153,6 +156,13 @@ export function isSkillToolAvailable(config: SkillToolAvailabilityConfig): boole
   return config.modelInvocableSkillsAvailable === true || config.skillAuthoringAvailable === true;
 }
 
+/** Configured entries that expand into other definitions and are never bound themselves. */
+const CAPABILITY_MARKERS: ReadonlySet<string> = new Set([
+  AgentCapabilities.execute_code,
+  AgentCapabilities.memory,
+  AgentCapabilities.skills,
+]);
+
 /** Derives the model-facing names an unresolved lazy agent can expose without loading it. */
 export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig): Set<string> {
   const configuredToolNames = [
@@ -181,17 +191,28 @@ export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig)
     }
   }
 
+  /** Capability marker → the names its registration adds, mirroring `initializeAgent`. */
+  const capabilityToolNames = new Map<string, string[]>();
+  const register = (capability: string, names: readonly string[]): void => {
+    const recorded = capabilityToolNames.get(capability) ?? [];
+    for (const name of names) {
+      toolNames.add(name);
+      recorded.push(name);
+    }
+    capabilityToolNames.set(capability, recorded);
+  };
   if (config.codeExecutionAvailable === true) {
-    toolNames.add('bash_tool');
-    toolNames.add('read_file');
-    toolNames.add(CREATE_FILE_TOOL_NAME);
-    toolNames.add(EDIT_FILE_TOOL_NAME);
-    toolNames.add(SEARCH_WORKSPACE_TOOL_NAME);
-    toolNames.add(LIST_WORKSPACE_FILES_TOOL_NAME);
+    register(AgentCapabilities.execute_code, [
+      'bash_tool',
+      'read_file',
+      CREATE_FILE_TOOL_NAME,
+      EDIT_FILE_TOOL_NAME,
+      SEARCH_WORKSPACE_TOOL_NAME,
+      LIST_WORKSPACE_FILES_TOOL_NAME,
+    ]);
   }
   if (config.memoryAvailable === true) {
-    toolNames.add('set_memory');
-    toolNames.add('delete_memory');
+    register(AgentCapabilities.memory, ['set_memory', 'delete_memory']);
   }
   if (
     isSkillToolAvailable({
@@ -199,19 +220,26 @@ export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig)
       skillAuthoringAvailable: config.skillAuthoringAvailable,
     })
   ) {
-    toolNames.add(SkillToolDefinition.name);
+    register(AgentCapabilities.skills, [SkillToolDefinition.name]);
   }
   if ((config.skillFileAccessAvailable ?? config.skillsAvailable) === true) {
-    toolNames.add('read_file');
+    register(AgentCapabilities.skills, ['read_file']);
   }
   if (config.skillAuthoringAvailable === true) {
-    toolNames.add('read_file');
-    toolNames.add(CREATE_FILE_TOOL_NAME);
-    toolNames.add(EDIT_FILE_TOOL_NAME);
+    register(AgentCapabilities.skills, ['read_file', CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME]);
   }
 
   const options = normalizedOptions;
-  const hasDeferredTool = [...toolNames].some((name) => options[name]?.defer_loading === true);
+  const wildcard = config.toolOptions?.[TOOL_SELECTION_WILDCARD];
+  const deferralPolicy: AgentToolOptions = wildcard
+    ? { [TOOL_SELECTION_WILDCARD]: wildcard, ...options }
+    : options;
+  const hasDeferredTool = [...toolNames].some(
+    (name) =>
+      !CAPABILITY_MARKERS.has(name) &&
+      isDeferrableToolName(name) &&
+      resolveToolOption(name, 'defer_loading', deferralPolicy, capabilityToolNames)?.value === true,
+  );
   if (config.deferredToolsAvailable === true && hasDeferredTool) {
     toolNames.add('tool_search');
   }
@@ -453,6 +481,8 @@ export interface RegisterCodeExecutionToolsParams {
   workspaceLinkedWorktrees?: boolean;
   /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
   workspaceNativeSandbox?: boolean;
+  /** Background commands are sent detached; tell the model they overlap later commands. */
+  workspaceDetachedCommands?: boolean;
   /**
    * When `true`, the registered `bash_tool` description includes the
    * LLM-facing `{{tool<idx>turn<turn>}}` reference syntax guide so the
@@ -1147,6 +1177,7 @@ function createBashToolDef(
   workspaceLinkedWorktrees = false,
   workspaceCommandTimeoutDefaultMs?: number,
   workspaceNativeSandbox = false,
+  workspaceDetachedCommands = false,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1160,6 +1191,7 @@ function createBashToolDef(
           enableToolOutputReferences,
           workspaceEnvironment,
           workspaceNativeSandbox,
+          workspaceDetachedCommands,
         )
       : buildBashExecutionToolDescription(descriptionOpts),
     parameters: (workspaceTools
@@ -1186,6 +1218,7 @@ function buildBashToolDef(opts: {
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
   workspaceNativeSandbox?: boolean;
+  workspaceDetachedCommands?: boolean;
 }): LCTool {
   /* Stateful defs are built on demand: the stateless pair covers the
    * default path, and per-run construction is negligible next to init. */
@@ -1199,6 +1232,7 @@ function buildBashToolDef(opts: {
       opts.workspaceLinkedWorktrees === true,
       opts.workspaceCommandTimeoutDefaultMs,
       opts.workspaceNativeSandbox === true,
+      opts.workspaceDetachedCommands === true,
     );
   }
   return opts.enableToolOutputReferences
@@ -1236,6 +1270,7 @@ export function registerCodeExecutionTools(
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     workspaceNativeSandbox,
+    workspaceDetachedCommands,
     enableToolOutputReferences = false,
     statefulSessions = false,
   } = params;
@@ -1268,6 +1303,7 @@ export function registerCodeExecutionTools(
         workspaceEnvironment,
         workspaceLinkedWorktrees,
         workspaceNativeSandbox,
+        workspaceDetachedCommands,
       }),
     );
   }

@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import {
   messagesView,
   MOCK_ENDPOINTS,
@@ -6,6 +5,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from '../helpers';
+import { expect, test } from '../fixtures';
 
 test('Inspecting numeric reasoning preserves Auto and steering @scenario:inspecting-numeric-reasoning-preserves-auto-and-steering', async ({
   page,

@@ -13,6 +13,7 @@ import type {
   CodeApprovalMode,
   CodeEnvironmentMode,
 } from 'librechat-data-provider';
+import type { CodeApprovalModeInputs } from '@librechat/chat';
 import { useCodeApprovalModePreference } from './codeApprovalPreference';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useGetAgentsConfig from './useGetAgentsConfig';
@@ -38,6 +39,8 @@ export default function useCodeApprovalMode(
   available: boolean;
   modes: CodeApprovalMode[];
   selected?: CodeApprovalMode;
+  /** The raw values this hook read, for a derivation at send time. */
+  readInputs: () => Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
 } {
   const { agentsConfig } = useGetAgentsConfig();
   const agentsMap = useAgentsMapContext();
@@ -98,5 +101,15 @@ export default function useCodeApprovalMode(
   const requested = conversation?.codeApprovalMode ?? preference.get() ?? 'ask';
   const selected = selectCodeApprovalMode({ supported, available, modes, requested });
 
-  return { available, modes, selected };
+  return {
+    available,
+    modes,
+    selected,
+    readInputs: () => ({
+      conversation,
+      statefulCodeSessions,
+      reachable,
+      preferred: preference.get(),
+    }),
+  };
 }

@@ -14,6 +14,7 @@ const {
   getValidOpenIdReuseUserId,
   generateTwoFactorSetupToken,
   afterTermsGate,
+  createTermsRouteGate,
   createTermsAcceptanceGate,
   isTwoFactorEnrollmentRequired,
 } = require('@librechat/api');
@@ -86,6 +87,8 @@ const requiredTwoFactorGate = createRequiredTwoFactorGate({
 const requireJwtTermsAcceptance = createTermsAcceptanceGate({ getAppConfig });
 /** Remote agent and management boundaries answer in the nested error envelope. */
 const requireTermsAcceptance = createTermsAcceptanceGate({ getAppConfig }, { envelope: 'nested' });
+/** For a GET route that starts a flow, which the gate above lets through as a read. */
+const requireTermsAcceptanceOnRead = createTermsRouteGate({ getAppConfig });
 
 /**
  * Custom Middleware to handle JWT authentication, with support for OpenID token reuse.
@@ -264,3 +267,4 @@ const requireRumProxyAuth = (req, res, next) => {
 module.exports = requireJwtAuth;
 module.exports.requireRumProxyAuth = requireRumProxyAuth;
 module.exports.requireTermsAcceptance = requireTermsAcceptance;
+module.exports.requireTermsAcceptanceOnRead = requireTermsAcceptanceOnRead;

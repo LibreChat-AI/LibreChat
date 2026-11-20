@@ -20,6 +20,19 @@ const EMBEDDED = [
   'text-text-primary',
   'theme-field-fill:bg-surface-tertiary-alt',
 ];
+const FILLED = [
+  'rounded-lg',
+  'border',
+  'border-border-light',
+  'bg-surface-chat',
+  'px-3',
+  'py-2',
+  'text-sm',
+  'text-text-primary',
+  'placeholder:text-text-secondary',
+  'focus-visible:ring-2',
+  'focus-visible:ring-text-primary',
+];
 const FRAMED = [
   'lc-own-focus',
   'rounded-xl',
@@ -93,9 +106,17 @@ describe('field variants', () => {
       'lc-field',
       'border-border-control',
       'focus-visible:ring-focus-control',
-      'bg-transparent',
+      'theme-field-fill:bg-field-fill',
       'resize-none',
     );
+  });
+
+  it('TextareaAutosize filled carries the compact card field exactly', () => {
+    render(
+      <TextareaAutosize aria-label="answer" variant="filled" className="w-full resize-none" />,
+    );
+    const field = screen.getByLabelText('answer');
+    expect(field).toHaveClass(...FILLED, 'w-full', 'resize-none');
   });
 
   it('TextareaAutosize framed carries the bordered editor box exactly', () => {
@@ -129,9 +150,10 @@ describe('field variants', () => {
     expect(screen.getByLabelText('key')).toHaveClass(...FLUSH);
   });
 
-  it('paints the floating label chip in the field fill when the theme fills fields', () => {
+  it('paints the floating label chip in the field fill below the border line when the theme fills fields', () => {
     expect(floatingLabel).toContain('bg-surface-primary');
-    expect(floatingLabel).toContain('theme-field-fill:bg-field-fill');
+    expect(floatingLabel).toContain('theme-field-fill:bg-linear-to-b');
+    expect(floatingLabel).toContain('theme-field-fill:to-field-fill');
   });
 
   it('flush and embedded variants drop the base field fill in every control that carries it', () => {

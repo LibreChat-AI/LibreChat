@@ -6,11 +6,19 @@ import BashCall from '../BashCall';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
-  useProgress: (initialProgress: number) => initialProgress,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => initialProgress,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({

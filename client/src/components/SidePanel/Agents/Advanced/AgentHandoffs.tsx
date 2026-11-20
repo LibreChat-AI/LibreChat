@@ -12,6 +12,7 @@ import {
   useSelectableAgents,
 } from './AgentList';
 import { isHandoffEdge } from '../Tools/items/orchestration';
+import { useModelSpecHandoffsQuery } from '~/data-provider';
 import OrchestrationPattern from './OrchestrationPattern';
 import { useLocalize } from '~/hooks';
 import { CountPill } from './ui';
@@ -38,7 +39,11 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
     field.onChange([...(field.value ?? []).filter((edge) => !isHandoffEdge(edge)), ...next]);
   };
 
-  const { options, getAgent } = useSelectableAgents({ currentAgentId });
+  const targets = useModelSpecHandoffsQuery();
+  const { options, getAgent } = useSelectableAgents({
+    currentAgentId,
+    additionalAgents: targets.data,
+  });
   const selectedAgentIds = useMemo(
     () => new Set(edges.map((edge) => getTargetAgentId(edge.to))),
     [edges],
@@ -132,6 +137,15 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
       }
     >
       <div className="flex flex-col gap-1.5">
+        {targets.isLoading && <p role="status">{localize('com_ui_loading')}</p>}
+        {targets.isError && (
+          <div role="alert">
+            <p>{localize('com_ui_agent_handoff_load_error')}</p>
+            <Button variant="quiet" onClick={() => void targets.refetch()}>
+              {localize('com_ui_retry')}
+            </Button>
+          </div>
+        )}
         {edges.map((edge, idx) => {
           const targetAgentId = getTargetAgentId(edge.to);
           const isExpanded = expandedIndices.has(idx);

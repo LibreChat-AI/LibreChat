@@ -1,33 +1,11 @@
 import { Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { getActivityLabelText, getBatchActivityLabelPart } from '@librechat/chat';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
 import type { PartWithIndex } from '~/components/Chat/Messages/Content/ParallelContent';
-import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
 
 export type GroupedPart =
   | { type: 'single'; part: PartWithIndex }
   | { type: 'tool-group'; parts: PartWithIndex[]; labelPart?: PartWithIndex };
-
-/**
- * True while a standard tool call waits on a sign-in. A step the run already
- * closed can never be waiting, whatever its progress says: `ToolCall` hides
- * the sign-in button on a terminal status, so counting it as pending would
- * show a trust warning with no authentication action behind it.
- */
-export function hasPendingAuthInPart(part: TMessageContentParts): boolean {
-  if (part.type !== ContentTypes.TOOL_CALL) {
-    return false;
-  }
-  const toolCall = part[ContentTypes.TOOL_CALL];
-  if (!toolCall || !('args' in toolCall) || toolCall.runStepStatus != null) {
-    return false;
-  }
-  const standardToolCall = toolCall as Agents.ToolCall & { progress?: number };
-  return (
-    typeof standardToolCall.auth === 'string' &&
-    standardToolCall.auth.length > 0 &&
-    (standardToolCall.progress ?? 0.1) < 1
-  );
-}
 
 function isGroupableToolCall(part: TMessageContentParts): boolean {
   if (part.type !== ContentTypes.TOOL_CALL) {

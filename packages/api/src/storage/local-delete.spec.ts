@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { createLocalFileDeleter } from './local';
+import { createLocalFileDeleter, saveLocalBuffer } from './local';
 
 describe('local file deletion', () => {
   let root: string;
@@ -36,6 +36,90 @@ describe('local file deletion', () => {
     expect(fs.existsSync(path.join(root, 'uploads', 'user-1', 'knowledge.txt'))).toBe(false);
     expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user-1', file });
   });
+
+  it.each(['a#b.txt', 'what?.txt', '100%.txt', 'a%41.txt', 'my report.txt', '会社.txt'])(
+    'removes the bytes saved as %s through the filepath returned at save time',
+    async (name) => {
+      const filepath = await saveLocalBuffer({
+        paths: req.config.paths,
+        userId: 'user-1',
+        buffer: Buffer.from('contents'),
+        fileName: name,
+        basePath: 'uploads',
+      });
+      expect(fs.existsSync(path.join(root, 'uploads', 'user-1', name))).toBe(true);
+
+      await remove(req, { file_id: 'file-1', filepath: `${filepath}?v=1789460622697` });
+
+      expect(fs.existsSync(path.join(root, 'uploads', 'user-1', name))).toBe(false);
+      expect(logger.warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('removes a nested file recorded with an encoded segment', async () => {
+    const directory = path.join(root, 'uploads', 'user-1', 'dir');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'a#b.txt'), 'contents');
+
+    await remove(req, { file_id: 'file-1', filepath: '/uploads/user-1/dir/a%23b.txt' });
+
+    expect(fs.readdirSync(directory)).toEqual([]);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('removes the public file behind an encoded images filepath', async () => {
+    const filepath = await saveLocalBuffer({
+      paths: req.config.paths,
+      userId: 'user-1',
+      buffer: Buffer.from('png'),
+      fileName: 'chart #1.png',
+    });
+    const stored = path.join(root, 'public', 'images', 'user-1', 'chart #1.png');
+    expect(fs.existsSync(stored)).toBe(true);
+
+    await remove(req, { file_id: 'file-1', filepath });
+
+    expect(fs.existsSync(stored)).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('removes a legacy record by its raw name and leaves the decoded lookalike alone', async () => {
+    const escapedSpace = uploadedFile('a%20b.txt');
+    const escapedLetter = uploadedFile('a%41.txt');
+    const malformed = uploadedFile('50%.txt');
+    uploadedFile('a b.txt');
+    uploadedFile('aA.txt');
+
+    await remove(req, escapedSpace);
+    await remove(req, escapedLetter);
+    await remove(req, malformed);
+
+    const directory = path.join(root, 'uploads', 'user-1');
+    expect(fs.readdirSync(directory).sort()).toEqual(['a b.txt', 'aA.txt']);
+  });
+
+  it('removes a legacy record named with a literal escape of a reserved character', async () => {
+    const literal = uploadedFile('a%23.txt');
+
+    await remove(req, literal);
+
+    expect(fs.readdirSync(path.join(root, 'uploads', 'user-1'))).toEqual([]);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each(['/uploads/user-1/..%2Fuser-2%2Fsecret.txt', '/uploads/user-1/../user-2/secret.txt'])(
+    'does not follow %s into another owner directory',
+    async (filepath) => {
+      uploadedFile('secret.txt', 'user-2');
+
+      await expect(remove(req, { file_id: 'file-1', filepath, user: 'user-1' })).rejects.toThrow(
+        'Invalid file path',
+      );
+
+      expect(deleteRagFile).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(root, 'uploads', 'user-2', 'secret.txt'))).toBe(true);
+    },
+  );
 
   it('preserves bytes when vector cleanup returns false', async () => {
     const file = uploadedFile('retained.txt');

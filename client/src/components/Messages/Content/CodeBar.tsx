@@ -1,11 +1,10 @@
 import React from 'react';
 import { InfoIcon } from 'lucide-react';
+import { CopyButton, LangIcon } from '@librechat/chat/components';
 import type { CodeBarProps } from '~/common';
 import useDownloadCode from '~/components/Messages/Content/useDownloadCode';
 import DownloadButton from '~/components/Messages/Content/DownloadButton';
 import useCopyCode from '~/components/Messages/Content/useCopyCode';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import LangIcon from '~/components/Messages/Content/LangIcon';
 import RunCode from '~/components/Messages/Content/RunCode';
 import { useLocalize } from '~/hooks';
 
@@ -17,7 +16,7 @@ const CodeBar: React.FC<CodeBarProps> = React.memo(
 
     return (
       <div className="bg-surface-code text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs">
-        <span className="flex items-center gap-1.5 text-xs font-medium">
+        <span className="flex items-center gap-1.5 ps-1.5 text-xs font-medium">
           <LangIcon lang={lang} className="size-3.5" />
           {lang}
         </span>

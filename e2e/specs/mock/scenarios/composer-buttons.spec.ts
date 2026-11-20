@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import {
   messagesView,
@@ -8,6 +7,7 @@ import {
   sendMessage,
 } from '../helpers';
 import { probeStyle } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The composer's own controls (the Thinking pill and its effort rail, the palette rows and

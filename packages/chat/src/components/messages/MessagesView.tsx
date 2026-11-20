@@ -1,33 +1,31 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Constants } from 'librechat-data-provider';
 import { cn, useLocalize } from '@librechat/client';
-import type { RefObject, ReactNode, MouseEvent, ReactElement } from 'react';
+import type { RefObject, ReactNode, ReactElement } from 'react';
 import type { TMessage } from 'librechat-data-provider';
+import type { MessagesScrollButtonProps } from './ScrollButton';
 import type { MessagesThreadProps } from './thread/Thread';
 import {
+  createRowGates,
   RowMountProvider,
   useProgressiveRowMount,
+  pinsByHand,
 } from '../../react/messages/useProgressiveRowMount';
+import { OffscreenRowsProvider, useOffscreenRows } from '../../react/messages/offscreen';
 import useMessageScrolling from '../../react/messages/useMessageScrolling';
 import useConversationSeen from '../../react/messages/useConversationSeen';
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
+import { useOptionalSteerHost } from '../../react/steer/host';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
 import { useMessagePartsHost } from '../../react/host';
+import PendingSteers from './PendingSteers';
+import ScrollButton from './ScrollButton';
+import PendingTurn from './PendingTurn';
+import MessageNav from './MessageNav';
 import Thread from './thread/Thread';
 
-export type { MessagesThreadProps };
-
-/** What the scroll-to-bottom slot needs to watch the end marker and scroll to it. */
-export type MessagesScrollButtonProps = {
-  conversationId: string;
-  enabled: boolean;
-  maximizeChatSpace: boolean;
-  scrollableRef: RefObject<HTMLDivElement>;
-  messagesEndRef: RefObject<HTMLDivElement>;
-  scrollHandler: (event: MouseEvent<HTMLButtonElement>) => void;
-  onNearBottomChange: (isNearBottom: boolean) => void;
-};
+export type { MessagesThreadProps, MessagesScrollButtonProps };
 
 export type MessagesViewProps = {
   messagesTree?: TMessage[] | null;
@@ -38,6 +36,12 @@ export type MessagesViewProps = {
   maximizeChatSpace: boolean;
   /** Renders the thread as a flat row list (the default) or, when `false`, as a recursive tree. */
   flatThread?: boolean;
+  /**
+   * Whether this is the page's main list, which owns the `messages-end` id and the screenshot
+   * target that the app and its tests look up page-wide. A list mounted beside it passes `false`
+   * and leaves both to the main one.
+   */
+  primary?: boolean;
   /** Renders the conversation's rows; the package thread by default. */
   renderThread?: (props: MessagesThreadProps) => ReactNode;
   /** Renders the turn the reader just sent, ahead of its reply, at the thread's tail. */
@@ -52,9 +56,9 @@ export type MessagesViewProps = {
     index: number;
     fullWidth: boolean;
   }) => ReactNode;
-  /** Renders the scroll-to-bottom control. */
+  /** Renders the scroll-to-bottom control; the package control by default. */
   renderScrollButton?: (props: MessagesScrollButtonProps) => ReactNode;
-  /** Renders the in-thread navigation rail. */
+  /** Renders the in-thread navigation rail; the package rail by default. */
   renderNav?: (props: {
     conversationId?: string | null;
     scrollableRef: RefObject<HTMLDivElement>;
@@ -62,26 +66,62 @@ export type MessagesViewProps = {
 };
 
 const renderDefaultThread = (props: MessagesThreadProps): ReactNode => <Thread {...props} />;
+const renderDefaultScrollButton = (props: MessagesScrollButtonProps): ReactNode => (
+  <ScrollButton {...props} />
+);
+/** Keyed so a warm switch releases the outgoing conversation's rail. */
+const renderDefaultNav: NonNullable<MessagesViewProps['renderNav']> = ({
+  conversationId,
+  scrollableRef,
+}) => (
+  <MessageNav key={conversationId} conversationId={conversationId} scrollableRef={scrollableRef} />
+);
+
+const renderDefaultPendingTurn: NonNullable<MessagesViewProps['renderPendingTurn']> = ({
+  scrollableRef,
+  messages,
+  maximizeChatSpace,
+}) => (
+  <PendingTurn
+    scrollableRef={scrollableRef}
+    messages={messages}
+    maximizeChatSpace={maximizeChatSpace}
+  />
+);
+
+const renderDefaultPendingSteers: NonNullable<MessagesViewProps['renderPendingSteers']> = (
+  props,
+) => <PendingSteers {...props} />;
 
 /**
  * The message list: the scroll container, the rendered thread with its progressive mount
- * window, the pending tail, and the end marker the scroll and seen reporting watch. The rows,
- * the pending pieces, the scroll control and the navigation rail arrive as slots.
+ * window, the pending tail, and the end marker the scroll and seen reporting watch. The
+ * pending turn, pending steers, scroll control and navigation rail are the package's own
+ * unless a caller passes a slot. The pending rows stay unmounted when no steer host is
+ * present, so a shared page does not call the steer hooks.
  */
 export default function MessagesView({
   messagesTree,
   messages,
   showScrollButton,
   maximizeChatSpace,
-  flatThread = true,
+  flatThread,
+  primary = true,
   renderThread = renderDefaultThread,
-  renderPendingTurn,
-  renderPendingSteers,
-  renderScrollButton,
-  renderNav,
+  renderPendingTurn: renderPendingTurnSlot,
+  renderPendingSteers: renderPendingSteersSlot,
+  renderScrollButton = renderDefaultScrollButton,
+  renderNav = renderDefaultNav,
 }: MessagesViewProps): ReactElement {
   const localize = useLocalize();
   const host = useMessagesHost();
+  const steerHost = useOptionalSteerHost();
+  const renderPendingTurn =
+    renderPendingTurnSlot ?? (steerHost == null ? undefined : renderDefaultPendingTurn);
+  const renderPendingSteers =
+    renderPendingSteersSlot ?? (steerHost == null ? undefined : renderDefaultPendingSteers);
+  const hostFlatThread = host.useFlatThread();
+  const flat = flatThread ?? hostFlatThread;
   const fontSize = useMessagePartsHost().useFontSize();
   const screenshotTargetRef = host.useScreenshotTarget();
   const [currentEditId, setCurrentEditId] = useState<string | number | null>(-1);
@@ -105,6 +145,7 @@ export default function MessagesView({
     handleSmoothToRef,
     debouncedHandleScroll,
     handleNearBottomChange,
+    handleInsertAbove,
   } = useMessageScrolling({
     messagesTree,
     conversationId,
@@ -115,6 +156,7 @@ export default function MessagesView({
   });
 
   useScrollbarGutter(scrollableRef);
+  const observeRow = useOffscreenRows(scrollableRef);
 
   /** Re-arm from the conversation that owns the RENDERED tree: the app's conversation id lags
    *  the route during warm-cache navigation, and keying off it would first mount the new tree
@@ -170,12 +212,15 @@ export default function MessagesView({
     [handleNearBottomChange, reportNearBottom],
   );
 
+  const [gates] = useState(createRowGates);
   const mountWindow = useProgressiveRowMount({
     tailDepth: latestMessageDepth,
     anchorBottom: autoScroll || isSubmitting,
     isSubmitting,
     conversationId: treeConversationId,
     scrollableRef,
+    gates,
+    onInsertAbove: handleInsertAbove,
   });
   useEffect(() => {
     const isNearBottom = measureNearBottom();
@@ -192,12 +237,13 @@ export default function MessagesView({
   return (
     <div className="relative flex-1 overflow-hidden overflow-y-auto">
       <div className="relative h-full">
-        {/* The mount hook pins the anchor row itself (document-space measurement); native
-            scroll anchoring reacting to the same insertions would double-correct. */}
+        {/* While the mount hook pins the anchor row itself (document-space measurement), the
+            browser's scroll anchoring is off: the two reacting to the same insertions would
+            double-correct. Otherwise the browser holds the reader and the hook stands down. */}
         <div
           className={cn(
             'h-full w-full scrollbar-gutter-stable overflow-y-auto',
-            mountWindow != null && '[overflow-anchor:none]',
+            mountWindow != null && pinsByHand(isSubmitting) && '[overflow-anchor:none]',
           )}
           onScroll={debouncedHandleScroll}
           ref={scrollableRef}
@@ -216,19 +262,21 @@ export default function MessagesView({
               <>
                 <div
                   key={treeConversationId}
-                  ref={screenshotTargetRef}
+                  ref={primary ? screenshotTargetRef : undefined}
                   data-conversation-id={treeConversationId}
-                  data-testid="screenshot-target"
+                  data-testid={primary ? 'screenshot-target' : undefined}
                 >
-                  <RowMountProvider mountWindow={mountWindow}>
-                    {renderThread({
-                      messagesTree,
-                      messages,
-                      conversationId: treeConversationId,
-                      flat: flatThread,
-                      currentEditId,
-                      setCurrentEditId,
-                    })}
+                  <RowMountProvider mountWindow={mountWindow} gates={gates}>
+                    <OffscreenRowsProvider observe={observeRow}>
+                      {renderThread({
+                        messagesTree,
+                        messages,
+                        conversationId: treeConversationId,
+                        flat,
+                        currentEditId,
+                        setCurrentEditId,
+                      })}
+                    </OffscreenRowsProvider>
                   </RowMountProvider>
                 </div>
                 {renderPendingTurn?.({ scrollableRef, messages, maximizeChatSpace })}
@@ -248,7 +296,11 @@ export default function MessagesView({
                 index,
                 fullWidth: maximizeChatSpace,
               })}
-            <div id="messages-end" className="group h-0 w-full shrink-0" ref={messagesEndRef} />
+            <div
+              id={primary ? 'messages-end' : undefined}
+              className="group h-0 w-full shrink-0"
+              ref={messagesEndRef}
+            />
           </div>
         </div>
 

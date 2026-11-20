@@ -24,8 +24,6 @@ jest.mock('librechat-data-provider', () => {
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useAttachments: () => ({ attachments: [], searchResults: [] }),
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
   ...jest.requireActual('~/hooks/Messages/useCopyToClipboard'),
 }));
 jest.mock('~/hooks/MCP', () => ({

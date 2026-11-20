@@ -9,6 +9,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -19,8 +23,9 @@ jest.mock('~/hooks', () => ({
   }),
 }));
 
-jest.mock('../ToolOutput', () => ({
-  OutputRenderer: ({ text }: { text: string }) => <div data-testid="output-renderer">{text}</div>,
+jest.mock('../ToolOutput/OutputRenderer', () => ({
+  __esModule: true,
+  default: ({ text }: { text: string }) => <div data-testid="output-renderer">{text}</div>,
 }));
 
 jest.mock('~/utils', () => ({

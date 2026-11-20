@@ -55,7 +55,7 @@ const StopButton: NamedExoticComponent<StopButtonProps> = memo(function StopButt
             xmlns="http://www.w3.org/2000/svg"
             className="size-6"
           >
-            <rect x="7" y="7" width="10" height="10" rx="1.25" fill="currentColor"></rect>
+            <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"></rect>
           </svg>
         </IconButton>
       }

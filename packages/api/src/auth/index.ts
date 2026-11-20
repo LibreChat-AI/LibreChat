@@ -36,3 +36,4 @@ export * from './gates';
 export * from './share';
 export * from './limiter';
 export * from './tempuser';
+export * from './resetRequest';

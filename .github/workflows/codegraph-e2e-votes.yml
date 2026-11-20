@@ -1,9 +1,10 @@
 # Codegraph e2e VOTES — observe-only, post-merge, time-boxed.
 #
-# Playwright never runs on pushes to dev, so evidence for the e2e skip election would
-# otherwise wait on rare organic PR spec failures. This workflow runs the FULL mock suite after
-# merges: each run is one graduation trial for every spec it executes, and doubles as the
-# post-merge safety net the jest workflows already have via their dev-push triggers.
+# Evidence for the e2e skip election would otherwise wait on rare organic PR spec failures, so
+# this workflow runs the FULL mock suite after merges: each run is one graduation trial for
+# every spec it executes. It is not the post-merge safety net: its test step cannot fail (see
+# below), so a regression on dev leaves it green. The run that goes red is playwright-mock.yml's
+# own dev-push trigger.
 #
 # By default every merge votes (the push trigger). Each run costs about 154 job-minutes on ten
 # runners, so with repo variable CODEGRAPH_E2E_VOTE_MIN_HOURS set to N > 0 a push run votes
@@ -100,10 +101,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -117,8 +118,9 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -182,6 +184,9 @@ jobs:
       - name: Build client app
         if: steps.cache-client-app.outputs.cache-hit != 'true'
         run: npm run build:client
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
 
       - name: Verify Chrome is present
         run: google-chrome --version

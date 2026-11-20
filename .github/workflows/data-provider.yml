@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
       - run: cd packages/data-provider && npm ci
       - run: cd packages/data-provider && npm run build
       - name: Check version change
@@ -66,7 +66,7 @@ jobs:
     steps:
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install npm with OIDC support

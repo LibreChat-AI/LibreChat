@@ -31,8 +31,13 @@ import {
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
+import {
+  startupConfigKey,
+  useGetAgentByIdQuery,
+  getAgentListQueryData,
+  setAgentListQueryData,
+} from '~/data-provider';
 import { useAuthContext, useAgentsMap, useDefaultConvo, useSubmitMessage } from '~/hooks';
-import { startupConfigKey, useGetAgentByIdQuery } from '~/data-provider';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import { isHistoryRevalidating } from '~/hooks/Chat/ask/guards';
 import { consumeComposerQuery } from '~/utils/drafts';
@@ -40,12 +45,20 @@ import store from '~/store';
 
 const PROJECT_ID_SEARCH_PARAM = 'projectId';
 
+/** What the history observer reports while a submission waits for the history to settle. */
+const HISTORY_SETTLING_PROPS: Array<'status' | 'fetchStatus' | 'dataUpdatedAt'> = [
+  'status',
+  'fetchStatus',
+  'dataUpdatedAt',
+];
+const NO_PROPS: never[] = [];
+
 const injectAgentIntoAgentsMap = (
   queryClient: QueryClient,
   agent: AgentListResponse['data'][number],
 ) => {
   const editCacheKey = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT }];
-  const editCache = queryClient.getQueryData<AgentListResponse>(editCacheKey);
+  const editCache = getAgentListQueryData(queryClient, editCacheKey);
 
   if (editCache?.data && !editCache.data.some((cachedAgent) => cachedAgent.id === agent.id)) {
     // Inject agent into EDIT cache so dropdown can display it
@@ -53,7 +66,7 @@ const injectAgentIntoAgentsMap = (
       ...editCache,
       data: [agent, ...editCache.data],
     };
-    queryClient.setQueryData(editCacheKey, updatedCache);
+    setAgentListQueryData(queryClient, editCacheKey, updatedCache);
     logger.log('agent', 'Injected URL agent into cache:', agent);
   }
 };
@@ -61,12 +74,20 @@ const injectAgentIntoAgentsMap = (
 /** Stages URL prompts, then auto-submits once normalized conversation settings match. */
 export default function useQueryParams({
   textAreaRef,
+  routed = true,
   routePending = false,
+  targetReady = true,
   onBeforePrompt,
   onPromptSettled,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
+  /**
+   * Whether this composer is the one the route's query addresses. One beside it holds another
+   * conversation, which the route never names, so it does not watch the query at all.
+   */
+  routed?: boolean;
   routePending?: boolean;
+  targetReady?: boolean;
   onBeforePrompt?: () => void;
   onPromptSettled?: (text: string, conversationId: string | null | undefined) => void;
 }) {
@@ -81,11 +102,16 @@ export default function useQueryParams({
   const validSettingsRef = useRef<TPreset | null>(null);
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const awaitingHistoryRef = useRef(false);
+  /** Mirrors the ref for the one thing that has to render on it: the history observer below
+   *  listens only while a submission is waiting. */
+  const [awaitingHistory, setAwaitingHistory] = useState(false);
   const requestIdRef = useRef(0);
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
   const routePendingRef = useRef(routePending);
   routePendingRef.current = routePending;
+  const targetReadyRef = useRef(targetReady);
+  targetReadyRef.current = targetReady;
   const onPromptSettledRef = useRef(onPromptSettled);
   onPromptSettledRef.current = onPromptSettled;
   const methods = useChatFormContext();
@@ -128,7 +154,17 @@ export default function useQueryParams({
   submitMessageRef.current = submitMessage;
 
   const queryClient = useQueryClient();
-  const { conversation, newConversation, index = 0 } = useChatContext();
+  const { conversation, newConversation, isSubmitting, index = 0 } = useChatContext();
+  /**
+   * A new chat has no run of its own, so a busy composer there is still releasing the run of the
+   * conversation it just left (a queued message started in a new chat navigates mid-run). `ask`
+   * refuses until a commit without that run has flushed its effects, so the auto-submit waits for
+   * an effect of this hook to observe one instead of spending its only attempt on that refusal.
+   */
+  const composerReleasedRef = useRef(!isSubmitting);
+  if (isSubmitting) {
+    composerReleasedRef.current = false;
+  }
 
   const urlAgentId = searchParams.get('agent_id') || '';
   const { data: urlAgent } = useGetAgentByIdQuery(urlAgentId);
@@ -156,6 +192,14 @@ export default function useQueryParams({
     );
     setSearchParamsRef.current(params, { replace: true });
   }, [index, getPreservedSearchParams]);
+
+  const awaitsComposerRelease = useCallback(() => {
+    const conversationId = conversationRef.current?.conversationId;
+    return (
+      !composerReleasedRef.current &&
+      (conversationId == null || conversationId === Constants.NEW_CONVO)
+    );
+  }, []);
 
   const ownsComposer = useCallback(() => {
     const currentId = conversationRef.current?.conversationId;
@@ -246,6 +290,7 @@ export default function useQueryParams({
       requestIdRef.current += 1;
       attemptsRef.current = 0;
       awaitingHistoryRef.current = false;
+      setAwaitingHistory(false);
       processedRef.current = false;
       submissionHandledRef.current = false;
       pendingSubmitRef.current = false;
@@ -278,9 +323,8 @@ export default function useQueryParams({
 
   const areSettingsApplied = useCallback(() => {
     const convo = conversationRef.current;
-    if (!validSettingsRef.current || !convo) {
-      return false;
-    }
+    if (!convo) return false;
+    if (!validSettingsRef.current) return true;
 
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]) ?? {};
     const normalizedSettings = convo.endpoint
@@ -452,9 +496,15 @@ export default function useQueryParams({
     );
   }, [methods, ownsRequest]);
 
-  /** Consumes an auto-submit once, leaving a refused submission in the composer. */
+  /**
+   * Consumes an auto-submit once, leaving a refused submission in the composer. Callers reach it
+   * only with the requested settings in place, so the settings wait ends here even when the send
+   * itself still waits for the composer or the history.
+   */
   const processSubmission = useCallback(() => {
     if (
+      routePendingRef.current ||
+      !targetReadyRef.current ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
@@ -468,8 +518,12 @@ export default function useQueryParams({
       clearTimeout(settingsTimeoutRef.current);
       settingsTimeoutRef.current = null;
     }
+    if (awaitsComposerRelease()) {
+      return;
+    }
 
     awaitingHistoryRef.current = isHistoryPending();
+    setAwaitingHistory(awaitingHistoryRef.current);
     if (awaitingHistoryRef.current) {
       return;
     }
@@ -521,24 +575,74 @@ export default function useQueryParams({
     ownsRequest,
     isHistoryPending,
     areSettingsApplied,
+    awaitsComposerRelease,
     clearConsumedSearchParams,
     restoreUrlPrompt,
     settlePrompt,
   ]);
 
+  /**
+   * Bounds the wait for the requested settings, never the wait for the composer. The timer can
+   * fire between the commit that applied them and that commit's effects, so it reads them again
+   * before reporting a failure.
+   */
+  const armSettingsTimeout = useCallback(() => {
+    if (settingsTimeoutRef.current || routePendingRef.current || !targetReadyRef.current) return;
+    const requestId = requestIdRef.current;
+    settingsTimeoutRef.current = setTimeout(() => {
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
+      settingsTimeoutRef.current = null;
+      if (routePendingRef.current || !targetReadyRef.current) return;
+      if (!ownsRequest()) {
+        cancelRequest();
+        return;
+      }
+      if (!submissionHandledRef.current && pendingSubmitRef.current) {
+        if (areSettingsApplied()) {
+          processSubmission();
+          return;
+        }
+        restoreUrlPrompt();
+        pendingSubmitRef.current = false;
+        submissionHandledRef.current = true;
+        setSubmissionStatus('failed');
+        logger.log('conversation', 'Settings application timeout, retaining prompt');
+        settlePrompt();
+        clearConsumedSearchParams();
+      }
+    }, MAX_SETTINGS_WAIT_MS);
+  }, [
+    ownsRequest,
+    cancelRequest,
+    areSettingsApplied,
+    processSubmission,
+    restoreUrlPrompt,
+    settlePrompt,
+    clearConsumedSearchParams,
+  ]);
+
   /** Observes the history the composer sends from, so a retry runs after the
-   * render that derives the latest message from it, not during the cache write. */
+   * render that derives the latest message from it, not during the cache write.
+   * Only while a submission waits on it: every streamed delta is a write to this
+   * query, and an observer that always listened would render the composer for
+   * each one. */
   const historyKey = [QueryKeys.messages, conversation?.conversationId ?? ''];
   const history = useQuery<TMessage[]>(
     historyKey,
     async () => queryClient.getQueryData<TMessage[]>(historyKey) ?? [],
-    { enabled: false },
+    {
+      enabled: false,
+      notifyOnChangeProps: awaitingHistory ? HISTORY_SETTLING_PROPS : NO_PROPS,
+    },
   );
   useEffect(() => {
     if (awaitingHistoryRef.current && !isHistoryPending()) {
       processSubmission();
     }
   }, [
+    awaitingHistory,
     history.status,
     history.fetchStatus,
     history.dataUpdatedAt,
@@ -547,6 +651,9 @@ export default function useQueryParams({
   ]);
 
   useEffect(() => {
+    if (!routed) {
+      return;
+    }
     const processQueryParams = () => {
       const queryParams: Record<string, string> = {};
       searchParams.forEach((value, key) => {
@@ -637,6 +744,7 @@ export default function useQueryParams({
       const settingsAccepted = !hasSettings || newQueryConvo(validSettings) === true;
       if (willAutoSubmit && decodedPrompt.trim()) {
         pendingSubmitRef.current = true;
+        setSubmissionStatus('preparing');
         if (!settingsAccepted) {
           pendingSubmitRef.current = false;
           submissionHandledRef.current = true;
@@ -645,25 +753,7 @@ export default function useQueryParams({
           processSubmission();
         } else {
           setSubmissionStatus('preparing');
-          settingsTimeoutRef.current = setTimeout(() => {
-            if (requestId !== requestIdRef.current) {
-              return;
-            }
-            settingsTimeoutRef.current = null;
-            if (!ownsRequest()) {
-              cancelRequest();
-              return;
-            }
-            if (!submissionHandledRef.current && pendingSubmitRef.current) {
-              restoreUrlPrompt();
-              pendingSubmitRef.current = false;
-              submissionHandledRef.current = true;
-              setSubmissionStatus('failed');
-              logger.log('conversation', 'Settings application timeout, retaining prompt');
-              settlePrompt();
-              clearConsumedSearchParams();
-            }
-          }, MAX_SETTINGS_WAIT_MS);
+          armSettingsTimeout();
         }
       } else {
         submissionHandledRef.current = true;
@@ -677,6 +767,7 @@ export default function useQueryParams({
     };
   }, [
     searchParams,
+    routed,
     requestIdentity,
     methods,
     textAreaRef,
@@ -689,19 +780,31 @@ export default function useQueryParams({
     clearConsumedSearchParams,
     queryClient,
     processSubmission,
+    armSettingsTimeout,
     areSettingsApplied,
     restoreUrlPrompt,
     ownsRequest,
     cancelRequest,
   ]);
 
+  /** Declared ahead of the retry below, so that effect already sees the release it reacts to. */
   useEffect(() => {
+    if (!isSubmitting) {
+      composerReleasedRef.current = true;
+    }
+  }, [isSubmitting]);
+
+  useEffect(() => {
+    if (routePending || !targetReady) {
+      if (settingsTimeoutRef.current) clearTimeout(settingsTimeoutRef.current);
+      settingsTimeoutRef.current = null;
+      return;
+    }
     // Only proceed if we've already processed URL parameters but haven't yet handled submission
     if (
       !processedRef.current ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
-      !validSettingsRef.current ||
       !conversation ||
       !ownsRequest()
     ) {
@@ -712,8 +815,20 @@ export default function useQueryParams({
     if (areSettingsApplied()) {
       logger.log('conversation', 'Settings fully applied, processing submission');
       processSubmission();
+    } else {
+      armSettingsTimeout();
     }
-  }, [conversation, processSubmission, areSettingsApplied, restoreUrlPrompt, ownsRequest]);
+  }, [
+    conversation,
+    routePending,
+    targetReady,
+    isSubmitting,
+    processSubmission,
+    armSettingsTimeout,
+    areSettingsApplied,
+    restoreUrlPrompt,
+    ownsRequest,
+  ]);
 
   useEffect(() => {
     mountedRef.current = true;

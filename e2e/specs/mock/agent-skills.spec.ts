@@ -806,7 +806,9 @@ test.describe('Agent Builder skills', () => {
       const nextPageResponse = await nextPageResponsePromise;
       expect(nextPageResponse.ok(), await nextPageResponse.text()).toBe(true);
 
-      await dialog.getByRole('textbox', { name: 'Search skills...' }).fill(targetSkillName);
+      await dialog
+        .getByRole('textbox', { name: 'Search skills', exact: true })
+        .fill(targetSkillName);
       await selectSkill(dialog, targetSkillName);
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden();

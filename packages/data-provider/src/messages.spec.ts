@@ -4,6 +4,7 @@ import type { TFile } from './types/files';
 import type { TMessage } from './types';
 import {
   buildTree,
+  mergeMessageFile,
   findMessageById,
   isCompactedLeaf,
   isFileAttachment,
@@ -350,5 +351,37 @@ describe('file reference predicates', () => {
     expect(isFileContentPart(undefined)).toBe(false);
     expect(hasContentPartFiles(null)).toBe(false);
     expect(isFileAttachment(undefined)).toBe(false);
+  });
+});
+
+describe('mergeMessageFile', () => {
+  it('preserves persisted display metadata when the library omits it', () => {
+    const file = {
+      file_id: 'paste',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text' as const,
+    };
+    const stored = {
+      file_id: 'paste',
+      filename: 'pasted-text.txt',
+      type: 'text/plain',
+      llmDeliveryPath: 'none',
+    } as TFile;
+    expect(mergeMessageFile(file, stored)).toMatchObject({
+      filename: 'pasted-text.txt',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text',
+    });
+    expect(stored).not.toHaveProperty('textPreview');
+  });
+
+  it('reuses the stored object when the message adds no display metadata', () => {
+    const stored = { file_id: 'paste', textPreview: 'stored excerpt' } as TFile;
+    expect(mergeMessageFile({ file_id: 'paste' }, stored)).toBe(stored);
+  });
+
+  it('keeps the message ref when no owner record exists', () => {
+    const file = { file_id: 'paste', textPreview: 'persisted excerpt' };
+    expect(mergeMessageFile(file)).toBe(file);
   });
 });

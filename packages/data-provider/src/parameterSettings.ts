@@ -33,8 +33,9 @@ import {
   ReasoningParameterFormat,
 } from './schemas';
 import { resolveEffectiveUseResponsesApi } from './file-config';
+import { gpt6Tier, gpt6Release } from './families';
 import { clampSettingRange } from './generate';
-import { gpt6Tier } from './families';
+import { isGeminiHydrogen } from './gemini';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -826,6 +827,7 @@ const google: Record<string, SettingDefinition> = {
       [ThinkingLevel.low]: 'com_ui_low',
       [ThinkingLevel.medium]: 'com_ui_medium',
       [ThinkingLevel.high]: 'com_ui_high',
+      [ThinkingLevel.xhigh]: 'com_ui_xhigh',
     },
     optionType: 'conversation',
     columnSpan: 4,
@@ -1441,6 +1443,37 @@ const toSubmittableReasoningSetting = (
   return options.length === 0 ? undefined : { ...setting, options };
 };
 
+/**
+ * The definitions `resolveReasoningSettingForTarget` should see for one model: the endpoint's own,
+ * plus the efforts the model's Azure deployment declares. `model` comes from the request, so the
+ * lookup only trusts an array, never a property inherited by a model named `constructor`.
+ */
+export function getReasoningParamDefinitions(
+  endpointConfig:
+    | {
+        customParams?: { paramDefinitions?: Partial<SettingDefinition>[] | null } | null;
+        modelReasoningEfforts?: Record<string, string[]>;
+      }
+    | null
+    | undefined
+    | false,
+  model?: string | null,
+): Partial<SettingDefinition>[] | null | undefined {
+  if (!endpointConfig) {
+    return undefined;
+  }
+  const paramDefinitions = endpointConfig.customParams?.paramDefinitions;
+  const efforts = model == null ? undefined : endpointConfig.modelReasoningEfforts?.[model];
+  if (!Array.isArray(efforts)) {
+    return paramDefinitions;
+  }
+  const options = [
+    ReasoningEffort.unset,
+    ...efforts.filter((effort) => effort !== ReasoningEffort.unset),
+  ];
+  return [...(paramDefinitions ?? []), { key: 'reasoning_effort', options }];
+}
+
 /** Builds the effective reasoning definition shared by the composer and the server.
  * A model-spec lock is part of capability resolution, not a caller-only UI check:
  * both surfaces must see the same unavailable result before an override is staged. */
@@ -1453,6 +1486,7 @@ export function resolveReasoningSettingForTarget({
   paramDefinitions,
   blockedReasoningKeys,
   modelReasoning,
+  responsesApiRouting,
 }: {
   endpoint: string;
   model?: string | null;
@@ -1461,6 +1495,7 @@ export function resolveReasoningSettingForTarget({
   reasoningFormat?: ReasoningParameterFormat | null;
   paramDefinitions?: Partial<SettingDefinition>[] | null;
   blockedReasoningKeys?: ReadonlySet<string>;
+  responsesApiRouting?: ResponsesApiRouting;
   /** Provider-reported efforts for `model`; see {@link applyModelAwareDefaults}. */
   modelReasoning?: TModelReasoning | null;
 }): SettingDefinition | undefined {
@@ -1506,7 +1541,7 @@ export function resolveReasoningSettingForTarget({
     baseSettings,
     effectiveDefaultParamsEndpoint,
     model,
-    undefined,
+    responsesApiRouting,
     effectiveModelReasoning(modelReasoning, paramDefinitions),
   ).map((setting) => {
     const override = customSettingsByKey.get(setting.key);
@@ -1733,13 +1768,58 @@ function applyModelFamilyDefaults(
         : setting,
     );
   }
+  if (model === 'gpt-6-cyber' && endpoint === EModelEndpoint.openAI) {
+    return settings
+      .filter(
+        (setting) =>
+          ![
+            'reasoning_effort',
+            'reasoning_summary',
+            'reasoning_mode',
+            'reasoning_context',
+          ].includes(setting.key),
+      )
+      .map((setting) => {
+        if (setting.key === 'max_tokens')
+          return { ...setting, range: { min: 1, max: 128000, step: 1 } };
+        if (setting.key === 'useResponsesApi' && endpoint === EModelEndpoint.openAI) {
+          const route = (value?: boolean) =>
+            resolveEffectiveUseResponsesApi({
+              endpoint,
+              model,
+              routing: responsesApiRouting,
+              value,
+            });
+          return {
+            ...setting,
+            default: route() ?? false,
+            enumMappings: { true: route(true) ?? true, false: route(false) ?? false },
+          };
+        }
+        return setting;
+      });
+  }
   const tier = gpt6Tier(model);
-  if (tier === 'sol' || tier === 'luna') {
-    return settings.map((setting) => {
+  if (tier === 'sol' || tier === 'terra' || tier === 'luna') {
+    const sol62 =
+      gpt6Release(model)?.toLowerCase() === 'gpt-6.2-sol' &&
+      (responsesApiRouting?.[model]?.firstPartyEndpoint ??
+        responsesApiRouting?.[`${gpt6Release(model)}-*`]?.firstPartyEndpoint ??
+        false);
+    const supportedSettings = sol62
+      ? settings.filter((setting) => !['temperature', 'top_p'].includes(setting.key))
+      : settings;
+    return supportedSettings.map((setting) => {
+      if (sol62 && setting.key === 'max_tokens') {
+        return { ...setting, range: { min: 1, max: 128000, step: 1 } };
+      }
       if (setting.key === 'reasoning_effort') {
         return {
           ...setting,
-          options: setting.options?.filter((effort) => effort !== ReasoningEffort.minimal),
+          options: setting.options?.filter(
+            (effort) =>
+              effort !== ReasoningEffort.minimal && (!sol62 || effort !== ReasoningEffort.none),
+          ),
         };
       }
       /** Match the native backend's unset default without writing into stored
@@ -1782,30 +1862,54 @@ function applyModelFamilyDefaults(
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google
-      ? settings.map((setting) => {
-          if (setting.key === 'maxOutputTokens') {
-            return { ...setting, default: googleSettings.maxOutputTokens.reset(model) };
-          }
-          /** The shared thinking budget range is model-agnostic, so it caps Pro below
-           *  its real ceiling and accepts Flash values the provider rejects. The
-           *  maximum and the positive floor move together. `range.min` stays -1 so
-           *  the "decide automatically" sentinel remains typeable. */
-          if (setting.key === 'thinkingBudget' && setting.range != null) {
-            const bounds = getGoogleThinkingBudgetBounds(model);
-            if (bounds != null) {
+      ? settings
+          .filter(
+            (setting) =>
+              !isGeminiHydrogen(model) ||
+              !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+          )
+          .map((setting) => {
+            if (setting.key === 'maxOutputTokens') {
+              const max = googleSettings.maxOutputTokens.reset(model);
               return {
                 ...setting,
-                range: {
-                  ...setting.range,
-                  max: bounds.max,
-                  positiveMin: bounds.min,
-                  modelSpecific: true,
-                },
+                default: max,
+                ...(isGeminiHydrogen(model) &&
+                  setting.range && { range: { ...setting.range, max, modelSpecific: true } }),
               };
             }
-          }
-          return setting;
-        })
+            if (setting.key === 'thinkingLevel' && isGeminiHydrogen(model)) {
+              return {
+                ...setting,
+                options: [
+                  ThinkingLevel.unset,
+                  ThinkingLevel.low,
+                  ThinkingLevel.medium,
+                  ThinkingLevel.high,
+                  ThinkingLevel.xhigh,
+                ],
+              };
+            }
+            /** The shared thinking budget range is model-agnostic, so it caps Pro below
+             *  its real ceiling and accepts Flash values the provider rejects. The
+             *  maximum and the positive floor move together. `range.min` stays -1 so
+             *  the "decide automatically" sentinel remains typeable. */
+            if (setting.key === 'thinkingBudget' && setting.range != null) {
+              const bounds = getGoogleThinkingBudgetBounds(model);
+              if (bounds != null) {
+                return {
+                  ...setting,
+                  range: {
+                    ...setting.range,
+                    max: bounds.max,
+                    positiveMin: bounds.min,
+                    modelSpecific: true,
+                  },
+                };
+              }
+            }
+            return setting;
+          })
       : settings;
 
   if (endpoint !== EModelEndpoint.anthropic || supportsPromptCache(model)) {

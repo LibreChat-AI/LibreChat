@@ -304,7 +304,8 @@ describe('RedisJobStore', () => {
     expect(lrange).not.toHaveBeenCalled();
   });
 
-  test('writes initial metadata in the atomic job creation', async () => {
+  const retentionDeadlines = ['2030-01-01T00:00:00.000Z', '', 'invalid'];
+  test.each(retentionDeadlines)('round-trips job metadata %p', async (retentionExpiresAt) => {
     const evalJobCreation = jest
       .fn()
       .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
@@ -337,7 +338,9 @@ describe('RedisJobStore', () => {
       agent_id: 'agent-1',
       compact: true,
       isTemporary: false,
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: false,
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       agentEventDeliveryKey: 'completion-delivery-1',
       agentEventInvocationKey: 'original-delivery-1',
       agentEventInvocationGenerationCreatedAt: 987654,
@@ -456,7 +459,9 @@ describe('RedisJobStore', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: false,
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduleMCPCompletion: {
         scheduleId: 'original-schedule',
@@ -525,7 +530,9 @@ describe('RedisJobStore', () => {
       }),
       agent_id: 'agent-1',
       isTemporary: '0',
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: '0',
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: '4',
@@ -737,6 +744,25 @@ describe('RedisJobStore', () => {
     await expect(store.createJob('stream-terminal-create', 'user-1')).rejects.toThrow(
       'Generation job was replaced during creation',
     );
+  });
+
+  test('copies the content of a hosted run without touching Redis', async () => {
+    const redis = { isCluster: true, eval: jest.fn() } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+    const live = [{ type: 'text', text: 'one ' }];
+    store.setContentParts('stream-host-copy', live as never, 101);
+
+    const copy = store.copyHostContent('stream-host-copy', 101);
+    /** The run keeps writing; the copy holds what it had at the call. */
+    live[0] = { type: 'text', text: 'one two ' };
+
+    expect(copy).toEqual([{ type: 'text', text: 'one ' }]);
+    await expect(store.getContentParts('stream-host-copy', 101)).resolves.toEqual({
+      content: [{ type: 'text', text: 'one two ' }],
+    });
+    expect(store.copyHostContent('stream-host-copy', 100)).toBeNull();
+    expect(store.copyHostContent('stream-not-hosted')).toBeNull();
+    expect(redis.eval).not.toHaveBeenCalled();
   });
 
   test('guards local content caches by creation epoch', async () => {

@@ -4,15 +4,9 @@ import { ToolContentPendingContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import OutputRenderer, { isError } from '../OutputRenderer';
 
-jest.mock('copy-to-clipboard', () => jest.fn());
-
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('~/components/Messages/Content/CopyButton', () => ({
-  __esModule: true,
-  default: ({
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CopyButton: ({
     onClick,
     className,
     disabled,
@@ -29,6 +23,12 @@ jest.mock('~/components/Messages/Content/CopyButton', () => ({
       disabled={disabled}
     />
   ),
+}));
+
+jest.mock('copy-to-clipboard', () => jest.fn());
+
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => key,
 }));
 
 describe('OutputRenderer', () => {

@@ -9,6 +9,7 @@ import { createAdminUsersHandlers } from './users';
 import { eraseUserData } from '~/user/erasure';
 
 jest.mock('~/user/erasure', () => ({
+  ...jest.requireActual('~/user/erasure'),
   eraseUserData: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -60,6 +61,7 @@ function createDeps(overrides: Partial<AdminUsersDeps> = {}): AdminUsersDeps {
     findUsers: jest.fn().mockResolvedValue([]),
     countUsers: jest.fn().mockResolvedValue(0),
     beginAgentTriggerUserDeletion: jest.fn().mockResolvedValue('acquired'),
+    isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
     cancelAgentTriggerUserDeletion: jest.fn().mockResolvedValue(true),
     drainAgentTriggerDeliveriesForUser: jest.fn().mockResolvedValue(undefined),
     prepareAgentTriggerUserPurge: jest.fn().mockResolvedValue(undefined),
@@ -392,6 +394,7 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.beginAgentTriggerUserDeletion).toHaveBeenCalledWith(
         validUserId,
         expect.any(Date),
+        expect.any(String),
       );
       expect(deps.drainAgentTriggerDeliveriesForUser).toHaveBeenCalledWith(validUserId);
       expect(deps.prepareAgentTriggerUserPurge).toHaveBeenCalledWith(
@@ -461,7 +464,10 @@ describe('createAdminUsersHandlers', () => {
       await handlers.deleteUser(req, res);
 
       expect(status).toHaveBeenCalledWith(200);
-      expect(deps.deleteUserById).toHaveBeenCalledWith(targetId);
+      expect(deps.deleteUserById).toHaveBeenCalledWith(targetId, {
+        startedAt: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][1],
+        attemptId: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2],
+      });
     });
 
     it('does not check admin count when target is a regular user', async () => {
@@ -559,7 +565,12 @@ describe('createAdminUsersHandlers', () => {
         }),
       );
       expect(eraseUserData).toHaveBeenCalledWith(
-        { userId: validUserId, tenantId: 'tenant-1', checkpointer },
+        {
+          userId: validUserId,
+          tenantId: 'tenant-1',
+          checkpointer,
+          deletionAttemptId: expect.any(String),
+        },
         erasureDeps,
       );
       expect(jest.mocked(eraseUserData).mock.invocationCallOrder[0]).toBeLessThan(
@@ -581,6 +592,34 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalled();
     });
+
+    it.each([true, false])(
+      'releases the resolved favorite UUID only after a proven Mongo owner: %s',
+      async (owned) => {
+        const cancelUserToolFavoriteDeletion = jest.fn().mockResolvedValue(undefined);
+        jest.mocked(eraseUserData).mockRejectedValueOnce(new Error('later cascade failure'));
+        const deps = createDeps({
+          isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(owned),
+          resolveErasure: jest.fn().mockResolvedValue({ deps: { cancelUserToolFavoriteDeletion } }),
+        });
+        const { req, res } = createReqRes({ params: { id: validUserId } });
+        await createAdminUsersHandlers(deps).deleteUser(req, res);
+        const token = jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2];
+        expect(eraseUserData).toHaveBeenCalledWith(
+          expect.objectContaining({ deletionAttemptId: token }),
+          expect.anything(),
+        );
+        if (owned) {
+          expect(cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(validUserId, token);
+          expect(
+            jest.mocked(deps.isAgentTriggerUserDeletionOwner).mock.invocationCallOrder[0],
+          ).toBeLessThan(cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0]);
+          expect(cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+            jest.mocked(deps.cancelAgentTriggerUserDeletion).mock.invocationCallOrder[0],
+          );
+        } else expect(cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+      },
+    );
 
     it('suspends schedules before erasing and restores them when the deletion fails', async () => {
       jest.mocked(eraseUserData).mockRejectedValueOnce(new Error('storage down'));
@@ -677,7 +716,10 @@ describe('createAdminUsersHandlers', () => {
 
       await handlers.deleteUser(req, res);
 
-      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId);
+      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId, {
+        startedAt: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][1],
+        attemptId: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2],
+      });
       expect(deps.deleteUserCodeEnvironments).not.toHaveBeenCalled();
     });
 
@@ -694,10 +736,7 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.deleteUserCodeEnvironments).not.toHaveBeenCalled();
       expect(deps.deleteAclEntries).not.toHaveBeenCalled();
       expect(deps.purgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
-      expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
-        validUserId,
-        expect.any(Date),
-      );
+      expect(deps.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalledWith(validUserId, expect.any(Date));
     });
 
@@ -735,10 +774,8 @@ describe('createAdminUsersHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({ error: 'Failed to delete user' });
-      expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
-        validUserId,
-        expect.any(Date),
-      );
+      expect(deps.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
+      expect(deps.isAgentTriggerUserDeletionOwner).not.toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalledWith(validUserId, expect.any(Date));
       expect(deps.purgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
     });
@@ -815,7 +852,10 @@ describe('createAdminUsersHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({ error: 'Failed to delete user' });
-      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId);
+      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId, {
+        startedAt: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][1],
+        attemptId: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2],
+      });
       expect(deps.prepareAgentTriggerUserPurge).toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).not.toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();

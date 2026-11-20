@@ -73,10 +73,31 @@ test('needsTranslation keeps alt text in either quote style and skips code and g
   assert.equal(needsTranslation('- **Agents:** build [docs](https://x.y)'), true);
 });
 
+test('needsTranslation treats bare domain and path labels as code, not prose', () => {
+  const rag =
+    '- **RAG API:** [github.com/LibreChat-AI/rag-api](https://github.com/LibreChat-AI/rag-api)';
+  assert.equal(needsTranslation(rag), false);
+  assert.equal(
+    needsTranslation('- **Blog:** [librechat.ai/blog](https://librechat.ai/blog)'),
+    true,
+  );
+  assert.equal(needsTranslation('Edit librechat.yaml to begin.'), true);
+});
+
 test('validate accepts a faithful translation', () => {
   const source = '- **Agents:** see [docs](https://librechat.ai/docs) and `npm run build`';
   const out = '- **Agents:** см. [документацию](https://librechat.ai/docs) и `npm run build`';
   assert.deepEqual(validate(source, out, 'ru'), []);
+});
+
+test('validate lets prose move around links, code and emphasis', () => {
+  const source = '- Text-to-image and image-to-image with [GPT-Image-1](https://x.y)';
+  assert.deepEqual(
+    validate(source, '- 使用 [GPT-Image-1](https://x.y) 进行文生图和图生图', 'zh'),
+    [],
+  );
+  assert.deepEqual(validate('Run `npm ci` first.', '`npm ci` を最初に実行します。', 'ja'), []);
+  assert.deepEqual(validate('**Agents** are here', 'ここに **エージェント**', 'ja'), []);
 });
 
 test('validate flags structural changes', () => {

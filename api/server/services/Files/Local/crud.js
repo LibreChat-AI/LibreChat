@@ -5,6 +5,8 @@ const {
   deleteRagFile,
   createLocalFileDeleter,
   stripCacheBust,
+  toLocalUrlPath,
+  resolveLocalFile,
   writeLocalFile,
   assertRemoteFileURL,
   getRemoteFileFetchMaxBytes,
@@ -98,8 +100,8 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
 }
 
 /**
- * Constructs a local file path for a given file name and base path. This function simply joins the base
- * path and the file name to create a file path. It does not check for the existence of the file at the path.
+ * Constructs the URL path of a locally stored file from a base path and a file name, with every segment
+ * percent-encoded. It does not check for the existence of the file at the path.
  *
  * @param {Object} params - The parameters object.
  * @param {string} params.fileName - The name of the file for which the path is to be constructed. This should
@@ -111,7 +113,7 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
  *          The constructed local file path.
  */
 async function getLocalFileURL({ fileName, basePath = 'images' }) {
-  return path.posix.join('/', basePath, fileName);
+  return toLocalUrlPath(basePath, fileName);
 }
 
 const deleteLocalFile = (req, file) => createLocalFileDeleter({ deleteRagFile, logger })(req, file);
@@ -141,7 +143,7 @@ async function uploadLocalFile({ req, file, file_id }) {
 
   const fileName = `${file_id}__${path.basename(inputFilePath)}`;
   const newPath = await writeLocalFile(userPath, fileName, inputBuffer);
-  const filepath = path.posix.join('/', 'uploads', req.user.id, path.basename(newPath));
+  const filepath = toLocalUrlPath('uploads', req.user.id, path.basename(newPath));
 
   let height, width;
   if (file.mimetype && file.mimetype.startsWith('image/')) {
@@ -177,7 +179,7 @@ async function getLocalFileStream(req, requestedFilepath) {
         throw new Error(`Invalid file path: ${filepath}`);
       }
 
-      const fullPath = path.join(appConfig.paths.uploads, basePath);
+      const fullPath = await resolveLocalFile(appConfig.paths.uploads, basePath);
       const uploadsDir = appConfig.paths.uploads;
 
       const rel = path.relative(uploadsDir, fullPath);
@@ -195,7 +197,7 @@ async function getLocalFileStream(req, requestedFilepath) {
         throw new Error(`Invalid file path: ${filepath}`);
       }
 
-      const fullPath = path.join(appConfig.paths.imageOutput, basePath);
+      const fullPath = await resolveLocalFile(appConfig.paths.imageOutput, basePath);
       const publicDir = appConfig.paths.imageOutput;
 
       const rel = path.relative(publicDir, fullPath);

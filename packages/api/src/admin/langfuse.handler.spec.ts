@@ -460,6 +460,8 @@ describe('createAdminLangfuseHandlers', () => {
         {
           user: 'u1',
           conversationId: 'conversation-1',
+          isCreatedByUser: false,
+          isUserSubmitted: { $ne: true },
           langfuseSampled: true,
           langfuseDestinationIds: getLangfuseDestinationId(
             'https://cloud.langfuse.com',

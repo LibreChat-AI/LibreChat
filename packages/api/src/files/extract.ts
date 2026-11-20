@@ -5,6 +5,8 @@ import {
   hasActiveFilePolicy,
   UninspectableFileError,
 } from '~/protection/files';
+import { SpreadsheetLimitError } from './documents/workbook';
+import { SpreadsheetBusyError } from './upload/errors';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 /**
@@ -72,7 +74,12 @@ export async function extractInspectableFileText<T extends ExtractedFileText>(in
     }
     return result;
   } catch (error) {
-    if (blockedField == null || error instanceof UninspectableFileError) {
+    if (
+      blockedField == null ||
+      error instanceof UninspectableFileError ||
+      error instanceof SpreadsheetBusyError ||
+      error instanceof SpreadsheetLimitError
+    ) {
       throw error;
     }
     throw new UninspectableFileError(blockedField);

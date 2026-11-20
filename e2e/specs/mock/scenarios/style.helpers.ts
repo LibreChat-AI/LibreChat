@@ -59,6 +59,7 @@ export function probePlaceholderColor(page: Page): Promise<string> {
  * Normalise a colour expression — `rgb(227 227 227 / 1)`, `color-mix(...)`, a
  * token triplet — to the form `getComputedStyle` returns, by letting the browser
  * compute it. Comparing two normalised values compares colours, not spellings.
+ * Use a role expression for state-only utilities whose base class may not be emitted.
  */
 export function normalizeColor(page: Page, value: string): Promise<string> {
   return page.evaluate((color) => {

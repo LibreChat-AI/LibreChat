@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Constants as AgentConstants } from '@librechat/agents';
-import { Constants, isActionTool } from 'librechat-data-provider';
+import { Constants, isActionTool, normalizeServerName } from 'librechat-data-provider';
 import type {
-  ScheduledMCPReadOnlyPolicy,
   ScheduledMCPToolSelection,
   ScheduledMCPFailureReason,
   ScheduleMCPOutcome,
@@ -24,6 +23,28 @@ export function isScheduledMCPCandidate(name: string): boolean {
   );
 }
 
+/**
+ * A tool an agent carries that is neither an MCP tool nor one of the SDK's own controls:
+ * code execution, web search, file search, an action. Each is its own item for the owner to
+ * allow or leave out.
+ */
+export function isScheduledToolItem(name: string): boolean {
+  return !name.includes(Constants.mcp_delimiter) && !isScheduledMCPCandidate(name);
+}
+
+/**
+ * Every key a tool on a server could be listed under among an agent's other tools: by either
+ * spelling of the server, by name or as part of a selection of the whole server. The tools of
+ * a server the operator declared nothing for are listed that way. Built from the server's
+ * own name, never by splitting a key: a server name may contain the delimiter.
+ */
+export function listedMCPKeys(serverName: string, selectionName: string): string[] {
+  return [serverName, normalizeServerName(serverName)].flatMap((spelling) => [
+    `${selectionName}${Constants.mcp_delimiter}${spelling}`,
+    `${Constants.mcp_all}${Constants.mcp_delimiter}${spelling}`,
+  ]);
+}
+
 /** Stable across object insertion order. Arrays retain their semantic order. */
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -38,31 +59,20 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-/** A pin binds trusted service policy to the full upstream definition, not its hints. */
+/** Covers the whole upstream definition: name, description, schemas and annotations. */
 export function getScheduledMCPToolDefinitionDigest(tool: Tool): string {
   return createHash('sha256')
     .update(JSON.stringify(canonical(tool)))
     .digest('hex');
 }
 
+/** Identifies one set of permitted selections; a grant and its bearer cache entries bind to it. */
 export function getScheduledMCPPolicyRevision(
   selections: readonly ScheduledMCPToolSelection[],
-  policy?: ScheduledMCPReadOnlyPolicy,
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify(canonical({ selections, policy: policy ?? null })))
+    .update(JSON.stringify(canonical({ selections })))
     .digest('hex');
-}
-
-export function isScheduledMCPToolReadOnly(
-  tool: Tool,
-  policy?: ScheduledMCPReadOnlyPolicy,
-): boolean {
-  const pin = policy?.tools[tool.name];
-  return (
-    pin?.effect === 'read_only' &&
-    pin.definitionSha256 === getScheduledMCPToolDefinitionDigest(tool)
-  );
 }
 
 /** Expected denial. Only the approved projection can reach a client or persisted run. */

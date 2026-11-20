@@ -110,6 +110,17 @@ describe('ChatScreen', () => {
     expect(container.querySelector('footer')).toHaveAttribute('data-placement', 'full');
   });
 
+  it('places the full footer under the composer when the deployment asks for it', () => {
+    const { container } = renderScreen(
+      { conversationId: undefined, messages: null, landingFooter: 'composer' },
+      null,
+    );
+
+    expect(composer()).toHaveAttribute('data-footer-below', 'false');
+    expect(container.querySelectorAll('footer')).toHaveLength(1);
+    expect(container.querySelector('footer')).toHaveAttribute('data-placement', 'composer');
+  });
+
   it("keeps a deployment's configured footer in the conversation's composer band", () => {
     const { container } = renderScreen({ configuredFooter: true });
 

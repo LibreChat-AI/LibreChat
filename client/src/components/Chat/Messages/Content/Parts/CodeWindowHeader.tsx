@@ -1,8 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { useToolContentPending } from '@librechat/chat/react';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import LangIcon from '~/components/Messages/Content/LangIcon';
+import { CopyButton, LangIcon } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 
 interface CodeWindowHeaderProps {

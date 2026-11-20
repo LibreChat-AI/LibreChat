@@ -113,6 +113,7 @@ export default function ActionsAuth({ disableOAuth }: { disableOAuth?: boolean }
             value={type}
             onChange={(value) => setValue('type', value)}
             fullWidth
+            wrap
             aria-labelledby="auth-method-label"
           />
           <AnimatedAuthFields type={type} />
@@ -216,6 +217,7 @@ function SegmentedField({
         value={value}
         onChange={onValueChange}
         fullWidth
+        wrap
         aria-labelledby={id}
       />
     </div>

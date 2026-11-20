@@ -194,7 +194,7 @@ describe('pinned provider configuration', () => {
       req: {} as Request<unknown, unknown, unknown>,
       res: {} as Response,
       agent,
-      modelsConfig: { [EModelEndpoint.openAI]: ['gpt-4o-mini'] },
+      getEndpointModels: async () => ({ [EModelEndpoint.openAI]: ['gpt-4o-mini'] }),
       logViolation,
     });
 

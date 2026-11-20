@@ -1,5 +1,6 @@
 /* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis"] }] */
 /* eslint jest/expect-expect: ["error", { "assertFunctionNames": ["expect", "expectSafeTerminalEvent"] }] */
+import type { RedisClientType, RedisClusterType } from '@redis/client';
 import type { Redis, Cluster } from 'ioredis';
 import type { FinalEvent, ServerSentEvent } from '~/types';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
@@ -13,7 +14,7 @@ import { clearRedisTestPrefix } from './helpers/redis';
 /** Suppress winston Console transport output (survives jest.resetModules) */
 jest.spyOn(console, 'log').mockImplementation();
 
-const TRANSIENT_BODY = 'D'.repeat(64 * 1024);
+const TRANSIENT_BODY = 'D'.repeat(1024 * 1024);
 const ANSWER = 'The report concludes that latency improved.';
 /** Generated attachment body: authoritative output, must survive projection. */
 const GENERATED_OUTPUT = 'row,value\n1,42\n';
@@ -25,6 +26,19 @@ const GENERATED_OUTPUT = 'row,value\n1,42\n';
  * manager boundary itself excludes the transient data.
  */
 function buildUnsanitizedFinal(): FinalEvent {
+  const providerInputs = {
+    documents: [
+      {
+        type: 'file',
+        file: {
+          filename: 'report.pdf',
+          file_data: `data:application/pdf;base64,${TRANSIENT_BODY}`,
+        },
+      },
+    ],
+    videos: [{ type: 'video_url', video_url: { url: `data:video/mp4;base64,${TRANSIENT_BODY}` } }],
+    audios: [{ type: 'input_audio', input_audio: { data: TRANSIENT_BODY, format: 'wav' } }],
+  };
   return {
     final: true,
     terminalStatus: 'complete',
@@ -35,6 +49,7 @@ function buildUnsanitizedFinal(): FinalEvent {
       conversationId: 'conv-1',
       text: 'Summarize the attachment',
       isCreatedByUser: true,
+      ...providerInputs,
       fileContext: TRANSIENT_BODY,
       image_urls: [
         { type: 'image_url', image_url: { url: `data:image/png;base64,${TRANSIENT_BODY}` } },
@@ -48,7 +63,15 @@ function buildUnsanitizedFinal(): FinalEvent {
         },
       ],
     },
+    runMessages: ['conv-1', 'conv-2'].map((conversationId) => ({
+      ...providerInputs,
+      messageId: `run-${conversationId}`,
+      conversationId,
+      text: ANSWER,
+      files: [{ file_id: 'f-1', filename: 'report.pdf' }],
+    })),
     responseMessage: {
+      ...providerInputs,
       messageId: 'rm-1',
       parentMessageId: 'um-1',
       conversationId: 'conv-1',
@@ -83,6 +106,13 @@ function expectSafeTerminalEvent(event: unknown): void {
   const final = event as FinalEvent;
   expect(final.requestMessage).not.toHaveProperty('fileContext');
   expect(final.requestMessage).not.toHaveProperty('image_urls');
+  for (const message of [final.requestMessage, final.responseMessage, ...final.runMessages!]) {
+    expect(message).not.toHaveProperty('documents');
+    expect(message).not.toHaveProperty('videos');
+    expect(message).not.toHaveProperty('audios');
+  }
+  expect(final.runMessages?.map((message) => message.conversationId)).toEqual(['conv-1', 'conv-2']);
+  expect(filesOf(final.runMessages?.[1])[0].file_id).toBe('f-1');
   expect(filesOf(final.requestMessage)[0]).not.toHaveProperty('text');
 
   // authoritative final state and attachment references survive
@@ -109,6 +139,8 @@ function expectSafeTerminalEvent(event: unknown): void {
 describe('terminal projection boundary', () => {
   let originalEnv: NodeJS.ProcessEnv;
   let ioredisClient: Redis | Cluster | null = null;
+  let keyvClient: RedisClientType | RedisClusterType | null = null;
+  let keyvReady: Promise<void> | null = null;
   const testPrefix = 'Terminal-Projection-Test';
   const redisConfigured = process.env.USE_REDIS === 'true';
   const describeRedis = redisConfigured ? describe : describe.skip;
@@ -122,10 +154,18 @@ describe('terminal projection boundary', () => {
     jest.resetModules();
     const redisModule = await import('~/cache/redisClients');
     ioredisClient = redisModule.ioredisClient;
+    keyvClient = redisModule.keyvRedisClient;
+    keyvReady = redisModule.keyvRedisClientReady;
   });
 
   afterAll(async () => {
-    process.env = originalEnv;
+    try {
+      await keyvReady;
+      if (keyvClient?.isOpen) await keyvClient.disconnect();
+      await ioredisClient?.quit();
+    } finally {
+      process.env = originalEnv;
+    }
   });
 
   afterEach(async () => {
@@ -157,7 +197,19 @@ describe('terminal projection boundary', () => {
       });
 
       const input = buildUnsanitizedFinal();
+      const delivered: ServerSentEvent[] = [];
+      const subscription = await manager.subscribe(
+        streamId,
+        () => undefined,
+        (event: ServerSentEvent) => {
+          delivered.push(event);
+        },
+      );
       const result = await manager.publishTerminalClaim(claim!, input);
+
+      expect(delivered).toHaveLength(1);
+      expectSafeTerminalEvent(delivered[0]);
+      subscription!.unsubscribe();
 
       expectSafeTerminalEvent(result.finalEvent);
       expect(result.persistenceFailed).toBe(false);
@@ -169,6 +221,9 @@ describe('terminal projection boundary', () => {
       // the caller's own object is untouched
       expect(input.requestMessage).toHaveProperty('fileContext');
       expect(input.requestMessage).toHaveProperty('image_urls');
+      expect(input.requestMessage).toHaveProperty('documents');
+      expect(input.requestMessage).toHaveProperty('videos');
+      expect(input.requestMessage).toHaveProperty('audios');
     });
 
     it('excludes transient data from emitDone storage and publication', async () => {
@@ -251,6 +306,11 @@ describe('terminal projection boundary', () => {
           requestMessage: {
             messageId: 'um-1',
             text: 'q',
+            documents: [
+              { type: 'file', file: { file_data: `data:application/pdf;base64,${body}` } },
+            ],
+            videos: [{ type: 'video_url', video_url: { url: `data:video/mp4;base64,${body}` } }],
+            audios: [{ type: 'input_audio', input_audio: { data: body, format: 'wav' } }],
             fileContext: body,
             files: [{ file_id: 'f-1', filename: 'a.pdf', text: body }],
           },
@@ -317,14 +377,16 @@ describe('terminal projection boundary', () => {
       const claim = await manager.claimTerminalJob(streamId, 'complete', undefined, job.createdAt, {
         persistencePending: true,
       });
-      await manager.publishTerminalClaim(claim!, { final: true } as FinalEvent);
+      expect(claim).not.toBeNull();
 
-      /** Overwrite with the shape an older producer stored. */
-      await jobStore.updateJob(
-        streamId,
-        { finalEvent: JSON.stringify(buildUnsanitizedFinal()) },
-        job.createdAt,
-      );
+      /** Seed the legacy durable payload without publishing a competing terminal frame. */
+      expect(
+        await jobStore.finalizeTerminalPersistence(
+          streamId,
+          job.createdAt,
+          JSON.stringify(buildUnsanitizedFinal()),
+        ),
+      ).toBe(true);
       const rawStored = await jobStore.getJob(streamId);
       expect(rawStored!.finalEvent).toContain(TRANSIENT_BODY);
 
@@ -349,12 +411,12 @@ describe('terminal projection boundary', () => {
             delivered.push(event);
           },
         );
-        expect(subscription).not.toBeNull();
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // A completed replay may retire its subscription before attachment returns.
+        await waitFor(() => delivered.length > 0, 'legacy terminal replay');
 
         expect(delivered).toHaveLength(1);
         expectSafeTerminalEvent(delivered[0]);
-        subscription!.unsubscribe();
+        subscription?.unsubscribe();
       } finally {
         await replica.destroy();
         await replicaSubscriber.quit().catch(() => undefined);

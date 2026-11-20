@@ -303,6 +303,34 @@ describe('McpSection', () => {
     expect(mockInitializeServer).toHaveBeenCalledWith('srv', false);
   });
 
+  test('selects discovered tools after Connect succeeds and the serving replica has no observation', async () => {
+    mockInitializeServer.mockResolvedValue({ success: true });
+    const { rerender } = render(<McpSection item={item} />);
+    fireEvent.click(screen.getByRole('button', { name: 'com_nav_mcp_connect_server' }));
+
+    mockGetServerStatusIconProps.mockReturnValue({
+      serverStatus: {
+        connectionState: 'disconnected',
+        connectionStateSource: 'unobserved',
+        requiresOAuth: false,
+      },
+      view: { state: 'succeeded', canUse: true },
+    });
+    rerender(<McpSection item={item} />);
+
+    expect(screen.queryByText('com_nav_mcp_status_unknown')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_nav_mcp_connect_server' }),
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tools',
+        ['sys__server__sys_mcp_srv', 'mcp:srv:a', 'mcp:srv:b'],
+        { shouldDirty: true },
+      ),
+    );
+  });
+
   test('opens the OAuth dialog only when initialize reports oauthRequired', async () => {
     mockInitializeServer.mockResolvedValue({
       success: true,

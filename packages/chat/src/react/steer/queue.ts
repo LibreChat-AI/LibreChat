@@ -1,6 +1,8 @@
 import { atom } from 'jotai';
 import { atomFamily, RESET } from 'jotai/utils';
 import type { Getter, PrimitiveAtom, WritableAtom } from 'jotai';
+import type { TMessage } from 'librechat-data-provider';
+import type { useStore } from 'jotai';
 import type {
   RunEnd,
   StoppedRun,
@@ -10,7 +12,7 @@ import type {
   SettledQueuedTurnReceipt,
 } from '../../core/steer/types';
 import type { Family } from './family';
-import { isStoppedRun } from '../../core/steer/queue';
+import { isStoppedRun, resolveDetachedRunEnd } from '../../core/steer/queue';
 
 /** A chat pane, keyed by its index (`0` for the main chat). */
 type PaneKey = string | number;
@@ -112,6 +114,82 @@ export function isDetachedRunManual(
   run: DetachedRun,
 ): boolean {
   return isStoppedRun(get(stopRequestedByConvoId(conversationId)), run.generationCreatedAt);
+}
+
+type QueueStore = ReturnType<typeof useStore>;
+
+/**
+ * A different run starting under the conversation owns its end from now on: an earlier run
+ * someone stopped watching is superseded, and a Stop belonged to that earlier run. Attaching
+ * again to the same generation keeps both, since that run's end is still owed and it was stopped.
+ */
+export function clearSupersededRunMarkers(
+  store: QueueStore,
+  conversationId: string,
+  isSameGeneration: (generationCreatedAt: number) => boolean,
+): void {
+  const stopFamily = stopRequestedByConvoId(conversationId);
+  const stopped = store.get(stopFamily);
+  if (stopped != null && !isSameGeneration(stopped.generationCreatedAt)) {
+    store.set(stopFamily, null);
+  }
+  const detachedFamily = detachedRunByConvoId(conversationId);
+  const detached = store.get(detachedFamily);
+  if (detached != null && !isSameGeneration(detached.generationCreatedAt)) {
+    store.set(detachedFamily, null);
+  }
+}
+
+/**
+ * A run's end reached the drain, so a marker left for the same run is settled and must not be
+ * resolved a second time on a later visit.
+ */
+export function settleDetachedRun(
+  store: QueueStore,
+  end: Pick<RunEnd, 'conversationId' | 'generationCreatedAt'>,
+): void {
+  if (end.conversationId == null) {
+    return;
+  }
+  const detachedFamily = detachedRunByConvoId(end.conversationId);
+  const detached = store.get(detachedFamily);
+  if (
+    detached != null &&
+    (end.generationCreatedAt == null || detached.generationCreatedAt === end.generationCreatedAt)
+  ) {
+    store.set(detachedFamily, null);
+  }
+}
+
+/**
+ * A run someone stopped watching has ended on the server, which deleted the job. Its stored
+ * response tells how it ended; parking that end under its conversation lets the queue drain
+ * send a follow-up queued during the run, as a followed run would have. A run the reader
+ * stopped is retired instead, its queue left for a manual send. `messages` must be history
+ * read after the run was known to be over: an earlier copy can hold the optimistic response,
+ * which lacks the stored stop and error flags. While no response of the run is stored the
+ * marker is kept, and the next visit tries again.
+ */
+export function parkDetachedRunEnd(
+  store: QueueStore,
+  conversationId: string,
+  detachedRun: DetachedRun,
+  messages: TMessage[] | undefined,
+): void {
+  const detachedFamily = detachedRunByConvoId(conversationId);
+  if (store.get(detachedFamily) !== detachedRun) {
+    return;
+  }
+  if (isDetachedRunManual(store.get, conversationId, detachedRun)) {
+    store.set(detachedFamily, null);
+    return;
+  }
+  const end = resolveDetachedRunEnd(conversationId, detachedRun, messages);
+  if (end == null) {
+    return;
+  }
+  store.set(detachedFamily, null);
+  store.set(pendingRunEndByConvoId(conversationId), end);
 }
 
 const clearFamily = <Param>(family: {

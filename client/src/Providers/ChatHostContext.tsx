@@ -1,16 +1,17 @@
 import { useMemo } from 'react';
-import { useSetAtom } from 'jotai';
+import { SIDE_CHAT_PANE } from '@librechat/chat/react';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
-import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
-import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
+import {
+  refetchMessagesOnMount,
+  useAbortStreamMutation,
+  useGetMessagesByConvoId,
+} from '~/data-provider';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import useTurnServices from '~/hooks/Chat/services';
 import useNewConvo from '~/hooks/useNewConvo';
 
@@ -87,10 +88,12 @@ function useMessageCache(): ChatMessageCache {
 
 /** The conversation's messages query. Refetches stale caches on mount: navigation invalidates
  *  (not removes) messages, so a warm conversation renders instantly from cache and reconciles in
- *  the background instead of unmounting into a spinner. */
+ *  the background instead of unmounting into a spinner. A payload or failure `ChatRoute` just
+ *  prefetched counts as this mount's own load. With `enabled: false` it is a second reader of
+ *  that query, which never fetches. */
 function useMessages(
   conversationId: string | undefined,
-  { isStreaming }: { isStreaming: boolean },
+  { isStreaming, enabled = true }: { isStreaming: boolean; enabled?: boolean },
 ): ChatMessagesQuery {
   const {
     data = null,
@@ -99,8 +102,9 @@ function useMessages(
   } = useGetMessagesByConvoId(
     conversationId ?? '',
     {
-      enabled: !!conversationId && conversationId !== Constants.SEARCH,
-      refetchOnMount: true,
+      enabled: enabled && !!conversationId && conversationId !== Constants.SEARCH,
+      /** A reader that only follows the query leaves its mount, and the prefetch's mark, alone. */
+      ...(enabled && { refetchOnMount: refetchMessagesOnMount }),
     },
     { isStreaming },
   );
@@ -111,17 +115,15 @@ function useMessages(
  *  services, thread selection, transport and settings. */
 export const appChatHost: ChatHost = {
   usePaneConversation: (index) => useChatSettings().usePaneConversationState(index),
-  useNewConversation: (index) => useNewConvo(index).newConversation,
+  /** A conversation beside the chat has no route: its pane changes it in place or not at all. */
+  useNewConversation: (index) =>
+    useNewConvo(index, { routed: index !== SIDE_CHAT_PANE }).newConversation,
   useTurnServices,
-  useLatestMessage: (index, key) => useLatestMessage(index, key),
-  useLatestMessageId: (index, key) => useLatestMessageId(index, key),
-  useSetSiblingIdx: (parentMessageId) => useSetAtom(siblingIdxFamily(siblingKey(parentMessageId))),
   /** `mutateAsync` is bound once per observer; the mutation result object is fresh every
    *  render and would defeat the contract's memo. */
   useAbortStream: () => useAbortStreamMutation().mutateAsync,
   useMessageCache,
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
-  getMappingOptions,
   useMessages,
 };
 

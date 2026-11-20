@@ -259,7 +259,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
       let fileId = item.fileId;
       if (!fileId) {
         const formData = new FormData();
-        formData.append('file', item.file);
+        formData.append('file', item.file, encodeURIComponent(item.file.name));
         formData.append('file_id', item.id);
         formData.append('endpoint', 'agents');
         formData.append('message_file', 'true');

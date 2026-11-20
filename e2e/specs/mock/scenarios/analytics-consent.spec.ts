@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   sendMessageAndWaitForCompletion,
@@ -8,6 +7,7 @@ import {
   NEW_CHAT_PATH,
 } from '../helpers';
 import { openSettings } from './ui-scale.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * A deployment that sets `ANALYTICS_GTM_ID` used to load Google Tag Manager on

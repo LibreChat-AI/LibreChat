@@ -1,8 +1,8 @@
 import { memo, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
-import { Constants } from 'librechat-data-provider';
 import { ThinkingControl } from '@librechat/chat/components';
 import { queuedMessagesByConvoId } from '@librechat/chat/react';
+import { Constants, reasoningSettingKeys } from 'librechat-data-provider';
 import { getBranchReasoning, getAppendParentMessageId } from '@librechat/chat';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 import { useGetStartupConfig } from '~/data-provider';
@@ -27,17 +27,27 @@ interface ThinkingProps {
   hasAddedConversation: boolean;
 }
 
+const REASONING_KEYS: ReadonlySet<string> = new Set(reasoningSettingKeys);
+
 function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
   const { conversation, latestMessageId, getMessages } = useChatContext();
   const { data: startupConfig } = useGetStartupConfig();
   const parametersEnabled = startupConfig?.interface?.parameters;
-  const modelSpec = getModelSpec({ specName: conversation?.spec, startupConfig });
+  const specName = conversation?.spec;
+  const modelSpec = getModelSpec({ specName, startupConfig });
+  const enforced = startupConfig?.modelSpecs?.enforce === true;
   const blockedReasoningKeys = useMemo(() => {
-    if (startupConfig?.modelSpecs?.enforce !== true || modelSpec?.preset == null) {
+    if (!enforced) {
       return undefined;
     }
-    return new Set(Object.keys(modelSpec.preset));
-  }, [modelSpec?.preset, startupConfig?.modelSpecs?.enforce]);
+    if (modelSpec?.preset != null) {
+      return new Set(Object.keys(modelSpec.preset));
+    }
+    /* A spec the served config omits is a hidden one (`showInMenu: false`). The server still
+       resolves it and refuses a pick of any key its preset sets, but that preset never reaches
+       the client, so no reasoning key can be known free. */
+    return specName != null && specName !== '' ? REASONING_KEYS : undefined;
+  }, [enforced, modelSpec?.preset, specName]);
   const queueKey =
     conversation?.conversationId != null && conversation.conversationId !== ''
       ? conversation.conversationId

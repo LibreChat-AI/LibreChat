@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
 import type { ResponsesApiRouting } from './types';
 import { EModelEndpoint, isAgentsEndpoint, isDocumentSupportedProvider } from './schemas';
-import { gpt6Tier, gptPointReleaseFamily } from './families';
+import { gpt6Tier, gpt6Release, gptPointReleaseFamily } from './families';
 import { normalizeEndpointName } from './utils';
 
 /** Parallel storage deletions during rollback of a failed skill archive import. */
@@ -273,7 +273,7 @@ export const resolveEffectiveUseResponsesApi = ({
   }
   const tier = gpt6Tier(model);
   if (!policy && tier) {
-    policy = routing?.[`gpt-6-${tier}-*`];
+    policy = routing?.[`gpt-6-${tier}-*`] ?? routing?.[`${gpt6Release(model)}-*`];
   }
   policy ??= routing?.['*'];
   if (!policy) return value ?? undefined;

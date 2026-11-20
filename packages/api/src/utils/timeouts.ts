@@ -2,11 +2,13 @@ import type { AppConfig } from '@librechat/data-schemas';
 
 /** Budgets for outbound calls made inside a request, used when `timeouts` omits a key. */
 export const DEFAULT_OUTBOUND_TIMEOUTS_MS = {
+  directoryMs: 30_000,
   ragMs: 30_000,
   ocrMs: 300_000,
   actionsMs: 300_000,
   moderationMs: 10_000,
   imageFetchMs: 30_000,
+  fileFetchMs: 300_000,
   toolsMs: 60_000,
   speechMs: 300_000,
   imageGenerationMs: 300_000,

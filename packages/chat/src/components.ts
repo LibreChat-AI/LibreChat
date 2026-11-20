@@ -16,7 +16,19 @@ export type {
   ToolRenderProps,
 } from './components/Part';
 
+export {
+  AnimatedText,
+  createFadePlugin,
+  FADE_DURATION_MS,
+  FADE_STAGGER_MS,
+  FADE_STAGGER_MAX_MS,
+  FADE_HYDRATION_THRESHOLD,
+} from './components/fade';
+export type { FadePlugin } from './components/fade';
+
 /** Composer: the chat input, its controls and the steering queue. */
+export { default as BrowserAudio } from './components/composer/Audio';
+export type { BrowserAudioProps } from './components/composer/Audio';
 export { default as StopButton } from './components/composer/StopButton';
 export { default as MentionItem } from './components/composer/MentionItem';
 export { default as MentionPopover } from './components/composer/popover/Mention';
@@ -29,6 +41,8 @@ export {
   COMPOSER_FOCUS_OWNER_ATTRIBUTE,
 } from './components/composer/Frame';
 export { default as CommandPopover } from './components/composer/popover/Command';
+export { default as ComposerPalette } from './components/composer/Palette';
+export type { ComposerPaletteProps } from './components/composer/Palette';
 export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
 export { default as composerClearance } from './components/composer/clearance';
@@ -65,12 +79,25 @@ export { default as SourceIcon } from './components/composer/files/SourceIcon';
 export { default as FilePreview } from './components/composer/files/FilePreview';
 export { default as ProgressCircle } from './components/composer/files/ProgressCircle';
 export { default as FileContainer } from './components/composer/files/FileContainer';
+export { default as FileRow, FileRowWrapper } from './components/composer/files/FileRow';
+export type { FileRowProps } from './components/composer/files/FileRow';
+export { default as ComposerTray } from './components/composer/Tray';
+export type { TrayProps as ComposerTrayProps } from './components/composer/Tray';
 export { default as DragDropOverlay } from './components/composer/files/DragDropOverlay';
 export { default as PastedTextDialog } from './components/composer/files/PastedTextDialog';
 export { getFileType } from './components/composer/files/kinds';
 export type { FileKind } from './components/composer/files/kinds';
 export type { SubtitleAction } from './components/composer/files/FileContainer';
 export type { PastedTextEdit } from './components/composer/files/PastedTextDialog';
+export { composerChipClasses } from './components/composer/chip';
+export type { ComposerChipClasses } from './components/composer/chip';
+export { default as CodeWorkspaceMenu } from './components/composer/Workspace';
+export type {
+  WorkspaceLocalize,
+  WorkspaceMachineQuery,
+  CodeWorkspaceMenuProps,
+  CodeWorkspaceMenuWorkspace,
+} from './components/composer/Workspace';
 
 /** Message list building blocks: rows, headers, sibling navigation and the streaming timer. */
 export { default as SubRow } from './components/messages/SubRow';
@@ -87,7 +114,13 @@ export {
 export { messageFooterClasses, revealOnRowHoverClasses } from './components/messages/styles';
 export { getRunStepDurationLabels, getElapsedDurationLabels } from './components/messages/duration';
 export type { RunStepDurationLabels } from './components/messages/duration';
+export { default as MessageFiles } from './components/messages/Files';
 export { default as MessageRow } from './components/messages/MessageRow';
+export { default as WakeupRow } from './components/messages/WakeupRow';
+export { default as PendingTurn } from './components/messages/PendingTurn';
+export type { PendingTurnProps } from './components/messages/PendingTurn';
+export { default as PendingSteers } from './components/messages/PendingSteers';
+export type { PendingSteersProps } from './components/messages/PendingSteers';
 export { default as MessageTimestamp } from './components/messages/MessageTimestamp';
 export { getMessageRowWidthClass } from './components/messages/width';
 export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';
@@ -103,6 +136,12 @@ export { default as MessageNav } from './components/messages/MessageNav';
 export type { MessageFooterProps } from './components/messages/MessageFooter';
 export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './components/messages/labels';
 
+export { default as PhaseLabel, FOLD_EASING } from './components/parts/PhaseLabel';
+export { default as ToolGroupHeader } from './components/parts/group/Header';
+export type { ToolGroupHeaderProps } from './components/parts/group/Header';
+export { default as ToolGroupBody } from './components/parts/group/Body';
+export type { ToolGroupBodyProps } from './components/parts/group/Body';
+
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
 export { default as BareStatus } from './components/parts/BareStatus';
@@ -116,12 +155,20 @@ export {
   TOOL_ROW_CLASSES,
   FOLD_RAIL_CLASSES,
   FOLD_GLYPH_SELECTOR,
+  PROGRESS_TEXT_CONTENT,
+  PROGRESS_TEXT_WRAPPER,
   ARTIFACT_ROW_NAV_SPACING,
 } from './components/parts/rows';
 export { default as AskOptions } from './components/parts/AskOptions';
 export { default as AskPopover } from './components/composer/ask/Popover';
 export type { LiveAsk, AskAnswerView, AskPopoverProps } from './components/composer/ask/Popover';
 export type { AskOption } from './components/parts/AskOptions';
+export { default as AutoHeight } from './components/parts/AutoHeight';
+export { default as AskUserQuestion } from './components/parts/ask/Question';
+export { default as AskUserQuestions } from './components/parts/ask/Questions';
+export { default as AskUserQuestionCall } from './components/parts/ask/Call';
+export { default as AskUserQuestionProgress } from './components/parts/ask/Progress';
+export type { AskCardMode } from './components/parts/ask/Question';
 export { default as SkillPills } from './components/parts/SkillPills';
 export type { SkillPillsSource } from './components/parts/SkillPills';
 export { default as MessageQuotes } from './components/parts/MessageQuotes';
@@ -134,6 +181,45 @@ export {
   buildEditPreviewDiff,
 } from './components/parts/DiffView';
 export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/DiffView';
+
+/** Parts: content leaves moved from the app. */
+export { default as Container } from './components/parts/Container';
+export { default as MemoryInfo } from './components/parts/MemoryInfo';
+export { default as DialogImage } from './components/parts/DialogImage';
+export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
+export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
+export { default as ToolCall } from './components/parts/ToolCall';
+export type { ToolCallProps } from './components/parts/ToolCall';
+export { default as ProgressText } from './components/parts/ProgressText';
+export type { ProgressTextProps } from './components/parts/ProgressText';
+export { default as SubagentCall } from './components/parts/SubagentCall';
+export type { SubagentCallProps, SubagentCallContext } from './components/parts/SubagentCall';
+export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
+export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
+export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
+export {
+  FailedRevealPill,
+  useFailedReveal,
+  FailedRevealContext,
+  useFailedRevealTrigger,
+} from './components/parts/reveal';
+export type { FailedReveal } from './components/parts/reveal';
+export {
+  FoldRail,
+  RailGlyph,
+  litFoldPath,
+  useFoldPath,
+  useRailHover,
+  revealFoldHeader,
+  FoldHeaderContext,
+} from './components/parts/rail';
+export type { LitRail, RailHover } from './components/parts/rail';
+export {
+  backgroundTaskNoteKey,
+  backgroundTaskNoticeKey,
+  backgroundTaskMessageKey,
+  backgroundListGuidanceKeys,
+} from './components/parts/guidance';
 export { default as AttachmentImage } from './components/composer/files/Image';
 export { default as ImagePreview } from './components/composer/files/ImagePreview';
 export { default as SendButton } from './components/composer/SendButton';
@@ -150,6 +236,16 @@ export { default as ReasoningControl } from './components/composer/bar/Reasoning
 export type { ReasoningControlProps } from './components/composer/bar/Reasoning';
 export { default as ThinkingControl } from './components/composer/bar/Thinking';
 export type { ThinkingControlProps } from './components/composer/bar/Thinking';
+export { default as ContextUsage } from './components/composer/usage/Usage';
+export type { UsageProps as ContextUsageProps } from './components/composer/usage/Usage';
+export { default as ContextGauge } from './components/composer/usage/Gauge';
+export type { GaugeProps as ContextGaugeProps, GaugeTone } from './components/composer/usage/Gauge';
+export { default as ContextUsagePopover } from './components/composer/usage/Popover';
+export type { UsagePopoverProps as ContextUsagePopoverProps } from './components/composer/usage/Popover';
+export { default as CompactAction } from './components/composer/usage/CompactAction';
+export type { CompactActionProps } from './components/composer/usage/CompactAction';
+export { default as ContextBreakdown } from './components/composer/usage/Breakdown';
+export type { BreakdownProps as ContextBreakdownProps } from './components/composer/usage/Breakdown';
 export { default as EscalateNowButton } from './components/composer/EscalateNowButton';
 export { default as DuringRunSendButton } from './components/composer/DuringRunSendButton';
 export { composerHintId } from './components/composer/bar/Hints';
@@ -165,9 +261,18 @@ export { getChatPaneView } from './components/pane/view';
 export type { ChatPaneProps } from './components/pane/ChatPane';
 export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
 export { default as ChatScreen } from './components/pane/Screen';
+export { default as ChatStarters } from './components/pane/starters';
 export { getChatPaneChrome } from './components/pane/chrome';
-export type { ChatScreenProps, ChatScreenComposerProps } from './components/pane/Screen';
+export { loadScreenMessages, loadFollowedThread } from './components/pane/load';
+export type { FollowedThreadProps } from './components/pane/Followed';
+export type {
+  ChatScreenProps,
+  ChatScreenComposerProps,
+  ChatScreenMessagesProps,
+  ChatScreenMessagesSlots,
+} from './components/pane/Screen';
 export type { ChatPaneChrome } from './components/pane/chrome';
+export type { ChatStartersProps } from './components/pane/starters';
 
 /** Message list root: the scroll container, mount window and pending tail around the thread. */
 export { default as MessagesView } from './components/messages/MessagesView';
@@ -179,6 +284,18 @@ export type {
 } from './components/messages/MessagesView';
 
 export { EventSubagentActivityGroup } from './components/subagents/activity';
+export { default as ThreadMessage } from './components/messages/thread/Message';
+export { default as MessageContent } from './components/messages/MessageContent';
+export { default as ContentRender } from './components/messages/ContentRender';
+export { default as MessageRender } from './components/messages/MessageRender';
+export { default as MessageParts } from './components/messages/MessageParts';
+export { default as Message } from './components/messages/Message';
+export { default as useMessageActions } from './components/messages/useMessageActions';
+export type { TMessageActions, MessageActions } from './components/messages/useMessageActions';
+export { default as useMessageHelpers } from './components/messages/useMessageHelpers';
+export type { MessageHelpers } from './components/messages/useMessageHelpers';
+export { default as useAttachments } from './components/messages/useAttachments';
+export { useSearchResultsByTurn } from './components/messages/useSearchResultsByTurn';
 export { default as ScrollToBottom } from './components/messages/ScrollToBottom';
 export {
   SubagentStatus,
@@ -187,3 +304,92 @@ export {
   SubagentActivityContent,
   SubagentActivityScrollSurface,
 } from './components/subagents/transcript';
+export { default as SubagentConversation } from './components/subagents/conversation';
+export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
+export { loadSubagentThreadPanel } from './components/subagents/load';
+export { loadSideChatPanel } from './components/side/load';
+
+/** Part helpers moved from the app: copy and action buttons, language icons, expand/collapse. */
+export {
+  default as useExpandCollapse,
+  EXPAND_TRANSITION,
+  REDUCED_MOTION_EXPAND_TRANSITION,
+} from './components/parts/useExpandCollapse';
+export { default as CopyButton } from './components/parts/CopyButton';
+export { default as ActionButton } from './components/parts/ActionButton';
+export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
+export { default as RetrievalCall } from './components/parts/Retrieval';
+export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
+export {
+  bySalience,
+  byEntrySalience,
+  displayFilename,
+  attachmentSalience,
+  isTextAttachment,
+  isImageAttachment,
+  renderAttachmentKey,
+  isInternalSandboxArtifact,
+} from './components/parts/attachmentTypes';
+
+/** Tool approval: the shared decision state and the composer's review panel. */
+export {
+  default as ApprovalProvider,
+  ResumeSubmitContext,
+  useApprovalContext,
+  useAskSubmitStatus,
+  useResumeSubmit,
+} from './components/approval/context';
+export type {
+  ResumeSubmitTransport,
+  ToolApprovalDecisionDraft,
+} from './components/approval/context';
+export { PendingToolApprovalButton, PendingToolApprovalPanel } from './components/approval/Review';
+export type {
+  ApprovalRequestRenderProps,
+  ApprovalReviewCopy,
+  PendingToolApprovalButtonProps,
+  PendingToolApprovalPanelProps,
+} from './components/approval/Review';
+
+/** Reasoning, thinking and web search parts, with the source and viewport helpers they share. */
+export {
+  default as Thinking,
+  FloatingThinkingBar,
+  ThinkingButton,
+  ThinkingContent,
+  ThinkingLabel,
+} from './components/parts/Thinking';
+export {
+  default as Reasoning,
+  ReasoningCompact,
+  ReasoningMarker,
+  StreamingThoughtPeek,
+} from './components/parts/Reasoning';
+export { default as WebSearch } from './components/parts/WebSearch';
+export type {
+  WebSearchFailedCall,
+  WebSearchFaviconProps,
+  WebSearchStackProps,
+} from './components/parts/WebSearch';
+export {
+  collectSources,
+  getCleanDomain,
+  getSourceDomains,
+  getUniqueDomainSources,
+} from './components/parts/sources';
+
+export { HiddenAttachmentsContext, useVisibleAttachments } from './components/parts/media';
+/** Phase header presentation; hosts retain live activity and fold state. */
+export { default as PhaseMarker, PhaseGlyph } from './components/parts/phase/Marker';
+export type { PhaseMarkerProps, PhaseGlyphProps } from './components/parts/phase/Marker';
+export { default as LivePhaseHeader } from './components/parts/phase/Live';
+export type { LivePhaseHeaderProps } from './components/parts/phase/Live';
+export {
+  getLiveActivity,
+  blocksLiveFold,
+  getSpanIconNames,
+  LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
+} from './components/parts/phase/live';
+export type { LiveActivity } from './components/parts/phase/live';

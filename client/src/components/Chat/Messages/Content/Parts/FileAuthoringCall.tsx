@@ -103,8 +103,9 @@ function buildEditArgsPreview(args: ToolCallArgs): TextEditPreview[] {
   })).filter((edit) => edit.oldText || edit.newText);
 }
 
-/** The host-authored summaries a successful create or edit returns. */
-const SUCCESS_SUMMARY = /^(?:Created|Updated|Edited)\b/;
+/** The host-authored summary a successful create or edit returns: one line led by the verb.
+ *  Anything after it (a warning, a syntax-check result) is output the reader still needs. */
+const SUCCESS_SUMMARY = /^(?:Created|Updated|Edited)\b[^\r\n]*$/;
 
 export default function FileAuthoringCall({
   toolName,
@@ -199,7 +200,7 @@ export default function FileAuthoringCall({
   /** The row already says what happened, so a success summary is not repeated
    *  under the preview. Anything else, an error above all, stays visible. */
   const showOutputSection =
-    hasOutputSection && (phase === 'failed' || !SUCCESS_SUMMARY.test(output));
+    hasOutputSection && (phase === 'failed' || !SUCCESS_SUMMARY.test(output.trimEnd()));
   const Icon = isCreate && !overwrote ? FilePlus2 : FilePenLine;
   let finishedKey: 'com_ui_created_file' | 'com_ui_updated_file' | 'com_ui_edited_file' =
     'com_ui_edited_file';

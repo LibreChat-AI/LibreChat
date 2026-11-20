@@ -13,10 +13,13 @@ import {
   fetchJson,
   getAccessToken,
   mockReply,
+  selectModelSpec,
   sendMessageAndWaitForCompletion,
 } from './helpers';
 
 const MCP_SERVER_NAME = 'e2e-memory';
+/** The Tool Library and the agent's tool rows label the server by its config `title`. */
+const MCP_SERVER_TITLE = 'E2E Memory';
 const MCP_TOOL_NAME = 'remember_fact';
 const MCP_SERVER_TOOL_ID = `sys__server__sys_mcp_${MCP_SERVER_NAME}`;
 const MCP_TOOL_ID = `${MCP_TOOL_NAME}_mcp_${MCP_SERVER_NAME}`;
@@ -65,7 +68,9 @@ async function addMCPServerTools(page: Page, form: Locator) {
   await expect(dialog).toBeVisible();
 
   await dialog.getByRole('textbox', { name: 'Search tools…' }).fill(MCP_SERVER_NAME);
-  const serverCard = dialog.getByRole('button', { name: new RegExp(MCP_SERVER_NAME) }).first();
+  const serverCard = dialog
+    .getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) })
+    .first();
   await expect(serverCard).toBeVisible();
 
   await serverCard.click();
@@ -73,14 +78,63 @@ async function addMCPServerTools(page: Page, form: Locator) {
 
   await dialog.getByRole('button', { name: /^Close( dialog)?$/ }).click();
   await expect(dialog).toBeHidden();
-  await expect(form.getByText(MCP_SERVER_NAME, { exact: true })).toBeVisible();
+  await expect(form.getByText(MCP_SERVER_TITLE, { exact: true })).toBeVisible();
 }
 
 async function expectSelectedMCPServerTools(form: Locator) {
-  await expect(form.getByText(MCP_SERVER_NAME, { exact: true })).toBeVisible();
+  await expect(form.getByText(MCP_SERVER_TITLE, { exact: true })).toBeVisible();
 }
 
 test.describe('agent builder MCP tools', () => {
+  test('discovers builder tools while the current chat uses an ephemeral agent', async ({
+    page,
+  }) => {
+    await page.goto('/c/new');
+    await selectModelSpec(page, 'E2E Builder MCP');
+    // Start with a cold query cache and a model spec whose composer does not observe tools.
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Select a model' }).first()).toContainText(
+      'E2E Builder MCP',
+    );
+
+    const toolResponses: string[] = [];
+    page.on('response', (response) => {
+      const pathname = new URL(response.url()).pathname;
+      if (pathname === '/api/mcp/tools' || pathname === '/api/mcp/connection/status') {
+        toolResponses.push(pathname);
+      }
+    });
+    const form = await openAgentBuilder(page, { navigate: false });
+    await form.getByRole('button', { name: 'Add tools' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Tool Library' });
+    await dialog.getByRole('textbox', { name: 'Search tools…' }).fill(MCP_SERVER_NAME);
+    const serverCard = dialog.getByRole('button', { name: new RegExp(MCP_SERVER_TITLE) }).first();
+    await expect(serverCard).toBeVisible();
+
+    await serverCard.locator('..').getByRole('button', { name: 'Configure', exact: true }).click();
+    const details = page.getByRole('dialog', { name: MCP_SERVER_TITLE, exact: true });
+    await expect(details).toBeVisible();
+    await expect.soft(details.getByText('Connected', { exact: true })).toBeVisible();
+    await test.info().attach('builder-status', {
+      body: await page.screenshot({
+        path: test.info().outputPath('builder-status.png'),
+        animations: 'disabled',
+      }),
+      contentType: 'image/png',
+    });
+
+    // This must be populated by the builder itself; prefetching the catalog through the
+    // test API or selecting a persistent chat agent would hide the regression.
+    await expect
+      .poll(() => toolResponses)
+      .toEqual(expect.arrayContaining(['/api/mcp/tools', '/api/mcp/connection/status']));
+    await details.getByRole('button', { name: /^Close( dialog)?$/ }).click();
+    await serverCard.click();
+    await expect(serverCard).toHaveAttribute('aria-pressed', 'true');
+    await dialog.getByRole('button', { name: /^Close( dialog)?$/ }).click();
+    await expect(form.getByText(MCP_SERVER_TITLE, { exact: true })).toBeVisible();
+  });
+
   test('creates an agent with MCP server tools and persists the selection', async ({ page }) => {
     test.setTimeout(120000);
 

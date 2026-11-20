@@ -55,6 +55,31 @@ describe('balanceController', () => {
     });
   });
 
+  it('keeps the period start that validates a stored allotment without auto-refill', async () => {
+    const lastRefill = new Date('2026-07-01T00:00:00.000Z');
+    const res = createResponse();
+    res.locals.balanceConfigEnabled = true;
+    res.locals.balanceData = {
+      _id: 'balance-1',
+      tokenCredits: 100,
+      autoRefillEnabled: false,
+      refillAmount: 500,
+      lastRefill,
+      allotment: 1000,
+      allottedAt: lastRefill,
+    };
+
+    await balanceController({ user: { id: 'user-1' } }, res);
+
+    expect(res.json).toHaveBeenCalledWith({
+      tokenCredits: 100,
+      autoRefillEnabled: false,
+      lastRefill,
+      allotment: 1000,
+      allottedAt: lastRefill,
+    });
+  });
+
   it('returns not found when balance is enabled and no record exists', async () => {
     findBalanceByUser.mockResolvedValue(null);
     const req = {

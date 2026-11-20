@@ -13,7 +13,10 @@ const { getAppConfig } = require('~/server/services/Config');
 const db = require('~/models');
 
 const apiKeyMiddleware = createRequireApiKeyAuth({
+  authorizeBinding: (...args) =>
+    require('~/server/services/ChannelAuthority').authorizeChannelResponseKeyRequest(...args),
   validateAgentApiKey: db.validateAgentApiKey,
+  validateBoundAgentApiKey: db.validateBoundAgentApiKey,
   findUser: db.findUser,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
 });
@@ -28,10 +31,14 @@ const requireRemoteAgentAuth = createRemoteAgentAuth({
   recordAuditEntry: db.recordAuditEntry,
 });
 
-const requireAgentManagementAuth = createAgentManagementAuth({
+const managementAuthDeps = {
   findUser: db.findUser,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
   getAppConfig,
+};
+const requireAgentManagementAuth = createAgentManagementAuth(managementAuthDeps);
+const requireConversationReadAuth = createAgentManagementAuth(managementAuthDeps, {
+  requireConversationRead: true,
 });
 
 const checkRemoteAgentsFeature = generateCheckAccess({
@@ -54,5 +61,6 @@ module.exports = {
   preAuthTenantMiddleware,
   requireRemoteAgentAuth,
   requireAgentManagementAuth,
+  requireConversationReadAuth,
   checkRemoteAgentsFeature,
 };

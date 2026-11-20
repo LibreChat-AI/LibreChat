@@ -6,6 +6,7 @@ on:
     paths:
       - 'e2e/byom/**'
       - '.github/workflows/workspace-acceptance.yml'
+      - '.github/actions/mongodb-binary/**'
   workflow_dispatch:
 
 permissions:
@@ -39,7 +40,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
 
       - name: Install native prerequisites
@@ -58,6 +59,9 @@ jobs:
           npm ci
           npm run e2e:prepare
           npx playwright install chromium
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
 
       - name: Build the real Code API and worker
         run: |

@@ -2,7 +2,7 @@ import { useMemo, useContext, createContext } from 'react';
 import { X, PlusCircle } from 'lucide-react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { Button, ControlCombobox } from '@librechat/client';
-import type { Agent, TMessage } from 'librechat-data-provider';
+import type { Agent, TMessage, ModelSpecHandoffTarget } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { OptionWithIcon } from '~/common';
 import MessageIcon from '~/components/Share/MessageIcon';
@@ -14,12 +14,12 @@ export const AgentPickerPortalContext = createContext<HTMLElement | null>(null);
 const AGENT_MESSAGE = { endpoint: EModelEndpoint.agents, isCreatedByUser: false } as TMessage;
 
 /** Renders an agent's avatar/icon as used in combobox options and select triggers. */
-export const agentIcon = (agent?: Agent | false): ReactNode => (
+export const agentIcon = (agent?: Agent | ModelSpecHandoffTarget | false): ReactNode => (
   <MessageIcon message={AGENT_MESSAGE} agent={agent} />
 );
 
 /** Fixed-size circular agent avatar for list rows. */
-export function AgentGlyph({ agent }: { agent?: Agent }) {
+export function AgentGlyph({ agent }: { agent?: Agent | ModelSpecHandoffTarget }) {
   return (
     <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full">
       {agentIcon(agent)}
@@ -31,14 +31,25 @@ interface UseSelectableAgentsParams {
   currentAgentId: string;
   /** Agent ids to omit from the options (e.g. already-selected ones). */
   exclude?: string[];
+  additionalAgents?: ModelSpecHandoffTarget[];
 }
 
 /**
  * Builds the list of agents this agent can collaborate with (everything except
  * itself and any excluded ids), plus a lookup for a single agent's details.
  */
-export function useSelectableAgents({ currentAgentId, exclude }: UseSelectableAgentsParams) {
-  const agentsMap = useAgentsMapContext();
+export function useSelectableAgents({
+  currentAgentId,
+  exclude,
+  additionalAgents,
+}: UseSelectableAgentsParams) {
+  const savedAgents = useAgentsMapContext();
+  const agentsMap = useMemo(() => {
+    if (!additionalAgents?.length) return savedAgents;
+    const map: Record<string, Agent | ModelSpecHandoffTarget | undefined> = { ...savedAgents };
+    for (const agent of additionalAgents) map[agent.id] = agent;
+    return map;
+  }, [savedAgents, additionalAgents]);
   const excludeKey = (exclude ?? []).join(',');
 
   const options = useMemo<OptionWithIcon[]>(() => {
@@ -61,7 +72,7 @@ export function useSelectableAgents({ currentAgentId, exclude }: UseSelectableAg
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentsMap, currentAgentId, excludeKey]);
 
-  const getAgent = (id: string): Agent | undefined => agentsMap?.[id];
+  const getAgent = (id: string): Agent | ModelSpecHandoffTarget | undefined => agentsMap?.[id];
 
   return { options, getAgent };
 }
@@ -169,7 +180,7 @@ export function AgentRow({ children, onRemove, removeLabel }: AgentRowProps) {
 }
 
 interface StaticAgentRowProps {
-  agent?: Agent;
+  agent?: Agent | ModelSpecHandoffTarget;
   name: string;
   onRemove: () => void;
   removeLabel: string;

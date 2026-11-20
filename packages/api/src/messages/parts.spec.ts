@@ -156,7 +156,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongod.stop();
+  await mongod?.stop();
 });
 
 beforeEach(async () => {

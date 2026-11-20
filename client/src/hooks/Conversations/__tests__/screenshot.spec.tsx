@@ -3,9 +3,9 @@ import download from 'downloadjs';
 import { toCanvas } from 'html-to-image';
 import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
-import { completeProgressiveRowMounts } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { completeProgressiveRowMounts, revealOffscreenRows } from '@librechat/chat/react';
 import type { TMessage, TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { ScreenshotProvider, useScreenshot } from '~/hooks/ScreenshotContext';
@@ -22,6 +22,7 @@ jest.mock('html-to-image', () => ({ toCanvas: jest.fn() }));
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   completeProgressiveRowMounts: jest.fn(),
+  revealOffscreenRows: jest.fn(),
 }));
 
 const sourceId = '11111111-1111-4111-8111-111111111111';
@@ -100,8 +101,11 @@ function canvas() {
   });
   return element;
 }
+const resumeSkipping = jest.fn();
 beforeEach(() => {
+  resumeSkipping.mockClear();
   jest.mocked(completeProgressiveRowMounts).mockResolvedValue(undefined);
+  jest.mocked(revealOffscreenRows).mockReset().mockReturnValue(resumeSkipping);
   jest.mocked(toCanvas).mockResolvedValue(canvas());
 });
 
@@ -112,6 +116,31 @@ it('downloads an unchanged unprotected capture', async () => {
   });
   expect(toCanvas).toHaveBeenCalledWith(target, expect.anything());
   expect(download).toHaveBeenCalledTimes(1);
+});
+
+it('lays out every row before cloning the thread and resumes skipping afterwards', async () => {
+  jest.mocked(toCanvas).mockImplementation(async () => {
+    /** A clone has no remembered size: skipped rows would be copied at their fallback height. */
+    expect(revealOffscreenRows).toHaveBeenCalledTimes(1);
+    expect(resumeSkipping).not.toHaveBeenCalled();
+    return canvas();
+  });
+  const { result } = setup();
+  await act(async () => {
+    await result.current.exportConversation();
+  });
+  expect(toCanvas).toHaveBeenCalledTimes(1);
+  expect(resumeSkipping).toHaveBeenCalledTimes(1);
+});
+
+it('resumes skipping rows when the capture fails', async () => {
+  jest.mocked(toCanvas).mockRejectedValue(new Error('capture failed'));
+  const { result } = setup();
+  await act(async () => {
+    await result.current.exportConversation().catch(() => undefined);
+  });
+  expect(revealOffscreenRows).toHaveBeenCalledTimes(1);
+  expect(resumeSkipping).toHaveBeenCalledTimes(1);
 });
 
 it('rejects navigation to a protected transcript during progressive mounting', async () => {
@@ -236,4 +265,30 @@ it('does not revive a cancelled capture after navigating away and back', async (
     await exporting;
   });
   expect(download).not.toHaveBeenCalled();
+});
+
+describe('when the screenshot library chunk cannot load', () => {
+  afterEach(() => {
+    delete window.__lcRecoverStaleAssets;
+    jest.doMock('html-to-image', () => ({ toCanvas }));
+  });
+
+  it('reports the failure, asks for stale-asset recovery and downloads nothing', async () => {
+    const recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    jest.resetModules();
+    jest.doMock('html-to-image', () => {
+      throw new TypeError('Failed to fetch dynamically imported module: /assets/export-old.js');
+    });
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { result } = setup();
+    await act(async () => {
+      await result.current.exportConversation();
+    });
+    expect(download).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'com_nav_export_screenshot_error' }),
+    );
+    expect(recover).toHaveBeenCalledTimes(1);
+  });
 });

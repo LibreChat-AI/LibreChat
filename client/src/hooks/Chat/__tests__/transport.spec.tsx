@@ -825,9 +825,17 @@ describe('chat transport boundary', () => {
       set(store.conversationByIndex(0), {
         conversationId: 'convo-1',
         endpoint: 'agents',
+        model: 'gpt-4o',
+        agent_id: 'agent-1',
       } as TConversation);
 
     const seedCache = (queryClient: QueryClient) => {
+      queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.agents]: { order: 0 } });
+      queryClient.setQueryData([QueryKeys.agent, 'agent-1'], {
+        id: 'agent-1',
+        provider: EModelEndpoint.openAI,
+        model: 'gpt-4o',
+      });
       queryClient.setQueryData(startupConfigKey(false), {});
       queryClient.setQueryData([QueryKeys.messages, 'convo-1'], []);
     };

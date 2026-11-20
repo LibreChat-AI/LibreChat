@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
 import { useToastContext } from '@librechat/client';
+import { isComposerFileTaken, markComposerFilesTaken } from '@librechat/chat';
 import {
   dataService,
   EToolResources,
@@ -30,9 +31,16 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import useFileUploadRouter from './useFileUploadRouter';
 import { getNewConversationDraftToken } from '~/utils';
+import { retainPasteUpload } from './useFileHandling';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useFileDeletion from './useFileDeletion';
 import { useLocalize } from '~/hooks';
+
+const attachmentIdsOf = (file: ExtendedFile): string[] =>
+  [file.file_id, file.temp_file_id].filter((id): id is string => id != null && id !== '');
+
+const actionIdOf = (file: Pick<ExtendedFile, 'file_id' | 'temp_file_id'>): string =>
+  file.temp_file_id || file.file_id;
 
 /**
  * Backs the paste editor: resolves an attached `pasted-text.txt` back to the text it holds, and
@@ -102,6 +110,8 @@ export default function usePastedTextEdit({
    * only copy left once the composer was rebuilt from a draft. */
   const resolveText = useCallback(
     async (file: ExtendedFile): Promise<string | null> => {
+      if (file.pastedText != null) return file.pastedText;
+      if (file.text != null) return file.text;
       if (file.file != null) {
         try {
           return await file.file.text();
@@ -162,6 +172,7 @@ export default function usePastedTextEdit({
       file: ExtendedFile,
     ) =>
       openRequestRef.current !== request ||
+      pendingActionIdsRef.current.has(actionIdOf(file)) ||
       conversationIdRef.current !== conversationIdAtOpen ||
       getNewConversationDraftToken(index) !== draftTokenAtOpen ||
       !isAttachedToComposer(file),
@@ -172,7 +183,7 @@ export default function usePastedTextEdit({
     async (file: ExtendedFile) => {
       /** A replacement for this chip is already in flight; acting on it again would
        * double-replace the same original. */
-      if (pendingActionIdsRef.current.has(file.file_id)) {
+      if (pendingActionIdsRef.current.has(actionIdOf(file))) {
         return;
       }
       const conversationIdAtOpen = conversationIdRef.current;
@@ -190,6 +201,7 @@ export default function usePastedTextEdit({
         showToast({ message: localize('com_ui_pasted_text_unavailable'), status: 'error' });
         return;
       }
+      retainPasteUpload(attachmentIdsOf(file));
       setEditing({
         file,
         text,
@@ -200,19 +212,20 @@ export default function usePastedTextEdit({
     [resolveText, showToast, localize, index, isOpenStale],
   );
 
-  const closeEditor = useCallback(() => setEditing(null), []);
+  const closeEditor = useCallback(() => {
+    openRequestRef.current++;
+    setEditing(null);
+  }, []);
 
   /** Removes the chip locally and schedules the upload's deletion. A paste restored from a
    * draft carries `attached: true`, which makes `deleteFile` keep the server record because a
    * restored file is normally shared. Foreign claims are checked before either path can schedule
    * deletion, because another tab or composer pane may still reference the upload. Both draft keys
    * are read, since a response finishing mid-edit migrates the record between them. */
-  const detach = useCallback(
+  const removeChip = useCallback(
     (file: ExtendedFile) => {
       const restored = file.attached === true;
-      const attachmentIds = [file.file_id, file.temp_file_id].filter(
-        (id): id is string => id != null && id !== '',
-      );
+      const attachmentIds = attachmentIdsOf(file);
       const draftIds = [
         getComposerDraftId(index, conversationIdRef.current, isSubmitting),
         getComposerDraftId(index, conversationIdRef.current, !isSubmitting),
@@ -274,6 +287,86 @@ export default function usePastedTextEdit({
     [deleteFile, setFiles, mutateAsync, index, isSubmitting],
   );
 
+  /** Drops a detached chip from this composer's persisted files draft. Autosave rewrites that
+   * draft in an effect that runs after the restore effect of the same commit, and the replacement
+   * upload's file-cache write is what schedules that restore: a draft still naming the original
+   * brings it back as a restored chip with no copy of its text. A record another open tab owns is
+   * not this composer's to write to, and a draft that never named the chip is not rewritten, since
+   * a rewrite stamps this tab as its owner once the previous owner is gone. Both keys are checked
+   * for the reason the removal reads both. */
+  const forgetInDrafts = useCallback(
+    (file: ExtendedFile) => {
+      if (!saveDrafts) {
+        return;
+      }
+      const attachmentIds = attachmentIdsOf(file);
+      for (const draftId of [
+        getComposerDraftId(index, conversationIdRef.current, isSubmitting),
+        getComposerDraftId(index, conversationIdRef.current, !isSubmitting),
+      ]) {
+        const draft = getFilesDraftCached(draftId);
+        if (!isFilesDraftOwnedByThisTab(draft)) {
+          continue;
+        }
+        for (const fileId of attachmentIds) {
+          if (
+            draft.fileIds.includes(fileId) ||
+            draft.pastedTextIds?.includes(fileId) === true ||
+            draft.pendingPastes[fileId] != null
+          ) {
+            removePendingTextAttachmentDraft({ id: draftId, fileId, removeFile: true });
+          }
+        }
+      }
+    },
+    [index, isSubmitting, saveDrafts],
+  );
+
+  /** Removes the chip from the composer, then from the draft that would restore it. The draft is
+   * cleaned last because the removal reads the paste claim it carries to decide whether the stored
+   * upload is this composer's to delete. */
+  const detach = useCallback(
+    (snapshot: ExtendedFile) => {
+      const identities = new Set(attachmentIdsOf(snapshot));
+      let file = snapshot;
+      for (const [key, current] of filesRef.current) {
+        if (identities.has(key) || attachmentIdsOf(current).some((id) => identities.has(id))) {
+          file = { ...snapshot, ...current };
+          break;
+        }
+      }
+      removeChip(file);
+      forgetInDrafts(file);
+    },
+    [removeChip, forgetInDrafts],
+  );
+
+  /** A successful edit or inline move consumes its entire replacement chain, not just the
+   * newest chip. Mark before detaching so abort callbacks cannot restore superseded edits. */
+  const consumePaste = useCallback(
+    (snapshot: ExtendedFile) => {
+      const consumed = new Map<string, ExtendedFile>();
+      let file: ExtendedFile | undefined = snapshot;
+      while (file != null && !consumed.has(actionIdOf(file))) {
+        consumed.set(actionIdOf(file), file);
+        const sourceId = file.replacesFileId;
+        file = undefined;
+        if (!sourceId) break;
+        for (const [key, candidate] of filesRef.current) {
+          if (key === sourceId || attachmentIdsOf(candidate).includes(sourceId)) {
+            file = candidate;
+            break;
+          }
+        }
+      }
+      for (const consumedFile of consumed.values()) {
+        markComposerFilesTaken(attachmentIdsOf(consumedFile));
+      }
+      for (const consumedFile of consumed.values()) detach(consumedFile);
+    },
+    [detach],
+  );
+
   /** The composer an edit belongs to: same conversation, same unsaved-chat identity. */
   const isOriginatingComposer = useCallback(
     (editConversationId: string | null, editDraftToken: symbol) =>
@@ -287,7 +380,29 @@ export default function usePastedTextEdit({
       if (editing == null) {
         return;
       }
-      const { file, conversationId: editConversationId, draftToken: editDraftToken } = editing;
+      const {
+        file: editedFile,
+        conversationId: editConversationId,
+        draftToken: editDraftToken,
+      } = editing;
+      if (pendingActionIdsRef.current.has(actionIdOf(editedFile))) return;
+      openRequestRef.current++;
+      // Pending corrections share one surviving source, even when an intermediate upload fails.
+      const superseded = new Map<string, ExtendedFile>();
+      let file = editedFile;
+      while (file.progress < 1 && file.replacesFileId && !superseded.has(actionIdOf(file))) {
+        const sourceId = file.replacesFileId;
+        let source: ExtendedFile | undefined;
+        for (const [key, candidate] of filesRef.current) {
+          if (key === sourceId || attachmentIdsOf(candidate).includes(sourceId)) {
+            source = candidate;
+            break;
+          }
+        }
+        if (source == null || source === file || superseded.has(actionIdOf(source))) break;
+        superseded.set(actionIdOf(file), file);
+        file = source;
+      }
       /** Refuse a save from a composer the paste did not come from: the detach and the
        * replacement upload would otherwise land in whatever the user switched to. */
       if (!isOriginatingComposer(editConversationId, editDraftToken)) {
@@ -321,14 +436,27 @@ export default function usePastedTextEdit({
         restoredToolResource ??
         (isAssistantsEndpoint(conversation?.endpoint) ? undefined : EToolResources.context);
 
+      for (const previous of superseded.values()) {
+        markComposerFilesTaken(attachmentIdsOf(previous));
+      }
+      for (const previous of superseded.values()) detach(previous);
+      const sourceIds = new Set(attachmentIdsOf(file));
+      setFailedEdits((queue) =>
+        queue.filter((failed) => !attachmentIdsOf(failed.file).some((id) => sourceIds.has(id))),
+      );
+      retainPasteUpload(attachmentIdsOf(file));
       setEditing(null);
       /** The original stays until the replacement is stored, but it stops accepting actions:
        * a second edit or a Move back against the same original would double-replace it. */
       const sourceId = file.file_id;
-      pendingActionIdsRef.current.add(sourceId);
+      const actionId = actionIdOf(file);
+      pendingActionIdsRef.current.add(actionId);
       setPendingActionIds(new Set(pendingActionIdsRef.current));
+      let settled = false;
       const settleAction = () => {
-        pendingActionIdsRef.current.delete(sourceId);
+        if (settled) return;
+        settled = true;
+        pendingActionIdsRef.current.delete(actionId);
         setPendingActionIds(new Set(pendingActionIdsRef.current));
       };
       /** The original stays until the replacement is stored. `routeFiles` resolving only means
@@ -353,7 +481,11 @@ export default function usePastedTextEdit({
        * another chip's dialog is open, the failed edit queues for the freed dialog instead of
        * being dropped: the failed upload's callback was its only remaining owner. */
       const restoreEdits = () => {
-        if (!isOriginatingComposer(editConversationId, editDraftToken)) {
+        if (
+          !isOriginatingComposer(editConversationId, editDraftToken) ||
+          isComposerFileTaken(uploadId) ||
+          !isAttachedToComposer(file)
+        ) {
           return;
         }
         const revived = {
@@ -370,9 +502,12 @@ export default function usePastedTextEdit({
       };
       const accepted = await routeFiles([replacement], toolResource, {
         fileId: uploadId,
+        pastedText: text,
         replacesFileId: sourceId,
         shouldCommit: () =>
-          isOriginatingComposer(editConversationId, editDraftToken) && isAttachedToComposer(file),
+          !isComposerFileTaken(uploadId) &&
+          isOriginatingComposer(editConversationId, editDraftToken) &&
+          isAttachedToComposer(file),
         onSuccess: () => {
           settleAction();
           /** `shouldCommit` only gates the queue, not the request: the composer can change
@@ -380,10 +515,11 @@ export default function usePastedTextEdit({
            * file belongs to was sent in the meantime. Either way the original is no longer
            * this composer's unsent chip to remove. */
           if (
+            !isComposerFileTaken(uploadId) &&
             isOriginatingComposer(editConversationId, editDraftToken) &&
             isAttachedToComposer(file)
           ) {
-            detach(file);
+            consumePaste(file);
           }
         },
         onError: () => {
@@ -410,6 +546,7 @@ export default function usePastedTextEdit({
         /** A send or navigation already took the original; reopening the editor or toasting a
          * save error would put a replacement into the emptied composer. */
         if (
+          !isComposerFileTaken(uploadId) &&
           isOriginatingComposer(editConversationId, editDraftToken) &&
           isAttachedToComposer(file)
         ) {
@@ -424,6 +561,7 @@ export default function usePastedTextEdit({
       conversation?.endpoint,
       isOriginatingComposer,
       isAttachedToComposer,
+      consumePaste,
       detach,
       routeFiles,
       showToast,
@@ -448,10 +586,12 @@ export default function usePastedTextEdit({
       /** Same lock as an edit: a replacement already in flight must not race a move, and a
        * second action must not race this move's own resolve. The ref is claimed before any
        * await so two clicks in the same turn cannot both proceed. */
-      if (pendingActionIdsRef.current.has(file.file_id)) {
+      if (pendingActionIdsRef.current.has(actionIdOf(file))) {
         return;
       }
-      pendingActionIdsRef.current.add(file.file_id);
+      const actionId = actionIdOf(file);
+      pendingActionIdsRef.current.add(actionId);
+      openRequestRef.current++;
       setPendingActionIds(new Set(pendingActionIdsRef.current));
       try {
         const conversationIdAtClick = conversationIdRef.current;
@@ -470,7 +610,7 @@ export default function usePastedTextEdit({
         }
 
         setEditing((current) => (current?.file.file_id === file.file_id ? null : current));
-        detach(file);
+        consumePaste(file);
 
         const textArea = textAreaRef.current;
         const current = textArea?.value ?? methods.getValues('text') ?? '';
@@ -485,17 +625,27 @@ export default function usePastedTextEdit({
         textArea.focus();
         textArea.setSelectionRange(next.length, next.length);
       } finally {
-        pendingActionIdsRef.current.delete(file.file_id);
+        pendingActionIdsRef.current.delete(actionId);
         setPendingActionIds(new Set(pendingActionIdsRef.current));
       }
     },
-    [resolveText, showToast, localize, detach, textAreaRef, methods, index, isAttachedToComposer],
+    [
+      resolveText,
+      showToast,
+      localize,
+      consumePaste,
+      textAreaRef,
+      methods,
+      index,
+      isAttachedToComposer,
+    ],
   );
 
   /** Whether a replacement upload or inline move is in flight for a source attachment; the
    * chip's actions hide while it is, so the same original cannot be acted on twice. */
   const isActionPending = useCallback(
-    (fileId: string) => pendingActionIds.has(fileId),
+    (file: Pick<ExtendedFile, 'file_id' | 'temp_file_id'>) =>
+      pendingActionIds.has(actionIdOf(file)),
     [pendingActionIds],
   );
 

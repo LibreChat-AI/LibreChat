@@ -14,6 +14,7 @@ import type {
   SteerQueueItem,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
   UsageMetadata,
   IJobStoreV2,
   JobStatus,
@@ -24,6 +25,7 @@ import type {
   ParkedSteerClaim,
   ScheduleCleanupScope,
   ScheduleProviderOwner,
+  ActiveJobFilter,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { RecoveredSteerPayload } from '~/stream/SteerRecovery';
@@ -149,6 +151,9 @@ interface ContentState {
  * - No chunk persistence needed - same instance handles generation and reconnects
  */
 export class InMemoryJobStore implements IJobStoreV2 {
+  readonly providerGuardedStatusTransitions = true as const;
+  readonly providerStartOwnership = true as const;
+  readonly providerTerminalPersistence = true as const;
   readonly durableScheduleReceipts = false;
   readonly detachedAgentEventActionStoreMode = 'process_local' as const;
 
@@ -776,10 +781,17 @@ export class InMemoryJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (job?.createdAt !== expectedCreatedAt || job.providerExecutionId !== providerExecutionId) {
       return false;
+    }
+    if (terminalPersistencePending) {
+      if (!['complete', 'error', 'aborted'].includes(job.status)) return false;
+      job.terminalPersistencePending = true;
+      job.terminalPersistenceOwner = 'external';
+      job.terminalPersistenceStartedAt ??= Date.now();
     }
     job.providerDrained = true;
     return true;
@@ -789,6 +801,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (
@@ -801,6 +814,8 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     job.providerDrained = false;
     job.providerExecutionStartedId = providerExecutionId;
+    if (ownerId != null) job.providerExecutionOwnerId = ownerId;
+    else delete job.providerExecutionOwnerId;
     return true;
   }
 
@@ -835,6 +850,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) {
       return false;
     }
+    if (
+      args.expectProviderExecutionId != null &&
+      job.providerExecutionId !== args.expectProviderExecutionId
+    )
+      return false;
     if (args.notAfterMs != null && Date.now() >= args.notAfterMs) {
       throw new JobStatusTransitionDeadlineError(args.notAfterMs);
     }
@@ -914,7 +934,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
       !job ||
       job.status !== args.from ||
       (args.expectActionId != null && job.pendingActionId !== args.expectActionId) ||
-      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt)
+      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) ||
+      (args.expectProviderExecutionId != null &&
+        job.providerExecutionId !== args.expectProviderExecutionId)
     ) {
       return null;
     }
@@ -1111,6 +1133,15 @@ export class InMemoryJobStore implements IJobStoreV2 {
       }
       this.extendRecoveryLease(streamId, job, this.runningRecoveryLeaseExpiry(now));
     }
+  }
+
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    if (job?.createdAt !== expectedCreatedAt || job.status !== 'running') {
+      return false;
+    }
+    this.recordActivity(streamId, expectedCreatedAt);
+    return true;
   }
 
   async hasJob(streamId: string): Promise<boolean> {
@@ -1392,16 +1423,34 @@ export class InMemoryJobStore implements IJobStoreV2 {
     return toDelete.length + retainedRecovered;
   }
 
+  /** Makes room at capacity. A finished job goes before any live one: evicting a running
+   * or paused generation ends a run somebody is still waiting on. A terminal job that still
+   * owes persistence, a host action, a schedule reconciliation or a provider drain is not
+   * finished, since its owner comes back for the record. */
   private async evictOldest(): Promise<void> {
     let oldestId: string | null = null;
     let oldestTime = Infinity;
+    let oldestFinishedId: string | null = null;
+    let oldestFinishedTime = Infinity;
 
     for (const [streamId, job] of this.jobs) {
       if (job.createdAt < oldestTime) {
         oldestTime = job.createdAt;
         oldestId = streamId;
       }
+      const live =
+        job.status === 'running' ||
+        job.status === 'requires_action' ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true ||
+        job.preserveForScheduleReconcile === true ||
+        job.providerDrained === false;
+      if (!live && job.createdAt < oldestFinishedTime) {
+        oldestFinishedTime = job.createdAt;
+        oldestFinishedId = streamId;
+      }
     }
+    oldestId = oldestFinishedId ?? oldestId;
 
     if (oldestId) {
       logger.warn(`[InMemoryJobStore] Evicting oldest job: ${oldestId}`);
@@ -1455,8 +1504,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
    * Returns conversation IDs of running jobs belonging to the user.
    * Also performs self-healing cleanup: removes stale entries for jobs that no longer exist.
    */
-  async getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.getJobIdsByUser(userId, tenantId, false);
+  async getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, false, accept);
   }
 
   async getCleanupBlockingJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
@@ -1480,6 +1533,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     userId: string,
     tenantId: string | undefined,
     includeUndrained: boolean,
+    accept?: ActiveJobFilter,
   ): string[] {
     const userKey = tenantId ? `${tenantId}:${userId}` : userId;
     const trackedIds = this.userJobMap.get(userKey);
@@ -1523,7 +1577,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
         ) {
           continue;
         }
-        activeIds.push(streamId);
+        if (accept == null || accept(job)) {
+          activeIds.push(streamId);
+        }
       } else if (
         job.providerDrained !== false &&
         job.terminalPersistencePending !== true &&
@@ -2604,6 +2660,81 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     entry.receipt.state = 'cancelled';
     return true;
+  }
+
+  async promoteSteerLeftover(
+    streamId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
+    const now = Date.now();
+    let receipt: SteerReceipt | undefined;
+    for (const entry of this.steerReceipts.get(streamId)?.values() ?? []) {
+      if (entry.expiresAt > now && entry.receipt.item?.steerId === steerId) {
+        receipt = entry.receipt;
+        break;
+      }
+    }
+    if (receipt == null) {
+      return 'missing';
+    }
+    if (
+      receipt.generationCreatedAt !== generationCreatedAt ||
+      receipt.userId !== ownerUserId ||
+      (receipt.tenantId != null && receipt.tenantId !== ownerTenantId)
+    ) {
+      return 'refused';
+    }
+    if (receipt.state === 'recovered' && receipt.promotedTurnId === queuedTurnId) {
+      return 'promoted';
+    }
+    if (receipt.state !== 'leftover') {
+      return 'refused';
+    }
+    const activeJob = this.jobs.get(streamId);
+    if (
+      activeJob?.recoveredSteerId === steerId &&
+      (activeJob.status === 'running' || activeJob.status === 'requires_action')
+    ) {
+      return 'refused';
+    }
+    const parked = this.parkedSteers.get(streamId);
+    if (parked == null || parked.expiresAt <= now) {
+      return 'unparked';
+    }
+    try {
+      const parsed = JSON.parse(parked.payload) as {
+        userId?: string;
+        tenantId?: string;
+        steers?: Array<{ steerId?: string }>;
+      };
+      if (
+        parsed.userId !== ownerUserId ||
+        (parsed.tenantId != null && parsed.tenantId !== ownerTenantId) ||
+        !Array.isArray(parsed.steers) ||
+        !parsed.steers.every(isValidParkedSteer)
+      ) {
+        return 'refused';
+      }
+      const kept = parsed.steers.filter((item) => item.steerId !== steerId);
+      if (kept.length === parsed.steers.length) {
+        return 'unparked';
+      }
+      if (kept.length === 0) {
+        this.parkedSteers.delete(streamId);
+      } else {
+        parsed.steers = kept;
+        parked.payload = JSON.stringify(parsed);
+      }
+    } catch {
+      return 'refused';
+    }
+    receipt.state = 'recovered';
+    receipt.promotedTurnId = queuedTurnId;
+    return 'promoted';
   }
 
   private parkLeftovers(

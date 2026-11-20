@@ -1,3 +1,5 @@
+import { memo } from 'react';
+import { LangIcon } from '@librechat/chat/components';
 import { Constants, isActionTool, splitToolCallName } from 'librechat-data-provider';
 import {
   Terminal,
@@ -16,7 +18,6 @@ import {
   Wrench,
   ListChecks,
 } from 'lucide-react';
-import LangIcon from '~/components/Messages/Content/LangIcon';
 import CustomIcon from '~/components/ui/CustomIcon';
 import { cn } from '~/utils';
 
@@ -134,7 +135,12 @@ interface ToolIconProps {
   className?: string;
 }
 
-export default function ToolIcon({ type, iconUrl, isAnimating = false, className }: ToolIconProps) {
+export default memo(function ToolIcon({
+  type,
+  iconUrl,
+  isAnimating = false,
+  className,
+}: ToolIconProps) {
   if (iconUrl) {
     return (
       <CustomIcon
@@ -160,4 +166,4 @@ export default function ToolIcon({ type, iconUrl, isAnimating = false, className
       aria-hidden="true"
     />
   );
-}
+});

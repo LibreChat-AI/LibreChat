@@ -49,6 +49,12 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getTrustedNewConversationId: (...args) =>
+    jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
+  buildGenerationStartedResponse: (...args) =>
+    jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
+  describeCreatedTurn: (...args) =>
+    jest.requireActual('@librechat/api').describeCreatedTurn(...args),
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
@@ -71,6 +77,7 @@ jest.mock('@librechat/api', () => ({
   persistedReasoningOverrideFields:
     jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   isScheduleFireRequest: jest.fn(() => false),
+  createScheduleExecutionContext: jest.fn(() => undefined),
   exemptFromConcurrencyLimiter: jest.fn(() => false),
   toPendingSteer: jest.fn((item) => item),
   isSteerPreemptSupported: jest.fn(() => true),

@@ -12,8 +12,6 @@ import Wakeup from '../Wakeup';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, vars?: Record<string, string>) =>
     vars == null ? key : `${key}:${Object.values(vars).join(',')}`,
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
 }));
 
 jest.mock('~/hooks/MCP', () => ({

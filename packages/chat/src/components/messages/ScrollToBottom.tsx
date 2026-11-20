@@ -22,49 +22,59 @@ type Props = {
    * button stays in the tab order and answers Enter however it paints.
    */
   interactive?: boolean;
+  /** Classes for the wrapper, such as the phase of the fade that shows and hides it. */
+  className?: string;
 };
 
 const ScrollToBottom: ForwardRefExoticComponent<Props & RefAttributes<HTMLDivElement>> = forwardRef<
   HTMLDivElement,
   Props
->(({ scrollHandler, maximizeChatSpace, overlayHeight = 0, interactive = false }, ref) => {
-  const localize = useLocalize();
+>(
+  (
+    { scrollHandler, maximizeChatSpace, overlayHeight = 0, interactive = false, className },
+    ref,
+  ) => {
+    const localize = useLocalize();
 
-  return (
-    <div
-      ref={ref}
-      className="scrollbar-gutter-spacer pointer-events-none absolute inset-x-0 z-10"
-      style={{ bottom: `calc(1.25rem + ${overlayHeight}px)` }}
-    >
-      {/* The composer's own column, so the control stacks over the send
+    return (
+      <div
+        ref={ref}
+        className={cn(
+          'scrollbar-gutter-spacer pointer-events-none absolute inset-x-0 z-10',
+          className,
+        )}
+        style={{ bottom: `calc(1.25rem + ${overlayHeight}px)` }}
+      >
+        {/* The composer's own column, so the control stacks over the send
             button one row down: the same end inset (`me-2`, mirroring Send's
             `me-2`) and, through `icon-theme` + `round`, the same control
             geometry as every button in the composer's action row. */}
-      <div
-        className={cn(
-          'mx-auto flex justify-end sm:px-2',
-          maximizeChatSpace ? 'max-w-full' : 'md:max-w-3xl xl:max-w-4xl',
-        )}
-      >
-        <Button
-          type="button"
-          variant="floating"
-          size="icon-theme"
-          shape="round"
-          onClick={scrollHandler}
-          disabled={!interactive}
-          aria-label={localize('com_ui_scroll_to_bottom')}
+        <div
           className={cn(
-            'me-2 active:scale-[0.96] motion-reduce:active:scale-100',
-            interactive ? 'pointer-events-auto' : 'pointer-events-none',
+            'mx-auto flex justify-end sm:px-2',
+            maximizeChatSpace ? 'max-w-full' : 'md:max-w-3xl xl:max-w-4xl',
           )}
         >
-          <ChevronDown className="size-4" aria-hidden="true" />
-        </Button>
+          <Button
+            type="button"
+            variant="floating"
+            size="icon-theme"
+            shape="round"
+            onClick={scrollHandler}
+            disabled={!interactive}
+            aria-label={localize('com_ui_scroll_to_bottom')}
+            className={cn(
+              'me-2 active:scale-[0.96] motion-reduce:active:scale-100',
+              interactive ? 'pointer-events-auto' : 'pointer-events-none',
+            )}
+          >
+            <ChevronDown className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 ScrollToBottom.displayName = 'ScrollToBottom';
 

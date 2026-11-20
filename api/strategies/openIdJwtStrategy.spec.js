@@ -51,6 +51,7 @@ jest.mock('@librechat/api', () => ({
   timeAuthUserLookup: jest.requireActual('@librechat/api').timeAuthUserLookup,
   getHttpsProxyAgent: jest.fn(() => undefined),
   isAccessTokenJwt: jest.requireActual('@librechat/api').isAccessTokenJwt,
+  getOpenIDBearerAudiences: jest.requireActual('@librechat/api').getOpenIDBearerAudiences,
   math: jest.fn((val, fallback) => fallback),
 }));
 jest.mock('~/models', () => ({

@@ -21,6 +21,7 @@ const ACTION_LABELS = {
 type DuringRunSendButtonProps = {
   /** The composer's current text; the host owns the input state. */
   text: string;
+  hasInlinePaste?: boolean;
   steering: SteeringControls;
   isNewConversation: boolean;
   getText: () => string;
@@ -101,7 +102,7 @@ const DuringRunSendButton: React.MemoExoticComponent<
         return;
       }
       const text = props.getText().trim();
-      if (text.length === 0) {
+      if (text.length === 0 && !props.hasInlinePaste) {
         return;
       }
       if (action(text) !== false) {
@@ -158,7 +159,7 @@ const DuringRunSendButton: React.MemoExoticComponent<
           <button
             ref={ref}
             aria-label={label}
-            disabled={!content || props.disabled === true}
+            disabled={(!content && !props.hasInlinePaste) || props.disabled === true}
             className={composerSubmitClasses()}
             data-testid="during-run-send-button"
             data-during-run-action={primary}

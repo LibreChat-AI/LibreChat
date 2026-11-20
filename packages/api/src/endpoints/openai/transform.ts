@@ -21,11 +21,41 @@ const googleToolsToFilter = new Set(['googleSearch', 'urlContext']);
 export type ConfigTools = Array<Record<string, unknown>> | Array<GoogleAIToolType>;
 
 /**
+ * Google documents `reasoning_effort` and `thinking_config` as overlapping controls
+ * that cannot be sent together, so an `addParams` `thinking_config` keeps the field.
+ */
+function hasGoogleThinkingConfig(extraBody: unknown): boolean {
+  if (extraBody == null || typeof extraBody !== 'object') {
+    return false;
+  }
+  const google = (extraBody as Record<string, unknown>).google;
+  if (google == null || typeof google !== 'object') {
+    return false;
+  }
+  return 'thinking_config' in google || 'thinkingConfig' in google;
+}
+
+/** Whether `addParams` or the source config already carries its own reasoning control. */
+function hasReasoningControl(
+  openAIConfig: Partial<t.OAIClientOptions>,
+  modelKwargs: Record<string, unknown>,
+): boolean {
+  return (
+    openAIConfig.reasoning != null ||
+    modelKwargs.reasoning != null ||
+    modelKwargs.reasoning_effort != null ||
+    hasGoogleThinkingConfig(modelKwargs.extra_body)
+  );
+}
+
+/**
  * Transforms a Non-OpenAI LLM config to an OpenAI-conformant config.
  * Non-OpenAI parameters are moved to modelKwargs.
  * Also extracts configuration options that belong in configOptions.
  * Handles addParams and dropParams for parameter customization.
  * Filters out provider-specific tools that have no OpenAI equivalent.
+ * Sends `reasoningEffort` as `reasoning_effort` unless `addParams` already sets a reasoning
+ * control; `dropParams` removes it like any other param.
  */
 export function transformToOpenAIConfig({
   tools,
@@ -35,6 +65,7 @@ export function transformToOpenAIConfig({
   inferenceParameters,
   llmConfig,
   fromEndpoint,
+  reasoningEffort,
 }: {
   tools?: ConfigTools;
   addParams?: Record<string, unknown>;
@@ -43,6 +74,7 @@ export function transformToOpenAIConfig({
   inferenceParameters?: Record<string, unknown>;
   llmConfig: ClientOptions;
   fromEndpoint: string;
+  reasoningEffort?: string;
 }): {
   tools: ConfigTools;
   llmConfig: t.OAIClientOptions;
@@ -127,6 +159,11 @@ export function transformToOpenAIConfig({
         hasModelKwargs = true;
       }
     }
+  }
+
+  if (reasoningEffort != null && !hasReasoningControl(openAIConfig, modelKwargs)) {
+    modelKwargs.reasoning_effort = reasoningEffort;
+    hasModelKwargs = true;
   }
 
   if (hasModelKwargs) {

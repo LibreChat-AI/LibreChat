@@ -61,6 +61,7 @@ async function globalSetup(config: FullConfig) {
       subject: 'Verify your email',
     });
     await page.goto(getVerificationURL(verificationEmail, baseURL), { timeout });
+    await page.getByRole('button', { name: 'Verify email' }).click({ timeout });
     await page.getByRole('heading', { name: /Email verified successfully/ }).waitFor({ timeout });
 
     await page.goto(appURL(baseURL, 'login'), { timeout });

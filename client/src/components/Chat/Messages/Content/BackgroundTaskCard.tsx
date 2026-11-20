@@ -1,10 +1,10 @@
 import { useMemo } from 'react';
 import { Button } from '@librechat/client';
 import { useSubagentTaskPanel } from '@librechat/chat/react';
+import { backgroundTaskMessageKey, backgroundTaskNoteKey } from '@librechat/chat/components';
 import { formatBackgroundCodeOutput, parseToolName, getToolDisplayLabel } from '@librechat/chat';
 import type { BackgroundTaskStatus, BackgroundTaskView } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
-import { backgroundTaskMessageKey, backgroundTaskNoteKey } from './Parts/guidance';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { ToolIcon, getToolIconType, OutputRenderer } from './ToolOutput';
 import SubagentProgress from './SubagentProgress';

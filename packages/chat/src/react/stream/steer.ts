@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useStore } from 'jotai';
-import type { TPendingSteer, TSteerUpdatedEvent } from 'librechat-data-provider';
+import type { TPendingSteer, TPromotedSteer, TSteerUpdatedEvent } from 'librechat-data-provider';
 import type { GenerationProtocolVersion, PendingSteer } from '../../core';
 import {
   seedPendingSteers,
@@ -9,7 +9,9 @@ import {
   RUN_ENDED_STATUSES,
   acceptedClientSteerIds,
   withoutRecoveredSteers,
+  withoutPromotedSteers,
   updatePendingSteerLabels,
+  reconcileServerQueuedTurns,
   selectLocalSteersForQueue,
   mergeRestagedQuotes,
   appendAppliedSteerIds,
@@ -23,8 +25,8 @@ import {
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
 } from '../steer/atoms';
+import { queuedMessagesByConvoId, settledQueuedTurnReceiptsByConvoId } from '../steer/queue';
 import useSteerConvert from '../steering/useSteerConvert';
-import { queuedMessagesByConvoId } from '../steer/queue';
 import { pendingQuotesByConvoId } from '../composer';
 import { useSteerHost } from '../steer/host';
 
@@ -45,6 +47,7 @@ export type SteerState = {
   ) => void;
   settleAppliedSteerParts: (conversationId: string, values: unknown[] | undefined) => void;
   convertSteersToQueued: ReturnType<typeof useSteerConvert>;
+  adoptPromotedSteers: (conversationId: string, promoted: TPromotedSteer[]) => string[];
   convertLocalSteersToQueued: (
     conversationId: string,
     options?: {
@@ -196,6 +199,43 @@ export function useSteerState(): SteerState {
     [jotaiStore],
   );
 
+  /** Steers the server promoted to durable queued turns at run end. Their chips
+   *  retire and the turns join the queue as server-owned rows the receipt poll
+   *  follows to admission. The ids join the applied set, so a late 202 ACK, a
+   *  legacy `pendingSteers` copy or the local sweep cannot queue them again. */
+  const adoptPromotedSteers = useCallback(
+    (conversationId: string, promoted: TPromotedSteer[]): string[] => {
+      if (promoted.length === 0) {
+        return [];
+      }
+      const ids = promoted.flatMap(({ steerId, clientSteerId }) =>
+        clientSteerId != null ? [steerId, clientSteerId] : [steerId],
+      );
+      const settled = new Map(
+        jotaiStore
+          .get(settledQueuedTurnReceiptsByConvoId(conversationId))
+          .map((receipt) => [receipt.clientRequestId, receipt]),
+      );
+      jotaiStore.set(appliedSteerIdsByConvoId(conversationId), (prev) =>
+        appendAppliedSteerIds(prev, ids),
+      );
+      jotaiStore.set(pendingSteersByConvoId(conversationId), (prev) =>
+        removePendingSteers(prev, ids),
+      );
+      jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
+        reconcileServerQueuedTurns(
+          withoutPromotedSteers(prev, ids),
+          promoted.map(({ receipt }) => receipt),
+          settled,
+          false,
+          fileMapRef.current,
+        ),
+      );
+      return ids;
+    },
+    [jotaiStore],
+  );
+
   /** Sweeps this conversation's local chips (see `selectLocalSteersForQueue`)
    *  into queued follow-ups. Error events carry no `pendingSteers` payload of
    *  their own (the server drops its copy on failure); this is the only
@@ -281,6 +321,7 @@ export function useSteerState(): SteerState {
       seedSteerChips,
       settleAppliedSteerParts,
       convertSteersToQueued,
+      adoptPromotedSteers,
       convertLocalSteersToQueued,
       updateActiveGenerationCreatedAt,
     }),
@@ -290,6 +331,7 @@ export function useSteerState(): SteerState {
       seedSteerChips,
       settleAppliedSteerParts,
       convertSteersToQueued,
+      adoptPromotedSteers,
       convertLocalSteersToQueued,
       updateActiveGenerationCreatedAt,
     ],

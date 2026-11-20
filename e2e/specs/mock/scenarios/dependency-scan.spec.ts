@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { inOneProject, repoRoot, run } from './lint.helpers';
 
@@ -28,7 +28,7 @@ function suiteCase(name: string) {
  * read: the extractor's patterns and subpath stripping over the checkout, minus
  * installs, build output, `.git` and local `.claude` worktrees.
  */
-function legacyScan(dir: string): string[] {
+function legacyScan(dir: string, cwd = repoRoot): string[] {
   const include = ['js', 'ts', 'tsx', 'jsx', 'mjs', 'cjs', 'mts', 'cts'].map(
     (ext) => `--include=*.${ext}`,
   );
@@ -38,6 +38,8 @@ function legacyScan(dir: string): string[] {
     '--exclude-dir=coverage',
     '--exclude-dir=.git',
     '--exclude-dir=.claude',
+    // Traces retain copied dependency bundles; they are not repository source.
+    '--exclude-dir=.test-results',
   ];
   const patterns = [
     `require\\(\\s*['"][a-zA-Z0-9@/._-]+['"]\\s*\\)`,
@@ -47,7 +49,7 @@ function legacyScan(dir: string): string[] {
   ];
   const names = new Set<string>();
   for (const pattern of patterns) {
-    const result = run('grep', ['-rhoP', pattern, dir, ...include, ...exclude]);
+    const result = run('grep', ['-rhoP', pattern, dir, ...include, ...exclude], { cwd });
     for (const line of result.stdout.split('\n')) {
       // The specifier closes the match: a quote earlier on the line is someone else's.
       const specifier = line.match(/['"]([a-zA-Z0-9@/._-]+)['"]\s*\)?$/)?.[1];
@@ -79,6 +81,26 @@ test.describe('dependency source extraction', () => {
   test('the job command writes one sorted list per workspace and rejects a malformed target @scenario:dependency-scan-writes-workspace-lists', () => {
     suiteCase('the CLI writes each directory as a sorted list');
     suiteCase('fails instead of reporting nothing outside a git checkout');
+  });
+
+  test('trace resource imports never enter the source comparison @scenario:dependency-scan-ignores-trace-resources', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-traces-'));
+    try {
+      expect(run('git', ['init', '-q'], { cwd: root }).status).toBe(0);
+      writeFileSync(join(root, '.gitignore'), '.test-results/\n');
+      writeFileSync(join(root, 'source.ts'), "import 'source-only';\n");
+      const resources = join(root, 'e2e', '.test-results', 'traces', 'resources');
+      mkdirSync(resources, { recursive: true });
+      writeFileSync(join(resources, 'bundle.js'), "import 'trace-only';\n");
+      const output = join(root, 'imports.txt');
+      const result = run(process.execPath, [CLI, `.=${output}`], { cwd: root });
+      expect(result.status, result.output).toBe(0);
+      const listed = readFileSync(output, 'utf8').trim().split('\n');
+      expect(listed).toEqual(['source-only']);
+      expect(legacyScan('.', root)).toEqual(listed);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('on this checkout every workspace list matches the legacy extraction over its source @scenario:dependency-scan-matches-legacy-on-source', () => {

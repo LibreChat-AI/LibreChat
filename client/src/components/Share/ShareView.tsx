@@ -1,9 +1,11 @@
 import { memo, useState, useCallback, useContext } from 'react';
 import Cookies from 'js-cookie';
-import { useStore } from 'jotai';
+import { useAtom, useStore } from 'jotai';
 import { buildTree } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { useParams, useNavigate } from 'react-router-dom';
+import { activeSubagentPanel } from '@librechat/chat/react';
+import { SharedSubagentActivityDialog } from '@librechat/chat/components';
 import { useGetSharedMessages } from 'librechat-data-provider/react-query';
 import { CalendarDays, ExternalLink, RefreshCw, Settings, MessageSquarePlus } from 'lucide-react';
 import {
@@ -24,7 +26,6 @@ import {
   CodeHighlightThrottleContext,
   normalizeCodeHighlightThrottleMs,
 } from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
-import SharedSubagentActivityDialog from '~/components/Chat/Subagents/SharedSubagentActivityDialog';
 import { cn, DEFAULT_APP_TITLE, getResponseStatus, selectActiveBranchTail } from '~/utils';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import AnalyticsConsentToggle from '../Nav/SettingsTabs/Data/AnalyticsConsent';
@@ -54,6 +55,7 @@ function SharedView() {
   const { theme, setTheme } = useContext(ThemeContext);
   const { shareId } = useParams();
   const jotaiStore = useStore();
+  const [subagentSelection, setSubagentSelection] = useAtom(activeSubagentPanel);
   const {
     data: config,
     isError: configFailed,
@@ -275,7 +277,12 @@ function SharedView() {
               {artifactsContainer}
             </main>
           </div>
-          <SharedSubagentActivityDialog shareId={shareId} messages={data?.messages} />
+          <SharedSubagentActivityDialog
+            shareId={shareId}
+            messages={data?.messages}
+            selected={subagentSelection}
+            setSelected={setSubagentSelection}
+          />
         </AppChatSurface>
       </ShareContext.Provider>
     </CodeHighlightThrottleContext.Provider>

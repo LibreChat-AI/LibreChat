@@ -1,4 +1,6 @@
-import { cn } from '@librechat/client';
+import { useId } from 'react';
+import { cn, Spinner } from '@librechat/client';
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ExtendedFile } from '../../../core/files';
@@ -16,6 +18,7 @@ const FileContainer = ({
   file,
   overrideType,
   displayName,
+  textPreview,
   subtitle,
   subtitleAction,
   ariaLabel,
@@ -34,6 +37,8 @@ const FileContainer = ({
    * persisted user files leave this undefined and render the raw filename.
    */
   displayName?: string;
+  /** Plain-text snippet; defaults to stored text/plain content. Null disables the preview. */
+  textPreview?: string | null;
   /**
    * Optional override for the subtitle line (defaults to the file
    * type's localized title — e.g. "PowerPoint Presentation"). Used by
@@ -66,6 +71,18 @@ const FileContainer = ({
 }): React.JSX.Element => {
   const fileType = getFileType(overrideType ?? file.type);
   const visibleName = displayName ?? file.filename ?? '';
+  const previewId = useId();
+  let previewText = textPreview;
+  if (
+    previewText === undefined &&
+    file.type === 'text/plain' &&
+    !('textFormat' in file && file.textFormat === 'html')
+  ) {
+    previewText = file.textPreview ?? file.text;
+  }
+  const snippet = previewText?.trim().slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH);
+  const hasTextPreview = snippet != null && snippet !== '';
+  const isUploading = 'progress' in file && typeof file.progress === 'number' && file.progress < 1;
   const interactive = onClick != null;
   const surfaceClassName = cn(
     'relative overflow-hidden rounded-2xl border border-border-light bg-surface-hover-alt',
@@ -80,43 +97,60 @@ const FileContainer = ({
   const insetFocusRing =
     'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary';
 
-  const details = (
+  const subtitleContent =
+    subtitleAction != null ? (
+      <button
+        type="button"
+        onClick={subtitleAction.onClick}
+        className={cn(
+          'text-text-secondary hover:text-text-primary focus-visible:text-text-primary pointer-events-auto relative z-10 inline-block max-w-full shrink-0 truncate rounded text-start align-middle leading-4 underline underline-offset-2',
+          focusRing,
+        )}
+      >
+        {subtitleAction.label}
+      </button>
+    ) : (
+      (subtitle ??
+      (!hasTextPreview && (
+        <div className="text-text-secondary truncate" title={fileType.title}>
+          {fileType.title}
+        </div>
+      )))
+    );
+
+  const name = (
+    <div
+      dir="auto"
+      className={cn('truncate', hasTextPreview ? 'min-w-0 flex-1 text-start' : 'font-medium')}
+      title={visibleName}
+    >
+      {visibleName}
+    </div>
+  );
+
+  const details = hasTextPreview ? (
+    <div className="w-64 max-w-full p-2.5 text-start">
+      <div
+        id={previewId}
+        dir="auto"
+        className="line-clamp-2 min-h-8 text-xs leading-4 break-words whitespace-pre-wrap"
+        title={snippet}
+      >
+        {snippet}
+      </div>
+      <div className="text-text-secondary mt-1 flex min-w-0 items-center gap-2 text-xs">
+        {isUploading && <Spinner className="size-3 shrink-0" />}
+        {name}
+        {subtitleContent}
+      </div>
+    </div>
+  ) : (
     <div className="w-56 max-w-full p-1.5">
       <div className="flex flex-row items-center gap-2">
         <FilePreview file={file} fileType={fileType} className="relative" />
         <div className="overflow-hidden">
-          <div dir="auto" className="truncate font-medium" title={visibleName}>
-            {visibleName}
-          </div>
-          {subtitleAction != null ? (
-            /** Sits above the full-bleed target so the subtitle keeps its own click. */
-            <button
-              type="button"
-              onClick={subtitleAction.onClick}
-              className={cn(
-                /** The chip's only cue that its text can be brought back, so it states itself
-                 * at rest instead of replacing the file type on hover: an affordance that only
-                 * appears under a pointer is one most people never find, and touch has no
-                 * pointer to find it with. Underlined for the same reason — as a permanent
-                 * subtitle it would otherwise read as a description rather than a control. The
-                 * hit area is the label and nothing more: `inline-block` keeps it off the rest
-                 * of the row, and `leading-4` keeps it inside its 20px line so the chip's own
-                 * center still opens the editor. The colour shift answers focus as well as
-                 * hover: the ring already announces focus, but leaving the two input modes
-                 * with different feedback is a difference with no reason behind it. */
-                'text-text-secondary hover:text-text-primary focus-visible:text-text-primary pointer-events-auto relative z-10 inline-block max-w-full truncate rounded text-start align-middle leading-4 underline underline-offset-2',
-                focusRing,
-              )}
-            >
-              {subtitleAction.label}
-            </button>
-          ) : (
-            (subtitle ?? (
-              <div className="text-text-secondary truncate" title={fileType.title}>
-                {fileType.title}
-              </div>
-            ))
-          )}
+          {name}
+          {subtitleContent}
         </div>
       </div>
     </div>
@@ -125,6 +159,7 @@ const FileContainer = ({
   return (
     <div
       className={cn('group text-text-primary relative inline-block text-sm', containerClassName)}
+      aria-busy={hasTextPreview && isUploading ? true : undefined}
     >
       {subtitleAction != null ? (
         <div className={surfaceClassName}>
@@ -132,6 +167,7 @@ const FileContainer = ({
             type="button"
             onClick={onClick}
             aria-label={ariaLabel ?? visibleName}
+            aria-describedby={hasTextPreview ? previewId : undefined}
             className={cn(
               'absolute inset-0 z-0 rounded-2xl',
               interactive && 'cursor-pointer',
@@ -145,6 +181,7 @@ const FileContainer = ({
           type="button"
           onClick={onClick}
           aria-label={ariaLabel ?? visibleName}
+          aria-describedby={hasTextPreview ? previewId : undefined}
           className={cn(surfaceClassName, interactive && cn('cursor-pointer', focusRing))}
         >
           {details}

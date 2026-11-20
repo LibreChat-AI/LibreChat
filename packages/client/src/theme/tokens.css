@@ -306,12 +306,66 @@
 
 /* The same fill for a wrapper whose disabled control sits inside it, as
  * `rc-input-number` renders its input inside the element that takes the
- * component's classes. */
+ * component's classes.
+ *
+ * For the wrapper itself only. `theme-disabled-within:[&_*]:…` would compile to
+ * `…:has(:disabled) *`, a `:has()` with every descendant as its subject, and one such rule
+ * anywhere in the stylesheet makes a `disabled` flip re-style the whole subtree of every
+ * `:has()` anchor above it, message rows included. A wrapper's parts take the fill through
+ * `theme-disabled-fill` instead. */
 @custom-variant theme-disabled-within {
   @container style(--theme-disabled-style: fill) {
     &:is(:root *):has(:disabled) {
       @slot;
     }
+  }
+}
+
+/* The fill style alone, with no disabled test of its own: for classes a component adds only
+ * while it knows its control is disabled, which is how a wrapper restyles its parts without
+ * asking the stylesheet to find the disabled control for it. */
+@custom-variant theme-disabled-fill {
+  @container style(--theme-disabled-style: fill) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
+/* A descendant of the nearest `group` that holds something: keyboard focus, or a toolbar
+ * button whose surface is open. These stand in for Tailwind's `group-has-[…]`, and the
+ * difference is only where `:has()` sits in the selector, which decides what a browser has to
+ * re-style when anything changes underneath the group.
+ *
+ * `group-has-[…]:x` compiles to `.x:is(:where(.group):has(…) *)`. With `:has()` buried inside
+ * `:is(… *)`, Chromium cannot tell which descendants of the group the rule could reach, so it
+ * records "all of them". From then on an element entering or leaving the group, or changing a
+ * state some `:has()` in the stylesheet mentions, re-styles the group's entire subtree. A
+ * message row is a `group`: a button mounting in each row when a run ended re-styled every row
+ * of the thread, 90 ms in a 250-message conversation, and a single rule of that shape was
+ * enough.
+ *
+ * Written as `:where(.group):has(…) .x` the rule matches exactly the same elements with the
+ * same specificity, and names its subject where the browser can read it, so the same change
+ * re-styles only the elements that carry the utility: 10 ms for the same 250 rows.
+ *
+ * Keep `:has()` out of `:is(… *)` and never follow it with a bare `*`:
+ * `e2e/specs/mock/scenarios/has-selectors.spec.ts` reads the built stylesheet for both. */
+@custom-variant grouped-keyboard-focus {
+  :where(.group):has(:focus-visible:not(:is(input, textarea, [contenteditable]))) & {
+    @slot;
+  }
+}
+
+@custom-variant grouped-focus-visible {
+  :where(.group):has(:focus-visible) & {
+    @slot;
+  }
+}
+
+@custom-variant grouped-hover-active {
+  :where(.group):has([data-hover-active]) & {
+    @slot;
   }
 }
 

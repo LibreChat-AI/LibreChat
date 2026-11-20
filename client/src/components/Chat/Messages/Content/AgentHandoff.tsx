@@ -4,18 +4,23 @@ import { ChevronDown } from 'lucide-react';
 import { unescapeJsonString } from '@librechat/chat';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
 import { Button, disclosureChevronVariants } from '@librechat/client';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import {
   useToolContentRequest,
   useToolContentPending,
   toolPanelSpacingClassName,
 } from '@librechat/chat/react';
+import {
+  PANE_COPY_REVEAL,
+  TOOL_ROW_CLASSES,
+  ROW_GLYPH_SLOT,
+  CopyButton,
+  useExpandCollapse,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import CopyButton from '~/components/Messages/Content/CopyButton';
+import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { useLocalize, useExpandCollapse } from '~/hooks';
-import { useAgentsMapContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface AgentHandoffProps {
@@ -110,7 +115,6 @@ function fieldLabel(key: string, localize: (translationKey: TranslationKeys) => 
 
 const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) => {
   const localize = useLocalize();
-  const agentsMap = useAgentsMapContext();
   const [showInfo, setShowInfo] = useState(false);
   useToolContentRequest(showInfo);
   const [isCopied, setIsCopied] = useState(false);
@@ -128,12 +132,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
     return name.replace(Constants.LC_TRANSFER_TO_, '');
   }, [name]);
 
-  const targetAgent = useMemo(() => {
-    if (!targetAgentId || !agentsMap) {
-      return null;
-    }
-    return agentsMap[targetAgentId];
-  }, [agentsMap, targetAgentId]);
+  const targetAgent = useTranscriptAgent(targetAgentId ?? '');
 
   const fields = useMemo(() => parseHandoffFields(_args), [_args]);
   const copyText = useMemo(

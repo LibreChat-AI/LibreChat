@@ -13,6 +13,9 @@ export type ComposerFile = {
   height?: number;
   size: number;
   progress: number;
+  pastedText?: string;
+  /** Staged source superseded by this replacement upload. */
+  replacesFileId?: string;
   llmDeliveryPath?: TFile['llmDeliveryPath'];
 };
 

@@ -5,6 +5,7 @@ import { CallbackManager } from '@langchain/core/callbacks/manager';
 import { encryptV3, logger, mergeConfigOverrides } from '@librechat/data-schemas';
 import {
   EModelEndpoint,
+  ReasoningEffort,
   FileSources,
   PrincipalType,
   MAX_SUBAGENT_DEPTH,
@@ -1078,6 +1079,790 @@ async function compactSummary(
   return { requests };
 }
 
+describe('final Cyber summary configuration', () => {
+  it.each([
+    { sourceModel: 'claude-sonnet-4.6', sourceProvider: Providers.ANTHROPIC, carrier: 'baseURL' },
+    {
+      sourceModel: 'claude-sonnet-4.6',
+      sourceProvider: Providers.ANTHROPIC,
+      carrier: 'configuration',
+    },
+    { sourceModel: 'claude-sonnet-4.6', sourceProvider: Providers.ANTHROPIC, carrier: 'default' },
+    { sourceModel: 'gpt-6-cyber', sourceProvider: Providers.OPENAI, carrier: 'baseURL' },
+    { sourceModel: 'gpt-6-cyber', sourceProvider: Providers.OPENAI, carrier: 'configuration' },
+    { sourceModel: 'gpt-6-cyber', sourceProvider: Providers.OPENAI, carrier: 'default' },
+  ])(
+    'enforces native identity after final parameter merge: %j',
+    async ({ sourceModel, sourceProvider, carrier }) => {
+      const nativeSource = sourceProvider === Providers.OPENAI;
+      const identity = { userId: 'final-summary-user', tenantId: 'request-tenant' };
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'resolved-user-key',
+        {
+          requestIdentity: identity,
+          modelOptions: { model: sourceModel },
+          headers: { 'X-Final-Transport': 'inherited' },
+        },
+        EModelEndpoint.openAI,
+      );
+      const mainOptions = nativeSource
+        ? { ...llmConfig, configuration: configOptions }
+        : {
+            model: sourceModel,
+            apiKey: 'anthropic-key',
+            modelKwargs: { source_only: 'do not inherit' },
+          };
+      const snapshot = { ...mainOptions, modelKwargs: { ...mainOptions.modelKwargs } };
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        apiKey: 'summary-key',
+        user: 'spoofed-user',
+        safety_identifier: 'shared-literal',
+        ...(carrier === 'baseURL' && { baseURL: 'https://api.openai.com/v1' }),
+        ...(carrier === 'configuration' && {
+          configuration: {
+            baseURL: 'https://api.openai.com/v1',
+            defaultHeaders: { 'X-Final-Transport': 'override' },
+            defaultQuery: { scope: 'summary' },
+          },
+        }),
+      };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: sourceProvider,
+            endpoint: nativeSource ? EModelEndpoint.openAI : EModelEndpoint.anthropic,
+            model: sourceModel,
+            model_parameters: mainOptions,
+          }),
+        ],
+        user: { id: identity.userId, tenantId: 'stale-user-tenant' } as IUser,
+        tenantId: identity.tenantId,
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model: 'gpt-6-cyber',
+          parameters: summaryParameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+        'https://api.openai.com/v1/responses',
+      );
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier:
+          llmConfig.modelKwargs?.safety_identifier ??
+          getOpenAIConfig(
+            '',
+            { requestIdentity: identity, modelOptions: { model: 'gpt-6-cyber' } },
+            EModelEndpoint.openAI,
+          ).llmConfig.modelKwargs?.safety_identifier,
+      });
+      expect(requests[0].body).not.toHaveProperty('user');
+      expect(requests[0].body).not.toHaveProperty('source_only');
+      if (carrier === 'configuration') {
+        expect(requests[0].headers.get('X-Final-Transport')).toBe('override');
+        expect(requests[0].url.searchParams.get('scope')).toBe('summary');
+      } else if (nativeSource) {
+        expect(requests[0].headers.get('X-Final-Transport')).toBe('inherited');
+      }
+      expect(mainOptions).toEqual(snapshot);
+      expect(summaryParameters.safety_identifier).toBe('shared-literal');
+    },
+  );
+});
+
+describe('Cyber summary final transport boundaries', () => {
+  it.each([false, true])(
+    'preserves self-summary API selection while replacing shared identity (%s)',
+    async (useResponsesApi) => {
+      const identity = { userId: 'self-summary-user', tenantId: 'self-summary-tenant' };
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'resolved-user-key',
+        {
+          requestIdentity: identity,
+          modelOptions: { model: 'gpt-6-cyber' },
+          addParams: { useResponsesApi, access_programs: { cyber: 'standard' } },
+        },
+        EModelEndpoint.openAI,
+      );
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        modelKwargs: {
+          model: 'gpt-6-sol',
+          safety_identifier: 'nested-shared-literal',
+          access_programs: { cyber: 'standard' },
+        },
+        safety_identifier: 'scalar-shared-literal',
+      };
+      const before = { ...llmConfig.modelKwargs };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'gpt-6-cyber',
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user: { id: identity.userId, tenantId: identity.tenantId } as IUser,
+        tenantId: identity.tenantId,
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          model: 'gpt-6-cyber',
+          parameters: summaryParameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests[0].url.pathname).toBe(
+        useResponsesApi ? '/v1/responses' : '/v1/chat/completions',
+      );
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'standard' },
+        safety_identifier: llmConfig.modelKwargs?.safety_identifier,
+      });
+      expect(llmConfig.modelKwargs).toEqual(before);
+      expect(summaryParameters.safety_identifier).toBe('scalar-shared-literal');
+    },
+  );
+
+  it.each(['baseURL', 'configuration', 'sdk-default'])(
+    'does not apply the native contract to a cross-provider gateway (%s)',
+    async (carrier) => {
+      if (carrier === 'sdk-default')
+        jest.replaceProperty(process, 'env', {
+          ...process.env,
+          OPENAI_BASE_URL: 'https://summary-gateway.example/v1',
+        });
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        apiKey: 'gateway-key',
+        safety_identifier: 'gateway-owned-identity',
+        ...(carrier === 'baseURL' && { baseURL: 'https://summary-gateway.example/v1' }),
+        ...(carrier === 'configuration' && {
+          configuration: { baseURL: 'https://summary-gateway.example/v1' },
+        }),
+      };
+      try {
+        const agents = await callAndCapture({
+          agents: [
+            makeAgent({
+              provider: Providers.ANTHROPIC,
+              endpoint: EModelEndpoint.anthropic,
+              model: 'claude-sonnet-4.6',
+              model_parameters: { model: 'claude-sonnet-4.6' },
+            }),
+          ],
+          user: { id: 'gateway-summary-user', tenantId: 'gateway-summary-tenant' } as IUser,
+          tenantId: 'gateway-summary-tenant',
+          appConfig: makeAppConfig([]),
+          summarizeOnly: true,
+          summarizationConfig: {
+            provider: EModelEndpoint.openAI,
+            model: 'gpt-6-cyber',
+            parameters: summaryParameters as SummarizationConfig['parameters'],
+          },
+        });
+        const { requests } = await compactSummary(agents);
+        expect(requests[0].url.origin).toBe('https://summary-gateway.example');
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+        expect(requests[0].body.safety_identifier).toBe('gateway-owned-identity');
+      } finally {
+        if (carrier === 'sdk-default') jest.restoreAllMocks();
+      }
+    },
+  );
+});
+
+describe('Cyber summary SDK URL defaults', () => {
+  beforeEach(() => {
+    const env: NodeJS.ProcessEnv = { ...process.env, OPENAI_API_KEY: 'summary-key' };
+    for (const key of [
+      'OPENAI_API_BASE',
+      'OPENAI_BASE_URL',
+      'OPENAI_REVERSE_PROXY',
+      'LANGSMITH_GATEWAY',
+    ]) {
+      delete env[key];
+    }
+    jest.replaceProperty(process, 'env', env);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    {
+      apiBase: 'https://summary-api-base.example/v1',
+      sdkURL: 'https://api.openai.com/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://summary-api-base.example',
+      native: false,
+    },
+    {
+      apiBase: '',
+      sdkURL: 'https://summary-sdk-url.example/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://summary-sdk-url.example',
+      native: false,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: 'https://summary-sdk-url.example/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: 'https://summary-api-base.example/v1',
+      sdkURL: undefined,
+      explicitURL: 'https://api.openai.com/v1',
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: undefined,
+      explicitURL: 'https://summary-explicit.example/v1',
+      gateway: undefined,
+      origin: 'https://summary-explicit.example',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      explicitURL: undefined,
+      gateway: 'true',
+      origin: 'https://gateway.smith.langchain.com',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      explicitURL: undefined,
+      gateway: 'false',
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+  ])(
+    'shapes cross-provider summaries for the actual SDK destination: %j',
+    async ({ apiBase, sdkURL, explicitURL, gateway, origin, native }) => {
+      for (const [key, value] of Object.entries({
+        OPENAI_API_BASE: apiBase,
+        OPENAI_BASE_URL: sdkURL,
+        LANGSMITH_GATEWAY: gateway,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      const parameters: TestSummarizationParameters = {
+        streaming: false,
+        apiKey: 'summary-key',
+        ...(explicitURL && { configuration: { baseURL: explicitURL } }),
+      };
+      const agents = await callAndCapture({
+        agents: [
+          makeAgent({
+            provider: Providers.ANTHROPIC,
+            endpoint: EModelEndpoint.anthropic,
+            model: 'claude-sonnet-4.6',
+            model_parameters: { model: 'claude-sonnet-4.6' },
+          }),
+        ],
+        user: { id: 'summary-url-user', tenantId: 'summary-url-tenant' } as IUser,
+        tenantId: 'summary-url-tenant',
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model: 'gpt-6-cyber',
+          parameters: parameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin).toBe(origin);
+      expect(requests[0].url.pathname.endsWith(native ? '/responses' : '/chat/completions')).toBe(
+        true,
+      );
+      if (native) {
+        expect(requests[0].body).toMatchObject({
+          access_programs: { cyber: 'daybreak_red' },
+          safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+      } else {
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+        expect(requests[0].body).not.toHaveProperty('safety_identifier');
+      }
+    },
+  );
+});
+
+describe.each([false, true])(
+  'Cyber same-endpoint routing policy (explicit provider=%s)',
+  (explicitProvider) => {
+    it.each([
+      { sourceModel: 'gpt-6-sol', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-4.1-mini', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-cyber', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: true, summary: undefined, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: false, summary: true, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: true, summary: false, expected: false },
+      { sourceModel: 'gpt-4.1-mini', policy: undefined, summary: undefined, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: 'default', summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: 'drop', summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: 'drop', summary: true, expected: true },
+    ])(
+      'preserves the target endpoint policy without changing the agent: %j',
+      async ({ sourceModel, policy, summary, expected }) => {
+        const endpoint: TestCustomEndpoint = {
+          name: 'Daybreak',
+          apiKey: 'endpoint-key',
+          baseURL: 'https://api.openai.com/v1',
+          addParams: {
+            ...(typeof policy === 'boolean' && { useResponsesApi: policy }),
+            ...(policy === 'drop' && { useResponsesApi: true }),
+          },
+          dropParams: policy === 'drop' ? ['useResponsesApi'] : undefined,
+          customParams:
+            policy === 'default'
+              ? {
+                  defaultParamsEndpoint: 'custom',
+                  paramDefinitions: [{ key: 'useResponsesApi', default: false }],
+                }
+              : undefined,
+        };
+        const endpointParams = { ...endpoint.addParams };
+        const user = { id: 'route-user', tenantId: 'route-tenant' } as IUser;
+        const { llmConfig, configOptions } = getOpenAIConfig(
+          endpoint.apiKey,
+          {
+            requestIdentity: { userId: user.id, tenantId: user.tenantId },
+            modelOptions: { model: sourceModel },
+            reverseProxyUrl: endpoint.baseURL,
+            addParams: endpoint.addParams,
+            dropParams: endpoint.dropParams,
+            customParams: endpoint.customParams,
+            headers: { 'X-Route-Transport': 'preserved' },
+          },
+          endpoint.name,
+        );
+        const agents = await callAndCapture({
+          agents: [
+            makeReasoningAgent({
+              provider: Providers.OPENAI,
+              endpoint: endpoint.name,
+              model: sourceModel,
+              model_parameters: { ...llmConfig, configuration: configOptions },
+            }),
+          ],
+          user,
+          tenantId: user.tenantId,
+          appConfig: makeAppConfig([endpoint]),
+          summarizeOnly: true,
+          summarizationConfig: {
+            ...(explicitProvider && { provider: endpoint.name }),
+            model: 'gpt-6-cyber',
+            parameters: {
+              streaming: false,
+              ...(summary !== undefined && { useResponsesApi: summary }),
+            },
+          },
+        });
+        const sourceApiMode = llmConfig.useResponsesApi;
+        const { requests } = await compactSummary(agents);
+        expect(requests).toHaveLength(1);
+        expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+          `https://api.openai.com/v1/${expected ? 'responses' : 'chat/completions'}`,
+        );
+        expect(requests[0].headers.get('X-Route-Transport')).toBe('preserved');
+        expect(requests[0].body).toMatchObject({
+          model: 'gpt-6-cyber',
+          access_programs: { cyber: 'daybreak_red' },
+          safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+        expect((agents[0].clientOptions as Record<string, unknown>).useResponsesApi).toBe(
+          sourceApiMode,
+        );
+        expect(endpoint.addParams).toEqual(endpointParams);
+      },
+    );
+  },
+);
+
+describe('Cyber direct endpoint summary routing', () => {
+  it.each([
+    { sourceModel: 'gpt-6-cyber', path: 'chat/completions', responses: false },
+    { sourceModel: 'gpt-4.1-mini', path: 'chat/completions', responses: false },
+    { sourceModel: 'gpt-6-cyber', path: 'responses', responses: true },
+    { sourceModel: 'gpt-4.1-mini', path: 'responses', responses: true },
+    { sourceModel: 'gpt-6-cyber', path: 'chat/completions', summary: true, responses: true },
+    { sourceModel: 'gpt-6-cyber', path: 'responses', summary: false, responses: false },
+    {
+      sourceModel: 'gpt-4.1-mini',
+      path: 'chat/completions',
+      crossEndpoint: true,
+      responses: false,
+    },
+    { sourceModel: 'gpt-4.1-mini', path: 'responses', crossEndpoint: true, responses: true },
+  ])(
+    'matches the exact endpoint API: %j',
+    async ({ sourceModel, path, summary, crossEndpoint, responses }) => {
+      const endpoint: TestCustomEndpoint = {
+        name: 'Daybreak',
+        apiKey: 'test-key',
+        baseURL: `https://api.openai.com/v1/${path}`,
+        directEndpoint: true,
+      };
+      const user = { id: 'direct-user', tenantId: 'direct-tenant' } as IUser;
+      const sourceEndpoint = crossEndpoint ? EModelEndpoint.openAI : endpoint.name;
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        endpoint.apiKey,
+        {
+          reverseProxyUrl: crossEndpoint ? undefined : endpoint.baseURL,
+          directEndpoint: !crossEndpoint,
+          modelOptions: { model: sourceModel },
+          requestIdentity: { userId: user.id, tenantId: user.tenantId },
+        },
+        sourceEndpoint,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: sourceEndpoint,
+            model: sourceModel,
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([endpoint]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: endpoint.name,
+          model: 'gpt-6-cyber',
+          parameters: {
+            streaming: false,
+            ...(typeof summary === 'boolean' ? { useResponsesApi: summary } : {}),
+          },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toHaveProperty(responses ? 'input' : 'messages');
+      expect(requests[0].body).not.toHaveProperty(responses ? 'messages' : 'input');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    },
+  );
+
+  it.each([
+    { agent: 'anthropic', path: '/chat/completions', responses: false },
+    { agent: 'anthropic', path: '/responses', responses: true },
+    { agent: 'anthropic', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'anthropic', path: '/responses', drop: true, responses: false },
+    { agent: 'anthropic', path: '', drop: true, responses: false },
+    { agent: 'openAI', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', inferred: true, responses: false },
+    { agent: 'endpoint', path: '/responses', inferred: true, responses: true },
+  ])(
+    'keeps the target endpoint API decision: %j',
+    async ({ agent, path, drop, inferred, responses }) => {
+      const endpoint: TestCustomEndpoint = {
+        name: 'Daybreak',
+        apiKey: 'test-key',
+        baseURL: `https://api.openai.com/v1${path}`,
+        directEndpoint: path !== '',
+        dropParams: drop ? ['useResponsesApi'] : undefined,
+      };
+      const user = { id: 'direct-user', tenantId: 'direct-tenant' } as IUser;
+      const onEndpoint = agent === 'endpoint';
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        endpoint.apiKey,
+        {
+          reverseProxyUrl: onEndpoint ? endpoint.baseURL : undefined,
+          directEndpoint: onEndpoint && endpoint.directEndpoint,
+          dropParams: onEndpoint ? endpoint.dropParams : undefined,
+          modelOptions: { model: 'gpt-4.1-mini' },
+          requestIdentity: { userId: user.id, tenantId: user.tenantId },
+        },
+        onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+      );
+      const source =
+        agent === 'anthropic'
+          ? makeReasoningAgent({
+              provider: Providers.ANTHROPIC,
+              endpoint: EModelEndpoint.anthropic,
+              model: 'claude-sonnet-4.6',
+              model_parameters: { model: 'claude-sonnet-4.6', apiKey: 'anthropic-key' },
+            })
+          : makeReasoningAgent({
+              provider: Providers.OPENAI,
+              endpoint: onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+              model: 'gpt-4.1-mini',
+              model_parameters: { ...llmConfig, configuration: configOptions },
+            });
+      const agents = await callAndCapture({
+        agents: [source],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([endpoint]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          ...(inferred ? {} : { provider: endpoint.name }),
+          model: 'gpt-6-cyber',
+          parameters: { streaming: false },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toHaveProperty(responses ? 'input' : 'messages');
+      expect(requests[0].body).not.toHaveProperty(responses ? 'messages' : 'input');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    },
+  );
+});
+
+describe('Cyber summary target shaping', () => {
+  it.each([
+    { sourceModel: 'gpt-6-sol', baseURL: undefined, endpoint: EModelEndpoint.openAI },
+    { sourceModel: 'gpt-4.1-mini', baseURL: undefined, endpoint: EModelEndpoint.openAI },
+    { sourceModel: 'gpt-6-sol', baseURL: 'https://api.openai.com/v1', endpoint: 'Daybreak' },
+  ])(
+    'shapes a Cyber summary while preserving $sourceModel transport',
+    async ({ sourceModel, baseURL, endpoint }) => {
+      const user = { id: 'summary-user', tenantId: 'summary-tenant' } as IUser;
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'resolved-user-key',
+        {
+          modelOptions: { model: sourceModel, reasoning_effort: ReasoningEffort.high },
+          reverseProxyUrl: baseURL,
+          headers: { 'X-Summary-Transport': 'kept' },
+          defaultQuery: { 'request-scope': 'kept' },
+          addParams: { prompt_cache_options: { ttl: '12h' } },
+        },
+        endpoint,
+      );
+      const before = { ...llmConfig.modelKwargs };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint,
+            model: sourceModel,
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: endpoint,
+          model: 'gpt-6-cyber',
+          parameters: { streaming: false },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.pathname).toBe('/v1/responses');
+      expect(requests[0].url.searchParams.get('request-scope')).toBe('kept');
+      expect(requests[0].headers.get('X-Summary-Transport')).toBe('kept');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        prompt_cache_options: { ttl: '12h' },
+      });
+      expect(requests[0].body).not.toHaveProperty('reasoning');
+      expect(llmConfig.modelKwargs).toEqual(before);
+      expect((agents[0].clientOptions as Record<string, unknown>).modelKwargs).toEqual(before);
+    },
+  );
+
+  it('preserves an explicit summary API selection and server-owned identity', async () => {
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'resolved-user-key',
+      {
+        modelOptions: { model: 'gpt-6-sol' },
+        headers: { 'X-Summary-Transport': 'kept' },
+      },
+      EModelEndpoint.openAI,
+    );
+    const summaryKwargs = {
+      access_programs: { cyber: 'standard' },
+      safety_identifier: 'shared-spoof',
+    };
+    const summaryParameters: TestSummarizationParameters = {
+      streaming: false,
+      useResponsesApi: false,
+      modelKwargs: summaryKwargs,
+    };
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.OPENAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-6-sol',
+          model_parameters: { ...llmConfig, configuration: configOptions },
+        }),
+      ],
+      user: { id: 'summary-user', tenantId: 'stale-user-tenant' } as IUser,
+      tenantId: 'request-tenant',
+      appConfig: makeAppConfig([]),
+      summarizeOnly: true,
+      summarizationConfig: {
+        model: 'gpt-6-cyber',
+        parameters: summaryParameters as SummarizationConfig['parameters'],
+      },
+    });
+    const expected = getOpenAIConfig(
+      'unused',
+      {
+        requestIdentity: { userId: 'summary-user', tenantId: 'request-tenant' },
+        modelOptions: { model: 'gpt-6-cyber' },
+      },
+      EModelEndpoint.openAI,
+    );
+    const { requests } = await compactSummary(agents);
+    expect(requests[0].url.pathname).toBe('/v1/chat/completions');
+    expect(requests[0].headers.get('X-Summary-Transport')).toBe('kept');
+    expect(requests[0].body).toMatchObject({
+      access_programs: { cyber: 'standard' },
+      safety_identifier: expected.llmConfig.modelKwargs?.safety_identifier,
+    });
+    expect(summaryKwargs).toEqual({
+      access_programs: { cyber: 'standard' },
+      safety_identifier: 'shared-spoof',
+    });
+  });
+
+  it('rejects a native Cyber summary without authenticated identity before calling the SDK', async () => {
+    await expect(
+      callAndCapture({
+        agents: [makeAgent({ model: 'gpt-6-sol', model_parameters: { model: 'gpt-6-sol' } })],
+        appConfig: makeAppConfig([]),
+        summarizationConfig: { model: 'gpt-6-cyber' },
+      }),
+    ).rejects.toThrow('GPT-6 Cyber requires an authenticated user.');
+    expect(Run.create).not.toHaveBeenCalled();
+  });
+
+  it('leaves a disabled Cyber summary inert without an authenticated identity', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ model: 'gpt-6-sol', model_parameters: { model: 'gpt-6-sol' } })],
+      appConfig: makeAppConfig([]),
+      summarizationConfig: { enabled: false, model: 'gpt-6-cyber' },
+    });
+    expect(agents[0].summarizationEnabled).toBe(false);
+  });
+
+  it.each(['Gateway', EModelEndpoint.openAI])(
+    'keeps gateway transport outside native Cyber shaping (%s)',
+    async (endpoint) => {
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'gateway-key',
+        {
+          modelOptions: { model: 'gpt-4.1-mini' },
+          reverseProxyUrl: endpoint === 'Gateway' ? 'https://gateway.example/v1' : undefined,
+        },
+        endpoint,
+      );
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        ...(endpoint === EModelEndpoint.openAI && {
+          configuration: { baseURL: 'https://gateway.example/v1' },
+        }),
+      };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint,
+            model: 'gpt-4.1-mini',
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: endpoint,
+          model: 'gpt-6-cyber',
+          parameters: summaryParameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests[0].url.origin).toBe('https://gateway.example');
+      expect(requests[0].url.pathname).toBe('/v1/chat/completions');
+      expect(requests[0].body).not.toHaveProperty('access_programs');
+      expect(requests[0].body).not.toHaveProperty('safety_identifier');
+    },
+  );
+});
+
+describe('Cyber summary model isolation', () => {
+  it.each(['gpt-6-sol', 'gpt-4.1-mini', 'gpt-6-cyber'])(
+    'scopes Cyber access to the matching summary model, %s',
+    async (model) => {
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'test-cyber-key',
+        {
+          requestIdentity: { userId: 'test-user', tenantId: 'test-tenant' },
+          modelOptions: { model: 'gpt-6-cyber' },
+          headers: { 'X-Test-Transport': 'preserved' },
+        },
+        EModelEndpoint.openAI,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'gpt-6-cyber',
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user: { id: 'test-user', tenantId: 'test-tenant' } as IUser,
+        tenantId: 'test-tenant',
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: { model, parameters: { streaming: false } },
+      });
+
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body.model).toBe(model);
+      expect(requests[0].url.origin).toBe('https://api.openai.com');
+      expect(requests[0].headers.get('X-Test-Transport')).toBe('preserved');
+      if (model === 'gpt-6-cyber') {
+        expect(requests[0].body).toHaveProperty('access_programs.cyber', 'daybreak_red');
+      } else {
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+      }
+      expect((agents[0].clientOptions as Record<string, unknown>).modelKwargs).toMatchObject({
+        access_programs: { cyber: 'daybreak_red' },
+      });
+    },
+  );
+});
+
 describe('manual compaction recency', () => {
   it('skips a fully retained conversation without calling the summarizer', async () => {
     const agents = await callAndCapture({
@@ -1718,6 +2503,56 @@ describe('Azure deployment alias', () => {
     });
     expect(azure.url.origin).toBe('https://summary-instance.openai.azure.com');
     expect(azure.headers.get('api-key')).toBe('expanded-azure-key');
+  });
+
+  it('forwards the primary agent id on OpenAI and Azure summarizer headers', async () => {
+    jest.replaceProperty(process, 'env', { ...process.env, OPENAI_API_KEY: 'openai-summary-key' });
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.all = { headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' } };
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const compact = async (summarizationConfig: SummarizationConfig) => {
+      (Run.create as jest.Mock).mockClear();
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig,
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      return requests[0];
+    };
+
+    const openAI = await compact({
+      provider: EModelEndpoint.openAI,
+      model: 'gpt-4.1-mini',
+      parameters: { streaming: false },
+    });
+    expect(openAI.url.origin).toBe('https://api.openai.com');
+    expect(openAI.headers.get('X-Agent-Id')).toBe('agent_1');
+
+    const azure = await compact({ model: 'gpt-4.1-mini', parameters: { streaming: false } });
+    expect(azure.url.origin).toBe('https://summary-instance.openai.azure.com');
+    expect(azure.headers.get('X-Agent-Id')).toBe('agent_1');
   });
 
   it("leaves Azure's reserved URL templates to the summary deployment", async () => {
@@ -2539,6 +3374,28 @@ describe('custom-endpoint provider resolution', () => {
     expect(configuration.defaultHeaders).toEqual({ 'X-Tenant-ID': 'request-tenant' });
   });
 
+  it('forwards the primary agent id in custom-endpoint summarization headers', async () => {
+    const appConfig = makeAppConfig([
+      {
+        name: 'Agent Gateway',
+        baseURL: 'https://gateway.example.com/v1',
+        apiKey: 'gateway-key',
+        headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' },
+      },
+    ]);
+    const agents = await callAndCapture({
+      agents: [makeAgent({ id: 'agent_gateway' })],
+      summarizationConfig: { provider: 'Agent Gateway', model: 'summary-model' },
+      appConfig,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    const configuration = parameters.configuration as Record<string, unknown>;
+
+    expect(configuration.defaultHeaders).toEqual({ 'X-Agent-Id': 'agent_gateway' });
+  });
+
   it('forwards PROXY env var into summarization client configuration', async () => {
     const originalProxy = process.env.PROXY;
     process.env.PROXY = 'http://proxy.internal:3128';
@@ -2789,6 +3646,62 @@ describe('built-in provider request shaping', () => {
       firstPartyEndpoint: true,
       reasoning: { effort: 'minimal' },
     });
+  });
+
+  it.each(['none', 'minimal'])(
+    'normalizes Sol 6.2 summary effort %s after user overrides',
+    async (effort) => {
+      const result = await summarizeWith(
+        { reasoning_effort: effort, temperature: 0.7 },
+        'gpt-6.2-sol',
+      );
+      expect(result).toMatchObject({ firstPartyEndpoint: true, reasoning: { effort: 'low' } });
+      expect(result.temperature).toBeUndefined();
+    },
+  );
+
+  it('clears inherited unsupported controls when switching summaries to Sol 6.2', async () => {
+    const sourceModel = 'gpt-6.1-sol';
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        streaming: false,
+        modelOptions: {
+          model: sourceModel,
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+        addParams: { modelKwargs: { reasoning: { effort: 'none' }, temperature: 0.7 } },
+      },
+      EModelEndpoint.openAI,
+    );
+    const agents = await callAndCapture({
+      agents: [makeAgent({ model: sourceModel, model_parameters: llmConfig })],
+      appConfig: makeAppConfig([]),
+      summarizationConfig: {
+        provider: 'openAI',
+        model: 'gpt-6.2-sol',
+        parameters: { reasoning_effort: 'none' },
+      },
+    });
+    const config = agents[0].summarizationConfig;
+    expect(config).toMatchObject({
+      parameters: {
+        reasoning: { effort: 'low' },
+        modelKwargs: { reasoning: { effort: 'low' } },
+      },
+    });
+    expect(config).toHaveProperty('parameters.temperature', undefined);
+    expect(config).not.toHaveProperty('parameters.modelKwargs.temperature');
+    expect(llmConfig.modelKwargs).toHaveProperty('reasoning.effort', 'none');
+  });
+
+  it('keeps Sol gateway summary controls unchanged', async () => {
+    const result = await summarizeWith(
+      { baseURL: 'https://gateway.internal/v1', reasoning_effort: 'none', temperature: 0.7 },
+      'gpt-6.2-sol',
+    );
+    expect(result).toMatchObject({ reasoning: { effort: 'none' }, temperature: 0.7 });
   });
 
   it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
@@ -4732,10 +5645,17 @@ describe('HITL wiring is gated on hitlCapable', () => {
     },
   );
 
-  it.each([true, false])(
-    'withholds detached task/wakeup capabilities only for enrolled=%s',
-    async (enrolled) => {
-      const f = await executionFixture();
+  // A schedule's completion turn finds its grant again, so its runs keep these capabilities
+  // with or without a grant. A grant that cannot be found again keeps its runs foreground.
+  it.each([
+    ['a schedule grant', true, true],
+    ['no grant', false, true],
+    ['a grant its completion turn could not find again', true, false],
+  ] as const)(
+    'withholds detached task/wakeup capabilities only under such a grant: %s',
+    async (_name, enrolled, detaches) => {
+      const withheld = enrolled && !detaches;
+      const f = await executionFixture('invoke', undefined, undefined, { detaches });
       if (!enrolled) f.snapshot.enrollment = null;
       const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
       const tasks = {
@@ -4759,23 +5679,23 @@ describe('HITL wiring is gated on hitlCapable', () => {
         } as unknown as AppConfig,
       });
       const config = (Run.create as jest.Mock).mock.calls[0][0];
-      expect(config.subagentTasks).toBe(enrolled ? undefined : tasks);
+      expect(config.subagentTasks).toBe(withheld ? undefined : tasks);
       const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
         background: config.subagentTasks != null,
         threadContinuation: true,
       });
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       const agent = config.graphConfig.agents[0];
       expect(agent.subagentConfigs).toEqual([
         expect.objectContaining({ type: 'child', allowNested: true }),
       ]);
       const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
-      expect(names.includes('check_background_task')).toBe(!enrolled);
+      expect(names.includes('check_background_task')).toBe(!withheld);
     },
   );
 

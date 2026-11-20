@@ -9,6 +9,7 @@ import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/re
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useGetSkillQuery, useSkillsInfiniteQuery } from '~/data-provider';
+import { useShareContext } from '~/Providers/ShareContext';
 import { useHasAccess, useLocalize } from '~/hooks';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
@@ -73,6 +74,7 @@ export default function SkillCall({
   const skillName = parsedSkillName || localize('com_ui_skill').toLowerCase();
   const intent = useToolCallIntent(args);
   const navigate = useNavigate();
+  const { isSharedConvo } = useShareContext();
 
   const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
     useToolCallState({
@@ -87,7 +89,12 @@ export default function SkillCall({
       runStepStatus,
     });
 
-  const skill = useLoadedSkill(parsedSkillName, showCode && phase === 'completed');
+  /** A shared transcript ran in its author's library, so a skill with the same name in the
+   *  viewer's library is a different skill: the output is all the call can vouch for. */
+  const skill = useLoadedSkill(
+    parsedSkillName,
+    showCode && phase === 'completed' && isSharedConvo !== true,
+  );
   const instructions = skill?.body.trim();
   /** Beside the instructions, the output only adds the bare confirmation, so it
    *  shows only when it says something more. */

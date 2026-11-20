@@ -6,6 +6,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { SteeringControls } from '../../../react/steering/useSteering';
 import type { ComposerBindings } from '../../../core/shortcuts';
 import type { ComposerHost } from '../../../react/input';
+import { emptyPaletteSources } from '../../../react/palette';
 import { ComposerHostProvider } from '../../../react/input';
 import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
 import DuringRunSendButton from '../DuringRunSendButton';
@@ -44,16 +45,19 @@ const hostWith = (bindings: ComposerBindings): ComposerHost => ({
   useComposerBindings: () => bindings,
   useShortcutDisplay: () => '',
   useShortcutAriaKey: () => undefined,
+  usePaletteSources: emptyPaletteSources,
 });
 
 function renderButton({
   text = TEXT,
+  hasInlinePaste = false,
   disabled = false,
   controls = steering(),
   bindings = NO_HOST_BINDINGS,
   enterToSend = true,
 }: {
   text?: string;
+  hasInlinePaste?: boolean;
   disabled?: boolean;
   controls?: SteeringControls;
   bindings?: ComposerBindings;
@@ -63,6 +67,7 @@ function renderButton({
     <ComposerHostProvider host={hostWith(bindings)}>
       <DuringRunSendButton
         text={text}
+        hasInlinePaste={hasInlinePaste}
         steering={controls}
         isNewConversation={false}
         getText={() => text}
@@ -98,6 +103,17 @@ describe('DuringRunSendButton', () => {
       />,
     );
     expect(screen.getByTestId('during-run-send-button')).toBeDisabled();
+  });
+
+  it('enables paste-only submission and forwards empty text to every explicit action', () => {
+    renderButton({ text: '', hasInlinePaste: true });
+    expect(screen.getByTestId('during-run-send-button')).toBeEnabled();
+    for (const label of ['com_ui_queue', 'com_ui_steer', 'com_ui_interrupt_steer'])
+      fireEvent.click(row(label));
+    expect(queueFromComposer).toHaveBeenCalledWith('');
+    expect(steerFromComposer).toHaveBeenCalledWith('');
+    expect(interruptSteer).toHaveBeenCalledWith('');
+    expect(onConsumed).toHaveBeenCalledTimes(3);
   });
 
   it('runs the chosen row with the trimmed text and consumes the composer', () => {

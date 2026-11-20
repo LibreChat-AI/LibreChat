@@ -17,7 +17,8 @@ import type {
   SandboxStartingEvent,
   TReasoningLabelAttemptEvent,
 } from './runs';
-import type { TMessage, TPayload, TConversation } from '../types';
+import type { TMessage, TPayload, TConversation, TEditedContent } from '../types';
+import type { TPromotedSteer } from './queuedTurns';
 import type { StreamContentData } from './content';
 import type { TAttachment } from '../schemas';
 import type { Agents } from './agents';
@@ -31,12 +32,38 @@ import type { TFile } from './files';
  * {@link ChatEvent} by the client transport.
  */
 
+/**
+ * How a turn relates to what the conversation already holds. The client that started the turn
+ * knows; one that only watches it cannot tell from the frame's message alone, since a
+ * regeneration, a continued reply, an edited reply and a compaction all name a message the
+ * conversation already has.
+ */
+export type ChatCreatedTurn = {
+  /** The id the turn's reply is stored under. */
+  responseMessageId?: string;
+  /** The reply is a new answer to an already-answered message, drawn beside the earlier one. */
+  isRegenerate?: boolean;
+  /** No user turn was made: the frame's message is the leaf a compaction summarizes up to. */
+  compact?: boolean;
+  /**
+   * The saved reply a continued or an edited turn starts from. A continued reply keeps this id;
+   * an edited rerun is stored under a new one, so `responseMessageId` does not name it.
+   */
+  sourceMessageId?: string;
+  /** The reply named by `sourceMessageId` is carried on from where it stopped. */
+  isContinued?: boolean;
+  /** The reply named by `sourceMessageId` is rerun after this edit to one of its parts. */
+  editedContent?: TEditedContent;
+};
+
 /** `{ created: true }`: the user message was saved and generation started. */
 export type ChatCreatedFrame = {
   created: true;
   message: Partial<TMessage>;
   /** Present on resumable streams only. */
   streamId?: string;
+  /** The turn's shape. Absent from servers that predate it; a client then infers what it can. */
+  turn?: ChatCreatedTurn;
 };
 
 /**
@@ -75,6 +102,8 @@ export type ChatFinalFrame = {
   earlyAbort?: boolean;
   /** Steers that never reached an injection boundary, handed back as queued turns. */
   pendingSteers?: TPendingSteer[];
+  /** Unapplied steers the server already made durable queued turns; never re-queue these locally. */
+  promotedSteers?: TPromotedSteer[];
   error?: { message: string };
 };
 

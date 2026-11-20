@@ -1,4 +1,27 @@
+import { isAxiosError } from 'axios';
 import type { AxiosResponse } from 'axios';
+import type {
+  AgentChannel,
+  ActivateAgentChannel,
+  SlackChannelManifest,
+  SlackAppPage,
+  SlackAppRegistration,
+  ConfigureSlackApp,
+  SlackWorkspaceStatus,
+  SlackBotManagers,
+  SlackBotManager,
+  SlackWorkspaceConnect,
+  SlackWorkspaceDetail,
+  SlackWorkspaceRoutePage,
+  SlackWorkspaceRouteStatus,
+  SetSlackWorkspaceRoute,
+} from './types/channels';
+import type {
+  ResponseReviewView,
+  ResponseCancelReceipt,
+  ResponseReviewDecision,
+  ResponseReviewDecisionReceipt,
+} from './types/responseReview';
 import type {
   TTracePage,
   TTracePageParams,
@@ -6,12 +29,21 @@ import type {
   TTraceRecordParams,
   TTraceRecordDetail,
 } from './types/traces';
+import type {
+  ChannelIdentityClient,
+  ChannelIdentityResult,
+  ChannelLinkView,
+} from './types/channelIdentity';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
+import {
+  responseReviewDecisionReceiptSchema,
+  responseCancelReceiptSchema,
+} from './types/responseReview';
 import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
@@ -31,6 +63,223 @@ import * as config from './config';
 import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
+
+export function listAgentChannels(agentId: string): Promise<AgentChannel[]> {
+  return request.get(endpoints.agentChannels(agentId));
+}
+
+export function getResponseReview(responseId: string): Promise<ResponseReviewView> {
+  return request.get(endpoints.responseReview(responseId));
+}
+
+export async function cancelOwnerResponse(responseId: string): Promise<ResponseCancelReceipt> {
+  const body: unknown = await request.post(endpoints.responseCancel(responseId), {});
+  const receipt = responseCancelReceiptSchema.safeParse(body);
+  if (!receipt.success || receipt.data.id !== responseId)
+    throw new Error('Response cancellation acknowledgement is unavailable');
+  return receipt.data;
+}
+
+export async function submitResponseReviewDecision(
+  responseId: string,
+  decision: ResponseReviewDecision,
+): Promise<ResponseReviewDecisionReceipt> {
+  const body: unknown = await request.post(endpoints.responseReview(responseId), decision);
+  const receipt = responseReviewDecisionReceiptSchema.safeParse(body);
+  if (
+    !receipt.success ||
+    receipt.data.responseId !== responseId ||
+    receipt.data.actionId !== decision.actionId
+  )
+    throw new Error('Response decision acknowledgement is unavailable');
+  return receipt.data;
+}
+
+export function createAgentChannel(
+  agentId: string,
+  credentialMode: AgentChannel['credentialMode'] = 'shared',
+): Promise<AgentChannel> {
+  return request.post(endpoints.agentChannels(agentId), { type: 'slack', credentialMode });
+}
+
+export function getAgentChannelManifest(
+  agentId: string,
+  channelId: string,
+): Promise<SlackChannelManifest> {
+  return request.get(`${endpoints.agentChannels(agentId, channelId)}/manifest`);
+}
+
+function channelCredentialFailure(error: unknown): never {
+  const failure = isAxiosError<{ error?: unknown }>(error)
+    ? error.response?.data?.error
+    : undefined;
+  const code =
+    typeof failure === 'object' && failure !== null && 'code' in failure ? failure.code : failure;
+  // Axios failures retain serialized secrets. Only this supported setup code may escape.
+  throw Object.assign(
+    new Error('Channel credential update failed'),
+    code === 'transactions_unavailable' ? { code } : {},
+  );
+}
+
+export function activateAgentChannel(
+  agentId: string,
+  channelId: string,
+  input: ActivateAgentChannel,
+): Promise<AgentChannel> {
+  return request
+    .patch(endpoints.agentChannels(agentId, channelId), input)
+    .catch(channelCredentialFailure);
+}
+
+export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { status: 'disabled' });
+}
+
+export function changeAgentChannelMode(
+  agentId: string,
+  channelId: string,
+  credentialMode: AgentChannel['credentialMode'],
+  revision: string,
+): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { credentialMode, revision });
+}
+
+export function deleteAgentChannel(agentId: string, channelId: string): Promise<void> {
+  return request.delete(endpoints.agentChannels(agentId, channelId));
+}
+
+export function createWorkspaceAgentChannel(
+  agentId: string,
+  workspaceId: string,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId)}/workspace-connections`, { workspaceId });
+}
+
+export function getAgentChannelWorkspaceRoutes(
+  agentId: string,
+  channelId: string,
+  cursor?: string,
+): Promise<SlackWorkspaceRoutePage> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getAgentChannelWorkspaceTarget(
+  agentId: string,
+  channelId: string,
+  externalChannelId?: string,
+): Promise<SlackWorkspaceRouteStatus> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes?target=${encodeURIComponent(externalChannelId || 'default')}`,
+  );
+}
+
+export function setAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: SetSlackWorkspaceRoute,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId, channelId)}/workspace-routes`, input);
+}
+
+export function removeAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: { externalChannelId?: string; expectedRevision: string },
+): Promise<void> {
+  return request.deleteWithOptions(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes`,
+    { data: input },
+  );
+}
+
+export function getSlackWorkspaces(cursor?: string): Promise<SlackWorkspaceStatus> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getSlackBotManagers(workspaceId: string): Promise<SlackBotManagers> {
+  return request.get(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`);
+}
+
+export function searchSlackBotManagers(
+  workspaceId: string,
+  query: string,
+): Promise<SlackBotManager[]> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+export function setSlackBotManagers(
+  workspaceId: string,
+  revision: string,
+  userIds: string[],
+): Promise<{ revision: string }> {
+  return request.put(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`, {
+    revision,
+    userIds,
+  });
+}
+
+export function getSlackWorkspace(workspaceId: string): Promise<SlackWorkspaceDetail> {
+  return request.get(endpoints.slackWorkspaces(workspaceId));
+}
+
+export function getSlackApps(cursor?: string): Promise<SlackAppPage> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/apps${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function configureSlackApp(input: ConfigureSlackApp): Promise<SlackAppRegistration> {
+  return request.put(`${endpoints.slackWorkspaces()}/apps`, input).catch(channelCredentialFailure);
+}
+
+export function removeSlackApp(appId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces()}/apps/${encodeURIComponent(appId)}/remove`, {
+    revision,
+  });
+}
+
+export function connectSlackWorkspace(
+  workspaceId?: string,
+  appId?: string,
+): Promise<SlackWorkspaceConnect> {
+  return request.post(`${endpoints.slackWorkspaces()}/connect`, { workspaceId, appId });
+}
+
+export function disconnectSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.slackWorkspaces(workspaceId), { data: { revision } });
+}
+
+export function removeSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces(workspaceId)}/remove`, { revision });
+}
+
+export function cancelSlackWorkspaceInstall(flowId: string): Promise<void> {
+  return request.delete(`${endpoints.slackWorkspaces()}/attempts/${encodeURIComponent(flowId)}`);
+}
+
+export const channelIdentityClient: ChannelIdentityClient = {
+  preview: (ticket): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/preview`, { ticket }),
+  accept: ({ ticket, expectedRevision }): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/accept`, {
+      ticket,
+      revision: expectedRevision,
+    }),
+  list: (): Promise<ChannelLinkView[]> =>
+    request.get(`${endpoints.apiBaseUrl()}/api/channels/links`),
+  revoke: (linkId, revision): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.deleteWithOptions(
+      `${endpoints.apiBaseUrl()}/api/channels/links/${encodeURIComponent(linkId)}`,
+      { data: { revision } },
+    ),
+};
 
 export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResponse> {
   const query = new URLSearchParams();
@@ -310,6 +559,10 @@ export function getAgentApiKeys(): Promise<t.TAgentApiKeyListResponse> {
   return request.get(endpoints.apiKeys());
 }
 
+export function getApiKeyAgents(): Promise<t.TApiKeyAgentsResponse> {
+  return request.get(endpoints.apiKeyAgents());
+}
+
 export function createAgentApiKey(
   payload: t.TAgentApiKeyCreateRequest,
 ): Promise<t.TAgentApiKeyCreateResponse> {
@@ -458,8 +711,9 @@ export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {
   return request.get(endpoints.aiEndpoints());
 };
 
-export const getTokenConfig = (): Promise<t.TTokenConfigMap> => {
-  return request.get(endpoints.tokenConfig());
+export const getTokenConfig = async (endpoint?: string): Promise<t.TTokenConfigMap> => {
+  const config = await request.get<t.TTokenConfigMap>(endpoints.tokenConfig(endpoint));
+  return endpoint == null ? config : { [endpoint]: config[endpoint] ?? {} };
 };
 
 export const getReasoningCapabilities = (
@@ -468,8 +722,10 @@ export const getReasoningCapabilities = (
   return request.get(endpoints.reasoningCapabilities(endpoint));
 };
 
-export const getModels = async (): Promise<t.TModelsConfig> => {
-  return request.get(endpoints.models());
+export const getModels = async (endpoint?: string): Promise<t.TModelsConfig> => {
+  const models = await request.get<t.TModelsConfig>(endpoints.models(endpoint));
+  // Older servers ignore the selector and return the aggregate catalog.
+  return endpoint == null ? models : { [endpoint]: models[endpoint] ?? [] };
 };
 
 /* Assistants */
@@ -485,14 +741,17 @@ export const getAssistantById = ({
   endpoint,
   assistant_id,
   version,
+  model,
 }: {
   endpoint: s.AssistantsEndpoint;
   assistant_id: string;
-  version: number | string | number;
+  version: number | string;
+  model?: string | null;
 }): Promise<a.Assistant> => {
   return request.get(
     endpoints.assistants({
-      path: assistant_id,
+      path: encodeURIComponent(assistant_id),
+      options: model ? { model } : undefined,
       endpoint,
       version,
     }),
@@ -804,6 +1063,9 @@ export const deleteAgent = ({ agent_id }: m.DeleteAgentBody): Promise<void> => {
   );
 };
 
+export const getModelSpecHandoffs = (): Promise<ag.ModelSpecHandoffTarget[]> =>
+  request.get(endpoints.agents({ path: 'handoff-targets' }));
+
 export const listAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
@@ -1008,6 +1270,14 @@ export const speechToText = (data: FormData): Promise<f.SpeechToTextResponse> =>
 
 export const textToSpeech = (data: FormData): Promise<ArrayBuffer> => {
   return request.postTTS(endpoints.textToSpeechManual(), data);
+};
+
+export const streamTextToSpeech = (data: FormData, signal: AbortSignal): Promise<Response> => {
+  return request.authenticatedFetch(endpoints.textToSpeechManual(), {
+    method: 'POST',
+    body: data,
+    signal,
+  });
 };
 
 export const getVoices = (): Promise<f.VoiceResponse> => {
@@ -1258,6 +1528,38 @@ export function getSubagentThread(
   cursor?: string,
 ): Promise<t.SubagentThreadView> {
   return request.get(endpoints.subagentThread(parentConversationId, threadId, taskId, cursor));
+}
+
+/** The most rows one read of a child thread's messages asks for; the server holds the same bound. */
+export const SUBAGENT_THREAD_MESSAGES_PAGE = 50;
+
+/**
+ * One page of a child thread's messages, in the shape and with the previews of a conversation
+ * load: the thread's newest rows, or with `cursor` the rows before a page already read. A
+ * thread can hold more than is worth reading at once, so it is read a page at a time.
+ */
+export async function getSubagentThreadMessages(
+  parentConversationId: string,
+  threadId: string,
+  options?: { toolPreviews?: boolean; cursor?: string },
+): Promise<t.SubagentThreadMessagesPage> {
+  const url = endpoints.subagentThreadMessagesPage(parentConversationId, threadId, {
+    limit: SUBAGENT_THREAD_MESSAGES_PAGE,
+    cursor: options?.cursor,
+  });
+  const page = await request.get<s.TMessage[] | t.SubagentThreadMessagesPage>(
+    options?.toolPreviews === true ? withToolCallPreviews(url) : url,
+  );
+  /** A server that predates paging answers with the whole thread as a list. */
+  return Array.isArray(page) ? { messages: page, earlier: null } : page;
+}
+
+/** The full tool call behind a preview in a child thread; `params.conversationId` is the thread. */
+export function getSubagentThreadToolCallPart(
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.subagentThreadToolCallPart(parentConversationId, params));
 }
 
 export function getSubagentTaskContent(
@@ -1782,11 +2084,17 @@ export function finalizeTwoFactorSetup(
   return request.post(endpoints.finalizeTwoFactorSetup(), payload);
 }
 
+export function cancelTwoFactorSetup(
+  payload: t.TCancel2FASetupRequest,
+): Promise<t.TCancel2FASetupResponse> {
+  return request.post(endpoints.cancelTwoFactorSetup(), payload);
+}
+
 export function verifyTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
   return request.post(endpoints.verifyTwoFactor(), payload);
 }
 
-export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
+export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TConfirm2FAResponse> {
   return request.post(endpoints.confirmTwoFactor(), payload);
 }
 
@@ -1955,6 +2263,9 @@ export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
 export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
   return request.get(endpoints.scheduleMCPConsent(id));
 }
+export function getScheduleMCPOffer(agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.scheduleMCPOffer(), { agent_id: agentId });
+}
 export function confirmScheduleMCPConsent(
   id: string,
   payload: ConfirmScheduleMCPConsent,
@@ -1963,6 +2274,26 @@ export function confirmScheduleMCPConsent(
 }
 export function revokeScheduleMCPConsent(id: string, expectedRevision: string): Promise<void> {
   return request.deleteWithOptions(endpoints.scheduleMCPConsent(id), {
+    data: { expectedRevision },
+  });
+}
+
+export function getApiKeyMCPConsent(id: string, agentId: string): Promise<ScheduleMCPConsentView> {
+  return request.get(endpoints.apiKeyMCPConsent(id, agentId));
+}
+export function confirmApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  payload: ConfirmScheduleMCPConsent,
+): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.apiKeyMCPConsent(id, agentId), payload);
+}
+export function revokeApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  expectedRevision: string,
+): Promise<void> {
+  return request.deleteWithOptions(endpoints.apiKeyMCPConsent(id, agentId), {
     data: { expectedRevision },
   });
 }

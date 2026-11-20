@@ -22,8 +22,9 @@ function inlineChatView({
   const activeSubagentThread = activeConversation?.subagentThread;
   const chatProjectId = activeConversation?.chatProjectId || undefined;
   const { isLanding: isLandingPage } = view;
-  const fullFooter = isLandingPage && landingFooter;
-  const footerBelow = fullFooter || configuredFooter;
+  const fullFooter = isLandingPage && landingFooter !== false;
+  const composerFooter = fullFooter && landingFooter === 'composer';
+  const bandFooter = !fullFooter && configuredFooter;
   const isProjectLandingPage = isLandingPage && project != null;
   const conversationTitle = activeConversation?.title?.trim();
   const newChat = isLandingPage || !conversationTitle;
@@ -32,8 +33,9 @@ function inlineChatView({
   return {
     title: newChat ? null : (conversationTitle ?? null),
     fullFooter,
-    bandFooter: !fullFooter && configuredFooter,
-    footerBelow,
+    composerFooter,
+    bandFooter,
+    footerBelow: bandFooter || (fullFooter && !composerFooter),
     landingProject: isProjectLandingPage ? project : undefined,
     projectId: chatProjectId,
     readOnly: isSubagentThreadReadOnly,
@@ -135,6 +137,24 @@ describe('getChatPaneChrome', () => {
   it.each([
     [landingView, true, false, { fullFooter: true, bandFooter: false, footerBelow: true }],
     [landingView, true, true, { fullFooter: true, bandFooter: false, footerBelow: true }],
+    [
+      landingView,
+      'composer' as const,
+      false,
+      { fullFooter: true, composerFooter: true, bandFooter: false, footerBelow: false },
+    ],
+    [
+      landingView,
+      'composer' as const,
+      true,
+      { fullFooter: true, composerFooter: true, bandFooter: false, footerBelow: false },
+    ],
+    [
+      conversationView,
+      'composer' as const,
+      true,
+      { fullFooter: false, composerFooter: false, bandFooter: true, footerBelow: true },
+    ],
     [landingView, false, true, { fullFooter: false, bandFooter: true, footerBelow: true }],
     [landingView, false, false, { fullFooter: false, bandFooter: false, footerBelow: false }],
     [conversationView, true, false, { fullFooter: false, bandFooter: false, footerBelow: false }],

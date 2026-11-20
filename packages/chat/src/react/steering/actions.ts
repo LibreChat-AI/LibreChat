@@ -50,35 +50,31 @@ export default function useDuringRunActions({
   armDrainAfterAbort: () => void;
   stopGenerating: () => void;
 }): DuringRunActions {
-  const { takeComposerFiles, takeComposerContext, takeComposerQuotes } = composer;
+  const { takeComposerFiles, takeComposerContext, takeComposerQuotes, restoreComposerQuotes } =
+    composer;
   /** Composer-originated steer: consumes the composer's attachments and quote
    *  chips so they ride the steer as one unit (the server re-fetches + encodes
    *  files and merges quotes at the injection boundary). Both are taken only
-   *  after the guards pass: with `canSteer` true, `submitSteer` cannot
-   *  refuse, so the drained context can never be stranded. */
+   *  after the submission accepts the prepared text and refs. */
   const steerFromComposer = useCallback(
     (text: string, preempt = false): boolean => {
-      const trimmed = text.trim();
-      if (composerDisabledRef.current || trimmed.length === 0 || filesLoading || !canSteer) {
+      if (composerDisabledRef.current || filesLoading || !canSteer) {
         return false;
       }
-      /** A live steer cannot change the provider request already in flight.
-       * Preserve a staged reasoning choice as a full queued turn. */
-      if (pendingReasoningOverride != null) {
-        enqueue(trimmed, {
-          files: takeComposerFiles(),
-          ...takeComposerContext(),
-        });
-        takeComposerDraft();
-        return true;
-      }
-      const consumed = submitSteer(trimmed, takeComposerFiles(), takeComposerQuotes(), {
-        preempt,
+      return takeComposerFiles(text.trim(), (mergedText, files) => {
+        /** A live steer cannot change the provider request already in flight.
+         * Preserve a staged reasoning choice as a full queued turn. */
+        if (pendingReasoningOverride != null) {
+          enqueue(mergedText, { files, ...takeComposerContext() });
+          takeComposerDraft();
+          return true;
+        }
+        const quotes = takeComposerQuotes();
+        const consumed = submitSteer(mergedText, files, quotes, { preempt });
+        if (consumed) takeComposerDraft();
+        else restoreComposerQuotes(quotes);
+        return consumed;
       });
-      if (consumed) {
-        takeComposerDraft();
-      }
-      return consumed;
     },
     [
       composerDisabledRef,
@@ -89,6 +85,7 @@ export default function useDuringRunActions({
       takeComposerFiles,
       takeComposerContext,
       takeComposerQuotes,
+      restoreComposerQuotes,
       takeComposerDraft,
       submitSteer,
     ],
@@ -98,16 +95,14 @@ export default function useDuringRunActions({
    *  chips, and manual skill picks as one unit. */
   const queueFromComposer = useCallback(
     (text: string): boolean => {
-      const trimmed = text.trim();
-      if (composerDisabledRef.current || trimmed.length === 0 || filesLoading) {
+      if (composerDisabledRef.current || filesLoading) {
         return false;
       }
-      enqueue(trimmed, {
-        files: takeComposerFiles(),
-        ...takeComposerContext(),
+      return takeComposerFiles(text.trim(), (mergedText, files) => {
+        enqueue(mergedText, { files, ...takeComposerContext() });
+        takeComposerDraft();
+        return true;
       });
-      takeComposerDraft();
-      return true;
     },
     [
       composerDisabledRef,
@@ -122,24 +117,16 @@ export default function useDuringRunActions({
   /** Abort the current run and auto-send this text once the abort settles. */
   const interruptAndSend = useCallback(
     (text: string): boolean => {
-      const trimmed = text.trim();
-      if (
-        composerDisabledRef.current ||
-        trimmed.length === 0 ||
-        filesLoading ||
-        !canControlGeneration
-      ) {
+      if (composerDisabledRef.current || filesLoading || !canControlGeneration) {
         return false;
       }
-      enqueue(trimmed, {
-        front: true,
-        files: takeComposerFiles(),
-        ...takeComposerContext(),
+      return takeComposerFiles(text.trim(), (mergedText, files) => {
+        enqueue(mergedText, { front: true, files, ...takeComposerContext() });
+        takeComposerDraft();
+        armDrainAfterAbort();
+        stopGenerating();
+        return true;
       });
-      takeComposerDraft();
-      armDrainAfterAbort();
-      stopGenerating();
-      return true;
     },
     [
       composerDisabledRef,
@@ -157,10 +144,8 @@ export default function useDuringRunActions({
   /** Preempt the active step and continue the same response with the message. */
   const interruptSteer = useCallback(
     (text: string): boolean => {
-      const trimmed = text.trim();
       if (
         composerDisabledRef.current ||
-        trimmed.length === 0 ||
         filesLoading ||
         pausedOnApproval ||
         !canControlGeneration ||
@@ -177,13 +162,13 @@ export default function useDuringRunActions({
       if (pendingReasoningOverride != null) {
         return false;
       }
-      const consumed = submitSteer(trimmed, takeComposerFiles(), takeComposerQuotes(), {
-        preempt: true,
+      return takeComposerFiles(text.trim(), (mergedText, files) => {
+        const quotes = takeComposerQuotes();
+        const consumed = submitSteer(mergedText, files, quotes, { preempt: true });
+        if (consumed) takeComposerDraft();
+        else restoreComposerQuotes(quotes);
+        return consumed;
       });
-      if (consumed) {
-        takeComposerDraft();
-      }
-      return consumed;
     },
     [
       composerDisabledRef,
@@ -194,6 +179,7 @@ export default function useDuringRunActions({
       pendingReasoningOverride,
       takeComposerFiles,
       takeComposerQuotes,
+      restoreComposerQuotes,
       takeComposerDraft,
       submitSteer,
     ],

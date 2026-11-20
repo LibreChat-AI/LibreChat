@@ -531,6 +531,30 @@ function isUnjudgedDottedWhere(node: ts.Node): boolean {
   return !assignsCode;
 }
 
+/** AWS supports this option on aggregate, but not find. Judge only direct option
+ * properties in the aggregate call's second argument; nested pipeline fields and
+ * unproven aliases retain the conservative token verdict.
+ * https://docs.aws.amazon.com/documentdb/latest/devguide/functional-differences.html#functional-differences.lookup
+ */
+function isAggregateDiskOption(node: ts.Node): boolean {
+  const property = node.parent;
+  if (!ts.isPropertyAssignment(property) || property.name !== node) {
+    return false;
+  }
+  const options = property.parent;
+  if (!ts.isObjectLiteralExpression(options)) {
+    return false;
+  }
+  const use = outermostWrapper(options).parent;
+  return (
+    ts.isCallExpression(use) &&
+    ts.isPropertyAccessExpression(use.expression) &&
+    calleeName(use) === 'aggregate' &&
+    use.arguments.length >= 2 &&
+    unwrapExpression(use.arguments[1]) === options
+  );
+}
+
 function findForbiddenTokens(sourceFile: ts.SourceFile): string[] {
   if (OPERATOR_GUARDS.has(sourceFile.fileName)) {
     return [];
@@ -543,6 +567,9 @@ function findForbiddenTokens(sourceFile: ts.SourceFile): string[] {
         (ts.isIdentifier(node) && !ts.isPropertySignature(node.parent)))
     ) {
       for (const token of FORBIDDEN_TOKENS) {
+        if (token === 'allowDiskUse' && node.text === token && isAggregateDiskOption(node)) {
+          continue;
+        }
         if (node.text === token || node.text.startsWith(`${token}.`)) {
           offenses.push(offenseAt(sourceFile, node, token));
         }
@@ -1054,6 +1081,24 @@ describe('Amazon DocumentDB compatibility', () => {
       ['bare with minus exclusion', `Model.find({}).select('-internal');`],
     ])('accepts a supported select: %s', (_shape, source) => {
       expect(findMixedSelectStrings(parse('fixture.ts', source))).toEqual([]);
+    });
+
+    it.each([
+      `collection.aggregate([], { allowDiskUse: false });`,
+      `collection.aggregate([], { 'allowDiskUse': true });`,
+      `collection.aggregate([], ({ allowDiskUse: false } as AggregateOptions));`,
+    ])('accepts the supported aggregation disk option: %s', (source) => {
+      expect(findForbiddenTokens(parse('fixture.ts', source))).toEqual([]);
+    });
+
+    it.each([
+      `collection.find({}, { allowDiskUse: false });`,
+      `collection.find({}).allowDiskUse(false);`,
+      `collection.aggregate([{ $project: { allowDiskUse: false } }]);`,
+      `collection.aggregate([], { nested: { allowDiskUse: false } });`,
+      `const options = { allowDiskUse: false }; collection.find({}, options);`,
+    ])('retains the disk-option guard outside proven aggregate options: %s', (source) => {
+      expect(findForbiddenTokens(parse('fixture.ts', source))).not.toEqual([]);
     });
 
     it('flags forbidden operators in code but not in prose or type members', () => {

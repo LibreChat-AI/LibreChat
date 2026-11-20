@@ -13,6 +13,7 @@ import { durableSubagentSelection } from '../../../react/subagents/eventSelectio
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { activeSubagentPanel } from '../../../react/subagents/state';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { emptyToolCallChrome } from '../../../react/host';
 import { EventSubagentActivityGroup } from '../activity';
 
 const mockRefresh = jest.fn().mockResolvedValue(undefined);
@@ -56,6 +57,7 @@ jest.mock('@librechat/client', () => ({
     <button {...props}>{children}</button>
   ),
   cn: (...values: Array<string | false | undefined>) => values.filter(Boolean).join(' '),
+  Shimmer: jest.requireActual('@librechat/client').Shimmer,
   useLocalize: () => (key: string) => key,
 }));
 jest.mock('lucide-react', () => ({
@@ -105,6 +107,7 @@ const host: MessagePartsHost = {
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const testChatSurface = (overrides: Partial<ChatSurface> = {}): ChatSurface => ({

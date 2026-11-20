@@ -1,4 +1,4 @@
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, CodeApprovalMode } from 'librechat-data-provider';
 import type { PendingSteer, QueuedMessageOrigin } from './types';
 import type { GenerationProtocolVersion } from '../protocol';
 import type { SteerCarriedContext } from './steer';
@@ -17,6 +17,7 @@ export type SteerAttempt = {
   generationProtocolVersion: GenerationProtocolVersion;
   queuedOrigin?: QueuedMessageOrigin;
   carried: SteerCarriedContext;
+  codeApprovalMode?: CodeApprovalMode;
 };
 
 /** A chip for this attempt in the given state. Callers add the fields that
@@ -34,6 +35,7 @@ export function steerAttemptChip(
     }),
     generationProtocolVersion: attempt.generationProtocolVersion,
     ...(attempt.queuedOrigin && { queuedOrigin: attempt.queuedOrigin }),
+    ...(attempt.codeApprovalMode != null && { codeApprovalMode: attempt.codeApprovalMode }),
     ...attempt.carried,
     ...chip,
   };

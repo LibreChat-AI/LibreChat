@@ -1,3 +1,4 @@
+import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { createFileProvisionRecovery } from '../operations';
@@ -166,3 +167,27 @@ it.each([
   ).rejects.toBe(error);
   expect(clearFileCodeEnvRefs).not.toHaveBeenCalled();
 });
+
+it.each([true, false])(
+  'reconciles snapshot receipts without deleting mutable paths (CAS %s)',
+  async (matched) => {
+    const { httpClient, clearFileCodeEnvRefs, remove } = setup();
+    clearFileCodeEnvRefs.mockResolvedValue(matched);
+    const file = {
+      file_id: 'snapshot-v1',
+      user: 'owner',
+      tenantId: 'tenant-a',
+      context: FileContext.execute_code_snapshot,
+      metadata: { codeEnvRef: ref, codeEnvRefs: { default: ref } },
+    };
+    if (matched) await expect(remove(req, file)).resolves.toEqual({ deleted: true });
+    else await expect(remove(req, file)).rejects.toThrow('Code storage reconciliation failed');
+    expect(httpClient).not.toHaveBeenCalled();
+    expect(clearFileCodeEnvRefs).toHaveBeenCalledWith({
+      file_id: 'snapshot-v1',
+      userId: 'owner',
+      tenantId: 'tenant-a',
+      refs: [{ routeKey: 'default', ref }],
+    });
+  },
+);

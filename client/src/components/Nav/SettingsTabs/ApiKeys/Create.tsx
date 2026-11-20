@@ -72,6 +72,7 @@ export default function Create({ onCreated, onCancel }: CreateProps) {
         <Label id="api-key-expiry-label">{localize('com_ui_api_key_expiration')}</Label>
         <Radio
           fullWidth
+          wrap
           value={expiry}
           onChange={setExpiry}
           aria-labelledby="api-key-expiry-label"

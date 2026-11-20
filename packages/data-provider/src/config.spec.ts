@@ -37,6 +37,38 @@ import {
   isSafeLinkUrl,
 } from './config';
 
+describe('local configuration cache limits', () => {
+  it('defaults an explicit block and keeps the policy deployment-only', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).configCache).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.18', configCache: {} }).configCache).toEqual({
+      maxBytes: 16 * 1024 * 1024,
+      maxEntries: 1000,
+    });
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS.configCache).toBe('operator');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, '100'])(
+    'rejects invalid bounds %p',
+    (value) => {
+      for (const field of ['maxBytes', 'maxEntries']) {
+        expect(
+          configSchema.safeParse({ version: '1.3.18', configCache: { [field]: value } }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('accepts explicit positive bounds and rejects unknown settings', () => {
+    expect(
+      configSchema.parse({ version: '1.3.18', configCache: { maxBytes: 4096, maxEntries: 2 } })
+        .configCache,
+    ).toEqual({ maxBytes: 4096, maxEntries: 2 });
+    expect(configSchema.safeParse({ version: '1.3.18', configCache: { maxSize: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('independent browser replay opt-in', () => {
   it('preserves absent configuration for existing environment-based RUM deployments', () => {
     expect(configSchema.parse({ version: '1.3.17' }).telemetry).toBeUndefined();
@@ -1176,7 +1208,10 @@ describe('attached code environment user config schema', () => {
     [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
-  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    [{ detachedCommands: true }, true],
+    [{ detachedCommands: false }, true],
+    [{ detachedCommands: 'yes' }, false],
+  ])('validates the workspace toggles %p', (workspaces, valid) => {
     const result = configSchema.safeParse({
       version: '1.0',
       endpoints: {
@@ -2065,6 +2100,11 @@ describe('allowedAddressesSchema', () => {
       ['[fd00::1]:8080', 'IPv6 unique-local with port'],
       ['[fe80::1]:8080', 'IPv6 link-local with port'],
       ['[::ffff:10.0.0.5]:8080', 'IPv4-mapped IPv6 of a private address'],
+      ['[::ffff:0:10.0.0.1]:8080', 'IPv4-translated dotted private address'],
+      ['[::ffff:0:a00:1]:8080', 'IPv4-translated hex private address'],
+      ['[::ffff:0:a9fe:a9fe]:80', 'IPv4-translated metadata address'],
+      ['[0:0:0:0:ffff:0:10.0.0.1]:8080', 'expanded IPv4-translated address'],
+      ['[0000:0000:0000:0000:FFFF:0000:0A00:0001]:8080', 'padded translated address'],
       ['[64:ff9b::a00:1]:8080', 'NAT64 embedding private 10.0.0.1'],
       ['[2002:a00:1::]:8080', '6to4 embedding private 10.0.0.1'],
       ['[2001::ffff:f5ff:fffe]:8080', 'Teredo embedding a private address'],
@@ -2090,6 +2130,9 @@ describe('allowedAddressesSchema', () => {
       ['ws://10.0.0.5', 'ws URL'],
       ['10.0.0.0/24', 'CIDR range'],
       ['[64:ff9b::808:808]:8080', 'NAT64 embedding public 8.8.8.8'],
+      ['[::ffff:0:808:808]:8080', 'translated public IPv4 in hex form'],
+      ['[::ffff:0:8.8.8.8]:8080', 'translated public IPv4 in dotted form'],
+      ['[::ffff:1:a00:1]:8080', 'address outside the translated prefix'],
       ['[2002:808:808::]:8080', '6to4 embedding public 8.8.8.8'],
       ['/path', 'leading slash / path'],
       ['10.0.0.5/api', 'embedded path'],
@@ -2200,6 +2243,21 @@ describe('allowedAddressesSchema', () => {
   });
 
   describe('integration with configSchema', () => {
+    it.each(['actions', 'mcpSettings'] as const)(
+      'accepts translated private-address exemptions on %s',
+      (section) => {
+        const allowedAddresses = ['[::ffff:0:10.0.0.1]:8080'];
+        const result = configSchema.safeParse({
+          version: '1.0',
+          [section]: { allowedAddresses },
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data[section]?.allowedAddresses).toEqual(allowedAddresses);
+        }
+      },
+    );
+
     it('accepts the field on endpoints', () => {
       const result = configSchema.safeParse({
         version: '1.0',
@@ -3062,6 +3120,8 @@ describe('subagent activity policy', () => {
       endpoints: { agents: { subagentActivity: {} } },
     });
     expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      generationJobs: true,
+      generationContentBytes: 4_194_304,
       contentRecoveryEnabled: false,
       contentPageBytes: 262_144,
       contentFlushMs: 250,
@@ -3191,9 +3251,18 @@ describe('workspace admission configuration', () => {
     { jitterRatio: 1.1 },
     { maxDelayMs: Infinity },
     { queueWaitMs: 1.5 },
+    { resubmissionWindowMs: -1 },
+    { resubmissionWindowMs: 60_001 },
+    { resubmissionWindowMs: 1.5 },
     { unexpected: true },
   ])('rejects an invalid policy %j', (admission) => {
     expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 20_500, 60_000])('accepts a resubmission window of %i ms', (resubmissionWindowMs) => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ admission: { resubmissionWindowMs } }).admission,
+    ).toMatchObject({ resubmissionWindowMs });
   });
 
   it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
@@ -3296,6 +3365,18 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
     expect(DEPLOYMENT_ONLY_CONFIG_PATHS['telemetry.stackTraceLimit']).toBe('operator');
   });
 
+  it('declares the settings read from librechat.yaml itself or only at startup', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS).toMatchObject({
+      'telemetry.rum': 'operator',
+      clientLimits: 'operator',
+      conversationList: 'operator',
+      passwordHashing: 'startup',
+      'interface.colorModeFromUrl': 'startup',
+      'fileConfig.skills.deletionCleanupConcurrency': 'operator',
+      'endpoints.agents.managementApi': 'operator',
+    });
+  });
+
   it('overlaps neither the base-only sections nor the base-only paths', () => {
     const baseOnly = new Set<string>([...BASE_ONLY_CONFIG_SECTIONS, ...BASE_ONLY_CONFIG_PATHS]);
     for (const path of Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS)) {
@@ -3303,5 +3384,261 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
       const prefixes = segments.map((_, index) => segments.slice(0, index + 1).join('.'));
       expect(prefixes.filter((prefix) => baseOnly.has(prefix))).toEqual([]);
     }
+  });
+});
+
+describe('Permission principal concurrency', () => {
+  it('accepts bounded permission lookup concurrency', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', concurrency: { permissionPrincipalLookups: 2 } })
+        .concurrency?.permissionPrincipalLookups,
+    ).toBe(2);
+  });
+  it.each([0, 33, 1.5])(
+    'rejects invalid principal concurrency: %s',
+    (permissionPrincipalLookups) => {
+      expect(
+        configSchema.safeParse({ version: '1.3.5', concurrency: { permissionPrincipalLookups } })
+          .success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('directory verification deadline configuration', () => {
+  it('preserves an explicitly configured directory budget', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', timeouts: { directoryMs: 50 } }).timeouts?.directoryMs,
+    ).toBe(50);
+  });
+  it.each([0, -1, 1.5, 2147483648])('rejects unsafe directory budget %s', (directoryMs) => {
+    expect(configSchema.safeParse({ version: '1.3.5', timeouts: { directoryMs } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('channel storage work limit', () => {
+  it('preserves the claim default and exposes an operator override through YAML config', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.claimBatchSize).toBe(25);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { claimBatchSize: 60 } } },
+      }).endpoints?.agents?.channels?.claimBatchSize,
+    ).toBe(60);
+  });
+  it.each([0, 101, 1.5, '25'])('rejects invalid claim batch %s', (claimBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { claimBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('channel erasure configuration', () => {
+  it('defaults cleanup batches and exposes a deployment override', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.erasureBatchSize).toBe(250);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { erasureBatchSize: 12 } } },
+      }).endpoints?.agents?.channels?.erasureBatchSize,
+    ).toBe(12);
+  });
+  it.each([0, 1001, 1.5, '250'])('rejects invalid erasure batch %s', (erasureBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { erasureBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('complete channel operator configuration', () => {
+  it('owns gateway feature and signature policy with behavior-preserving defaults', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels).toMatchObject({
+      transport: 'socket_mode',
+      nativeSessions: false,
+      lifecycleReactions: false,
+      signatureToleranceSeconds: 300,
+      socketReconnectDelayMs: 5000,
+    });
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        endpoints: {
+          agents: {
+            channels: {
+              enabled: true,
+              transport: 'webhook',
+              nativeSessions: true,
+              lifecycleReactions: true,
+              signatureToleranceSeconds: 60,
+              socketReconnectDelayMs: 100,
+            },
+          },
+        },
+      }).endpoints?.agents?.channels,
+    ).toMatchObject({
+      transport: 'webhook',
+      nativeSessions: true,
+      lifecycleReactions: true,
+      signatureToleranceSeconds: 60,
+      socketReconnectDelayMs: 100,
+    });
+  });
+  it.each([
+    { socketReconnectDelayMs: 99 },
+    { socketReconnectDelayMs: 60001 },
+    { socketReconnectDelayMs: 100.5 },
+    { socketReconnectDelayMs: '5000' },
+    { nativeSessions: 'true' },
+    { lifecycleReactions: 'false' },
+    { signatureToleranceSeconds: 0 },
+    { signatureToleranceSeconds: 301 },
+    { signatureToleranceSeconds: 1.5 },
+  ])('rejects malformed shared gateway policy %p', (channels) => {
+    expect(agentsEndpointSchema.safeParse({ channels }).success).toBe(false);
+  });
+  it('keeps channel execution disabled by default and accepts explicit enablement with runtime limits', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.enabled).toBe(false);
+    const parsed = configSchema.parse({
+      version: '1.2.1',
+      endpoints: {
+        agents: {
+          channels: {
+            enabled: true,
+            transport: 'webhook',
+            gatewayUrl: 'https://gateway.example',
+            cleanup: { batchSize: 12 },
+            ticketLifetimeMs: 180000,
+            artifactAnswerFileThresholdBytes: 8192,
+          },
+        },
+      },
+    });
+    expect(parsed.endpoints?.agents?.channels).toMatchObject({
+      enabled: true,
+      transport: 'webhook',
+      gatewayUrl: 'https://gateway.example',
+      cleanup: { batchSize: 12 },
+      ticketLifetimeMs: 180000,
+      artifactAnswerFileThresholdBytes: 8192,
+    });
+  });
+  it.each([{ artifactMaxBytes: 50 * 1024 * 1024 + 1 }, { ticketLifetimeMs: 0 }, { batchSize: 12 }])(
+    'rejects invalid or unknown runtime configuration %p',
+    (channels) => {
+      expect(
+        agentsEndpointSchema.safeParse({ channels: { enabled: true, ...channels } }).success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('remote SDK runtime configuration', () => {
+  it('keeps native file reads opt-in and bounds process budgets', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostFiles).toBeUndefined();
+    const parsed = agentsEndpointSchema.parse({
+      sdkHostFiles: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostFiles: true },
+        },
+      },
+    });
+    expect(parsed.sdkHostFiles?.maxChunkBytes).toBe(262144);
+    expect(parsed.sdkRuntimes?.runtime).toMatchObject({ remote: { hostFiles: true } });
+    for (const field of Object.keys(parsed.sdkHostFiles!)) {
+      for (const value of [0, -1, Number.MAX_SAFE_INTEGER])
+        expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { [field]: value } }).success).toBe(
+          false,
+        );
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { unknown: true } }).success).toBe(false);
+  });
+  it('opts into builder models with bounded process-wide admission', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
+    const result = agentsEndpointSchema.parse({
+      sdkHostModels: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostModel: true },
+        },
+      },
+    });
+    expect(result.sdkHostModels).toEqual({
+      maxConcurrentCalls: 32,
+      maxAdmissionEntries: 4096,
+      maxBufferedRequestBytes: 67108864,
+      timeoutMs: 60000,
+      maxRequestBytes: 4194304,
+      maxResponseBytes: 4194304,
+    });
+    expect(result.sdkRuntimes?.runtime).toMatchObject({ remote: { hostModel: true } });
+    for (const field of Object.keys(result.sdkHostModels!)) {
+      expect(agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: 0 } }).success).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: Number.MAX_SAFE_INTEGER } })
+          .success,
+      ).toBe(false);
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostModels: { unknown: true } }).success).toBe(
+      false,
+    );
+  });
+  it('keeps module registrations and supplies remote transport defaults', () => {
+    const result = agentsEndpointSchema.parse({
+      sdkRuntimes: {
+        local: { module: './local.cjs' },
+        remote: { remote: { url: 'wss://runtime.example/sdk', secret: '${SDK_RUNTIME_SECRET}' } },
+      },
+    });
+    expect(result?.sdkRuntimes?.local).toEqual({ module: './local.cjs', roles: ['ADMIN'] });
+    expect(result?.sdkRuntimes?.remote).toEqual({
+      roles: ['ADMIN'],
+      remote: {
+        url: 'wss://runtime.example/sdk',
+        secret: '${SDK_RUNTIME_SECRET}',
+        connectTimeoutMs: 10000,
+        rpcTimeoutMs: 60000,
+        maxFrameBytes: 1048576,
+        maxBufferedBytes: 4194304,
+        maxRunMs: 600000,
+      },
+    });
+  });
+  it('enables recovery explicitly with bounded defaults', () => {
+    const remote = (recovery: unknown) => ({
+      sdkRuntimes: {
+        test: { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', recovery } },
+      },
+    });
+    const registration = agentsEndpointSchema.parse(remote({}))?.sdkRuntimes?.test;
+    expect(
+      registration && 'remote' in registration ? registration.remote.recovery : undefined,
+    ).toEqual({
+      maxDisconnectMs: 15000,
+      retryDelayMs: 250,
+      maxJournalBytes: 67108864,
+    });
+    const routed = agentsEndpointSchema.parse(
+      remote({ routes: { 'worker-a': 'wss://worker-a.internal/sdk' } }),
+    )?.sdkRuntimes?.test;
+    expect(routed && 'remote' in routed ? routed.remote.recovery?.routes : undefined).toEqual({
+      'worker-a': 'wss://worker-a.internal/sdk',
+    });
+    for (const recovery of [
+      { routes: { 'worker-a': 'https://worker-a.internal/sdk' } },
+      { maxDisconnectMs: 0 },
+      { maxDisconnectMs: 60000 },
+      { retryDelayMs: -1 },
+      { maxJournalBytes: 0 },
+      { unknown: true },
+    ])
+      expect(agentsEndpointSchema.safeParse(remote(recovery)).success).toBe(false);
+  });
+  it.each([
+    { module: './local.cjs', remote: { url: 'wss://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'https://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', maxFrameBytes: 0 } },
+  ])('rejects ambiguous or invalid transport registrations', (registration) => {
+    expect(agentsEndpointSchema.safeParse({ sdkRuntimes: { invalid: registration } }).success).toBe(
+      false,
+    );
   });
 });

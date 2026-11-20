@@ -94,10 +94,10 @@ export function buildSharedLinkStartupPayload(
   if (typeof env.ANALYTICS_GTM_ID === 'string') {
     payload.analyticsGtmId = env.ANALYTICS_GTM_ID;
   }
-  if (typeof env.SANDPACK_BUNDLER_URL === 'string') {
+  if (env.SANDPACK_BUNDLER_URL) {
     payload.bundlerURL = env.SANDPACK_BUNDLER_URL;
   }
-  if (typeof env.SANDPACK_STATIC_BUNDLER_URL === 'string') {
+  if (env.SANDPACK_STATIC_BUNDLER_URL) {
     payload.staticBundlerURL = env.SANDPACK_STATIC_BUNDLER_URL;
   }
   if (typeof env.CUSTOM_FOOTER === 'string') {

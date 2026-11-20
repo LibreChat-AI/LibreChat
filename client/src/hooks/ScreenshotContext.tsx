@@ -1,7 +1,7 @@
 import { createContext, useRef, useContext, RefObject, ReactNode } from 'react';
-import { toCanvas } from 'html-to-image';
-import { completeProgressiveRowMounts } from '@librechat/chat/react';
 import { ThemeContext, isDark, readThemeColor } from '@librechat/client';
+import { completeProgressiveRowMounts, revealOffscreenRows } from '@librechat/chat/react';
+import { importWithRecovery } from '~/lib/assets/lazy';
 
 type ScreenshotContextType = {
   ref?: RefObject<HTMLDivElement>;
@@ -40,6 +40,9 @@ export const useScreenshot = () => {
     if (!node) {
       throw new Error('You should provide correct html node.');
     }
+
+    /** Loaded before measuring so the size check and the clone below still run in one synchronous step. */
+    const { toCanvas } = await importWithRecovery(() => import('html-to-image'));
 
     const width = node.scrollWidth;
     const height = node.scrollHeight;
@@ -109,9 +112,15 @@ export const useScreenshot = () => {
     /** Pin the transcript before mounting or cloning can yield to navigation. */
     await completeProgressiveRowMounts();
     assertTarget();
-    const image = await takeScreenShot(node);
-    assertTarget();
-    return image;
+    /** A clone carries no remembered size, so every row is laid out for the capture. */
+    const resumeSkipping = revealOffscreenRows();
+    try {
+      const image = await takeScreenShot(node);
+      assertTarget();
+      return image;
+    } finally {
+      resumeSkipping();
+    }
   };
 
   return { screenshotTargetRef: ref, captureScreenshot };

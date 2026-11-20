@@ -963,7 +963,7 @@ describe('primeWorkspaceAttachments', () => {
       name: 'fresh.zip',
     } as CodeEnvFile;
     const provisionFiles = jest.fn(async (toolNames: string[]) => {
-      expect(toolNames).toEqual([AgentConstants.READ_FILE]);
+      expect(toolNames).toEqual([AgentConstants.EXECUTE_CODE]);
       queued.file.metadata = {
         codeEnvRefs: {
           'stateful:machine': {

@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -9,10 +9,12 @@ import type { TMessage } from 'librechat-data-provider';
 import type { ConversationSeenSource, MessagesHost } from '../../../react/messages/host';
 import type { MessagesScrollButtonProps, MessagesViewProps } from '../MessagesView';
 import type { ChatContract } from '../../../react/chat/contract';
-import type { MessagePartsHost } from '../../../react/host';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
+import { createSteerHost } from '../../../__fixtures__/steerHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { SteerHostProvider } from '../../../react/steer/host';
 import { ChatContext } from '../../../react/chat/context';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import MessagesView from '../MessagesView';
@@ -21,7 +23,7 @@ beforeAll(initEnglish);
 
 const tree = [{ messageId: 'reply-1', conversationId: 'convo-1' }] as TMessage[];
 
-const partsHost = { useFontSize: () => 'text-base' } as unknown as MessagePartsHost;
+const partsHost = createMessagePartsHost({ useFontSize: () => 'text-base' });
 
 const RESPONDED_AT = '2026-11-03T10:00:00.000Z';
 
@@ -82,23 +84,25 @@ function renderView(props: Partial<MessagesViewProps>, host: MessagesHost, chat 
   queryClient.setQueryData([QueryKeys.messages, 'convo-1'], tree);
   const view = (next: Partial<MessagesViewProps>) => (
     <QueryClientProvider client={queryClient}>
-      <ChatContext.Provider value={chat}>
-        <MessagesHostProvider host={host}>
-          <MessagePartsHostProvider host={partsHost}>
-            <MessagesView
-              messagesTree={tree}
-              messages={tree}
-              showScrollButton
-              maximizeChatSpace={false}
-              renderThread={({ conversationId }) => (
-                <ol aria-label="Thread" data-conversation-id={conversationId} />
-              )}
-              {...props}
-              {...next}
-            />
-          </MessagePartsHostProvider>
-        </MessagesHostProvider>
-      </ChatContext.Provider>
+      <SteerHostProvider host={createSteerHost()}>
+        <ChatContext.Provider value={chat}>
+          <MessagesHostProvider host={host}>
+            <MessagePartsHostProvider host={partsHost}>
+              <MessagesView
+                messagesTree={tree}
+                messages={tree}
+                showScrollButton
+                maximizeChatSpace={false}
+                renderThread={({ conversationId }) => (
+                  <ol aria-label="Thread" data-conversation-id={conversationId} />
+                )}
+                {...props}
+                {...next}
+              />
+            </MessagePartsHostProvider>
+          </MessagesHostProvider>
+        </ChatContext.Provider>
+      </SteerHostProvider>
     </QueryClientProvider>
   );
   const result = render(view({}));
@@ -123,6 +127,26 @@ describe('MessagesView', () => {
 
     expect(screen.getByText('Nothing found')).toBeInTheDocument();
     expect(renderThread).not.toHaveBeenCalled();
+  });
+
+  it('takes the thread mode from the host unless the caller sets it', () => {
+    const renderThread = jest.fn((_props: { flat?: boolean }) => null);
+    const { rerenderView } = renderView(
+      { renderThread },
+      createHost({ useFlatThread: () => false }).host,
+    );
+
+    expect(renderThread).toHaveBeenLastCalledWith(expect.objectContaining({ flat: false }));
+
+    rerenderView({ flatThread: true });
+    expect(renderThread).toHaveBeenLastCalledWith(expect.objectContaining({ flat: true }));
+  });
+
+  it('keeps the host hook order when the thread mode prop comes and goes', () => {
+    const host = createHost({ useFlatThread: () => useState(false)[0] }).host;
+    const { rerenderView } = renderView({ flatThread: true }, host);
+
+    expect(() => rerenderView({ flatThread: undefined })).not.toThrow();
   });
 
   it('keys the thread and the rail to the rendered tree, not the lagging conversation', () => {
@@ -290,5 +314,40 @@ describe('MessagesView', () => {
     const scrollable = button?.scrollableRef.current;
     expect(scrollable).toHaveClass('scrollbar-gutter-stable', 'overflow-y-auto');
     expect(scrollable).not.toHaveClass('[overflow-anchor:none]');
+  });
+});
+
+describe('MessagesView default rail', () => {
+  const turns = (conversationId: string) =>
+    ['one', 'two', 'three'].map((id, index) => ({
+      messageId: `${conversationId}-${id}`,
+      conversationId,
+      isCreatedByUser: index % 2 === 0,
+      text: id,
+    })) as TMessage[];
+  /** The rail builds its entries from the rendered rows. */
+  const renderThread: MessagesViewProps['renderThread'] = ({ messages }) => (
+    <ol aria-label="Thread">
+      {messages?.map((message) => (
+        <li key={message.messageId} id={message.messageId} className="message-render">
+          {message.text}
+        </li>
+      ))}
+    </ol>
+  );
+
+  it('keeps the rail on same-chat updates and replaces it on a warm switch', async () => {
+    const { rerenderView } = renderView(
+      { messagesTree: turns('convo-1'), messages: turns('convo-1'), renderThread },
+      createHost({ useConversationMessages: (id) => turns(id ?? 'convo-1') }).host,
+    );
+    const rail = await screen.findByRole('navigation');
+
+    rerenderView({ messagesTree: turns('convo-1'), messages: turns('convo-1') });
+    expect(screen.getByRole('navigation')).toBe(rail);
+
+    rerenderView({ messagesTree: turns('convo-2'), messages: turns('convo-2') });
+    expect(rail.isConnected).toBe(false);
+    expect(await screen.findByRole('navigation')).not.toBe(rail);
   });
 });

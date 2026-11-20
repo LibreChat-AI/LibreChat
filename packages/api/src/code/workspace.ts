@@ -190,6 +190,9 @@ export interface WorkspaceExecuteCommandRequest {
   timeoutMs?: number;
   maxOutputBytes?: number;
   environmentAction?: { name: string; fingerprint: string };
+  /** Runs without holding its worktree. Sent only to a worker that advertises the `detached`
+   *  command feature, because older workers reject the field; never with `environmentAction`. */
+  detached?: true;
 }
 
 export interface WorkspaceWriteRequest {
@@ -869,7 +872,9 @@ function isValidRequest(request: WorkspaceToolRequest): boolean {
       (request.timeoutMs == null ||
         isPositiveInteger(request.timeoutMs, WORKSPACE_COMMAND_MAX_TIMEOUT_MS)) &&
       (request.maxOutputBytes == null ||
-        isPositiveInteger(request.maxOutputBytes, MAX_COMMAND_OUTPUT_BYTES))
+        isPositiveInteger(request.maxOutputBytes, MAX_COMMAND_OUTPUT_BYTES)) &&
+      (request.detached === undefined ||
+        (request.detached === true && request.environmentAction == null))
     );
   }
   if (request.operation === 'write_file') {
@@ -1452,6 +1457,9 @@ export async function executeWorkspaceTool({
           policy.queueWaitMs ?? Math.max(maxQueueWaitMs, WORKSPACE_QUEUE_TIMEOUT_MS),
         ),
         pollIntervalMs: policy.pollIntervalMs ?? 500,
+        ...(policy.resubmissionWindowMs === undefined
+          ? {}
+          : { resubmissionWindowMs: policy.resubmissionWindowMs }),
         rateLimitWaitMs: codeApiMaxRetryWaitMs,
         readJson: (response, requestSignal) => readBoundedJson(response, requestSignal, true),
         validateResult: isValidResult,

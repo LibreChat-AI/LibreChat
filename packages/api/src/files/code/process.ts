@@ -1,12 +1,7 @@
 import path from 'path';
 import { v4 } from 'uuid';
-import {
-  megabyte,
-  fileConfig,
-  imageExtRegex,
-  inferMimeType,
-  mergeCodeEnvRef,
-} from 'librechat-data-provider';
+import { createHash } from 'node:crypto';
+import { megabyte, fileConfig, imageExtRegex, inferMimeType } from 'librechat-data-provider';
 import type { CodeEnvRef, FileSources, getEndpointFileConfig } from 'librechat-data-provider';
 import type { CodeFileCommitData } from '@librechat/data-schemas';
 import type {
@@ -76,7 +71,7 @@ export interface CodeOutputProcessorDeps {
     Pick<
       CodeOutputStoredFile,
       'filepath' | 'bytes' | 'width' | 'height' | 'storageKey' | 'storageRegion'
-    >
+    > & { sha256: string }
   >;
   getStrategyFunctions: (source: FileSources) => {
     saveBuffer?: (input: {
@@ -240,24 +235,8 @@ export async function processCodeOutput(
       );
     }
 
-    /**
-     * Ordinary outputs atomically reuse a file_id for this filename and conversation.
-     * Explicit publications instead receive a fresh attempt ID from the gateway.
-     *
-     * Claim by `safeName` (not raw `name`) so the claim and the eventual
-     * `createFile` agree on the filename column — otherwise weird inputs
-     * (e.g. `"proj name/file@v1.txt"`) would claim under the raw name and
-     * then write under the sanitized one, leaving the claim row orphaned.
-     */
-    /**
-     * Dispatch-order stamp persisted with every write AND every claim insert
-     * (foreground writes dispatch ≈ now): the out-of-order guard below
-     * compares WRITER dispatch order, not wall-clock write time — an older
-     * task writing late must not make a newer task's harvest look stale, and
-     * a freshly claimed row must carry its claimant's stamp before the
-     * content write lands.
-     */
-    const sourceDispatchedAt = freshClaimAfter ?? Date.now();
+    // Separate captures never share primary storage, even at the same sandbox path.
+    const sourceDispatchedAt = freshClaimAfter ?? currentDate.getTime();
 
     const outputPersistence = createCodeOutputPersistence({
       publication,
@@ -272,36 +251,9 @@ export async function processCodeOutput(
       user: req.user.id,
       tenantId: req.user.tenantId,
       sourceDispatchedAt,
+      snapshot: publication == null,
     });
     const file_id = claimed.file_id;
-    const isUpdate = file_id !== newFileId;
-
-    /**
-     * Out-of-order guard for detached (background) harvests: when the claimed
-     * row's last writer was dispatched AFTER this task (`freshClaimAfter` =
-     * this task's dispatch time), a newer run owns this filename slot. The
-     * `(filename, conversationId)` unique index means the stale bytes have
-     * nowhere else to live, so skip this file rather than overwrite fresh
-     * content — the harvest's stdout patch still lands, only the superseded
-     * attachment is omitted. Falls back to `updatedAt` for rows written
-     * before the stamp existed (the claim itself is timestamp-neutral).
-     */
-    const lastWriterDispatchedAt =
-      claimed.metadata?.sourceDispatchedAt ??
-      (claimed.updatedAt != null ? new Date(claimed.updatedAt).getTime() : null);
-    if (isUpdate && freshClaimAfter != null && (lastWriterDispatchedAt ?? 0) > freshClaimAfter) {
-      logger.warn(
-        `[processCodeOutput] Skipping stale background output "${safeName}" (${file_id}): a newer run owns this filename`,
-      );
-      return null;
-    }
-
-    if (isUpdate) {
-      logger.debug(
-        `[processCodeOutput] Updating existing file "${safeName}" (${file_id}) instead of creating duplicate`,
-      );
-    }
-
     /** Retain the completed output for token-qualified persistence after storage settles. */
     let pendingOutput: CodeOutputStoredFile | undefined;
     async function commitCodeFile(fileData: CodeOutputStoredFile): Promise<boolean> {
@@ -312,29 +264,22 @@ export async function processCodeOutput(
     const writeOutput = async (
       onUploadStart: FileStorageUploadObserver,
     ): Promise<CodeOutputResult | null> => {
-      /**
-       * Preserve the original `messageId` on update. Each `processCodeOutput`
-       * call would otherwise overwrite it with the current run's run id, which
-       * decouples the file from the assistant message that originally created
-       * it. `getCodeGeneratedFiles` filters by `messageId IN <thread>`, so a
-       * stale id (e.g. from a later regeneration / failed re-read attempt)
-       * silently excludes the file from priming on subsequent turns.
-       */
-      const persistedMessageId = isUpdate ? (claimed.messageId ?? messageId) : messageId;
-      /* A generated-output write replaces the file's bytes, so pointers to
-       * earlier content in another profile must not survive as reusable refs. */
-      const codeEnvReferenceSet = mergeCodeEnvRef(undefined, codeEnvRef);
+      // The sandbox object is a live path, not an owned immutable copy.
       const codeEnvMetadata = {
-        ...claimed.metadata,
-        ...codeEnvReferenceSet,
+        codeEnvSource: codeEnvRef,
+        codeDestination: true,
         sourceDispatchedAt,
       };
+      const outputMetadata = (sha256: string) => ({
+        ...codeEnvMetadata,
+        codeOutput: { messageId, sha256 },
+      });
 
       if (isImage) {
-        const usage = isUpdate ? (claimed.usage ?? 0) + 1 : 1;
+        const usage = 1;
         onUploadStart();
         const _file = await convertImage(req, buffer, 'high', `${file_id}${fileExt}`);
-        const filepath = usage > 1 ? `${_file.filepath}?v=${Date.now()}` : _file.filepath;
+        const filepath = _file.filepath;
         const storageMetadata = getStorageMetadata({
           filepath: _file.filepath,
           source: appConfig.fileStrategy,
@@ -358,7 +303,7 @@ export async function processCodeOutput(
           filepath,
           ...storageMetadata,
           file_id,
-          messageId: persistedMessageId,
+          messageId,
           usage,
           filename: safeName,
           conversationId,
@@ -366,11 +311,11 @@ export async function processCodeOutput(
           user: req.user.id,
           tenantId: req.user.tenantId,
           type: `image/${appConfig.imageOutputType}`,
-          createdAt: isUpdate ? claimed.createdAt : formattedDate,
+          createdAt: formattedDate,
           updatedAt: formattedDate,
           source: appConfig.fileStrategy,
           context: outputPersistence.context,
-          metadata: codeEnvMetadata,
+          metadata: outputMetadata(_file.sha256),
           ...(await retentionExpiryPromise),
         };
         if (!(await outputPersistence.commit(file))) {
@@ -478,7 +423,7 @@ export async function processCodeOutput(
         file_id,
         filepath,
         ...storageMetadata,
-        messageId: persistedMessageId,
+        messageId,
         object: 'file',
         filename: safeName,
         type: mimeType,
@@ -487,11 +432,11 @@ export async function processCodeOutput(
         tenantId: req.user.tenantId,
         bytes: buffer.length,
         updatedAt: formattedDate,
-        metadata: codeEnvMetadata,
+        metadata: outputMetadata(createHash('sha256').update(buffer).digest('hex')),
         source: appConfig.fileStrategy,
         context: outputPersistence.context,
-        usage: isUpdate ? (claimed.usage ?? 0) + 1 : 1,
-        createdAt: isUpdate ? claimed.createdAt : formattedDate,
+        usage: 1,
+        createdAt: formattedDate,
         ...(await retentionExpiryPromise),
       };
 

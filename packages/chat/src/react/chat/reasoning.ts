@@ -5,6 +5,7 @@ import {
   resolveModelReasoning,
   isAgentsEndpoint,
   isReasoningOverrideSupported,
+  getReasoningParamDefinitions,
   resolveReasoningSettingForTarget,
 } from 'librechat-data-provider';
 import type {
@@ -94,7 +95,10 @@ export function resolveSubmittedReasoning({
           isAgent,
           defaultParamsEndpoint: customParams?.defaultParamsEndpoint,
           reasoningFormat: customParams?.reasoningFormat,
-          paramDefinitions: customParams?.paramDefinitions,
+          paramDefinitions: getReasoningParamDefinitions(
+            effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint],
+            effectiveModel,
+          ),
           modelReasoning:
             effectiveModel == null || clearsEffort
               ? undefined

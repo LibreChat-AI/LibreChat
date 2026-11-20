@@ -4,6 +4,12 @@ import { render, screen } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import MemoryCall from '../MemoryCall';
 
+/** Moved components read the localizer from the package, so it delegates to the `~/hooks` mock. */
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize:
     () =>

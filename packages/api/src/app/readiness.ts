@@ -1,5 +1,5 @@
+import type { Request, Response, RequestHandler } from 'express';
 import type { RedisClientType } from '@redis/client';
-import type { Request, Response } from 'express';
 import type { Redis, Cluster } from 'ioredis';
 
 type NodeRedisReadiness = Pick<RedisClientType, 'isReady'>;
@@ -63,3 +63,30 @@ export const createReadinessHandler =
     }
     res.status(200).send('OK');
   };
+
+/** Per-worker readiness: a healthy sibling must not admit work to an initializing worker. */
+export function createStartupReadiness(redis: RedisReadinessClients): {
+  handler: RequestHandler;
+  gate: RequestHandler;
+  markReady: () => void;
+} {
+  let initialized = false;
+  const gate: RequestHandler = (_req, res, next) => {
+    if (initialized && isRedisReady(redis)) {
+      next();
+      return;
+    }
+    res.set('Retry-After', '1');
+    res.status(503).json({
+      code: 'SERVER_NOT_READY',
+      error: 'Server is not ready. Please retry shortly.',
+    });
+  };
+  return {
+    handler: createReadinessHandler(() => initialized, redis),
+    gate,
+    markReady: () => {
+      initialized = true;
+    },
+  };
+}

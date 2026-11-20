@@ -55,13 +55,9 @@ const createHost = (conversation: TConversation | null): ChatHost => ({
   usePaneConversation: () => ({ conversation, setConversation: noop }),
   useNewConversation: () => noop,
   useTurnServices: () => turnServices,
-  useLatestMessage: () => null,
-  useLatestMessageId: () => null,
-  useSetSiblingIdx: () => noop,
   useAbortStream: () => mockAbortStream,
   useMessageCache: () => cache,
   useFeedbackEnabled: () => false,
-  getMappingOptions: () => ({}),
   useMessages: () => ({ messages: null, isLoading: false, isFetching: false }),
 });
 

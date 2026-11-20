@@ -1,10 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { ROW_GLYPH_SLOT, FailedRevealContext } from '@librechat/chat/components';
 import type {
   TAttachment,
   SearchResultData,
@@ -12,8 +12,8 @@ import type {
   PartMetadata,
 } from 'librechat-data-provider';
 import { HeaderActionSlotContext } from '../slot';
-import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
+import '~/Providers/MessagePartsHostContext';
 import WebSearch from '../WebSearch';
 
 jest.mock('~/hooks', () => ({
@@ -31,16 +31,24 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
-  useProgress: (progress: number) => progress,
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
+    const translations: Record<string, string> = {
+      com_ui_web_searching: 'Searching the web',
+      com_ui_web_searching_again: 'Searching again',
+      com_ui_web_search_processing: 'Processing results',
+      com_ui_web_search_reading: 'Reading sources',
+      com_ui_web_searched: 'Searched the web',
+      com_ui_web_search_source: `${values?.count ?? 1} source`,
+      com_ui_web_search_sources: `${values?.count ?? 0} sources`,
+      com_ui_web_search_details: 'Search details',
+      com_ui_search_query: 'Query',
+    };
+    return translations[key] || key;
+  },
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -532,8 +540,7 @@ describe('WebSearch', () => {
       renderWebSearch({ searchResults });
 
       const button = screen.getByRole('button', { name: /Searched the web/ });
-      expect(button.parentElement).toHaveClass('h-5');
-      expect(button.parentElement?.parentElement).toHaveClass('my-1');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
       expect(button).not.toHaveClass('py-1');
       expect(button).not.toHaveClass('transition-colors');
       const chevron = screen.getByTestId('chevron-icon');

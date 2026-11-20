@@ -990,6 +990,19 @@ describe('createProvisionFilesCallback', () => {
     ]);
   });
 
+  it('keeps lazily provisioned refs for a code call after a read_file batch', async () => {
+    /* A skill reference read is answered on the host and never reaches the sandbox, so a
+     * read_file batch must not take the handoff from the bash call that follows it. */
+    const { provisionFiles } = buildHarness({
+      contexts: [['agent-a', { provisionState: state([makeFile()], []) }]],
+    });
+    const expected = [expect.objectContaining({ id: 'remote-1', name: 'data.csv' })];
+
+    expect(await provisionFiles([Constants.READ_FILE], 'agent-a')).toEqual(expected);
+    expect(await provisionFiles([Constants.BASH_TOOL], 'agent-a')).toEqual(expected);
+    expect(await provisionFiles([Constants.BASH_TOOL], 'agent-a')).toEqual([]);
+  });
+
   it('reports the name the sandbox stored, not the record name', async () => {
     /* A converted image is uploaded under a corrected extension, so telling the model the
      * record's name points it at a path the sandbox does not have. */
@@ -1492,5 +1505,279 @@ describe('createProvisionFilesCallback', () => {
 
     expect(provisionToCodeEnv).not.toHaveBeenCalled();
     expect(provisionToVectorDB).not.toHaveBeenCalled();
+  });
+});
+
+describe('createProvisionFilesCallback batched code uploads', () => {
+  type BatchParams = Parameters<NonNullable<ProvisionCallbackDeps['provisionBatchToCodeEnv']>>[0];
+  type BatchResult = Awaited<
+    ReturnType<NonNullable<ProvisionCallbackDeps['provisionBatchToCodeEnv']>>
+  >;
+
+  const stored = (file: TFile, sandboxFilename: string | undefined, session: string) => {
+    const ref: CodeEnvRef = {
+      kind: 'user',
+      id: 'user-1',
+      storage_session_id: session,
+      file_id: `remote-${file.file_id}`,
+    };
+    return {
+      referenceSet: { codeEnvRefs: { default: ref } },
+      refUpdate: { file_id: file.file_id, routeKey: 'default', ref },
+      sandboxFilename: sandboxFilename ?? file.filename,
+    };
+  };
+
+  function batchHarness(
+    contexts: Array<[string, ProvisionToolContext]>,
+    batchImpl?: (params: BatchParams) => Promise<BatchResult>,
+  ) {
+    let sessions = 0;
+    const provisionBatchToCodeEnv = jest.fn(
+      batchImpl ??
+        (async ({ files }: BatchParams): Promise<BatchResult> => {
+          const session = `batch-${++sessions}`;
+          return files.map(({ file, sandboxFilename, onUploadStart }) => {
+            onUploadStart?.();
+            return { status: 'fulfilled', value: stored(file, sandboxFilename, session) };
+          });
+        }),
+    );
+    const provisionToCodeEnv = jest.fn(
+      async ({
+        file,
+        sandboxFilename,
+      }: Parameters<ProvisionCallbackDeps['provisionToCodeEnv']>[0]) =>
+        stored(file, sandboxFilename, `single-${file.file_id}`),
+    );
+    const fileStorage = {
+      recovery: createFileProvisionRecovery(),
+      acquireFileProvision: jest.fn(async (_claim: FileStorageClaim) => true),
+      releaseFileProvision: jest.fn(async (_claim: FileStorageClaim) => true),
+      commitFileProvision: jest.fn(async (_commit: FileProvisionCommit) => true),
+    };
+    return {
+      provisionBatchToCodeEnv,
+      provisionToCodeEnv,
+      fileStorage,
+      provisionFiles: createProvisionFilesCallback({
+        req,
+        fileStorage,
+        agentToolContexts: new Map(contexts),
+        provisionToCodeEnv,
+        provisionBatchToCodeEnv,
+        provisionToVectorDB: jest.fn() as never,
+        updateFile: jest.fn(),
+        updateCodeEnvRef: jest.fn(),
+        addEmbeddedEntity: jest.fn(),
+      }),
+    };
+  }
+
+  const files = (count: number): TFile[] =>
+    Array.from({ length: count }, (_, index) =>
+      makeFile({ file_id: `file-${index}`, filename: `data-${index}.csv` }),
+    );
+
+  it('sends every queued file of a tool batch in one request and applies each result', async () => {
+    const queued = files(5);
+    const provisionState = state(queued, []);
+    const context: ProvisionToolContext = { provisionState };
+    const h = batchHarness([['agent-a', context]]);
+
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+    const [request] = h.provisionBatchToCodeEnv.mock.calls[0];
+    expect(request.entity_id).toBeUndefined();
+    expect(request.files.map(({ file }) => file.file_id).sort()).toEqual(
+      queued.map((file) => file.file_id).sort(),
+    );
+    expect(provisioned.map((file) => [file.id, file.storage_session_id]).sort()).toEqual(
+      queued.map((file) => [`remote-${file.file_id}`, 'batch-1']).sort(),
+    );
+    expect(h.fileStorage.commitFileProvision).toHaveBeenCalledTimes(5);
+    expect(h.fileStorage.releaseFileProvision).toHaveBeenCalledTimes(5);
+    expect(provisionState.codeEnvFiles).toEqual([]);
+    expect(context.tool_resources?.execute_code?.files?.map((file) => file.file_id).sort()).toEqual(
+      queued.map((file) => file.file_id).sort(),
+    );
+  });
+
+  it('keeps each resource identity in its own request', async () => {
+    const queued = files(4);
+    const h = batchHarness([
+      ['agent-a', { provisionState: state(queued, [], ['file-0', 'file-1']) }],
+    ]);
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls
+        .map(([{ entity_id, files: sent }]) => [
+          entity_id,
+          sent.map(({ file }) => file.file_id).sort(),
+        ])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ).toEqual([
+      ['agent-a', ['file-0', 'file-1']],
+      [undefined, ['file-2', 'file-3']],
+    ]);
+  });
+
+  it('streams a file it cannot size while the rest share a request', async () => {
+    const queued = files(3);
+    queued[1] = makeFile({ file_id: 'file-1', filename: 'data-1.csv', bytes: undefined });
+    const h = batchHarness([['agent-a', { provisionState: state(queued, []) }]]);
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(h.provisionToCodeEnv.mock.calls[0][0].file.file_id).toBe('file-1');
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls[0][0].files.map(({ file }) => file.file_id).sort(),
+    ).toEqual(['file-0', 'file-2']);
+  });
+
+  it('uploads without a file whose claim was denied', async () => {
+    const queued = files(3);
+    const provisionState = state(queued, []);
+    const h = batchHarness([['agent-a', { provisionState }]]);
+    h.fileStorage.acquireFileProvision.mockImplementation(
+      async ({ file_id }: FileStorageClaim) => file_id !== 'file-1',
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toThrow(
+      'Failed to provision 1 file(s)',
+    );
+
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls[0][0].files.map(({ file }) => file.file_id).sort(),
+    ).toEqual(['file-0', 'file-2']);
+    expect(provisionState.codeEnvFiles.map((file) => file.file_id)).toEqual(['file-1']);
+  });
+
+  it('shares one request between agents that queue the same files', async () => {
+    const queued = files(3);
+    const h = batchHarness([
+      ['agent-a', { provisionState: state([...queued], []) }],
+      ['agent-b', { provisionState: state([...queued], []) }],
+    ]);
+
+    const [first, second] = await Promise.all([
+      h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a'),
+      h.provisionFiles([Constants.EXECUTE_CODE], 'agent-b'),
+    ]);
+
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(first.map((file) => file.id).sort()).toEqual(second.map((file) => file.id).sort());
+    expect(h.fileStorage.commitFileProvision).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports one rate-limit failure for the turn and keeps every file queued', async () => {
+    const rateLimit = Object.assign(new Error('Code API rate limit reached'), {
+      name: 'CodeApiRateLimitError',
+      code: 'CODE_API_RATE_LIMITED',
+      status: 429,
+      statusCode: 429,
+      retryAfterMs: 219_000,
+    });
+    const queued = files(30);
+    const provisionState = state(queued, []);
+    const h = batchHarness([['agent-a', { provisionState }]], async ({ files: sent }) => {
+      for (const { onUploadStart } of sent) {
+        onUploadStart?.();
+        onUploadStart?.('rejected');
+      }
+      throw rateLimit;
+    });
+    const { logger } = jest.requireMock('@librechat/data-schemas');
+    logger.error.mockClear();
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toBe(rateLimit);
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(provisionState.codeEnvFiles).toHaveLength(30);
+    expect(h.fileStorage.releaseFileProvision).toHaveBeenCalledTimes(30);
+  });
+
+  it('reports the longest wait when separate requests were rate limited', async () => {
+    const limited = (retryAfterMs: number) =>
+      Object.assign(new Error(`retry in ${retryAfterMs}`), {
+        code: 'CODE_API_RATE_LIMITED',
+        status: 429,
+        retryAfterMs,
+      });
+    const waits = [30_000, 219_000];
+    const errors = waits.map(limited);
+    const h = batchHarness(
+      [['agent-a', { provisionState: state(files(2), [], ['file-0']) }]],
+      async ({ entity_id }) => {
+        throw errors[entity_id ? 0 : 1];
+      },
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toBe(errors[1]);
+  });
+
+  it('names the rate limit when other files failed for another reason', async () => {
+    const rateLimit = Object.assign(new Error('Code API rate limit reached'), {
+      code: 'CODE_API_RATE_LIMITED',
+      status: 429,
+      retryAfterMs: 262_000,
+    });
+    const unknown = new Error('File provisioning outcome is unknown');
+    const h = batchHarness(
+      [['agent-a', { provisionState: state(files(3), []) }]],
+      async ({ files: sent }) =>
+        sent.map(({ file }) => ({
+          status: 'rejected',
+          reason: file.file_id === 'file-0' ? unknown : rateLimit,
+        })),
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toMatchObject({
+      message:
+        'Failed to provision 3 file(s) to the code environment; aborting tool execution rather than running without them. The Code API rate limit turned away 2 of them (retry in 262s)',
+      errors: expect.arrayContaining([unknown, rateLimit]),
+    });
+  });
+
+  it('retries only the file a request refused', async () => {
+    const refused = new Error('Code API did not store "data-1.csv"');
+    const queued = files(3);
+    const provisionState = state(queued, []);
+    let refuse = true;
+    const h = batchHarness([['agent-a', { provisionState }]], async ({ files: sent }) =>
+      sent.map(({ file, sandboxFilename, onUploadStart }) => {
+        onUploadStart?.();
+        if (refuse && file.file_id === 'file-1') {
+          onUploadStart?.('rejected');
+          return { status: 'rejected', reason: refused };
+        }
+        return { status: 'fulfilled', value: stored(file, sandboxFilename, 'batch') };
+      }),
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toMatchObject({
+      cause: refused,
+      errors: [refused],
+    });
+    expect(provisionState.codeEnvFiles.map((file) => file.file_id)).toEqual(['file-1']);
+
+    refuse = false;
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(2);
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls[1][0].files.map(({ file }) => file.file_id),
+    ).toEqual(['file-1']);
+    expect(provisioned.map((file) => file.id).sort()).toEqual([
+      'remote-file-0',
+      'remote-file-1',
+      'remote-file-2',
+    ]);
   });
 });

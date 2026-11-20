@@ -1,23 +1,26 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { expect } from '@playwright/test';
 import type Result from 'lighthouse/types/lhr/lhr';
 import type { Cookie } from '@playwright/test';
 
+import type { Measurement } from './measure.mts';
+import type { Budgets } from './budgets.mts';
+import { measure, referenceBlockingTime } from './measure.mts';
+import { sanitizeLighthouseArtifacts } from './artifacts.mts';
 import { runLighthouse } from './process.mts';
-
-/** Median budgets keyed by Lighthouse audit id. */
-export type MedianBudgets = Record<string, number>;
+import { BUDGETS } from './budgets.mts';
 
 const REPORTS_DIRECTORY = '.lighthouse';
 
 const DEFAULT_RUNS = 3;
 
-const DEFAULT_BUDGETS: MedianBudgets = {
-  'largest-contentful-paint': 4500,
-  'cumulative-layout-shift': 0.1,
-  'total-blocking-time': 500,
-};
+/**
+ * An over-budget batch is measured once more before it fails. A regression is over budget in
+ * every run; a busy stretch on a shared runner is not, and must not fail the gate alone.
+ */
+const BATCHES = 2;
 
 /**
  * Lighthouse 13 removed `largest-contentful-paint-element` and moved the LCP node into the
@@ -32,69 +35,16 @@ export function lcpElement(report: Result): string {
   return JSON.stringify(details);
 }
 
-function medianOf(results: Result[], audit: string): number {
-  const values = results
-    .map((report) => report.audits[audit]?.numericValue)
-    .filter((value): value is number => typeof value === 'number')
-    .sort((a, b) => a - b);
-  expect(values, `Lighthouse must report a numeric ${audit} for every run`).toHaveLength(
-    results.length,
-  );
-  const middle = values.length >> 1;
-  return values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+function readReports(directory: string): Result[] {
+  return fs
+    .readdirSync(directory)
+    .filter((file) => /^lhr-.*\.report\.json$/.test(file))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .map((file) => JSON.parse(fs.readFileSync(path.join(directory, file), 'utf8')) as Result);
 }
 
-export async function auditPage({
-  url,
-  cookies,
-  runs = DEFAULT_RUNS,
-  budgets = DEFAULT_BUDGETS,
-}: {
-  url: string;
-  cookies: Cookie[];
-  runs?: number;
-  budgets?: MedianBudgets;
-}): Promise<Result[]> {
-  const cookie = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
-  const directory = path.resolve(REPORTS_DIRECTORY);
-  fs.rmSync(directory, { recursive: true, force: true });
-  fs.mkdirSync(directory, { recursive: true });
-
-  const cli = require.resolve('lighthouse/cli/index.js');
-  const chromeFlags = `--headless=new ${process.env.LIGHTHOUSE_CHROME_FLAGS ?? ''}`.trim();
-  const flags = [
-    url,
-    '--quiet',
-    '--preset=desktop',
-    '--throttling-method=provided',
-    '--only-categories=performance',
-    `--chrome-flags=${chromeFlags}`,
-    `--extra-headers=${JSON.stringify({ Cookie: cookie })}`,
-    '--output=json',
-    '--output=html',
-  ];
-
-  try {
-    for (let run = 1; run <= runs; run++) {
-      const output = path.join(directory, `lhr-${run}`);
-      await runLighthouse({ cli, flags, output, run, runs });
-    }
-  } finally {
-    // Lighthouse embeds extraHeaders in reports; keep disposable session cookies out of artifacts.
-    for (const file of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
-      if (!/\.report\.(json|html)$/.test(file)) continue;
-      const filename = path.join(directory, file);
-      const content = fs.readFileSync(filename, 'utf8');
-      fs.writeFileSync(filename, cookie ? content.replaceAll(cookie, '[redacted]') : content);
-    }
-  }
-
-  const reports = fs.readdirSync(directory).filter((file) => /^lhr-.*\.report\.json$/.test(file));
-  expect(reports.length, 'Lighthouse must produce one report per run').toBe(runs);
-  const results = reports.map(
-    (file) => JSON.parse(fs.readFileSync(path.join(directory, file), 'utf8')) as Result,
-  );
-  for (const report of results) {
+function describeRuns(reports: Result[]): void {
+  for (const report of reports) {
     console.log(
       `${report.finalDisplayedUrl}: LCP ${report.audits['largest-contentful-paint'].displayValue}`,
     );
@@ -113,18 +63,79 @@ export async function auditPage({
     }
     expect(report.runtimeError, 'Lighthouse navigation must succeed').toBeUndefined();
   }
+}
+
+export async function auditPage({
+  url,
+  cookies,
+  runs = DEFAULT_RUNS,
+  budgets = BUDGETS,
+}: {
+  url: string;
+  cookies: Cookie[];
+  runs?: number;
+  budgets?: Budgets;
+}): Promise<Result[]> {
+  const cookie = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
+  const directory = path.resolve(REPORTS_DIRECTORY);
+  fs.rmSync(directory, { recursive: true, force: true });
+  fs.mkdirSync(directory, { recursive: true });
+
+  const cli = require.resolve('lighthouse/cli/index.js');
+  const chromeFlags = `--headless=new ${process.env.LIGHTHOUSE_CHROME_FLAGS ?? ''}`.trim();
+  const flags = [
+    url,
+    '--quiet',
+    '--preset=desktop',
+    '--throttling-method=provided',
+    '--only-categories=performance',
+    `--chrome-flags=${chromeFlags}`,
+    `--extra-headers=${JSON.stringify({ Cookie: cookie })}`,
+    '--output=json',
+    '--output=html',
+    '--save-assets',
+  ];
+
+  let results: Result[] = [];
+  let measured: Measurement[] = [];
+  for (let batch = 1; batch <= BATCHES; batch++) {
+    const total = runs * batch;
+    try {
+      for (let run = results.length + 1; run <= total; run++) {
+        const output = path.join(directory, `lhr-${run}`);
+        await runLighthouse({ cli, flags, output, run, runs: total });
+      }
+    } finally {
+      sanitizeLighthouseArtifacts(directory, cookies);
+    }
+    const reports = readReports(directory);
+    expect(reports.length, 'Lighthouse must produce one report per run').toBe(total);
+    describeRuns(reports.slice(results.length));
+    results = reports;
+    measured = measure(results, budgets);
+    if (batch === BATCHES || measured.every(({ value, limit }) => value <= limit)) break;
+    console.log(`Over budget after ${total} runs; measuring ${runs} more before failing.`);
+  }
   console.log(
     `Inspect ${REPORTS_DIRECTORY} HTML/JSON and e2e/lighthouse/README.md. Reuse loaded user/config data; overlap independent reads without bypassing authorization.`,
   );
 
-  const measured = Object.entries(budgets).map(([audit, limit]) => ({
-    audit,
-    median: medianOf(results, audit),
-    limit,
-  }));
+  // A low benchmarkIndex is a slow or busy runner: read the measured times against it.
+  console.log(`Runner: ${os.availableParallelism()} logical CPUs`);
+  console.table(
+    results.map((report, index) => ({
+      run: index + 1,
+      benchmarkIndex: Math.round(report.environment.benchmarkIndex),
+      'largest-contentful-paint': Math.round(
+        report.audits['largest-contentful-paint'].numericValue ?? NaN,
+      ),
+      'total-blocking-time': Math.round(report.audits['total-blocking-time'].numericValue ?? NaN),
+      'at reference CPU': Math.round(referenceBlockingTime(report)),
+    })),
+  );
   console.table(measured);
-  for (const { audit, median, limit } of measured) {
-    expect(median, `Median ${audit} must stay within ${limit}`).toBeLessThanOrEqual(limit);
+  for (const { audit, statistic, value, limit } of measured) {
+    expect(value, `${audit} (${statistic}) must stay within ${limit}`).toBeLessThanOrEqual(limit);
   }
   return results;
 }

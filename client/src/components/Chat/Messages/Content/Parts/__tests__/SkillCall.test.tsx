@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { ShareContext } from '~/Providers/ShareContext';
 import SkillCall from '../SkillCall';
 
 const mockNavigate = jest.fn();
@@ -141,5 +142,28 @@ describe('SkillCall', () => {
     );
     expect(screen.getByText('com_ui_output')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+  });
+
+  it("keeps the output instead of the viewer's same-named skill in a shared transcript", () => {
+    render(
+      <ShareContext.Provider value={{ isSharedConvo: true, shareId: 'share-1' }}>
+        <SkillCall
+          initialProgress={1}
+          isSubmitting={false}
+          args={JSON.stringify({ skillName: 'release-notes' })}
+          output='Skill "release-notes" loaded. Follow the instructions below.'
+        />
+      </ShareContext.Provider>,
+    );
+
+    expect(screen.getByText('com_ui_output')).toBeInTheDocument();
+    expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
+    expect(screen.queryByText(/Summarize merged PRs\./)).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_skill_current_version')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+    expect(mockSkillsQuery).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ enabled: true }),
+    );
   });
 });

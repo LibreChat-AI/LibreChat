@@ -382,6 +382,8 @@ export type TAgentApiKeyListItem = {
   id: string;
   name: string;
   keyPrefix: string;
+  /** Issued to an integration, not the owner's personal key. It holds no MCP grants. */
+  bound?: boolean;
   lastUsedAt?: string;
   expiresAt?: string;
   createdAt: string;
@@ -389,6 +391,13 @@ export type TAgentApiKeyListItem = {
 
 export type TAgentApiKeyListResponse = {
   keys: TAgentApiKeyListItem[];
+  /** Runs started with a key may use only the MCP tools its owner granted it. */
+  grants?: boolean;
+};
+
+/** The agents an API key can be granted for: the ones its owner may run remotely. */
+export type TApiKeyAgentsResponse = {
+  agents: { id: string; name: string | null }[];
 };
 
 export type TUpdateConversationRequest = {
@@ -666,6 +675,7 @@ export type TCodeEnvironmentMoveResponse = {
 
 /** Sanitized results of server request shaping for each saved toggle state. */
 export type ResponsesApiRoute = {
+  firstPartyEndpoint?: boolean;
   default: boolean;
   on: boolean;
   off: boolean;
@@ -675,6 +685,8 @@ export type ResponsesApiRouting = Record<string, ResponsesApiRoute>;
 
 export type TConfig = {
   responsesApiRouting?: ResponsesApiRouting;
+  /** Azure model name -> the `reasoning_effort` values its deployment declares. */
+  modelReasoningEfforts?: Record<string, string[]>;
   order: number;
   type?: EModelEndpoint;
   azure?: boolean;
@@ -851,10 +863,24 @@ export type TFinalize2FASetupResponse = {
   user: TUser;
 };
 
+export type TCancel2FASetupRequest = {
+  tempToken: string;
+};
+
+export type TCancel2FASetupResponse = {
+  message: string;
+};
+
 export type TVerify2FARequest = TOTPVerificationPayload;
 
 export type TVerify2FAResponse = {
   message: string;
+};
+
+/** Opt-in confirmation retires every earlier session and hands back the one that replaces them. */
+export type TConfirm2FAResponse = {
+  token: string;
+  user: TUser;
 };
 
 /** For verifying 2FA during login with a temporary token. */
@@ -1346,6 +1372,12 @@ export type TBalanceResponse = {
   lastRefill?: Date | string;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  /** ISO timestamp with offset that periods are aligned to; null or absent for rolling periods. */
+  refillAnchor?: string | null;
+  /** Credits granted at the start of the current period; absent on records not yet granted one. */
+  allotment?: number;
+  /** When `allotment` was granted; a later `lastRefill` means a writer replaced the period without it. */
+  allottedAt?: Date | string;
 };
 
 /* -------------------------------------------------------------------------- */

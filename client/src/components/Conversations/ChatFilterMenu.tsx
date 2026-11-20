@@ -907,6 +907,7 @@ const ChatFilterMenu = () => {
               buttonVariants({ variant: 'ghost', size: 'xs' }),
               'text-text-secondary cursor-pointer font-medium outline-hidden',
               'aria-disabled:hover:text-text-secondary aria-disabled:opacity-50',
+              'theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent',
               'data-[active-item]:bg-surface-hover data-[active-item]:text-text-primary',
             )}
           >

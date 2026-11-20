@@ -1,5 +1,7 @@
 import fs from 'fs';
 import path from 'path';
+import { hash } from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { MongoClient, ObjectId } from 'mongodb';
 import type { Db } from 'mongodb';
 
@@ -236,4 +238,22 @@ export async function deleteUserByEmail(userEmail: string): Promise<void> {
     ]);
     await db.collection('users').deleteOne({ _id: user._id });
   });
+}
+
+/** Test-only recovery credential, independent of the public reset request response. */
+export async function seedPasswordReset(userEmail: string): Promise<string> {
+  const token = randomBytes(32).toString('hex');
+  const tokenHash = await hash(token, 4);
+  await withMongo(async (db) => {
+    const userId = new ObjectId(await resolveUserId(db, userEmail));
+    await db.collection('tokens').insertOne({
+      userId,
+      email: userEmail.toLowerCase(),
+      type: 'password_reset',
+      token: tokenHash,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 900_000),
+    });
+  });
+  return token;
 }

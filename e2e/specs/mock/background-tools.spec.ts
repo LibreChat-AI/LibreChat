@@ -113,6 +113,20 @@ test.describe('background tool calls', () => {
           { timeout: 30000, intervals: [1500] },
         )
         .toBeGreaterThan(0);
+
+      /** The session rail lists the finished tool, and its way to the call opens the call: the
+       *  folds the thread drew around it, then the call's own details, and brings it into view.
+       *  It is not enough to land on the message and leave the reader to find it. */
+      const calls = messagesView(page).locator('[data-task-tool-call]');
+      await page.getByTestId('header-background-tasks-button').click();
+      const rail = page.getByRole('complementary', { name: 'Session' });
+      const task = rail.getByTestId('session-row').first();
+      await expect(task).toBeVisible();
+      await task.getByRole('button', { name: /^Take me to that tool/ }).click();
+      const call = calls.first();
+      await expect(call).toBeVisible();
+      await expect(call.getByRole('button').first()).toHaveAttribute('aria-expanded', 'true');
+      await expect(call).toBeInViewport();
     } finally {
       await cleanupAgent(page, createdAgentId);
     }
