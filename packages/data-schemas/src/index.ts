@@ -211,4 +211,3 @@ export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
 export { backfillInsightsAttribution } from './methods/insights/backfill';
-export type { InsightsBackfillOptions } from './methods/insights/backfill';

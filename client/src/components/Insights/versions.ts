@@ -1,9 +1,9 @@
 import type { TInsightsAgentVersion } from 'librechat-data-provider';
 import type { useLocalize } from '~/hooks';
 
-export const versionMarkerLimit = 5;
+const versionMarkerLimit = 5;
 
-export type VersionDay = {
+type VersionDay = {
   inUse: number | null;
   lastSaved: number | null;
   earlierSaved: number;
