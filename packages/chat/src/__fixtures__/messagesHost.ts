@@ -34,6 +34,7 @@ export function createMessagesHost(overrides: Partial<MessagesHost> = {}): Messa
     }),
     renderMessageIcon: () => null,
     useMaximizeChatSpace: () => false,
+    useFlatThread: () => true,
     useHideSelectedAuthor: () => false,
     useAgentsMap: () => undefined,
     renderMessageBody: () => null,

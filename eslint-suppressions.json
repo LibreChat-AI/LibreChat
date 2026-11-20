@@ -65,11 +65,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/CodeWorkspaceMenu.tsx": {
-    "design/disabled-recipe": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Input/Composer/Files.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -111,11 +106,6 @@
       "count": 3
     }
   },
-  "client/src/components/Chat/Input/chip.ts": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Landing.tsx": {
     "shadcn/no-restyle": {
       "count": 14
@@ -140,24 +130,11 @@
     }
   },
   "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    },
     "shadcn/no-inline-styles": {
       "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/AskUserQuestion.tsx": {
-    "shadcn/no-restyle": {
-      "count": 11
-    }
-  },
-  "client/src/components/Chat/Messages/Content/AskUserQuestionCall.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
     }
@@ -201,14 +178,6 @@
       "count": 7
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/Attachment.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 5
-    },
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/BashCall.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -234,25 +203,7 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/Reasoning.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 4
-    },
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/SkillCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/SubagentCall.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/Thinking.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
     }
@@ -265,11 +216,6 @@
       "count": 5
     }
   },
-  "client/src/components/Chat/Messages/Content/RetrievalCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/SiblingHeader.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -278,14 +224,6 @@
   "client/src/components/Chat/Messages/Content/ToolApproval.tsx": {
     "shadcn/no-restyle": {
       "count": 26
-    }
-  },
-  "client/src/components/Chat/Messages/Content/ToolCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/ToolCallGroup.tsx": {
@@ -324,19 +262,6 @@
       "count": 2
     },
     "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/WebSearch.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 12
-    }
-  },
-  "client/src/components/Chat/Messages/Content/animate.tsx": {
-    "shadcn/no-inline-styles": {
       "count": 1
     }
   },
@@ -845,9 +770,6 @@
   "client/src/components/SidePanel/Agents/FileContext.tsx": {
     "design/disabled-recipe": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 14
     }
   },
   "client/src/components/SidePanel/Agents/MCPIcon.tsx": {
@@ -906,7 +828,7 @@
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 4
     }
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {

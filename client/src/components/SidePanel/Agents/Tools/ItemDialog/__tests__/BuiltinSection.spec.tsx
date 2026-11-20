@@ -57,40 +57,47 @@ function renderSection(builtinId: string, defaultValues: Partial<AgentForm> = {}
   );
 }
 
-const scopeCheckbox = () => screen.getByRole('checkbox', { name: 'com_agents_memory_scope' });
+const sharedCard = () => screen.getByRole('radio', { name: 'com_agents_memory_scope_shared' });
+const agentCard = () => screen.getByRole('radio', { name: 'com_agents_memory_scope_agent' });
 
 describe('BuiltinSection memory scope', () => {
-  test('renders the scope control unchecked when memory is on the shared pool', () => {
+  test('offers shared and this-agent-only memory as two described choices', () => {
     renderSection('memory', { memory: true, memory_scope: MemoryScope.user });
-    expect(scopeCheckbox()).not.toBeChecked();
-    expect(screen.getByText('com_agents_memory_scope_info')).toBeInTheDocument();
+    expect(
+      screen.getByRole('radiogroup', { name: 'com_agents_memory_scope_title' }),
+    ).toBeInTheDocument();
+    expect(sharedCard()).toBeChecked();
+    expect(agentCard()).not.toBeChecked();
+    expect(agentCard()).toHaveAccessibleDescription('com_agents_memory_scope_info');
+    expect(sharedCard()).toHaveAccessibleDescription('com_agents_memory_scope_shared_info');
   });
 
-  test('defaults to the shared pool when the agent has no saved scope', () => {
+  test('defaults to shared memory when the agent has no saved scope', () => {
     renderSection('memory', { memory: true });
-    expect(scopeCheckbox()).not.toBeChecked();
+    expect(sharedCard()).toBeChecked();
   });
 
-  test('renders checked for an agent already partitioned to its own memories', () => {
+  test('shows this-agent-only for an agent already partitioned to its own memories', () => {
     renderSection('memory', { memory: true, memory_scope: MemoryScope.agent });
-    expect(scopeCheckbox()).toBeChecked();
+    expect(agentCard()).toBeChecked();
+    expect(sharedCard()).not.toBeChecked();
   });
 
-  test('toggling writes the scope back to the form in both directions', () => {
+  test('choosing a card writes the scope back to the form in both directions', () => {
     renderSection('memory', { memory: true, memory_scope: MemoryScope.user });
 
-    fireEvent.click(scopeCheckbox());
+    fireEvent.click(agentCard());
     expect(screen.getByTestId('scope')).toHaveTextContent(MemoryScope.agent);
-    expect(scopeCheckbox()).toBeChecked();
+    expect(agentCard()).toBeChecked();
 
-    fireEvent.click(scopeCheckbox());
+    fireEvent.click(sharedCard());
     expect(screen.getByTestId('scope')).toHaveTextContent(MemoryScope.user);
-    expect(scopeCheckbox()).not.toBeChecked();
+    expect(sharedCard()).toBeChecked();
   });
 
   test('other builtins do not render the scope control', () => {
     renderSection('execute_code', { memory: true, memory_scope: MemoryScope.agent });
-    expect(screen.queryByRole('checkbox', { name: 'com_agents_memory_scope' })).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: 'com_agents_memory_scope_title' })).toBeNull();
   });
 });
 

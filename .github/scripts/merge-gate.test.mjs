@@ -1,9 +1,11 @@
 import yaml from 'js-yaml';
 import { test } from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { condition, interpolate } from './expressions.mjs';
 import { SUITES, plan, stale, supersede, verify } from './merge-gate.mjs';
 
@@ -208,12 +210,18 @@ test('the Playwright merge group matrix is the pull request profile with no lane
   const profile = JSON.parse(selector.env.FULL_INCLUDE);
   const queued = simulate(workflow, mergeGroup());
   assert.deepEqual(queued.e2e_shards.matrix, profile);
-  assert.equal(profile.include.length, 12);
-  assert.deepEqual(ran(queued).sort(), ['e2e', 'e2e_shards', 'mcp_apps', 'mcp_tool_list_changed']);
+  assert.equal(profile.include.length, 17);
+  assert.deepEqual(ran(queued).sort(), [
+    'e2e',
+    'e2e_shards',
+    'mcp_apps',
+    'mcp_tool_list_changed',
+    'shard_timings',
+  ]);
   const opened = simulate(workflow, pullRequest('opened'));
   assert.deepEqual(opened.e2e_shards.matrix, profile);
   const nightly = simulate(workflow, { event_name: 'schedule', event: {} });
-  assert.equal(nightly.e2e_shards.matrix.include.length, 20);
+  assert.equal(nightly.e2e_shards.matrix.include.length, 25);
 });
 
 test('pull request runs keep their selection: full when opened, narrowed on synchronize', () => {
@@ -522,4 +530,69 @@ test('the verify command exits non-zero unless the gate passes', () => {
   assert.equal(run({}).status, 1);
   assert.equal(run({ NEEDS: '{}' }).status, 1);
   assert.equal(spawnSync(process.execPath, [script, 'nonsense'], { encoding: 'utf8' }).status, 1);
+});
+
+function regional(t, mode) {
+  const root = mkdtempSync(join(tmpdir(), 'role-cache-readiness-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(
+    join(root, 'redis-server'),
+    `#!/bin/bash
+printf '%s\\n' "$*" >> "$FIXTURE/servers"
+[[ "$MODE" != startup ]]
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    join(root, 'redis-cli'),
+    `#!/bin/bash
+while [[ "$1" != -p ]]; do shift; done
+port="$2"
+file="$FIXTURE/$port"
+count=0
+[[ ! -f "$file" ]] || read -r count < "$file"
+printf '%s\\n' "$((count + 1))" > "$file"
+if [[ "$MODE" == never || "$count" == 0 ]]; then
+  echo 'Connection refused' >&2
+  exit 1
+fi
+if [[ "$count" == 1 ]]; then
+  echo 'LOADING fixture'
+else
+  echo PONG
+fi
+`,
+    { mode: 0o755 },
+  );
+  const step = workflows['cache-integration-tests.yml'].jobs.cache_integration_tests.steps.find(
+    (item) => item.name === 'Start three independent regional Redis instances',
+  );
+  const result = spawnSync('bash', ['-e', '-c', step.run], {
+    encoding: 'utf8',
+    timeout: 15_000,
+    env: { ...process.env, PATH: `${root}:${process.env.PATH}`, FIXTURE: root, MODE: mode },
+  });
+  return { root, result };
+}
+
+test('regional Redis startup waits for PONG from every daemon', (t) => {
+  const { root, result } = regional(t, 'delayed');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  for (const port of [6380, 6381, 6382]) {
+    assert.ok(Number(readFileSync(join(root, String(port)), 'utf8')) >= 3);
+  }
+  assert.equal(readFileSync(join(root, 'servers'), 'utf8').trim().split('\n').length, 3);
+});
+
+test('regional Redis startup fails within its deadline when a daemon never becomes ready', (t) => {
+  const { root, result } = regional(t, 'never');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /::error::Redis on port 6380 did not become ready/);
+  assert.match(result.stderr, /Connection refused/);
+  assert.equal(readFileSync(join(root, 'servers'), 'utf8').trim().split('\n').length, 1);
+});
+
+test('regional Redis startup preserves daemon launch failures', (t) => {
+  const { result } = regional(t, 'startup');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
 });

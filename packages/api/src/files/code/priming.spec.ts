@@ -2,8 +2,10 @@ import { createReadStream } from 'node:fs';
 import { PassThrough, Readable } from 'node:stream';
 import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
+import type { CodeFileInfo } from './priming';
 import {
   selectCodeFiles,
+  createCodeFileUploadRef,
   getCodeFileLocation,
   getCodeFileContextLine,
   appendCodeFileContextLine,
@@ -12,6 +14,7 @@ import {
   setMissingCodeFilesContext,
   createCodeReuploadFailures,
 } from './priming';
+import { digestCodeUpload } from './receipt';
 
 const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1): TFile =>
   ({
@@ -630,5 +633,164 @@ describe('setMissingCodeFilesContext', () => {
     expect(map).toEqual({ execute_code: 'files' });
     setMissingCodeFilesContext(map, 'note');
     expect(Object.values(map)).toEqual(['files', 'note']);
+  });
+});
+
+describe('createCodeFileUploadRef', () => {
+  it('stamps only the completed upload and preserves its route, resource identity and receipt name', () => {
+    const before = Date.now();
+    const ref = createCodeFileUploadRef({
+      sourceRef: {
+        kind: 'skill',
+        id: 'shared-skill',
+        version: 7,
+        storage_session_id: 'old',
+        file_id: 'old',
+        provisionedAt: 1,
+      },
+      uploaded: {
+        storage_session_id: 'fresh-session',
+        file_id: 'fresh-id',
+        filename: 'stored.csv',
+      },
+      sandboxFilename: 'requested.csv',
+      executionProfile: 'stateful',
+      executionRouteKey: 'stateful:worker',
+    });
+    expect(ref).toMatchObject({
+      kind: 'skill',
+      id: 'shared-skill',
+      version: 7,
+      storage_session_id: 'fresh-session',
+      file_id: 'fresh-id',
+      sandboxFilename: 'stored.csv',
+      executionProfile: 'stateful',
+      executionRouteKey: 'stateful:worker',
+    });
+    expect(ref.provisionedAt).toBeGreaterThanOrEqual(before);
+    expect(ref.provisionedAt).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe('selectCodeFiles snapshot receipts', () => {
+  const content = digestCodeUpload(Buffer.from('captured bytes'));
+  const stored: CodeFileInfo = {
+    lastModified: new Date().toISOString(),
+    etag: content.md5,
+    size: content.bytes,
+  };
+  const receipted = (overrides: Partial<CodeEnvRef> = {}, routeKey = 'default'): TFile => {
+    const receipt = {
+      kind: 'user',
+      id: 'user',
+      storage_session_id: 'upload-session',
+      file_id: 'upload-object',
+      sandboxFilename: 'chart.csv',
+      provisionedAt: Date.now(),
+      content,
+      ...overrides,
+    } as CodeEnvRef;
+    return {
+      ...file('snapshot', 'chart.csv'),
+      context: FileContext.execute_code_snapshot,
+      metadata: {
+        codeOutput: { messageId: 'message', sha256: content.sha256 },
+        sourceDispatchedAt: 1,
+        codeEnvRefs: { [routeKey]: receipt },
+      },
+    } as TFile;
+  };
+
+  it('mounts the uploaded object while the store still reports the uploaded bytes', async () => {
+    const snapshot = receipted();
+    const getFileInfo = jest.fn(async () => stored);
+    const { selected } = await selectCodeFiles({
+      files: [snapshot],
+      routeKey: 'default',
+      getFileInfo,
+    });
+
+    expect(getFileInfo).toHaveBeenCalledTimes(1);
+    expect(getFileInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ storage_session_id: 'upload-session', file_id: 'upload-object' }),
+    );
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toMatchObject({
+      isActive: true,
+      sandboxName: 'chart.csv',
+      ref: { storage_session_id: 'upload-session', file_id: 'upload-object' },
+      sourceRef: { storage_session_id: 'upload-session', file_id: 'upload-object' },
+    });
+  });
+
+  it.each([
+    ['rewritten bytes', { ...stored, etag: 'f'.repeat(32) }],
+    ['a truncated object', { ...stored, size: content.bytes - 1 }],
+    ['an object past the freshness window', { ...stored, lastModified: '2020-01-01T00:00:00Z' }],
+    ['a store that reports no entity tag', { lastModified: stored.lastModified }],
+    ['a probe that failed', null],
+  ])('uploads the stored snapshot again over %s', async (_label, info) => {
+    const { selected } = await selectCodeFiles({
+      files: [receipted()],
+      routeKey: 'default',
+      getFileInfo: async () => info,
+    });
+    expect(selected[0]).toMatchObject({
+      ref: undefined,
+      isActive: false,
+      sandboxName: 'chart.csv',
+    });
+  });
+
+  it('uploads again when the snapshot now mounts under another name', async () => {
+    const { selected } = await selectCodeFiles({
+      files: [receipted({ sandboxFilename: 'chart-old.csv' })],
+      routeKey: 'default',
+      getFileInfo: async () => stored,
+    });
+    expect(selected[0]).toMatchObject({
+      ref: undefined,
+      isActive: false,
+      sandboxName: 'chart.csv',
+    });
+  });
+
+  it('never trusts a receipt on a route that keeps its own copy of a mounted file', async () => {
+    const routeKey = 'stateful:workspace';
+    const getFileInfo = jest.fn(async () => stored);
+    const { selected } = await selectCodeFiles({
+      files: [receipted({ executionProfile: 'stateful', executionRouteKey: routeKey }, routeKey)],
+      routeKey,
+      getFileInfo,
+    });
+    expect(getFileInfo).not.toHaveBeenCalled();
+    expect(selected[0]).toMatchObject({ ref: undefined, isActive: false });
+  });
+
+  it('leaves a file that is not a snapshot on the freshness rule alone', async () => {
+    const attachment = { ...receipted(), context: FileContext.message_attachment } as TFile;
+    const { selected } = await selectCodeFiles({
+      files: [attachment],
+      routeKey: 'default',
+      getFileInfo: async () => ({ ...stored, etag: 'f'.repeat(32) }),
+    });
+    expect(selected[0]).toMatchObject({
+      isActive: true,
+      ref: { file_id: 'upload-object' },
+    });
+  });
+});
+
+describe('createCodeFileUploadRef content', () => {
+  it('records what the upload stored only when the uploader digested it', () => {
+    const content = digestCodeUpload(Buffer.from('captured bytes'));
+    const params = {
+      sourceRef: { kind: 'user' as const, id: 'user' },
+      uploaded: { storage_session_id: 'session', file_id: 'object' },
+      sandboxFilename: 'chart.csv',
+      executionProfile: 'default' as const,
+    };
+    expect(createCodeFileUploadRef({ ...params, content }).content).toEqual(content);
+    expect(createCodeFileUploadRef(params)).not.toHaveProperty('content');
   });
 });

@@ -10,6 +10,13 @@ TAG_PREFIX="${TAG_PREFIX:-chart-}"
 GITHUB_SERVER_URL="${GITHUB_SERVER_URL:-https://github.com}"
 DISPATCH_WORKFLOW="${DISPATCH_WORKFLOW:-}"
 RELEASE_EXISTING_TAG="${RELEASE_EXISTING_TAG:-}"
+CHART_REGISTRY="${CHART_REGISTRY:-ghcr.io}"
+CHART_REPOSITORY="${CHART_REPOSITORY:-}"
+# GitHub refuses a ref created by a token without the `workflows` permission when the commit holds
+# workflow file changes; in practice, a workflow file version found at no branch or tag tip.
+# GITHUB_TOKEN can never hold that permission, so a chart version bumped in the middle of a
+# promotion that also changes workflows cannot be tagged from here.
+WORKFLOW_REFUSAL='to create or update workflow'
 SEMVER_REGEX='^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?([+][0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$'
 
 fail() {
@@ -33,6 +40,7 @@ git_with_auth() {
 
 dispatch_release() {
   tag="$1"
+  release_commit="${2:-}"
 
   if [ -z "$DISPATCH_WORKFLOW" ]; then
     return
@@ -58,10 +66,98 @@ dispatch_release() {
   command -v gh >/dev/null ||
     fail "GitHub CLI is required to dispatch ${DISPATCH_WORKFLOW}"
 
+  release_inputs=(-f "chart_tag=${tag}")
+  if [ -n "$release_commit" ]; then
+    release_inputs+=(-f "chart_sha=${release_commit}")
+  fi
+
   GH_TOKEN="$token" gh workflow run "$DISPATCH_WORKFLOW" \
     --repo "$GITHUB_REPOSITORY" \
     --ref "$DEFAULT_BRANCH" \
-    -f "chart_tag=${tag}"
+    "${release_inputs[@]}"
+}
+
+chart_repository() {
+  if [ -n "$CHART_REPOSITORY" ]; then
+    printf '%s' "$CHART_REPOSITORY"
+    return
+  fi
+
+  if [[ ! "${GITHUB_REPOSITORY:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    fail "GITHUB_REPOSITORY is required to look up published charts"
+  fi
+
+  # Must match the repository helmcharts.yml publishes to; OCI names are lowercase.
+  owner="${GITHUB_REPOSITORY%%/*}"
+  printf '%s/librechat-chart/librechat' "${owner,,}"
+}
+
+# Succeeds when the registry holds the chart version and returns 1 when it does not. Anything
+# else is an outage, and failing keeps it from being read as either answer.
+chart_published() {
+  version="$1"
+  repository="$(chart_repository)" || exit 1
+  token_url="https://${CHART_REGISTRY}/token?service=${CHART_REGISTRY}&scope=repository:${repository}:pull"
+  credentials=()
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    credentials=(-u "x-access-token:${GITHUB_TOKEN}")
+  fi
+
+  registry_token="$(curl -fsS --max-time 30 "${credentials[@]}" "$token_url" | jq -er '.token')" ||
+    fail "Unable to get a pull token for ${CHART_REGISTRY}/${repository}"
+
+  # Helm stores SemVer build metadata with '_' because OCI tags cannot hold '+'.
+  status="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${registry_token}" \
+    -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+    "https://${CHART_REGISTRY}/v2/${repository}/manifests/${version//+/_}")" ||
+    fail "Unable to reach ${CHART_REGISTRY} for ${repository}:${version}"
+
+  case "$status" in
+    200) return 0 ;;
+    404) return 1 ;;
+    *) fail "Unexpected status ${status} from ${CHART_REGISTRY} for ${repository}:${version}" ;;
+  esac
+}
+
+# The chart is the deliverable, so a version GitHub will not let this token tag is still released,
+# once, from its commit. The tag is left for a maintainer whose credential can create it.
+release_untagged() {
+  tag="$1"
+  commit="$2"
+  version="${tag#${TAG_PREFIX}}"
+
+  printf '::warning::GitHub refused %s at %s: this token cannot create a ref holding workflow file changes. A maintainer can run: git push origin %s:refs/tags/%s\n' \
+    "$tag" "$(git rev-parse --short "$commit")" "$commit" "$tag"
+  printf '%s\t%s\n' "$tag" "$commit" >>"$untagged_file"
+
+  if [ -z "$DISPATCH_WORKFLOW" ]; then
+    return
+  fi
+
+  if chart_published "$version"; then
+    printf 'Chart %s is already published; only %s is missing.\n' "$version" "$tag"
+    return
+  fi
+
+  printf 'Dispatching release workflow for %s from %s.\n' "$version" "$commit"
+  dispatch_release "$tag" "$commit"
+}
+
+summarize_untagged() {
+  if [ ! -s "$untagged_file" ] || [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+    return
+  fi
+
+  {
+    printf '### Chart tags a maintainer has to push\n\n'
+    printf 'GitHub refuses these tags from the workflow token because the commits hold workflow file changes. The charts are released from the commits either way.\n\n'
+    printf '```bash\n'
+    while IFS="$(printf '\t')" read -r tag commit; do
+      printf 'git push origin %s:refs/tags/%s\n' "$commit" "$tag"
+    done <"$untagged_file"
+    printf '```\n'
+  } >>"$GITHUB_STEP_SUMMARY"
 }
 
 version_less_than() {
@@ -147,8 +243,10 @@ history_file="$(mktemp)"
 versions_file="$(mktemp)"
 seen_file="$(mktemp)"
 missing_file="$(mktemp)"
+untagged_file="$(mktemp)"
+push_log="$(mktemp)"
 cleanup() {
-  rm -f "$history_file" "$versions_file" "$seen_file" "$missing_file"
+  rm -f "$history_file" "$versions_file" "$seen_file" "$missing_file" "$untagged_file" "$push_log"
 }
 trap cleanup EXIT
 
@@ -219,7 +317,11 @@ while IFS="$(printf '\t')" read -r tag commit; do
 
   git tag "$tag" "$commit"
 
-  if git_with_auth push origin "refs/tags/${tag}"; then
+  pushed=true
+  git_with_auth push origin "refs/tags/${tag}" 2>"$push_log" || pushed=false
+  cat "$push_log" >&2
+
+  if [ "$pushed" = true ]; then
     printf 'Created %s at %s.\n' "$tag" "$short_commit"
     dispatch_release "$tag"
     continue
@@ -231,7 +333,15 @@ while IFS="$(printf '\t')" read -r tag commit; do
     continue
   fi
 
+  git tag -d "$tag" >/dev/null
+
+  if grep -Fq "$WORKFLOW_REFUSAL" "$push_log"; then
+    release_untagged "$tag" "$commit"
+    continue
+  fi
+
   fail "Failed to push ${tag}"
 done <"$missing_file"
 
+summarize_untagged
 dispatch_existing_tag "$RELEASE_EXISTING_TAG"

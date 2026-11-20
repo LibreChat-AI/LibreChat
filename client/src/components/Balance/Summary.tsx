@@ -4,7 +4,7 @@ import { useTimeTick } from '@librechat/chat/react';
 import { Progress, Skeleton } from '@librechat/client';
 import type { BalanceSummary, BalanceTone, CurrencyConfig } from '~/utils';
 import type { BalanceState } from '~/hooks/useBalanceSummary';
-import { formatBalanceAmount, formatTimeUntil } from '~/utils/balance';
+import { formatBalanceAmount, formatResetDate, formatTimeUntil } from '~/utils/balance';
 import useLocalize from '~/hooks/useLocalize';
 import cn from '~/utils/cn';
 
@@ -32,12 +32,17 @@ function useRefillText(summary: BalanceSummary, currency?: CurrencyConfig): stri
   /** Re-render once a minute so "in 5 minutes" counts down while the view stays open */
   useTimeTick();
 
-  const { display, refillAmount, refillMode, nextRefill } = summary;
+  const { display, refillAmount, refillMode, nextRefill, anchored } = summary;
   if (refillAmount == null) {
     return localize('com_ui_balance_no_refill');
   }
-  const when =
-    nextRefill != null ? formatTimeUntil(nextRefill, Date.now(), i18n.resolvedLanguage) : null;
+  let when: string | null = null;
+  if (nextRefill != null && anchored) {
+    const date = formatResetDate(nextRefill, Date.now(), i18n.resolvedLanguage);
+    when = date != null ? localize('com_ui_balance_on_date', { 0: date }) : null;
+  } else if (nextRefill != null) {
+    when = formatTimeUntil(nextRefill, Date.now(), i18n.resolvedLanguage);
+  }
   if (refillMode === 'reset') {
     if (display === 'percent') {
       return when != null

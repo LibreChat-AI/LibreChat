@@ -1,98 +1,12 @@
 import { useRef, useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import copy from 'copy-to-clipboard';
-import { isError } from '@librechat/chat';
 import { Button } from '@librechat/client';
 import { useToolContentPending } from '@librechat/chat/react';
-import { stripToolCallErrorPrefix } from 'librechat-data-provider';
 import { PANE_COPY_REVEAL, CopyButton } from '@librechat/chat/components';
+import { isError, extractText, isStructuredText, hasRenderableOutput } from '@librechat/chat';
 import type { UIEvent } from 'react';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-
-interface ContentBlock {
-  type?: string;
-  text?: string;
-}
-
-const ERROR_INNER = /^Error\s+\w+ing to endpoint\s*\(HTTP \d+\):\s*/i;
-
-function cleanError(text: string): string {
-  let cleaned = stripToolCallErrorPrefix(text).trim();
-  cleaned = cleaned.replace(ERROR_INNER, '').trim();
-  if (cleaned.endsWith('Please fix your mistakes.')) {
-    cleaned = cleaned.slice(0, -'Please fix your mistakes.'.length).trim();
-  }
-  return cleaned;
-}
-
-function isStructuredText(text: string): boolean {
-  return text.includes('\n') || text.includes('{') || text.includes(':');
-}
-
-interface ExtractedText {
-  text: string;
-  rawError: string;
-  error: boolean;
-  /** When true, `text` contains raw JSON that should be rendered as a highlighted code block. */
-  isJson: boolean;
-}
-
-function extractText(raw: string, verbatim = false): ExtractedText {
-  /** Command output keeps its exact bytes, whitespace-only output included:
-   *  indentation and blank lines are part of it. */
-  if (verbatim) {
-    return { text: raw, rawError: '', error: isError(raw.trim()), isJson: false };
-  }
-
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return { text: '', rawError: '', error: false, isJson: false };
-  }
-
-  if (isError(trimmed)) {
-    return { text: cleanError(trimmed), rawError: trimmed, error: true, isJson: false };
-  }
-
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-
-      if (Array.isArray(parsed)) {
-        const textBlocks = parsed.filter(
-          (b: ContentBlock) => typeof b === 'object' && b !== null && typeof b.text === 'string',
-        );
-        if (textBlocks.length > 0) {
-          const joined = (textBlocks as ContentBlock[])
-            .map((b) => b.text)
-            .join('\n')
-            .trim();
-          if (isError(joined)) {
-            return { text: cleanError(joined), rawError: joined, error: true, isJson: false };
-          }
-          return { text: joined, rawError: '', error: false, isJson: false };
-        }
-      }
-
-      // Render structured JSON as a highlighted code block
-      return {
-        text: JSON.stringify(parsed, null, 2),
-        rawError: '',
-        error: false,
-        isJson: true,
-      };
-    } catch {
-      // Not JSON
-    }
-  }
-
-  return { text: trimmed, rawError: '', error: false, isJson: false };
-}
-
-/** Whether the default renderer would draw anything for this output. Callers
- *  that decide a panel is worth showing use it, so the two cannot disagree. */
-export function hasRenderableOutput(raw?: string | null): boolean {
-  return extractText(raw ?? '').text.length > 0;
-}
 
 export interface OutputSegment {
   text: string;
@@ -227,4 +141,4 @@ export default function OutputRenderer({
   );
 }
 
-export { isError };
+export { isError, hasRenderableOutput };

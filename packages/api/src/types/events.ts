@@ -1,4 +1,4 @@
-import type { TPendingSteer, TPromotedSteer } from 'librechat-data-provider';
+import type { TPendingSteer, TPromotedSteer, ChatCreatedTurn } from 'librechat-data-provider';
 
 /** SSE streaming event (on_run_step, on_message_delta, etc.) */
 export type StreamEvent = {
@@ -22,6 +22,8 @@ export type CreatedEvent = {
     quotes?: string[];
   };
   streamId: string;
+  /** The turn's shape, for a client that watches the turn without having started it. */
+  turn?: ChatCreatedTurn;
 };
 
 export type FinalMessageFields = {

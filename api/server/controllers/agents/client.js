@@ -12,6 +12,7 @@ const {
   sanitizeTitle,
   payloadParser,
   createSafeUser,
+  createSafeAgent,
   initializeAgent,
   resolveConfigHeaders,
   resolveRequestTenantId,
@@ -27,8 +28,10 @@ const {
   recordCollectedUsage,
   resolveRunUsageContext,
   getScheduleMCPExecution,
+  scheduleAsksEveryUse,
   createScheduledMCPPolicyRecorder,
   recordFallbackTokenUsage,
+  getAgentPromptTokenEstimate,
   createDetachedSubagentUsageRecorder,
   sendEvent,
   computeUsageCostUSD,
@@ -68,6 +71,7 @@ const {
   collectAttachedCodeApprovalPolicies,
   collectAttachedCodeRoutePolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
+  buildScheduledApprovalAdmissionHooks,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
   getCodeApprovalPreservedFields,
@@ -218,6 +222,8 @@ const {
   getChatProjectContextKey,
   isTemporaryTurn,
   hasEntityEmbeddings,
+  restoreGoogleThoughtSignatures,
+  getGoogleHistoryFormatOptions,
 } = require('@librechat/api');
 const {
   Run,
@@ -688,11 +694,7 @@ class AgentClient extends BaseClient {
     this.stepMap = stepMap;
     /** @type {Array<UsageMetadata>} */
     this.collectedUsage = collectedUsage;
-    /** Vertex Gemini 3 thought signatures captured during the run, keyed by
-     *  `tool_call_id`. Persisted on `responseMessage.metadata.thoughtSignatures`
-     *  and restored as `additional_kwargs.signatures` on subsequent turns to
-     *  keep tool round-trips valid across DB reconstruction.
-     *  @type {Record<string, string> | undefined} */
+    /** @type {import('@librechat/api').GoogleThoughtSignatures | undefined} */
     this.collectedThoughtSignatures = collectedThoughtSignatures;
     /** @type {ArtifactPromises} */
     this.artifactPromises = artifactPromises;
@@ -2975,7 +2977,10 @@ class AgentClient extends BaseClient {
     ]);
 
     this.retainedAnswers = await retainedAnswersPromise;
-    promptTokens += this.retainedAnswers.tokenCount;
+    promptTokens = getAgentPromptTokenEstimate(
+      promptTokens + this.retainedAnswers.tokenCount,
+      this.maxContextTokens,
+    );
 
     /** Augmented prompt from RAG/context handlers */
     this.augmentedPrompt = augmentedPrompt;
@@ -3515,6 +3520,7 @@ class AgentClient extends BaseClient {
       req: this.options.req,
       res: this.options.res,
       user: createSafeUser(this.options.req.user),
+      primaryAgent: createSafeAgent(this.options.agent),
       tenantId: resolveRequestTenantId(this.options.req),
     });
 
@@ -3737,14 +3743,14 @@ class AgentClient extends BaseClient {
    * which rebuild the gauge breakdown and branch/total cost across reloads.
    * Returns undefined when nothing was captured.
    * @returns {{
-   *   thoughtSignatures?: Record<string, string>,
+   *   thoughtSignatures?: import('@librechat/api').GoogleThoughtSignatures,
    *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
    *   usage?: import('librechat-data-provider').TResponseUsage,
    * } | undefined}
    */
   buildResponseMetadata() {
     /** @type {{
-     *   thoughtSignatures?: Record<string, string>,
+     *   thoughtSignatures?: import('@librechat/api').GoogleThoughtSignatures,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
      * }} */
@@ -4475,6 +4481,7 @@ class AgentClient extends BaseClient {
                 appConfig,
               },
               pluginHookSource: getPluginHookSource(),
+              asksEveryUse: scheduleAsksEveryUse(this.options.req),
             },
           )
         : interrupt.payload;
@@ -4622,9 +4629,11 @@ class AgentClient extends BaseClient {
         collectAttachedCodeApprovalPolicies(topLevelAgents),
         agentsEConfig?.toolApproval?.enabled !== false,
       );
+      const scheduledMCPExecution = getScheduleMCPExecution(getMCPRequestContext(this.options.req));
       const effectiveToolApprovalPolicy = resolveToolApprovalPolicy({
         endpoint: agentsEConfig?.toolApproval,
         attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+        ownerApproval: scheduledMCPExecution?.mayAsk === true,
       });
       const resolvedToolApprovalHooks = isHITLEnabled(effectiveToolApprovalPolicy)
         ? buildToolApprovalHooks({
@@ -4642,6 +4651,7 @@ class AgentClient extends BaseClient {
           codeApprovalMode,
           collectAttachedCodeRoutePolicies(topLevelAgents),
         ),
+        ...buildScheduledApprovalAdmissionHooks(scheduledMCPExecution),
       ];
       const askUserQuestionAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
       const runCanPause = canAgentGraphPause({
@@ -4820,6 +4830,7 @@ class AgentClient extends BaseClient {
         ...(this.agentConfigs?.values() ?? []),
       ]);
       const messageFormatOptions = {
+        ...getGoogleHistoryFormatOptions(reachableAgents),
         ...(needsReasoningContentFormat ? { preserveReasoningContent: true } : {}),
         ...(freshSkillPrimeNames.size > 0 ? { skipSkillBodyNames: freshSkillPrimeNames } : {}),
         ...(useLegacyContent ? { legacyContent: true } : {}),
@@ -4873,6 +4884,11 @@ class AgentClient extends BaseClient {
         toolSet,
         skillPrimeResult?.skills,
         formatOptions,
+      );
+      restoreGoogleThoughtSignatures(
+        initialMessages,
+        this.modelBoundStoredMessages ?? [],
+        reachableAgents,
       );
       if (this.eventActorContinuation !== 'warm') {
         this.eventActorSummary = initialSummary;
@@ -5071,6 +5087,8 @@ class AgentClient extends BaseClient {
           activityPhase?.handlers(offsetHandlers) ??
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
+          sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+          sdkFiles: this.options.sdkFiles,
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
             getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5373,7 +5391,7 @@ class AgentClient extends BaseClient {
       rejectPrivateTextAdmission(this.options.req);
       /** An aborted/erroring run can still have completed compaction before
        * the failure; retain that model-visible state for actor reconciliation. */
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the
@@ -5888,6 +5906,9 @@ class AgentClient extends BaseClient {
         activityPhase?.handlers(offsetHandlers) ??
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
+        sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+        sdkFiles: this.options.sdkFiles,
+        sdkResumeState: { content: seedContent, steps: runSteps },
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
           getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -6087,7 +6108,7 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the
@@ -6316,6 +6337,7 @@ class AgentClient extends BaseClient {
         conversationId: this.conversationId,
         parentMessageId: this.parentMessageId,
       },
+      agent: createSafeAgent(this.options.agent),
     });
 
     try {
@@ -6417,6 +6439,8 @@ class AgentClient extends BaseClient {
         usage,
         context,
         collectedUsage: this.collectedUsage,
+        contentParts: this.contentParts,
+        maxContextTokens: this.maxContextTokens,
         aborted: this.abortController?.signal?.aborted === true,
         promptTokens,
         completionTokens,

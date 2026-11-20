@@ -1,11 +1,18 @@
+import os from 'node:os';
+import path from 'node:path';
 import mongoose from 'mongoose';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { FileContext, FileSources } from 'librechat-data-provider';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import type { CodeFileCommitData, FileProvisionCommit, IMongoFile } from '@librechat/data-schemas';
+import type { AxiosInstance } from 'axios';
 import { createFileProvisionRecovery, withFileProvisioning, withFileDeletion } from './operations';
+import { createVectorFileUploader } from './rag/upload';
 
 let mongo: MongoMemoryServer;
+let directory: string;
+let uploadPath: string;
 let File: mongoose.Model<IMongoFile>;
 let methods: ReturnType<typeof createMethods>;
 const owner = new mongoose.Types.ObjectId();
@@ -19,7 +26,10 @@ const ref = {
 };
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
+  directory = await mkdtemp(path.join(os.tmpdir(), 'rag-lifecycle-'));
+  uploadPath = path.join(directory, 'notes.txt');
+  await writeFile(uploadPath, 'notes');
+  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
   createModels(mongoose);
   await mongoose.connect(mongo.getUri());
   File = mongoose.models.File as mongoose.Model<IMongoFile>;
@@ -28,7 +38,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
+  await rm(directory, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
@@ -311,3 +322,213 @@ it('does not overwrite fresh output bytes while deletion intent remains after pr
     (await File.findOne({ file_id: file.file_id }).lean())?.storageOperations?.deletionPending,
   ).toBe(true);
 });
+
+const refusalReceipt = {
+  status: false,
+  file_id: file.file_id,
+  known_type: true,
+  error: { code: 'RAG_EMBEDDING_REFUSED', side_effects: 'none' },
+};
+
+function ragProvision(data: unknown) {
+  const storage = { ...methods, recovery: createFileProvisionRecovery() };
+  const post = jest.fn().mockResolvedValue({ status: 200, data });
+  const upload = createVectorFileUploader({
+    baseUrl: 'http://rag.test',
+    httpClient: { post } as Pick<AxiosInstance, 'post'>,
+    generateToken: () => 'test-token',
+  });
+  const options = {
+    file,
+    userId: scope.userId,
+    storage,
+    destination: 'search:user',
+    operation: async (_claim: FileProvisionCommit['claim'], onUploadStart: () => void) => ({
+      value: await upload({
+        req: { user: { id: scope.userId } },
+        file: { path: uploadPath, originalname: 'notes.txt', size: 5 },
+        file_id: file.file_id,
+        onUploadStart,
+      }),
+      commit: { embedded: true, entityId: scope.userId },
+    }),
+  };
+  return { options, storage, post };
+}
+
+it('releases a confirmed RAG refusal and allows a fresh successful retry', async () => {
+  const { options, post } = ragProvision(refusalReceipt);
+  await expect(withFileProvisioning(options)).rejects.toMatchObject({
+    code: 'RAG_EMBEDDING_REFUSED',
+  });
+  const refused = await File.findOne({ file_id: file.file_id }).lean();
+  expect(refused?.storageOperations?.provisioning).toEqual([]);
+  expect(refused?.embedded).not.toBe(true);
+  expect(refused?.metadata?.embeddedEntities).toBeUndefined();
+
+  post.mockResolvedValueOnce({
+    status: 200,
+    data: { status: true, known_type: true, file_id: file.file_id },
+  });
+  await expect(withFileProvisioning(options)).resolves.toMatchObject({ embedded: true });
+  expect(post).toHaveBeenCalledTimes(2);
+  const stored = await File.findOne({ file_id: file.file_id }).lean();
+  expect(stored?.storageOperations?.provisioning).toEqual([]);
+  expect(stored?.embedded).toBe(true);
+  expect(stored?.metadata?.embeddedEntities).toContain(scope.userId);
+});
+
+it('allows owner-scoped deletion after refusal without publishing remote pointers', async () => {
+  const { options, storage } = ragProvision(refusalReceipt);
+  await expect(withFileProvisioning(options)).rejects.toMatchObject({
+    code: 'RAG_EMBEDDING_REFUSED',
+  });
+  const stored = await File.findOne({ file_id: file.file_id }).lean();
+  expect(
+    await methods.acquireFileDeletion({
+      ...scope,
+      userId: new mongoose.Types.ObjectId().toString(),
+      token: 'foreign',
+      updatedAt: stored?.updatedAt,
+    }),
+  ).toBeNull();
+  expect(
+    await methods.acquireFileDeletion({
+      ...scope,
+      tenantId: 'other',
+      token: 'foreign',
+      updatedAt: stored?.updatedAt,
+    }),
+  ).toBeNull();
+  const remove = jest.fn(async () => 'deleted');
+  await expect(
+    withFileDeletion({
+      file: { ...file, updatedAt: stored?.updatedAt },
+      userId: scope.userId,
+      storage,
+      operation: remove,
+    }),
+  ).resolves.toBe('deleted');
+  expect(remove).toHaveBeenCalledTimes(1);
+});
+
+it.each([{ status: false, known_type: true }, { status: true, known_type: false }, {}, null])(
+  'retains the RAG claim and blocks retry and deletion for uncertain response %j',
+  async (data) => {
+    const { options, storage, post } = ragProvision(data);
+    await expect(withFileProvisioning(options)).rejects.toThrow('outcome is unknown');
+    const pending = await File.findOne({ file_id: file.file_id }).lean();
+    expect(pending?.storageOperations?.provisioning).toHaveLength(1);
+    await expect(withFileProvisioning(options)).rejects.toThrow('outcome is unknown');
+    const remove = jest.fn();
+    await expect(
+      withFileDeletion({ file, userId: scope.userId, storage, operation: remove }),
+    ).rejects.toThrow('outcome is unknown');
+    // A restarted process cannot take over the durable claim either.
+    expect(
+      await methods.acquireFileDeletion({
+        ...scope,
+        token: 'restart',
+        updatedAt: pending?.updatedAt,
+      }),
+    ).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(
+      (await File.findOne({ file_id: file.file_id }).lean())?.storageOperations?.provisioning,
+    ).toEqual(pending?.storageOperations?.provisioning);
+  },
+);
+
+it('never clears another provisioning request or its committed namespace on refusal', async () => {
+  const { options } = ragProvision(refusalReceipt);
+  const peer = { ...scope, token: 'other-request' };
+  expect(await methods.acquireFileProvision(peer)).toBe(true);
+  expect(
+    await methods.commitFileProvision({ claim: peer, embedded: true, entityId: 'agent-peer' }),
+  ).toBe(true);
+  await expect(withFileProvisioning(options)).rejects.toMatchObject({
+    code: 'RAG_EMBEDDING_REFUSED',
+  });
+  const stored = await File.findOne({ file_id: file.file_id }).lean();
+  expect(stored?.storageOperations?.provisioning).toEqual([peer.token]);
+  expect(stored?.metadata?.embeddedEntities).toEqual(['agent-peer']);
+  expect(stored?.embedded).toBe(true);
+  expect(
+    await methods.acquireFileDeletion({ ...scope, token: 'blocked', updatedAt: stored?.updatedAt }),
+  ).toBeNull();
+  expect(await methods.releaseFileProvision(peer)).toBe(true);
+  expect(
+    await methods.acquireFileDeletion({ ...scope, token: 'delete', updatedAt: stored?.updatedAt }),
+  ).toEqual({ resumed: false });
+});
+
+it('blocks deletion while refusal is in flight and releases only after its receipt', async () => {
+  const { options, post } = ragProvision(refusalReceipt);
+  let respond!: (value: { status: number; data: unknown }) => void;
+  let dispatched!: () => void;
+  const started = new Promise<void>((resolve) => {
+    dispatched = resolve;
+  });
+  post.mockImplementationOnce(() => {
+    dispatched();
+    return new Promise((resolve) => {
+      respond = resolve;
+    });
+  });
+  const attempt = withFileProvisioning(options);
+  const rejected = attempt.catch((error: unknown) => error);
+  await started;
+  const pending = await File.findOne({ file_id: file.file_id }).lean();
+  expect(
+    await methods.acquireFileDeletion({
+      ...scope,
+      token: 'blocked',
+      updatedAt: pending?.updatedAt,
+    }),
+  ).toBeNull();
+  respond({ status: 200, data: refusalReceipt });
+  await expect(rejected).resolves.toMatchObject({ code: 'RAG_EMBEDDING_REFUSED' });
+  const stored = await File.findOne({ file_id: file.file_id }).lean();
+  expect(
+    await methods.acquireFileDeletion({ ...scope, token: 'delete', updatedAt: stored?.updatedAt }),
+  ).toEqual({ resumed: false });
+});
+
+it('recovers only its refused claim when release acknowledgement is lost', async () => {
+  const { options, storage } = ragProvision(refusalReceipt);
+  const release = jest
+    .spyOn(storage, 'releaseFileProvision')
+    .mockRejectedValueOnce(new Error('database unavailable'));
+  await expect(withFileProvisioning(options)).rejects.toMatchObject({
+    code: 'RAG_EMBEDDING_REFUSED',
+  });
+  const pending = await File.findOne({ file_id: file.file_id }).lean();
+  expect(pending?.storageOperations?.provisioning).toHaveLength(1);
+  await storage.recovery.recover(scope, storage);
+  expect(release).toHaveBeenCalledTimes(2);
+  expect(release.mock.calls[0][0]).toEqual(release.mock.calls[1][0]);
+  expect(
+    (await File.findOne({ file_id: file.file_id }).lean())?.storageOperations?.provisioning,
+  ).toEqual([]);
+});
+
+it.each(['ETIMEDOUT', 'ECONNRESET', 'ERR_CANCELED'])(
+  'keeps the durable claim on RAG transport uncertainty: %s',
+  async (code) => {
+    const { options, storage, post } = ragProvision(refusalReceipt);
+    post.mockRejectedValueOnce(Object.assign(new Error('private upstream payload'), { code }));
+    await expect(withFileProvisioning(options)).rejects.toThrow('outcome is unknown');
+    const stored = await File.findOne({ file_id: file.file_id }).lean();
+    expect(stored?.storageOperations?.provisioning).toHaveLength(1);
+    await expect(storage.recovery.recover(scope, storage)).rejects.toThrow('outcome is unknown');
+    expect(
+      await methods.acquireFileDeletion({
+        ...scope,
+        token: 'delete',
+        updatedAt: stored?.updatedAt,
+      }),
+    ).toBeNull();
+    expect(post).toHaveBeenCalledTimes(1);
+  },
+);

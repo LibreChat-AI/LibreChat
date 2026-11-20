@@ -24,6 +24,7 @@ import {
   selectCodeFileGenerations,
   planCodeSnapshotMounts,
 } from '~/files/code/destinations';
+import { getSnapshotReceipt } from '~/files/code/receipt';
 import { allowsFileResource } from '~/files/consumers';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
@@ -599,9 +600,10 @@ const computeProvisionState = async ({
     needsCodeEnv && checkSessionsAlive && canProbeRoute
       ? provisionable.filter(
           (f) =>
-            f.context !== FileContext.execute_code_snapshot &&
             codeFileIds.has(f.file_id) &&
-            codeEnvRefForRoute(f, activeCodeRouteKey),
+            (f.context === FileContext.execute_code_snapshot
+              ? getSnapshotReceipt(f, activeCodeRouteKey)
+              : codeEnvRefForRoute(f, activeCodeRouteKey)),
         )
       : [];
 
@@ -702,7 +704,18 @@ const computeProvisionState = async ({
           (routeRef.sandboxFilename ?? getCodeFileDestination(file, activeCodeRouteKey)) ||
           (file.context === FileContext.execute_code &&
             plannedName !== getCodeFileDestination(file, activeCodeRouteKey)));
-      if (file.context === FileContext.execute_code_snapshot || displaced) {
+      /* A snapshot mounts from its stored bytes. It skips the upload only while a receipt
+       * for this content version, under this turn's identity, still answers for its object;
+       * priming matches that object's bytes again before the reference is used. */
+      const reusesSnapshotUpload =
+        file.context === FileContext.execute_code_snapshot &&
+        aliveFileIds?.has(file.file_id) === true &&
+        getSnapshotReceipt(file, activeCodeRouteKey) != null &&
+        hasCodeRefForRoute(file, activeCodeRouteKey, codeScope);
+      if (
+        (file.context === FileContext.execute_code_snapshot && !reusesSnapshotUpload) ||
+        displaced
+      ) {
         codeEnvFiles.push(file);
         if (displaced) displacedCodeFileIds.add(file.file_id);
       } else if (isStale) {

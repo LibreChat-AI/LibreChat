@@ -4,6 +4,7 @@ import { Download } from 'lucide-react';
 import { CopyButton } from '@librechat/chat/components';
 import {
   Button,
+  Shimmer,
   OGDialog,
   OGDialogContent,
   OGDialogTitle,
@@ -288,10 +289,8 @@ export default function FilePreviewDialog({
 
         <div className="relative min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-6">
           {isLoading && (
-            <div className="bg-surface-secondary flex h-60 items-center justify-center rounded-lg">
-              <span className="shimmer text-text-secondary text-sm">
-                {localize('com_ui_loading')}
-              </span>
+            <div className="bg-surface-secondary text-text-secondary flex h-60 items-center justify-center rounded-lg">
+              <Shimmer className="text-sm">{localize('com_ui_loading')}</Shimmer>
             </div>
           )}
           {hasPreviewError && !isLoading && (

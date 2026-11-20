@@ -128,6 +128,18 @@ const answerField = (scope: Scope, question: string) =>
 const optionRow = (scope: Scope, name: string) =>
   scope.getByRole('button', { name: new RegExp(`${escapeRegExp(name)}$`) });
 
+/** How far a computed `box-shadow` reaches below its element: the largest y offset plus blur plus
+ *  spread over its outer layers. An inset layer paints inside the box and reaches nothing. */
+const shadowReach = (boxShadow: string): number =>
+  boxShadow
+    .split(/,(?![^(]*\))/)
+    .filter((layer) => !layer.includes('inset'))
+    .reduce((reach, layer) => {
+      const lengths = layer.replace(/\([^)]*\)/g, '').match(/-?\d*\.?\d+/g) ?? [];
+      const [, y = 0, blur = 0, spread = 0] = lengths.map(Number);
+      return Math.max(reach, y + blur + spread);
+    }, 0);
+
 test.describe('ask question batch refinements', () => {
   test('Enter in an answer field confirms the step instead of sending the composer @scenario:ask-batch-enter-confirms-answer', async ({
     page,
@@ -347,6 +359,39 @@ test.describe('ask question batch refinements', () => {
       await expect
         .poll(async () => (await composer.boundingBox())?.height ?? 0)
         .toBeGreaterThan(640 * 0.4);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
+  test('the batch card leaves no shadow band between it and the composer @scenario:ask-batch-card-leaves-no-shadow-band', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    let agentId: string | undefined;
+
+    try {
+      const agent = await createAgent(page);
+      agentId = agent.id;
+      await openBatch(page, agent, label);
+      const popover = await openPopover(page);
+      const surface = page.getByTestId('composer-surface');
+
+      /* The card floats a small gap above the composer. A shadow that reaches further than that
+         gap never fades out inside it: the whole strip stays tinted and reads as a dark band
+         under the card's own border. */
+      const slack = async () => {
+        const [card, composer, boxShadow] = await Promise.all([
+          popover.boundingBox(),
+          surface.boundingBox(),
+          popover.evaluate((element) => getComputedStyle(element).boxShadow),
+        ]);
+        expect(card).not.toBeNull();
+        expect(composer).not.toBeNull();
+        return composer!.y - (card!.y + card!.height) - shadowReach(boxShadow);
+      };
+      await expect.poll(slack, { timeout: 5000 }).toBeGreaterThanOrEqual(0);
     } finally {
       await cleanupAgent(page, agentId);
     }

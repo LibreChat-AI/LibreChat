@@ -342,6 +342,8 @@ export function recordScheduledMCPToolAuthFailure(
   getRecorder: () => SchedulesService['recordMCPToolAuthFailure'],
   getRetryPolicy?: () => Promise<ScheduleMCPReceiptRetryPolicy | undefined>,
 ): Promise<boolean> {
+  // A grant held by an API key has no schedule run to record against.
+  if (input.identity != null && !('scheduleId' in input.identity)) return Promise.resolve(false);
   const bearer =
     input.error instanceof ScheduledMCPBearerError ||
     input.error instanceof ScheduledMCPPolicyError;
@@ -556,6 +558,9 @@ export function createScheduleLimitsResolver(
           enabled: config.mcpConsent.enabled === true,
           maxLifetimeHours:
             config.mcpConsent.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+          ...(config.mcpConsent.requireAfter != null && {
+            requireAfterMs: Date.parse(config.mcpConsent.requireAfter),
+          }),
         },
       }),
       maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,

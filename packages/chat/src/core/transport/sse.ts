@@ -10,6 +10,7 @@ import type {
 import { normalizeFrame } from './frames';
 
 type StreamErrorEvent = MessageEvent & { responseCode?: number };
+type StreamOpenEvent = Event & { responseCode?: number };
 type ReadyStateChangeEvent = Event & { readyState?: number };
 type EventCallback = (event: ChatEvent) => void;
 
@@ -191,7 +192,16 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
         onEvent(event);
       };
 
-      sse.addEventListener('open', () => {
+      /**
+       * sse.js announces every response once its headers arrive, whatever it answered. Only one
+       * that carries the stream has opened it: a gateway's 502 or a 404 is the failure the
+       * `error` behind it reports, and told as an open first it would read as a connection made
+       * and then lost, which starts a caller's count of failed attempts over at every answer.
+       */
+      sse.addEventListener('open', (e: StreamOpenEvent) => {
+        if (e.responseCode != null && (e.responseCode < 200 || e.responseCode >= 300)) {
+          return;
+        }
         failureSeen = false;
         dispatch({ type: 'open' });
       });

@@ -384,13 +384,13 @@ export interface ResponseRequest {
   instructions?: string;
 
   /** Maximum output tokens */
-  max_output_tokens?: number;
+  max_output_tokens?: number | null;
 
   /** Maximum tool calls */
   max_tool_calls?: number;
 
   /** Sampling temperature */
-  temperature?: number;
+  temperature?: number | null;
 
   /** Top-p sampling */
   top_p?: number;

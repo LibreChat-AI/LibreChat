@@ -19,7 +19,9 @@ const mongoose = require('mongoose');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, createRoleChangeSource } = require('@librechat/data-schemas');
+const { CacheKeys } = require('librechat-data-provider');
+const getLogStores = require('~/cache/getLogStores');
 const mongoSanitize = require('express-mongo-sanitize');
 const {
   isEnabled,
@@ -46,6 +48,9 @@ const {
   configureServerTimeouts,
   setupGracefulShutdown,
   registerShutdownTask,
+  startRoleCacheInvalidation,
+  reportRoleCacheError,
+  reportRoleCacheInvalidation,
   getClusterShutdownBudgetMs,
   registerBackgroundTaskShutdown,
   configureMessageFilterRegexValidator,
@@ -56,6 +61,8 @@ const {
   startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
   createCodeApiUploadRegistry,
+  createSdkFileHost,
+  createSdkModelHost,
   cacheConfig,
   createClusteredFileSweep,
   createRequestSanitizer,
@@ -529,6 +536,19 @@ if (cluster.isMaster) {
     await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
     registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
     const appConfig = await getAppConfig({ baseOnly: true });
+    registerShutdownTask(
+      'role cache invalidation',
+      await startRoleCacheInvalidation({
+        config: appConfig?.config?.roleCache,
+        cache: getLogStores(CacheKeys.ROLES),
+        open: createRoleChangeSource(mongoose),
+        onError: reportRoleCacheError,
+        onInvalidate: reportRoleCacheInvalidation,
+      }),
+      { priority: 50 },
+    );
+    app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
+    app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
     startSkillDeletionSweep(appConfig.skillDeletion);

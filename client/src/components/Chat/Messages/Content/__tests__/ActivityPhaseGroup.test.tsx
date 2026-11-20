@@ -1,11 +1,13 @@
 import { useContext } from 'react';
-import { ContentTypes, Tools } from 'librechat-data-provider';
+import fs from 'fs';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
+import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { PhaseLabel as PackagePhaseLabel, FOLD_EASING } from '@librechat/chat/components';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES, useFailedReveal } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import ActivityPhaseGroup, { PhaseLabel } from '../ActivityPhaseGroup';
 import { MessageSurfaceContext } from '../../ui/surface';
-import ActivityPhaseGroup from '../ActivityPhaseGroup';
 
 const mockUseSmoothStreaming = jest.fn(() => true);
 const mockScheduleLayoutReconcile = jest.fn((_target: HTMLElement | null) => jest.fn());
@@ -79,6 +81,44 @@ const searchAttachment = {
 } as unknown as TAttachment;
 
 describe('ActivityPhaseGroup', () => {
+  test('preserves the package ticker export for existing tool group consumers', () => {
+    expect(PhaseLabel).toBe(PackagePhaseLabel);
+  });
+
+  test('exports real phase consumers for the browser cascade checks', () => {
+    const ticker = render(<PhaseLabel text={LABEL} animate live />);
+    ticker.rerender(<PhaseLabel text={NEXT_LABEL} animate live />);
+    expect(ticker.container.querySelector('.animate-out')).toHaveAttribute('aria-hidden', 'true');
+    const tickerMarkup = ticker.container.innerHTML;
+    ticker.unmount();
+
+    const entrance = render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent={false} animateEntrance>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    for (const name of FOLD_EASING.split(' ')) {
+      expect(screen.getByTestId('activity-phase-card')).toHaveClass(name);
+    }
+    const entranceMarkup = entrance.container.innerHTML;
+    entrance.unmount();
+
+    const reduced = render(<PhaseLabel text={LABEL} animate={false} live />);
+    reduced.rerender(<PhaseLabel text={NEXT_LABEL} animate={false} live />);
+    expect(reduced.container.querySelector('.animate-in, .animate-out')).toBeNull();
+    const fixturePath = process.env.E2E_PHASE_CASCADE_FIXTURE;
+    if (fixturePath) {
+      fs.writeFileSync(
+        fixturePath,
+        JSON.stringify({
+          ticker: tickerMarkup,
+          entrance: entranceMarkup,
+          reduced: reduced.container.innerHTML,
+        }),
+      );
+    }
+  });
+
   let frames: Array<FrameRequestCallback | undefined>;
   const originalRequestAnimationFrame = window.requestAnimationFrame;
   const originalCancelAnimationFrame = window.cancelAnimationFrame;
@@ -283,6 +323,9 @@ describe('ActivityPhaseGroup', () => {
      *  new one comes up from below — the absorbed block is the thing that
      *  moved, so it has to be visible while it moves. */
     const retired = screen.getByText(LABEL);
+    for (const easingClass of FOLD_EASING.split(' ')) {
+      expect(retired).toHaveClass(easingClass);
+    }
     expect(retired).toHaveClass('animate-out', 'slide-out-to-top-5');
     expect(retired).toHaveAttribute('aria-hidden', 'true');
     expect(
@@ -379,6 +422,9 @@ describe('ActivityPhaseGroup', () => {
 
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
     expect(screen.getByText(LABEL)).toHaveClass('text-start');
+    for (const easingClass of FOLD_EASING.split(' ')) {
+      expect(screen.getByTestId('activity-phase-card')).toHaveClass(easingClass);
+    }
     expect(pendingFrames()).toBe(0);
   });
 
@@ -842,6 +888,58 @@ describe('ActivityPhaseGroup open live header', () => {
     fireEvent.click(screen.getByRole('button'));
     settle();
     expect(within(screen.getByRole('button')).getByTitle('Found the recap')).toBeInTheDocument();
+  });
+
+  test.each<[string, boolean]>([
+    ['read_file', false],
+    [String(Constants.CHECK_BACKGROUND_TASK), true],
+  ])('passes the formatted repeated %s count to the real package header', (name, background) => {
+    const call = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id: 'first', name, args: '{}', type: 'tool_call', progress: 0.5, output: '' },
+    } satisfies TMessageContentParts;
+    const next = { ...call, tool_call: { ...call.tool_call, id: 'next' } };
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[call, next]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+
+    const count = screen.getByTestId('live-phase-combo');
+    expect(count).toHaveTextContent(background ? 'com_ui_background_tasks_n_checks' : '×2');
+    expect(count).toHaveClass(background ? 'text-text-secondary' : 'sr-only');
+    const header = screen.getByRole('button');
+    expect(header.getAttribute('aria-labelledby')?.split(' ')).toContain(count.id);
+  });
+
+  test('announces a completed live line and then the settled summary through the same region', () => {
+    const { rerender } = render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought()]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    const announcer = screen.getByTestId('activity-phase-announcer');
+    expect(announcer).toBeEmptyDOMElement();
+
+    rerender(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought(), thought()]}
+      >
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    settle();
+    expect(announcer).toHaveTextContent('Next I check the ordering.');
+
+    rerender(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByTestId('activity-phase-announcer')).toBe(announcer);
+    expect(announcer).toHaveTextContent(LABEL);
   });
 });
 

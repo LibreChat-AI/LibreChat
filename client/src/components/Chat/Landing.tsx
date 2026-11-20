@@ -11,6 +11,7 @@ import { useLocalize, useAuthContext, useGreeting } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import AgentContact from '~/components/Agents/AgentContact';
 import ConvoIcon from '~/components/Endpoints/ConvoIcon';
+import { announceGreetingSettled } from './welcome';
 
 const containerClassName =
   'relative flex h-full items-center justify-center rounded-full bg-presentation text-text-primary';
@@ -79,10 +80,10 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
 
   const brandedSpecLabel = modelSpec?.showOnLanding ? modelSpec.label : '';
   const brandedSpecDescription = (modelSpec?.showOnLanding && modelSpec.description) || '';
-  const name =
-    isTemporary || startupConfig?.interface?.landingHeading === 'greeting'
-      ? ''
-      : (entity?.name ?? brandedSpecLabel);
+  const isGreetingHeading = startupConfig?.interface?.landingHeading === 'greeting';
+  /** Greeting mode drops the entity icon: the header selector already shows it. */
+  const showIcon = isTemporary || !isGreetingHeading;
+  const name = isTemporary || isGreetingHeading ? '' : (entity?.name ?? brandedSpecLabel);
   const description = isTemporary
     ? localize('com_ui_temporary_description')
     : ((entity?.description || brandedSpecDescription || conversation?.greeting) ?? '');
@@ -96,6 +97,29 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
       : undefined;
 
   const scheduledGreeting = useGreeting(user?.name);
+
+  /** The greeting animates a grapheme at a time; when the last one settles the
+   * screen comes alive from that character (the composer takes focus, and a
+   * welcome backdrop can answer) instead of the title simply stopping. Once per
+   * visit: the title remounts when its text changes, such as an agent's name
+   * arriving after the time-based greeting has settled, and the screen has
+   * already come alive by then. */
+  const settledAnnounced = useRef(false);
+  const handleTitleSettled = useCallback(() => {
+    if (settledAnnounced.current) {
+      return;
+    }
+    const graphemes = contentRef.current?.querySelectorAll<HTMLElement>(
+      '.split-parent .will-change-transform',
+    );
+    const lastGrapheme = graphemes?.[graphemes.length - 1];
+    if (!lastGrapheme) {
+      return;
+    }
+    settledAnnounced.current = true;
+    const { left, top, width, height } = lastGrapheme.getBoundingClientRect();
+    announceGreetingSettled(left + width / 2, top + height / 2);
+  }, []);
 
   const handleLineCountChange = useCallback((count: number) => {
     setTextHasMultipleLines(count > 1);
@@ -145,35 +169,39 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
         <div
           className={`flex ${textHasMultipleLines ? 'flex-col' : 'flex-col md:flex-row'} items-center justify-center gap-2`}
         >
-          <div className={`relative size-10 justify-center ${textHasMultipleLines ? 'mb-2' : ''}`}>
-            <div className="avatar-stroke size-full rounded-full dark:after:shadow-none">
-              {isTemporary ? (
-                <div className={containerClassName}>
-                  <HatGlasses className="text-text-primary h-2/3 w-2/3" aria-hidden="true" />
-                </div>
-              ) : (
-                <ConvoIcon
-                  agentsMap={agentsMap}
-                  assistantMap={assistantMap}
-                  conversation={conversation}
-                  endpointsConfig={endpointsConfig}
-                  containerClassName={containerClassName}
-                  context="landing"
-                  className="text-text-primary h-2/3 w-2/3"
-                  size={41}
-                />
+          {showIcon && (
+            <div
+              className={`relative size-10 justify-center ${textHasMultipleLines ? 'mb-2' : ''}`}
+            >
+              <div className="avatar-stroke size-full rounded-full dark:after:shadow-none">
+                {isTemporary ? (
+                  <div className={containerClassName}>
+                    <HatGlasses className="text-text-primary h-2/3 w-2/3" aria-hidden="true" />
+                  </div>
+                ) : (
+                  <ConvoIcon
+                    agentsMap={agentsMap}
+                    assistantMap={assistantMap}
+                    conversation={conversation}
+                    endpointsConfig={endpointsConfig}
+                    containerClassName={containerClassName}
+                    context="landing"
+                    className="text-text-primary h-2/3 w-2/3"
+                    size={41}
+                  />
+                )}
+              </div>
+              {startupConfig?.showBirthdayIcon && (
+                <TooltipAnchor
+                  className="absolute inset-e-2 bottom-[1.6875rem]"
+                  description={localize('com_ui_happy_birthday')}
+                  aria-label={localize('com_ui_happy_birthday')}
+                >
+                  <BirthdayIcon />
+                </TooltipAnchor>
               )}
             </div>
-            {startupConfig?.showBirthdayIcon && (
-              <TooltipAnchor
-                className="absolute inset-e-2 bottom-[1.6875rem]"
-                description={localize('com_ui_happy_birthday')}
-                aria-label={localize('com_ui_happy_birthday')}
-              >
-                <BirthdayIcon />
-              </TooltipAnchor>
-            )}
-          </div>
+          )}
           {name ? (
             <div className="flex flex-col items-center gap-0 p-2">
               <SplitText
@@ -188,6 +216,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
                 threshold={0}
                 rootMargin="0px"
                 onLineCountChange={handleLineCountChange}
+                onLetterAnimationComplete={handleTitleSettled}
               />
             </div>
           ) : (
@@ -203,6 +232,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
               threshold={0}
               rootMargin="0px"
               onLineCountChange={handleLineCountChange}
+              onLetterAnimationComplete={handleTitleSettled}
             />
           )}
         </div>

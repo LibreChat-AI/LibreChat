@@ -61,8 +61,13 @@ export function AgentPanelProvider({
   const [action, setAction] = useState<Action | undefined>(undefined);
   const [activePanel, setActivePanel] = useState<Panel>(Panel.builder);
   const [agent_id, setCurrentAgentId] = useState<string | undefined>(undefined);
-  const { availableMCPServers, isLoading, availableMCPServersMap, connectionStatus } =
-    useMCPServerManager({ observeToolAuthorization: observeVisibleToolAuthorization });
+  const {
+    availableMCPServers,
+    isLoading,
+    availableMCPServersMap,
+    connectionStatus,
+    connectionViews,
+  } = useMCPServerManager({ observeToolAuthorization: observeVisibleToolAuthorization });
   const { data: startupConfig } = useGetStartupConfig();
   const { data: actions } = useGetActionsQuery(EModelEndpoint.agents, {
     enabled: observeToolAuthorization,
@@ -141,6 +146,7 @@ export function AgentPanelProvider({
             serverStatus,
             serverConfig?.requestScoped === true,
             Object.keys(serverConfig?.customUserVars ?? {}).length > 0,
+            connectionViews?.[serverName],
           ),
           requestScoped: serverConfig?.requestScoped,
           metadata,
@@ -179,6 +185,7 @@ export function AgentPanelProvider({
           serverStatus,
           serverConfig?.requestScoped === true,
           Object.keys(serverConfig?.customUserVars ?? {}).length > 0,
+          connectionViews?.[mcpServerName],
         ),
         requestScoped: serverConfig?.requestScoped,
         consumeOnly: serverConfig?.consumeOnly,
@@ -186,7 +193,14 @@ export function AgentPanelProvider({
     }
 
     return serversMap;
-  }, [mcpData, localize, mcpServerNames, connectionStatus, availableMCPServersMap]);
+  }, [
+    mcpData,
+    localize,
+    mcpServerNames,
+    connectionStatus,
+    connectionViews,
+    availableMCPServersMap,
+  ]);
 
   const value: AgentPanelContextType = {
     revealChat,

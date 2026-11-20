@@ -142,11 +142,12 @@ async function disabledLook(page: Page) {
     thumb.remove();
     return fill;
   });
-  /** `InputNumber` styles a wrapper whose disabled input sits inside it. */
+  /** `InputNumber` styles a wrapper whose disabled input sits inside it, and adds the classes
+   *  for its parts itself while that input is disabled. */
   const wrapper = await page.evaluate(() => {
     const box = document.createElement('div');
     box.className =
-      'bg-transparent text-text-primary theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-within:[&_*]:border-border-disabled';
+      'bg-transparent text-text-primary theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-fill:[&_*]:border-border-disabled';
     const field = document.createElement('input');
     field.disabled = true;
     const slot = document.createElement('div');

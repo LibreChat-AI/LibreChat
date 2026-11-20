@@ -10,6 +10,7 @@ export * from './common';
 export * from './crypto';
 export * from './schema';
 export * from './utils';
+export * from './roles/changes';
 export { createModels } from './models';
 export { createSlackWorkspaceStorage } from './methods/slackWorkspace';
 export { createSlackRouteStorage } from './methods/slackRoute';
@@ -29,6 +30,7 @@ export type {
   SlackInstallGeneration,
 } from './models/slackWorkspace';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
+export { createAgentKeyMCPConsentStorage } from './methods/scheduleConsent';
 export type {
   ResponseOwner,
   ResponseStorage,
@@ -210,3 +212,14 @@ export * from './postgres/migrations';
 export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
+
+export { migrateMCPReservationIndex } from './migrations/mcpReservations';
+
+export { repairAuthorizationDuplicates } from './migrations/authorization';
+
+export type {
+  ConversationMetadata,
+  ConversationMetadataBoundary,
+  ConversationMetadataMethods,
+  ConversationMetadataScope,
+} from './methods/conversationMetadata';

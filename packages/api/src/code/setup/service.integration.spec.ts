@@ -274,7 +274,7 @@ describe('browser setup durable lifecycle', () => {
   });
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   test('resumes immutable starts, returns the CLI approval, and idempotently completes the final owner slot', async () => {

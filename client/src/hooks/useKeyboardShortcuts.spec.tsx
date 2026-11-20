@@ -24,6 +24,7 @@ import store from '~/store';
 
 /** `copy-to-clipboard` exports a single callable: `copy(text, options?)`. */
 const mockCopy = jest.fn((_text: string, _options?: { format?: string }) => true);
+const mockReachRow = jest.fn((_row?: Element | null) => undefined);
 
 jest.mock('~/components/Chat/Input/Reasoning', () => ({
   __esModule: true,
@@ -57,6 +58,7 @@ jest.mock('~/Providers', () => ({
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useReducedMotion: () => true,
+  reachRow: (row?: Element | null) => mockReachRow(row),
 }));
 
 jest.mock('copy-to-clipboard', () => ({
@@ -128,6 +130,7 @@ beforeEach(() => {
   queryClient = new QueryClient();
   window.localStorage.clear();
   mockCopy.mockClear();
+  mockReachRow.mockReset();
 });
 
 afterEach(() => {
@@ -583,6 +586,32 @@ describe('clipboard shortcuts', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it('copies the last response from a row that had not mounted its toolbar yet', () => {
+    const earlierCopy = jest.fn();
+    const lastCopy = jest.fn();
+    renderHarness();
+    appendResponseCopyButton(earlierCopy);
+    /** A long thread leaves the toolbar out of a row the reader has not been near. */
+    const row = document.createElement('div');
+    row.className = 'message-render';
+    const turn = document.createElement('div');
+    turn.className = 'agent-turn';
+    row.appendChild(turn);
+    document.body.appendChild(row);
+    mockReachRow.mockImplementation((reached) => {
+      const button = document.createElement('button');
+      button.dataset.testid = 'copy-response-button';
+      button.addEventListener('click', lastCopy);
+      reached?.appendChild(button);
+    });
+
+    dispatchKey({ key: ';', ctrlKey: true, shiftKey: true });
+
+    expect(mockReachRow).toHaveBeenCalledWith(row);
+    expect(earlierCopy).not.toHaveBeenCalled();
+    expect(lastCopy).toHaveBeenCalledTimes(1);
+  });
+
   it('copies the last code block through the clipboard fallback helper', () => {
     renderHarness();
     appendCodeBlock('const x = 1;');
@@ -942,6 +971,32 @@ describe('composer submit shortcuts', () => {
 
     expect(sendClick).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('sends from the composer of the pane holding focus, not the first on the page', () => {
+    bindSubmitMessage('Alt+Enter');
+    renderHarness();
+    const pane = (index: number) => {
+      const element = document.createElement('div');
+      element.dataset.chatPane = String(index);
+      const onClick = jest.fn();
+      const send = document.createElement('button');
+      send.dataset.testid = 'send-button';
+      send.addEventListener('click', onClick);
+      const control = document.createElement('button');
+      element.append(send, control);
+      document.body.appendChild(element);
+      return { onClick, control };
+    };
+    const main = pane(0);
+    const beside = pane(3);
+    beside.control.focus();
+
+    const event = dispatchKey({ key: 'Enter', altKey: true }, beside.control);
+
+    expect(beside.onClick).toHaveBeenCalledTimes(1);
+    expect(main.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it('runs a custom Alt+Enter submit binding outside the composer', () => {

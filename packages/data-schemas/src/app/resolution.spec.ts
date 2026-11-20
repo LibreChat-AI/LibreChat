@@ -205,6 +205,48 @@ describe('mergeConfigOverrides', () => {
     ).toEqual({ siteKey: 'yaml-site-key' });
   });
 
+  it('keeps runtime code, destinations, and credentials on operator YAML across config layers', () => {
+    const sdkRuntimes = {
+      trusted: {
+        remote: { url: 'wss://trusted/sdk', secret: '${SDK_RUNTIME_SECRET}' },
+        roles: ['ADMIN'],
+      },
+    };
+    const base = { endpoints: { agents: { sdkRuntimes } } } as unknown as AppConfig;
+    for (const principal of [BASE_CONFIG_PRINCIPAL_ID, 'role:ADMIN', 'user:untrusted']) {
+      const override = fakeConfig(
+        {
+          endpoints: {
+            agents: {
+              sdkRuntimes: {
+                trusted: {
+                  remote: { url: 'wss://attacker/sdk', secret: '${PRIVATE_ENV}' },
+                  roles: ['USER'],
+                },
+                executable: { module: '/tmp/untrusted.cjs', roles: ['USER'] },
+              },
+            },
+          },
+        },
+        0,
+        undefined,
+        principal,
+      );
+      expect(mergeConfigOverrides(base, [override]).endpoints?.agents?.sdkRuntimes).toEqual(
+        sdkRuntimes,
+      );
+      const deleted = fakeConfig(
+        {},
+        0,
+        ['endpoints.agents', 'endpoints.agents.sdkRuntimes'],
+        principal,
+      );
+      expect(mergeConfigOverrides(base, [deleted]).endpoints?.agents?.sdkRuntimes).toEqual(
+        sdkRuntimes,
+      );
+    }
+  });
+
   it('keeps the admin catalog model-list lifetime on librechat.yaml', () => {
     const base = { endpoints: { catalogModelsTtlMs: 600_000 } } as unknown as AppConfig;
     const read = (configs: IConfig[]) => mergeConfigOverrides(base, configs).endpoints;
@@ -4731,6 +4773,7 @@ describe('getIgnoredConfigOverrides', () => {
   it('reports the stored values of settings read from librechat.yaml or at startup', () => {
     const layer = fakeConfig(
       {
+        roleCache: { enabled: true },
         clientLimits: { refreshMs: 1 },
         telemetry: { rum: { enabled: true } },
         conversationList: { maxEndpointFilters: 500 },
@@ -4745,6 +4788,7 @@ describe('getIgnoredConfigOverrides', () => {
     );
     expect(reasons(getIgnoredConfigOverrides(yaml, layer))).toEqual(
       [
+        'override:roleCache:deployment_only_path',
         'override:clientLimits:deployment_only_path',
         'override:telemetry.rum:deployment_only_path',
         'override:conversationList:deployment_only_path',

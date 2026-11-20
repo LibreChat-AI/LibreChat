@@ -1,4 +1,9 @@
-const { createScheduleMCPRuntimeHost } = require('@librechat/api');
+const {
+  getAgentCheckpointer,
+  GenerationJobManager,
+  createScheduledPauseCheck,
+  createScheduleMCPRuntimeHost,
+} = require('@librechat/api');
 const { getMCPServersRegistry } = require('~/config');
 const { getAppConfig } = require('~/server/services/Config/app');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
@@ -11,6 +16,11 @@ module.exports = createScheduleMCPRuntimeHost({
   findUser: (id) => methods.findUser({ _id: id }),
   getRoleByName: methods.getRoleByName,
   canViewAgent: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',
+  canPauseRuns: createScheduledPauseCheck({
+    isSharedStore: () => GenerationJobManager.isRedis,
+    getCheckpointer: getAgentCheckpointer,
+    getAppConfig,
+  }),
   enrollment: {
     canUseRoot: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',
     findUser: (id) => methods.findUser({ _id: id }),

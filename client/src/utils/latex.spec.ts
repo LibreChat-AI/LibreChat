@@ -9,7 +9,14 @@ import {
   getRemarkPlugins,
   getRehypePlugins,
 } from '~/components/Chat/Messages/Content/markdownConfig';
+import {
+  getLoadedRehypeModules,
+  loadRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { singleDollarMath } from './latex';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 type SpecNode = {
   type: string;
@@ -285,7 +292,9 @@ describe('getRemarkPlugins LaTeX wiring', () => {
   });
 
   test('KaTeX renders the parsed spans without errors', () => {
-    const rehypePlugins = getRehypePlugins() as ReactMarkdownOptions['rehypePlugins'];
+    const rehypePlugins = getRehypePlugins(
+      getLoadedRehypeModules(),
+    ) as ReactMarkdownOptions['rehypePlugins'];
     const remarkPlugins = getRemarkPlugins(true) as ReactMarkdownOptions['remarkPlugins'];
     const { container } = render(
       createElement(

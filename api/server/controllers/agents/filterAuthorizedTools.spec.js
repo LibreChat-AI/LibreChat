@@ -823,6 +823,41 @@ describe('MCP Tool Authorization', () => {
       expect(agentInDb.mcpServerNames).not.toContain('Workspace');
     });
 
+    test.each([true, false])(
+      'does not grant an unindexed Action key with MCP permission: %s',
+      async (canUse) => {
+        const tools = ['lookup_action_x_mcp_pay'];
+        await Agent.updateOne({ id: existingAgentId }, { tools, mcpServerNames: [] });
+        mockReq.user.id = canUse
+          ? existingAgentAuthorId.toString()
+          : new mongoose.Types.ObjectId().toString();
+        mockUserCanUseMCPServers.mockResolvedValue(canUse);
+        mockReq.params.id = existingAgentId;
+        mockReq.body = { tools };
+        await updateAgentHandler(mockReq, mockRes);
+        expect((await Agent.findOne({ id: existingAgentId })).mcpServerNames).toEqual([]);
+      },
+    );
+
+    test('rejects grants revoked after controller authorization', async () => {
+      const db = require('~/models');
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = { tools: ['existingTool_mcp_authorizedServer'] };
+      const update = db.updateAgent;
+      const spy = jest.spyOn(db, 'updateAgent').mockImplementationOnce(async (...args) => {
+        await Agent.updateOne({ id: existingAgentId }, { tools: [], mcpServerNames: [] });
+        return update(...args);
+      });
+      try {
+        await updateAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).toHaveBeenCalledWith(409);
+        expect((await Agent.findOne({ id: existingAgentId })).mcpServerNames).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     test('should let persistence derive when an unindexed agent retains MCP tools', async () => {
       /** A legacy or partially migrated agent can hold MCP tools with no stored
        *  mcpServerNames. Pinning the index to [] here would suppress the derivation

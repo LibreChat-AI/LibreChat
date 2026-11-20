@@ -70,6 +70,7 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       steerArmConfirmationTimeoutMs: ui?.steerArmConfirmationTimeoutMs,
       loaded: startupConfigLoaded,
       balanceEnabled: startupConfig?.balance?.enabled ?? false,
+      sideChat: startupConfig != null && ui?.sideChat !== false,
     };
   }, [startupConfig, startupConfigLoaded]);
   const auth = useMemo<ChatAuth>(

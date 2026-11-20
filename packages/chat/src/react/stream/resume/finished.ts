@@ -3,12 +3,8 @@ import type { useStore } from 'jotai';
 import type { StreamStatusResponse, GenerationProtocolVersion } from '../../../core';
 import type useSteerConvert from '../../steering/useSteerConvert';
 import type { ChatMessageCache } from '../../chat/host';
-import {
-  isDetachedRunManual,
-  detachedRunByConvoId,
-  pendingRunEndByConvoId,
-} from '../../steer/queue';
-import { dedupeSteersById, resolveDetachedRunEnd, isQueuedTurnSuccessorOwed } from '../../../core';
+import { parkDetachedRunEnd, isDetachedRunManual, detachedRunByConvoId } from '../../steer/queue';
+import { settleFinishedSteers, isQueuedTurnSuccessorOwed } from '../../../core';
 import { revealedQueuedTurnFamily } from '../../steer/atoms';
 
 /** The steer chips a finished run settles. */
@@ -69,26 +65,16 @@ export function settleFinishedRun({
     jotaiStore.set(revealFamily, null);
   }
 
-  // A terminal drain may have parked acknowledged steers no subscriber
-  // received (tab closed / reload racing the final event); the status
-  // claim returns them exactly once; restore as queued follow-up chips.
-  // An expired pendingAction can report inactive BEFORE the sweeper parks
-  // the steer queue: those steers still ride resumeState.pendingSteers,
-  // so convert both lists (id-deduped) before the empty seed clears chips.
-  const leftoverSteers = dedupeSteersById(
-    streamStatus.unrecoveredSteers,
-    streamStatus.resumeState?.pendingSteers,
+  settleFinishedSteers(
+    {
+      convertToQueued: steers.convertSteersToQueued,
+      settleApplied: steers.settleAppliedSteerParts,
+      seed: steers.seedSteerChips,
+    },
+    conversationId,
+    { ...streamStatus, generationProtocolVersion },
+    getMessages(),
   );
-  if (conversationId && leftoverSteers.length > 0) {
-    steers.convertSteersToQueued(conversationId, leftoverSteers, {
-      generationProtocolVersion,
-    });
-  }
-  // The run is terminal, so any remaining local pending chip is stale:
-  // its steer either applied (inline part in the saved message) or rode
-  // `unrecoveredSteers` above, the same empty-list reconcile as the resume path.
-  steers.settleAppliedSteerParts(conversationId, getMessages());
-  steers.seedSteerChips(conversationId, []);
   /** A run this pane stopped watching when the user left has ended on the server, which
    *  deleted the job. Its persisted response tells how it ended; parking that end lets the
    *  queue drain send a follow-up queued during the run, as an attached run would have.
@@ -98,19 +84,9 @@ export function settleFinishedRun({
   const detachedFamily = detachedRunByConvoId(conversationId);
   const detachedRun = jotaiStore.get(detachedFamily);
   const parkDetachedEnd = () => {
-    if (detachedRun == null || jotaiStore.get(detachedFamily) !== detachedRun) {
-      return;
+    if (detachedRun != null) {
+      parkDetachedRunEnd(jotaiStore, conversationId, detachedRun, getMessages());
     }
-    if (isDetachedRunManual(jotaiStore.get, conversationId, detachedRun)) {
-      jotaiStore.set(detachedFamily, null);
-      return;
-    }
-    const end = resolveDetachedRunEnd(conversationId, detachedRun, getMessages());
-    if (end == null) {
-      return;
-    }
-    jotaiStore.set(detachedFamily, null);
-    jotaiStore.set(pendingRunEndByConvoId(conversationId), end);
   };
   /** A run left for a manual send is retired without a read instead of refetching on every
    *  visit; the check repeats after the read, since a receipt can settle meanwhile. */
