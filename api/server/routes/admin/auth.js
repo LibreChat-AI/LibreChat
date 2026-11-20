@@ -53,6 +53,7 @@ const {
   acquireOpenIDRefreshFlight,
   assertOpenIDRefreshFlightAvailable,
   completeOpenIDRefreshFlight,
+  failOpenIDRefreshFlight,
   waitForOpenIDRefreshFlight,
   withOpenIDRefreshFlightLease,
 } = require('~/server/services/OpenIDRefreshFlight');
@@ -841,6 +842,7 @@ router.post(
             createAdminRefreshGrantFlightKey,
             acquireOpenIDRefreshFlight,
             completeOpenIDRefreshFlight,
+            failOpenIDRefreshFlight,
             assertOpenIDRefreshFlightAvailable,
             waitForOpenIDRefreshFlight,
             withOpenIDRefreshFlightLease,

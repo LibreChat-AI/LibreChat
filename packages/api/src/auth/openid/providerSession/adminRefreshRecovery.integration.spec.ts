@@ -337,6 +337,14 @@ function makeFlightDeps(onWaiterRegistered?: () => void): AdminRefreshGrantDeps 
       flights.delete(key);
       return null;
     },
+    failOpenIDRefreshFlight: async ({ key }) => {
+      if (!key) return null;
+      const flight = flights.get(key);
+      if (!flight) return null;
+      flight.waiters.forEach((resolve) => resolve(null));
+      flights.delete(key);
+      return null;
+    },
     waitForOpenIDRefreshFlight: ({ key }) => {
       if (!key) return Promise.resolve(null);
       const flight = flights.get(key);
@@ -916,6 +924,7 @@ function makeRealGrantDeps(
     ).createAdminRefreshGrantFlightKey,
     acquireOpenIDRefreshFlight: flights.acquireOpenIDRefreshFlight,
     completeOpenIDRefreshFlight: flights.completeOpenIDRefreshFlight,
+    failOpenIDRefreshFlight: flights.failOpenIDRefreshFlight,
     assertOpenIDRefreshFlightAvailable: flights.assertOpenIDRefreshFlightAvailable,
     waitForOpenIDRefreshFlight: flights.waitForOpenIDRefreshFlight,
     withOpenIDRefreshFlightLease: flights.withOpenIDRefreshFlightLease,
@@ -1167,6 +1176,33 @@ describe.each(['record', 'enforce'] as const)(
       expect(retry1.body.refreshToken).toBe(`${R0}-r`);
       expect(retry2.body.refreshToken).toBe(`${R0}-r`);
       expect(grant).toHaveBeenCalledTimes(1);
+    });
+
+    it('(b) lets a retry grant at once after the first grant throws', async () => {
+      const R0 = 'refresh-shared-grant-throws';
+      const { bridgeService, flights } = await setup(R0, { publishBrowserLogin: false });
+      const grant = jest
+        .fn<Promise<RefreshTokenset>, [string]>()
+        .mockRejectedValueOnce(Object.assign(new Error('IdP unavailable'), { status: 503 }))
+        .mockImplementation(async (presented: string) => makeTokenset(presented));
+      const run = () =>
+        runAdminRefresh({
+          refreshToken: R0,
+          config,
+          bridgeService,
+          userId: ADMIN_USER_ID,
+          grant,
+          flightDeps: makeRealGrantDeps(flights, bridgeService),
+        });
+
+      await expect(run()).rejects.toThrow('IdP unavailable');
+      const startedAt = Date.now();
+      const retry = await run();
+
+      expect(retry.status).toBe(200);
+      expect(retry.body.refreshToken).toBe(`${R0}-r`);
+      expect(grant).toHaveBeenCalledTimes(2);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
     });
 
     it('(c) answers 401 OPENID_SESSION_ENDED without tokens and deletes the bridge once the provider session ended', async () => {

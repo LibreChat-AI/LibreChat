@@ -220,6 +220,13 @@ export interface AdminRefreshGrantDeps {
     ownerId?: string;
     tokens?: TokenResult | null;
   }) => Promise<unknown>;
+  /** Marks the flight failed when the grant throws, so a retry can take the flight over at once
+   *  instead of waiting for the pending flight to expire. */
+  failOpenIDRefreshFlight?: (args: {
+    key?: string | null;
+    ownerId?: string;
+    error?: Error | null;
+  }) => Promise<unknown>;
   /** Confirms a completion write landed under this flight's ownership despite the write itself
    *  throwing; mirrors the main refresh path's indeterminate-completion check. */
   assertOpenIDRefreshFlightAvailable?: (args: {
@@ -341,7 +348,8 @@ async function waitForSharedAdminTokenset(
  * has run, the IdP has already rotated the refresh token. A failure from the grant itself still
  * reaches the caller as-is. A failure from the lease's own bookkeeping after a successful grant
  * (the completion write, or the lease's post-operation renewal and ownership checks) must not
- * drop the rotated tokenset; it is returned so the caller can still persist it.
+ * drop the rotated tokenset; it is returned so the caller can still persist it. A failed grant
+ * marks the flight failed, so a retry takes the flight over at once.
  */
 async function runOwnedAdminGrant(
   grant: () => Promise<RefreshTokenset>,
@@ -413,6 +421,17 @@ async function runOwnedAdminGrant(
         { error },
       );
       throw coordinationUnavailable(error);
+    }
+    try {
+      await deps.failOpenIDRefreshFlight?.({
+        key,
+        ownerId,
+        error: error instanceof Error ? error : new Error('OpenID admin refresh grant failed'),
+      });
+    } catch (flightError) {
+      logger.warn('[runAdminOpenIdRefreshGrant] Failed to mark the refresh flight failed', {
+        error: flightError,
+      });
     }
     throw error;
   }

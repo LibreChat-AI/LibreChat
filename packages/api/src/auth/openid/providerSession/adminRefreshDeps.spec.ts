@@ -712,4 +712,57 @@ describe('runAdminOpenIdRefreshGrant', () => {
       ),
     ).rejects.toBe(grantError);
   });
+
+  it('marks the owned flight failed when the grant throws, so a retry can take it over', async () => {
+    const grantError = new Error('IdP unavailable');
+    const grant = jest.fn().mockRejectedValue(grantError);
+    const deps = {
+      createAdminRefreshGrantFlightKey: jest.fn().mockReturnValue('grant-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease: jest
+        .fn()
+        .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() })),
+      failOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: false, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toBe(grantError);
+    expect(deps.failOpenIDRefreshFlight).toHaveBeenCalledWith({
+      key: 'grant-key',
+      ownerId: 'owner-1',
+      error: grantError,
+    });
+  });
+
+  it('rethrows the grant failure when marking the flight failed also fails', async () => {
+    const grantError = new Error('IdP unavailable');
+    const grant = jest.fn().mockRejectedValue(grantError);
+    const deps = {
+      createAdminRefreshGrantFlightKey: jest.fn().mockReturnValue('grant-key'),
+      acquireOpenIDRefreshFlight: jest
+        .fn()
+        .mockResolvedValue({ acquired: true, ownerId: 'owner-1' }),
+      withOpenIDRefreshFlightLease: jest
+        .fn()
+        .mockImplementation(({ operation }) => operation({ assertLeaseOwned: jest.fn() })),
+      failOpenIDRefreshFlight: jest.fn().mockRejectedValue(new Error('flight store down')),
+    };
+
+    await expect(
+      runAdminOpenIdRefreshGrant(
+        grant,
+        'presented-token',
+        { bridged: false, identity: { userId: 'user-1' } },
+        deps,
+      ),
+    ).rejects.toBe(grantError);
+  });
 });
