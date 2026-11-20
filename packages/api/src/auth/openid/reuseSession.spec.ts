@@ -11,6 +11,7 @@ import {
   respondToProviderSessionError,
   type AuthorizeCachedReuseSessionDeps,
   type AuthorizeCachedReuseSessionInput,
+  type OpenIDRefreshProviderSessionDeps,
 } from './reuseSession';
 import {
   createProviderSessionAuthorizer,
@@ -75,48 +76,116 @@ describe('resolveBoundProviderSessionForToken', () => {
   const markerCookie = (ref: typeof refA) => ({
     openid_user_id: jwt.sign({ id: 'user-1', providerSession: ref, refreshTokenHash }, SECRET),
   });
+  const noSessionRow = () => jest.fn().mockResolvedValue(null);
 
-  it('carries the marker ref on the given token forward in mode off', () => {
-    const result = resolveBoundProviderSessionForToken(
+  it('carries the marker ref on the given token forward in mode off', async () => {
+    const result = await resolveBoundProviderSessionForToken(
       'off',
       markerCookie(refA),
       SECRET,
       refreshToken,
       refB,
+      noSessionRow(),
     );
     expect(result).toEqual(refA);
   });
 
-  it('falls back to the session ref in mode off when the token carries no marker', () => {
-    const result = resolveBoundProviderSessionForToken('off', {}, SECRET, refreshToken, refB);
+  it('falls back to the session ref in mode off when the token carries no marker', async () => {
+    const result = await resolveBoundProviderSessionForToken(
+      'off',
+      {},
+      SECRET,
+      refreshToken,
+      refB,
+      noSessionRow(),
+    );
     expect(result).toEqual(refB);
   });
 
-  it('creates no binding in mode off when neither the marker nor the session has one', () => {
-    const result = resolveBoundProviderSessionForToken('off', {}, SECRET, refreshToken, null);
+  it('creates no binding and reads no Session row in mode off', async () => {
+    const findBinding = jest.fn().mockResolvedValue({ providerSession: refA });
+    const result = await resolveBoundProviderSessionForToken(
+      'off',
+      {},
+      SECRET,
+      refreshToken,
+      null,
+      findBinding,
+    );
     expect(result).toBeNull();
+    expect(findBinding).not.toHaveBeenCalled();
   });
 
-  it('prefers the marker on the given token over the session ref', () => {
-    const result = resolveBoundProviderSessionForToken(
+  it('prefers the marker on the given token over the session ref, without a Session row read', async () => {
+    const findBinding = noSessionRow();
+    const result = await resolveBoundProviderSessionForToken(
       'record',
       markerCookie(refA),
       SECRET,
       refreshToken,
       null,
+      findBinding,
     );
     expect(result).toEqual(refA);
+    expect(findBinding).not.toHaveBeenCalled();
   });
 
-  it('falls back to the session ref when the token carries no marker', () => {
-    const result = resolveBoundProviderSessionForToken('record', {}, SECRET, refreshToken, refB);
+  it('falls back to the session ref when the token carries no marker', async () => {
+    const result = await resolveBoundProviderSessionForToken(
+      'record',
+      {},
+      SECRET,
+      refreshToken,
+      refB,
+      noSessionRow(),
+    );
     expect(result).toEqual(refB);
   });
 
-  it('throws OPENID_SESSION_ENDED when the marker conflicts with the session ref', () => {
-    expect(() =>
-      resolveBoundProviderSessionForToken('record', markerCookie(refA), SECRET, refreshToken, refB),
-    ).toThrow(expect.objectContaining({ code: OPENID_SESSION_ENDED }));
+  it('reads the Session row ref by refresh token when neither the marker nor the session has one', async () => {
+    const findBinding = jest.fn().mockResolvedValue({ userId: 'user-1', providerSession: refB });
+    const result = await resolveBoundProviderSessionForToken(
+      'record',
+      {},
+      SECRET,
+      refreshToken,
+      null,
+      findBinding,
+    );
+    expect(result).toEqual(refB);
+    expect(findBinding).toHaveBeenCalledWith(refreshToken);
+  });
+
+  it('returns null (legacy) when no Session row matches the refresh token', async () => {
+    const result = await resolveBoundProviderSessionForToken(
+      'record',
+      {},
+      SECRET,
+      refreshToken,
+      null,
+      noSessionRow(),
+    );
+    expect(result).toBeNull();
+  });
+
+  it('throws ProviderSessionUnavailableError when the Session row read fails', async () => {
+    const findBinding = jest.fn().mockRejectedValue(new Error('mongo down'));
+    await expect(
+      resolveBoundProviderSessionForToken('record', {}, SECRET, refreshToken, null, findBinding),
+    ).rejects.toBeInstanceOf(ProviderSessionUnavailableError);
+  });
+
+  it('throws OPENID_SESSION_ENDED when the marker conflicts with the session ref', async () => {
+    await expect(
+      resolveBoundProviderSessionForToken(
+        'record',
+        markerCookie(refA),
+        SECRET,
+        refreshToken,
+        refB,
+        noSessionRow(),
+      ),
+    ).rejects.toMatchObject({ code: OPENID_SESSION_ENDED });
   });
 });
 
@@ -313,7 +382,7 @@ describe('resolveOpenIDRefreshProviderSession', () => {
   function makeDeps(
     mode: ResolvedBackchannelLogoutConfig['mode'],
     dbAuthorize: jest.Mock,
-    overrides: Partial<AuthorizeCachedReuseSessionDeps> = {},
+    overrides: Partial<OpenIDRefreshProviderSessionDeps> = {},
   ) {
     const authorizer = createProviderSessionAuthorizer({
       methods: { establish: jest.fn(), authorize: dbAuthorize },
@@ -325,6 +394,7 @@ describe('resolveOpenIDRefreshProviderSession', () => {
       parsedCookies: markerCookie(refA),
       jwtRefreshSecret: SECRET,
       deleteOpenIDSession: jest.fn().mockResolvedValue(undefined),
+      findProviderSessionBinding: jest.fn().mockResolvedValue(null),
       logger: { warn: jest.fn() },
       providerSessionExpiryMs: 60_000,
       ...overrides,
@@ -380,5 +450,136 @@ describe('resolveOpenIDRefreshProviderSession', () => {
     await expect(authorizeReuse(refA)).resolves.toBeUndefined();
     expect(dbAuthorize).toHaveBeenCalled();
     expect(deps.deleteOpenIDSession).not.toHaveBeenCalled();
+  });
+
+  /** A marker signed for another refresh token (for example an older marker for the same user)
+   *  does not bind; with no Express session, the Session row is the only source of the ref. */
+  describe('unbound marker with no Express session', () => {
+    const unboundMarker = {
+      openid_user_id: jwt.sign(
+        { id: 'user-1', providerSession: refA, refreshTokenHash: 'other-token-hash' },
+        SECRET,
+      ),
+    };
+
+    it('record mode: resolves the Session row ref for the refresh and authorizes against it', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDeps('record', dbAuthorize, {
+        parsedCookies: unboundMarker,
+        findProviderSessionBinding: jest
+          .fn()
+          .mockResolvedValue({ userId: 'user-1', providerSession: refB }),
+      });
+      const { resolveBoundProviderSession } = await resolveOpenIDRefreshProviderSession(
+        deps,
+        refreshToken,
+        false,
+      );
+
+      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toEqual(refB);
+      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toEqual(refB);
+      expect(deps.findProviderSessionBinding).toHaveBeenCalledTimes(1);
+      expect(deps.findProviderSessionBinding).toHaveBeenCalledWith(refreshToken);
+    });
+
+    it('record mode: resolves null (legacy) when no Session row matches the refresh token', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDeps('record', dbAuthorize, {
+        parsedCookies: unboundMarker,
+      });
+      const { resolveBoundProviderSession } = await resolveOpenIDRefreshProviderSession(
+        deps,
+        refreshToken,
+        false,
+      );
+
+      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toBeNull();
+    });
+
+    it('mode off: reads no Session row', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDeps('off', dbAuthorize, {
+        parsedCookies: unboundMarker,
+      });
+      const { resolveBoundProviderSession, authorizeReuse } =
+        await resolveOpenIDRefreshProviderSession(deps, refreshToken, true);
+
+      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toBeNull();
+      await expect(authorizeReuse(null)).resolves.toBeUndefined();
+      expect(deps.findProviderSessionBinding).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cached reuse with a bound marker that has no ref', () => {
+    it('record mode: authorizes against the Session row ref', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDeps('record', dbAuthorize, {
+        parsedCookies: markerCookie(null),
+        findProviderSessionBinding: jest
+          .fn()
+          .mockResolvedValue({ userId: 'user-1', providerSession: refB }),
+      });
+      const { authorizeReuse } = await resolveOpenIDRefreshProviderSession(
+        deps,
+        refreshToken,
+        true,
+      );
+
+      await expect(authorizeReuse(null)).resolves.toBeUndefined();
+      expect(deps.findProviderSessionBinding).toHaveBeenCalledWith(refreshToken);
+      expect(dbAuthorize).toHaveBeenCalledWith(
+        expect.objectContaining({ issuer: refB.issuer, clientId: refB.clientId, sid: refB.sid }),
+      );
+    });
+
+    it('record mode: denies and cleans up when the Session row ref has ended', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: false, code: 'ENDED' });
+      const deps = makeDeps('record', dbAuthorize, {
+        parsedCookies: markerCookie(null),
+        findProviderSessionBinding: jest
+          .fn()
+          .mockResolvedValue({ userId: 'user-1', providerSession: refB }),
+      });
+      const { authorizeReuse } = await resolveOpenIDRefreshProviderSession(
+        deps,
+        refreshToken,
+        true,
+      );
+
+      const error: unknown = await authorizeReuse(null).catch((caught: unknown) => caught);
+      expect(isOpenIDSessionEndedError(error)).toBe(true);
+      expect(deps.deleteOpenIDSession).toHaveBeenCalledWith(refreshToken);
+    });
+
+    it('record mode: passes as legacy, without a database authorize, when no Session row matches', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDeps('record', dbAuthorize, {
+        parsedCookies: markerCookie(null),
+      });
+      const { authorizeReuse } = await resolveOpenIDRefreshProviderSession(
+        deps,
+        refreshToken,
+        true,
+      );
+
+      await expect(authorizeReuse(null)).resolves.toBeUndefined();
+      expect(deps.findProviderSessionBinding).toHaveBeenCalledWith(refreshToken);
+      expect(dbAuthorize).not.toHaveBeenCalled();
+    });
+
+    it('reads no Session row when the Express session has a ref', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDeps('record', dbAuthorize, {
+        parsedCookies: markerCookie(null),
+      });
+      const { authorizeReuse } = await resolveOpenIDRefreshProviderSession(
+        deps,
+        refreshToken,
+        true,
+      );
+
+      await authorizeReuse(refA);
+      expect(deps.findProviderSessionBinding).not.toHaveBeenCalled();
+    });
   });
 });

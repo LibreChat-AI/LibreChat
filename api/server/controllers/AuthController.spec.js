@@ -1198,6 +1198,21 @@ describe('refreshController – OpenID path', () => {
       expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
     });
 
+    it('authorizes the Session row ref when neither the marker nor the Express session has one', async () => {
+      setUpCachedReuse();
+      findSession.mockResolvedValueOnce({ user: 'user-db-id', providerSession });
+
+      await refreshController(req, res);
+
+      expect(findSession).toHaveBeenCalledWith({ refreshToken: 'stored-refresh' }, { lean: true });
+      expect(mockAuthorizeProviderSession).toHaveBeenCalledWith({
+        ref: providerSession,
+        expiresAt: expect.any(Date),
+        legacy: false,
+      });
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
     it('authorizes a cached session that predates provider-session tracking as legacy', async () => {
       setUpCachedReuse();
 
@@ -1245,6 +1260,60 @@ describe('refreshController – OpenID path', () => {
         expect.objectContaining({ ref: providerSession }),
       );
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    /** A marker signed for another refresh token still names the user, but does not bind a ref. */
+    it('authorizes the Session row ref for an unbound marker with no Express session', async () => {
+      req.headers.cookie = [
+        'token_provider=openid',
+        'refreshToken=stored-refresh',
+        `openid_user_id=${signMarker('older-refresh', { ...providerSession, sid: 'sid-old' })}`,
+      ].join('; ');
+      req.session = {};
+      findSession.mockResolvedValueOnce({ user: 'user-db-id', providerSession });
+
+      await refreshController(req, res);
+
+      expect(findSession).toHaveBeenCalledWith({ refreshToken: 'stored-refresh' }, { lean: true });
+      expect(mockAuthorizeProviderSession).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: providerSession, legacy: false }),
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('authorizes an unbound marker with no Express session and no Session row as legacy', async () => {
+      req.headers.cookie = [
+        'token_provider=openid',
+        'refreshToken=stored-refresh',
+        `openid_user_id=${signMarker('older-refresh', providerSession)}`,
+      ].join('; ');
+      req.session = {};
+      findSession.mockResolvedValueOnce(null);
+
+      await refreshController(req, res);
+
+      expect(findSession).toHaveBeenCalledWith({ refreshToken: 'stored-refresh' }, { lean: true });
+      expect(mockAuthorizeProviderSession).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: null, legacy: true }),
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('returns 503 without clearing cookies when the Session row read fails', async () => {
+      req.headers.cookie = [
+        'token_provider=openid',
+        'refreshToken=stored-refresh',
+        `openid_user_id=${signMarker('older-refresh', providerSession)}`,
+      ].join('; ');
+      req.session = {};
+      findSession.mockRejectedValueOnce(new Error('mongo down'));
+
+      await refreshController(req, res);
+
+      expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
+      expect(clearOpenIDAuthTokens).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
     });
 
     it('denies the refresh when the marker and session provider sessions disagree', async () => {

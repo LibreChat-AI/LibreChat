@@ -16,7 +16,7 @@ const {
   isOpenIDSessionMissingError,
   isOpenIDSessionIdentityMatch,
   resolveOpenIDRefreshProviderSession,
-  resolveBoundProviderSessionForToken,
+  createFindProviderSessionBinding,
   respondToProviderSessionError,
   OPENID_EXPIRY_BUFFER_SECONDS,
   clearCloudFrontCookies,
@@ -233,6 +233,8 @@ const refreshLocalSession = createLocalRefreshHandler({
   error: (message, cause) => logger.error(message, cause),
 });
 
+const findProviderSessionBinding = createFindProviderSessionBinding({ findSession });
+
 const refreshController = async (req, res) => {
   const parsedCookies = req.headers.cookie ? cookies.parse(req.headers.cookie) : {};
   const token_provider = parsedCookies.token_provider;
@@ -256,21 +258,23 @@ const refreshController = async (req, res) => {
       const reusableSessionToken = cookieDiffersFromSession
         ? null
         : getReusableOpenIDSessionToken(req.session?.openidTokens);
-      const { mode, reuseCredential, authorizeReuse } = await resolveOpenIDRefreshProviderSession(
-        {
-          authorizer: getProviderSessionAuthorizer(),
-          parsedCookies,
-          jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
-          deleteOpenIDSession: (token) => deleteSession({ refreshToken: token }),
-          logger,
-          providerSessionExpiryMs: math(
-            process.env.REFRESH_TOKEN_EXPIRY,
-            DEFAULT_REFRESH_TOKEN_EXPIRY,
-          ),
-        },
-        refreshToken,
-        Boolean(reusableSessionToken),
-      );
+      const { reuseCredential, authorizeReuse, resolveBoundProviderSession } =
+        await resolveOpenIDRefreshProviderSession(
+          {
+            authorizer: getProviderSessionAuthorizer(),
+            parsedCookies,
+            jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
+            deleteOpenIDSession: (token) => deleteSession({ refreshToken: token }),
+            findProviderSessionBinding,
+            logger,
+            providerSessionExpiryMs: math(
+              process.env.REFRESH_TOKEN_EXPIRY,
+              DEFAULT_REFRESH_TOKEN_EXPIRY,
+            ),
+          },
+          refreshToken,
+          Boolean(reusableSessionToken),
+        );
       const reuseUserId = reuseCredential?.userId;
       if (reuseUserId) {
         const reuseSessionTokens = req.session?.openidTokens;
@@ -294,7 +298,9 @@ const refreshController = async (req, res) => {
               }
               /** Rechecked right before the cached token is sent, so a back-channel logout
                *  ends a reused session whose provider session was revoked since it was cached. */
-              await authorizeReuse(reuseSessionTokens?.providerSession ?? null, req.session);
+              await runInUserTenant(user, () =>
+                authorizeReuse(reuseSessionTokens?.providerSession ?? null, req.session),
+              );
               return sendAuthorized(() => {
                 const cloudFrontCookiesSet = setCloudFrontAuthCookies(req, res, user);
                 logger.debug('[refreshController] OpenID session token reused', {
@@ -341,13 +347,7 @@ const refreshController = async (req, res) => {
       return await runInUserTenant(refreshUser, async () => {
         const sessionProviderSession = req.session?.openidTokens?.providerSession ?? null;
         const boundProviderSessionFor = (token) =>
-          resolveBoundProviderSessionForToken(
-            mode,
-            parsedCookies,
-            process.env.JWT_REFRESH_SECRET,
-            token,
-            sessionProviderSession,
-          );
+          resolveBoundProviderSession(token, sessionProviderSession);
 
         let successfulRefreshToken = refreshToken;
         let refreshResult;
@@ -360,7 +360,7 @@ const refreshController = async (req, res) => {
             browserRefreshToken: parsedCookies.refreshToken,
             strategyName: 'refreshController',
             deferPublication: true,
-            providerSession: boundProviderSessionFor(refreshToken),
+            providerSession: await boundProviderSessionFor(refreshToken),
           });
         } catch (error) {
           if (!fallbackRefreshToken || !isInvalidGrantError(error)) {
@@ -378,7 +378,7 @@ const refreshController = async (req, res) => {
             browserRefreshToken: parsedCookies.refreshToken,
             strategyName: 'refreshController (browser fallback)',
             deferPublication: true,
-            providerSession: boundProviderSessionFor(fallbackRefreshToken),
+            providerSession: await boundProviderSessionFor(fallbackRefreshToken),
           });
         }
         const { tokenset, claims, openidIssuer, user, error, migration } = refreshResult;
@@ -434,7 +434,7 @@ const refreshController = async (req, res) => {
             openidIssuer: refreshUser.openidIssuer,
           },
           rejectedRefreshTokens: successfulRefreshToken === refreshToken ? [] : [refreshToken],
-          providerSession: boundProviderSessionFor(successfulRefreshToken),
+          providerSession: await boundProviderSessionFor(successfulRefreshToken),
           req,
           res,
         });
