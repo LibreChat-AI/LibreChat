@@ -219,14 +219,6 @@ describe('Session', () => {
     expect(within(rail).queryByTestId('session-stop-all')).toBeNull();
   });
 
-  it('is offered on a chat that has not been saved, without asking the server for its tasks', async () => {
-    const getTasks = jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
-    renderSession({ id: 'new' });
-    const rail = await openRail();
-    expect(rail).toHaveTextContent('com_ui_session_empty');
-    expect(getTasks).not.toHaveBeenCalled();
-  });
-
   it('draws the rail in the layout column, not in the header', async () => {
     jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
     renderSession();

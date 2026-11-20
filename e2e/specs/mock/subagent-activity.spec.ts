@@ -253,15 +253,8 @@ test.describe('detached subagent activity', () => {
 
     try {
       await page.goto('/c/new');
-      /** The control is offered before the chat has anything to list, and says so. */
       const toggle = page.getByTestId('header-background-tasks-button');
       const rail = page.getByRole('complementary', { name: 'Session' });
-      await expect(toggle).toHaveAccessibleName('Session');
-      await toggle.click();
-      await expect(rail).toContainText('will show up here');
-      await rail.getByRole('button', { name: 'Close session' }).click();
-      await expect(rail).toHaveCount(0);
-      await expect(toggle).toBeFocused();
 
       const token = await getAccessToken(page);
       const children: AgentDetail[] = [];
@@ -278,6 +271,8 @@ test.describe('detached subagent activity', () => {
       createdAgentIds.push(parent.id);
 
       await selectAgent(page, parentName);
+      /** A chat nothing has been sent in has no session to show, so it offers no control. */
+      await expect(toggle).toHaveCount(0);
       const response = await sendMessageAndWaitForCompletion(
         page,
         `${DETACHED_ACTIVITY_MARKER}${children.map((child) => child.id).join(',')}:${label}`,
@@ -285,7 +280,7 @@ test.describe('detached subagent activity', () => {
       expect(response.ok()).toBeTruthy();
 
       /** The children outlive the parent's turn. The control counts them from the header, and
-       *  the rail shows itself for them: it was closed above, but for the unsaved chat. */
+       *  the rail shows itself for them. */
       await expect(toggle).toHaveAccessibleName(/^Session, 2 running/, { timeout: 30_000 });
       await expect(rail).toBeVisible();
       await expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -339,6 +334,8 @@ test.describe('detached subagent activity', () => {
       await expect(rail).toBeVisible();
       await expect(rows).toHaveCount(2);
       await rail.getByRole('button', { name: 'Close session' }).click();
+      await expect(rail).toHaveCount(0);
+      await expect(toggle).toBeFocused();
     } finally {
       for (const agentId of createdAgentIds.reverse()) {
         await cleanupAgent(page, agentId);
