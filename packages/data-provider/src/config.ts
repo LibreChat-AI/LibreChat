@@ -3144,7 +3144,7 @@ export type TLookupConcurrency = z.infer<typeof lookupConcurrencySchema>;
 
 export const adminRefreshRateLimitSchema = z.object({
   windowMs: z.number().int().positive().max(2_147_483_647).default(60_000),
-  max: z.number().int().positive().default(120),
+  max: z.number().int().positive().default(30),
 });
 
 export const rateLimitSchema = z.object({

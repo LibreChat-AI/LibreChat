@@ -2,7 +2,7 @@ import { configSchema, adminRefreshRateLimitSchema } from './config';
 
 describe('admin refresh rate limits', () => {
   it('provides a renewal budget independent of login attempts', () => {
-    expect(adminRefreshRateLimitSchema.parse({})).toEqual({ windowMs: 60_000, max: 120 });
+    expect(adminRefreshRateLimitSchema.parse({})).toEqual({ windowMs: 60_000, max: 30 });
     expect(
       configSchema.parse({ version: '1.2.1', rateLimits: { adminRefresh: { max: 240 } } })
         .rateLimits?.adminRefresh,
