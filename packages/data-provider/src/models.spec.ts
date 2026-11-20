@@ -1,3 +1,4 @@
+import type { TEphemeralAgent } from './types';
 import type { TModelSpec } from './models';
 import {
   resolveSpecToolFlag,
@@ -6,6 +7,7 @@ import {
   resolveSpecUserToggle,
   resolveSpecUserToggles,
   resolveSpecSkillsEnabled,
+  getWithheldToggles,
   specWithholdsUserToggles,
 } from './models';
 
@@ -104,10 +106,37 @@ describe('model spec defaults vs. explicit user toggles', () => {
       expect(resolveSpecUserToggles(toggles, undefined)).toBe(toggles);
     });
 
+    it('keeps a request key named __proto__ from restoring a dropped toggle', () => {
+      const toggles = JSON.parse(
+        '{"web_search": false, "__proto__": {"web_search": true}}',
+      ) as TEphemeralAgent;
+      const resolved = resolveSpecUserToggles(toggles, hidden({ webSearch: false }));
+      expect(resolved?.web_search).toBeUndefined();
+      expect(Object.getPrototypeOf(resolved)).toBe(Object.prototype);
+    });
+
     it('treats a spec value of false as configured', () => {
       expect(
         resolveSpecUserToggles({ web_search: true }, hidden({ webSearch: false })),
       ).toBeUndefined();
+    });
+  });
+
+  describe('getWithheldToggles', () => {
+    it('lists exactly the toggles a withholding spec configures', () => {
+      const spec = {
+        hideBadgeRow: true,
+        webSearch: true,
+        executeCode: false,
+        mcpServers: ['crm'],
+      } as TModelSpec;
+      expect([...getWithheldToggles(spec)].sort()).toEqual(['execute_code', 'mcp', 'web_search']);
+    });
+
+    it('is empty for an ordinary spec, a withholding spec that configures nothing, or no spec', () => {
+      expect(getWithheldToggles({ webSearch: true } as TModelSpec).size).toBe(0);
+      expect(getWithheldToggles({ hideBadgeRow: true } as TModelSpec).size).toBe(0);
+      expect(getWithheldToggles(undefined).size).toBe(0);
     });
   });
 

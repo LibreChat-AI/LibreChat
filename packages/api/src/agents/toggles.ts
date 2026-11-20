@@ -25,8 +25,8 @@ import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { synthesizeDeferralToolOptions } from '~/agents/deferral';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
+import { classifyChatSelectableMCPServers } from '~/mcp/utils';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
-import { filterChatSelectableMCPServers } from '~/mcp/utils';
 
 /** Tool id equipped for each spec-configurable capability. */
 const TOOL_NAMES: Record<string, string> = {
@@ -66,6 +66,33 @@ export function resolveEphemeralTools(
   return tools;
 }
 
+/** The selection each request body carried before a loader published over it. */
+const requestedMCPSelections = new WeakMap<TEphemeralAgent, string[]>();
+
+/**
+ * Publishes the servers a request actually uses onto its body, where the
+ * instruction path reads them, while keeping the user's own selection for
+ * `withRequestedMCPSelection`: the added pane resolves its spec against what
+ * the user picked, not against the primary spec's pins.
+ */
+export function publishEphemeralMCPServers(requestAgent: TEphemeralAgent, servers: string[]): void {
+  if (Array.isArray(requestAgent.mcp) && !requestedMCPSelections.has(requestAgent)) {
+    requestedMCPSelections.set(requestAgent, requestAgent.mcp);
+  }
+  requestAgent.mcp = servers;
+}
+
+/** The request's toggles with the MCP selection the user sent, before any publish. */
+export function withRequestedMCPSelection(
+  requestAgent: TEphemeralAgent | null | undefined,
+): TEphemeralAgent | undefined {
+  if (requestAgent == null) {
+    return undefined;
+  }
+  const requested = requestedMCPSelections.get(requestAgent);
+  return requested == null ? requestAgent : { ...requestAgent, mcp: requested };
+}
+
 export interface EphemeralMCPServerSources extends ChatSelectableLookup {
   /** The request's MCP picker selection, after spec authority was applied. */
   selected: string[] | null | undefined;
@@ -78,7 +105,9 @@ export interface EphemeralMCPServerSources extends ChatSelectableLookup {
  * selection is narrowed to what the picker may offer and, whenever the request
  * sends one, decides among those servers: an empty selection is a deselection.
  * Spec servers the picker cannot offer were never the user's to deselect, so
- * they stay pinned. One accessibility lookup covers both lists.
+ * they stay pinned. One accessibility lookup covers both lists. When the
+ * catalog cannot be resolved, every spec server stays pinned and the selection
+ * is kept as sent, matching the picker narrowing's own fail-open behavior.
  */
 export async function resolveEphemeralMCPServers({
   selected,
@@ -87,13 +116,15 @@ export async function resolveEphemeralMCPServers({
 }: EphemeralMCPServerSources): Promise<string[]> {
   const requested = Array.isArray(selected) ? selected : undefined;
   const spec = specServers ?? [];
-  const selectable = new Set(
-    await filterChatSelectableMCPServers([...(requested ?? []), ...spec], lookup),
-  );
-  const pinned = spec.filter((server) => !selectable.has(server));
+  const candidates = [...new Set([...(requested ?? []), ...spec])];
+  const classified = await classifyChatSelectableMCPServers(candidates, lookup);
+  if (classified == null) {
+    return [...new Set([...(requested ?? []), ...spec])];
+  }
+  const pinned = spec.filter((server) => !classified.has(server));
   const chosen = resolveSpecMcpServers(
-    requested?.filter((server) => selectable.has(server)),
-    spec.filter((server) => selectable.has(server)),
+    requested?.filter((server) => classified.has(server)),
+    spec.filter((server) => classified.has(server)),
   );
   return [...new Set([...chosen, ...pinned])];
 }
