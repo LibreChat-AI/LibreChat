@@ -4663,13 +4663,8 @@ class AgentClient extends BaseClient {
         canPause: runCanPause,
         sharedStore: GenerationJobManager.isRedis,
         getCheckpointer: () => getAgentCheckpointer(agentsEConfig?.checkpointer),
+        conversationId: this.conversationId,
       });
-      if (!pause.capable) {
-        logger.warn(
-          `[AgentClient] Scheduled run ${this.conversationId} cannot pause here (${pause.missing}): ` +
-            'it runs without the ask-user tool, and a tool that needs approval is refused.',
-        );
-      }
 
       /** Fire-and-forget: boot each selected stateful environment in
        *  parallel with generation so the first execute_code/bash call lands
@@ -5005,11 +5000,7 @@ class AgentClient extends BaseClient {
         // Start the prune alongside graph construction. The all-settled barrier
         // below still guarantees it completes before the graph is exposed or run.
         const shouldPruneCheckpoint =
-          streamId &&
-          this.eventActorInvocationId == null &&
-          runUsesCheckpointer &&
-          // With no checkpointer there is nothing to prune, and the prune would throw.
-          (pause.capable || pause.missing !== 'durable_checkpointer');
+          streamId && this.eventActorInvocationId == null && runUsesCheckpointer && pause.prunes;
         let checkpointPrunePromise = Promise.resolve();
         if (shouldPruneCheckpoint && this.checkpointNamespace !== '') {
           checkpointPrunePromise = deleteAgentCheckpoint(

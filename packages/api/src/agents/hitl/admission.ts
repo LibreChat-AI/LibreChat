@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import {
   Constants,
   isActionTool,
@@ -587,6 +588,27 @@ export function canAgentGraphPause({
 /** What a scheduled run that could pause is missing where it cannot. */
 export type ScheduledPauseGap = 'shared_store' | 'durable_checkpointer';
 
+/** Whether a run keeps its pause and resume wiring, and whether its checkpoints may be pruned. */
+export interface ScheduledPause {
+  /** Passed to `createRun` as `hitlCapable`. */
+  capable: boolean;
+  /**
+   * Checkpoint cleanup may run. It follows the checkpointer, not the wiring: with none there
+   * is nothing to prune and the prune would fail, while a run started without a shared store
+   * still clears what an earlier attempt may have left.
+   */
+  prunes: boolean;
+  missing?: ScheduledPauseGap;
+}
+
+async function pauseGap(
+  sharedStore: boolean,
+  getCheckpointer: () => Promise<unknown>,
+): Promise<ScheduledPauseGap | undefined> {
+  if (!sharedStore) return 'shared_store';
+  if ((await getCheckpointer()) == null) return 'durable_checkpointer';
+}
+
 /**
  * Whether a run keeps its pause and resume wiring.
  *
@@ -601,16 +623,23 @@ export async function resolveScheduledPause({
   canPause,
   sharedStore,
   getCheckpointer,
+  conversationId,
 }: {
   scheduled: boolean;
   canPause: boolean;
   sharedStore: boolean;
   getCheckpointer: () => Promise<unknown>;
-}): Promise<{ capable: true } | { capable: false; missing: ScheduledPauseGap }> {
-  if (!scheduled || !canPause) return { capable: true };
-  if (!sharedStore) return { capable: false, missing: 'shared_store' };
-  if ((await getCheckpointer()) == null) return { capable: false, missing: 'durable_checkpointer' };
-  return { capable: true };
+  /** Names the run in the warning an operator reads. */
+  conversationId?: string;
+}): Promise<ScheduledPause> {
+  if (!scheduled || !canPause) return { capable: true, prunes: true };
+  const missing = await pauseGap(sharedStore, getCheckpointer);
+  if (!missing) return { capable: true, prunes: true };
+  logger.warn(
+    `[resolveScheduledPause] Scheduled run ${conversationId ?? 'unknown'} cannot pause here ` +
+      `(${missing}): it runs without the ask-user tool, and a tool that needs approval is refused.`,
+  );
+  return { capable: false, prunes: missing !== 'durable_checkpointer', missing };
 }
 
 /**

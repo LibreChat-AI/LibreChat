@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import { Constants } from 'librechat-data-provider';
 import { createToolPolicyHook } from '@librechat/agents';
 import type { AgentToolOptions } from 'librechat-data-provider';
@@ -1687,7 +1688,12 @@ describe('bounded approval admission', () => {
 
 describe('resolveScheduledPause', () => {
   const saver = jest.fn(async () => ({}));
-  beforeEach(() => saver.mockClear());
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    saver.mockClear();
+    warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+  });
+  afterEach(() => warn.mockRestore());
 
   it('keeps the wiring of a run that is not scheduled, whatever the deployment has', async () => {
     await expect(
@@ -1697,7 +1703,8 @@ describe('resolveScheduledPause', () => {
         sharedStore: false,
         getCheckpointer: async () => null,
       }),
-    ).resolves.toEqual({ capable: true });
+    ).resolves.toEqual({ capable: true, prunes: true });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('keeps the wiring of a scheduled run that cannot pause, without asking for a checkpointer', async () => {
@@ -1708,23 +1715,28 @@ describe('resolveScheduledPause', () => {
         sharedStore: false,
         getCheckpointer: saver,
       }),
-    ).resolves.toEqual({ capable: true });
+    ).resolves.toEqual({ capable: true, prunes: true });
     expect(saver).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
   });
 
-  it('starts a scheduled run that could pause without the wiring where there is no shared store', async () => {
+  it('starts a scheduled run that could pause without the wiring where there is no shared store, and says so', async () => {
     await expect(
       resolveScheduledPause({
         scheduled: true,
         canPause: true,
         sharedStore: false,
         getCheckpointer: saver,
+        conversationId: 'run-1',
       }),
-    ).resolves.toEqual({ capable: false, missing: 'shared_store' });
+    ).resolves.toEqual({ capable: false, prunes: true, missing: 'shared_store' });
     expect(saver).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('run-1');
+    expect(warn.mock.calls[0][0]).toContain('shared_store');
   });
 
-  it('starts it without the wiring where there is no durable checkpointer', async () => {
+  it('starts it without the wiring where there is no durable checkpointer, and prunes nothing', async () => {
     await expect(
       resolveScheduledPause({
         scheduled: true,
@@ -1732,7 +1744,8 @@ describe('resolveScheduledPause', () => {
         sharedStore: true,
         getCheckpointer: async () => null,
       }),
-    ).resolves.toEqual({ capable: false, missing: 'durable_checkpointer' });
+    ).resolves.toEqual({ capable: false, prunes: false, missing: 'durable_checkpointer' });
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the wiring where the deployment can hold the pause', async () => {
@@ -1743,6 +1756,7 @@ describe('resolveScheduledPause', () => {
         sharedStore: true,
         getCheckpointer: saver,
       }),
-    ).resolves.toEqual({ capable: true });
+    ).resolves.toEqual({ capable: true, prunes: true });
+    expect(warn).not.toHaveBeenCalled();
   });
 });

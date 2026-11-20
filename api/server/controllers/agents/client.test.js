@@ -2452,6 +2452,47 @@ describe('AgentClient - startup telemetry', () => {
     client.parentMessageId = 'scheduled-hitl-parent';
 
     expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+    // A checkpointer may exist without Redis, so what an earlier attempt left is still cleared.
+    expect(mockDeleteAgentCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a scheduled run without pruning where Redis is present and no durable checkpointer is', async () => {
+    mockIsHITLEnabled.mockReturnValue(false);
+    const isRedisSpy = jest.spyOn(GenerationJobManager, 'isRedis', 'get').mockReturnValue(true);
+    mockGetAgentCheckpointer.mockResolvedValueOnce(null);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _isScheduledFire: true,
+        _resumableStreamId: 'scheduled-hitl-no-checkpointer',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        tools: [{ name: 'ask_user_question' }],
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'scheduled-hitl-no-checkpointer';
+    client.responseMessageId = 'scheduled-hitl-no-checkpointer-response';
+    client.parentMessageId = 'scheduled-hitl-no-checkpointer-parent';
+
+    try {
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+      // With no checkpointer there is nothing to prune, and the prune would fail the run.
+      expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+    } finally {
+      isRedisSpy.mockRestore();
+    }
   });
 
   it('includes host-generated background tools in scheduled pause admission', async () => {
