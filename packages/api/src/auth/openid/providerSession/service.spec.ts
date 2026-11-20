@@ -85,6 +85,7 @@ describe('createProviderSessionService', () => {
       getAppConfig,
       getOpenIdClient: jest.fn(),
       getClientId: jest.fn(),
+      storeOpenIDSession: jest.fn(),
       logger: makeLogger(),
     });
 
