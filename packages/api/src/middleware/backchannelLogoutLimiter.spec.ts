@@ -41,4 +41,23 @@ describe('createBackchannelLogoutLimiter', () => {
 
     expect(getConfig).toHaveBeenCalledTimes(1);
   });
+
+  it('counts only rejected deliveries against the limit', async () => {
+    const getConfig = jest.fn().mockResolvedValue({ rateLimit: { windowMs: 60000, max: 2 } });
+    const app = express();
+    app.post(
+      '/',
+      createBackchannelLogoutLimiter({ getConfig, removePorts, limiterCache }),
+      (req, res) => {
+        res.status(req.query.reject === '1' ? 400 : 200).end();
+      },
+    );
+
+    for (let i = 0; i < 5; i++) {
+      await request(app).post('/').expect(200);
+    }
+    await request(app).post('/?reject=1').expect(400);
+    await request(app).post('/?reject=1').expect(400);
+    await request(app).post('/').expect(429);
+  });
 });
