@@ -201,7 +201,7 @@ describe('ChatSessionProvider', () => {
       const { host, write, asked } = createLiveHost();
       const drawn = { pane: 0, reader: [] as Array<TMessage[] | null> };
       function Reader() {
-        drawn.reader.push(useChatSessionMessages('convo-1').messages);
+        drawn.reader.push(useChatSessionMessages('convo-1', 1).messages);
         return null;
       }
       function Pane() {
@@ -231,6 +231,30 @@ describe('ChatSessionProvider', () => {
       expect(mockUseChatHelpers.mock.calls.length).toBe(sessions);
       expect(drawn.reader[drawn.reader.length - 1]).toHaveLength(3);
       expect(drawn.pane).toBe(1);
+    });
+
+    it('has the reader say the same of the pane’s stream as the session does', () => {
+      getDefaultStore().set(isSubmittingFamily(1), true);
+      const { host, asked } = createLiveHost();
+      function Reader() {
+        useChatSessionMessages('convo-1', 1);
+        return null;
+      }
+      render(
+        <ChatHostProvider host={host}>
+          <ChatSessionProvider index={1} conversationId="convo-1">
+            <Reader />
+          </ChatSessionProvider>
+        </ChatHostProvider>,
+      );
+
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: true, messages: false });
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: true, enabled: false });
+      expect(asked).not.toHaveBeenCalledWith(
+        'convo-1',
+        expect.objectContaining({ isStreaming: false }),
+      );
+      getDefaultStore().set(isSubmittingFamily(1), false);
     });
 
     it('still calls a pane given as a function with the messages on every change', () => {
