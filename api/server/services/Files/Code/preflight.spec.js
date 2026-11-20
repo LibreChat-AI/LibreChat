@@ -1,6 +1,7 @@
 const mockRunCodeOutputBatchPreflight = jest.fn();
 const mockPrepareCodeOutputForInspection = jest.fn();
 const mockGetSafeErrorMetadata = jest.fn(() => ({ type: 'Error', status: 404 }));
+const mockReleasePreparedCodeOutputBuffer = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn() },
@@ -9,6 +10,7 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('@librechat/api', () => ({
   preflightCodeOutputBatch: (...args) => mockRunCodeOutputBatchPreflight(...args),
   getSafeErrorMetadata: (...args) => mockGetSafeErrorMetadata(...args),
+  releasePreparedCodeOutputBuffer: (...args) => mockReleasePreparedCodeOutputBuffer(...args),
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -21,11 +23,8 @@ jest.mock('librechat-data-provider', () => ({
   })),
 }));
 
-const mockReleasePreparedCodeOutputBuffer = jest.fn();
-
 jest.mock('./process', () => ({
   prepareCodeOutputForInspection: (...args) => mockPrepareCodeOutputForInspection(...args),
-  releasePreparedCodeOutputBuffer: (...args) => mockReleasePreparedCodeOutputBuffer(...args),
 }));
 
 const { logger } = require('@librechat/data-schemas');

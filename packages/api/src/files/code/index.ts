@@ -1,6 +1,7 @@
 export * from './classify';
 export * from './artifactDelivery';
 export * from './batch';
+export * from './cache';
 export * from './destinations';
 export * from './delete';
 export * from './errors';
