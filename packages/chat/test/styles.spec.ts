@@ -104,6 +104,14 @@ describe('the stylesheets behind the package’s classes', () => {
     expect(app).not.toContain('hide-scrollbar');
   });
 
+  it('finds the code highlight theme in the client package’s stylesheet, not the app’s', () => {
+    const published = classesIn(read(require.resolve('@librechat/client/style.css')));
+    for (const name of ['hljs', 'hljs-keyword', 'hljs-string', 'hljs-comment']) {
+      expect(published).toContain(name);
+      expect(app).not.toContain(name);
+    }
+  });
+
   it('leaves the reserved scrollbar gutter to Tailwind’s own utility', () => {
     expect(named('scrollbar-gutter-stable')).toBe(true);
     expect(app).not.toContain('scrollbar-gutter-stable');

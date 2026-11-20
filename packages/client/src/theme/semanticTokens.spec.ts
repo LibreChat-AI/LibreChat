@@ -705,11 +705,10 @@ describe('syntax highlighting palette', () => {
   });
 
   it('leaves no hard-coded syntax hex behind in the stylesheet', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
+    const syntaxStyles = readFileSync(join(__dirname, 'syntax.css'), 'utf8');
+    const hljsRules = [...syntaxStyles.matchAll(/^\.hljs[^{]*\{([^}]*)\}/gm)].map(
+      (match) => match[1],
     );
-    const hljsRules = [...appStyles.matchAll(/^\.hljs[^{]*\{([^}]*)\}/gm)].map((match) => match[1]);
 
     expect(hljsRules.length).toBeGreaterThan(0);
     expect(hljsRules.filter((body) => /#[0-9a-f]{3,8}|hsla?\(/i.test(body))).toEqual([]);
