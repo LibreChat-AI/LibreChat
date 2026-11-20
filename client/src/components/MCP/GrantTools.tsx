@@ -144,6 +144,16 @@ function currentChoice(
   );
 }
 
+/** Tools by server in one spelling, whatever order they were ticked in. */
+function canonical(tools: Record<string, string[]>): string {
+  return JSON.stringify(
+    Object.entries(tools)
+      .filter(([, names]) => names.length > 0)
+      .map(([serverName, names]): [string, string[]] => [serverName, [...names].sort()])
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
+}
+
 /** The owner's choice from one offer, and the ways to change it. */
 export interface GrantChoice {
   /** The MCP tools ticked, by server. */
@@ -168,6 +178,11 @@ export interface GrantChoice {
   keepsAsking: boolean;
   /** Something is allowed, so there is a grant to confirm. */
   some: boolean;
+  /**
+   * The choice is where the offer starts: nothing ticked, unticked or asked about differently.
+   * With a grant in force, that is the grant itself, so confirming would store nothing new.
+   */
+  pristine: boolean;
   /** What a confirmation sends for this choice. */
   request: Pick<ConfirmScheduleMCPConsent, 'allow' | 'ask' | 'tools' | 'everything'>;
   setEverything: (everything: boolean) => void;
@@ -276,6 +291,14 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
       })
       .filter(([, tools]) => tools.length > 0),
   );
+  const pristine =
+    data != null &&
+    everything === (standing && (data.revision == null ? true : data.everything)) &&
+    keepsAsking &&
+    canonical(choice) === canonical(initialChoice(data)) &&
+    canonical(asking) === canonical(data.asking) &&
+    canonical({ other }) ===
+      canonical({ other: data.tools.allowed.filter((tool) => offeredOther.includes(tool)) });
   return {
     choice,
     ask,
@@ -288,6 +311,7 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
     everything,
     keepsAsking,
     some: everything || chosenCount > 0,
+    pristine,
     // The whole agent names nothing, and says nothing about asking unless the owner stops it:
     // left out, the server keeps what the stored grant asks about. Otherwise `ask` and `tools`
     // are always sent, since left out the server would keep the stored grant's choice of both.

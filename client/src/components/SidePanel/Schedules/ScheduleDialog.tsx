@@ -52,11 +52,14 @@ import {
   useUpdateScheduleMutation,
 } from '~/data-provider';
 import {
+  useScheduleMCPOfferRefresh,
+  useScheduleMCPConsentMutations,
+} from '~/data-provider/Schedules/consent';
+import {
   scheduleMCPErrorMessage,
   scheduleMCPErrorOutcomes,
   scheduleAuthorizationRejected,
 } from './errors';
-import { useScheduleMCPOfferRefresh } from '~/data-provider/Schedules/consent';
 import { useLocalize, useClockFormat, useWeekStart } from '~/hooks';
 import { useChatProjectPicker } from './useScheduleProjects';
 import { VariableEditor } from '~/components/Variables';
@@ -260,7 +263,11 @@ export default function ScheduleDialog({
    * again in the same step that edits it: an edit ends the grant it had.
    */
   const authorizes = schedulesData?.limits.mcpConsent === true;
-  const [authorization, setAuthorization] = useState<Authorization>({ value: null, owed: false });
+  const [authorization, setAuthorization] = useState<Authorization>({
+    value: null,
+    owed: false,
+    unsaved: false,
+  });
   const {
     items: loadedProjectItems,
     namesById: projectNames,
@@ -364,29 +371,33 @@ export default function ScheduleDialog({
     },
   });
 
-  const updateSchedule = useUpdateScheduleMutation({
-    onSuccess: () => {
-      setMCPRecoveryOutcomes([]);
-      showToast({ message: localize('com_ui_schedule_updated'), status: 'success' });
-      onOpenChange(false);
-    },
-    onError: (error) => {
-      setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
-      const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
-      // As on create: the offer the choice was made from is not the one the server holds.
-      const rejected = scheduleAuthorizationRejected(error);
-      if (rejected) refreshOffer();
-      const fallback = status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error';
-      showToast({
-        message:
-          scheduleMCPErrorMessage(error, localize) ??
-          localize(rejected ? 'com_ui_schedule_authorize_changed' : fallback),
-        status: 'error',
-      });
-    },
-  });
+  const updated = () => {
+    setMCPRecoveryOutcomes([]);
+    showToast({ message: localize('com_ui_schedule_updated'), status: 'success' });
+    onOpenChange(false);
+  };
+  const refused = (error: Error) => {
+    setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
+    const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
+    // As on create: the offer the choice was made from is not the one the server holds.
+    const rejected = scheduleAuthorizationRejected(error);
+    if (rejected) refreshOffer();
+    const fallback = status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error';
+    showToast({
+      message:
+        scheduleMCPErrorMessage(error, localize) ??
+        localize(rejected ? 'com_ui_schedule_authorize_changed' : fallback),
+      status: 'error',
+    });
+  };
+  const updateSchedule = useUpdateScheduleMutation({ onSuccess: updated, onError: refused });
+  /**
+   * The schedule's own authorization step, for a save that changes what the schedule may use
+   * and nothing else: an edit with no field is refused, and this is not an edit.
+   */
+  const { confirm: authorize } = useScheduleMCPConsentMutations(schedule?.id ?? '');
 
-  const isLoading = createSchedule.isLoading || updateSchedule.isLoading;
+  const isLoading = createSchedule.isLoading || updateSchedule.isLoading || authorize.isLoading;
 
   /** Whether this submit carries a cadence at all: a pure rename does not, and the
    *  API only validates a cadence it actually receives. Only touched cadence
@@ -428,10 +439,20 @@ export default function ScheduleDialog({
         ...(cadenceTouched ? { cadence } : {}),
         ...(dirtyFields.timezone === true ? { timezone: values.timezone } : {}),
       };
-      // Nothing touched: a field-less PATCH is refused server-side (it would rotate
-      // the schedule's fencing for a request that changes nothing), so just close.
+      // No field touched: a field-less PATCH is refused server-side (it would rotate
+      // the schedule's fencing for a request that changes nothing). A choice that is not the
+      // grant in force is stored through the schedule's authorization step instead, which
+      // leaves the schedule's revision alone. Otherwise there is nothing to save.
       if (Object.keys(payload).length === 0) {
-        onOpenChange(false);
+        if (!(authorizes && authorization.value && authorization.unsaved)) {
+          onOpenChange(false);
+          return;
+        }
+        const { expectedRevision, ...choice } = authorization.value;
+        authorize.mutate(
+          { ...choice, expectedRevision: expectedRevision ?? null },
+          { onSuccess: updated, onError: (error) => refused(error as Error) },
+        );
         return;
       }
       updateSchedule.mutate({
