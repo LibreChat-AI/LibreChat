@@ -25,6 +25,7 @@ const {
   sanitizeGeminiSchema,
   processMCPEnv,
   createAgentMCPTool,
+  reuseMCPAdmission,
   preProcessGraphTokens,
   createMCPReauthenticationPrompt,
   createMCPInitializationOAuthPrompts,
@@ -1090,7 +1091,7 @@ async function createMCPToolImpl({
   const useMissingToolCache = !requestScopedTools;
   const missingToolCacheKey = getMCPConnectionPoolKey(toolKey, capabilityProfile);
 
-  if (serverConfig?.url && !domainAdmitted) {
+  if (serverConfig?.url) {
     const appConfig = await getAppConfig({
       role: user?.role,
       tenantId: user?.tenantId,
@@ -1099,15 +1100,17 @@ async function createMCPToolImpl({
     recoveryPolicy ??= appConfig?.mcpSettings?.catalogRecovery;
     const allowedDomains = appConfig?.mcpSettings?.allowedDomains;
     const allowedAddresses = appConfig?.mcpSettings?.allowedAddresses;
-    const isDomainAllowed = await isEarlyDomainAllowed({
-      serverConfig,
-      user,
-      requestBody,
-      userMCPAuthMap,
-      serverName,
-      allowedDomains,
-      allowedAddresses,
-    });
+    const isDomainAllowed = await reuseMCPAdmission(domainAdmitted, () =>
+      isEarlyDomainAllowed({
+        serverConfig,
+        user,
+        requestBody,
+        userMCPAuthMap,
+        serverName,
+        allowedDomains,
+        allowedAddresses,
+      }),
+    );
     if (!isDomainAllowed) {
       logger.warn('[MCP] Domain no longer allowed; skipping tool creation');
       return undefined;
