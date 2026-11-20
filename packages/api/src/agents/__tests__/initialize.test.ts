@@ -7897,3 +7897,210 @@ describe("initializeAgent: under a schedule's grant", () => {
     expect(tools).toEqual(expect.arrayContaining(selected));
   });
 });
+
+describe('initializeAgent — files the conversation leaves out', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockExtractLibreChatParams.mockReset();
+    mockGetThreadData.mockReset();
+  });
+
+  /** `resendFiles` opens the block that reads the conversation's and the thread's files. */
+  const setup = (...args: Parameters<typeof createMocks>) => {
+    const mocks = createMocks(...args);
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: true,
+      maxContextTokens: undefined,
+      modelOptions: { model: 'test-model' },
+    });
+    return mocks;
+  };
+
+  const kept = { file_id: 'kept-file', filename: 'kept.txt' } as IMongoFile;
+  const left = { file_id: 'left-out-file', filename: 'left.txt' } as IMongoFile;
+  const byId = new Map([
+    [kept.file_id, kept],
+    [left.file_id, left],
+  ]);
+  const lookup = () =>
+    jest
+      .fn()
+      .mockImplementation(async (filter: { file_id: { $in: string[] } }) =>
+        filter.file_id.$in.map((id) => byId.get(id)).filter((entry) => entry != null),
+      );
+  const passThroughRuntimeFilter = () => {
+    const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
+      filterFilesByEndpointRuntimeConfig: jest.Mock;
+    };
+    filterFilesByEndpointRuntimeConfig.mockImplementation(
+      (_req: ServerRequest, { files }: { files: IMongoFile[] }) => files,
+    );
+  };
+
+  it('asks for no tool file the conversation leaves out, and names the list to the caller', async () => {
+    const { agent, req, res, loadTools, db } = setup();
+    agent.tools = [EToolResources.file_search];
+    passThroughRuntimeFilter();
+    (db.getConvoFiles as jest.Mock).mockResolvedValueOnce([kept.file_id, left.file_id]);
+    const getToolFilesByIds = jest
+      .fn()
+      .mockImplementation(async (ids: string[]) =>
+        ids.map((id) => byId.get(id)).filter((entry) => entry != null),
+      );
+    const getConvoExcludedFiles = jest.fn().mockResolvedValue([left.file_id]);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getToolFilesByIds, getFiles: lookup(), getConvoExcludedFiles },
+    );
+
+    expect(getConvoExcludedFiles).toHaveBeenCalledWith('conversation-1');
+    expect(getToolFilesByIds).toHaveBeenCalledWith(
+      [kept.file_id],
+      new Set([EToolResources.file_search]),
+      { userId: 'user-1', tenantId: undefined },
+    );
+    expect(result.excludedFiles).toEqual([left.file_id]);
+  });
+
+  it('does not send a left-out file the request names again', async () => {
+    const { primeResources } = jest.requireMock('../resources') as { primeResources: jest.Mock };
+    const { agent, req, res, loadTools, db } = setup();
+    passThroughRuntimeFilter();
+    const getFiles = lookup();
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        requestFiles: [kept, left],
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getFiles, getConvoExcludedFiles: jest.fn().mockResolvedValue([left.file_id]) },
+    );
+
+    expect(getFiles).toHaveBeenCalledWith(
+      { file_id: { $in: [kept.file_id] }, user: 'user-1' },
+      {},
+      {},
+    );
+    await expect(primeResources.mock.calls[0][0].attachments).resolves.toEqual([kept]);
+  });
+
+  it('leaves the file out of the thread walk that primes code files', async () => {
+    const { agent, req, res, loadTools, db } = setup({ provider: Providers.OPENAI });
+    agent.tools = ['execute_code'];
+    mockGetThreadData.mockReturnValue({
+      messageIds: ['message-2', 'message-1'],
+      fileIds: [kept.file_id, left.file_id],
+    });
+    const getCodeGeneratedFiles = jest.fn().mockResolvedValue([]);
+    const getUserCodeFiles = jest.fn().mockResolvedValue([]);
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        conversationId: 'conversation-1',
+        parentMessageId: 'message-2',
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      {
+        ...db,
+        getMessages: jest
+          .fn()
+          .mockResolvedValue([{ messageId: 'message-2', parentMessageId: 'message-1', files: [] }]),
+        getCodeGeneratedFiles,
+        getUserCodeFiles,
+        getConvoExcludedFiles: jest.fn().mockResolvedValue([left.file_id]),
+      },
+    );
+
+    expect(getCodeGeneratedFiles).toHaveBeenCalledWith('conversation-1', [kept.file_id], {
+      userId: 'user-1',
+      tenantId: undefined,
+    });
+    expect(getUserCodeFiles).toHaveBeenCalledWith([kept.file_id], {
+      userId: 'user-1',
+      tenantId: undefined,
+    });
+  });
+
+  it('takes the list from the conversation the request already loaded, without a query', async () => {
+    const { agent, req, res, loadTools, db } = setup();
+    agent.tools = [EToolResources.file_search];
+    passThroughRuntimeFilter();
+    Object.assign(req, {
+      resolvedConversation: {
+        conversationId: 'conversation-1',
+        files: [kept.file_id, left.file_id],
+        excludedFiles: [left.file_id],
+      },
+    });
+    const getToolFilesByIds = jest.fn().mockResolvedValue([kept]);
+    const getConvoExcludedFiles = jest.fn().mockResolvedValue([]);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getToolFilesByIds, getFiles: lookup(), getConvoExcludedFiles },
+    );
+
+    expect(getConvoExcludedFiles).not.toHaveBeenCalled();
+    expect(db.getConvoFiles).not.toHaveBeenCalled();
+    expect(getToolFilesByIds.mock.calls[0][0]).toEqual([kept.file_id]);
+    expect(result.excludedFiles).toEqual([left.file_id]);
+  });
+
+  it('changes nothing for a conversation that leaves no file out', async () => {
+    const { agent, req, res, loadTools, db } = setup();
+    agent.tools = [EToolResources.file_search];
+    passThroughRuntimeFilter();
+    (db.getConvoFiles as jest.Mock).mockResolvedValueOnce([kept.file_id, left.file_id]);
+    const getToolFilesByIds = jest.fn().mockResolvedValue([kept, left]);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getToolFilesByIds, getFiles: lookup() },
+    );
+
+    expect(getToolFilesByIds.mock.calls[0][0]).toEqual([kept.file_id, left.file_id]);
+    expect(result).not.toHaveProperty('excludedFiles');
+  });
+});

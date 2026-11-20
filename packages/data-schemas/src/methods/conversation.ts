@@ -24,6 +24,7 @@ import type {
   IAgentEventBindingRecord,
   IAgentTriggerDeliveryDocument,
   AppConfig,
+  FileExclusionResult,
   IChatProjectDocument,
   IActiveSubagentThreadLease,
   IConversation,
@@ -35,6 +36,7 @@ import type {
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
 import {
+  MAX_EXCLUDED_FILES,
   MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS,
   MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH,
   MAX_AGENT_EVENT_ACTOR_SKILLS,
@@ -345,6 +347,13 @@ export interface ConversationMethods {
     conversationId: string,
     pinned: boolean,
   ): Promise<IConversation | null>;
+  getConvoExcludedFiles(conversationId: string): Promise<string[]>;
+  setConvoFileExclusion(
+    user: string,
+    conversationId: string,
+    fileIds: string[],
+    excluded: boolean,
+  ): Promise<FileExclusionResult>;
   appendConvoMessageReference(
     user: string,
     conversationId: string,
@@ -2482,6 +2491,9 @@ export function createConversationMethods(
       }
       /* Remembered tool approvals are granted only by a validated resume. */
       delete update.toolApprovalAllows;
+      /* The left-out files change one id at a time through `setConvoFileExclusion`; a save that
+       * carries a copy of the list would put back what another tab just changed. */
+      delete update.excludedFiles;
       stripFields(update, LANE_PRIVATE_FIELDS);
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
@@ -2508,6 +2520,7 @@ export function createConversationMethods(
       delete unsetFields.titleSetByUser;
       delete unsetFields.titleRevision;
       delete unsetFields.toolApprovalAllows;
+      delete unsetFields.excludedFiles;
       stripFields(unsetFields, LANE_PRIVATE_FIELDS);
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
@@ -2990,6 +3003,77 @@ export function createConversationMethods(
     } catch (error) {
       logger.error('[setConvoPinned] Error updating pinned state', error);
       throw new Error('Error updating pinned state');
+    }
+  }
+
+  /** The file ids a conversation leaves out of later turns; none for one that is not stored. */
+  async function getConvoExcludedFiles(conversationId: string): Promise<string[]> {
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      const conversation = await Conversation.findOne(
+        { conversationId },
+        'excludedFiles',
+      ).lean<IConversation>();
+      return conversation?.excludedFiles ?? [];
+    } catch (error) {
+      logger.error('[getConvoExcludedFiles] Error getting excluded files', error);
+      throw new Error('Error getting excluded files');
+    }
+  }
+
+  /**
+   * Leaves files out of a conversation's later turns, or takes them back in. One direction per
+   * call, so each is a single atomic array update and two tabs changing different files cannot
+   * overwrite each other. `timestamps: false` because choosing files is not activity and must
+   * not reorder the sidebar.
+   *
+   * The list is bounded: an exclusion that would carry it past `MAX_EXCLUDED_FILES` matches no
+   * document. The bound is on the list as it would be afterwards, so ids that are on it already
+   * take no room and repeating a change that landed succeeds again. Only when nothing matched is
+   * the conversation read again, to tell a full list from one that is not this user's or does
+   * not exist.
+   */
+  async function setConvoFileExclusion(
+    user: string,
+    conversationId: string,
+    fileIds: string[],
+    excluded: boolean,
+  ): Promise<FileExclusionResult> {
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      const options = { new: true, timestamps: false, projection: 'excludedFiles' };
+      if (!excluded) {
+        const updated = await Conversation.findOneAndUpdate(
+          { conversationId, user },
+          { $pull: { excludedFiles: { $in: fileIds } } },
+          options,
+        ).lean<IConversation>();
+        return updated == null
+          ? { ok: false, error: { code: 'not_found' } }
+          : { ok: true, value: updated.excludedFiles ?? [] };
+      }
+      const updated = await Conversation.findOneAndUpdate(
+        {
+          conversationId,
+          user,
+          $expr: {
+            $lte: [
+              { $size: { $setUnion: [{ $ifNull: ['$excludedFiles', []] }, fileIds] } },
+              MAX_EXCLUDED_FILES,
+            ],
+          },
+        },
+        { $addToSet: { excludedFiles: { $each: fileIds } } },
+        options,
+      ).lean<IConversation>();
+      if (updated != null) {
+        return { ok: true, value: updated.excludedFiles ?? [] };
+      }
+      const exists = await Conversation.exists({ conversationId, user });
+      return { ok: false, error: { code: exists == null ? 'not_found' : 'limit_exceeded' } };
+    } catch (error) {
+      logger.error('[setConvoFileExclusion] Error updating excluded files', error);
+      throw new Error('Error updating excluded files');
     }
   }
 
@@ -4666,6 +4750,8 @@ export function createConversationMethods(
     stampForcedRetention,
     saveConvo,
     setConvoPinned,
+    getConvoExcludedFiles,
+    setConvoFileExclusion,
     appendConvoMessageReference,
     getConvoCodeEnvironmentDecision,
     addConvoToolApprovalAllows,

@@ -653,6 +653,7 @@ const executeResponse = async (envelope, { req, res }) => {
       const dbMethods = {
         getProjectFiles: db.getProjectFiles,
         getConvoFiles: db.getConvoFiles,
+        getConvoExcludedFiles: db.getConvoExcludedFiles,
         getFiles: db.getFiles,
         filterFilesByAgentAccess: filterFilesByRemoteAgentAccess,
         getUserKey: db.getUserKey,
