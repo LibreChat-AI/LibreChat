@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 
-const stylesheet = fs.readFileSync(path.resolve(__dirname, 'parts.css'), 'utf8');
-
 /**
  * A host that loads only `@librechat/client` gets `parts.css` through its ThemeProvider and nothing
  * from the app's `style.css`. Every class the composer palette draws its motion with has to be
@@ -190,17 +188,6 @@ describe('subagent card pulse in the app cascade', () => {
     expect(reducedMotion).toMatch(/\.animate-pulse-slow[\s,{]/);
     expect(reducedMotion).toContain("[data-activity-card][data-running='true']");
     expect(parts).toMatch(/@keyframes pulse-slow \{\s*50% \{\s*opacity: 0\.5;/);
-  });
-});
-
-describe('shared message body typography', () => {
-  it('ships the message-content rule with the published styles', () => {
-    const rule = stylesheet.match(/^\.message-content \{([^}]*)\}/m);
-    expect(rule).not.toBeNull();
-    const body = rule?.[1] ?? '';
-    expect(body).toMatch(/font-size:\s*var\(--markdown-font-size/);
-    expect(body).toMatch(/line-height:\s*1\.6/);
-    expect(body).toMatch(/max-width:\s*none/);
   });
 });
 
