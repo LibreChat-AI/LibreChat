@@ -78,7 +78,6 @@ export const fullMimeTypesList = [
   'image/svg',
   'image/svg+xml',
   'message/rfc822',
-  'application/vnd.ms-outlook',
   // Video formats
   'video/mp4',
   'video/avi',
@@ -370,8 +369,8 @@ export const supportedMimeTypes = [
   /^image\/(svg|svg\+xml)$/,
   /** .eml email files */
   /^message\/rfc822$/,
-  /** .msg Outlook email files */
-  /^application\/vnd\.ms-outlook$/,
+  /* .msg (application/vnd.ms-outlook) is deliberately absent: it is an OLE2 binary with no
+   * built-in extractor, so it is inferable but only accepted where an operator opts in. */
 ];
 
 export const codeInterpreterMimeTypes = [
