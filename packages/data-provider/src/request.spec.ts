@@ -183,26 +183,29 @@ describe('refresh failure classification and auth generation', () => {
     ).toBe('unavailable');
   });
 
-  it('classifies a 503 without the code as denied', () => {
-    expect(request.classifyRefreshFailure({ response: { status: 503, data: {} } })).toBe('denied');
-  });
-
-  it('classifies a network error (no response) as denied', () => {
-    expect(request.classifyRefreshFailure(new Error('Network Error'))).toBe('denied');
-  });
-
-  it('classifies a timeout/abort (no response) as denied', () => {
-    expect(request.classifyRefreshFailure({ code: 'ECONNABORTED', message: 'timeout' })).toBe(
-      'denied',
+  it('classifies a 503 without the code as unavailable', () => {
+    expect(request.classifyRefreshFailure({ response: { status: 503, data: {} } })).toBe(
+      'unavailable',
     );
   });
 
-  it.each([500, 502, 504, 408, 429, 400, 401, 403])(
-    'classifies a %s response as denied',
-    (status) => {
-      expect(request.classifyRefreshFailure({ response: { status } })).toBe('denied');
-    },
-  );
+  it('classifies a network error (no response) as unavailable', () => {
+    expect(request.classifyRefreshFailure(new Error('Network Error'))).toBe('unavailable');
+  });
+
+  it('classifies a timeout/abort (no response) as unavailable', () => {
+    expect(request.classifyRefreshFailure({ code: 'ECONNABORTED', message: 'timeout' })).toBe(
+      'unavailable',
+    );
+  });
+
+  it.each([500, 502, 504, 429])('classifies a %s response as unavailable', (status) => {
+    expect(request.classifyRefreshFailure({ response: { status } })).toBe('unavailable');
+  });
+
+  it.each([400, 401, 403, 404, 408])('classifies a %s response as denied', (status) => {
+    expect(request.classifyRefreshFailure({ response: { status } })).toBe('denied');
+  });
 
   it('starts at generation 0 and advances by one per call', () => {
     expect(request.getAuthGeneration()).toBe(0);
@@ -237,5 +240,9 @@ describe('isAuthSessionUnavailableError', () => {
 
   it('does not recognize a network error', () => {
     expect(request.isAuthSessionUnavailableError(new Error('Network Error'))).toBe(false);
+  });
+
+  it('does not recognize a 500 on the request itself', () => {
+    expect(request.isAuthSessionUnavailableError({ response: { status: 500 } })).toBe(false);
   });
 });

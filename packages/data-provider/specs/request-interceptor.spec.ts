@@ -81,6 +81,15 @@ function createJwt(expiresAtMs: number) {
   return `header.${payload}.signature`;
 }
 
+/** Refresh failures that tell the session check did not complete: the session stays. */
+const unavailableRefreshFailures: Array<[string, (config: InternalAxiosRequestConfig) => unknown]> =
+  [
+    ['500', (config) => ({ response: { status: 500, data: {} }, config })],
+    ['502', (config) => ({ response: { status: 502, data: {} }, config })],
+    ['429', (config) => ({ response: { status: 429, data: {} }, config })],
+    ['network error', () => new Error('Network Error')],
+  ];
+
 beforeAll(async () => {
   originalAdapter = axios.defaults.adapter;
   axios.defaults.adapter = mockAdapter;
@@ -975,7 +984,75 @@ describe('axios 401 interceptor — temporary session-check unavailability', () 
     expect(unavailableEvents).toHaveLength(1);
   });
 
-  it('redirects to login when the refresh request has no response (network error), same as on dev', async () => {
+  it.each(unavailableRefreshFailures)(
+    'keeps the session and marks the error as unavailable when refresh fails with a %s',
+    async (_label, createFailure) => {
+      expect.assertions(4);
+      setTokenHeader('expired-token');
+      const hrefWrites = setTrackedWindowLocation({
+        href: 'http://localhost/c/race',
+        pathname: '/c/race',
+        search: '',
+        hash: '',
+      } as Partial<Location>);
+      const startingGeneration = dataRequest.getAuthGeneration();
+      const unavailableEvents: Event[] = [];
+      const listener = (event: Event) => unavailableEvents.push(event);
+      window.addEventListener('authSessionUnavailable', listener);
+
+      mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+        if (config.url?.includes('/api/auth/refresh') === true) {
+          return Promise.reject(createFailure(config));
+        }
+        return create401Error(config);
+      });
+
+      let caughtError: unknown;
+      await axios.get('/api/messages').catch((caught) => {
+        caughtError = caught;
+      });
+      window.removeEventListener('authSessionUnavailable', listener);
+
+      expect(hrefWrites).toHaveLength(0);
+      expect(unavailableEvents).toHaveLength(1);
+      expect(dataRequest.isAuthSessionUnavailableError(caughtError)).toBe(true);
+      expect(dataRequest.getAuthGeneration()).toBe(startingGeneration);
+    },
+  );
+
+  it.each(unavailableRefreshFailures)(
+    'keeps the session for an authenticated fetch when refresh fails with a %s',
+    async (_label, createFailure) => {
+      expect.assertions(3);
+      setTokenHeader('expired-token');
+      const hrefWrites = setTrackedWindowLocation({
+        href: 'http://localhost/c/race',
+        pathname: '/c/race',
+        search: '',
+        hash: '',
+      } as Partial<Location>);
+      const unavailableEvents: Event[] = [];
+      const listener = (event: Event) => unavailableEvents.push(event);
+      window.addEventListener('authSessionUnavailable', listener);
+
+      mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) =>
+        Promise.reject(createFailure(config)),
+      );
+      const fetchSpy = jest
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(null, { status: 401 }));
+
+      const response = await dataRequest.authenticatedFetch('/api/files');
+      window.removeEventListener('authSessionUnavailable', listener);
+      fetchSpy.mockRestore();
+
+      expect(hrefWrites).toHaveLength(0);
+      expect(unavailableEvents).toHaveLength(1);
+      expect(dataRequest.isAuthSessionUnavailableError(response)).toBe(true);
+    },
+  );
+
+  it('redirects to login when refresh fails with a 403', async () => {
     expect.assertions(1);
     setTokenHeader('expired-token');
     const hrefWrites = setTrackedWindowLocation({
@@ -987,7 +1064,7 @@ describe('axios 401 interceptor — temporary session-check unavailability', () 
 
     mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
       if (config.url?.includes('/api/auth/refresh') === true) {
-        return Promise.reject(new Error('Network Error'));
+        return Promise.reject({ response: { status: 403, data: {} }, config });
       }
       return create401Error(config);
     });
@@ -1321,7 +1398,7 @@ describe('proactive refresh — failure handling before a request is sent', () =
     expect(hrefWrites).toHaveLength(0);
   });
 
-  it('treats a refresh rejection with no error shape as a network failure, not a denial', async () => {
+  it('treats a refresh rejection with no error shape as unavailable, not a denial', async () => {
     expect.assertions(2);
     setTokenHeader(createJwt(Date.now() + 60_000));
     const hrefWrites = setTrackedWindowLocation({
@@ -1411,7 +1488,74 @@ describe('proactive refresh — failure handling before a request is sent', () =
     expect(unavailableEvents).toHaveLength(1);
   });
 
-  it('keeps the old token without redirecting when a proactive refresh hits a network error', async () => {
+  it.each(unavailableRefreshFailures)(
+    'keeps the old token and dispatches the unavailable event when a proactive refresh fails with a %s',
+    async (_label, createFailure) => {
+      expect.assertions(5);
+      const oldToken = createJwt(Date.now() + 60_000);
+      setTokenHeader(oldToken);
+      const hrefWrites = setTrackedWindowLocation({
+        href: 'http://localhost/c/race',
+        pathname: '/c/race',
+        search: '',
+        hash: '',
+      } as Partial<Location>);
+      const startingGeneration = dataRequest.getAuthGeneration();
+      const unavailableEvents: Event[] = [];
+      const listener = (event: Event) => unavailableEvents.push(event);
+      window.addEventListener('authSessionUnavailable', listener);
+
+      mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+        if (config.url?.includes('/api/auth/refresh') === true) {
+          return Promise.reject(createFailure(config));
+        }
+        return createAdapterResponse(config, { ok: true });
+      });
+
+      const response = await axios.get('/api/messages');
+      window.removeEventListener('authSessionUnavailable', listener);
+
+      expect(response.data).toEqual({ ok: true });
+      expect(getCallsForUrl('/api/messages')[0][0].headers?.Authorization).toBe(
+        `Bearer ${oldToken}`,
+      );
+      expect(hrefWrites).toHaveLength(0);
+      expect(unavailableEvents).toHaveLength(1);
+      expect(dataRequest.getAuthGeneration()).toBe(startingGeneration);
+    },
+  );
+
+  it.each(unavailableRefreshFailures)(
+    'sends an authenticated fetch with the old token when a proactive refresh fails with a %s',
+    async (_label, createFailure) => {
+      expect.assertions(3);
+      const oldToken = createJwt(Date.now() + 60_000);
+      setTokenHeader(oldToken);
+      const hrefWrites = setTrackedWindowLocation({
+        href: 'http://localhost/c/race',
+        pathname: '/c/race',
+        search: '',
+        hash: '',
+      } as Partial<Location>);
+
+      mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) =>
+        Promise.reject(createFailure(config)),
+      );
+      const fetchSpy = jest
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(null, { status: 200 }));
+
+      const response = await dataRequest.authenticatedFetch('/api/files');
+      const sentHeaders = new Headers(fetchSpy.mock.calls[0][1]?.headers);
+      fetchSpy.mockRestore();
+
+      expect(response.status).toBe(200);
+      expect(sentHeaders.get('Authorization')).toBe(`Bearer ${oldToken}`);
+      expect(hrefWrites).toHaveLength(0);
+    },
+  );
+
+  it('ends the session when a proactive refresh gets a 403', async () => {
     expect.assertions(2);
     setTokenHeader(createJwt(Date.now() + 60_000));
     const hrefWrites = setTrackedWindowLocation({
@@ -1423,15 +1567,14 @@ describe('proactive refresh — failure handling before a request is sent', () =
 
     mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
       if (config.url?.includes('/api/auth/refresh') === true) {
-        return Promise.reject(new Error('Network Error'));
+        return Promise.reject({ response: { status: 403, data: {} }, config });
       }
       return createAdapterResponse(config, { ok: true });
     });
 
-    const response = await axios.get('/api/messages');
+    await expect(axios.get('/api/messages')).rejects.toMatchObject({ code: 'AUTH_SESSION_ENDED' });
 
-    expect(response.data).toEqual({ ok: true });
-    expect(hrefWrites).toHaveLength(0);
+    expect(hrefWrites).toEqual(['/login?redirect_to=%2Fc%2Frace']);
   });
 
   it('joins one proactive refresh across concurrent requests and redirects only once when it is denied', async () => {
