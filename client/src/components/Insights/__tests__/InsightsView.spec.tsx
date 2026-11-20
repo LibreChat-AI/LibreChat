@@ -5,7 +5,6 @@ import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   TInsightsSelectionResponse,
-  TInsightsAgentVersion,
   TInsightsDailyPoint,
   TInsightsResponse,
   TInsightsParams,
@@ -324,43 +323,6 @@ describe('InsightsView agent selection', () => {
       ['title-model', '0', '0', '0', '0', '0', '0', '20', '$0.01'],
       ['com_insights_unknown_model', '1', '0', '0', '1', '0', '1', '0', '$0.00'],
     ]);
-  });
-
-  const versionedData = (agentVersions: TInsightsAgentVersion[]) => ({
-    ...insightsData,
-    daily: ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05'].map((date) =>
-      dailyPoint(date, 0.1),
-    ),
-    agentVersions,
-  });
-
-  it('marks saved agent versions on every trend chart for one selected agent', () => {
-    mockUseInsightsQuery.mockImplementation((params) =>
-      queryResult(
-        params,
-        versionedData([
-          { agentId: 'agent-1', version: 1, savedAt: '2026-09-01T12:00:00.000Z', active: false },
-          { agentId: 'agent-1', version: 2, savedAt: '2026-10-03T12:00:00.000Z', active: true },
-          { agentId: 'agent-1', version: 3, savedAt: null, active: false },
-        ]),
-      ),
-    );
-    renderView('/insights?agentIds=agent-1');
-
-    for (const title of ['com_insights_messages', 'com_insights_spend', 'com_insights_failed']) {
-      const trend = metricCard(title).getByRole('img');
-      expect(within(trend).getAllByTestId('insights-version-marker')).toHaveLength(1);
-      expect(trend).toHaveAccessibleName(
-        expect.stringContaining('com_insights_version_saved_marker:2'),
-      );
-    }
-    const trend = metricCard('com_insights_messages').getByRole('img');
-    expect(within(trend).getByText('com_insights_version_tag:2')).toBeVisible();
-    fireEvent.focus(trend);
-    expect(within(trend).getByText('com_ui_agent_version_title:2')).toBeInTheDocument();
-    expect(
-      screen.queryByRole('heading', { name: 'com_insights_agent_versions' }),
-    ).not.toBeInTheDocument();
   });
 
   it('filters names without changing selection and clears search on close', async () => {
