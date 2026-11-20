@@ -1,6 +1,6 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { EndpointTokenConfig } from '~/types';
-import { getModelMaxTokens, findMatchingPattern } from './tokens';
+import { getModelMaxTokens, findMatchingPattern, matchModelName } from './tokens';
 
 describe('Bedrock OpenAI context windows', () => {
   const models = [
@@ -538,6 +538,9 @@ describe('GPT-6 and Gemini 4 context defaults', () => {
 
   it('keeps specific keys and unrelated generations distinct', () => {
     expect(getModelMaxTokens('gpt-60-sol', EModelEndpoint.openAI)).toBeUndefined();
+    expect(getModelMaxTokens('gpt-6', EModelEndpoint.bedrock)).toBeUndefined();
+    expect(getModelMaxTokens('gpt-6', EModelEndpoint.google)).toBeUndefined();
+    expect(matchModelName('gpt-6.1-sol', EModelEndpoint.openAI)).toBe('gpt-6-sol');
     expect(getModelMaxTokens('gemini-40-neon', EModelEndpoint.google)).toBe(30720);
     expect(getModelMaxTokens('gemini-3', EModelEndpoint.google)).toBe(1000000);
     expect(
