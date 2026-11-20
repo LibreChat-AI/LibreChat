@@ -93,30 +93,22 @@ type AuthRecoveryState = {
 
 type RefreshFailureClassification = 'unavailable' | 'denied';
 
-/** Only a 503 carrying the session-check-unavailable code is a temporary failure the server
- *  itself distinguished from a denial; every other failure (network error, timeout, other
- *  5xx/4xx) is a denial, since the client cannot otherwise tell a down check from an ended one. */
+/** A refresh failure ends the session only when the server answers with a 4xx other than 429,
+ *  because that answer is about the session itself. A 5xx, a 429, or a failure without a response
+ *  (network error, timeout) tells that the check did not complete, so the session stays. The
+ *  proactive and the reactive refresh paths both use this classification. */
 const classifyRefreshFailure = (error: unknown): RefreshFailureClassification => {
+  const status = (error as { response?: { status?: unknown } } | undefined)?.response?.status;
+  const isDenial = typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+  return isDenial ? 'denied' : 'unavailable';
+};
+
+/** The 503 that the refresh endpoint sends when it cannot complete the session check. */
+const isSessionCheckUnavailableResponse = (error: unknown): boolean => {
   const response = (error as { response?: { status?: number; data?: unknown } } | undefined)
     ?.response;
   const code = (response?.data as { code?: unknown } | undefined)?.code;
-  return response?.status === 503 && code === AUTH_SESSION_CHECK_UNAVAILABLE
-    ? 'unavailable'
-    : 'denied';
-};
-
-type ProactiveRefreshFailureClassification = RefreshFailureClassification | 'network';
-
-/** Narrows the proactive path's handling of a rejected refresh beyond `classifyRefreshFailure`'s
- *  binary split: a network error or timeout carries no `response` at all, so it is told apart
- *  from an actual denial without re-deriving the unavailable check. */
-const classifyProactiveRefreshFailure = (error: unknown): ProactiveRefreshFailureClassification => {
-  const classification = classifyRefreshFailure(error);
-  if (classification === 'unavailable') {
-    return 'unavailable';
-  }
-  const hasResponse = (error as { response?: unknown } | undefined)?.response != null;
-  return hasResponse ? 'denied' : 'network';
+  return response?.status === 503 && code === AUTH_SESSION_CHECK_UNAVAILABLE;
 };
 
 const AUTH_SESSION_UNAVAILABLE_MARKER = '__authSessionUnavailable';
@@ -133,9 +125,10 @@ const markAuthSessionUnavailable = <T>(target: T): T => {
 };
 
 /** True for an error the interceptor marked while classifying its own refresh failure as
- *  unavailable, or for a raw unavailable response passed in directly. */
+ *  unavailable, or for a raw session-check-unavailable response passed in directly. Other
+ *  failures of the request itself are not refresh failures, so they do not count. */
 const isAuthSessionUnavailableError = (error: unknown): boolean =>
-  classifyRefreshFailure(error) === 'unavailable' ||
+  isSessionCheckUnavailableResponse(error) ||
   (error != null &&
     typeof error === 'object' &&
     (error as MarkedUnavailable)[AUTH_SESSION_UNAVAILABLE_MARKER] === true);
@@ -502,30 +495,25 @@ class AuthSessionEndedError extends Error {
   }
 }
 
-/** Mirrors the reactive 401 path's handling of a rejected refresh for the proactive path, which
- *  has no failed request of its own to reject: a 503 AUTH_SESSION_CHECK_UNAVAILABLE still
- *  surfaces the event, and a network error or timeout keeps the old token, since neither says
- *  the session has ended. Every other denial throws `AuthSessionEndedError` so the pending
- *  request is never sent with the invalidated bearer — whether or not the generation still
- *  matches, since a request that only joined the denied flight must be denied too — unless a
- *  newer login already replaced that bearer, in which case the request continues with the new
- *  token instead. advanceAuthGeneration()/redirectToLoginOnce() stay guarded by the generation
- *  check so only the flight that first discovers the denial redirects. */
+/** Handles a rejected refresh for the proactive path, which has no failed request of its own to
+ *  reject. It uses the same classification as the reactive 401 path: an unavailable check
+ *  dispatches the unavailable event and keeps the old token, which is still valid. A denial throws
+ *  `AuthSessionEndedError` so the pending request is never sent with the invalidated bearer —
+ *  whether or not the generation still matches, since a request that only joined the denied
+ *  flight must be denied too — unless a newer login already replaced that bearer, in which case
+ *  the request continues with the new token instead. advanceAuthGeneration()/redirectToLoginOnce()
+ *  stay guarded by the generation check so only the flight that first discovers the denial
+ *  redirects. */
 const handleProactiveRefreshFailure = (
   error: unknown,
   requestGeneration: number,
   tokenAtStart: string | null,
 ): string | null => {
   const generationMatches = getAuthGeneration() === requestGeneration;
-  const classification = classifyProactiveRefreshFailure(error);
-
-  if (classification === 'unavailable') {
+  if (classifyRefreshFailure(error) === 'unavailable') {
     if (generationMatches) {
       dispatchAuthUnavailableEvent();
     }
-    return null;
-  }
-  if (classification === 'network') {
     return null;
   }
 

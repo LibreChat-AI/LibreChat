@@ -1289,10 +1289,10 @@ describe('AuthContextProvider: read-aloud cache at every session end', () => {
     expect(getCachedTTSAudio('departing')).not.toBeUndefined();
   });
 
-  it('empties the cache on a network error, same as on dev', () => {
+  it('keeps the cache when the refresh check fails with a network error', () => {
     renderProviderLive();
     act(() => refreshOptions().onError(new Error('network error')));
-    expect(getCachedTTSAudio('departing')).toBeUndefined();
+    expect(getCachedTTSAudio('departing')).not.toBeUndefined();
   });
 
   it('empties when a refresh returns no session', () => {
@@ -1631,34 +1631,25 @@ describe('AuthContextProvider — session check unavailable', () => {
     ).toBeInTheDocument();
   });
 
-  it('redirects to login on a network error, same as on dev', () => {
+  it.each([
+    ['a network error', new Error('network error')],
+    ['a 500', { response: { status: 500, data: {} } }],
+    ['a 502', { response: { status: 502, data: {} } }],
+    ['a 503 without the unavailable code', { response: { status: 503, data: {} } }],
+    ['a 429', { response: { status: 429, data: {} } }],
+  ])('shows Retry and does not redirect when the refresh check fails with %s', (_label, error) => {
     renderProviderLive();
     const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
       unknown,
       { onError: (error: unknown) => void },
     ];
 
-    act(() => refreshOptions.onError(new Error('network error')));
+    act(() => refreshOptions.onError(error));
 
-    expect(mockNavigate).toHaveBeenCalledWith('/login');
+    expect(mockNavigate).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('redirects to login on a 503 without the unavailable code, same as on dev', () => {
-    renderProviderLive();
-    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
-      unknown,
-      { onError: (error: unknown) => void },
-    ];
-
-    act(() => refreshOptions.onError({ response: { status: 503, data: {} } }));
-
-    expect(mockNavigate).toHaveBeenCalledWith('/login');
-    expect(
-      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole('heading', { name: "We couldn't verify your session" }),
+    ).toBeInTheDocument();
   });
 
   it('still redirects to login for a confirmed denial', () => {
