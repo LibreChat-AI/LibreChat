@@ -129,11 +129,6 @@
       "count": 21
     }
   },
-  "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
