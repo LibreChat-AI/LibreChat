@@ -3,7 +3,9 @@ import {
   restoreExecutionContext,
   toScheduledTokenContext,
   createRemoteExecutionContext,
+  createTriggerExecutionContext,
   createScheduleExecutionContext,
+  getSourceKey,
 } from './context';
 
 const user = { id: 'owner', tenantId: 'tenant' };
@@ -206,4 +208,114 @@ it('names the personal API key that started a remote run, and nothing when there
   expect(createRemoteExecutionContext({ ...base, keyId: undefined }).source).not.toHaveProperty(
     'keyId',
   );
+});
+
+describe('createTriggerExecutionContext', () => {
+  const event = (source: Record<string, unknown>) => ({
+    id: 'event-1',
+    type: 'review.submitted',
+    occurredAt: 1_000,
+    source,
+  });
+  /** A new conversation the trigger host starts for an event the public route accepted. */
+  const fire = (source: Record<string, unknown> = { type: 'remote_api_key', id: 'key-1' }) => ({
+    user,
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'root-agent',
+      clientRequestId: 'trigger_abc',
+      agentTrigger: { version: 1, deliveryId: 'caller-key', event: event(source) },
+    },
+  });
+  /** A later event the trigger host continues a bound conversation with. */
+  const bound = () => ({
+    user,
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'root-agent',
+      conversationId: 'conversation',
+      clientRequestId: 'ignored',
+      agentEventDelivery: {
+        deliveryKey: 'trigger_def',
+        event: event({ type: 'remote_api_key', id: 'key-1' }),
+      },
+    },
+  });
+
+  it('gives a delivery an API key posted that key as its subject, and names the delivery', () => {
+    const context = createTriggerExecutionContext(fire());
+    expect(context).toEqual({
+      principal: { userId: 'owner', tenantId: 'tenant' },
+      agentId: 'root-agent',
+      source: {
+        type: 'trigger',
+        subject: { kind: 'key', id: 'key-1' },
+        delivery: {
+          key: 'trigger_abc',
+          event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+        },
+      },
+      unattended: false,
+    });
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(getSourceKey(context)).toBe('key-1');
+  });
+
+  it('reads a bound continuation the same way, from the delivery it carries', () => {
+    expect(createTriggerExecutionContext(bound())?.source).toEqual({
+      type: 'trigger',
+      subject: { kind: 'key', id: 'key-1' },
+      delivery: {
+        key: 'trigger_def',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+      },
+    });
+  });
+
+  it('keeps the context a schedule occurrence has always had', () => {
+    const req = scheduleFire({ manual: true });
+    expect(createTriggerExecutionContext(req)).toEqual(createScheduleExecutionContext(req));
+    expect(createTriggerExecutionContext(req)?.source.type).toBe('schedule');
+  });
+
+  it('has none for a request that is not a trigger, whatever its body says', () => {
+    expect(createTriggerExecutionContext({ ...fire(), _isAgentTrigger: false })).toBeUndefined();
+    expect(createTriggerExecutionContext({ user, body: fire().body })).toBeUndefined();
+  });
+
+  it('has none for a delivery no key posted', () => {
+    for (const source of [
+      { type: 'internal', id: 'subagent-completion' },
+      { type: 'responses', id: 'response-1' },
+    ])
+      expect(createTriggerExecutionContext(fire(source))).toBeUndefined();
+    expect(
+      createTriggerExecutionContext({ user, _isAgentTrigger: true, body: { agent_id: 'a' } }),
+    ).toBeUndefined();
+  });
+
+  it('refuses a delivery that names a key as its source without identifying it', () => {
+    for (const source of [{ type: 'remote_api_key' }, { type: 'remote_api_key', id: '  ' }])
+      expect(() => createTriggerExecutionContext(fire(source))).toThrow(/API key/);
+    const unnamed = fire();
+    Object.assign(unnamed.body.agentTrigger.event, { id: undefined });
+    expect(() => createTriggerExecutionContext(unnamed)).toThrow(/API key/);
+  });
+});
+
+describe('getSourceKey', () => {
+  it('names the key of a run the remote API started, and none for a schedule or no run', () => {
+    expect(
+      getSourceKey(
+        createRemoteExecutionContext({
+          principal: { userId: 'owner' },
+          protocol: 'responses',
+          background: true,
+          keyId: 'key-2',
+        }),
+      ),
+    ).toBe('key-2');
+    expect(getSourceKey(createScheduleExecutionContext(scheduleFire()))).toBeUndefined();
+    expect(getSourceKey(undefined)).toBeUndefined();
+  });
 });

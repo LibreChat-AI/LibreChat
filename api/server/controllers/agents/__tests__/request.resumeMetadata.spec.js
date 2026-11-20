@@ -299,8 +299,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   logAgentMemorySnapshot: jest.fn(),
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),
-  createScheduleExecutionContext: (...args) =>
-    jest.requireActual('@librechat/api').createScheduleExecutionContext(...args),
+  createTriggerExecutionContext: (...args) =>
+    jest.requireActual('@librechat/api').createTriggerExecutionContext(...args),
   exemptFromConcurrencyLimiter: (...args) => mockExemptFromConcurrencyLimiter(...args),
   toPendingSteer: jest.fn((item) => item),
   promoteDrainedSteers: (...args) =>

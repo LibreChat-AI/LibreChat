@@ -24,6 +24,7 @@ import {
 } from '~/schedules';
 import { getBackgroundResponseWorkerRecord } from '~/agents/responses/worker';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+import { getSourceKey } from '~/agents/authority/context';
 import { getMCPRequestContext } from '~/mcp/request';
 import { checkRemoteAgentAccess } from './service';
 import { checkAccess } from '~/middleware/access';
@@ -70,8 +71,14 @@ export interface AgentKeyMCPGrantHost {
    * and for a run no personal key started.
    */
   prepare: (input: {
-    /** The authenticated request. Its MCP tools are built against this request's context. */
-    req: ApiKeyAuthRequest;
+    /**
+     * The authenticated request. Its MCP tools are built against this request's context. A
+     * request a key authenticated names the key; one the trigger host made for a key's
+     * delivery does not, and the run's context does.
+     */
+    req: Pick<ApiKeyAuthRequest, 'apiKeyId'> & {
+      user?: { id: string; tenantId?: string; role?: string };
+    };
     res?: Parameters<typeof getMCPRequestContext>[1];
     executionContext?: ExecutionContext;
     signal?: AbortSignal;
@@ -212,10 +219,10 @@ export function createAgentKeyMCPGrantHost(deps: {
     handlers,
     execution,
     async prepare({ req, res, executionContext, signal }) {
-      const source = executionContext?.source;
+      const keyId = getSourceKey(executionContext);
       const agentId = executionContext?.agentId;
       const user = req.user;
-      if (source?.type !== 'remote_api' || source.keyId == null || !user) return;
+      if (keyId == null || !user) return;
       signal?.throwIfAborted();
       // Resolved again, fail-closed, and not read from the request: a config that fell back to
       // the deployment's base during an override outage must not read as "unrestricted".
@@ -223,14 +230,13 @@ export function createAgentKeyMCPGrantHost(deps: {
       // A background worker rebuilds the request from its admitted record, which names the key
       // but not what kind it is. One issued to an integration holds no grants, here as on the
       // request that started the run. A key that is gone is refused below with any other.
-      if (req.apiKeyId == null && (await deps.getKey(source.keyId, user.id))?.binding != null)
-        return;
+      if (req.apiKeyId == null && (await deps.getKey(keyId, user.id))?.binding != null) return;
       const context = getMCPRequestContext(req, res);
       // An agent the run cannot name, a request with nowhere to hold the check, or a key the
       // store no longer finds, is not a reason to run unrestricted.
       if (!agentId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
       const identity: AgentKeyMCPIdentity = {
-        keyId: source.keyId,
+        keyId,
         ownerId: user.id,
         tenantId: user.tenantId ?? null,
         agentId,

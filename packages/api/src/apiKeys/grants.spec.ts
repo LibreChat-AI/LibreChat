@@ -15,6 +15,7 @@ import type {
 import type { AgentKeyMCPIdentity, MCPGrantEnrollment } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { Response } from 'express';
+import type { ExecutionContext } from '~/agents/authority/context';
 import type { ApiKeyAuthRequest } from './middleware';
 import type { ServerRequest } from '~/types';
 import {
@@ -26,7 +27,10 @@ import {
   getScheduleMCPExecution,
   bindScheduledMCPInvocation,
 } from '~/schedules/authorization/execution';
-import { createRemoteExecutionContext } from '~/agents/authority/context';
+import {
+  createRemoteExecutionContext,
+  createTriggerExecutionContext,
+} from '~/agents/authority/context';
 import { createAgentKeyMCPGrantHost, getRemoteRunKeyId } from './grants';
 import { getMCPRequestContext } from '~/mcp/request';
 
@@ -167,18 +171,51 @@ function setup(
    * personal key started: a token, or a bound key. `worker` is a background run, whose
    * request was rebuilt from its admitted record and so carries no key of its own.
    */
-  const run = async (agentId = 'agent_a', keyId: string | null = 'key-1', worker = false) => {
-    const req = { user, ...(keyId && !worker && { apiKeyId: keyId }) } as ApiKeyAuthRequest;
-    await host.prepare({
-      req,
-      executionContext: createRemoteExecutionContext({
+  const run = async (agentId = 'agent_a', keyId: string | null = 'key-1', worker = false) =>
+    start(
+      { user, ...(keyId && !worker && { apiKeyId: keyId }) },
+      createRemoteExecutionContext({
         principal: { userId: 'owner', tenantId: 'tenant', role: 'USER' },
         agentId,
         protocol: 'chat.completions',
         background: false,
         ...(keyId && { keyId }),
       }),
-    });
+      agentId,
+    );
+  /**
+   * A run of `agentId` on the chat route, started by a delivery of the trigger engine whose
+   * event `keyId` posted: the request is the trigger host's, so it names no key itself.
+   */
+  const deliver = async (agentId = 'agent_a', keyId = 'key-1') =>
+    start(
+      { user },
+      createTriggerExecutionContext({
+        user,
+        _isAgentTrigger: true,
+        body: {
+          agent_id: agentId,
+          clientRequestId: 'trigger_delivery',
+          agentTrigger: {
+            version: 1,
+            deliveryId: 'delivery-1',
+            event: {
+              id: 'event-1',
+              type: 'review.submitted',
+              occurredAt: 1_000,
+              source: { type: 'remote_api_key', id: keyId },
+            },
+          },
+        },
+      }),
+      agentId,
+    );
+  const start = async (
+    req: Parameters<typeof host.prepare>[0]['req'],
+    executionContext: ExecutionContext | undefined,
+    agentId: string,
+  ) => {
+    await host.prepare({ req, executionContext });
     const context = getMCPRequestContext(req)!;
     const call = async (tool = 'query'): Promise<'unrestricted' | 'authorized'> => {
       const invocation = bindScheduledMCPInvocation(context, agentId, tool);
@@ -201,6 +238,7 @@ function setup(
     identity,
     allow,
     run,
+    deliver,
     findUser,
     getAppConfig,
     getEffectivePermissions,
@@ -270,6 +308,40 @@ it('stops honouring a grant the owner revoked or that ran out', async () => {
   expect(view.revision).not.toBe(granted.revision);
   await again.host.service.revoke(again.identity(), view.revision!);
   await expect((await again.run()).call()).rejects.toMatchObject(refused('consent_revoked'));
+});
+
+describe('a delivery of the trigger engine that an API key posted', () => {
+  it("runs under that key's grant, as a run the key starts through the remote API does", async () => {
+    const s = setup();
+    const ungranted = await s.deliver();
+    await expect(ungranted.call()).rejects.toMatchObject(refused('consent_missing'));
+    await s.allow('agent_a', ['query']);
+    const { call } = await s.deliver();
+    await expect(call()).resolves.toBe('authorized');
+    await expect(call('list')).rejects.toMatchObject(refused('tool_policy_denied'));
+    // The grant is the key's for that agent, and no other key's.
+    await expect((await s.deliver('agent_b')).call()).rejects.toMatchObject(
+      refused('consent_missing'),
+    );
+  });
+
+  it('is left as it was unless the operator asks for grants', async () => {
+    for (const integrations of [null, {}, { mode: 'owner', resources: { warehouse: resource } }]) {
+      const s = setup(integrations);
+      await expect((await s.deliver()).call()).resolves.toBe('unrestricted');
+    }
+  });
+
+  it('reads what kind of key posted it, since the request names none', async () => {
+    const s = setup();
+    // One issued to an integration holds no grants, here as on the remote API.
+    await expect((await s.deliver('agent_a', 'key-bound')).call()).resolves.toBe('unrestricted');
+    expect(s.getKey).toHaveBeenCalledWith('key-bound', 'owner');
+    // A key that is gone is not a reason to run unrestricted.
+    await expect(s.deliver('agent_a', 'key-deleted')).rejects.toMatchObject(
+      refused('binding_mismatch'),
+    );
+  });
 });
 
 it('does not run unrestricted when the key or the agent cannot be established', async () => {
