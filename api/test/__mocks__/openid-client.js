@@ -67,5 +67,8 @@ module.exports = {
   genericGrantRequest: jest
     .fn()
     .mockResolvedValue({ access_token: 'mock_grant_access_token', expires_in: 3600 }),
+  ClientSecretBasic: jest.fn((secret) => ({ kind: 'client_secret_basic', secret })),
+  ClientSecretPost: jest.fn((secret) => ({ kind: 'client_secret_post', secret })),
+  None: jest.fn(() => ({ kind: 'none' })),
   customFetch: Symbol('customFetch'),
 };
