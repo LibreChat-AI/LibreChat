@@ -159,6 +159,7 @@ const {
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
   assertAgentAttachmentLimits,
+  collectTurnHistoricalIds,
   assertAgentAttachmentTopology,
   collectHistoricalAttachmentIds,
   admitSteerAttachmentHistory,
@@ -552,10 +553,11 @@ class AgentClient extends BaseClient {
     const compatibleCurrentAttachments =
       this.getModelBoundAttachmentsForEndpoint(currentAttachments);
     this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      historicalAttachments,
-      currentAttachments,
-    );
+    this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+      historical: historicalAttachments,
+      attachments: currentAttachments,
+      requested: this.options.currentRequestAttachments,
+    });
     const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
     const sharedAttachmentIds = collectFileIds(sharedAttachments);
     const agents = collectReachableAgents([
@@ -2529,10 +2531,11 @@ class AgentClient extends BaseClient {
       endpointsByAgentId,
     });
     this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
-      requestAttachments,
-    );
+    this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+      historical: this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
+      attachments: requestAttachments,
+      requested: this.options.currentRequestAttachments,
+    });
     this.turnSharedAttachmentFiles = sharedAttachmentFiles;
     this.turnAggregateOnlyAttachmentFiles = retainedHistoricalFileContexts;
     this.turnScopedAttachmentsByAgentId = scopedAttachmentMap;
@@ -5624,10 +5627,11 @@ class AgentClient extends BaseClient {
           .filter((file) => !file?.file_id || !checkpointFileIds.has(file.file_id)),
       ];
       this.turnSteerAttachmentHistory = undefined;
-      this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-        resumeContentProjection.checkpointFiles,
-        requestFiles,
-      );
+      this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+        historical: resumeContentProjection.checkpointFiles,
+        attachments: requestFiles,
+        requested: this.options.currentRequestAttachments,
+      });
       const resumeSharedFileIds = collectFileIds(resumeSharedFiles);
       const resumeEndpointsByAgentId = new Map(
         agents

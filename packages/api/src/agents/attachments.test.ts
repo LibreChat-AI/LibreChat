@@ -14,6 +14,8 @@ import {
   createAgentMemoryCallback,
   collectAgentAttachmentStats,
   collectFileIds,
+  collectTurnHistoricalIds,
+  partitionRequestAttachments,
   collectHistoricalAttachmentIds,
   admitSteerAttachmentHistory,
   rollbackSteerAttachmentHistory,
@@ -164,6 +166,87 @@ describe('agent attachment helpers', () => {
         fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
       }),
     ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2, limit: 1 }));
+  });
+
+  it('reads only the files the request named as new, not those primed again beside them', () => {
+    const fresh = { file_id: 'fresh' };
+    const earlier = Array.from({ length: 10 }, (_, index) => ({ file_id: `earlier-${index}` }));
+    const handed = [fresh, ...earlier];
+
+    const { named, primed } = partitionRequestAttachments(handed, [fresh]);
+    /** The replay skips what the turn was already handed, so it names none of them itself. */
+    const historicalFileIds = collectHistoricalAttachmentIds([...primed], named);
+
+    expect(named).toEqual([fresh]);
+    expect(primed).toEqual(earlier);
+    expect(historicalFileIds.size).toBe(10);
+    expect(
+      assertAgentAttachmentLimits({
+        attachments: handed,
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 10 } } },
+      }).attachmentCount,
+    ).toBe(1);
+  });
+
+  it('keeps an earlier file the request names again as new', () => {
+    const first = { file_id: 'first' };
+    const second = { file_id: 'second' };
+
+    const { named, primed } = partitionRequestAttachments(
+      [first, second, null, {}],
+      [second, { file_id: 'gone' }],
+    );
+
+    expect(named).toEqual([second]);
+    expect(primed).toEqual([first]);
+    expect(collectHistoricalAttachmentIds([first, second, ...primed], named)).toEqual(
+      new Set(['first']),
+    );
+  });
+
+  it('works out the earlier files the same way wherever a turn asks', () => {
+    const fresh = { file_id: 'fresh' };
+    const earlier = [{ file_id: 'earlier-0' }, { file_id: 'earlier-1' }];
+    const handed = [fresh, ...earlier];
+    const ids = new Set(['earlier-0', 'earlier-1']);
+
+    /** The replay knows none of them: it skips what the turn was already handed. */
+    expect(
+      collectTurnHistoricalIds({ historical: [], attachments: handed, requested: [fresh] }),
+    ).toEqual(ids);
+    /** The final admission and a resume know all of them from the stored history. */
+    expect(
+      collectTurnHistoricalIds({ historical: earlier, attachments: handed, requested: [fresh] }),
+    ).toEqual(ids);
+    expect(
+      collectTurnHistoricalIds({ historical: earlier, attachments: earlier, requested: [] }),
+    ).toEqual(ids);
+    /** A request that names an earlier file again makes it new, and a caller that reports
+     *  nothing has every attachment read as named. */
+    expect(
+      collectTurnHistoricalIds({
+        historical: earlier,
+        attachments: handed,
+        requested: [fresh, earlier[0]],
+      }),
+    ).toEqual(new Set(['earlier-1']));
+    expect(
+      collectTurnHistoricalIds({ historical: earlier, attachments: handed, requested: undefined }),
+    ).toEqual(new Set());
+  });
+
+  it('reads a request that named no file as bringing none', () => {
+    const handed = [{ file_id: 'first' }, { file_id: 'second' }];
+
+    expect(partitionRequestAttachments(handed, [])).toEqual({ named: [], primed: handed });
+  });
+
+  it('reads every attachment as named for a caller that does not say which were', () => {
+    const handed = [{ file_id: 'first' }, null, {}];
+
+    expect(partitionRequestAttachments(handed, undefined)).toEqual({ named: handed, primed: [] });
+    expect(partitionRequestAttachments(handed, null)).toEqual({ named: handed, primed: [] });
   });
 
   it('rolls back repeated historical occurrences without excluding a retained current file', () => {
