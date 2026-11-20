@@ -13,18 +13,18 @@ import type {
   InsightsRange,
   TInsightsChurnedUser,
   TInsightsConversation,
+  TInsightsDailyPoint,
   TInsightsModel,
   TInsightsParams,
   TInsightsUser,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import { useAuthContext, useDocumentTitle, useElementSize, useLocalize } from '~/hooks';
 import { clearAgentFilters, shouldRecoverAgentFilters } from './agentFilters';
 import { useGetStartupConfig, useInsightsQuery } from '~/data-provider';
-import { useAuthContext, useDocumentTitle, useLocalize } from '~/hooks';
 import { getVersionDays, tagAnchor, visibleTags } from './versions';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
-import useElementSize from '~/hooks/Generic/useElementSize';
 import { LocalizedDateRangePicker } from '~/components/ui';
 import { getRollingDateRange } from './dateRange';
 import { cn } from '~/utils';
@@ -36,7 +36,18 @@ type VersionMark = { label: string | null; marked: boolean; tag?: string };
 type CustomDateRange = { startDate: Date; endDate: Date };
 
 type KpiCardData = {
-  id: string;
+  id:
+    | 'conversations'
+    | 'users'
+    | 'messages'
+    | 'tokens'
+    | 'responses'
+    | 'spend'
+    | 'completed'
+    | 'failed'
+    | 'interrupted'
+    | 'thumbs-up'
+    | 'thumbs-down';
   title: string;
   description?: string;
   value: number;
@@ -63,19 +74,16 @@ function formatExactValue(value: number, locale: string) {
   return new Intl.NumberFormat(locale).format(value);
 }
 
-function formatSpend(value: number, locale: string) {
+function formatMetric(value: number, locale: string, format?: 'currency', compact = false) {
+  if (format !== 'currency') {
+    return compact ? formatValue(value, locale) : formatExactValue(value, locale);
+  }
+  const subCent = value !== 0 && Math.abs(value) < 0.01;
   return new Intl.NumberFormat(locale, {
     style: 'currency',
     currency: 'USD',
-    ...(value !== 0 && Math.abs(value) < 0.01
-      ? { maximumSignificantDigits: 6 }
-      : { maximumFractionDigits: 4 }),
+    ...(subCent ? { maximumSignificantDigits: 6 } : { maximumFractionDigits: 4 }),
   }).format(value);
-}
-
-function formatMetric(value: number, locale: string, format?: 'currency', compact = false) {
-  if (format === 'currency') return formatSpend(value, locale);
-  return compact ? formatValue(value, locale) : formatExactValue(value, locale);
 }
 
 function formatDate(value: string, locale: string) {
@@ -202,7 +210,7 @@ function Sparkline({
   });
   const markedVersions = points.flatMap((point, index) => {
     const mark = versionMarks?.[index];
-    if (!mark?.marked || !mark.label) return [];
+    if (!mark?.marked || !mark.label || !mark.tag) return [];
     return [
       {
         x: point.x,
@@ -213,7 +221,7 @@ function Sparkline({
     ];
   });
   const shownTags = visibleTags(
-    markedVersions.map(({ position, tag }) => ({ position, text: tag ?? '' })),
+    markedVersions.map(({ position, tag }) => ({ position, text: tag })),
     chartWidth,
   );
 
@@ -278,7 +286,7 @@ function Sparkline({
         ))}
       </svg>
       {markedVersions.map(({ x, position, tag }, index) =>
-        tag && shownTags.has(index) ? (
+        shownTags.has(index) ? (
           <span
             key={x}
             aria-hidden="true"
@@ -431,25 +439,17 @@ function TopUsersTable({
 
 const modelColumns: Array<{
   labelKey: TranslationKeys;
-  value: (row: TInsightsModel, locale: string) => string;
+  value: (row: TInsightsModel) => number;
+  format?: 'currency';
 }> = [
-  { labelKey: 'com_insights_responses', value: (row, l) => formatExactValue(row.responses, l) },
-  {
-    labelKey: 'com_insights_completed',
-    value: (row, l) => formatExactValue(row.completedResponses, l),
-  },
-  { labelKey: 'com_insights_failed', value: (row, l) => formatExactValue(row.failedResponses, l) },
-  {
-    labelKey: 'com_insights_interrupted',
-    value: (row, l) => formatExactValue(row.interruptedResponses, l),
-  },
-  { labelKey: 'com_insights_thumbs_up', value: (row, l) => formatExactValue(row.thumbsUp, l) },
-  { labelKey: 'com_insights_thumbs_down', value: (row, l) => formatExactValue(row.thumbsDown, l) },
-  {
-    labelKey: 'com_insights_usage_tokens',
-    value: (row, l) => formatExactValue(row.usageTokens, l),
-  },
-  { labelKey: 'com_insights_spend', value: (row, l) => formatSpend(row.spendUSD ?? 0, l) },
+  { labelKey: 'com_insights_responses', value: (row) => row.responses },
+  { labelKey: 'com_insights_completed', value: (row) => row.completedResponses },
+  { labelKey: 'com_insights_failed', value: (row) => row.failedResponses },
+  { labelKey: 'com_insights_interrupted', value: (row) => row.interruptedResponses },
+  { labelKey: 'com_insights_thumbs_up', value: (row) => row.thumbsUp },
+  { labelKey: 'com_insights_thumbs_down', value: (row) => row.thumbsDown },
+  { labelKey: 'com_insights_usage_tokens', value: (row) => row.usageTokens },
+  { labelKey: 'com_insights_spend', value: (row) => row.spendUSD ?? 0, format: 'currency' },
 ];
 
 function ModelsTable({
@@ -491,9 +491,9 @@ function ModelsTable({
                       </span>
                     )}
                   </td>
-                  {modelColumns.map(({ labelKey, value }) => (
+                  {modelColumns.map(({ labelKey, value, format }) => (
                     <td key={labelKey} className="px-2 py-3 text-right tabular-nums">
-                      {value(row, locale)}
+                      {formatMetric(value(row), locale, format)}
                     </td>
                   ))}
                 </tr>
@@ -851,96 +851,94 @@ export default function InsightsView() {
     });
   }, [localize, versionDays]);
 
-  const kpiCards = useMemo<KpiCardData[]>(() => {
+  const { kpiCards, outcomeCards, feedbackCards } = useMemo<
+    Record<'kpiCards' | 'outcomeCards' | 'feedbackCards', KpiCardData[]>
+  >(() => {
     if (!data) {
-      return [];
+      return { kpiCards: [], outcomeCards: [], feedbackCards: [] };
     }
-    return [
-      {
-        id: 'conversations',
-        title: localize('com_insights_total_conversations'),
-        description: localize('com_insights_conversations_definition'),
-        value: data.summary.totalConversations,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.conversations })),
-      },
-      {
-        id: 'users',
-        title: localize('com_insights_total_users'),
-        value: data.summary.totalUsers,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.users })),
-      },
-      {
-        id: 'messages',
-        title: localize('com_insights_messages'),
-        value: data.summary.totalMessages,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.messages })),
-      },
-      {
-        id: 'tokens',
-        title: localize('com_insights_total_tokens'),
-        value: data.summary.totalTokens,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.totalTokens })),
-      },
-      {
-        id: 'responses',
-        title: localize('com_insights_responses'),
-        value: data.summary.totalResponses,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.responses })),
-      },
-      {
-        id: 'spend',
-        title: localize('com_insights_spend'),
-        description: localize('com_insights_spend_definition'),
-        value: data.summary.spendUSD ?? 0,
-        format: 'currency',
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.spendUSD ?? 0 })),
-      },
-    ];
-  }, [data, localize]);
-
-  const outcomeCards = useMemo<KpiCardData[]>(() => {
-    if (!data) return [];
-    return [
-      {
-        id: 'completed',
-        title: localize('com_insights_completed'),
-        description: localize('com_insights_completed_definition'),
-        value: data.summary.completedResponses,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.completedResponses })),
-      },
-      {
-        id: 'failed',
-        title: localize('com_insights_failed'),
-        description: localize('com_insights_failed_definition'),
-        value: data.summary.failedResponses,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.failedResponses })),
-      },
-      {
-        id: 'interrupted',
-        title: localize('com_insights_interrupted'),
-        description: localize('com_insights_interrupted_definition'),
-        value: data.summary.interruptedResponses,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.interruptedResponses })),
-      },
-    ];
-  }, [data, localize]);
-
-  const feedbackCards = useMemo<KpiCardData[]>(() => {
-    if (!data) return [];
-    return [
-      {
-        id: 'thumbs-up',
-        title: localize('com_insights_thumbs_up'),
-        value: data.summary.feedback.thumbsUp,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.feedback.thumbsUp })),
-      },
-      {
-        id: 'thumbs-down',
-        title: localize('com_insights_thumbs_down'),
-        value: data.summary.feedback.thumbsDown,
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.feedback.thumbsDown })),
-      },
-    ];
+    const daily = (value: (row: TInsightsDailyPoint) => number) =>
+      data.daily.map((row) => ({ date: row.date, value: value(row) }));
+    return {
+      kpiCards: [
+        {
+          id: 'conversations',
+          title: localize('com_insights_total_conversations'),
+          description: localize('com_insights_conversations_definition'),
+          value: data.summary.totalConversations,
+          sparkline: daily((row) => row.conversations),
+        },
+        {
+          id: 'users',
+          title: localize('com_insights_total_users'),
+          value: data.summary.totalUsers,
+          sparkline: daily((row) => row.users),
+        },
+        {
+          id: 'messages',
+          title: localize('com_insights_messages'),
+          value: data.summary.totalMessages,
+          sparkline: daily((row) => row.messages),
+        },
+        {
+          id: 'tokens',
+          title: localize('com_insights_total_tokens'),
+          value: data.summary.totalTokens,
+          sparkline: daily((row) => row.totalTokens),
+        },
+        {
+          id: 'responses',
+          title: localize('com_insights_responses'),
+          value: data.summary.totalResponses,
+          sparkline: daily((row) => row.responses),
+        },
+        {
+          id: 'spend',
+          title: localize('com_insights_spend'),
+          description: localize('com_insights_spend_definition'),
+          value: data.summary.spendUSD ?? 0,
+          format: 'currency',
+          sparkline: daily((row) => row.spendUSD ?? 0),
+        },
+      ],
+      outcomeCards: [
+        {
+          id: 'completed',
+          title: localize('com_insights_completed'),
+          description: localize('com_insights_completed_definition'),
+          value: data.summary.completedResponses,
+          sparkline: daily((row) => row.completedResponses),
+        },
+        {
+          id: 'failed',
+          title: localize('com_insights_failed'),
+          description: localize('com_insights_failed_definition'),
+          value: data.summary.failedResponses,
+          sparkline: daily((row) => row.failedResponses),
+        },
+        {
+          id: 'interrupted',
+          title: localize('com_insights_interrupted'),
+          description: localize('com_insights_interrupted_definition'),
+          value: data.summary.interruptedResponses,
+          sparkline: daily((row) => row.interruptedResponses),
+        },
+      ],
+      feedbackCards: [
+        {
+          id: 'thumbs-up',
+          title: localize('com_insights_thumbs_up'),
+          value: data.summary.feedback.thumbsUp,
+          sparkline: daily((row) => row.feedback.thumbsUp),
+        },
+        {
+          id: 'thumbs-down',
+          title: localize('com_insights_thumbs_down'),
+          value: data.summary.feedback.thumbsDown,
+          sparkline: daily((row) => row.feedback.thumbsDown),
+        },
+      ],
+    };
   }, [data, localize]);
 
   const feedbackCategories = useMemo(() => {

@@ -96,6 +96,7 @@ jest.mock('~/hooks', () => ({
     },
   useAuthContext: () => ({ user: { id: 'user-1' } }),
   useDocumentTitle: () => undefined,
+  useElementSize: () => ({ ref: jest.fn(), width: 0, height: 0 }),
 }));
 
 jest.mock('react-i18next', () => ({
