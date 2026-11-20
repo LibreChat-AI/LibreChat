@@ -368,6 +368,11 @@ const HALFWIDTH =
   /(?<=[\p{Script=Han}）」』》])[ \t]*([,:;!?])|([,:;!?])(?=[\p{Script=Han}（「『《])/gu;
 /** Source between two text nodes that a reader does not see: emphasis markers and link targets. */
 const INVISIBLE = /^[*_~[\]]*$/;
+/**
+ * One source character, or a whole character reference (`&nbsp;`, `&#32;`) or backslash escape
+ * (`\!`), whose `;` or mark is syntax rather than punctuation and so must never be converted.
+ */
+const RAW_PIECE = /&(?:#\d+|#x[\da-f]+|[a-z][\da-z]*);|\\[!-/:-@[-`{-~]|[\s\S]/gi;
 
 /**
  * Turns ASCII punctuation beside Chinese text into its full-width form, as Chinese prose writes it.
@@ -389,15 +394,22 @@ export function punctuate(markdown, code, source = '') {
     // A bare or `<...>` URL is a link whose text is the address itself.
     if (node.type === 'link' && markdown[start.offset] !== '[') autolink = end.offset;
     if (node.type !== 'text') return;
+    // Only prose counts as copied: a lone `:` after `**label**` is in the English source too.
     const copied =
-      end.offset <= autolink || (node.value.trim() !== '' && source.includes(node.value));
+      end.offset <= autolink || (/\p{L}/u.test(node.value) && source.includes(node.value));
     const gap = last === null ? '\n' : markdown.slice(last, start.offset);
     if (!INVISIBLE.test(gap.replace(/\]\([^\s)]*\)/g, ']'))) {
       visible += '\n';
       offsets.push(-1);
     }
-    for (let at = start.offset; at < end.offset; at += 1) {
-      visible += markdown[at];
+    for (const piece of markdown.slice(start.offset, end.offset).matchAll(RAW_PIECE)) {
+      const at = start.offset + piece.index;
+      if (piece[0].length > 1) {
+        visible += '￼';
+        offsets.push(-1);
+        continue;
+      }
+      visible += piece[0];
       offsets.push(copied ? -1 : at);
     }
     last = end.offset;

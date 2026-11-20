@@ -338,6 +338,20 @@ test('punctuate writes full-width punctuation beside Chinese text', () => {
   assert.equal(punctuate('使用 API,用于测试', 'zh'), '使用 API，用于测试');
 });
 
+test('punctuate converts a lone mark after a label even though the source has it too', () => {
+  const source = '- 🌊 **[Resumable Streams](https://x.y)**:  \n  - Never lose a response';
+  assert.equal(
+    punctuate('- 🌊 **[可恢复流](https://x.y)**:  \n  - 绝不丢失回复', 'zh', source),
+    '- 🌊 **[可恢复流](https://x.y)**：  \n  - 绝不丢失回复',
+  );
+});
+
+test('punctuate keeps character references and backslash escapes intact', () => {
+  assert.equal(punctuate('你好&nbsp;世界!', 'zh'), '你好&nbsp;世界！');
+  assert.equal(punctuate('你好&#32;世界&#x4E2D;好', 'zh'), '你好&#32;世界&#x4E2D;好');
+  assert.equal(punctuate('中文\\!中文', 'zh'), '中文\\!中文');
+});
+
 test('punctuate leaves code, links, HTML, Latin text and copied source text alone', () => {
   const untouched = [
     '- Ollama, groq, Cohere',
