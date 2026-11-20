@@ -64,6 +64,7 @@ const openAIModels = {
   'gpt-5.6': 1050000,
   'gpt-5.6-terra': 1050000,
   'gpt-5.6-luna': 1050000,
+  'gpt-6': 1050000,
   'gpt-6-cyber': 1050000,
   'gpt-6-astra': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'gpt-6-sol': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
@@ -150,7 +151,10 @@ const googleModels = {
   'gemini-3.7-flash': 1048576,
   'gemini-3.8-flash': 1048576,
   /** Shared across input, thinking and output; output is still capped by `maxOutputTokens`. */
+  'gemini-4': 1048576,
   'gemini-4-argon': 1048576,
+  'gemini-4-carbon': 1048576,
+  'gemini-4-neon': 1048576,
   'gemini-4-hydrogen': 1048576,
 };
 
