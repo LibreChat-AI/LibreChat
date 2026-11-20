@@ -4,7 +4,7 @@ import { JSX } from 'react/jsx-runtime';
 import { cx } from 'class-variance-authority';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import type { FocusOutline } from './Focus';
-import { usePortalContainer } from '~/Providers/PortalContext';
+import { usePortalContainer } from '../Providers/PortalContext';
 import { focusOutlineVariants } from './Focus';
 import { cn } from '~/utils';
 

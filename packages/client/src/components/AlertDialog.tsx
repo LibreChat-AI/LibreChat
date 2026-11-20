@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { JSX } from 'react/jsx-runtime';
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
-import { usePortalContainer } from '~/Providers/PortalContext';
+import { usePortalContainer } from '../Providers/PortalContext';
 import { useDialogDepth } from './OriginalDialog';
 import { cn, disabledFillClasses } from '~/utils';
 
