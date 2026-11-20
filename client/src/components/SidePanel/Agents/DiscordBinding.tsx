@@ -26,6 +26,7 @@ import {
   AlertDialogTitle,
   Button,
   ControlCombobox,
+  InfoHoverCard,
   Input,
   Label,
 } from '@librechat/client';
@@ -130,6 +131,11 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
   const installations = guilds.data?.pages.flatMap((page) => page.guilds) ?? [];
   const selected = installations.find((guild) => guild.installationId === target.installationId);
   const guildReady = guilds.isSuccess && !guilds.isFetching;
+  // Background refetches (window focus) must not hide loaded state, so the layout stays put.
+  const noActiveServers =
+    guilds.isSuccess &&
+    !guilds.hasNextPage &&
+    !installations.some((guild) => guild.status === 'active');
   const debounced = useDebounce(target.externalChannelId.trim(), 250);
   const valid = channelSnowflakeSchema.safeParse(debounced).success;
   const invalidChannel =
@@ -292,12 +298,10 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
           </Button>
         </Alert>
       )}
-      {guildReady &&
-        !guilds.hasNextPage &&
-        !installations.some((guild) => guild.status === 'active') && (
-          <Alert variant="warning">{localize('com_ui_discord_binding_empty')}</Alert>
-        )}
-      {guildReady && immutable && !selected && !guilds.hasNextPage && (
+      {noActiveServers && (
+        <Alert variant="warning">{localize('com_ui_discord_binding_empty')}</Alert>
+      )}
+      {guilds.isSuccess && immutable && !selected && !guilds.hasNextPage && (
         <Alert variant="warning">{localize('com_ui_discord_binding_missing')}</Alert>
       )}
       <div>
@@ -333,7 +337,13 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
           portal={Boolean(portalElement)}
           portalElement={portalElement ?? undefined}
           disabled={
-            immutable || busy || uncertain || !enabled || !guildReady || Boolean(confirmation)
+            immutable ||
+            busy ||
+            uncertain ||
+            !enabled ||
+            !guilds.isSuccess ||
+            noActiveServers ||
+            Boolean(confirmation)
           }
           selectPlaceholder={localize('com_ui_select')}
         />
@@ -354,12 +364,17 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
         </Button>
       )}
       <div>
-        <Label htmlFor={`${id}-channel`}>{localize('com_ui_discord_binding_channel')}</Label>
+        <div className="flex items-center gap-1.5">
+          <Label htmlFor={`${id}-channel`}>{localize('com_ui_discord_binding_channel')}</Label>
+          {!immutable && (
+            <InfoHoverCard text={localize('com_ui_discord_binding_channel_help')} icon="info" />
+          )}
+        </div>
         <Input
           id={`${id}-channel`}
           value={target.externalChannelId}
           readOnly={immutable}
-          disabled={busy || uncertain || !enabled || Boolean(confirmation)}
+          disabled={busy || uncertain || !enabled || noActiveServers || Boolean(confirmation)}
           inputMode="numeric"
           maxLength={20}
           autoComplete="off"
@@ -373,7 +388,7 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
           </p>
         )}
         {(!immutable || invalidChannel) && (
-          <p id={`${id}-channel-help`} className="text-text-secondary text-xs">
+          <p id={`${id}-channel-help`} className="sr-only">
             {localize('com_ui_discord_binding_channel_help')}
           </p>
         )}

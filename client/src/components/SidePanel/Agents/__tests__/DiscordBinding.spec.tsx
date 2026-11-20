@@ -182,6 +182,33 @@ test('explains an empty installation list and only offers active guilds for new 
   expect(dataService.getDiscordBinding).not.toHaveBeenCalled();
 });
 
+test('disables both fields and keeps the empty warning through a background refetch', async () => {
+  jest
+    .mocked(dataService.getDiscordGuilds)
+    .mockResolvedValue({ guilds: [{ ...guild, status: 'disconnected' }] });
+  const view = await page(null);
+  expect(await screen.findByText('com_ui_discord_binding_empty')).toBeVisible();
+  expect(screen.getByRole('combobox', { name: 'com_ui_discord_binding_server' })).toBeDisabled();
+  expect(screen.getByLabelText('com_ui_discord_binding_channel')).toBeDisabled();
+  const refetch = deferred<{ guilds: DiscordGuild[] }>();
+  jest.mocked(dataService.getDiscordGuilds).mockReturnValue(refetch.promise);
+  void view.client.refetchQueries();
+  await waitFor(() => expect(dataService.getDiscordGuilds).toHaveBeenCalledTimes(2));
+  expect(screen.getByText('com_ui_discord_binding_empty')).toBeVisible();
+  expect(screen.getByLabelText('com_ui_discord_binding_channel')).toBeDisabled();
+  await act(async () => refetch.resolve({ guilds: [{ ...guild, status: 'disconnected' }] }));
+  expect(screen.getByText('com_ui_discord_binding_empty')).toBeVisible();
+});
+
+test('offers the channel ID help behind an info button and as the field description', async () => {
+  await page(null);
+  const help = await screen.findByRole('button', { name: 'com_ui_discord_binding_channel_help' });
+  expect(help).toBeVisible();
+  expect(screen.getByLabelText('com_ui_discord_binding_channel')).toHaveAccessibleDescription(
+    'com_ui_discord_binding_channel_help',
+  );
+});
+
 test('creates a new binding after selecting a guild and validating a string snowflake', async () => {
   const { user, onClose } = await page(null);
   await target(user);
