@@ -119,7 +119,7 @@ const { checkMigrations } = require('./services/start/migration');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
-const { preloadBackchannelLogoutConfig } = require('./services/ProviderSession');
+const { initializeBackchannelLogoutConfig } = require('./services/ProviderSession');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
 const { getAppConfig, rederiveEndpoints, loadCustomConfig } = require('./services/Config');
@@ -284,7 +284,7 @@ const startServer = async () => {
   );
   app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
   app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
-  await preloadBackchannelLogoutConfig();
+  await initializeBackchannelLogoutConfig();
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
     interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,

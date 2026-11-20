@@ -52,7 +52,7 @@ describe('createProviderSessionService', () => {
     expect(getAppConfig).toHaveBeenCalledTimes(2);
   });
 
-  it('preload logs the failure and does not throw', async () => {
+  it('initialize logs a failed load and rejects, so the server does not start', async () => {
     const loadError = new Error('config store unavailable');
     const getAppConfig = jest.fn().mockRejectedValue(loadError);
     const logger = makeLogger();
@@ -64,11 +64,39 @@ describe('createProviderSessionService', () => {
       logger,
     });
 
-    await expect(service.preloadBackchannelLogoutConfig()).resolves.toBeUndefined();
+    await expect(service.initializeBackchannelLogoutConfig()).rejects.toBe(loadError);
     expect(logger.error).toHaveBeenCalledWith(
-      '[ProviderSession] Startup preload of openidBackchannelLogout config failed',
+      '[ProviderSession] Startup load of openidBackchannelLogout config failed',
       { error: loadError },
     );
+  });
+
+  it('after initialize, off mode authorizes with no config load and no database call', async () => {
+    const getAppConfig = jest
+      .fn()
+      .mockResolvedValueOnce({ registration: { openidBackchannelLogout: { mode: 'off' } } })
+      .mockRejectedValue(new Error('config store unavailable'));
+    const methods = makeMethods();
+    const service = createProviderSessionService({
+      methods,
+      getAppConfig,
+      getOpenIdClient: jest.fn(),
+      getClientId: jest.fn(),
+      logger: makeLogger(),
+    });
+
+    await service.initializeBackchannelLogoutConfig();
+    const authorizer = service.getProviderSessionAuthorizer();
+    const input = {
+      ref: { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'session-1' },
+      expiresAt: new Date('2026-01-01T00:00:00Z'),
+      legacy: false,
+    };
+
+    await expect(authorizer.authorize(input)).resolves.toEqual({ ok: true });
+    await expect(authorizer.authorize(input)).resolves.toEqual({ ok: true });
+    expect(getAppConfig).toHaveBeenCalledTimes(1);
+    expect(methods.authorize).not.toHaveBeenCalled();
   });
 
   describe('getProviderSessionClient', () => {

@@ -151,6 +151,21 @@ describe('Startup readiness wiring', () => {
     }
   });
 
+  it('loads the back-channel logout config before accepting requests in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const [name, contents] of [
+      ['index.js', source],
+      ['experimental.js', experimental],
+    ]) {
+      const initIndex = contents.indexOf('await initializeBackchannelLogoutConfig();');
+      const listenIndex = contents.indexOf('const server = app.listen');
+
+      expect([name, initIndex > -1]).toEqual([name, true]);
+      expect([name, initIndex < listenIndex]).toEqual([name, true]);
+    }
+  });
+
   it('awaits the shared Redis client before startup cache access', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
     const connectDbIndex = source.indexOf('await connectDb();');
