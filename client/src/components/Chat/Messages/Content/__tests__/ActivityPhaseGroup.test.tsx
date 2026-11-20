@@ -8,6 +8,7 @@ import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES, useFailedReveal } from '@librechat/ch
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import ActivityPhaseGroup, { PhaseLabel } from '../ActivityPhaseGroup';
 import { MessageSurfaceContext } from '../../ui/surface';
+import { foldHolds } from '../fold';
 
 const mockUseSmoothStreaming = jest.fn(() => true);
 const mockScheduleLayoutReconcile = jest.fn((_target: HTMLElement | null) => jest.fn());
@@ -581,6 +582,27 @@ describe('ActivityPhaseGroup failure fast path', () => {
 
     expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
     expect(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' })).toBeInTheDocument();
+  });
+
+  /** A closed card has drawn none of its rows, so the document cannot say which calls are in
+   *  it. The card answers for its span, and its header is marked as the way in. */
+  test('answers for the calls in its span and marks its header as the way in', () => {
+    const { container } = render(
+      <ActivityPhaseGroup
+        labelPart={labelPart}
+        hasContent
+        spanParts={[okCall, undefined, failedCall]}
+      >
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    const root = container.querySelector('[data-fold-root]') as HTMLElement;
+    expect(foldHolds(root, 'ok')).toBe(true);
+    expect(foldHolds(root, 'f1')).toBe(true);
+    expect(foldHolds(root, 'elsewhere')).toBe(false);
+    const toggle = root.querySelector('[data-fold-toggle]');
+    expect(toggle).toBe(screen.getByRole('button', { name: LABEL }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 
   test('marks a generated phase with one call as the tool title', () => {

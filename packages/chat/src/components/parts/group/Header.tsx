@@ -49,6 +49,7 @@ export default function ToolGroupHeader({
         onClick={onToggle}
         aria-expanded={expanded}
         aria-label={ariaLabel}
+        data-fold-toggle=""
       >
         <RailGlyph hover={hover}>{glyph}</RailGlyph>
         <span className="tool-status-text min-w-0 truncate font-medium" role="status" title={label}>
