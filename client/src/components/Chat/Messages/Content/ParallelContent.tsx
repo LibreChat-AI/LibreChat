@@ -10,13 +10,14 @@ import {
   lastCursorContentIdx,
 } from '@librechat/chat';
 import type { TMessageContentParts, SearchResultData, TAttachment } from 'librechat-data-provider';
+import type { PartWithIndex } from '@librechat/chat';
 import MemoryArtifacts from './MemoryArtifacts';
 import { cn, getPartKeyIndex } from '~/utils';
 import { SearchContext } from '~/Providers';
 import SiblingHeader from './SiblingHeader';
 import { EmptyText } from './Parts';
 
-export type PartWithIndex = { part: TMessageContentParts; idx: number };
+export type { PartWithIndex };
 
 export type ParallelColumn = {
   agentId: string;

@@ -144,7 +144,8 @@ jest.mock('lucide-react', () => ({
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useMediaQuery: () => false,
-  useLocalize: () => (key: string) => key,
+  /** The tool group reads the localizer from the package, so it delegates to the `~/hooks` mock. */
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
   Button: ({
     children,
     variant: _variant,

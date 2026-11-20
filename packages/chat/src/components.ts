@@ -325,6 +325,11 @@ export {
 } from './components/parts/ToolIcon';
 export type { ToolIconType, ToolIconProps } from './components/parts/ToolIcon';
 export { default as StackedToolIcons } from './components/parts/StackedToolIcons';
+export { default as ToolCallGroup } from './components/parts/ToolCallGroup';
+export type {
+  ToolCallGroupProps,
+  ToolCallGroupExpansionState,
+} from './components/parts/ToolCallGroup';
 export type { StackedToolIconsProps } from './components/parts/StackedToolIcons';
 export { default as FaviconImage } from './components/parts/Favicon';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';

@@ -226,11 +226,6 @@
       "count": 26
     }
   },
-  "client/src/components/Chat/Messages/Content/ToolCallGroup.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/ToolCallInfo.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
