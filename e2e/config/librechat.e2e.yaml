@@ -73,6 +73,7 @@ mcpSettings:
 actions:
   allowedDomains:
     - example.com
+    - example.org
 
 mcpServers:
   e2e-memory:

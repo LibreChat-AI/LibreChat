@@ -18,6 +18,7 @@ const {
   createMCPToolApprovalMetadata,
   GenerationJobManager,
   isActionDomainAllowed,
+  resolveActionDomains,
   buildWebSearchContext,
   buildImageToolContext,
   buildToolClassification,
@@ -623,19 +624,21 @@ async function processRequiredActions(client, requiredActions) {
         // See registerActionTools for the key-shape rationale.
         const toolToAction = new Map();
 
+        const domainResults = await resolveActionDomains(actionSets, {
+          allowedDomains: appConfig?.actions?.allowedDomains,
+          allowedAddresses: appConfig?.actions?.allowedAddresses,
+          domainParser,
+          isActionDomainAllowed,
+        });
+
         for (let actionIndex = 0; actionIndex < actionSets.length; actionIndex++) {
           const action = actionSets[actionIndex];
           const storedAction = storedActions[actionIndex];
-          const domain = await domainParser(action.metadata.domain, true);
+          const { domain, isDomainAllowed } = domainResults[actionIndex];
           const normalizedDomain = domain.replace(domainSeparatorRegex, '_');
           const legacyDomain = legacyDomainEncode(action.metadata.domain);
           const legacyNormalized = legacyDomain.replace(domainSeparatorRegex, '_');
 
-          const isDomainAllowed = await isActionDomainAllowed(
-            action.metadata.domain,
-            appConfig?.actions?.allowedDomains,
-            appConfig?.actions?.allowedAddresses,
-          );
           if (!isDomainAllowed) {
             continue;
           }
@@ -1276,18 +1279,20 @@ async function loadToolDefinitionsWrapper({
       actionToolNames.map((n) => n.replace(domainSeparatorRegex, '_')),
     );
 
-    for (const action of actionSets) {
-      const domain = await domainParser(action.metadata.domain, true);
+    const domainResults = await resolveActionDomains(actionSets, {
+      allowedDomains,
+      allowedAddresses,
+      domainParser,
+      isActionDomainAllowed,
+    });
+
+    for (const [actionIndex, action] of actionSets.entries()) {
+      const { domain, isDomainAllowed } = domainResults[actionIndex];
       const normalizedDomain = domain.replace(domainSeparatorRegex, '_');
 
       const legacyDomain = legacyDomainEncode(action.metadata.domain);
       const legacyNormalized = legacyDomain.replace(domainSeparatorRegex, '_');
 
-      const isDomainAllowed = await isActionDomainAllowed(
-        action.metadata.domain,
-        allowedDomains,
-        allowedAddresses,
-      );
       if (!isDomainAllowed) {
         logger.warn(
           `[Actions] Domain "${action.metadata.domain}" not in allowedDomains. ` +
@@ -1961,19 +1966,21 @@ async function loadAgentTools({
   // See registerActionTools for the key-shape rationale.
   const toolToAction = new Map();
 
+  const domainResults = await resolveActionDomains(actionSets, {
+    allowedDomains: appConfig?.actions?.allowedDomains,
+    allowedAddresses: appConfig?.actions?.allowedAddresses,
+    domainParser,
+    isActionDomainAllowed,
+  });
+
   for (let index = 0; index < actionSets.length; index++) {
     const action = actionSets[index];
     const storedAction = storedActions[index];
-    const domain = await domainParser(action.metadata.domain, true);
+    const { domain, isDomainAllowed } = domainResults[index];
     const normalizedDomain = domain.replace(domainSeparatorRegex, '_');
     const legacyDomain = legacyDomainEncode(action.metadata.domain);
     const legacyNormalized = legacyDomain.replace(domainSeparatorRegex, '_');
 
-    const isDomainAllowed = await isActionDomainAllowed(
-      action.metadata.domain,
-      appConfig?.actions?.allowedDomains,
-      appConfig?.actions?.allowedAddresses,
-    );
     if (!isDomainAllowed) {
       continue;
     }
@@ -2577,19 +2584,21 @@ async function loadActionToolsForExecution({
   const allowedDomains = appConfig?.actions?.allowedDomains;
   const allowedAddresses = appConfig?.actions?.allowedAddresses;
 
+  const domainResults = await resolveActionDomains(actionSets, {
+    allowedDomains,
+    allowedAddresses,
+    domainParser,
+    isActionDomainAllowed,
+  });
+
   for (let index = 0; index < actionSets.length; index++) {
     const action = actionSets[index];
     const storedAction = storedActions[index];
-    const domain = await domainParser(action.metadata.domain, true);
+    const { domain, isDomainAllowed } = domainResults[index];
     const normalizedDomain = domain.replace(domainSeparatorRegex, '_');
     const legacyDomain = legacyDomainEncode(action.metadata.domain);
     const legacyNormalized = legacyDomain.replace(domainSeparatorRegex, '_');
 
-    const isDomainAllowed = await isActionDomainAllowed(
-      action.metadata.domain,
-      allowedDomains,
-      allowedAddresses,
-    );
     if (!isDomainAllowed) {
       logger.warn(
         `[Actions] Domain "${action.metadata.domain}" not in allowedDomains. ` +

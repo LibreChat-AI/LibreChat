@@ -962,6 +962,7 @@ async function createMCPToolsImpl({
       recoveryPolicy,
       availableTools: result.availableTools,
       serverName,
+      domainAdmitted: true,
       /** Model-facing key: matches the normalized `availableTools` keys and
        *  the instance name `createToolInstance` will assign. */
       toolKey: `${keyToolNames.get(tool.name) ?? tool.name}${Constants.mcp_delimiter}${keyServerName}`,
@@ -1005,6 +1006,7 @@ async function createMCPToolsImpl({
  * @param {string} [params.serverName] - Resolved raw MCP server name from tool loading.
  * @param {(availableTools: LCAvailableTools) => void} [params.onAvailableTools]
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
+ * @param {boolean} [params.domainAdmitted] - The caller already admitted this server's domain for this call.
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
 function createMCPTool(params) {
@@ -1037,6 +1039,7 @@ async function createMCPToolImpl({
   jobCreatedAt,
   unattended,
   recoveryPolicy,
+  domainAdmitted = false,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** `loadTools` already resolved the server for this key; parsing is the fallback. */
@@ -1087,7 +1090,7 @@ async function createMCPToolImpl({
   const useMissingToolCache = !requestScopedTools;
   const missingToolCacheKey = getMCPConnectionPoolKey(toolKey, capabilityProfile);
 
-  if (serverConfig?.url) {
+  if (serverConfig?.url && !domainAdmitted) {
     const appConfig = await getAppConfig({
       role: user?.role,
       tenantId: user?.tenantId,
