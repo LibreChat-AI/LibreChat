@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import type { AgentListResponse } from 'librechat-data-provider';
 
 interface SmartLoaderProps {
   /** Whether the content is currently loading */
@@ -62,41 +61,6 @@ export const SmartLoader: React.FC<SmartLoaderProps> = ({
 
   // Show content (including when loading but we have existing data)
   return <div className={className}>{children}</div>;
-};
-
-/**
- * Hook to determine if we have meaningful data to show
- * Helps prevent loading states when we already have cached content
- */
-export const useHasData = (data: AgentListResponse | undefined): boolean => {
-  if (!data) return false;
-
-  // Type guard for object data
-  if (typeof data === 'object' && data !== null) {
-    // Check for agent list data (AgentListResponse shape, e.g. marketplace pages)
-    const agents = data.data;
-    if (Array.isArray(agents)) {
-      return agents.length > 0;
-    }
-
-    // Check for agent list data
-    if ('agents' in data) {
-      const agents = (data as any).agents;
-      return Array.isArray(agents) && agents.length > 0;
-    }
-
-    // Check for single agent data
-    if ('id' in data || 'name' in data) {
-      return true;
-    }
-  }
-
-  // Check for categories data (array)
-  if (Array.isArray(data)) {
-    return data.length > 0;
-  }
-
-  return false;
 };
 
 export default SmartLoader;

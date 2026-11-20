@@ -27,12 +27,15 @@ type DeleteButtonProps = {
   triggerRef?: React.RefObject<HTMLButtonElement>;
   setMenuOpen?: (open: boolean) => void;
   currentConversationId?: string;
+  /** Read when the delete settles, for callers whose dialog outlives the route it was opened on. */
+  getCurrentConversationId?: () => string | undefined;
 };
 
 export function DeleteConversationDialog({
   setShowDeleteDialog,
   conversationId,
   currentConversationId,
+  getCurrentConversationId,
   setMenuOpen,
   retainView,
   title,
@@ -41,6 +44,7 @@ export function DeleteConversationDialog({
   setShowDeleteDialog: (value: boolean) => void;
   conversationId: string;
   currentConversationId?: string;
+  getCurrentConversationId?: () => string | undefined;
   retainView: () => void;
   title: string;
 }) {
@@ -55,7 +59,8 @@ export function DeleteConversationDialog({
   const deleteMutation = useDeleteConversationMutation({
     onSuccess: () => {
       setShowDeleteDialog(false);
-      if (currentConvoId === conversationId || currentConvoId === 'new') {
+      const openConvoId = getCurrentConversationId ? getCurrentConversationId() : currentConvoId;
+      if (openConvoId === conversationId || openConvoId === 'new') {
         newConversation();
         navigate('/c/new', { replace: true });
       }
@@ -86,6 +91,7 @@ export function DeleteConversationDialog({
 
   return (
     <OGDialogContent
+      id="delete-conversation-dialog"
       className="w-11/12 max-w-md"
       showCloseButton={false}
       aria-describedby="delete-conversation-description"
@@ -102,9 +108,7 @@ export function DeleteConversationDialog({
       </div>
       <div className="flex justify-end gap-4 pt-4">
         <OGDialogClose asChild>
-          <Button aria-label="cancel" variant="outline">
-            {localize('com_ui_cancel')}
-          </Button>
+          <Button variant="outline">{localize('com_ui_cancel')}</Button>
         </OGDialogClose>
         <Button variant="destructive" onClick={confirmDelete} disabled={deleteMutation.isLoading}>
           {deleteMutation.isLoading ? <Spinner /> : localize('com_ui_delete')}
@@ -117,6 +121,7 @@ export function DeleteConversationDialog({
 export default function DeleteButton({
   conversationId,
   currentConversationId,
+  getCurrentConversationId,
   retainView,
   title,
   setMenuOpen,
@@ -138,6 +143,7 @@ export default function DeleteButton({
         setShowDeleteDialog={setShowDeleteDialog}
         conversationId={conversationId}
         currentConversationId={currentConversationId}
+        getCurrentConversationId={getCurrentConversationId}
         setMenuOpen={setMenuOpen}
         retainView={retainView}
         title={title}

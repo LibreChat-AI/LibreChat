@@ -8,6 +8,7 @@ import type {
 export function applyMCPDiscoveryAuthorizationState(
   connectionStatus: Record<string, MCPServerStatus> | undefined,
   discoveredTools: MCPServersResponse | undefined,
+  knownGenerations: Readonly<Record<string, string>> = {},
 ): Record<string, MCPServerStatus> | undefined {
   const reauthRequired = Object.entries(discoveredTools?.servers ?? {})
     .filter(([, server]) => server.authorizationState === 'reauth_required')
@@ -21,7 +22,7 @@ export function applyMCPDiscoveryAuthorizationState(
   for (const serverName of reauthRequired) {
     const discoveryGeneration = discoveredTools?.servers[serverName]?.authorizationGeneration;
     const current = nextStatus?.[serverName];
-    const statusGeneration = current?.authorizationGeneration;
+    const statusGeneration = knownGenerations[serverName] ?? current?.authorizationGeneration;
     const statusIsActive =
       current?.connectionState === 'connecting' || current?.authorizationState === 'authorizing';
     if (statusIsActive) {
@@ -45,9 +46,40 @@ export function applyMCPDiscoveryAuthorizationState(
       requiresOAuth: true,
       connectionState: 'disconnected',
       authorizationState: 'needs_authorization',
+      connectionStateSource: 'authorization',
     };
   }
   return changed ? nextStatus : connectionStatus;
+}
+
+/**
+ * A server this browser is authorizing is `connecting`, whatever the cached status says. Starting
+ * a flow does not refetch connection status, so the cache can still hold the durable `connected`
+ * that stored-but-rejected tokens report, and that would read as ready in the middle of OAuth.
+ */
+export function applyPendingOAuthState(
+  connectionStatus: Record<string, MCPServerStatus> | undefined,
+  initStates: Record<string, { oauthUrl: string | null }>,
+): Record<string, MCPServerStatus> | undefined {
+  let nextStatus: Record<string, MCPServerStatus> | undefined;
+  for (const [serverName, initState] of Object.entries(initStates)) {
+    const current = connectionStatus?.[serverName];
+    if (
+      initState.oauthUrl == null ||
+      (current?.connectionState === 'connecting' && current.authorizationState === 'authorizing')
+    ) {
+      continue;
+    }
+    nextStatus ??= { ...(connectionStatus ?? {}) };
+    nextStatus[serverName] = {
+      ...current,
+      requiresOAuth: true,
+      connectionState: 'connecting',
+      authorizationState: 'authorizing',
+      connectionStateSource: 'authorization',
+    };
+  }
+  return nextStatus ?? connectionStatus;
 }
 
 export type MCPOAuthPollingOutcome = 'pending' | 'completed' | 'failed';

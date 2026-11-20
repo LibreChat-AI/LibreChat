@@ -10,8 +10,8 @@ import type {
   TAssignConversationToProjectRequest,
   TAssignConversationToProjectResponse,
 } from 'librechat-data-provider';
-import type { UseMutationResult } from '@tanstack/react-query';
-import { enqueue, invalidateConversationLists } from '~/utils';
+import type { QueryClient, UseMutationResult } from '@tanstack/react-query';
+import { enqueue, updateConvoInAllQueries, invalidateConversationLists } from '~/utils';
 import { getSessionPrincipal } from '~/utils/session';
 import store from '~/store';
 
@@ -182,6 +182,10 @@ export const useAssignConversationToProjectMutation = (): UseMutationResult<
                 ? { ...previous, chatProjectId: result.conversation.chatProjectId ?? null }
                 : result.conversation,
           );
+          updateConvoInAllQueries(queryClient, conversationId, (previous) => ({
+            ...previous,
+            chatProjectId: result.conversation.chatProjectId ?? null,
+          }));
           return result;
         } finally {
           /* Only the newest write clears the entry; by now the conversation
@@ -213,6 +217,53 @@ export const useAssignConversationToProjectMutation = (): UseMutationResult<
         queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
         queryClient.invalidateQueries([QueryKeys.projectConversations]);
       },
+    },
+  );
+};
+
+export type ProjectFileMutationVariables = {
+  projectId: string;
+  file_id: string;
+};
+
+const invalidateProjectFiles = (queryClient: QueryClient, projectId: string): void => {
+  queryClient.invalidateQueries({
+    queryKey: [QueryKeys.project, projectId],
+    refetchType: 'all',
+  });
+  queryClient.invalidateQueries([QueryKeys.projectFiles, projectId]);
+  queryClient.invalidateQueries([QueryKeys.projectAvailableFiles, projectId]);
+  queryClient.invalidateQueries([QueryKeys.projects]);
+};
+
+export const useAddProjectFileMutation = (): UseMutationResult<
+  TChatProject,
+  unknown,
+  ProjectFileMutationVariables,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    ({ projectId, file_id }: ProjectFileMutationVariables) =>
+      dataService.addProjectFile({ projectId, file_id }),
+    {
+      onSuccess: (_project, variables) => invalidateProjectFiles(queryClient, variables.projectId),
+    },
+  );
+};
+
+export const useRemoveProjectFileMutation = (): UseMutationResult<
+  TChatProject,
+  unknown,
+  ProjectFileMutationVariables,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    ({ projectId, file_id }: ProjectFileMutationVariables) =>
+      dataService.removeProjectFile({ projectId, file_id }),
+    {
+      onSuccess: (_project, variables) => invalidateProjectFiles(queryClient, variables.projectId),
     },
   );
 };

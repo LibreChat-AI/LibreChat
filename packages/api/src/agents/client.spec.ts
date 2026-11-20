@@ -1,20 +1,215 @@
 import { Tokenizer as AiTokenizer } from 'ai-tokenizer';
 import { Providers, StandardGraph } from '@librechat/agents';
-import { HumanMessage } from '@librechat/agents/langchain/messages';
+import { HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
 import { ContentTypes, DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
+import type { LCTool } from '@librechat/agents';
+import type { FormattedMessageWithContent } from './client';
+import type { EncodingName } from '~/utils/tokenizer';
+import type { ServerRequest } from '~/types';
 import {
   collectToolCallIds,
   countRetainedToolTokens,
   createCachedTokenCounter,
+  countFormattedMessageTokens,
+  payloadParser,
   prependQuotes,
   prependFileContext,
   applyAttachmentOnlyText,
-  type FormattedMessageWithContent,
 } from './client';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
+import Tokenizer from '~/utils/tokenizer';
+
+describe('countFormattedMessageTokens media blocks', () => {
+  const text = { type: 'text', text: 'Read the attachment.' };
+  const added = (block: Record<string, unknown>, encoding: EncodingName = 'o200k_base') =>
+    countFormattedMessageTokens({ role: 'user', content: [text, block] }, encoding) -
+    countFormattedMessageTokens({ role: 'user', content: [text] }, encoding);
+
+  it('counts an inline Google PDF by its estimated page count', () => {
+    const small = added({ type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(75_000) });
+    const large = added({
+      type: 'media',
+      mimeType: 'application/pdf',
+      data: 'A'.repeat(10_000_000),
+    });
+    expect(small).toBeGreaterThan(0);
+    expect(large).toBeGreaterThan(190_000);
+    expect(
+      added({ type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(75_000) }, 'claude'),
+    ).toBeGreaterThan(small);
+  });
+
+  it('counts PDF, audio and video references that carry no inline data', () => {
+    for (const mimeType of ['application/pdf', 'audio/mpeg', 'video/mp4']) {
+      expect(added({ type: 'media', mimeType, fileUri: 'gs://bucket/file' })).toBeGreaterThan(0);
+    }
+  });
+
+  it('counts inline audio and video by size', () => {
+    const audio = added({ type: 'media', mimeType: 'audio/wav', data: 'A'.repeat(1_000_000) });
+    const video = added({ type: 'media', mimeType: 'video/mp4', data: 'A'.repeat(10_000_000) });
+    expect(audio).toBeGreaterThan(added({ type: 'media', mimeType: 'audio/wav', data: 'AAAA' }));
+    expect(video).toBeGreaterThan(added({ type: 'media', mimeType: 'video/mp4', data: 'AAAA' }));
+  });
+
+  it('counts inline images and unknown media types', () => {
+    expect(added({ type: 'media', mimeType: 'image/png', data: 'AAAA' })).toBeGreaterThan(0);
+    expect(added({ type: 'media', mimeType: 'text/csv', data: 'AAAA' })).toBeGreaterThan(0);
+  });
+
+  it('rejects an oversized Google PDF before invoking the model', async () => {
+    const content = [
+      text,
+      { type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(10_000_000) },
+    ];
+    const graph = new StandardGraph({
+      runId: 'oversized-native-pdf',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.GOOGLE,
+          maxContextTokens: 190_000,
+          summarizationEnabled: false,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+      indexTokenCountMap: {
+        0: countFormattedMessageTokens({ role: 'user', content }, 'o200k_base'),
+      },
+    });
+    graph.overrideTestModel(['should not be called']);
+    await expect(
+      graph
+        .createAgentNode('primary')
+        .invoke(
+          { messages: [new HumanMessage({ content })] },
+          { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+        ),
+    ).rejects.toThrow('empty_messages');
+  });
+});
 
 describe('createCachedTokenCounter', () => {
+  const encodings: EncodingName[] = ['o200k_base', 'claude'];
+
+  it.each(encodings)('counts SDK-sized slices accurately with %s', async (encoding) => {
+    const counter = await createCachedTokenCounter(encoding);
+    const text = 'word '.repeat(3277).slice(0, 16384);
+    const exact = Tokenizer.countExactTokens(text, encoding)!;
+    const expected = encoding === 'claude' ? Math.ceil(exact * 1.1) : exact;
+    expect(counter(new SystemMessage(text))).toBeGreaterThanOrEqual(expected * 0.99);
+    expect(counter(new SystemMessage(text))).toBeLessThan(expected * 1.02);
+  });
+
+  it.each([false, true])(
+    'sends fitting instructions with summarization=%s',
+    async (summarizationEnabled) => {
+      const graph = new StandardGraph({
+        runId: `bounded-instructions-${summarizationEnabled}`,
+        agents: [
+          {
+            agentId: 'primary',
+            provider: Providers.OPENAI,
+            instructions: 'word '.repeat(1024),
+            maxContextTokens: 4000,
+            summarizationEnabled,
+          },
+        ],
+        tokenCounter: await createCachedTokenCounter('o200k_base'),
+      });
+      graph.overrideTestModel(['ok']);
+      const result = await graph
+        .createAgentNode('primary')
+        .invoke(
+          { messages: [new HumanMessage('Hi')] },
+          { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+        );
+      expect(result.messages[result.messages.length - 1]?.content).toBe('ok');
+      expect(graph.agentContexts.get('primary')?.instructionTokens).toBeLessThan(1100);
+    },
+  );
+
+  it('sends a fitting 400-tool programmatic prompt with no custom instructions', async () => {
+    const tools: LCTool[] = Array.from({ length: 400 }, (_, index) => ({
+      name: `lookup_${index}`,
+      description:
+        'Search the project documents and return matching results with source references. '.repeat(
+          16,
+        ),
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The search query to match against project documents.',
+          },
+          limit: {
+            type: 'number',
+            description: 'The maximum number of matching documents to return.',
+          },
+        },
+        required: ['query'],
+      },
+      allowed_callers: ['code_execution'],
+    }));
+    const graph = new StandardGraph({
+      runId: 'bounded-programmatic-instructions',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.ANTHROPIC,
+          instructions: '',
+          maxContextTokens: 500000,
+          toolDefinitions: [
+            {
+              name: 'run_tools_with_code',
+              description: 'Execute code',
+              parameters: { type: 'object', properties: { code: { type: 'string' } } },
+            },
+            ...tools,
+          ],
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('claude'),
+    });
+    graph.overrideTestModel(['ok']);
+    const result = await graph
+      .createAgentNode('primary')
+      .invoke(
+        { messages: [new HumanMessage('Hi')] },
+        { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+      );
+    expect(result.messages[result.messages.length - 1]?.content).toBe('ok');
+    const context = graph.agentContexts.get('primary');
+    expect(context?.systemMessageTokens).toBeGreaterThan(100000);
+    expect(context?.instructionTokens).toBeLessThan(150000);
+  });
+
+  it('still rejects instructions that genuinely exceed the context budget', async () => {
+    const graph = new StandardGraph({
+      runId: 'oversized-instructions',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.OPENAI,
+          instructions: 'word '.repeat(5000),
+          maxContextTokens: 4000,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+    });
+    graph.overrideTestModel(['should not be called']);
+    await expect(
+      graph
+        .createAgentNode('primary')
+        .invoke(
+          { messages: [new HumanMessage('Hi')] },
+          { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+        ),
+    ).rejects.toThrow('empty_messages');
+  });
+
   it('enables stable-message reuse in the agents runtime', async () => {
     const getTokenCount = jest.spyOn(AiTokenizer.prototype, 'count');
     try {
@@ -33,7 +228,7 @@ describe('createCachedTokenCounter', () => {
       const agentContext = graph.agentContexts.get('primary');
       await agentContext?.tokenCalculationPromise;
       getTokenCount.mockClear();
-      const message = new HumanMessage('Stable retained context');
+      const message = new HumanMessage('Stable retained context '.repeat(400));
 
       agentContext?.contextPressureTokenCounts?.count(message);
       const callsAfterFirstCount = getTokenCount.mock.calls.length;
@@ -148,8 +343,8 @@ describe('countRetainedToolTokens', () => {
     expect(
       countRetainedToolTokens({
         contentParts: [
-          toolPart('call_1', 'grep', 'a'.repeat(60)),
-          toolPart('call_2', 'read_file', 'b'.repeat(60)),
+          toolPart('call_1', 'grep', 'ab '.repeat(20)),
+          toolPart('call_2', 'read_file', 'cd '.repeat(20)),
         ],
         priorToolCallIds: new Set(),
         countExact: counted,
@@ -158,6 +353,80 @@ describe('countRetainedToolTokens', () => {
     ).toBeUndefined();
     /** It stops at the budget rather than counting the rest for nothing. */
     expect(counted).toHaveBeenCalledTimes(1);
+  });
+
+  it('charges a long unbroken run its quadratic merge work, not its length', () => {
+    /** 200 KB of whitespace is far under the 8 MiB character ceiling, yet merging it as
+     *  one piece blocks the event loop for ~25 s, so the budget must refuse it. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'web_search', `results${' '.repeat(200_000)}end`)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('charges a multi-byte run by its UTF-8 bytes', () => {
+    /** 16,000 astral letters are 64,000 bytes in one piece and take ~2 s to merge.
+     *  Charged per character they would fit the default ceiling; per byte they do not. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', '\u{1D400}'.repeat(16_000))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('charges an unbroken digit run quadratically for the Claude encoding only', () => {
+    /** o200k splits digits into threes; the Claude encoding merges the whole run. */
+    const output = '7'.repeat(200_000);
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        isClaude: true,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
+  });
+
+  it('refuses output longer than the remaining budget without scanning it', () => {
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', 'word '.repeat(100))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        maxCountChars: 100,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('still counts ordinary text up to the ceiling', () => {
+    const output = 'The quick brown fox jumps over the lazy dog. '.repeat(20_000);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
   });
 
   it('defaults the budget to the shipped ceiling', () => {
@@ -184,6 +453,68 @@ describe('collectToolCallIds', () => {
       ]),
     ).toEqual(new Set(['call_1']));
     expect(collectToolCallIds(undefined)).toEqual(new Set());
+  });
+});
+describe('payloadParser reasoning override persistence', () => {
+  it('returns the base value while the runtime endpoint option uses the override', () => {
+    const req = {
+      body: {
+        endpointOption: {
+          model_parameters: { model: 'gpt-5.1', reasoning_effort: 'high' },
+        },
+      },
+      reasoningOverrideBase: {
+        key: 'reasoning_effort',
+        hadValue: true,
+        value: 'low',
+      },
+    } as unknown as ServerRequest;
+
+    expect(payloadParser({ req, endpoint: 'openAI' })).toEqual({
+      model: 'gpt-5.1',
+      reasoning_effort: 'low',
+    });
+    expect(req.body.endpointOption?.model_parameters?.reasoning_effort).toBe('high');
+  });
+
+  it('omits a transient override when no base value existed', () => {
+    const req = {
+      body: {
+        endpointOption: {
+          model_parameters: { model: 'gpt-5.1', reasoning_effort: 'high' },
+        },
+      },
+      reasoningOverrideBase: {
+        key: 'reasoning_effort',
+        hadValue: false,
+      },
+    } as unknown as ServerRequest;
+
+    expect(payloadParser({ req, endpoint: 'openAI' })).toEqual({ model: 'gpt-5.1' });
+    expect(req.body.endpointOption?.model_parameters?.reasoning_effort).toBe('high');
+  });
+
+  it('restores the conversation thinking switch after a coupled Claude override', () => {
+    const req = {
+      body: {
+        endpointOption: {
+          model_parameters: { model: 'claude-sonnet-4-6', effort: 'max', thinking: true },
+        },
+      },
+      reasoningOverrideBase: {
+        key: 'effort',
+        hadValue: true,
+        value: 'low',
+        thinkingHadValue: true,
+        thinkingValue: false,
+      },
+    } as unknown as ServerRequest;
+
+    expect(payloadParser({ req, endpoint: 'anthropic' })).toEqual({
+      model: 'claude-sonnet-4-6',
+      effort: 'low',
+      thinking: false,
+    });
   });
 });
 

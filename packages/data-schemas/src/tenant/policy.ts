@@ -99,6 +99,19 @@ export function tenantFilter(scope: TenantScope): { tenantId: string } | undefin
   return scope.kind === 'scoped' ? { tenantId: scope.tenantId } : undefined;
 }
 
+/**
+ * The one partition a read may draw from when it merges several rows into a single answer, such
+ * as the config documents layered into an app config: the active tenant's rows when scoped, and
+ * otherwise only the deployment's own rows, which carry no tenant (absent, `null` or `''`, the
+ * same unclaimed forms `tenantWritePredicate` accepts). `tenantFilter` lets unscoped and system
+ * reads see every tenant, but an answer merged from several tenants' rows means nothing, so such
+ * reads stay in one partition. `null` names the tenantless partition, all three of those forms,
+ * which a SQL engine reads as `tenant_id IS NULL OR tenant_id = ''`.
+ */
+export function tenantPartition(scope: TenantScope): string | null {
+  return scope.kind === 'scoped' ? scope.tenantId : null;
+}
+
 /** Result of sanitizing an update payload against the active scope. */
 export interface TenantMutationResult {
   /** The payload to send to the engine — the input itself when nothing changed. */

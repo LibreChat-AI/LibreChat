@@ -1,29 +1,70 @@
-import { useMemo } from 'react';
+import { useContext, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Constants, MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
+import {
+  TaskContentScopeContext,
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+} from '@librechat/chat/react';
 import type {
   ParentSubagentIndex,
+  ToolCallPartResponse,
   SubagentControlReceipt,
-  SubagentControlRequest,
   SubagentControlResponse,
   SubagentThreadView,
 } from 'librechat-data-provider';
+import type { SubagentControlVariables, ToolContentQuery } from '@librechat/chat/react';
 import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query';
 
-export const ACTIVE_THREAD_REFRESH_MS = 2_000;
+export { ACTIVE_THREAD_REFRESH_MS, subagentThreadHasTaskEvidence };
+export type { SubagentControlVariables };
+
+const responseStatus = (error: unknown): number | undefined => {
+  if (error == null || typeof error !== 'object') return undefined;
+  const candidate = error as { status?: number; response?: { status?: number } };
+  return candidate.response?.status ?? candidate.status;
+};
+
 const IDLE_PARENT_REFRESH_MS = 10_000;
+const QUIET_PARENT_REFRESH_MS = 60_000;
 const CHILD_READY_POLL_WINDOW_MS = 60_000;
 
-export const parentSubagentsRefetchInterval = (index: ParentSubagentIndex | undefined): number =>
-  index?.children.some((child) => child.status === 'running') === true
-    ? ACTIVE_THREAD_REFRESH_MS
-    : IDLE_PARENT_REFRESH_MS;
+/** Streamed child lifecycle events wake local discovery; the capped fallback finds
+ * children published elsewhere when this tab has no active parent stream. */
+export const parentSubagentsRefetchInterval = (
+  index: ParentSubagentIndex | undefined,
+  isSubmitting = false,
+  error?: unknown,
+  dataUpdateCount = 0,
+  readinessDeadline = 0,
+): number | false => {
+  if (responseStatus(error) === 404) {
+    return isSubmitting && Date.now() < readinessDeadline ? IDLE_PARENT_REFRESH_MS : false;
+  }
+  if (index?.children.some((child) => child.status === 'running') === true) {
+    return ACTIVE_THREAD_REFRESH_MS;
+  }
+  if (isSubmitting || index?.children.some((child) => child.status === 'dispatched')) {
+    return IDLE_PARENT_REFRESH_MS;
+  }
+  if (index == null && error == null) {
+    return IDLE_PARENT_REFRESH_MS;
+  }
+  // Recheck the first empty result soon: publication may still be committing.
+  return dataUpdateCount <= 1 && error == null ? IDLE_PARENT_REFRESH_MS : QUIET_PARENT_REFRESH_MS;
+};
 
 export const useParentSubagentsQuery = (
   parentConversationId: string,
   config?: UseQueryOptions<ParentSubagentIndex>,
-) =>
-  useQuery<ParentSubagentIndex>(
+  isSubmitting = false,
+) => {
+  const readinessKey = `${parentConversationId}\u0000${isSubmitting}`;
+  const readiness = useMemo(
+    () => ({ key: readinessKey, deadline: Date.now() + CHILD_READY_POLL_WINDOW_MS }),
+    [readinessKey],
+  );
+  return useQuery<ParentSubagentIndex>(
     [QueryKeys.parentSubagents, parentConversationId],
     () => dataService.getParentSubagents(parentConversationId),
     {
@@ -33,27 +74,26 @@ export const useParentSubagentsQuery = (
         parentConversationId !== Constants.PENDING_CONVO,
       staleTime: 5_000,
       refetchOnWindowFocus: true,
-      refetchInterval: parentSubagentsRefetchInterval,
+      retry: (failureCount, error) => responseStatus(error) !== 404 && failureCount < 3,
+      refetchInterval: (index, query) =>
+        parentSubagentsRefetchInterval(
+          index,
+          isSubmitting,
+          query.state.error,
+          query.state.dataUpdateCount,
+          readiness.deadline,
+        ),
       refetchIntervalInBackground: false,
       ...config,
     },
   );
+};
 
 const isTerminal = (status: SubagentThreadView['status']): boolean =>
   status === 'completed' ||
   status === 'failed' ||
   status === 'interrupted' ||
   status === 'cancelled';
-
-export const subagentThreadHasTaskEvidence = (
-  view: SubagentThreadView | undefined,
-  taskId: string,
-): boolean =>
-  view?.turns?.some((turn) => turn.taskId === taskId) === true ||
-  view?.messages.some(
-    (message) =>
-      message.messageId === `${taskId}:user` || message.messageId === `${taskId}:assistant`,
-  ) === true;
 
 export const subagentThreadRefetchInterval = (
   view: SubagentThreadView | undefined,
@@ -78,12 +118,6 @@ export const subagentThreadRefetchInterval = (
     return now < readinessDeadline ? ACTIVE_THREAD_REFRESH_MS : false;
   }
   return isTerminal(view.status) ? false : ACTIVE_THREAD_REFRESH_MS;
-};
-
-const responseStatus = (error: unknown): number | undefined => {
-  if (error == null || typeof error !== 'object') return undefined;
-  const candidate = error as { status?: number; response?: { status?: number } };
-  return candidate.response?.status ?? candidate.status;
 };
 
 export const isSubagentReadinessPending = (
@@ -124,14 +158,6 @@ export const useSubagentThreadQuery = (
     ...query,
     isReadinessPending: isSubagentReadinessPending(query.error, readiness.deadline),
   };
-};
-
-export type SubagentControlVariables = {
-  parentConversationId: string;
-  threadId: string;
-  command: SubagentControlRequest;
-  /** Client-only timestamp retained across retries; never sent to the API. */
-  submittedAt: string;
 };
 
 type SubagentControlMutationOptions = {
@@ -189,6 +215,43 @@ export const useSubagentControlMutation = (options: SubagentControlMutationOptio
         options.onSuccess?.({ receipt }, { parentConversationId, threadId, command, submittedAt });
       },
       onError: (error, variables) => options.onError?.(error, variables),
+    },
+  );
+};
+
+/**
+ * The full tool call behind a preview in a followed child thread, read through the parent
+ * conversation the task scope names: the ordinary message route answers 404 for a child thread.
+ * Cached by the call's identity, as `useToolCallPartQuery` is.
+ */
+export const useSubagentThreadToolCallPartQuery: ToolContentQuery = (
+  params,
+  config,
+  revision = '',
+) => {
+  const scope = useContext(TaskContentScopeContext);
+  const parentConversationId = scope?.parentConversationId ?? '';
+  const { conversationId, messageId, toolCallId, stepId, agentId } = params;
+  return useQuery<ToolCallPartResponse>(
+    [
+      QueryKeys.subagentThreadToolCallPart,
+      parentConversationId,
+      conversationId,
+      messageId,
+      toolCallId ?? '',
+      stepId ?? '',
+      agentId ?? '',
+      revision,
+    ],
+    () => dataService.getSubagentThreadToolCallPart(parentConversationId, params),
+    {
+      staleTime: Infinity,
+      retry: 1,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      ...config,
+      enabled: scope != null && config?.enabled !== false,
     },
   );
 };

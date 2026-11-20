@@ -1,6 +1,10 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
-import { preserveStreamedContentIdentity, stripStreamedIndexStamps } from './messages';
+import {
+  preserveStreamedContentIdentity,
+  isUnacknowledgedUserMessage,
+  stripStreamedIndexStamps,
+} from './messages';
 
 const text = (value: string, extra: Record<string, unknown> = {}): TMessageContentParts =>
   ({ type: ContentTypes.TEXT, text: value, ...extra }) as TMessageContentParts;
@@ -19,6 +23,34 @@ const label = (value: string, extra: Record<string, unknown> = {}): TMessageCont
 
 const streamedIndexes = (content: TMessage['content']): Array<number | undefined> =>
   (content ?? []).map((part) => part?.streamedIndex);
+
+describe('private screenshot admission', () => {
+  it('identifies unsent user text without classifying acknowledged messages as pending', () => {
+    const optimistic = {
+      messageId: 'pending',
+      isCreatedByUser: true,
+      clientTimestamp: '2026-09-28T15:00:00',
+      text: 'alice@example.com',
+    } as TMessage;
+    const assistant = {
+      messageId: 'previous-answer',
+      isCreatedByUser: false,
+      text: 'Safe',
+    } as TMessage;
+    const canonical = {
+      ...optimistic,
+      privacyRevision: 'accepted-revision',
+      text: '[EMAIL_1_accepted-revision]',
+    };
+    const persisted = { ...optimistic, createdAt: '2026-09-28T15:00:01' };
+
+    expect(isUnacknowledgedUserMessage(optimistic)).toBe(true);
+    expect(isUnacknowledgedUserMessage(canonical)).toBe(false);
+    expect(isUnacknowledgedUserMessage(persisted)).toBe(false);
+    expect(isUnacknowledgedUserMessage(assistant)).toBe(false);
+    expect(optimistic.text).toBe('alice@example.com');
+  });
+});
 
 describe('preserveStreamedContentIdentity', () => {
   it('stamps every part shifted by compacted holes with its streamed index', () => {

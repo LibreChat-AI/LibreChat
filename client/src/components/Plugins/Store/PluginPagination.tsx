@@ -23,23 +23,22 @@ const PluginPagination: React.FC<TPluginPaginationProps> = ({
   };
 
   return (
-    <div className="flex gap-2 text-sm text-text-secondary">
+    <div className="text-text-secondary flex gap-2 text-sm">
       <div
         role="button"
         tabIndex={0}
-        aria-label="Previous page"
         onClick={() => handlePageChange(currentPage - 1)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
-            onChangePage(currentPage - 1);
+            e.preventDefault();
+            handlePageChange(currentPage - 1);
           }
         }}
-        className={`flex cursor-default items-center text-sm ${
+        className={`flex cursor-default items-center text-sm select-none ${
           currentPage === 1
             ? 'text-text-secondary opacity-50'
             : 'text-text-secondary hover:text-text-primary'
         }`}
-        style={{ userSelect: 'none' }}
       >
         <svg
           stroke="currentColor"
@@ -62,15 +61,15 @@ const PluginPagination: React.FC<TPluginPaginationProps> = ({
           role="button"
           key={page}
           tabIndex={0}
-          className={`flex h-5 w-5 items-center justify-center text-sm ${
+          className={`flex h-5 w-5 items-center justify-center text-sm select-none ${
             currentPage === page
               ? 'text-link hover:text-link'
               : 'text-text-secondary hover:text-text-primary'
           }`}
-          style={{ userSelect: 'none' }}
           onClick={() => onChangePage(page)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
               onChangePage(page);
             }
           }}
@@ -80,20 +79,19 @@ const PluginPagination: React.FC<TPluginPaginationProps> = ({
       ))}
       <div
         role="button"
-        aria-label="Next page"
         tabIndex={0}
         onClick={() => handlePageChange(currentPage + 1)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
-            onChangePage(currentPage + 1);
+            e.preventDefault();
+            handlePageChange(currentPage + 1);
           }
         }}
-        className={`flex cursor-default items-center text-sm ${
+        className={`flex cursor-default items-center text-sm select-none ${
           currentPage === maxPage
             ? 'text-text-secondary opacity-50'
             : 'text-text-secondary hover:text-text-primary'
         }`}
-        style={{ userSelect: 'none' }}
       >
         {localize('com_ui_next')}
         <svg

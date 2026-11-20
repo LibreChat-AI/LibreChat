@@ -22,7 +22,7 @@ describe('useVisibleTools', () => {
   });
 
   it('resolves an MCP tool id whose raw tool name itself contains the delimiter substring', () => {
-    // Regression test for https://github.com/danny-avila/LibreChat/issues/14440:
+    // Regression test for https://github.com/LibreChat-AI/LibreChat/issues/14440:
     // a raw MCP tool name that already contains "_mcp_" (e.g. one exposed
     // through a gateway that prefixes tool names by server) must still
     // resolve to the real server name - the *last* segment, not
@@ -62,5 +62,25 @@ describe('useVisibleTools', () => {
     );
     expect(result.current.toolIds).toEqual(['web_search']);
     expect(result.current.mcpServerNames).toEqual([]);
+  });
+
+  it.each(['Connector: Company', 'Connector__Company'])(
+    'resolves a legacy prefixed attachment using %s',
+    (name) => {
+      const servers = new Map<string, MCPServerInfo>([['Connector: Company', {} as MCPServerInfo]]);
+      const { result } = renderHook(() => useVisibleTools([`mcp_${name}`], regularTools, servers));
+      expect(result.current.mcpServerNames).toEqual(['Connector: Company']);
+    },
+  );
+
+  it('gives a literal configured name ownership over a normalized alias', () => {
+    const servers = new Map<string, MCPServerInfo>([
+      ['Connector: Company', {} as MCPServerInfo],
+      ['Connector__Company', {} as MCPServerInfo],
+    ]);
+    const { result } = renderHook(() =>
+      useVisibleTools(['mcp_Connector__Company'], regularTools, servers),
+    );
+    expect(result.current.mcpServerNames).toEqual(['Connector__Company']);
   });
 });

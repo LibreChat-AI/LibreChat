@@ -2,7 +2,10 @@
 [ -n "$CI" ] && exit 0
 
 # Formats, sorts and lints the exact staged content of each changed file.
-npx lint-staged --config ./.husky/lint-staged.config.js || exit 1
+# Serially: two of the groups build packages/client for the design rules, and
+# lint-staged runs groups in parallel by default — two tsdown writes into the
+# same dist leave the metadata the rules read half-written.
+npx lint-staged --concurrent false --config ./.husky/lint-staged.config.js || exit 1
 
 # The rest of the Static Checks CI job, gated on the paths this commit touches.
 # Add STATIC_CHECKS_FULL=1 for the slow gates (TypeScript, config migration

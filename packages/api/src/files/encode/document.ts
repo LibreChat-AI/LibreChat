@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import {
   isOpenAILikeProvider,
   isBedrockDocumentType,
@@ -15,13 +16,137 @@ import type {
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import type { ReachableAgent } from '~/agents/traversal';
+import type { MissingAttachmentHandler } from './utils';
+import {
+  CONTENT_TRAVERSAL_MAX_DEPTH,
+  CONTENT_TRAVERSAL_MAX_NODES,
+  ContentTraversalLimitError,
+} from '~/protection/adapters/nested';
 import {
   getFileStream,
+  AttachmentSizeError,
+  skipMissingAttachment,
   getConfiguredFileSizeLimit,
-  isAttachmentObjectNotFoundError,
 } from './utils';
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import { validatePdf, validateBedrockDocument, getBedrockDocumentLimit } from '~/files/validation';
+import { configuredRequestBudget } from '~/utils/timeouts';
+import { someReachableAgent } from '~/agents/traversal';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { runGuardedEncode } from './memoryGuard';
+
+/** The longest document name LibreChat sends to Bedrock. */
+const BEDROCK_DOCUMENT_NAME_LIMIT = 200;
+
+/** A content part of a formatted message, as far as document naming needs to read it. */
+export interface PayloadContentPart {
+  type?: string;
+  document?: { name?: string };
+  /** A replayed steer's own content, stamped for the formatter (`stampSteerPartMedia`). */
+  media?: PayloadContentPart[];
+}
+
+/** Hands out each name once, sharing suffix progress between colliding truncated prefixes. */
+function createDocumentNamer(): (name: string) => string {
+  const used = new Set<string>();
+  const nextIndex = new Map<string, number>();
+  return (input) => {
+    const original = input.slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
+    let name = original;
+    let index = 2;
+    while (used.has(name.toLowerCase())) {
+      const suffix = ` (${index})`;
+      const prefix = original.slice(0, BEDROCK_DOCUMENT_NAME_LIMIT - suffix.length).trimEnd();
+      const key = `${suffix.length}:${prefix.toLowerCase()}`;
+      const next = nextIndex.get(key);
+      if (next != null && next > index) {
+        index = next;
+        continue;
+      }
+      name = `${prefix}${suffix}`;
+      nextIndex.set(key, ++index);
+    }
+    used.add(name.toLowerCase());
+    return name;
+  };
+}
+
+/** The parts with every Bedrock document renamed by `nameOf`; the same array when none changed. */
+function renameDocumentParts(
+  parts: PayloadContentPart[],
+  nameOf: (name: string) => string,
+  budget: { remaining: number },
+  depth = 0,
+): PayloadContentPart[] {
+  if (depth > CONTENT_TRAVERSAL_MAX_DEPTH || parts.length > budget.remaining) {
+    throw new ContentTraversalLimitError();
+  }
+  budget.remaining -= parts.length;
+  let renamed: PayloadContentPart[] | undefined;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    let next = part;
+    const original = part?.type === 'document' ? part.document?.name : undefined;
+    if (typeof original === 'string') {
+      const name = nameOf(original);
+      next = name === original ? part : { ...part, document: { ...part.document, name } };
+    } else if (Array.isArray(part?.media)) {
+      const media = renameDocumentParts(part.media, nameOf, budget, depth + 1);
+      next = media === part.media ? part : { ...part, media };
+    }
+    if (next !== part) {
+      renamed ??= [...parts];
+      renamed[i] = next;
+    }
+  }
+  return renamed ?? parts;
+}
+
+interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
+  readonly provider?: string;
+}
+
+function isBedrockRecipient({ provider }: DocumentRecipient): boolean {
+  return provider === Providers.BEDROCK;
+}
+
+function hasBedrockRecipient(recipients: Iterable<DocumentRecipient>): boolean {
+  return someReachableAgent(recipients, isBedrockRecipient);
+}
+
+/**
+ * Bedrock rejects a request in which two documents share a name, and every turn resends the
+ * documents of earlier turns (and of steers replayed with their attachments), so two uploads with
+ * the same filename would fail every later turn of the conversation. Renames each repeat across the
+ * formatted payload in conversation order (`report`, `report (2)`), leaving the first occurrence,
+ * every other kind of part, and the parts themselves untouched: a message whose documents change
+ * gets a new content array. Names compare case-insensitively, as the restriction is not
+ * documented to be case-sensitive. Recipient metadata includes lazy children and graph
+ * members without resolving them. Only runs with a Bedrock recipient need naming;
+ * Structural limits apply per message, not to the lifetime of the conversation.
+ */
+export function dedupeDocumentNames(
+  messages: Array<{ content?: string | PayloadContentPart[] | null }>,
+  recipients?: Iterable<DocumentRecipient>,
+): void {
+  if (recipients != null && !hasBedrockRecipient(recipients)) {
+    return;
+  }
+  const nameOf = createDocumentNamer();
+  for (const message of messages) {
+    if (message == null) {
+      throw new ContentTraversalLimitError();
+    }
+    if (!Array.isArray(message.content)) {
+      continue;
+    }
+    const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - 1 };
+    const content = renameDocumentParts(message.content, nameOf, budget);
+    if (content !== message.content) {
+      message.content = content;
+    }
+  }
+}
 
 /** Anthropic only accepts PDFs as base64 documents; textual types must use a text source */
 function getAnthropicDocumentSource(
@@ -48,6 +173,17 @@ function getAnthropicDocumentSource(
 }
 
 /**
+ * Whether the model behind this provider is Claude, which accepts only PDFs as base64
+ * documents. OpenAI-compatible gateways report an OpenAI-like provider for Claude models.
+ */
+function usesAnthropicDocumentCapabilities(provider: Providers, model?: string): boolean {
+  return (
+    provider === Providers.ANTHROPIC ||
+    (isOpenAILikeProvider(provider) && (model?.toLowerCase().includes('claude') ?? false))
+  );
+}
+
+/**
  * Formats a base64-encoded document into the appropriate provider-specific block.
  * Returns `null` when the provider has no matching handler.
  */
@@ -57,6 +193,7 @@ function formatDocumentBlock(
   content: string,
   filename: string | undefined,
   useResponsesApi: boolean | undefined,
+  model?: string,
 ): DocumentBlock | null {
   if (provider === Providers.ANTHROPIC) {
     const source = getAnthropicDocumentSource(mimeType, content);
@@ -86,6 +223,19 @@ function formatDocumentBlock(
   }
 
   const resolvedFilename = filename ?? 'document';
+
+  /* A gateway translates an OpenAI `file` part into a base64 document with the file's own
+   * media type, which Claude rejects for anything but PDF. Send textual files as text. */
+  if (
+    !useResponsesApi &&
+    isAnthropicTextDocumentType(mimeType) &&
+    usesAnthropicDocumentCapabilities(provider, model)
+  ) {
+    return {
+      type: 'text',
+      text: `File: "${resolvedFilename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
+    };
+  }
 
   if (useResponsesApi) {
     return {
@@ -123,11 +273,7 @@ function filterProviderDocumentFiles(
     return files.filter((file) => isBedrockDocumentType(file.type));
   }
 
-  const usesAnthropicDocumentCapabilities =
-    provider === Providers.ANTHROPIC ||
-    (isOpenAILikeProvider(provider) && model?.toLowerCase().includes('claude'));
-
-  if (!usesAnthropicDocumentCapabilities) {
+  if (!usesAnthropicDocumentCapabilities(provider, model)) {
     return files;
   }
 
@@ -177,10 +323,16 @@ function getBase64DecodedByteCount(content: string): number {
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
   files: IMongoFile[],
-  params: { provider: Providers; endpoint?: string; useResponsesApi?: boolean; model?: string },
+  params: {
+    provider: Providers;
+    endpoint?: string;
+    useResponsesApi?: boolean;
+    model?: string;
+    onMissingFile?: MissingAttachmentHandler;
+  },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model } = params;
+  const { provider, endpoint, useResponsesApi, model, onMissingFile } = params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -201,22 +353,53 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, { provider, endpoint });
+  /** For Bedrock only a limit the operator set counts, so the inherited 512 MB cannot stand in for it. */
+  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, {
+    provider,
+    endpoint,
+    explicit: isBedrock,
+  });
+
+  /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
+  const readLimits = processableFiles.map((file) =>
+    isBedrock ? getBedrockDocumentLimit(file.type, configuredFileSizeLimit, model) : undefined,
+  );
+  /**
+   * A file attached this turn is refused from its recorded size, before storage is opened. Replayed
+   * history skips this: an object that is gone has to be reported missing and left out, and the
+   * bounded read still refuses one that is present.
+   */
+  for (const [index, file] of onMissingFile ? [] : processableFiles.entries()) {
+    const limit = readLimits[index];
+    if (limit != null && (file.bytes ?? 0) > limit) {
+      throw new AttachmentSizeError(file.file_id, file.filename, limit);
+    }
+  }
 
   const results = await Promise.allSettled(
-    processableFiles.map((file) =>
+    processableFiles.map((file, index) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+          readLimits[index],
+        ),
       ),
     ),
   );
 
-  for (const settledResult of results) {
+  for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
-      if (isAttachmentObjectNotFoundError(settledResult.reason)) {
+      if (settledResult.reason instanceof AttachmentSizeError) {
         throw settledResult.reason;
       }
-      console.error('Document processing failed:', settledResult.reason);
+      if (skipMissingAttachment(settledResult.reason, processableFiles[index], onMissingFile)) {
+        continue;
+      }
+      logger.error('Document processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 
@@ -250,7 +433,7 @@ export async function encodeAndFormatDocuments(
 
       const sanitizedName = (file.filename || 'document')
         .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
-        .slice(0, 200);
+        .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
       result.documents.push({
         type: 'document',
         document: {
@@ -283,6 +466,7 @@ export async function encodeAndFormatDocuments(
         content,
         file.filename,
         useResponsesApi,
+        model,
       );
       if (block) {
         result.documents.push(block);
@@ -302,6 +486,7 @@ export async function encodeAndFormatDocuments(
         content,
         file.filename,
         useResponsesApi,
+        model,
       );
       if (block) {
         result.documents.push(block);

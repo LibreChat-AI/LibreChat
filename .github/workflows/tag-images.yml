@@ -67,7 +67,8 @@ jobs:
     with:
       images: >-
         [{"target":"api-build","file":"Dockerfile.multi","image_name":"librechat-api"},
-         {"target":"node","file":"Dockerfile","image_name":"librechat"}]
+         {"target":"node","file":"Dockerfile","image_name":"librechat"},
+         {"target":"runtime","file":"packages/channel-gateway/Dockerfile","image_name":"librechat-channel-gateway"}]
       tag_suffixes: ${{ needs.resolve-tags.outputs.tag_suffixes }}
       build_branch: ${{ github.ref_name }}
     secrets:

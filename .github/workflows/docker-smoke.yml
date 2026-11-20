@@ -16,6 +16,7 @@ on:
       - 'skill/**'
       - 'packages/api/**'
       - 'packages/client/**'
+      - 'packages/chat/**'
       - 'packages/data-provider/**'
       - 'packages/data-schemas/**'
       - '!**.md'
@@ -207,7 +208,7 @@ jobs:
       - name: Verify production image resolves all runtime modules
         run: |
           docker run --rm librechat-api-smoke:ci \
-            node -e "require('@librechat/api'); require('@librechat/api/telemetry'); console.log('module resolution OK')"
+            node -e "const api = require('@librechat/api'); require('@librechat/api/telemetry'); for (const name of ['withSkillUploadIntent', 'reserveSkillBlob', 'createSkillBlobReserver', 'createSkillStorageResolver', 'createSkillBufferWriter']) { if (typeof api[name] !== 'function') throw new Error('Missing Skill upload helper: ' + name); } console.log('module resolution and Skill exports OK')"
 
       # Boot the real entrypoint against a real MongoDB so the *entire* server
       # require graph loads (api/db throws at module scope without MONGO_URI, and

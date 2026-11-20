@@ -7,9 +7,11 @@ import {
   normalizeMCPToolKey,
   buildServerNameAliases,
 } from 'librechat-data-provider';
-import type { AgentToolOptions } from 'librechat-data-provider';
+import type { AgentToolOptions, MCPOptions } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
 import type { RequestBody } from '~/types';
+import { capturePersistedToolOptions, retainToolOptionsLimits } from '~/agents/options';
+import { isApiKeyHeaderOverridden, isGeneratedUserApiKeyVariable } from './headers';
 import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { ALLOWED_BODY_FIELDS, isPluginSourced } from '~/utils/env';
 import { isEnabled } from '~/utils/common';
@@ -161,6 +163,7 @@ export function normalizeAgentToolKeys(params: {
   let optionsChanged = false;
   let nextOptions: AgentToolOptions | undefined;
   if (toolOptions) {
+    capturePersistedToolOptions(toolOptions);
     nextOptions = {};
     for (const [key, options] of Object.entries(toolOptions)) {
       const rewritten = rewriteKey(key);
@@ -177,6 +180,7 @@ export function normalizeAgentToolKeys(params: {
     }
   }
 
+  if (optionsChanged && nextOptions) retainToolOptionsLimits(nextOptions, toolOptions);
   return {
     tools: toolsChanged ? nextTools : tools,
     toolOptions: optionsChanged ? nextOptions : toolOptions,
@@ -189,10 +193,10 @@ const BODY_PLACEHOLDER_FIELDS = Object.fromEntries(
 ) as Record<string, keyof RequestBody>;
 const RUNTIME_BODY_FIELD_NAMES = Object.keys(BODY_PLACEHOLDER_FIELDS).join('|');
 const RUNTIME_BODY_PLACEHOLDER_PATTERN = new RegExp(
-  `\\{\\{LIBRECHAT_BODY_(?:${RUNTIME_BODY_FIELD_NAMES})\\}\\}`,
+  `\\{\\{LIBRECHAT_(?:BODY_(?:${RUNTIME_BODY_FIELD_NAMES})|AGENT_ID)\\}\\}`,
 );
 const RUNTIME_BODY_PLACEHOLDER_CAPTURE_PATTERN = new RegExp(
-  `\\{\\{LIBRECHAT_BODY_(${RUNTIME_BODY_FIELD_NAMES})\\}\\}`,
+  `\\{\\{LIBRECHAT_(?:BODY_(${RUNTIME_BODY_FIELD_NAMES})|(AGENT_ID))\\}\\}`,
   'g',
 );
 
@@ -216,7 +220,7 @@ type UserScopedConnectionConfig = Pick<
 > & {
   /** Loosened like the fields below: raw (pre-inspection) configs carry
    *  optional API-key fields, and the gating predicates only inspect them. */
-  apiKey?: { key?: string; source?: 'user' | 'admin' } | null;
+  apiKey?: Partial<NonNullable<ParsedServerConfig['apiKey']>> | null;
   args?: string[];
   /** Loosened from the parsed shapes so raw (pre-inspection) configs qualify;
    *  scoping predicates only check key presence */
@@ -227,17 +231,35 @@ type UserScopedConnectionConfig = Pick<
   >;
   env?: Record<string, string | undefined>;
   headers?: Record<string, string | undefined>;
+  /** Operator-configured headers sent only on chat-time connections. */
+  requestHeaders?: Record<string, string | undefined>;
   oauth?: PlaceholderValue;
   oauth_headers?: Record<string, string | undefined>;
   url?: string;
 };
 
+function mergeHeaderMaps<T extends string | undefined>(
+  headers: Record<string, T> | undefined,
+  requestHeaders: Record<string, T>,
+): Record<string, T> {
+  const overridden = new Set(Object.keys(requestHeaders).map((name) => name.toLowerCase()));
+  const merged: Record<string, T> = {};
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (!overridden.has(name.toLowerCase())) {
+      merged[name] = value;
+    }
+  }
+  return { ...merged, ...requestHeaders };
+}
+
 function placeholderBearingFields(config: UserScopedConnectionConfig): PlaceholderValue[] {
   return [
-    config.apiKey?.key,
+    isApiKeyHeaderOverridden(config.apiKey, config.requestHeaders) ? undefined : config.apiKey?.key,
     config.args,
     config.env,
-    config.headers,
+    config.requestHeaders == null
+      ? config.headers
+      : mergeHeaderMaps(config.headers, config.requestHeaders),
     config.oauth,
     config.oauth_headers,
     config.url,
@@ -272,11 +294,28 @@ export function requiresOAuthMachinery(config: ParsedServerConfig): boolean {
   return isOAuthServer(config) || config.obo != null;
 }
 
-/** Checks that `customUserVars` is present AND non-empty (guards against truthy `{}`) */
-export function hasCustomUserVars(
-  config: Pick<UserScopedConnectionConfig, 'customUserVars'>,
-): boolean {
-  return !!config.customUserVars && Object.keys(config.customUserVars).length > 0;
+/** Required chat credentials, retaining explicit variables and any still-used generated key. */
+function requiredCustomUserVars(config: UserScopedConnectionConfig): string[] {
+  const keys = Object.keys(config.customUserVars ?? {});
+  if (
+    config.apiKey?.source !== 'user' ||
+    !isApiKeyHeaderOverridden(config.apiKey, config.requestHeaders)
+  ) {
+    return keys;
+  }
+  const fields = placeholderBearingFields(config);
+  return keys.filter((key) => {
+    if (!isGeneratedUserApiKeyVariable(key)) {
+      return true;
+    }
+    const pattern = new RegExp(`\\{\\{${key}\\}\\}`);
+    return fields.some((value) => hasPlaceholder(value, pattern));
+  });
+}
+
+/** Checks the effective chat requirements, without weakening catalog-only credentials. */
+export function hasCustomUserVars(config: UserScopedConnectionConfig): boolean {
+  return requiredCustomUserVars(config).length > 0;
 }
 
 function hasRuntimeContextPlaceholder(value: PlaceholderValue): boolean {
@@ -308,6 +347,10 @@ function addRuntimeBodyPlaceholderFields(
   if (typeof value === 'string') {
     for (const candidate of new Set([value, extractEnvVariable(value)])) {
       for (const match of candidate.matchAll(RUNTIME_BODY_PLACEHOLDER_CAPTURE_PATTERN)) {
+        if (match[2] === 'AGENT_ID') {
+          fields.add('agentId');
+          continue;
+        }
         const placeholderKey = match[1];
         const field = placeholderKey ? BODY_PLACEHOLDER_FIELDS[placeholderKey] : undefined;
         if (field) {
@@ -374,10 +417,74 @@ export function getMCPRequestScope(config: UserScopedConnectionConfig): MCPReque
   return { requestScoped: fields.length > 0, requiredBodyFields: fields };
 }
 
-export function getRuntimeBodyPlaceholderFields(
-  config: UserScopedConnectionConfig,
-): Array<keyof RequestBody> {
-  return getMCPRequestScope(config).requiredBodyFields;
+/** Keep initialization, tool discovery, and recovery on the same agent's connection. */
+export function getMCPAgentConnectionKey(
+  baseKey: string,
+  config: UserScopedConnectionConfig | undefined,
+  body?: RequestBody,
+): string {
+  return config && getMCPRequestScope(config).requiredBodyFields.includes('agentId')
+    ? `${baseKey}:agent:${JSON.stringify(body?.agentId ?? null)}`
+    : baseKey;
+}
+
+/**
+ * Folds the operator's chat-only `requestHeaders` into `headers`, so everything
+ * downstream — direct-bearer detection, Graph preprocessing, `processMCPEnv`,
+ * the transports — keeps reading ONE header map and never has to learn about a
+ * second one. Called at the entry of each resolution pipeline, before any
+ * consumer inspects the config.
+ *
+ * HTTP header names are case-insensitive, so a base `Authorization` is dropped
+ * when the request map declares `authorization`: keeping both would let Undici
+ * join the values (`old, new`) instead of letting `requestHeaders` win.
+ *
+ * The field is consumed as it merges, making this idempotent for a config that
+ * passes through twice (checkout joiners, direct-bearer recovery).
+ */
+export function applyRequestHeaders<T extends MCPOptions>(config: T): T {
+  const carrier = config as T & {
+    headers?: Record<string, string>;
+    requestHeaders?: Record<string, string>;
+  };
+  if (carrier.requestHeaders == null) {
+    return config;
+  }
+
+  const merged = {
+    ...carrier,
+    headers: mergeHeaderMaps(carrier.headers, carrier.requestHeaders),
+  };
+  if (carrier.apiKey && isApiKeyHeaderOverridden(carrier.apiKey, carrier.requestHeaders)) {
+    /** Keep the explicit auth mode, but disarm its lower-priority header injection. */
+    merged.apiKey = { ...carrier.apiKey, key: undefined };
+  }
+  if (carrier.customUserVars) {
+    const required = new Set(requiredCustomUserVars(carrier));
+    merged.customUserVars = Object.fromEntries(
+      Object.entries(carrier.customUserVars).filter(([key]) => required.has(key)),
+    );
+  }
+  delete merged.requestHeaders;
+  return merged;
+}
+
+/**
+ * Strips the operator's chat-only `requestHeaders` for a catalog (discovery)
+ * connection. Discovery has no conversation or message to resolve a
+ * `{{LIBRECHAT_BODY_*}}` placeholder against, so sending the map at all would
+ * either leak a literal placeholder upstream or resolve it to an empty value.
+ *
+ * Returns the same reference when there is nothing to strip.
+ */
+export function toCatalogConnectionConfig<T extends MCPOptions>(config: T): T {
+  const carrier = config as T & { requestHeaders?: Record<string, string> };
+  if (carrier.requestHeaders == null) {
+    return config;
+  }
+  const catalogConfig = { ...carrier };
+  delete catalogConfig.requestHeaders;
+  return catalogConfig;
 }
 
 export function getMissingRuntimeBodyPlaceholderFields(
@@ -385,6 +492,7 @@ export function getMissingRuntimeBodyPlaceholderFields(
   requestBody?: RequestBody,
 ): string[] {
   return getMCPRequestScope(config).requiredBodyFields.filter((field) => {
+    if (field === 'agentId') return false;
     const value = requestBody?.[field];
     return value == null || (typeof value === 'string' && value.trim() === '');
   });
@@ -428,14 +536,25 @@ export function isChatSelectableMCPServer(
   return config.chatMenu !== false && config.consumeOnly !== true;
 }
 
+/** How `filterChatSelectableMCPServers` resolves the servers a user can reach. */
+export interface ChatSelectableLookup {
+  userId: string;
+  role?: string;
+  getAccessibleMCPServers?: (
+    userId: string,
+    role?: string,
+  ) => Promise<Record<string, Pick<ParsedServerConfig, 'chatMenu' | 'consumeOnly'>>>;
+}
+
 /**
  * Narrows a chat picker selection to the servers that picker is allowed to
  * offer, so a stale client, a replayed body, or a hand-written request cannot
  * reach a server the menu hides.
  *
- * Pass only the picker's own selection. Servers a model spec pins
- * (`modelSpec.mcpServers`) are the operator's choice and stay attached even
- * when hidden, so they must be added after this call, not through it.
+ * A server this drops was never offered by the picker. When a model spec
+ * configures one (`modelSpec.mcpServers`), it is the operator's choice and stays
+ * attached; `resolveEphemeralMCPServers` classifies spec servers through this
+ * call and keeps the ones it drops.
  *
  * The accessible set comes from the registry — the same resolution that feeds
  * the client's catalog, with its own tier precedence already applied — rather
@@ -456,18 +575,7 @@ export function isChatSelectableMCPServer(
  */
 export async function filterChatSelectableMCPServers(
   selectedServers: string[] | null | undefined,
-  {
-    userId,
-    role,
-    getAccessibleMCPServers,
-  }: {
-    userId: string;
-    role?: string;
-    getAccessibleMCPServers?: (
-      userId: string,
-      role?: string,
-    ) => Promise<Record<string, Pick<ParsedServerConfig, 'chatMenu' | 'consumeOnly'>>>;
-  },
+  { userId, role, getAccessibleMCPServers }: ChatSelectableLookup,
 ): Promise<string[]> {
   if (!Array.isArray(selectedServers) || selectedServers.length === 0) {
     return [];
@@ -511,10 +619,50 @@ export function requiresUserScopedConnection(config: UserScopedConnectionConfig)
   );
 }
 
+/**
+ * Whether the config declares chat-only headers. Guards against a truthy `{}`
+ * the way `hasCustomUserVars` does.
+ */
+function hasChatOnlyHeaders(config: UserScopedConnectionConfig): boolean {
+  return !!config.requestHeaders && Object.keys(config.requestHeaders).length > 0;
+}
+
 /** Whether a server can share one operator-owned connection across all users. */
 export function canUseAppConnection(config: UserScopedConnectionConfig): boolean {
   return (
-    config.startup !== false && !isUserSourced(config) && !requiresUserScopedConnection(config)
+    config.startup !== false &&
+    !isUserSourced(config) &&
+    !requiresUserScopedConnection(config) &&
+    /**
+     * One session cannot serve both sides of `requestHeaders`: an app-shared
+     * connection's own `initialize` and `tools/list` are catalog requests that
+     * must omit them, while its chat tool calls must send them. Placeholder
+     * values are already excluded through `requiresUserScopedConnection`; STATIC
+     * values reach here, and sharing would bake chat-only headers into the
+     * startup handshake every later catalog read reuses.
+     */
+    !hasChatOnlyHeaders(config)
+  );
+}
+
+/**
+ * Whether a server defers sign-in to its first tool call, offering a user who has not signed in
+ * yet the tool catalog the operator declared. Limited to operator-owned servers whose tools
+ * cannot vary by request or user input. OAuth itself is not required up front: it is often only
+ * discovered when the connection is refused, and the caller only asks once a sign-in is pending.
+ * The declared catalog is required even for a user who holds a cached one from an earlier
+ * connection: one config then prompts every user at the same point, and a cache that may be stale
+ * against the server never decides on its own whether sign-in waits.
+ */
+export function canDeferOAuthSignIn(config: ParsedServerConfig): boolean {
+  return (
+    config.oauthPrompt === 'on_use' &&
+    (config.oauthToolCatalog?.length ?? 0) > 0 &&
+    !isUserSourced(config) &&
+    config.obo == null &&
+    !hasCustomUserVars(config) &&
+    !hasRuntimeContextPlaceholders(config) &&
+    !hasChatOnlyHeaders(config)
   );
 }
 
@@ -528,6 +676,7 @@ export function canUseAppConnection(config: UserScopedConnectionConfig): boolean
 export function canBackfillSharedServerInstructions(config: UserScopedConnectionConfig): boolean {
   return (
     config.startup === false &&
+    !hasChatOnlyHeaders(config) &&
     !requiresUserScopedConnection(config) &&
     /** A configured `oauth` block is identity-scoped even when `requiresOAuth`
      *  is unset or was stamped `false` by the skipped startup inspection —
@@ -550,13 +699,13 @@ export function canBackfillSharedServerInstructions(config: UserScopedConnection
  * otherwise every tool call fails authentication. See issue #10969.
  */
 export function getMissingCustomUserVars(
-  config: Pick<ParsedServerConfig, 'customUserVars'>,
+  config: UserScopedConnectionConfig,
   providedVars?: Record<string, string> | null,
 ): string[] {
   if (!hasCustomUserVars(config)) {
     return [];
   }
-  return Object.keys(config.customUserVars ?? {}).filter((key) => {
+  return requiredCustomUserVars(config).filter((key) => {
     const value = providedVars?.[key];
     return value == null || (typeof value === 'string' && value.trim() === '');
   });
@@ -638,7 +787,11 @@ export function redactServerSecrets(
   }
 
   if (config.oauth) {
-    const { client_secret: _secret, ...safeOAuth } = config.oauth;
+    const {
+      client_secret: _secret,
+      client_secretPreview: _secretPreview,
+      ...safeOAuth
+    } = config.oauth;
     safe.oauth = safeOAuth;
   }
 

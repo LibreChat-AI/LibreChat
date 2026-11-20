@@ -1,16 +1,4 @@
 import React from 'react';
-import { handleDoubleClick } from '~/utils';
-
-export const CodeVariableGfm: React.ElementType = ({ children }: { children: React.ReactNode }) => {
-  return (
-    <code
-      onDoubleClick={handleDoubleClick}
-      className="rounded-md bg-surface-primary-alt p-1 text-xs text-text-secondary md:text-sm"
-    >
-      {children}
-    </code>
-  );
-};
 
 const variableRegex = /{{(.*?)}}/g;
 
@@ -21,7 +9,7 @@ const highlightVariables = (text: string): React.ReactNode[] => {
       return (
         <b
           key={index}
-          className="ml-[0.5] rounded-lg bg-amber-100 p-[1px] font-medium text-text-warning dark:bg-transparent"
+          className="bg-status-warning-subtle text-text-warning ms-[0.5] rounded-lg p-0.25 font-medium"
         >
           {`{{${part}}}`}
         </b>

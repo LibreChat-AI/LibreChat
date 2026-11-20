@@ -9,8 +9,8 @@ body:
         Thanks for taking the time to fill out this bug report!
         
         Before submitting, please:
-        - Search existing [Issues and Discussions](https://github.com/danny-avila/LibreChat/discussions) to see if your bug has already been reported
-        - Use [Discussions](https://github.com/danny-avila/LibreChat/discussions) instead of Issues for:
+        - Search existing [Issues and Discussions](https://github.com/LibreChat-AI/LibreChat/discussions) to see if your bug has already been reported
+        - Use [Discussions](https://github.com/LibreChat-AI/LibreChat/discussions) instead of Issues for:
           - General inquiries
           - Help with setup
           - Questions about whether you're experiencing a bug
@@ -87,7 +87,7 @@ body:
     id: terms
     attributes:
       label: Code of Conduct
-      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/danny-avila/LibreChat/blob/main/.github/CODE_OF_CONDUCT.md)
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/LibreChat-AI/LibreChat/blob/main/.github/CODE_OF_CONDUCT.md)
       options:
         - label: I agree to follow this project's Code of Conduct
           required: true

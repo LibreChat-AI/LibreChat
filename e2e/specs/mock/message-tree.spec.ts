@@ -9,6 +9,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { unroute } from './fixtures';
 
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 
@@ -626,6 +627,9 @@ async function clickForkVisibleMessages(
   await render.scrollIntoViewIfNeeded();
   await render.hover();
   await render.getByRole('button', { name: 'Open Fork Menu' }).click();
+  const popover = page.getByRole('dialog', { name: 'Fork conversation' });
+  await popover.getByRole('button', { name: 'More options' }).click();
+  await popover.getByRole('radio', { name: 'Visible', exact: true }).click();
 
   const [response] = await Promise.all([
     page.waitForResponse(
@@ -635,7 +639,7 @@ async function clickForkVisibleMessages(
         res.status() === 200,
       { timeout: 30000 },
     ),
-    page.getByRole('button', { name: 'Visible messages only', exact: true }).click(),
+    popover.getByRole('button', { name: 'Fork', exact: true }).click(),
   ]);
 
   return (await response.json()) as ForkResponse;
@@ -1135,7 +1139,11 @@ test.describe('message tree stream operations', () => {
     const errorPrompt = `E2E_FORCED_ERROR:${label}`;
     const providerError = `E2E forced stream error ${label}`;
     const errorText = 'The model provider could not complete this request.';
-    const errorPayload = `${errorText}\n${JSON.stringify({ type: 'upstream_model_error' })}`;
+    /** No content policy is configured here, so the failure keeps the provider's own words. */
+    const errorPayload = `${errorText}\n${JSON.stringify({
+      type: 'upstream_model_error',
+      message: providerError,
+    })}`;
     const afterErrorPrompt = replyPrompt(`${label}-after-error`);
     const afterErrorReply = replyText(`${label}-after-error`);
 
@@ -1145,7 +1153,7 @@ test.describe('message tree stream operations', () => {
 
     await sendAndExpectReply(page, errorPrompt, errorText);
     await expect(messagesView(page).getByText(errorText)).toBeVisible({ timeout: 30000 });
-    await expect(messagesView(page).getByText(providerError)).toHaveCount(0);
+    await expect(messagesView(page).getByText(providerError)).toBeVisible();
 
     await sendAndExpectReply(page, afterErrorPrompt, afterErrorReply);
     const messages = await waitForMessages(
@@ -1264,7 +1272,7 @@ test.describe('message tree stream operations', () => {
     await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled({
       timeout: 30000,
     });
-    await page.unroute('**/api/agents/chat**', failGenerationStart);
+    await unroute(page, '**/api/agents/chat**', failGenerationStart);
 
     await sendAndExpectReply(page, afterFailurePrompt, afterFailureReply);
     const messages = await waitForMessages(

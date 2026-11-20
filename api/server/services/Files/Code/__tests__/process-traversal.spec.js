@@ -22,6 +22,8 @@ jest.mock('@librechat/api', () => {
   const https = require('https');
   return {
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
+    createFileProvisionRecovery: jest.requireActual('@librechat/api').createFileProvisionRecovery,
+    createSandboxTextReader: jest.requireActual('@librechat/api').createSandboxTextReader,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     getBasePath: jest.fn(() => ''),
@@ -81,6 +83,12 @@ jest.mock('~/models', () => ({
   updateFile: jest.fn(),
   claimCodeFile: jest.fn().mockResolvedValue({ file_id: 'mock-uuid', usage: 0 }),
   commitCodeFile: jest.fn().mockResolvedValue(true),
+  acquireFileProvision: jest.fn().mockResolvedValue(true),
+  releaseFileProvision: jest.fn().mockResolvedValue(true),
+  commitFileProvision: jest.fn(async ({ output, releaseOnly }) => {
+    if (releaseOnly) return true;
+    return jest.requireMock('~/models').commitCodeFile(output.file, output.sourceDispatchedAt);
+  }),
 }));
 
 const mockSaveBuffer = jest.fn().mockResolvedValue('/uploads/user123/mock-uuid__output.csv');

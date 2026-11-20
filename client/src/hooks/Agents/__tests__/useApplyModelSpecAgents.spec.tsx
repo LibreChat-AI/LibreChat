@@ -3,8 +3,8 @@ import { RecoilRoot, useRecoilValue } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
 import type { TEphemeralAgent, TStartupConfig, TModelSpec } from 'librechat-data-provider';
+import { useApplyModelSpecEffects, useApplyAgentTemplate } from '../useApplyModelSpecAgents';
 import { ephemeralAgentByConvoId, useUpdateEphemeralAgent } from '~/store/agents';
-import { useApplyModelSpecEffects } from '../useApplyModelSpecAgents';
 
 const NEW_CONVO = Constants.NEW_CONVO as string;
 
@@ -143,5 +143,106 @@ describe('useApplyModelSpecEffects', () => {
     });
 
     expect(result.current.ephemeralAgent).toEqual(agent);
+  });
+});
+
+const useTemplateHarness = (targetId: string) => {
+  const applyAgentTemplate = useApplyAgentTemplate();
+  const ephemeralAgent = useRecoilValue(ephemeralAgentByConvoId(targetId));
+  return { applyAgentTemplate, ephemeralAgent };
+};
+
+describe('useApplyAgentTemplate spec merge (#15277)', () => {
+  const targetId = 'convo-saved';
+
+  const specWithTools = (overrides: Partial<TModelSpec>): TStartupConfig =>
+    createStartupConfig([{ ...createModelSpec('test-spec'), ...overrides } as TModelSpec]);
+
+  it('does not re-add an MCP server the user deselected before submitting', () => {
+    const { result } = renderHook(() => useTemplateHarness(targetId), { wrapper: Wrapper });
+
+    act(() => {
+      result.current.applyAgentTemplate({
+        targetId,
+        sourceId: NEW_CONVO,
+        ephemeralAgent: { mcp: [] },
+        specName: 'test-spec',
+        startupConfig: specWithTools({ mcpServers: ['clickhouse'] }),
+      });
+    });
+
+    expect(result.current.ephemeralAgent?.mcp).toEqual([]);
+  });
+
+  it('keeps the submitted selection rather than unioning it with the spec list', () => {
+    const { result } = renderHook(() => useTemplateHarness(targetId), { wrapper: Wrapper });
+
+    act(() => {
+      result.current.applyAgentTemplate({
+        targetId,
+        sourceId: NEW_CONVO,
+        ephemeralAgent: { mcp: ['github'] },
+        specName: 'test-spec',
+        startupConfig: specWithTools({ mcpServers: ['clickhouse'] }),
+      });
+    });
+
+    expect(result.current.ephemeralAgent?.mcp).toEqual(['github']);
+  });
+
+  it('applies the spec MCP list when the submission carries no selection', () => {
+    const { result } = renderHook(() => useTemplateHarness(targetId), { wrapper: Wrapper });
+
+    act(() => {
+      result.current.applyAgentTemplate({
+        targetId,
+        sourceId: NEW_CONVO,
+        ephemeralAgent: {},
+        specName: 'test-spec',
+        startupConfig: specWithTools({ mcpServers: ['clickhouse'] }),
+      });
+    });
+
+    expect(result.current.ephemeralAgent?.mcp).toEqual(['clickhouse']);
+  });
+
+  it("re-pins a hidden spec's capabilities rather than trusting what was submitted", () => {
+    const { result } = renderHook(() => useTemplateHarness(targetId), { wrapper: Wrapper });
+
+    act(() => {
+      result.current.applyAgentTemplate({
+        targetId,
+        sourceId: NEW_CONVO,
+        ephemeralAgent: { web_search: false, mcp: [], memory: false },
+        specName: 'test-spec',
+        startupConfig: specWithTools({
+          hideBadgeRow: true,
+          webSearch: true,
+          mcpServers: ['clickhouse'],
+        }),
+      });
+    });
+
+    expect(result.current.ephemeralAgent?.web_search).toBe(true);
+    expect(result.current.ephemeralAgent?.mcp).toEqual(['clickhouse']);
+    /** The spec is silent on memory, so the submitted value still stands. */
+    expect(result.current.ephemeralAgent?.memory).toBe(false);
+  });
+
+  it('carries an explicit tool opt-out through the merge', () => {
+    const { result } = renderHook(() => useTemplateHarness(targetId), { wrapper: Wrapper });
+
+    act(() => {
+      result.current.applyAgentTemplate({
+        targetId,
+        sourceId: NEW_CONVO,
+        ephemeralAgent: { web_search: false, skills: false },
+        specName: 'test-spec',
+        startupConfig: specWithTools({ webSearch: true, skills: true }),
+      });
+    });
+
+    expect(result.current.ephemeralAgent?.web_search).toBe(false);
+    expect(result.current.ephemeralAgent?.skills).toBe(false);
   });
 });

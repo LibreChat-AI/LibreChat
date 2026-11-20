@@ -1,6 +1,6 @@
 import { Search } from 'lucide-react';
 import { Skeleton } from '@librechat/client';
-import type { AgentItem, ItemFilter } from './items/types';
+import type { AgentItem, ItemFilter, ItemStatus } from './items/types';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { itemKey } from './items/selectors';
 import { useLocalize } from '~/hooks';
@@ -23,6 +23,8 @@ interface MarketplaceCatalogProps {
   emptyKey?: TranslationKeys;
   /** Accessible label for the grid; defaults to the marketplace label. */
   ariaLabel?: string;
+  /** Live state per item, such as an MCP server's connection. */
+  statusFor?: (item: AgentItem) => ItemStatus | undefined;
 }
 
 const SKELETON_COUNT = 3;
@@ -35,7 +37,7 @@ const EMPTY_COPY_KEYS: Record<View, TranslationKeys> = {
 
 function ToolCardSkeleton() {
   return (
-    <div className="flex h-32 w-full flex-col gap-2 rounded-2xl border border-border-light p-4">
+    <div className="border-border-light flex h-32 w-full flex-col gap-2 rounded-2xl border p-4">
       <div className="flex w-full items-start gap-3">
         <Skeleton className="h-10 w-10 shrink-0 rounded-xl" />
         <div className="min-w-0 flex-1 space-y-1.5">
@@ -61,15 +63,16 @@ export default function MarketplaceCatalog({
   onToggleFavorite,
   emptyKey,
   ariaLabel,
+  statusFor,
 }: MarketplaceCatalogProps) {
   const localize = useLocalize();
   const showSkeletons = isLoadingSkills && skillsInView;
 
   if (items.length === 0 && !showSkeletons) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <Search className="size-8 text-text-tertiary opacity-40" aria-hidden="true" />
-        <p className="mt-3 text-sm text-text-secondary">
+      <div role="status" className="flex flex-col items-center justify-center py-16 text-center">
+        <Search className="text-text-tertiary size-8 opacity-40" aria-hidden="true" />
+        <p className="text-text-secondary mt-3 text-sm">
           {localize(emptyKey ?? EMPTY_COPY_KEYS[view])}
         </p>
       </div>
@@ -91,6 +94,7 @@ export default function MarketplaceCatalog({
             onConfigure={onConfigure}
             isFavorited={favoriteKeys?.has(itemKey(item)) ?? false}
             onToggleFavorite={onToggleFavorite}
+            status={statusFor?.(item)}
           />
         </li>
       ))}

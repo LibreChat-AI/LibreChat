@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
+import { createModels, logger } from '..';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { PipelineStage } from 'mongoose';
 import { SYSTEM_TENANT_ID, tenantStorage } from '~/config/tenantContext';
-import { createModels, logger } from '..';
 import { createMethods } from './index';
 
 logger.silent = true;
@@ -98,7 +98,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 afterEach(async () => {

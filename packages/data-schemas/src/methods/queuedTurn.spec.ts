@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { ReasoningEffort, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type {
   IAgentQueuedTurnDocument,
@@ -39,7 +40,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 beforeEach(async () => {
@@ -86,6 +87,36 @@ function rootLineageId(parentMessageId = 'parent-1') {
 }
 
 describe('agent queued turn methods', () => {
+  it.each(['a'.repeat(257), 'a'.repeat(256) + '_'])(
+    'persists and replays a maximum-length response parent without changing lineage',
+    async (parentMessageId) => {
+      const input = enqueueInput({ parentMessageId });
+      const first = await methods.enqueueAgentQueuedTurn(input);
+      expect(first.turn.parentMessageId).toBe(parentMessageId);
+      await expect(methods.enqueueAgentQueuedTurn(input)).resolves.toMatchObject({
+        replayed: true,
+        turn: { queuedTurnId: first.turn.queuedTurnId, parentMessageId },
+      });
+      const stored = await Turn.findById(first.turn.queuedTurnId).lean();
+      expect(stored?.parentMessageId).toBe(parentMessageId);
+      await expect(
+        methods.getEffectiveAgentQueuedTurnPredecessor({
+          ...input,
+          sequence: first.turn.sequence,
+          rootParentMessageId: parentMessageId,
+        }),
+      ).resolves.toMatchObject({ lineagePredecessorId: rootLineageId(parentMessageId) });
+    },
+  );
+
+  it('rejects oversized response parents before reserving a lane or writing a row', async () => {
+    await expect(
+      methods.enqueueAgentQueuedTurn(enqueueInput({ parentMessageId: 'a'.repeat(258) })),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(await Turn.countDocuments()).toBe(0);
+    expect(await Sequence.countDocuments()).toBe(0);
+  });
+
   it('normalizes payloads, replays the same request, and conflicts on changed content', async () => {
     const input = enqueueInput({
       text: '  follow up  ',
@@ -95,6 +126,7 @@ describe('agent queued turn methods', () => {
       ],
       quotes: [' quote ', '', 'second'],
       manualSkills: [' skill-a ', 'skill-a'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       expectedPredecessorCreatedAt: 42,
     });
 
@@ -107,6 +139,7 @@ describe('agent queued turn methods', () => {
       files: [{ file_id: 'file-1', filename: 'report.pdf' }],
       quotes: ['quote', 'second'],
       manualSkills: ['skill-a'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
     });
 
     expect(first.replayed).toBe(false);
@@ -120,11 +153,27 @@ describe('agent queued turn methods', () => {
       files: [{ file_id: 'file-1', filename: 'report.pdf', llmDeliveryPath: 'text' }],
       quotes: ['quote', 'second'],
       manualSkills: ['skill-a'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       expectedPredecessorCreatedAt: 42,
     });
     expect(replay).toMatchObject({
       replayed: true,
-      turn: { queuedTurnId: first.turn.queuedTurnId },
+      turn: {
+        queuedTurnId: first.turn.queuedTurnId,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      },
+    });
+    await expect(methods.listActiveAgentQueuedTurns(input)).resolves.toEqual([
+      expect.objectContaining({
+        queuedTurnId: first.turn.queuedTurnId,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      }),
+    ]);
+    await expect(
+      methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId)),
+    ).resolves.toMatchObject({
+      outcome: 'acquired',
+      claim: { reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high } },
     });
     await expect(
       methods.enqueueAgentQueuedTurn({ ...input, agentId: 'agent-2' }),
@@ -135,7 +184,190 @@ describe('agent queued turn methods', () => {
         parentMessageId: 'different-parent',
       }),
     ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+    await expect(
+      methods.enqueueAgentQueuedTurn({
+        ...input,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.low },
+      }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
     expect(await Turn.countDocuments()).toBe(1);
+  });
+
+  it('preserves previews through durable admission, list, refetch, and mixed-version replay', async () => {
+    const textPreview = ` \n${'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH - 5)}\t \n`;
+    const files = [
+      { file_id: 'paste-1', type: 'text/plain', llmDeliveryPath: 'text' as const, textPreview },
+    ];
+    const input = enqueueInput({ files, expectedPredecessorCreatedAt: 42 });
+    const first = await methods.enqueueAgentQueuedTurn(input);
+    expect(first.turn.files).toEqual(files);
+    expect((await Turn.findById(first.turn.queuedTurnId).lean())?.files).toEqual(files);
+
+    const reloaded = createAgentQueuedTurnMethods(mongoose);
+    await expect(reloaded.listActiveAgentQueuedTurns(input)).resolves.toEqual([
+      expect.objectContaining({ files }),
+    ]);
+    await expect(reloaded.listAgentQueuedTurnReceipts(input)).resolves.toEqual([
+      expect.objectContaining({ files }),
+    ]);
+    await expect(reloaded.getAgentQueuedTurnByClientRequestId(input)).resolves.toMatchObject({
+      files,
+    });
+    for (const file of [
+      { file_id: 'paste-1', type: 'text/plain' },
+      { ...files[0], textPreview: 'different preview', llmDeliveryPath: 'none' as const },
+    ]) {
+      await expect(
+        reloaded.enqueueAgentQueuedTurn({ ...input, files: [file] }),
+      ).resolves.toMatchObject({
+        replayed: true,
+        turn: { queuedTurnId: first.turn.queuedTurnId, files },
+      });
+    }
+
+    const claim = claimInput(first.turn.queuedTurnId);
+    await reloaded.reserveAgentQueuedTurnDelivery({ ...claim, deliveryKey: 'preview-admission' });
+    await reloaded.markQueuedTurnScheduled({
+      ...claim,
+      deliveryKey: 'preview-admission',
+      scheduledAt: START,
+    });
+    await expect(reloaded.claimNextAgentQueuedTurn(claim)).resolves.toMatchObject({
+      outcome: 'acquired',
+      claim: { files },
+    });
+    await expect(
+      reloaded.beginAgentQueuedTurnAdmission({
+        ...claim,
+        admissionId: 'preview-admission',
+        startedAt: START,
+      }),
+    ).resolves.toMatchObject({ outcome: 'started', turn: { files } });
+    await expect(
+      reloaded.markAgentQueuedTurnAdmitted({
+        ...claim,
+        admissionId: 'preview-admission',
+        admissionMode: 'ordinary',
+        generationCreatedAt: 43,
+        effectivePredecessorCreatedAt: 42,
+        lineagePredecessorId: rootLineageId(),
+        settledAt: START,
+      }),
+    ).resolves.toMatchObject({ outcome: 'admitted', turn: { files } });
+
+    const terminalReader = createAgentQueuedTurnMethods(mongoose);
+    await expect(terminalReader.getAgentQueuedTurnByClientRequestId(input)).resolves.toMatchObject({
+      status: 'admitted',
+      files,
+    });
+    await expect(
+      terminalReader.listAgentQueuedTurnReceipts({
+        ...input,
+        clientRequestIds: [input.clientRequestId],
+      }),
+    ).resolves.toEqual([expect.objectContaining({ status: 'admitted', files })]);
+    await expect(
+      terminalReader.enqueueAgentQueuedTurn({
+        ...input,
+        files: [{ ...files[0], textPreview: 'new snippet after reload' }],
+      }),
+    ).resolves.toMatchObject({ replayed: true, turn: { status: 'admitted', files } });
+    expect(await Turn.countDocuments()).toBe(1);
+  });
+
+  it('rejects oversized previews in normalization and the Mongo file-ref schema', async () => {
+    const files = [
+      { file_id: 'paste-1', textPreview: 'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH + 1) },
+    ];
+    await expect(methods.enqueueAgentQueuedTurn(enqueueInput({ files }))).rejects.toBeInstanceOf(
+      TypeError,
+    );
+    expect(await Turn.countDocuments()).toBe(0);
+    expect(await Sequence.countDocuments()).toBe(0);
+
+    const document = new Turn({
+      ...enqueueInput({ files }),
+      fingerprint: 'x'.repeat(43),
+      laneId: 'lane-1',
+    });
+    await expect(document.validate()).rejects.toMatchObject({
+      errors: { 'files.0.textPreview': expect.objectContaining({ kind: 'maxlength' }) },
+    });
+    document.files![0].textPreview = 'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH);
+    await expect(document.validate()).resolves.toBeUndefined();
+  });
+
+  it('refuses an unfenced approval snapshot before inserting a row', async () => {
+    await expect(
+      methods.enqueueAgentQueuedTurn(enqueueInput({ codeApprovalMode: 'ask' })),
+    ).rejects.toThrow('versioned delivery reservation');
+    expect(await Turn.countDocuments()).toBe(0);
+  });
+
+  it('keeps the selected approval mode on queued, claimed, and retried turns', async () => {
+    const input = enqueueInput({
+      codeApprovalMode: 'fullAccess',
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      deliveryReservation: { queuedTurnId: '507f191e810c19729de860ea', deliveryKey: 'v2-key' },
+    });
+    const first = await methods.enqueueAgentQueuedTurn(input);
+    expect(first.turn.codeApprovalMode).toBe('fullAccess');
+    expect(first.turn.reasoningOverride).toEqual({
+      key: 'reasoning_effort',
+      value: ReasoningEffort.high,
+    });
+    expect(first.turn).toMatchObject({ deliveryKey: 'v2-key', deliveryState: 'publishing' });
+    const scope = {
+      user,
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+      queuedTurnId: first.turn.queuedTurnId,
+    };
+    await expect(
+      methods.reserveAgentQueuedTurnDelivery({ ...scope, deliveryKey: 'legacy-v1-key' }),
+    ).resolves.toMatchObject({ outcome: 'conflict' });
+    await expect(
+      methods.reserveAgentQueuedTurnDelivery({ ...scope, deliveryKey: 'v2-key' }),
+    ).resolves.toMatchObject({ outcome: 'already_reserved' });
+
+    expect((await methods.enqueueAgentQueuedTurn(input)).replayed).toBe(true);
+    await expect(
+      methods.enqueueAgentQueuedTurn({ ...input, codeApprovalMode: 'ask' }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+    await expect(
+      methods.enqueueAgentQueuedTurn({
+        ...input,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.low },
+      }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+    const claimed = await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    expect(claimed.outcome).toBe('acquired');
+    if (claimed.outcome === 'acquired') {
+      expect(claimed.claim).toMatchObject({
+        codeApprovalMode: 'fullAccess',
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      });
+    }
+    const listed = await methods.listActiveAgentQueuedTurns({
+      user,
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+    });
+    expect(listed[0]?.codeApprovalMode).toBe('fullAccess');
+  });
+
+  it('keeps old queued turns without a mode and rejects an upgraded same-id replay', async () => {
+    const input = enqueueInput();
+    const created = await methods.enqueueAgentQueuedTurn(input);
+    expect(created.turn.codeApprovalMode).toBeUndefined();
+    expect((await methods.enqueueAgentQueuedTurn(input)).replayed).toBe(true);
+    await expect(
+      methods.enqueueAgentQueuedTurn({
+        ...input,
+        codeApprovalMode: 'fullAccess',
+        deliveryReservation: { queuedTurnId: '507f191e810c19729de860ea', deliveryKey: 'v2-key' },
+      }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
   });
 
   it('looks up terminal receipts by owner-scoped request identity', async () => {
@@ -218,6 +450,31 @@ describe('agent queued turn methods', () => {
     await expect(
       Turn.findOne({ clientRequestId: 'interrupted-reservation' }).lean(),
     ).resolves.toMatchObject({ status: 'queued', sequence: expect.any(Number) });
+  });
+
+  it('reports reservation-only recovery activity when deleted lanes yield no deliveries', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(
+      enqueueInput({ clientRequestId: 'lost-lane-first' }),
+    );
+    const second = await methods.enqueueAgentQueuedTurn(
+      enqueueInput({ clientRequestId: 'lost-lane-second' }),
+    );
+    await Turn.updateMany(
+      { _id: { $in: [first.turn.queuedTurnId, second.turn.queuedTurnId] } },
+      {
+        $set: { status: 'reserving' },
+        $unset: { sequence: 1 },
+      },
+    );
+    await Sequence.deleteMany({});
+    for (let i = 0; i < 2; i++) {
+      const activity = { found: false };
+      expect(await methods.findQueuedTurnsNeedingDelivery(1, activity)).toEqual([]);
+      expect(activity.found).toBe(true);
+    }
+    const empty = { found: false };
+    expect(await methods.findQueuedTurnsNeedingDelivery(1, empty)).toEqual([]);
+    expect(empty.found).toBe(false);
   });
 
   it('caps each conversation at 100 active turns while preserving exact replay', async () => {
@@ -2299,7 +2556,7 @@ describe('agent queued turn methods', () => {
     expect(receipts.map((turn) => turn.queuedTurnId)).not.toContain(deadIds[0]);
   });
 
-  it('isolates owner, tenant, and conversation scopes and drains or deletes exact scopes', async () => {
+  it('isolates owner, tenant, and conversation scopes and deletes exact scopes', async () => {
     const otherUser = new mongoose.Types.ObjectId();
     await Promise.all([
       methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'keep', text: 'keep' })),
@@ -2319,14 +2576,6 @@ describe('agent queued turn methods', () => {
       ),
     ]);
 
-    expect(
-      await methods.drainAgentQueuedTurns({
-        user,
-        tenantId: 'tenant-1',
-        conversationId: 'conversation-1',
-        settledAt: START,
-      }),
-    ).toBe(1);
     expect(
       await methods.deleteAgentQueuedTurns({
         user,
@@ -2386,6 +2635,9 @@ describe('agent queued turn methods', () => {
     await methods.enqueueAgentQueuedTurn(
       enqueueInput({ conversationId: 'conversation-2', clientRequestId: 'keep-conversation' }),
     );
+    const untouched = await Turn.find({ _id: { $ne: tenantOne.turn.queuedTurnId } })
+      .sort('_id')
+      .lean();
 
     await expect(
       methods.prepareAgentQueuedTurnConversationDeletion({
@@ -2435,6 +2687,7 @@ describe('agent queued turn methods', () => {
       }),
     ).resolves.toBe(1);
     expect(await Turn.countDocuments({ user, conversationId: 'conversation-1' })).toBe(1);
+    await expect(Turn.find().sort('_id').lean()).resolves.toEqual(untouched);
     await expect(
       methods.enqueueAgentQueuedTurn(
         enqueueInput({ clientRequestId: 'cannot-reopen-deleted-lane' }),
@@ -2452,7 +2705,116 @@ describe('agent queued turn methods', () => {
     });
     expect(await Turn.countDocuments({ user, conversationId: 'conversation-1' })).toBe(0);
     expect(await Turn.countDocuments({ user, conversationId: 'conversation-2' })).toBe(1);
+    await expect(Turn.find({ conversationId: 'conversation-2' }).lean()).resolves.toEqual(
+      untouched.filter((turn) => turn.conversationId === 'conversation-2'),
+    );
   });
+
+  it.each(['reserving', 'queued', 'claimed'] as const)(
+    'only cancels selected conversation lanes with %s turns',
+    async (status) => {
+      const otherUser = new mongoose.Types.ObjectId();
+      const scopes = [
+        { conversationId: 'conversation-1', tenantId: 'tenant-1' },
+        { conversationId: 'conversation-3', tenantId: undefined },
+        { conversationId: 'conversation-2', tenantId: 'tenant-1' },
+        { conversationId: 'conversation-1', tenantId: 'tenant-2' },
+        { conversationId: 'conversation-1', tenantId: undefined },
+        { conversationId: 'conversation-1', tenantId: 'tenant-1', user: otherUser },
+      ];
+      const turns = await Promise.all(
+        scopes.map((scope, index) =>
+          methods.enqueueAgentQueuedTurn(
+            enqueueInput({ ...scope, clientRequestId: `isolation-${index}` }),
+          ),
+        ),
+      );
+      if (status === 'reserving') {
+        await Turn.updateMany({}, { $set: { status, reservationWriterId: 'pending-writer' } });
+      } else if (status === 'claimed') {
+        for (const [index, scope] of scopes.entries()) {
+          await expect(
+            methods.claimNextAgentQueuedTurn(claimInput(turns[index].turn.queuedTurnId, scope)),
+          ).resolves.toMatchObject({ outcome: 'acquired' });
+        }
+      }
+      const untouchedIds = turns.slice(2).map(({ turn }) => turn.queuedTurnId);
+      const untouched = await Turn.find({ _id: { $in: untouchedIds } })
+        .sort('_id')
+        .lean();
+      const untouchedLanes = await Sequence.find({
+        laneId: { $in: untouched.map((turn) => turn.laneId) },
+      })
+        .sort('_id')
+        .lean();
+      const input = { user, targets: scopes.slice(0, 2), settledAt: START };
+
+      await expect(methods.prepareAgentQueuedTurnConversationDeletion(input)).resolves.toEqual([]);
+      for (const { turn } of turns.slice(0, 2)) {
+        await expect(Turn.findById(turn.queuedTurnId).lean()).resolves.toMatchObject({
+          status: 'cancelled',
+          deliveryState: 'retired',
+          terminalReceipt: { failure: { code: 'OWNER_DRAINED' } },
+        });
+      }
+      await expect(
+        Turn.find({ _id: { $in: untouchedIds } })
+          .sort('_id')
+          .lean(),
+      ).resolves.toEqual(untouched);
+      await expect(methods.deletePreparedAgentQueuedTurnConversations(input)).resolves.toBe(2);
+      await expect(Turn.find().sort('_id').lean()).resolves.toEqual(untouched);
+      await expect(
+        Sequence.find({ laneId: { $in: untouched.map((turn) => turn.laneId) } })
+          .sort('_id')
+          .lean(),
+      ).resolves.toEqual(untouchedLanes);
+    },
+  );
+
+  it.each([
+    { name: 'tenant-scoped', targets: [{ conversationId: 'empty-chat', tenantId: 'tenant-1' }] },
+    { name: 'legacy tenantless', targets: [{ conversationId: 'conversation-1' }] },
+    {
+      name: 'another tenant',
+      targets: [{ conversationId: 'conversation-1', tenantId: 'tenant-2' }],
+    },
+    { name: 'all tenants', targets: [{ conversationId: 'empty-chat', allTenants: true as const }] },
+  ])(
+    'deletes an empty $name conversation despite an unrelated published delivery',
+    async ({ targets }) => {
+      const queued = await methods.enqueueAgentQueuedTurn(enqueueInput());
+      const deliveryKey = 'unrelated-published-delivery';
+      const delivery = { ...claimInput(queued.turn.queuedTurnId), deliveryKey };
+      await methods.reserveAgentQueuedTurnDelivery(delivery);
+      await methods.markQueuedTurnScheduled({ ...delivery, scheduledAt: START });
+      await methods.claimNextAgentQueuedTurn(delivery);
+      await methods.beginAgentQueuedTurnAdmission({
+        ...delivery,
+        admissionId: deliveryKey,
+        startedAt: START,
+      });
+      await methods.markAgentQueuedTurnAdmitted({
+        ...delivery,
+        admissionId: deliveryKey,
+        admissionMode: 'ordinary',
+        generationCreatedAt: 42,
+        lineagePredecessorId: rootLineageId(),
+        settledAt: LATER,
+      });
+      const untouched = await Turn.findById(queued.turn.queuedTurnId).lean();
+      expect(untouched).toMatchObject({ status: 'admitted', deliveryState: 'published' });
+      const lane = await Sequence.findOne({ laneId: untouched?.laneId }).lean();
+      const input = { user, targets, settledAt: START };
+
+      await expect(methods.prepareAgentQueuedTurnConversationDeletion(input)).resolves.toEqual([]);
+      await expect(methods.deletePreparedAgentQueuedTurnConversations(input)).resolves.toBe(0);
+      await expect(methods.prepareAgentQueuedTurnConversationDeletion(input)).resolves.toEqual([]);
+      await expect(methods.deletePreparedAgentQueuedTurnConversations(input)).resolves.toBe(0);
+      await expect(Turn.findById(queued.turn.queuedTurnId).lean()).resolves.toEqual(untouched);
+      await expect(Sequence.findOne({ laneId: untouched?.laneId }).lean()).resolves.toEqual(lane);
+    },
+  );
 
   it('includes preexisting dead deliveries in conversation retirement', async () => {
     const queued = await methods.enqueueAgentQueuedTurn(
@@ -2788,6 +3150,455 @@ describe('agent queued turn methods', () => {
     ).resolves.toBe(true);
     await expect(Turn.findById(queued.turn.queuedTurnId).lean()).resolves.toMatchObject({
       deliveryState: 'retiring',
+    });
+  });
+});
+
+describe('queued turn precedence', () => {
+  const scope = () => ({ user, tenantId: 'tenant-1', conversationId: 'conversation-1' });
+  const precedence = () => ({
+    userId: user.toString(),
+    tenantId: 'tenant-1',
+    conversationId: 'conversation-1',
+  });
+  const pending = (now = START) => methods.hasPendingAgentQueuedTurn({ ...precedence(), now });
+
+  it('answers false for a conversation without queued turns', async () => {
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it('reports a due queued head only inside its exact owner scope', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput());
+
+    await expect(pending()).resolves.toBe(true);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), tenantId: 'tenant-2', now: START }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), tenantId: undefined, now: START }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({
+        ...precedence(),
+        userId: new mongoose.Types.ObjectId().toString(),
+        now: START,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), userId: 'not-an-id', now: START }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), conversationId: 'other', now: START }),
+    ).resolves.toBe(false);
+  });
+
+  it('does not report a head that is not yet available', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ availableAt: LATER }));
+
+    await expect(pending()).resolves.toBe(false);
+    await expect(pending(LATER)).resolves.toBe(true);
+  });
+
+  it('bounds an admitting claim by its lease and stops at admission', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    const claimed = await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    expect(claimed.outcome).toBe('acquired');
+
+    await expect(pending()).resolves.toBe(true);
+    /** A lease that outlived its owner fences the lane for recovery, so the
+     * successor behind it cannot be admitted next either. */
+    await expect(pending(new Date(LATER.getTime() + 1))).resolves.toBe(false);
+
+    await Turn.updateOne(
+      { _id: first.turn.queuedTurnId },
+      {
+        $set: { status: 'admitted' },
+        $unset: { claimId: 1, claimBy: 1, claimUntil: 1, admissionSlot: 1, activeSlot: 1 },
+      },
+    );
+    await expect(pending()).resolves.toBe(true);
+    await Turn.updateMany({}, { $set: { status: 'admitted' } });
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it('does not wait on a dead head awaiting dismissal or on a quarantined admission', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    await methods.releaseAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: first.turn.queuedTurnId,
+      claimId: 'claim-1',
+      claimBy: 'worker-1',
+      disposition: 'dead',
+      settledAt: START,
+      failure: { code: 'PREDECESSOR_ABORTED', message: 'review this turn' },
+    });
+
+    await expect(pending()).resolves.toBe(false);
+
+    await methods.cancelAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: first.turn.queuedTurnId,
+      settledAt: START,
+    });
+    await expect(pending()).resolves.toBe(true);
+
+    await Turn.updateOne(
+      { _id: first.turn.queuedTurnId },
+      {
+        $set: {
+          status: 'dead',
+          terminalReceipt: {
+            outcome: 'dead',
+            settledAt: START,
+            failure: { code: 'ADMISSION_INDETERMINATE', message: 'owner disappeared' },
+          },
+        },
+      },
+    );
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  /** Runs `transition` around the active-lane read: once it is issued and
+   * `before` it executes, or `after` it has returned and before the blocker read. */
+  function interleaveActiveLaneRead(
+    transition: () => Promise<unknown>,
+    when: 'before' | 'after' = 'before',
+  ) {
+    const find = Turn.find.bind(Turn);
+    jest.spyOn(Turn, 'find').mockImplementationOnce((...args: Parameters<typeof find>) => {
+      const query = find(...args);
+      const exec = query.exec.bind(query);
+      query.exec = async () => {
+        if (when === 'before') {
+          await transition();
+          return exec();
+        }
+        const rows = await exec();
+        await transition();
+        return rows;
+      };
+      return query;
+    });
+  }
+
+  async function deadHeadWithSuccessor() {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    await methods.releaseAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: first.turn.queuedTurnId,
+      claimId: 'claim-1',
+      claimBy: 'worker-1',
+      disposition: 'dead',
+      settledAt: START,
+      failure: { code: 'PREDECESSOR_ABORTED', message: 'review this turn' },
+    });
+    return first.turn;
+  }
+
+  async function reservationBesideHead() {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    return Turn.create({
+      ...scope(),
+      agentId: 'agent-1',
+      parentMessageId: 'parent-1',
+      clientRequestId: 'interrupted-reservation',
+      fingerprint: 'x'.repeat(43),
+      laneId: first.turn.laneId,
+      activeSlot: ((first.turn.activeSlot ?? 0) + 1) % 100,
+      status: 'reserving',
+      priority: false,
+      text: 'repair me',
+      attempts: 0,
+      availableAt: START,
+      deliveryState: 'pending',
+    });
+  }
+
+  it('sees a claim that lands while the lane is being read', async () => {
+    const queued = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    interleaveActiveLaneRead(() =>
+      methods.claimNextAgentQueuedTurn(claimInput(queued.turn.queuedTurnId)),
+    );
+
+    await expect(pending()).resolves.toBe(true);
+    await expect(Turn.findById(queued.turn.queuedTurnId).lean()).resolves.toMatchObject({
+      status: 'claimed',
+    });
+  });
+
+  it('sees a released claim that is due again while the lane is being read', async () => {
+    const queued = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.claimNextAgentQueuedTurn(claimInput(queued.turn.queuedTurnId));
+    interleaveActiveLaneRead(() =>
+      methods.releaseAgentQueuedTurn({
+        ...scope(),
+        queuedTurnId: queued.turn.queuedTurnId,
+        claimId: 'claim-1',
+        claimBy: 'worker-1',
+        disposition: 'retry',
+        availableAt: START,
+      }),
+    );
+
+    await expect(pending()).resolves.toBe(true);
+    await expect(Turn.findById(queued.turn.queuedTurnId).lean()).resolves.toMatchObject({
+      status: 'queued',
+    });
+  });
+
+  it('orders a priority dead row ahead of an earlier queued row', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput());
+    const interrupt = await methods.enqueueAgentQueuedTurn(
+      enqueueInput({ clientRequestId: 'interrupt', priority: true }),
+    );
+    await methods.claimNextAgentQueuedTurn(claimInput(interrupt.turn.queuedTurnId));
+    await methods.releaseAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: interrupt.turn.queuedTurnId,
+      claimId: 'claim-1',
+      claimBy: 'worker-1',
+      disposition: 'dead',
+      settledAt: START,
+      failure: { code: 'PREDECESSOR_FAILED', message: 'review this turn' },
+    });
+
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it('still answers before startup has built the capacity index', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await Turn.collection.dropIndex('agent_queued_turn_active_capacity');
+    try {
+      await expect(pending()).resolves.toBe(true);
+    } finally {
+      await Turn.createIndexes();
+    }
+  });
+
+  it('does not wait on an unfinished reservation', async () => {
+    await reservationBesideHead();
+
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it.each(['before', 'after'] as const)(
+    'sees a successor whose dead head is dismissed %s the lane read returns',
+    async (when) => {
+      const dead = await deadHeadWithSuccessor();
+      await expect(pending()).resolves.toBe(false);
+      interleaveActiveLaneRead(
+        () =>
+          methods.cancelAgentQueuedTurn({
+            ...scope(),
+            queuedTurnId: dead.queuedTurnId,
+            settledAt: START,
+          }),
+        when,
+      );
+
+      await expect(pending()).resolves.toBe(true);
+    },
+  );
+
+  it('sees a head whose reservation fence settles after the lane read returns', async () => {
+    const reservation = await reservationBesideHead();
+    interleaveActiveLaneRead(
+      () =>
+        Turn.updateOne(
+          { _id: reservation._id, status: 'reserving' },
+          { $set: { status: 'queued', sequence: 2 } },
+        ),
+      'after',
+    );
+
+    await expect(pending()).resolves.toBe(true);
+  });
+
+  it('sees a head whose expired claim is renewed after the lane read returns', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    const expired = new Date(LATER.getTime() + 1);
+    await expect(pending(expired)).resolves.toBe(false);
+    interleaveActiveLaneRead(
+      () =>
+        Turn.updateOne(
+          { _id: first.turn.queuedTurnId, status: 'claimed' },
+          { $set: { claimUntil: new Date(expired.getTime() + 60_000) } },
+        ),
+      'after',
+    );
+
+    await expect(pending(expired)).resolves.toBe(true);
+  });
+
+  it('reads blockers only for a due head', async () => {
+    const find = jest.spyOn(Turn, 'find');
+    const exists = jest.spyOn(Turn, 'exists');
+
+    await expect(pending()).resolves.toBe(false);
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ availableAt: LATER }));
+    find.mockClear();
+    exists.mockClear();
+    await expect(pending()).resolves.toBe(false);
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(exists).not.toHaveBeenCalled();
+
+    await expect(pending(LATER)).resolves.toBe(true);
+    expect(find).toHaveBeenCalledTimes(2);
+    expect(exists).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('turns promoted from an unapplied steer', () => {
+  const scope = () => ({ user, tenantId: 'tenant-1', conversationId: 'conversation-1' });
+  const steerSource = { steerId: 'steer-1', clientSteerId: 'local-1', generationCreatedAt: 7_000 };
+  const promotedInput = (overrides: Parameters<typeof enqueueInput>[0] = {}) =>
+    enqueueInput({
+      steerSource,
+      deliveryReservation: {
+        queuedTurnId: new mongoose.Types.ObjectId().toString(),
+        deliveryKey: `reserved-${counter}`,
+      },
+      ...overrides,
+    });
+
+  it('writes the steer source with the row and marks ownership once, while the row can still run', async () => {
+    const { turn } = await methods.enqueueAgentQueuedTurn(promotedInput());
+    expect(turn.steerSource).toEqual(steerSource);
+    const target = { ...scope(), queuedTurnId: turn.queuedTurnId };
+
+    await expect(
+      methods.confirmAgentQueuedTurnSourceHandoff({ ...target, at: START }),
+    ).resolves.toBe(true);
+    await expect(
+      methods.confirmAgentQueuedTurnSourceHandoff({ ...target, at: LATER }),
+    ).resolves.toBe(true);
+    await expect(Turn.findById(turn.queuedTurnId).lean()).resolves.toMatchObject({
+      steerSource: { ...steerSource, handoffAt: START },
+    });
+    await expect(
+      methods.confirmAgentQueuedTurnSourceHandoff({ ...target, tenantId: 'tenant-2' }),
+    ).resolves.toBe(false);
+  });
+
+  it('never marks ownership on an ordinary row or on one that already settled', async () => {
+    const ordinary = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    const promoted = await methods.enqueueAgentQueuedTurn(
+      promotedInput({ clientRequestId: 'promoted' }),
+    );
+    await methods.cancelAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: promoted.turn.queuedTurnId,
+      settledAt: START,
+    });
+
+    for (const { turn } of [ordinary, promoted]) {
+      await expect(
+        methods.confirmAgentQueuedTurnSourceHandoff({
+          ...scope(),
+          queuedTurnId: turn.queuedTurnId,
+        }),
+      ).resolves.toBe(false);
+    }
+    await expect(Turn.findById(ordinary.turn.queuedTurnId).lean()).resolves.not.toHaveProperty(
+      'steerSource',
+    );
+  });
+
+  it('rejects a steer source without the generation that accepted it', async () => {
+    await expect(
+      methods.enqueueAgentQueuedTurn(
+        promotedInput({ steerSource: { steerId: 'steer-1', clientSteerId: 'local-1' } as never }),
+      ),
+    ).rejects.toThrow('steer source requires its generation');
+  });
+
+  it('refuses a promoted row that no versioned delivery was reserved for', async () => {
+    await expect(methods.enqueueAgentQueuedTurn(enqueueInput({ steerSource }))).rejects.toThrow(
+      'Promoted steers require a versioned delivery reservation',
+    );
+    await expect(Turn.countDocuments({})).resolves.toBe(0);
+  });
+
+  describe('generation lineage', () => {
+    const lineage = (generationCreatedAt: number) =>
+      methods.getAgentQueuedTurnGenerationLineage({ ...scope(), generationCreatedAt });
+
+    it('answers null for a generation no queued turn is tied to', async () => {
+      await methods.enqueueAgentQueuedTurn(enqueueInput({ expectedPredecessorCreatedAt: 1_000 }));
+
+      await expect(lineage(2_000)).resolves.toBeNull();
+    });
+
+    it('answers the lineage of turns queued directly against the generation', async () => {
+      await methods.enqueueAgentQueuedTurn(enqueueInput({ expectedPredecessorCreatedAt: 1_000 }));
+
+      await expect(lineage(1_000)).resolves.toEqual({
+        parentMessageId: 'parent-1',
+        expectedPredecessorCreatedAt: 1_000,
+      });
+      await expect(
+        methods.getAgentQueuedTurnGenerationLineage({
+          ...scope(),
+          conversationId: 'other',
+          generationCreatedAt: 1_000,
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it('answers a root admission lineage, which has a parent and no epoch', async () => {
+      const ran = await methods.enqueueAgentQueuedTurn(enqueueInput());
+      await Turn.updateOne(
+        { _id: ran.turn.queuedTurnId },
+        {
+          $set: {
+            status: 'admitted',
+            terminalReceipt: {
+              outcome: 'admitted',
+              settledAt: START,
+              generationCreatedAt: 2_000,
+              rootPredecessor: true,
+            },
+          },
+          $unset: { activeSlot: 1 },
+        },
+      );
+
+      await expect(lineage(2_000)).resolves.toEqual({ parentMessageId: 'parent-1' });
+    });
+
+    it('prefers the lineage the generation was admitted from', async () => {
+      const ran = await methods.enqueueAgentQueuedTurn(
+        enqueueInput({ expectedPredecessorCreatedAt: 1_000 }),
+      );
+      await methods.enqueueAgentQueuedTurn(
+        enqueueInput({
+          clientRequestId: 'queued-against-the-run',
+          parentMessageId: 'parent-2',
+          expectedPredecessorCreatedAt: 2_000,
+        }),
+      );
+      await Turn.updateOne(
+        { _id: ran.turn.queuedTurnId },
+        {
+          $set: {
+            status: 'admitted',
+            terminalReceipt: { outcome: 'admitted', settledAt: START, generationCreatedAt: 2_000 },
+          },
+          $unset: { activeSlot: 1 },
+        },
+      );
+
+      await expect(lineage(2_000)).resolves.toEqual({
+        parentMessageId: 'parent-1',
+        expectedPredecessorCreatedAt: 1_000,
+      });
     });
   });
 });

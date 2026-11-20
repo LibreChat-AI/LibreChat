@@ -7,6 +7,8 @@ import type {
   SubagentTaskSnapshot,
 } from '@librechat/agents';
 import type { Cluster, Redis } from 'ioredis';
+import type { ActivitySnapshot } from './digest';
+import { snapshotActivity, snapshotActivitySummary } from './digest';
 import { createConcurrencyLimiter } from '~/utils/promise';
 
 const PROTOCOL_VERSION = 1;
@@ -258,8 +260,13 @@ function truncateMiddle(value: string, maxChars: number): string {
   return `${value.slice(0, head)}${marker}${value.slice(value.length - (available - head))}`;
 }
 
-function boundedSnapshot(snapshot: SubagentTaskSnapshot): SubagentTaskSnapshot {
+/** Progress decorations are re-validated on every hop, so a peer cannot widen them. */
+function boundedSnapshot(snapshot: SubagentTaskSnapshot): ActivitySnapshot {
+  const activity = snapshotActivity(snapshot);
+  const activitySummary = snapshotActivitySummary(snapshot);
   return {
+    ...(activity == null ? {} : { activity }),
+    ...(activitySummary == null ? {} : { activitySummary }),
     taskId: truncateMiddle(snapshot.taskId, MAX_TASK_ID_CHARS),
     ...(snapshot.threadId == null
       ? {}
@@ -348,7 +355,13 @@ function boundedControlResult(result: SubagentTaskControlResult): SubagentTaskCo
   };
 }
 
-async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
+async function waitForRedisConnectionReady(
+  client: RedisClient,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) {
+    throw new SubagentTaskOwnerUnavailableError();
+  }
   if (client.status == null || client.status === 'ready') {
     return;
   }
@@ -360,6 +373,7 @@ async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
       clearTimeout(timeout);
       client.off('ready', onReady);
       client.off('end', onEnd);
+      signal.removeEventListener('abort', onEnd);
     };
     const onReady = () => {
       cleanup();
@@ -374,11 +388,14 @@ async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
       reject(new SubagentTaskOwnerUnavailableError());
     }, DEFAULT_READY_TIMEOUT_MS);
     timeout.unref?.();
+    signal.addEventListener('abort', onEnd, { once: true });
     client.once('ready', onReady);
     client.once('end', onEnd);
     /** Close the status-check/listener-registration race: ioredis may become ready
      * synchronously between the check above and installing these listeners. */
-    if (client.status === 'ready') {
+    if (signal.aborted) {
+      onEnd();
+    } else if (client.status === 'ready') {
       onReady();
     } else if (client.status === 'end') {
       onEnd();
@@ -390,9 +407,10 @@ async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
 
 async function waitForRedisReady(
   client: RedisClient,
+  signal: AbortSignal,
   options: { eagerClusterMasters?: boolean } = {},
 ): Promise<void> {
-  await waitForRedisConnectionReady(client);
+  await waitForRedisConnectionReady(client, signal);
   if (options.eagerClusterMasters !== true || !client.isCluster) {
     return;
   }
@@ -400,8 +418,39 @@ async function waitForRedisReady(
    * fail-fast publisher cannot admit requests until every possible write target is
    * connected; otherwise the first command to a cold shard would be rejected. */
   await Promise.all(
-    (client as Cluster).nodes('master').map((node) => waitForRedisConnectionReady(node)),
+    (client as Cluster).nodes('master').map((node) => waitForRedisConnectionReady(node, signal)),
   );
+}
+
+/** Bounds the initial SUBSCRIBE acknowledgement and cancels it with its owner. */
+async function waitForRedisSubscription(
+  operation: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(new SubagentTaskOwnerUnavailableError());
+    };
+    const timeout = setTimeout(onAbort, DEFAULT_READY_TIMEOUT_MS);
+    timeout.unref?.();
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+    if (signal.aborted) onAbort();
+  });
 }
 
 function isSnapshot(value: unknown): value is SubagentTaskSnapshot {
@@ -727,7 +776,9 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   private registrationHeartbeat?: ReturnType<typeof setInterval>;
   private registrationRefresh?: Promise<void>;
   private destroyed = false;
+  private readonly lifecycle = new AbortController();
 
+  /** Borrows the publisher; owns the dedicated subscriber and its pending waits. */
   constructor(
     private readonly publisher: RedisClient,
     private readonly subscriber: RedisClient,
@@ -757,13 +808,22 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
     /** The publisher fails fast instead of queueing commands, so opening HTTP
      * admission before it is ready would turn healthy startup lag into false
      * `unavailable` results. Both dedicated connections are part of readiness. */
-    await Promise.all([
-      waitForRedisReady(this.publisher, { eagerClusterMasters: true }),
-      waitForRedisReady(this.subscriber),
-    ]);
-    this.subscriber.on('message', this.onMessage);
-    this.ready = this.subscriber.subscribe(this.channel(this.instanceId)).then(() => undefined);
-    await this.ready;
+    try {
+      await Promise.all([
+        waitForRedisReady(this.publisher, this.lifecycle.signal, { eagerClusterMasters: true }),
+        waitForRedisReady(this.subscriber, this.lifecycle.signal),
+      ]);
+      if (this.destroyed) throw new SubagentTaskOwnerUnavailableError();
+      this.subscriber.on('message', this.onMessage);
+      this.ready = waitForRedisSubscription(
+        this.subscriber.subscribe(this.channel(this.instanceId)),
+        this.lifecycle.signal,
+      );
+      await this.requireReady();
+    } catch (error) {
+      await this.destroy();
+      throw error;
+    }
   }
 
   async registerTask(scopeId: string, taskId: string, ttlMs: number): Promise<void> {
@@ -956,6 +1016,8 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       return;
     }
     this.destroyed = true;
+    this.lifecycle.abort();
+    this.handler = undefined;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.retry);
       clearTimeout(pending.timeout);
@@ -972,12 +1034,15 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       this.registrationHeartbeat = undefined;
     }
     this.subscriber.off('message', this.onMessage);
-    await this.subscriber.unsubscribe(this.channel(this.instanceId)).catch(() => undefined);
     this.subscriber.disconnect();
   }
 
   private readonly onMessage = (channel: string, message: string): void => {
-    if (channel !== this.channel(this.instanceId) || message.length > MAX_ROUTED_MESSAGE_CHARS) {
+    if (
+      this.destroyed ||
+      channel !== this.channel(this.instanceId) ||
+      message.length > MAX_ROUTED_MESSAGE_CHARS
+    ) {
       return;
     }
     let parsed: unknown;
@@ -1020,6 +1085,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   }
 
   private async handleRequest(request: RoutedRequest): Promise<void> {
+    if (this.destroyed) return;
     if (Date.now() > request.expiresAt + REQUEST_CLOCK_SKEW_MS) {
       /** The caller stopped waiting for this long ago and has been told it was
        * unavailable, so applying it now would steer a child it believes untouched. */
@@ -1087,6 +1153,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
           ),
         );
       }
+      if (this.destroyed) return;
       const serializedResult = JSON.stringify(result);
       /** Retaining the result rather than the envelope lets a later caller retry,
        * which carries its own correlation id, recover a response it never received. */
@@ -1095,6 +1162,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       }
       serialized = successResponse(request.requestId, serializedResult);
     } catch (error) {
+      if (this.destroyed) return;
       logger.error('[subagentTaskRouting] Owner failed to process a routed command', error);
       serialized = failureResponse(request.requestId);
     }
@@ -1299,6 +1367,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   }
 
   private async publish(channel: string, value: string): Promise<number> {
+    if (this.destroyed) throw new SubagentTaskOwnerUnavailableError();
     const delivered = await this.publisher.publish(channel, value);
     return typeof delivered === 'number' ? delivered : 0;
   }
@@ -1444,5 +1513,6 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       throw new SubagentTaskOwnerUnavailableError();
     }
     await this.ready;
+    if (this.destroyed) throw new SubagentTaskOwnerUnavailableError();
   }
 }

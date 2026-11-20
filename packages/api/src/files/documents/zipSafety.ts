@@ -38,6 +38,8 @@ export interface ZipSafetyOptions {
   maxEntryBytes?: number;
   /** Filename for error messages — does not need to match disk. */
   name?: string;
+  /** Inspect entry names without a second ZIP traversal. */
+  onEntry?: (name: string) => void;
 }
 
 /**
@@ -97,6 +99,12 @@ export function assertSafeZipSize(buffer: Buffer, options: ZipSafetyOptions = {}
       zipfile.readEntry();
 
       zipfile.on('entry', (entry: yauzl.Entry) => {
+        try {
+          options.onEntry?.(entry.fileName);
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error('ZIP entry inspection failed'));
+          return;
+        }
         /* Directory entries (trailing slash) are zero-byte and don't
          * need to be opened. Saves a stream allocation per directory
          * in archives like .docx that have nested subfolders. */

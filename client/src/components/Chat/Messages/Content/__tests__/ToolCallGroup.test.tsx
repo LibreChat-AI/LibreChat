@@ -1,18 +1,37 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
-import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
+import { createPortal } from 'react-dom';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';
+import {
+  FailedRevealContext,
+  useFailedReveal,
+  FoldHeaderContext,
+  ToolAuthWarning,
+} from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
+import { HeaderActionSlotContext } from '../slot';
 import ToolCallGroup from '../ToolCallGroup';
-import { ToolAuthWarning } from '../auth';
 
 const mockMCPServerNames: string[] = [];
 
+/** Moved components read the localizer from the package, so it delegates to the `~/hooks` mock. */
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
+}));
+
 jest.mock('~/hooks', () => ({
+  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
     if (key === 'com_ui_ran_n_actions') {
       return `Ran ${values?.[0]} actions`;
+    }
+    if (key === 'com_ui_preparing_n_actions') {
+      return `Preparing ${values?.[0]} actions`;
     }
     if (key === 'com_ui_running_n_actions') {
       return `Running ${values?.[0]} actions`;
@@ -20,11 +39,17 @@ jest.mock('~/hooks', () => ({
     if (key === 'com_ui_n_searches') {
       return `${values?.[0]} searches`;
     }
-    if (key === 'com_ui_n_actions_failed') {
-      return `${values?.[0]} failed`;
+    if (key === 'com_ui_background_tasks_checked') {
+      return 'Checked background tasks';
     }
-    if (key === 'com_ui_one_action_failed') {
-      return '1 failed';
+    if (key === 'com_ui_background_tasks_checking') {
+      return 'Checking background tasks';
+    }
+    if (key === 'com_ui_background_tasks_n_checks') {
+      return `${values?.[0]} checks`;
+    }
+    if (key === 'com_ui_n_of_n_actions_failed') {
+      return `${values?.[0]}/${values?.[1]} failed`;
     }
     if (key === 'com_ui_n_actions_cancelled') {
       return `${values?.[0]} cancelled`;
@@ -76,14 +101,6 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-    },
-    ref: { current: null },
-  }),
-  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
 
 jest.mock('~/hooks/MCP', () => {
@@ -93,35 +110,49 @@ jest.mock('~/hooks/MCP', () => {
   };
 });
 
+jest.mock('~/components/MCPUIResource', () => ({
+  MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => (
+    <>
+      {(attachments ?? [])
+        .filter((item) => item.type === 'ui_resources')
+        .flatMap((item) => item.ui_resources ?? [])
+        .map((resource: { resourceId: string; toolName?: string }, index) => (
+          <iframe key={`${resource.resourceId}:${index}`} title={`MCP App: ${resource.toolName}`} />
+        ))}
+    </>
+  ),
+}));
+
 jest.mock('../ToolOutput', () => ({
-  StackedToolIcons: ({ toolNames }: { toolNames: string[] }) => (
-    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} />
+  StackedToolIcons: ({ toolNames, status }: { toolNames: string[]; status?: string }) => (
+    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} data-status={status} />
   ),
   getMCPServerName: () => '',
   isError: (output: string) => output.startsWith('Error processing tool'),
 }));
 
 jest.mock('lucide-react', () => ({
-  ChevronDown: ({ className }: { className?: string }) => (
-    <span data-testid="group-chevron" className={className}>
+  ChevronDown: ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
+    <span data-testid="group-chevron" className={className} aria-hidden={props['aria-hidden']}>
       {'chevron'}
     </span>
   ),
   Users: () => <span>{'users'}</span>,
+  Lightbulb: () => <span>{'thoughts'}</span>,
   MessageCircleQuestion: () => <span data-testid="question-icon">{'question'}</span>,
+  ListChecks: () => <span data-testid="task-check-icon">{'checks'}</span>,
   TriangleAlert: () => <span>{'warning'}</span>,
+  CircleX: () => <span>{'failed'}</span>,
+  CircleMinus: () => <span>{'collapse'}</span>,
 }));
 
 const mockSubmittedAskAnswers = new Map<string, string>();
 
-jest.mock('~/utils/approval', () => ({
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   ASK_USER_QUESTION: 'ask_user_question',
   getSubmittedAskAnswer: (toolCallId?: string) =>
     toolCallId != null ? mockSubmittedAskAnswers.get(toolCallId) : undefined,
-}));
-
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getToolDisplayLabel: (name: string, _localize: unknown, knownServerNames?: readonly string[]) => {
     const configuredServer = knownServerNames?.find((server) => name.endsWith(`_mcp_${server}`));
     if (configuredServer) {
@@ -142,22 +173,22 @@ jest.mock('~/utils', () => ({
       create_file: 'Create File',
       edit_file: 'Edit File',
       ask_user_question: 'Question',
+      check_background_task: 'Background tasks',
     };
     return friendlyNames[name] ?? name;
   },
-  /** Real implementations: the group header resolves its text through these,
-   *  so stubbing them out would hide the header logic under test. */
-  getBatchActivityLabelPart: jest.requireActual('~/utils/activityLabels').getBatchActivityLabelPart,
-  getActivityLabelText: jest.requireActual('~/utils/activityLabels').getActivityLabelText,
+}));
+
+jest.mock('~/utils', () => ({
+  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   hasPendingApprovalInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingApprovalInPart,
+  hasPendingAuthInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingAuthInPart,
 }));
 
 jest.mock('../Parts', () => ({
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="attachment-group" data-count={attachments?.length ?? 0} />
-  ),
-  ReasoningCompact: ({ isAfterTool }: { isAfterTool?: boolean }) => (
-    <div data-testid="compact-reasoning" data-after-tool={String(isAfterTool)} />
   ),
 }));
 
@@ -174,6 +205,15 @@ const makePart = (
       name,
       args,
       output,
+    },
+  }) as unknown as TMessageContentParts;
+
+const completed = (part: TMessageContentParts): TMessageContentParts =>
+  ({
+    ...part,
+    [ContentTypes.TOOL_CALL]: {
+      ...(part as unknown as Record<string, object>)[ContentTypes.TOOL_CALL],
+      runStepStatus: 'completed',
     },
   }) as unknown as TMessageContentParts;
 
@@ -253,6 +293,108 @@ const renderGroup = (props: React.ComponentProps<typeof ToolCallGroup>) =>
 const mockScheduleMessageContentLayoutReconcile =
   scheduleMessageContentLayoutReconcile as jest.Mock;
 
+describe('ToolCallGroup folded-in thought', () => {
+  const baseProps = {
+    parts: [
+      { part: makePart('t1'), idx: 0 },
+      {
+        part: { type: ContentTypes.THINK, think: 'Weighing the result' } as TMessageContentParts,
+        idx: 1,
+      },
+    ],
+    isSubmitting: true,
+    showThinking: false,
+    lastContentIdx: 1,
+    renderPart: (_p: TMessageContentParts, idx: number) => <div key={idx} />,
+  } satisfies Omit<React.ComponentProps<typeof ToolCallGroup>, 'isLast'>;
+
+  it('streams the thought at the tail of the group that holds the message cursor', () => {
+    renderGroup({ ...baseProps, isLast: true });
+    expect(screen.getByRole('button', { name: 'com_ui_thinking' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.getByTestId('streaming-thought-peek')).toHaveTextContent('Weighing the result');
+  });
+
+  it('settles the thought at the tail of a body the run has moved past', () => {
+    renderGroup({ ...baseProps, isLast: false });
+    expect(screen.getByRole('button', { name: 'com_ui_thoughts' })).toBeInTheDocument();
+    expect(screen.queryByTestId('streaming-thought-peek')).not.toBeInTheDocument();
+  });
+});
+
+describe('ToolCallGroup package body adapter', () => {
+  it('preserves the renderer child, expansion callback and reasoning disclosure across updates', () => {
+    const element = <input key="tool-child" aria-label="Tool draft" defaultValue="draft" />;
+    const renderPart = jest.fn<
+      ReturnType<React.ComponentProps<typeof ToolCallGroup>['renderPart']>,
+      Parameters<React.ComponentProps<typeof ToolCallGroup>['renderPart']>
+    >(() => element);
+    const parts = [
+      { part: makePart('tool', ''), idx: 0 },
+      {
+        part: {
+          type: ContentTypes.THINK,
+          think: 'Checking',
+          reasoning_label: 'Analysis',
+        } as TMessageContentParts,
+        idx: 1,
+      },
+    ];
+    const props = {
+      parts,
+      renderPart,
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+    };
+    const { rerender } = renderGroup(props);
+    const draft = screen.getByRole('textbox', { name: 'Tool draft' });
+    const wrapper = draft.parentElement;
+    const expand = renderPart.mock.calls[0][3];
+    const disclosure = screen.getByRole('button', { name: 'Analysis' });
+    fireEvent.change(draft, { target: { value: 'unsent' } });
+    fireEvent.click(disclosure);
+    const controls = disclosure.getAttribute('aria-controls');
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup
+          {...props}
+          parts={[
+            { part: makePart('tool', 'done'), idx: 0 },
+            {
+              part: {
+                type: ContentTypes.THINK,
+                think: { value: 'Checked' },
+                reasoning_label: 'Analysis',
+              } as TMessageContentParts,
+              idx: 1,
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('textbox', { name: 'Tool draft' })).toBe(draft);
+    expect(draft).toHaveValue('unsent');
+    expect(draft.parentElement).toBe(wrapper);
+    expect(renderPart.mock.results.every(({ value }) => value === element)).toBe(true);
+    expect(renderPart.mock.calls.every((call) => call[3] === expand)).toBe(true);
+    expect(screen.getByRole('button', { name: 'Analysis' })).toBe(disclosure);
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(disclosure).toHaveAttribute('aria-controls', controls);
+    expect(screen.getByText('Checked')).toBeInTheDocument();
+    const header = screen.getByRole('button', { name: /^Fetch_image/ });
+    fireEvent.click(header);
+    fireEvent.transitionEnd(screen.getByTestId('tool-call-group-panel'));
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    fireEvent.click(header);
+    expect(renderPart.mock.calls.at(-1)?.[3]).toBe(expand);
+    expect(screen.getByRole('textbox', { name: 'Tool draft' })).toHaveValue('draft');
+  });
+});
+
 describe('ToolCallGroup image hoisting', () => {
   const parts = [
     { part: makePart('t1'), idx: 0 },
@@ -287,6 +429,32 @@ describe('ToolCallGroup image hoisting', () => {
     const group = screen.getByTestId('attachment-group');
     expect(group).toBeInTheDocument();
     expect(group.getAttribute('data-count')).toBe('2');
+  });
+
+  it('keeps correlated App views outside the collapsed panel across disclosure toggles', () => {
+    const appAttachment = {
+      type: Tools.ui_resources,
+      toolCallId: 'call-0',
+      agentId: 'agent-a',
+      stepId: 'step-a',
+      [Tools.ui_resources]: [
+        { resourceId: 'alpha', toolName: 'alpha' },
+        { resourceId: 'beta', toolName: 'beta' },
+      ],
+    } as unknown as TAttachment;
+    renderGroup({ ...baseProps, groupAttachments: [appAttachment] });
+
+    const frames = screen.getAllByTitle(/MCP App:/);
+    expect(frames).toHaveLength(2);
+    expect(screen.getByTestId('tool-call-group-panel')).not.toContainElement(frames[0]);
+    const firstFrame = frames[0];
+
+    const toggle = screen.getByRole('button');
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+
+    expect(screen.getAllByTitle(/MCP App:/)).toHaveLength(2);
+    expect(screen.getAllByTitle(/MCP App:/)[0]).toBe(firstFrame);
   });
 
   it('hoists non-image attachments so they survive collapse', () => {
@@ -344,10 +512,35 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByText('Only allow sites you trust')).not.toBeInTheDocument();
   });
 
-  it('keeps the group disclosure chevron visible', () => {
-    renderGroup(baseProps);
-
-    expect(screen.getByTestId('group-chevron')).not.toHaveClass('opacity-0');
+  it('keeps the real header action target stable while the group updates', () => {
+    const actionTargets: HTMLElement[] = [];
+    function Action() {
+      const target = useContext(HeaderActionSlotContext);
+      if (target == null) {
+        return null;
+      }
+      actionTargets.push(target);
+      return createPortal(<span data-testid="tool-action">{'Sources'}</span>, target);
+    }
+    const props = {
+      ...baseProps,
+      initialExpansionState: { isExpanded: true, userOverride: true },
+      renderPart: (_part: TMessageContentParts, idx: number) => <Action key={idx} />,
+    };
+    const { rerender } = renderGroup(props);
+    const header = screen.getByRole('button', { expanded: true });
+    const target = screen.getAllByTestId('tool-action')[0].parentElement;
+    expect(target?.parentElement).toBe(header.parentElement);
+    expect(header).not.toContainElement(target);
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} isSubmitting />
+      </RecoilRoot>,
+    );
+    expect(screen.getAllByTestId('tool-action')[0].parentElement).toBe(target);
+    expect(actionTargets.every((element) => element === target)).toBe(true);
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('does not reconcile layout for an initially collapsed completed group', () => {
@@ -380,6 +573,21 @@ describe('ToolCallGroup image hoisting', () => {
     ).toBeInTheDocument();
     /** Collapsed: bodies not mounted. */
     expect(screen.queryByTestId('inner-0')).not.toBeInTheDocument();
+  });
+
+  it('keeps an unnamed streaming batch open between consecutive calls', () => {
+    const parts = [{ part: makePart('first', '', 'lookup'), idx: 0 }];
+    const view = renderGroup({ ...baseProps, parts, isSubmitting: true });
+    view.rerender(
+      <RecoilRoot>
+        <ToolCallGroup
+          {...baseProps}
+          parts={[{ part: makePart('first', 'done', 'lookup'), idx: 0 }]}
+          isSubmitting
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument();
   });
 
   it('keeps a pending-label group expanded while its tool has no output', () => {
@@ -492,25 +700,6 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
   });
 
-  it('removes the extra Thoughts top margin after a tool row', () => {
-    const reasoningPart = {
-      type: ContentTypes.THINK,
-      [ContentTypes.THINK]: 'A useful thought',
-    } as TMessageContentParts;
-
-    renderGroup({
-      ...baseProps,
-      parts: [
-        { part: makePart('t1'), idx: 0 },
-        { part: reasoningPart, idx: 1 },
-      ],
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
-
-    expect(screen.getByTestId('compact-reasoning')).toHaveAttribute('data-after-tool', 'true');
-  });
-
   it('delegates an unavailable-reasoning part to the standalone renderer', () => {
     /** A detached-subagent projection has no text to compact, so `Part`'s
      *  `ReasoningMarker` is the only thing that stands for it. Rendering it
@@ -532,14 +721,36 @@ describe('ToolCallGroup image hoisting', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
 
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
-    expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_thoughts' })).not.toBeInTheDocument();
+  });
+
+  it('delegates an encrypted-reasoning part to the standalone renderer', () => {
+    const encryptedPart = {
+      type: ContentTypes.THINK,
+      [ContentTypes.THINK]: Buffer.from(
+        Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256),
+      ).toString('base64'),
+    } as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [
+        { part: makePart('t1'), idx: 0 },
+        { part: encryptedPart, idx: 1 },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
+
+    expect(screen.getByTestId('inner-1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_thoughts' })).not.toBeInTheDocument();
   });
 
   it('unmounts tool bodies after a collapsed group finishes transitioning', () => {
     renderGroup(baseProps);
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.click(button);
     expect(screen.getByTestId('inner-0')).toBeInTheDocument();
@@ -565,15 +776,57 @@ describe('ToolCallGroup image hoisting', () => {
     });
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     expect(screen.getByTestId('approval-0')).toBeInTheDocument();
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
 
     fireEvent.click(button);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    fireEvent.mouseEnter(rail);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
     fireEvent.transitionEnd(collapsible);
 
     expect(button).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByTestId('approval-0')).toBeInTheDocument();
     expect(screen.getByTestId('approval-1')).toBeInTheDocument();
+  });
+
+  it('clears a retained group rail when its containing phase collapses', () => {
+    const phaseHeader = { current: document.createElement('div') };
+    /** Two calls: a lone call draws no rail at all. */
+    const groupProps = {
+      ...baseProps,
+      parts: [
+        { part: makeApprovalPart('t1'), idx: 0 },
+        { part: makePart('t2'), idx: 1 },
+      ],
+    };
+    const group = (expanded: boolean) => (
+      <RecoilRoot>
+        <FoldHeaderContext.Provider value={{ header: phaseHeader, expanded }}>
+          <ToolCallGroup {...groupProps} />
+        </FoldHeaderContext.Provider>
+      </RecoilRoot>
+    );
+    const { rerender } = render(group(true));
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
+    rerender(group(false));
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    rerender(group(true));
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).not.toBeDisabled();
+  });
+
+  it('draws no rail for a lone call, titled or not', () => {
+    renderGroup({ ...baseProps, parts: [{ part: makePart('t1'), idx: 0 }] });
+
+    expect(screen.queryByTestId('fold-rail')).toBeNull();
   });
 
   it('keeps deeply nested unresolved approval bodies mounted while the group is collapsed', () => {
@@ -597,7 +850,7 @@ describe('ToolCallGroup image hoisting', () => {
     });
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.transitionEnd(collapsible);
 
@@ -627,7 +880,7 @@ describe('ToolCallGroup image hoisting', () => {
     });
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.transitionEnd(collapsible);
 
@@ -655,7 +908,7 @@ describe('ToolCallGroup image hoisting', () => {
     const { rerender } = renderGroup(propsFor());
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.transitionEnd(collapsible);
     expect(screen.getByTestId('retained-0')).toBeInTheDocument();
@@ -696,7 +949,7 @@ describe('ToolCallGroup image hoisting', () => {
     const { rerender } = renderGroup(propsFor());
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
 
     rerender(
@@ -758,7 +1011,7 @@ describe('ToolCallGroup image hoisting', () => {
       ],
     });
 
-    expect(screen.getByText('· Code ×2')).toBeInTheDocument();
+    expect(screen.getByText('· Code')).toBeInTheDocument();
     expect(screen.queryByText(/Code, bash_tool/)).not.toBeInTheDocument();
     expect(screen.getByTestId('stacked-icons')).toHaveAttribute(
       'data-tool-names',
@@ -833,6 +1086,379 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByText(/web_search|file_search|retrieval/)).not.toBeInTheDocument();
   });
 
+  it('uses the edit glyph for a create_file overwrite without changing its tool label', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'file-1',
+            'Updated AGENTS.md with safe diagnostic guidance',
+            'create_file',
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByTestId('stacked-icons')).toHaveAttribute('data-tool-names', 'edit_file');
+    expect(screen.getByRole('button', { name: 'Create File' })).toBeInTheDocument();
+  });
+
+  it('names a lone code call by what it did, not by the bare tool name', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: completed(makePart('code-1', 'done', 'execute_code')), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('names a lone running code call by what it is doing', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: true,
+      parts: [{ part: makePart('code-1', '', 'execute_code'), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
+  it('keeps a multi-call group in the running tense while one detached task runs', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [
+        { part: completed(makePart('plain-1', 'ok', 'fetch_image')), idx: 0 },
+        {
+          part: completed(
+            makePart(
+              'code-bg-2',
+              JSON.stringify({
+                background_task_id: 'task-2',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 1,
+        },
+      ],
+      lastContentIdx: 1,
+    });
+
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran 2 actions/ })).not.toBeInTheDocument();
+  });
+
+  it('does not hold a group in the running tense for a detached MCP call its row reports as ran', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [
+        { part: completed(makePart('plain-1', 'ok', 'fetch_image')), idx: 0 },
+        {
+          part: completed(
+            makePart(
+              'mcp-bg',
+              JSON.stringify({
+                background_task_id: 'task-3',
+                tool: 'search',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'search_mcp_github',
+            ),
+          ),
+          idx: 1,
+        },
+      ],
+      lastContentIdx: 1,
+    });
+
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+  });
+
+  it('keeps the group open while a lone detached task is still running', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: completed(
+            makePart(
+              'code-bg',
+              JSON.stringify({
+                background_task_id: 'task-1',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('keeps a lone code call in the running tense while its detached task runs', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: completed(
+            makePart(
+              'code-1',
+              JSON.stringify({
+                background_task_id: 'task-1',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
+  const handleOutput = JSON.stringify({
+    background_task_id: 'task-1',
+    tool: 'bash_tool',
+    status: 'running',
+    message: 'Use check_background_task to follow it',
+  });
+  const detachedProps = (attachments: TAttachment[] = []) => ({
+    ...baseProps,
+    parts: [{ part: completed(makePart('code-1', handleOutput, 'bash_tool')), idx: 0 }],
+    lastContentIdx: 0,
+    groupAttachments: attachments,
+  });
+
+  it('does not keep a cancelled detached task open or live', () => {
+    const cancelled = completed(makePart('code-1', handleOutput, 'bash_tool'));
+    (cancelled as unknown as Record<string, Record<string, unknown>>)[
+      ContentTypes.TOOL_CALL
+    ].backgroundTask = { cancelled: true };
+    renderGroup({ ...baseProps, parts: [{ part: cancelled, idx: 0 }], lastContentIdx: 0 });
+
+    expect(screen.getByRole('button', { name: /^com_ui_cancelled/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('moves focus to the header when a focused detached task settles and the group collapses', () => {
+    const renderPart = (_p: TMessageContentParts, idx: number) => (
+      <button type="button" data-testid="row" key={idx}>
+        {'row'}
+      </button>
+    );
+    const settled = {
+      type: 'background_task_status',
+      status: 'finished',
+      toolCallId: 'code-1',
+      messageId: 'm1',
+    } as unknown as TAttachment;
+    const tree = (attachments: TAttachment[]) => (
+      <RecoilRoot>
+        <ToolCallGroup {...detachedProps(attachments)} renderPart={renderPart} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(tree([]));
+    screen.getByTestId('row').focus();
+    expect(screen.getByTestId('row')).toHaveFocus();
+
+    rerender(tree([settled]));
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toHaveFocus();
+  });
+
+  it('does not call a failed lone code call "ran"', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-f',
+        name: 'execute_code',
+        args: '{}',
+        output: 'boom',
+        runStepStatus: 'failed',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: failed, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not call a failed lone code call "running"', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-f2',
+        name: 'execute_code',
+        args: '{}',
+        output: 'boom',
+        runStepStatus: 'failed',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: failed, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_running_var/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when an interrupted legacy record has no success signal', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when an interrupted legacy record kept partial output', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-partial',
+        name: 'execute_code',
+        args: '{}',
+        output: 'partial',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when a legacy record has output but no progress field', () => {
+    const noProgress = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-no-progress',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: noProgress, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('calls a lone legacy code call ran once its progress reaches 1', () => {
+    const finished = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy-ok',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+        progress: 1,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: finished, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not call a stopped lone code call "ran"', () => {
+    const cancelled = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-c',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        runStepStatus: 'cancelled',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: cancelled, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
     renderGroup({
       ...baseProps,
@@ -849,8 +1475,140 @@ describe('ToolCallGroup image hoisting', () => {
 
     expect(
       screen.getByRole('button', {
-        name: 'Ran 3 actions, Create File ×2, Edit File · 1 failed',
+        name: 'Ran 3 actions, Create File, Edit File · 1/3 failed',
       }),
+    ).toBeInTheDocument();
+  });
+
+  it('summarizes repeated task checks as checks rather than separate tasks or generic actions', () => {
+    const parts = Array.from({ length: 3 }, (_, idx) => ({
+      part: makePart(
+        `check-${idx}`,
+        JSON.stringify({
+          background_task_id: 'same-task',
+          tool: 'bash_tool',
+          status: 'running',
+        }),
+        Constants.CHECK_BACKGROUND_TASK,
+      ),
+      idx,
+    }));
+    renderGroup({ ...baseProps, parts, lastContentIdx: 2 });
+
+    expect(
+      screen.getByRole('button', { name: 'Checked background tasks, 3 checks' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('· 3 checks')).toBeInTheDocument();
+    expect(screen.getByTestId('task-check-icon')).toBeInTheDocument();
+    expect(screen.queryByTestId('stacked-icons')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ran 3 actions|check_background_task/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the check group active until its outstanding poll settles', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: true,
+      parts: [
+        { part: makePart('check-1', '{"tasks":[]}', Constants.CHECK_BACKGROUND_TASK), idx: 0 },
+        { part: makePart('check-2', '', Constants.CHECK_BACKGROUND_TASK), idx: 1 },
+      ],
+    });
+
+    expect(
+      screen.getByRole('button', { name: 'Checking background tasks, 2 checks' }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('task-check-icon').parentElement).toHaveClass('animate-pulse');
+  });
+
+  it('uses the same check verb for one poll and preserves mixed-tool summaries', () => {
+    const check = makePart('check-1', '{"tasks":[]}', Constants.CHECK_BACKGROUND_TASK);
+    const { rerender } = renderGroup({
+      ...baseProps,
+      parts: [{ part: check, idx: 0 }],
+      lastContentIdx: 0,
+    });
+    expect(screen.getByRole('button', { name: 'Checked background tasks' })).toBeInTheDocument();
+
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup
+          {...baseProps}
+          parts={[
+            { part: check, idx: 0 },
+            { part: makePart('b1', 'done', Tools.bash_tool), idx: 1 },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Ran 2 actions, Background tasks, Code' }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('stacked-icons')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['error', '1/1 failed'],
+    ['cancelled', '1 cancelled'],
+    ['interrupted', '1/1 failed'],
+  ])('reflects a %s task poll in the collapsed group', (status, suffix) => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'check-1',
+            JSON.stringify({
+              background_task_id: 'bg-1',
+              tool: 'bash_tool',
+              status,
+              ...(status === 'error' ? { error: 'Disk full' } : {}),
+            }),
+            Constants.CHECK_BACKGROUND_TASK,
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: `Checked background tasks, ${suffix}` }),
+    ).toBeInTheDocument();
+  });
+
+  it.each(['invalid', 'rejected', 'unavailable', 'outcome_unknown', 'result_unavailable'])(
+    'shows a failed group for the %s background-task notice even when the poll step succeeds',
+    (status) => {
+      const part = makePart(
+        'poll-1',
+        JSON.stringify({ status, message: 'Host guidance about the failed check.' }),
+        Constants.CHECK_BACKGROUND_TASK,
+      );
+      Object.assign(part[ContentTypes.TOOL_CALL] ?? {}, { runStepStatus: 'completed' });
+      renderGroup({ ...baseProps, parts: [{ part, idx: 0 }], lastContentIdx: 0 });
+      expect(
+        screen.getByRole('button', { name: 'Checked background tasks, 1/1 failed' }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it('marks an incomplete background-task list as a failed check', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'poll-1',
+            JSON.stringify({ tasks: [], partial: true, warning: 'A replica is unreachable.' }),
+            Constants.CHECK_BACKGROUND_TASK,
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+    expect(
+      screen.getByRole('button', { name: 'Checked background tasks, 1/1 failed' }),
     ).toBeInTheDocument();
   });
 
@@ -892,14 +1650,14 @@ describe('ToolCallGroup image hoisting', () => {
       })),
     };
     const { rerender } = renderGroup(props);
-    expect(screen.getByRole('button', { name: /· 1 failed$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toBeInTheDocument();
 
     rerender(
       <RecoilRoot>
         <ToolCallGroup {...props} groupAttachments={[...groupAttachments].reverse()} />
       </RecoilRoot>,
     );
-    expect(screen.getByRole('button', { name: /· 1 failed$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toBeInTheDocument();
   });
 
   it('honors a terminal failed run step whose output reads as benign', () => {
@@ -928,7 +1686,7 @@ describe('ToolCallGroup image hoisting', () => {
      *  settled (past tense while still submitting) and count it as a
      *  failure even though the empty output never parses as an error. */
     expect(
-      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1 failed' }),
+      screen.getByRole('button', { name: 'Ran 2 actions, Create File · 1/2 failed' }),
     ).toBeInTheDocument();
   });
 
@@ -957,7 +1715,7 @@ describe('ToolCallGroup image hoisting', () => {
      *  over the only other notice, so the header must carry it and must not
      *  count it as a failure. */
     expect(
-      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1 cancelled' }),
+      screen.getByRole('button', { name: 'Ran 2 actions, Create File · 1 cancelled' }),
     ).toBeInTheDocument();
   });
 
@@ -1115,5 +1873,405 @@ describe('ToolCallGroup image hoisting', () => {
       screen.getByRole('button', { name: 'Ran 2 actions, Web Search, Question' }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('stacked-icons')).toBeInTheDocument();
+  });
+});
+
+describe('ToolCallGroup failure fast path', () => {
+  const RevealProbe = ({ onReveal }: { onReveal: () => void }) => {
+    useFailedReveal(true, onReveal);
+    return <div data-testid="probe" />;
+  };
+  const failedParts = [
+    { part: makePart('c1', 'created', 'create_file'), idx: 0 },
+    { part: makePart('c2', 'Error processing tool: disk full', 'create_file'), idx: 1 },
+  ];
+  const props = (onReveal: () => void) =>
+    ({
+      parts: failedParts,
+      isSubmitting: false,
+      isLast: false,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_p: TMessageContentParts, idx: number) => (
+        <RevealProbe key={idx} onReveal={onReveal} />
+      ),
+    }) satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  it('opens the group and asks its rows to open from the pill beside a standalone header', () => {
+    const onReveal = jest.fn();
+    renderGroup(props(onReveal));
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' }));
+
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    /** Once per row the group rendered, after those rows mounted. */
+    expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
+  });
+
+  it.each(['created', 'Error processing tool: unavailable'])(
+    'preserves a sparse partial batch with output %s',
+    (output) => {
+      renderGroup({
+        ...props(jest.fn()),
+        parts: [{ part: makePart('remaining', output, 'create_file'), idx: 0 }],
+        labelPart: {
+          part: {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Created the config files',
+            pending: false,
+            status: 'partial',
+          } as TMessageContentParts,
+          idx: 1,
+        },
+      });
+      expect(screen.getByText('warning')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    { type: ContentTypes.THINK, think: 'Remaining thought' },
+    { type: ContentTypes.TEXT, text: 'Remaining commentary' },
+  ])('preserves a failed batch marker with only a $type row', (part) => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [{ part: part as TMessageContentParts, idx: 0 }],
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          activity_label: 'Could not finish',
+          pending: false,
+          status: 'failed',
+        } as TMessageContentParts,
+        idx: 1,
+      },
+    });
+    expect(screen.getByTestId('stacked-icons')).toHaveAttribute('data-status', 'failed');
+  });
+
+  it('does not tint the title of a partially failed labeled group', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          [ContentTypes.ACTIVITY_LABEL]: 'Created the config files',
+          pending: false,
+          status: 'partial',
+        } as unknown as TMessageContentParts,
+        idx: 2,
+      },
+    });
+    expect(screen.getByText('Created the config files')).not.toHaveClass('text-text-warning');
+  });
+
+  it('shows the failure count once, on the pill, when it stands alone', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    expect(header).not.toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
+  });
+
+  it('hides the redundant failure count inside a phase', () => {
+    renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).not.toHaveTextContent(
+      '1/2 failed',
+    );
+  });
+
+  it('leaves the pill to a live phase without collapsing its running group', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [...failedParts, { part: makePart('c3', '', 'create_file'), idx: 2 }],
+      lastContentIdx: 2,
+      isSubmitting: true,
+      parentPhaseOwnsFailurePill: true,
+    });
+
+    const group = screen.getByRole('button', { name: /1\/3 failed$/ });
+    expect(group).toHaveAttribute('aria-expanded', 'true');
+    expect(group).not.toHaveTextContent('1/3 failed');
+    expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
+  });
+
+  it('leaves the pill to the phase header when nested in one', () => {
+    renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
+    expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
+  });
+
+  it('opens for a request from a phase above when it holds a failure', () => {
+    const onReveal = jest.fn();
+    const { rerender } = render(
+      <RecoilRoot>
+        <FailedRevealContext.Provider value={{ tick: 0, claimFocus: null }}>
+          <ToolCallGroup {...props(onReveal)} withinActivityPhase />
+        </FailedRevealContext.Provider>
+      </RecoilRoot>,
+    );
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    rerender(
+      <RecoilRoot>
+        <FailedRevealContext.Provider value={{ tick: 1, claimFocus: null }}>
+          <ToolCallGroup {...props(onReveal)} withinActivityPhase />
+        </FailedRevealContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('keeps an open header in its resting colour over railed rows', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    expect(header).not.toHaveClass('text-text-primary');
+    fireEvent.click(header);
+    expect(header).not.toHaveClass('text-text-primary');
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
+  });
+
+  it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    fireEvent.click(header);
+    const rail = screen.getByTestId('fold-rail');
+    expect(rail).toHaveAttribute('tabindex', '-1');
+    expect(rail).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    fireEvent.mouseEnter(rail);
+    expect(header).toContainElement(screen.getByTestId('fold-rail-knob'));
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    /** Still drawn while the panel animates shut: a second click is a no-op. */
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+describe('grouped tool preparation', () => {
+  it('keeps a collapsed group preparing until at least one call dispatches', () => {
+    const first = makePart('first', '', 'lookup', '{"query":"first');
+    const second = makePart('second', '', 'lookup', '{"query":"second');
+    const parts = [
+      { part: first, idx: 0 },
+      { part: second, idx: 1 },
+    ];
+    const props = {
+      parts,
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_part: TMessageContentParts, idx: number) => <div key={idx} />,
+    };
+    const { rerender } = renderGroup(props);
+    fireEvent.click(screen.getByRole('button', { name: /^Preparing 2 actions/ }));
+    expect(screen.getByRole('button', { name: /^Preparing 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    const dispatched =
+      first.type === ContentTypes.TOOL_CALL
+        ? { ...first, tool_call: { ...first.tool_call, toolDispatchedAt: 100 } }
+        : first;
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} parts={[{ part: dispatched, idx: 0 }, parts[1]]} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    const closed = parts.map(({ part, idx }) => ({
+      idx,
+      part:
+        part.type === ContentTypes.TOOL_CALL
+          ? { ...part, tool_call: { ...part.tool_call, runStepStatus: 'cancelled' as const } }
+          : part,
+    }));
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props} parts={closed} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+    expect(screen.queryByText(/^Preparing /)).not.toBeInTheDocument();
+  });
+});
+
+describe('legacy function preparation groups', () => {
+  it('prepares partial function arguments, then runs and settles using each call’s signals', () => {
+    const legacy = (id: string, args: string, progress = 0.1): TMessageContentParts => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id,
+        type: ToolCallTypes.FUNCTION,
+        function: { name: 'lookup', arguments: args, output: '' },
+        progress,
+      },
+    });
+    const props = (firstArgs: string, secondArgs: string, progress = 0.1) => ({
+      parts: [
+        { part: legacy('first', firstArgs, progress), idx: 0 },
+        { part: legacy('second', secondArgs, progress), idx: 1 },
+      ],
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_part: TMessageContentParts, idx: number) => <div key={idx} />,
+    });
+    const { rerender } = renderGroup(props('{"query":"first', '{"query":"second'));
+    fireEvent.click(screen.getByRole('button', { name: /^Preparing 2 actions/ }));
+    expect(screen.getByRole('button', { name: /^Preparing 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props('{"query":"first"}', '{"query":"second')} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props('{"query":"first', '{"query":"second', 1)} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+  });
+});
+
+describe('ToolCallGroup sole tool', () => {
+  function Probe({ idx }: { idx: number }) {
+    return <div data-testid={`probe-${idx}`}>{String(useToolAutoExpand())}</div>;
+  }
+  const props = (ids: string[]) =>
+    ({
+      parts: ids.map((id, idx) => ({ part: makePart(id), idx })),
+      isSubmitting: false,
+      isLast: false,
+      showThinking: false,
+      lastContentIdx: ids.length - 1,
+      renderPart: (_p: TMessageContentParts, idx: number) => <Probe key={idx} idx={idx} />,
+    }) satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  it('keeps a flattened result interactive rather than inert', () => {
+    render(
+      <RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <ToolCallGroup {...props(['only'])} />
+        </GeneratedToolLabelContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('probe-0').closest('[inert]')).toBeNull();
+  });
+
+  it.each([['only'], ['first', 'second']])(
+    'only compresses a generated group containing one call: %j',
+    (...ids: string[]) => {
+      function LabelProbe() {
+        return (
+          <div data-testid="generated-label">{String(useContext(GeneratedToolLabelContext))}</div>
+        );
+      }
+      renderGroup({
+        ...props(ids),
+        labelPart: {
+          part: {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Checked weather',
+            pending: false,
+          } as TMessageContentParts,
+          idx: ids.length,
+        },
+        renderPart: (_part, idx) => <LabelProbe key={idx} />,
+      });
+      fireEvent.click(screen.getByRole('button', { expanded: false }));
+      expect(screen.getAllByTestId('generated-label')[0]).toHaveTextContent(
+        String(ids.length === 1),
+      );
+    },
+  );
+
+  it('keeps the tool header when Thoughts shares its group', () => {
+    function Probe() {
+      return <span data-testid="lone-with-thoughts">{String(useContext(LoneGroupContext))}</span>;
+    }
+    renderGroup({
+      ...props(['only']),
+      parts: [
+        { part: makePart('only'), idx: 0 },
+        { part: { type: ContentTypes.THINK, think: 'Checking' } as TMessageContentParts, idx: 1 },
+      ],
+      renderPart: () => <Probe />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-with-thoughts')).toHaveTextContent('false');
+  });
+  it('lets the grid panel shrink below its content height', () => {
+    renderGroup(props(['first', 'second']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('min-h-0');
+  });
+
+  it('opens the only tool call inside the group by default', () => {
+    renderGroup(props(['only']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('true');
+  });
+
+  it('marks a one-call group as lone even when its phase holds several calls', () => {
+    function LoneProbe() {
+      return <div data-testid="lone">{String(useContext(LoneGroupContext))}</div>;
+    }
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup
+            {...props(['only'])}
+            renderPart={(_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} />}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone')).toHaveTextContent('true');
+  });
+
+  it('does not mark a two-call group as lone', () => {
+    function LoneProbe({ idx }: { idx: number }) {
+      return <div data-testid={`lone-${idx}`}>{String(useContext(LoneGroupContext))}</div>;
+    }
+    renderGroup({
+      ...props(['a', 'b']),
+      renderPart: (_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} idx={idx} />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-0')).toHaveTextContent('false');
+  });
+
+  it('keeps a one-call group collapsed when its phase holds several calls', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup {...props(['only'])} />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
+  });
+
+  it('leaves calls collapsed when the group holds more than one', () => {
+    renderGroup(props(['a', 'b']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
+    expect(screen.getByTestId('probe-1')).toHaveTextContent('false');
   });
 });

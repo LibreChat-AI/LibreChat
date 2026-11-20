@@ -1,18 +1,28 @@
 const express = require('express');
-const { createUserPreferencesHandler } = require('@librechat/api');
+const {
+  createUserPreferencesHandler,
+  preAuthTenantMiddleware,
+  requirePreAuthTenantContext,
+} = require('@librechat/api');
 const {
   updateUserPluginsController,
   resendVerificationController,
   getTermsStatusController,
   acceptTermsController,
   verifyEmailController,
+  requestEmailChangeController,
+  confirmEmailChangeController,
   deleteUserController,
   getUserController,
 } = require('~/server/controllers/UserController');
 const {
   verifyEmailLimiter,
+  emailChangeLimiter,
+  emailChangeSubmissionLimiter,
+  emailChangeSubmissionIpLimiter,
   verifyEmailSubmissionLimiter,
   configMiddleware,
+  strictConfigMiddleware,
   canDeleteAccount,
   requireJwtAuth,
 } = require('~/server/middleware');
@@ -33,7 +43,32 @@ router.get('/terms', requireJwtAuth, getTermsStatusController);
 router.post('/terms/accept', requireJwtAuth, acceptTermsController);
 router.post('/plugins', requireJwtAuth, updateUserPluginsController);
 router.delete('/delete', requireJwtAuth, canDeleteAccount, configMiddleware, deleteUserController);
-router.post('/verify', verifyEmailSubmissionLimiter, verifyEmailController);
-router.post('/verify/resend', verifyEmailLimiter, resendVerificationController);
+router.post(
+  '/email/change',
+  requireJwtAuth,
+  emailChangeLimiter,
+  strictConfigMiddleware,
+  requestEmailChangeController,
+);
+router.post(
+  '/email/verify',
+  emailChangeSubmissionIpLimiter,
+  emailChangeSubmissionLimiter,
+  confirmEmailChangeController,
+);
+router.post(
+  '/verify',
+  preAuthTenantMiddleware,
+  requirePreAuthTenantContext,
+  verifyEmailSubmissionLimiter,
+  verifyEmailController,
+);
+router.post(
+  '/verify/resend',
+  preAuthTenantMiddleware,
+  requirePreAuthTenantContext,
+  verifyEmailLimiter,
+  resendVerificationController,
+);
 
 module.exports = router;

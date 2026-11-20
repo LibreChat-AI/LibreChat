@@ -5,6 +5,7 @@ import type { RequestHandler, Request, Response, NextFunction } from 'express';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
 import type { JwtPayload } from 'jsonwebtoken';
 import type { GetAppConfigOptions } from '../app/service';
+import type { RecordAuditEntry } from '~/admin/audit';
 import type { ServerRequest } from '~/types/http';
 import type { ContextRequest } from './tenant';
 import {
@@ -12,6 +13,7 @@ import {
   getOpenIdRolesForOpenIdSync,
   getOpenIdRoleSyncOptions,
   selectOpenIdRole,
+  recordIdpRoleChange,
 } from '../auth/openidRoleSync';
 import { clearOidcAccessTokenCache, extractBearerToken, verifyOidcAccessToken } from '../auth/oidc';
 import { findOpenIDUser, getOpenIdEmail, normalizeOpenIdIssuer } from '../auth/openid';
@@ -24,6 +26,8 @@ export interface RemoteAgentAuthDeps {
   updateUser: UserMethods['updateUser'];
   isPrincipalActive: (userId: string) => Promise<boolean>;
   getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig>;
+  /** Records role changes made by OpenID role sync; fail-open. */
+  recordAuditEntry?: RecordAuditEntry;
 }
 
 type OidcConfig = NonNullable<
@@ -332,18 +336,17 @@ async function selectOpenIdRoleForOpenIdSync(
 async function updateResolvedUser(
   userResolution: Extract<UserResolution, { status: 'resolved' }>,
   updateUser: RemoteAgentAuthDeps['updateUser'],
-): Promise<void> {
+): Promise<boolean> {
   if (Object.keys(userResolution.updateData).length === 0) {
-    return;
+    return true;
   }
 
   const update = async () => updateUser(userResolution.user.id, userResolution.updateData);
   if (userResolution.user.tenantId && getTenantId() !== userResolution.user.tenantId) {
-    await tenantStorage.run({ tenantId: userResolution.user.tenantId }, update);
-    return;
+    return Boolean(await tenantStorage.run({ tenantId: userResolution.user.tenantId }, update));
   }
 
-  await update();
+  return Boolean(await update());
 }
 
 /**
@@ -374,6 +377,7 @@ export function createRemoteAgentAuth({
   updateUser,
   isPrincipalActive,
   getAppConfig,
+  recordAuditEntry,
 }: RemoteAgentAuthDeps): RequestHandler {
   /**
    * Annotated as `express.Request` (and helpers below take the same type)
@@ -477,6 +481,7 @@ export function createRemoteAgentAuth({
         return;
       }
 
+      const previousRole = userResolution.user.role;
       const selectedRole = await selectOpenIdRoleForOpenIdSync(
         payload,
         userResolution.user,
@@ -509,7 +514,17 @@ export function createRemoteAgentAuth({
         return;
       }
 
-      await updateResolvedUser(userResolution, updateUser);
+      const persisted = await updateResolvedUser(userResolution, updateUser);
+      if (roleChanged && persisted) {
+        await recordIdpRoleChange({
+          recordAuditEntry,
+          userId: userResolution.user.id,
+          previousRole,
+          role: selectedRole,
+          source: 'remote_agent_oidc',
+          tenantId: userResolution.user.tenantId,
+        });
+      }
 
       req.user = userResolution.user;
       return continueWithAuthenticatedTenantContext(req, res, next);

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   vectordb:
-    image: pgvector/pgvector:0.8.0-pg15-trixie
+    image: docker.io/pgvector/pgvector:0.8.0-pg15-trixie
     environment:
       POSTGRES_DB: mydatabase
       POSTGRES_USER: myuser
@@ -13,7 +13,7 @@ services:
       - "5433:5432"
 
   rag_api:
-    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev:latest
+    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev:latest
     environment:
       - DB_HOST=vectordb
       - DB_PORT=5432

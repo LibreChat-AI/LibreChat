@@ -1,4 +1,8 @@
-import { webSearchAuth, webSearchSelectionFields } from '@librechat/data-schemas';
+import {
+  webSearchAuth,
+  loadWebSearchConfig,
+  webSearchSelectionFields,
+} from '@librechat/data-schemas';
 import {
   AuthType,
   RerankerTypes,
@@ -8,12 +12,20 @@ import {
   ScraperProviders,
 } from 'librechat-data-provider';
 import type { TWebSearchConfig, TCustomConfig } from 'librechat-data-provider';
+import type { TWebSearchKeys } from '@librechat/data-schemas';
 import {
   loadWebSearchAuth,
   extractWebSearchEnvVars,
   getWebSearchInstallEntries,
   getWebSearchUninstallFields,
 } from './web';
+import { encryptConfigSecretFields } from '~/admin/secrets';
+
+/** Encryption reads `CREDS_KEY` when data-schemas loads, before any spec code runs. */
+jest.mock('@librechat/data-schemas', () => {
+  process.env.CREDS_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  return { ...jest.requireActual('@librechat/data-schemas') };
+});
 
 // Mock the extractVariableName function
 jest.mock('../utils', () => ({
@@ -651,7 +663,7 @@ describe('web.ts', () => {
         });
 
         expect(result.authResult.keenableApiUrl).toBe('https://user-keenable.example.com');
-        expect(result.authResult.keenableApiKey).toBeUndefined();
+        expect(result.authResult.keenableApiKey).toBe('');
         expect(result.authTypes).toEqual([
           ['providers', AuthType.USER_PROVIDED],
           ['scrapers', AuthType.USER_PROVIDED],
@@ -667,6 +679,115 @@ describe('web.ts', () => {
           delete process.env.KEENABLE_API_URL;
         } else {
           process.env.KEENABLE_API_URL = originalApiUrl;
+        }
+      }
+    });
+
+    it('should not send a system Jina key to a user-provided API URL', async () => {
+      const originalApiKey = process.env.JINA_API_KEY;
+      const originalApiUrl = process.env.JINA_API_URL;
+      process.env.JINA_API_KEY = 'system-jina-key';
+      process.env.JINA_API_URL = AuthType.USER_PROVIDED;
+      mockIsSSRFTarget.mockReturnValue(false);
+      mockResolveHostnameSSRF.mockResolvedValue(false);
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'JINA_API_KEY') {
+            result[field] = 'system-jina-key';
+          } else if (field === 'JINA_API_URL') {
+            result[field] = 'https://user-jina.example.com/v1/rerank';
+          } else {
+            result[field] =
+              field === 'FIRECRAWL_API_URL' ? 'https://api.firecrawl.dev' : 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      try {
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: {
+            ...webSearchConfig,
+            rerankerType: RerankerTypes.JINA,
+          },
+          loadAuthValues: mockLoadAuthValues,
+        });
+
+        expect(result.authResult.jinaApiKey).toBe('system-jina-key');
+        expect(result.authResult.jinaApiUrl).toBe('https://api.jina.ai/v1/rerank');
+        expect(result.authTypes).toContainEqual([
+          SearchCategories.RERANKERS,
+          AuthType.SYSTEM_DEFINED,
+        ]);
+        expect(mockResolveHostnameSSRF).toHaveBeenCalledWith(
+          'user-jina.example.com',
+          undefined,
+          '443',
+        );
+      } finally {
+        if (originalApiKey == null) {
+          delete process.env.JINA_API_KEY;
+        } else {
+          process.env.JINA_API_KEY = originalApiKey;
+        }
+        if (originalApiUrl == null) {
+          delete process.env.JINA_API_URL;
+        } else {
+          process.env.JINA_API_URL = originalApiUrl;
+        }
+      }
+    });
+
+    it("should keep a user-provided Jina URL with the same user's key", async () => {
+      const originalApiKey = process.env.JINA_API_KEY;
+      const originalApiUrl = process.env.JINA_API_URL;
+      delete process.env.JINA_API_KEY;
+      delete process.env.JINA_API_URL;
+      mockIsSSRFTarget.mockReturnValue(false);
+      mockResolveHostnameSSRF.mockResolvedValue(false);
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'JINA_API_KEY') {
+            result[field] = 'user-jina-key';
+          } else if (field === 'JINA_API_URL') {
+            result[field] = 'https://user-jina.example.com/v1/rerank';
+          } else {
+            result[field] =
+              field === 'FIRECRAWL_API_URL' ? 'https://api.firecrawl.dev' : 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      try {
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: {
+            ...webSearchConfig,
+            rerankerType: RerankerTypes.JINA,
+          },
+          loadAuthValues: mockLoadAuthValues,
+        });
+
+        expect(result.authResult.jinaApiKey).toBe('user-jina-key');
+        expect(result.authResult.jinaApiUrl).toBe('https://user-jina.example.com/v1/rerank');
+        expect(result.authTypes).toContainEqual([
+          SearchCategories.RERANKERS,
+          AuthType.USER_PROVIDED,
+        ]);
+      } finally {
+        if (originalApiKey == null) {
+          delete process.env.JINA_API_KEY;
+        } else {
+          process.env.JINA_API_KEY = originalApiKey;
+        }
+        if (originalApiUrl == null) {
+          delete process.env.JINA_API_URL;
+        } else {
+          process.env.JINA_API_URL = originalApiUrl;
         }
       }
     });
@@ -696,7 +817,7 @@ describe('web.ts', () => {
         });
 
         expect(result.authResult.keenableApiUrl).toBe('https://user-keenable.example.com');
-        expect(result.authResult.keenableApiKey).toBeUndefined();
+        expect(result.authResult.keenableApiKey).toBe('');
       } finally {
         if (originalApiKey == null) {
           delete process.env.KEENABLE_API_KEY;
@@ -1480,6 +1601,188 @@ describe('web.ts', () => {
       // Restore original env
       process.env = originalEnv;
     });
+  });
+
+  describe('URL and API key credential pairing', () => {
+    const userId = 'test-user-id';
+    const providers = [
+      {
+        name: 'Firecrawl',
+        apiKey: 'firecrawlApiKey',
+        apiUrl: 'firecrawlApiUrl',
+        keyField: 'FIRECRAWL_API_KEY',
+        urlField: 'FIRECRAWL_API_URL',
+        category: SearchCategories.SCRAPERS,
+        authenticatedWithoutUrl: true,
+        config: {
+          searchProvider: SearchProviders.KEENABLE,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          rerankerType: RerankerTypes.NONE,
+        },
+      },
+      {
+        name: 'SearXNG',
+        apiKey: 'searxngApiKey',
+        apiUrl: 'searxngInstanceUrl',
+        keyField: 'SEARXNG_API_KEY',
+        urlField: 'SEARXNG_INSTANCE_URL',
+        category: SearchCategories.PROVIDERS,
+        authenticatedWithoutUrl: false,
+        config: {
+          searchProvider: SearchProviders.SEARXNG,
+          scraperProvider: ScraperProviders.KEENABLE,
+          rerankerType: RerankerTypes.NONE,
+        },
+      },
+    ] as const;
+
+    describe.each(providers)('$name', (provider) => {
+      let originalEnv: NodeJS.ProcessEnv;
+
+      beforeEach(() => {
+        originalEnv = process.env;
+        process.env = { ...originalEnv };
+        delete process.env[provider.keyField];
+        delete process.env[provider.urlField];
+        mockIsSSRFTarget.mockReturnValue(false);
+        mockResolveHostnameSSRF.mockResolvedValue(false);
+      });
+
+      afterEach(() => {
+        process.env = originalEnv;
+      });
+
+      const config: TWebSearchConfig = {
+        ...provider.config,
+        [provider.apiKey]: `\${${provider.keyField}}`,
+        [provider.apiUrl]: `\${${provider.urlField}}`,
+        safeSearch: SafeSearchTypes.MODERATE,
+      };
+
+      it.each([undefined, AuthType.USER_PROVIDED])(
+        'rejects a user URL with a system key when the URL environment value is %s',
+        async (urlEnv) => {
+          process.env[provider.keyField] = 'system-api-key';
+          if (urlEnv != null) {
+            process.env[provider.urlField] = urlEnv;
+          }
+
+          const result = await loadWebSearchAuth({
+            userId,
+            webSearchConfig: config,
+            loadAuthValues: async () => ({
+              [provider.keyField]: 'system-api-key',
+              [provider.urlField]: 'https://user-provider.example.com',
+            }),
+          });
+
+          expect(result.authenticated).toBe(provider.authenticatedWithoutUrl);
+          expect(result.authResult[provider.apiUrl]).toBeUndefined();
+          expect(result.authResult[provider.apiKey]).toBe(
+            provider.authenticatedWithoutUrl ? 'system-api-key' : undefined,
+          );
+          expect(result.authTypes).toContainEqual([
+            provider.category,
+            provider.authenticatedWithoutUrl ? AuthType.SYSTEM_DEFINED : AuthType.USER_PROVIDED,
+          ]);
+        },
+      );
+
+      it("preserves a user URL paired with the same user's key", async () => {
+        process.env[provider.keyField] = AuthType.USER_PROVIDED;
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: config,
+          loadAuthValues: async () => ({
+            [provider.keyField]: 'user-api-key',
+            [provider.urlField]: 'https://user-provider.example.com',
+          }),
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.authResult[provider.apiKey]).toBe('user-api-key');
+        expect(result.authResult[provider.apiUrl]).toBe('https://user-provider.example.com');
+        expect(result.authTypes).toContainEqual([provider.category, AuthType.USER_PROVIDED]);
+      });
+
+      it('preserves a system URL paired with a system key', async () => {
+        process.env[provider.keyField] = 'system-api-key';
+        process.env[provider.urlField] = 'https://admin-provider.example.com';
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: config,
+          loadAuthValues: async () => ({
+            [provider.keyField]: 'system-api-key',
+            [provider.urlField]: 'https://admin-provider.example.com',
+          }),
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.authResult[provider.apiKey]).toBe('system-api-key');
+        expect(result.authResult[provider.apiUrl]).toBe('https://admin-provider.example.com');
+        expect(result.authTypes).toContainEqual([provider.category, AuthType.SYSTEM_DEFINED]);
+      });
+
+      it('rejects mixed ownership with custom environment variable names', async () => {
+        process.env.CUSTOM_PROVIDER_API_KEY = 'system-api-key';
+        process.env.CUSTOM_PROVIDER_API_URL = AuthType.USER_PROVIDED;
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: {
+            ...config,
+            [provider.apiKey]: '${CUSTOM_PROVIDER_API_KEY}',
+            [provider.apiUrl]: '${CUSTOM_PROVIDER_API_URL}',
+          },
+          loadAuthValues: async () => ({
+            CUSTOM_PROVIDER_API_KEY: 'system-api-key',
+            CUSTOM_PROVIDER_API_URL: 'https://user-provider.example.com',
+          }),
+        });
+
+        expect(result.authenticated).toBe(provider.authenticatedWithoutUrl);
+        expect(result.authResult[provider.apiUrl]).toBeUndefined();
+      });
+    });
+
+    it.each([undefined, ''])(
+      'preserves keyless SearXNG with an API key value of %s',
+      async (apiKey) => {
+        const originalEnv = process.env;
+        process.env = { ...originalEnv };
+        delete process.env.SEARXNG_API_KEY;
+        delete process.env.SEARXNG_INSTANCE_URL;
+        mockIsSSRFTarget.mockReturnValue(false);
+        mockResolveHostnameSSRF.mockResolvedValue(false);
+
+        try {
+          const result = await loadWebSearchAuth({
+            userId,
+            webSearchConfig: {
+              searxngApiKey: '${SEARXNG_API_KEY}',
+              searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}',
+              searchProvider: SearchProviders.SEARXNG,
+              scraperProvider: ScraperProviders.KEENABLE,
+              rerankerType: RerankerTypes.NONE,
+              safeSearch: SafeSearchTypes.MODERATE,
+            },
+            loadAuthValues: async () => ({
+              ...(apiKey == null ? {} : { SEARXNG_API_KEY: apiKey }),
+              SEARXNG_INSTANCE_URL: 'https://user-provider.example.com',
+            }),
+          });
+
+          expect(result.authenticated).toBe(true);
+          expect(result.authResult.searxngInstanceUrl).toBe('https://user-provider.example.com');
+          expect(result.authResult.searxngApiKey).toBe('');
+          expect(result.authTypes).toContainEqual([
+            SearchCategories.PROVIDERS,
+            AuthType.USER_PROVIDED,
+          ]);
+        } finally {
+          process.env = originalEnv;
+        }
+      },
+    );
   });
 
   describe('webSearchAuth', () => {
@@ -2486,7 +2789,7 @@ describe('web.ts', () => {
         loadAuthValues: mockLoadAuthValues,
       });
 
-      expect(result.authResult.jinaApiUrl).toBeUndefined();
+      expect(result.authResult.jinaApiUrl).toBe('https://api.jina.ai/v1/rerank');
       expect(mockIsSSRFTarget).toHaveBeenCalledWith('localhost', undefined, '8080');
     });
 
@@ -2961,13 +3264,597 @@ describe('web.ts', () => {
           loadAuthValues: mockLoadAuthValues,
         });
 
-        expect(result.authResult.jinaApiUrl).toBeUndefined();
+        expect(result.authResult.jinaApiUrl).toBe('https://api.jina.ai/v1/rerank');
         expect(result.authenticated).toBe(true);
         const rerankersAuth = result.authTypes.find(([c]) => c === 'rerankers')?.[1];
         expect(rerankersAuth).toBe(AuthType.SYSTEM_DEFINED);
       } finally {
         process.env = originalEnv;
       }
+    });
+  });
+
+  describe('credentials stored in config', () => {
+    const userId = 'test-user-id';
+    const ENV_NAMES = [
+      'SERPER_API_KEY',
+      'SEARXNG_INSTANCE_URL',
+      'SEARXNG_API_KEY',
+      'FIRECRAWL_API_KEY',
+      'FIRECRAWL_API_URL',
+      'FIRECRAWL_VERSION',
+      'TAVILY_API_KEY',
+      'TAVILY_SEARCH_URL',
+      'TAVILY_EXTRACT_URL',
+      'KEENABLE_API_KEY',
+      'KEENABLE_API_URL',
+      'JINA_API_KEY',
+      'JINA_API_URL',
+      'COHERE_API_KEY',
+    ];
+    /** Keyless fillers so each case authenticates on the service under test alone. */
+    const KEYLESS = {
+      searchProvider: SearchProviders.KEENABLE,
+      scraperProvider: ScraperProviders.KEENABLE,
+      rerankerType: RerankerTypes.NONE,
+    };
+    let originalEnv: NodeJS.ProcessEnv;
+
+    beforeEach(() => {
+      originalEnv = process.env;
+      process.env = { ...originalEnv };
+      for (const name of ENV_NAMES) {
+        delete process.env[name];
+      }
+      mockIsSSRFTarget.mockReturnValue(false);
+      mockResolveHostnameSSRF.mockResolvedValue(false);
+    });
+
+    afterEach(() => {
+      process.env = originalEnv;
+    });
+
+    /** Mirrors `loadAuthValues`: a set environment value wins, otherwise the user's saved value. */
+    function authValuesFor(userValues: Record<string, string> = {}) {
+      return jest.fn(async ({ authFields }: { authFields: string[] }) => {
+        const values: Record<string, string> = {};
+        for (const field of authFields) {
+          const envValue = process.env[field];
+          const value =
+            envValue && envValue.trim() !== '' && envValue !== AuthType.USER_PROVIDED
+              ? envValue
+              : userValues[field];
+          if (value != null) {
+            values[field] = value;
+          }
+        }
+        return values;
+      });
+    }
+
+    /** The value the admin config API stores for a web search secret. */
+    function stored(key: TWebSearchKeys, secret: string): string {
+      const path = `webSearch.${key}`;
+      const value = encryptConfigSecretFields({ [path]: secret })[path];
+      expect(value).toMatch(/^v3:/);
+      return value as string;
+    }
+
+    function requestedFields(loadAuthValues: jest.Mock): string[] {
+      return loadAuthValues.mock.calls.flatMap(([params]) => params.authFields);
+    }
+
+    it.each([
+      { key: 'serperApiKey', category: SearchCategories.PROVIDERS, searchProvider: 'serper' },
+      {
+        key: 'searxngApiKey',
+        category: SearchCategories.PROVIDERS,
+        searchProvider: 'searxng',
+        searxngInstanceUrl: 'https://searx.example.com',
+      },
+      { key: 'tavilyApiKey', category: SearchCategories.PROVIDERS, searchProvider: 'tavily' },
+      {
+        key: 'keenableApiKey',
+        category: SearchCategories.PROVIDERS,
+        searchProvider: 'keenable',
+        keenableApiUrl: '',
+      },
+      { key: 'firecrawlApiKey', category: SearchCategories.SCRAPERS, scraperProvider: 'firecrawl' },
+      { key: 'jinaApiKey', category: SearchCategories.RERANKERS, rerankerType: 'jina' },
+      { key: 'cohereApiKey', category: SearchCategories.RERANKERS, rerankerType: 'cohere' },
+    ] as const)(
+      'authenticates with an encrypted $key stored by the admin config API',
+      async ({ key, category, ...selection }) => {
+        const secret = `${key}-admin-secret-0001`;
+        const loadAuthValues = authValuesFor();
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: loadWebSearchConfig({
+            ...KEYLESS,
+            ...selection,
+            [key]: stored(key, secret),
+          } as TWebSearchConfig),
+          loadAuthValues,
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.authResult[key]).toBe(secret);
+        expect(result.authTypes).toContainEqual([category, AuthType.SYSTEM_DEFINED]);
+        expect(JSON.stringify(result.authResult)).not.toContain('v3:');
+        expect(requestedFields(loadAuthValues)).not.toContain(`${key}`);
+      },
+    );
+
+    it('uses librechat.yaml literals as system credentials, each on its own key', async () => {
+      const loadAuthValues = authValuesFor();
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          searchProvider: SearchProviders.SERPER,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          rerankerType: RerankerTypes.COHERE,
+          serperApiKey: 'serper-yaml-literal',
+          firecrawlApiKey: 'firecrawl-yaml-literal',
+          firecrawlApiUrl: 'https://firecrawl.internal.example.com',
+          firecrawlVersion: 'v2',
+          cohereApiKey: 'cohere-yaml-literal',
+        }),
+        loadAuthValues,
+      });
+
+      expect(result.authenticated).toBe(true);
+      expect(result.authResult).toMatchObject({
+        serperApiKey: 'serper-yaml-literal',
+        firecrawlApiKey: 'firecrawl-yaml-literal',
+        firecrawlApiUrl: 'https://firecrawl.internal.example.com',
+        firecrawlVersion: 'v2',
+        cohereApiKey: 'cohere-yaml-literal',
+      });
+      expect(result.authTypes).toEqual([
+        [SearchCategories.PROVIDERS, AuthType.SYSTEM_DEFINED],
+        [SearchCategories.SCRAPERS, AuthType.SYSTEM_DEFINED],
+        [SearchCategories.RERANKERS, AuthType.SYSTEM_DEFINED],
+      ]);
+      expect(loadAuthValues).not.toHaveBeenCalled();
+    });
+
+    it('keeps an environment-resolved value on its own key beside a literal sibling', async () => {
+      process.env.FIRECRAWL_API_KEY = 'firecrawl-env-key';
+      process.env.FIRECRAWL_VERSION = 'v1';
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          firecrawlApiUrl: '',
+        }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authResult.firecrawlApiKey).toBe('firecrawl-env-key');
+      expect(result.authResult.firecrawlVersion).toBe('v1');
+      expect(result.authResult.firecrawlApiUrl).toBeUndefined();
+    });
+
+    it('uses a literal Keenable key as a system key', async () => {
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          keenableApiKey: 'keenable-literal-key',
+          keenableApiUrl: '',
+        }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authenticated).toBe(true);
+      expect(result.authResult.keenableApiKey).toBe('keenable-literal-key');
+      expect(result.authTypes).toEqual([
+        [SearchCategories.PROVIDERS, AuthType.SYSTEM_DEFINED],
+        [SearchCategories.SCRAPERS, AuthType.SYSTEM_DEFINED],
+        [SearchCategories.RERANKERS, AuthType.SYSTEM_DEFINED],
+      ]);
+    });
+
+    it.each([
+      {
+        name: 'Firecrawl',
+        apiKey: 'firecrawlApiKey',
+        apiUrl: 'firecrawlApiUrl',
+        urlField: 'FIRECRAWL_API_URL',
+        selection: { scraperProvider: ScraperProviders.FIRECRAWL },
+        authenticated: true,
+        expectedUrl: undefined,
+      },
+      {
+        name: 'SearXNG',
+        apiKey: 'searxngApiKey',
+        apiUrl: 'searxngInstanceUrl',
+        urlField: 'SEARXNG_INSTANCE_URL',
+        selection: { searchProvider: SearchProviders.SEARXNG },
+        authenticated: false,
+        expectedUrl: undefined,
+      },
+      {
+        name: 'Jina',
+        apiKey: 'jinaApiKey',
+        apiUrl: 'jinaApiUrl',
+        urlField: 'JINA_API_URL',
+        selection: { rerankerType: RerankerTypes.JINA },
+        authenticated: true,
+        expectedUrl: 'https://api.jina.ai/v1/rerank',
+      },
+      {
+        name: 'Tavily search (operator opt-in)',
+        apiKey: 'tavilyApiKey',
+        apiUrl: 'tavilySearchUrl',
+        urlField: 'TAVILY_SEARCH_URL',
+        selection: { searchProvider: SearchProviders.TAVILY },
+        authenticated: true,
+        expectedUrl: undefined,
+      },
+      {
+        name: 'Tavily extract (operator opt-in)',
+        apiKey: 'tavilyApiKey',
+        apiUrl: 'tavilyExtractUrl',
+        urlField: 'TAVILY_EXTRACT_URL',
+        selection: { scraperProvider: ScraperProviders.TAVILY },
+        authenticated: true,
+        expectedUrl: undefined,
+      },
+    ] as const)(
+      'never sends a stored $name key to a user-provided URL',
+      async ({ apiKey, apiUrl, urlField, selection, authenticated, expectedUrl }) => {
+        process.env[urlField] = AuthType.USER_PROVIDED;
+        const userUrl = 'https://user-provider.example.com';
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: loadWebSearchConfig({
+            ...KEYLESS,
+            ...selection,
+            [apiKey]: stored(apiKey, 'admin-stored-secret-0001'),
+          }),
+          loadAuthValues: authValuesFor({ [urlField]: userUrl }),
+        });
+
+        expect(result.authenticated).toBe(authenticated);
+        expect(result.authResult[apiUrl]).toBe(expectedUrl);
+        expect(JSON.stringify(result.authResult)).not.toContain(userUrl);
+      },
+    );
+
+    it('withholds a stored Keenable key from a user-provided Keenable URL', async () => {
+      const userUrl = 'https://user-keenable.example.com';
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          keenableApiKey: stored('keenableApiKey', 'keenable-admin-secret-0001'),
+        }),
+        loadAuthValues: authValuesFor({ KEENABLE_API_URL: userUrl }),
+      });
+
+      expect(result.authenticated).toBe(true);
+      expect(result.authResult.keenableApiUrl).toBe(userUrl);
+      expect(result.authResult.keenableApiKey).toBe('');
+    });
+
+    it.each([
+      {
+        origin: 'an environment key',
+        env: {
+          FIRECRAWL_API_KEY: 'firecrawl-outside-key',
+          TAVILY_API_KEY: 'tavily-outside-key',
+          SEARXNG_API_KEY: 'searxng-outside-key',
+          KEENABLE_API_KEY: 'keenable-outside-key',
+        },
+        userValues: {} as Record<string, string>,
+        authType: AuthType.SYSTEM_DEFINED,
+      },
+      {
+        origin: "a user's saved key",
+        env: {
+          FIRECRAWL_API_KEY: AuthType.USER_PROVIDED,
+          TAVILY_API_KEY: AuthType.USER_PROVIDED,
+          SEARXNG_API_KEY: AuthType.USER_PROVIDED,
+          KEENABLE_API_KEY: AuthType.USER_PROVIDED,
+        },
+        userValues: {
+          FIRECRAWL_API_KEY: 'firecrawl-outside-key',
+          TAVILY_API_KEY: 'tavily-outside-key',
+          SEARXNG_API_KEY: 'searxng-outside-key',
+          KEENABLE_API_KEY: 'keenable-outside-key',
+        },
+        authType: AuthType.USER_PROVIDED,
+      },
+    ])('never sends $origin to a URL stored in config', async ({ env, userValues, authType }) => {
+      Object.assign(process.env, env);
+      const configUrl = 'https://config-host.example.com';
+
+      const keyed = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          searchProvider: SearchProviders.TAVILY,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          rerankerType: RerankerTypes.NONE,
+          tavilySearchUrl: configUrl,
+          firecrawlApiUrl: configUrl,
+        }),
+        loadAuthValues: authValuesFor(userValues),
+      });
+      expect(keyed.authenticated).toBe(true);
+      expect(keyed.authResult).toMatchObject({
+        tavilyApiKey: 'tavily-outside-key',
+        firecrawlApiKey: 'firecrawl-outside-key',
+      });
+      expect(keyed.authResult.tavilySearchUrl).toBeUndefined();
+      expect(keyed.authResult.firecrawlApiUrl).toBeUndefined();
+      expect(keyed.authTypes).toContainEqual([SearchCategories.PROVIDERS, authType]);
+
+      const searxng = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          searchProvider: SearchProviders.SEARXNG,
+          searxngInstanceUrl: configUrl,
+        }),
+        loadAuthValues: authValuesFor(userValues),
+      });
+      expect(searxng.authenticated).toBe(true);
+      expect(searxng.authResult.searxngInstanceUrl).toBe(configUrl);
+      expect(searxng.authResult.searxngApiKey).toBe('');
+      expect(JSON.stringify(searxng.authResult)).not.toContain('searxng-outside-key');
+
+      /** Keenable has a default endpoint, so the stored URL is ignored as it was before stored URLs were read. */
+      const keenable = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({ ...KEYLESS, keenableApiUrl: configUrl }),
+        loadAuthValues: authValuesFor(userValues),
+      });
+      expect(keenable.authenticated).toBe(true);
+      expect(keenable.authResult.keenableApiUrl).toBeUndefined();
+      expect(keenable.authResult.keenableApiKey).toBe('keenable-outside-key');
+      expect(keenable.authResult.keenableScraperOptions).toBeUndefined();
+      expect(JSON.stringify(keenable.authResult)).not.toContain(configUrl);
+    });
+
+    it('keeps a Keenable URL stored in config when no key sits beside it', async () => {
+      const configUrl = 'https://config-host.example.com';
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({ ...KEYLESS, keenableApiUrl: configUrl }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authResult.keenableApiUrl).toBe(configUrl);
+      expect(result.authResult.keenableApiKey).toBe('');
+    });
+
+    it('sends a stored key to a URL stored beside it', async () => {
+      process.env.FIRECRAWL_API_KEY = 'firecrawl-env-key';
+      const configUrl = 'https://firecrawl.admin.example.com';
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          firecrawlApiKey: stored('firecrawlApiKey', 'firecrawl-admin-secret-0001'),
+          firecrawlApiUrl: configUrl,
+          keenableApiKey: stored('keenableApiKey', 'keenable-admin-secret-0001'),
+          keenableApiUrl: configUrl,
+        }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authResult).toMatchObject({
+        firecrawlApiKey: 'firecrawl-admin-secret-0001',
+        firecrawlApiUrl: configUrl,
+        keenableApiKey: 'keenable-admin-secret-0001',
+        keenableApiUrl: configUrl,
+      });
+    });
+
+    it('treats an undecryptable stored key as missing and never forwards ciphertext', async () => {
+      const serperApiKey = stored('serperApiKey', 'serper-admin-secret-0001');
+      const dataSchemas =
+        jest.requireMock<typeof import('@librechat/data-schemas')>('@librechat/data-schemas');
+      const decrypt = jest.spyOn(dataSchemas, 'decryptV3').mockImplementation(() => {
+        throw new Error('Invalid key length');
+      });
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          searchProvider: SearchProviders.SERPER,
+          serperApiKey,
+        }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(decrypt).toHaveBeenCalledWith(serperApiKey);
+
+      expect(result.authenticated).toBe(false);
+      expect(result.authResult.serperApiKey).toBeUndefined();
+      expect(JSON.stringify(result.authResult)).not.toContain('v3:');
+    });
+
+    it('never expands environment references inside a stored value', async () => {
+      process.env.SPEC_PLATFORM_SECRET = 'platform-secret-value';
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          firecrawlApiKey: 'fc-${SPEC_PLATFORM_SECRET}',
+          firecrawlApiUrl: 'https://firecrawl.example.com/${SPEC_PLATFORM_SECRET}',
+        }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authResult.firecrawlApiKey).toBe('fc-${SPEC_PLATFORM_SECRET}');
+      expect(result.authResult.firecrawlApiUrl).toBe(
+        'https://firecrawl.example.com/${SPEC_PLATFORM_SECRET}',
+      );
+      expect(JSON.stringify(result.authResult)).not.toContain('platform-secret-value');
+    });
+
+    it.each(['user_provided', '', '   '])(
+      'leaves a required key of %p unresolved, as before',
+      async (serperApiKey) => {
+        const loadAuthValues = authValuesFor({ SERPER_API_KEY: 'user-serper-key' });
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: loadWebSearchConfig({
+            ...KEYLESS,
+            searchProvider: SearchProviders.SERPER,
+            serperApiKey,
+          }),
+          loadAuthValues,
+        });
+
+        expect(result.authenticated).toBe(false);
+        expect(result.authResult.serperApiKey).toBeUndefined();
+        expect(requestedFields(loadAuthValues)).not.toContain('SERPER_API_KEY');
+      },
+    );
+
+    it('never sends a stored "user_provided" as a key', async () => {
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          searchProvider: SearchProviders.SERPER,
+          serperApiKey: stored('serperApiKey', AuthType.USER_PROVIDED),
+        }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authenticated).toBe(false);
+      expect(result.authResult.serperApiKey).toBeUndefined();
+    });
+
+    it('passes only schema-defined fields of each provider option block', async () => {
+      const configUrl = 'https://config-host.example.com';
+      const destination = { apiUrl: configUrl, apiKey: 'option-block-key', httpAgent: {} };
+      const keenableScraperOptions = {
+        attributionTitle: 'LibreChat',
+        timeout: 9000,
+        ...destination,
+      };
+      const tavilyScraperOptions = { extractDepth: 'advanced' as const, ...destination };
+      const firecrawlOptions = { formats: ['markdown'], waitFor: 100, ...destination };
+      const searxngSearchOptions = { language: 'en', ...destination };
+      const tavilySearchOptions = { maxResults: 3, ...destination };
+      const keenableSearchOptions = { site: 'librechat.ai', ...destination };
+
+      const { authResult } = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          ...KEYLESS,
+          keenableScraperOptions,
+          tavilyScraperOptions,
+          firecrawlOptions,
+          searxngSearchOptions,
+          tavilySearchOptions,
+          keenableSearchOptions,
+        }),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(authResult.keenableScraperOptions).toEqual({
+        attributionTitle: 'LibreChat',
+        timeout: 9000,
+      });
+      expect(authResult.tavilyScraperOptions).toEqual({ extractDepth: 'advanced' });
+      expect(authResult.firecrawlOptions).toEqual({ formats: ['markdown'], waitFor: 100 });
+      expect(authResult.searxngSearchOptions).toEqual({ language: 'en' });
+      expect(authResult.tavilySearchOptions).toEqual({ maxResults: 3 });
+      expect(authResult.keenableSearchOptions).toEqual({ site: 'librechat.ai' });
+      expect(JSON.stringify(authResult)).not.toContain(configUrl);
+      expect(JSON.stringify(authResult)).not.toContain('option-block-key');
+    });
+
+    describe('Keenable scraper key', () => {
+      const SEARCH_URL = 'https://keenable.example.com';
+
+      it.each([
+        {
+          name: 'a user-provided search URL',
+          env: { KEENABLE_API_KEY: 'platform-key-0001', KEENABLE_API_URL: AuthType.USER_PROVIDED },
+          config: {},
+          scraperKey: 'platform-key-0001',
+        },
+        {
+          name: 'a user-provided search URL beside a stored key',
+          env: { KEENABLE_API_URL: AuthType.USER_PROVIDED },
+          config: { keenableApiKey: stored('keenableApiKey', 'kn-admin-key-0001') },
+          scraperKey: 'kn-admin-key-0001',
+        },
+      ])(
+        'gives the Keenable scraper the key kept from $name',
+        async ({ env, config, scraperKey }) => {
+          Object.assign(process.env, env);
+
+          const { authResult } = await loadWebSearchAuth({
+            userId,
+            webSearchConfig: loadWebSearchConfig({
+              ...KEYLESS,
+              keenableScraperOptions: { attributionTitle: 'LibreChat' },
+              ...config,
+            }),
+            loadAuthValues: authValuesFor({ KEENABLE_API_URL: SEARCH_URL }),
+          });
+
+          expect(authResult.keenableApiUrl).toBe(SEARCH_URL);
+          expect(authResult.keenableApiKey).toBe('');
+          expect(authResult.keenableScraperOptions).toEqual({
+            attributionTitle: 'LibreChat',
+            apiKey: scraperKey,
+          });
+        },
+      );
+
+      it('keeps the key out of the option block when another scraper runs', async () => {
+        process.env.KEENABLE_API_KEY = 'platform-key-0001';
+        process.env.KEENABLE_API_URL = AuthType.USER_PROVIDED;
+        process.env.FIRECRAWL_API_KEY = 'firecrawl-key-0001';
+
+        const { authResult } = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: loadWebSearchConfig({
+            ...KEYLESS,
+            scraperProvider: ScraperProviders.FIRECRAWL,
+          }),
+          loadAuthValues: authValuesFor({ KEENABLE_API_URL: SEARCH_URL }),
+        });
+
+        expect(authResult.scraperProvider).toBe(ScraperProviders.FIRECRAWL);
+        expect(authResult.keenableApiKey).toBe('');
+        expect(JSON.stringify(authResult)).not.toContain('platform-key-0001');
+      });
+
+      it('leaves the option block alone when the search sends the key itself', async () => {
+        process.env.KEENABLE_API_KEY = 'platform-key-0001';
+        process.env.KEENABLE_API_URL = SEARCH_URL;
+
+        const { authResult } = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: loadWebSearchConfig(KEYLESS),
+          loadAuthValues: authValuesFor(),
+        });
+
+        expect(authResult.keenableApiKey).toBe('platform-key-0001');
+        expect(authResult.keenableScraperOptions).toBeUndefined();
+      });
+    });
+
+    it('does not let a user save a value over a stored credential', () => {
+      const entries = getWebSearchInstallEntries({
+        auth: { serperApiKey: 'user-serper-key', jinaApiKey: 'user-jina-key' },
+        config: loadWebSearchConfig({ serperApiKey: stored('serperApiKey', 'admin-key-0001') }),
+      });
+
+      expect(entries).toEqual([['JINA_API_KEY', 'user-jina-key']]);
     });
   });
 });

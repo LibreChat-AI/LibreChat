@@ -1,13 +1,11 @@
+import { createToolPolicyHook } from '@librechat/agents';
+import { ReasoningEffort } from 'librechat-data-provider';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
 import {
   resolveToolApprovalPolicy,
   isHITLEnabled,
   healToolApprovalPolicy,
-  collectAliasMatcherNames,
-  buildAliasMatcherPattern,
   mapToolApprovalPolicy,
-  buildToolApprovalPayload,
-  buildAskUserQuestionPayload,
   buildPendingAction,
   isToolApprovalPayloadValid,
   toClientPendingAction,
@@ -17,10 +15,12 @@ import {
   sanitizeResumeModelParameters,
   pickResumeContext,
   applyResumeContext,
+  applyResumeRequest,
   applyResumeModelParameters,
   exemptAskUserQuestionFromApproval,
   isToolApprovalPauseCapable,
   isToolDeniedByApprovalPolicy,
+  isToolBlockedByApprovalPolicy,
 } from './policy';
 
 describe('isToolApprovalPauseCapable', () => {
@@ -90,6 +90,26 @@ describe('resolveToolApprovalPolicy', () => {
       enabled: true,
       mode: 'bypass',
     });
+  });
+
+  test('lets a grant whose owner approves tools call by call pause a run on its own', () => {
+    expect(resolveToolApprovalPolicy({ ownerApproval: true })).toEqual({
+      enabled: true,
+      mode: 'bypass',
+    });
+    expect(resolveToolApprovalPolicy({ endpoint: { deny: ['rm'] }, ownerApproval: true })).toEqual({
+      enabled: true,
+      mode: 'bypass',
+      deny: ['rm'],
+    });
+    expect(resolveToolApprovalPolicy({ ownerApproval: false })).toBeUndefined();
+  });
+
+  test('keeps the administrator in charge of a run whose owner approves tools', () => {
+    const off: TToolApprovalPolicy = { enabled: false };
+    expect(resolveToolApprovalPolicy({ endpoint: off, ownerApproval: true })).toBe(off);
+    const on: TToolApprovalPolicy = { enabled: true, mode: 'default' };
+    expect(resolveToolApprovalPolicy({ endpoint: on, ownerApproval: true })).toBe(on);
   });
 
   test.each(['default', 'dontAsk', 'bypass'] as const)(
@@ -185,6 +205,175 @@ describe('mapToolApprovalPolicy', () => {
     });
   });
 
+  describe('mcp:<server>:<tool> patterns', () => {
+    const SERVER = 'helpers-scripts-sandbox';
+    const LIST_DIRS = `list_allowed_directories_mcp_${SERVER}`;
+    const policy: TToolApprovalPolicy = {
+      enabled: true,
+      mode: 'dontAsk',
+      deny: [`mcp:${SERVER}:delete_file`],
+      ask: [`mcp:${SERVER}:*`, 'mcp:wpr-sandbox:*'],
+    };
+
+    /** Runs the SDK's real policy hook the way `runtime.ts` does, per called tool. */
+    const decide = async (toolName: string, target: TToolApprovalPolicy = policy) => {
+      const hook = createToolPolicyHook(mapToolApprovalPolicy(target, toolName) ?? {});
+      const result = await hook(
+        {
+          hook_event_name: 'PreToolUse',
+          runId: 'run',
+          toolName,
+          toolInput: {},
+          toolUseId: 'call',
+        } as Parameters<typeof hook>[0],
+        new AbortController().signal,
+      );
+      return result.decision;
+    };
+
+    test('a server-wide ask asks for every tool of that server under dontAsk', async () => {
+      expect(await decide(LIST_DIRS)).toBe('ask');
+      expect(await decide(`read_file_mcp_${SERVER}`)).toBe('ask');
+      expect(isToolBlockedByApprovalPolicy(policy, LIST_DIRS)).toBe(false);
+      expect(isToolApprovalPauseCapable(policy, false, [LIST_DIRS])).toBe(true);
+    });
+
+    test('deny still wins over a server-wide ask', async () => {
+      expect(await decide(`delete_file_mcp_${SERVER}`)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(policy, `delete_file_mcp_${SERVER}`)).toBe(true);
+    });
+
+    test('does not reach other servers or non-MCP tools', async () => {
+      expect(await decide('list_allowed_directories_mcp_other')).toBe('deny');
+      expect(await decide('list_allowed_directories')).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(policy, 'list_allowed_directories')).toBe(true);
+    });
+
+    test('resolves mcp: entries to the called tool and leaves other entries alone', () => {
+      const target: TToolApprovalPolicy = {
+        ask: ['mcp:My Server:run', 'mcp:*:search', 'mcp:x', 'read_*'],
+      };
+      expect(mapToolApprovalPolicy(target, 'run_mcp_My_Server')).toEqual({
+        ask: ['run_mcp_My_Server', 'mcp:x', 'read_*'],
+      });
+      expect(mapToolApprovalPolicy(target, 'search_mcp_github')).toEqual({
+        ask: ['search_mcp_github', 'mcp:x', 'read_*'],
+      });
+      expect(mapToolApprovalPolicy(target)).toEqual(target);
+    });
+
+    test('keeps a colon inside the server name', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        ask: ['mcp:Connector: Company:*'],
+      };
+      expect(await decide('search_mcp_Connector__Company', target)).toBe('ask');
+      expect(isToolBlockedByApprovalPolicy(target, 'search_mcp_Connector__Company')).toBe(false);
+    });
+
+    test('normalizes a globbed server name, including its trimmed edges', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:My Server*:delete_file', 'mcp:* (Production):delete_file'],
+      };
+      for (const name of ['delete_file_mcp_My_Server_1', 'delete_file_mcp_Acme__Production']) {
+        expect(await decide(name, target)).toBe('deny');
+        expect(isToolDeniedByApprovalPolicy(target, name)).toBe(true);
+      }
+      expect(await decide('read_file_mcp_Acme__Production', target)).toBe('allow');
+    });
+
+    test('a globbed server keeps the edge underscores a supported name keeps', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:_prod*:delete_file'],
+      };
+      expect(await decide('delete_file_mcp__prod1', target)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(target, 'delete_file_mcp__prod1')).toBe(true);
+      expect(await decide('delete_file_mcp_prod1', target)).toBe('deny');
+    });
+
+    test('a glob whose star matches nothing still reaches the trimmed edge', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:*(Production):delete_file'],
+      };
+      for (const name of ['delete_file_mcp_Production', 'delete_file_mcp_Acme__Production']) {
+        expect(await decide(name, target)).toBe('deny');
+        expect(isToolDeniedByApprovalPolicy(target, name)).toBe(true);
+      }
+      expect(await decide('delete_file_mcp_Staging', target)).toBe('allow');
+    });
+
+    test('a tool name that starts with the delimiter still meets its server rule', async () => {
+      const target: TToolApprovalPolicy = { enabled: true, mode: 'bypass', deny: ['mcp:github:*'] };
+      expect(await decide('_mcp_read_mcp_github', target)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(target, '_mcp_read_mcp_github')).toBe(true);
+    });
+
+    test('a server glob widened by normalization still reviews but never grants', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:(*):*'],
+        ask: ['mcp:* (Production):*'],
+      };
+      expect(await decide('read_mcp_github', target)).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_github')).toBe(true);
+      expect(await decide('read_mcp_Acme__Production', target)).toBe('ask');
+    });
+
+    test('a server glob never crosses into a server whose name contains the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:Workspace:*'],
+      };
+      const other = 'delete_file_mcp_Google_mcp_Workspace';
+      expect(await decide('read_mcp_Workspace', target)).toBe('allow');
+      expect(await decide(other, target)).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(target, other)).toBe(true);
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_Workspace')).toBe(false);
+    });
+
+    test('a globbed allow never grants an ambiguous key, whichever side holds the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:*:get', 'mcp:gitlab:*'],
+        ask: ['mcp:*:get'],
+      };
+      const ambiguous = 'get_mcp_server_version_mcp_gitlab';
+      expect(await decide('get_mcp_github', target)).toBe('ask');
+      expect(await decide('list_mcp_gitlab', target)).toBe('allow');
+      expect(await decide(ambiguous, target)).toBe('ask');
+      expect(
+        await decide(ambiguous, { enabled: true, mode: 'dontAsk', allow: ['mcp:*:get'] }),
+      ).toBe('deny');
+      expect(
+        isToolBlockedByApprovalPolicy(
+          { enabled: true, mode: 'dontAsk', allow: ['mcp:gitlab:*'] },
+          ambiguous,
+        ),
+      ).toBe(true);
+    });
+
+    test('a glob-free entry matches its exact key even when the tool name contains the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:Workspace:read_mcp_file'],
+      };
+      expect(await decide('read_mcp_file_mcp_Workspace', target)).toBe('allow');
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_file_mcp_Workspace')).toBe(false);
+      expect(await decide('read_mcp_Workspace', target)).toBe('deny');
+    });
+  });
+
   test('strips enabled regardless of value (LibreChat-only field)', () => {
     expect(mapToolApprovalPolicy({ enabled: false, mode: 'bypass' })).toEqual({
       mode: 'bypass',
@@ -199,89 +388,6 @@ describe('mapToolApprovalPolicy', () => {
       mode: 'default',
       deny: ['rm'],
     });
-  });
-});
-
-describe('buildToolApprovalPayload', () => {
-  const calls = [
-    {
-      name: 'shell',
-      arguments: { command: 'ls' },
-      tool_call_id: 'call_abc',
-      description: 'List files',
-    },
-  ];
-
-  test('produces a tool_approval-discriminated payload', () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.type).toBe('tool_approval');
-    expect(payload.action_requests).toEqual([
-      {
-        name: 'shell',
-        arguments: { command: 'ls' },
-        tool_call_id: 'call_abc',
-        description: 'List files',
-      },
-    ]);
-  });
-
-  test("default decisions exclude 'respond' (reserved for AskUserQuestion semantics)", () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject', 'edit']);
-  });
-
-  test('respects per-tool decision overrides', () => {
-    const payload = buildToolApprovalPayload(calls, {
-      shell: ['approve', 'reject'],
-    });
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject']);
-  });
-
-  test('produces one review_config per call, in order', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'a', arguments: {}, tool_call_id: '1' },
-      { name: 'b', arguments: {}, tool_call_id: '2' },
-    ]);
-    expect(payload.review_configs.map((r) => r.action_name)).toEqual(['a', 'b']);
-  });
-
-  test('carries tool_call_id on each review_config (join key for duplicate-tool batches)', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'mcp:server:search', arguments: { q: 'a' }, tool_call_id: 'call_1' },
-      { name: 'mcp:server:search', arguments: { q: 'b' }, tool_call_id: 'call_2' },
-    ]);
-    expect(payload.review_configs).toEqual([
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_1',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_2',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-    ]);
-  });
-});
-
-describe('buildAskUserQuestionPayload', () => {
-  test('produces an ask_user_question-discriminated payload', () => {
-    const payload = buildAskUserQuestionPayload({
-      question: 'Which environment?',
-      options: [
-        { label: 'Staging', value: 'staging' },
-        { label: 'Production', value: 'production' },
-      ],
-    });
-    expect(payload.type).toBe('ask_user_question');
-    expect(payload.question.question).toBe('Which environment?');
-    expect(payload.question.options).toHaveLength(2);
-  });
-
-  test('options are optional', () => {
-    const payload = buildAskUserQuestionPayload({ question: 'Free-form?' });
-    expect(payload.question.options).toBeUndefined();
   });
 });
 
@@ -424,10 +530,11 @@ describe('toClientPendingAction', () => {
     ],
   };
 
-  test('omits server-only replay state, keeping the fields the client renders from', () => {
+  test('omits server-only replay and project context state', () => {
     const full = buildPendingAction(payload, {
       streamId: 'stream-1',
       conversationId: 'conv-1',
+      projectContextKey: 'project:p1:r2',
       requestFingerprint: 'fp-hash',
       requestFingerprintV2: 'fp-v2-hash',
       resumeContext: {
@@ -438,6 +545,7 @@ describe('toClientPendingAction', () => {
         version: 1,
         targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
       },
+      toolApprovalAliases: [{ name: 'shell', aliasName: 'legacy_shell' }],
     });
 
     const clientSafe = toClientPendingAction(full);
@@ -446,6 +554,8 @@ describe('toClientPendingAction', () => {
     expect(clientSafe?.requestFingerprint).toBeUndefined();
     expect(clientSafe?.requestFingerprintV2).toBeUndefined();
     expect(clientSafe?.codeExecutionBinding).toBeUndefined();
+    expect(clientSafe?.toolApprovalAliases).toBeUndefined();
+    expect(clientSafe?.projectContextKey).toBeUndefined();
     expect(clientSafe?.actionId).toBe(full.actionId);
     expect(clientSafe?.streamId).toBe('stream-1');
     expect(clientSafe?.payload).toBe(full.payload);
@@ -457,6 +567,8 @@ describe('toClientPendingAction', () => {
       version: 1,
       targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
     });
+    expect(full.projectContextKey).toBe('project:p1:r2');
+    expect(full.toolApprovalAliases).toEqual([{ name: 'shell', aliasName: 'legacy_shell' }]);
   });
 
   test('passes through nullish input', () => {
@@ -626,6 +738,19 @@ describe('captureResumeModelParameters', () => {
     ).toEqual({ thinking: false, effort: 'low' });
   });
 
+  test('the validated one-shot reasoning selection wins on resume and re-enables thinking', () => {
+    expect(
+      captureResumeModelParameters(
+        {
+          thinking: false,
+          effort: 'low',
+          reasoningOverride: { key: 'effort', value: 'max' },
+        },
+        { thinking: { type: 'adaptive' }, invocationKwargs: { output_config: { effort: 'max' } } },
+      ),
+    ).toEqual({ thinking: true, effort: 'max' });
+  });
+
   test('resolved params still fill gaps the body lacks (normalized to UI form)', () => {
     expect(
       captureResumeModelParameters(
@@ -793,6 +918,14 @@ describe('computeAgentRequestFingerprint', () => {
 });
 
 describe('pickResumeContext / applyResumeContext', () => {
+  it('captures the trusted reasoning snapshot alongside the body fields', () => {
+    const base = { key: 'reasoning_effort' as const, hadValue: true, value: 'low' };
+    const ctx = pickResumeContext({ endpoint: 'agents' }, base);
+    expect(ctx).toEqual({ endpoint: 'agents', reasoningOverrideBase: base });
+    expect(ctx.reasoningOverrideBase).not.toBe(base);
+    expect(pickResumeContext({ endpoint: 'agents' }, null)).toEqual({ endpoint: 'agents' });
+  });
+
   it('picks only the graph-determining fields (incl. addedConvo + timezone), dropping unrelated keys', () => {
     const ctx = pickResumeContext({
       endpoint: 'agents',
@@ -805,6 +938,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       timezone: 'America/New_York',
       // Graph-determining: skill allowed-tools union into the tool set.
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       // Graph-determining: feeds the ephemeral agent id / checkpoint namespace (#14253).
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
@@ -823,6 +957,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       addedConvo: { agent_id: 'secondary' },
       timezone: 'America/New_York',
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
       codeEnvironmentMode: 'attached',
@@ -979,6 +1114,42 @@ describe('pickResumeContext / applyResumeContext', () => {
   });
 });
 
+describe('applyResumeRequest', () => {
+  it('restores the body, the reasoning snapshot and the generation params together', () => {
+    const reasoningOverrideBase = { key: 'reasoning_effort' as const, hadValue: false };
+    const req: {
+      body: Record<string, unknown>;
+      reasoningOverrideBase?: typeof reasoningOverrideBase;
+      resumeReplayed?: boolean;
+    } = { body: { conversationId: 'c', addedConvo: { endpoint: 'x' } } };
+    applyResumeRequest(req, {
+      endpoint: 'agents',
+      reasoningOverrideBase,
+      model_parameters: { temperature: 0.3, conversationId: 'forged' },
+    });
+    expect(req.body).toEqual({ conversationId: 'c', endpoint: 'agents', temperature: 0.3 });
+    expect(req.reasoningOverrideBase).toEqual(reasoningOverrideBase);
+    expect(req.reasoningOverrideBase).not.toBe(reasoningOverrideBase);
+    /* Marks the request as carrying trusted replayed state, so a replayed
+       override that no longer validates degrades instead of refusing. */
+    expect(req.resumeReplayed).toBe(true);
+  });
+
+  it('leaves the reasoning snapshot unset when the paused turn had none', () => {
+    const req: { body: Record<string, unknown>; reasoningOverrideBase?: undefined } = {
+      body: {},
+    };
+    applyResumeRequest(req, { endpoint: 'agents' });
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
+
+  it('is a no-op without a persisted context', () => {
+    const req = { body: { ephemeralAgent: null } };
+    applyResumeRequest(req, undefined);
+    expect(req).toEqual({ body: { ephemeralAgent: null } });
+  });
+});
+
 describe('applyResumeModelParameters', () => {
   it('replays generation params without replacing routing or resume identity fields (#14946)', () => {
     const body: Record<string, unknown> = {
@@ -1099,31 +1270,29 @@ describe('healToolApprovalPolicy reverse direction', () => {
   });
 });
 
-describe('collectAliasMatcherNames', () => {
-  const aliases = [
-    { name: 'search_mcp_acme', aliasName: 'acme_search_mcp_acme' },
-    { name: 'acme_list_mcp_acme', aliasName: 'list_mcp_acme' },
-  ];
-
-  it('returns names whose alias matches the regex while the name does not', () => {
-    expect(collectAliasMatcherNames('^acme_search_mcp_acme$', aliases)).toEqual([
-      'search_mcp_acme',
-    ]);
-    expect(collectAliasMatcherNames('^list_mcp_acme$', aliases)).toEqual(['acme_list_mcp_acme']);
-  });
-
-  it('skips names the matcher already matches and invalid patterns', () => {
-    expect(collectAliasMatcherNames('_mcp_acme$', aliases)).toEqual([]);
-    expect(collectAliasMatcherNames('(unclosed', aliases)).toEqual([]);
-    expect(collectAliasMatcherNames(undefined, aliases)).toEqual([]);
-  });
-
-  it('builds an anchored exact-name pattern with escaped names', () => {
-    const pattern = buildAliasMatcherPattern(['a.b_mcp_acme', 'c_mcp_acme']);
-    const regex = new RegExp(pattern);
-    expect(regex.test('a.b_mcp_acme')).toBe(true);
-    expect(regex.test('axb_mcp_acme')).toBe(false);
-    expect(regex.test('c_mcp_acme')).toBe(true);
-    expect(regex.test('xc_mcp_acme')).toBe(false);
-  });
+test.each([
+  { mode: 'dontAsk' as const },
+  { mode: 'dontAsk' as const, allow: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], deny: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['other*'] },
+  { mode: 'bypass' as const },
+  { mode: 'default' as const },
+])('concrete fallback denial matches the SDK baseline: %j', async (config) => {
+  const policy = { enabled: true, ...config };
+  const hook = createToolPolicyHook(mapToolApprovalPolicy(policy)!);
+  const result = await hook(
+    {
+      hook_event_name: 'PreToolUse',
+      runId: 'test',
+      toolName: 'query_mcp_db',
+      toolInput: {},
+      toolUseId: 'call',
+    },
+    new AbortController().signal,
+  );
+  expect(isToolBlockedByApprovalPolicy(policy, 'query_mcp_db')).toBe(result.decision === 'deny');
+  if (result.decision === 'deny')
+    expect(isToolApprovalPauseCapable(policy, true, ['query_mcp_db'])).toBe(false);
 });

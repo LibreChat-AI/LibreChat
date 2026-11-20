@@ -217,11 +217,50 @@ describe('AgentClient retained answers', () => {
     getMessages.mockResolvedValue([]);
   });
 
+  it.each([false, true])(
+    'builds a first-turn prompt under legacy PII with a large catalog (deferred: %s)',
+    async (deferred) => {
+      const client = makeClient();
+      client.options.req.config.messageFilter = {
+        pii: { starterPatterns: ['sk_prefix', 'bearer_header', 'api_key_header'] },
+      };
+      client.options.agent.toolDefinitions = Array.from({ length: 1_000 }, (_, index) => ({
+        name: `mcp_tool_${index}`,
+        defer_loading: deferred,
+        parameters: {
+          type: 'object',
+          properties: {
+            value: { type: 'string', description: 'A safe value', enum: ['one', 'two'] },
+          },
+        },
+      }));
+      const firstMessage = {
+        ...latestUserMessage(),
+        messageId: 'u1',
+        parentMessageId: null,
+        text: 'Hello',
+      };
+      await expect(client.buildMessages([firstMessage], null, {})).resolves.toEqual(
+        expect.objectContaining({ prompt: expect.any(Array) }),
+      );
+
+      client.options.req.config.filters = { toolArguments: { pii: { fields: ['arguments'] } } };
+      await expect(client.buildMessages([firstMessage], null, {})).rejects.toMatchObject({
+        code: 'content_filter_uninspectable',
+      });
+    },
+  );
+
   it('completes the branch the history read cut at the summary and quotes the answer in the user turn', async () => {
     const client = makeClient();
     client.user = 'user-123';
     client.processMemory = jest.fn();
     const rows = compactedBranch();
+    /** The stored count covers the whole response, including what preceded its summary. */
+    const storedResponseTokens = 5000;
+    const response = rows.find((row) => row.messageId === 'a2');
+    response.tokenCount = storedResponseTokens;
+    response.content.unshift({ type: ContentTypes.TEXT, text: 'Checking the pipeline.' });
     getMessages.mockResolvedValue(rows);
     /** The real loader: one read of the conversation, then the summary-bounded walk. */
     const cut = await client.loadHistory('convo-123', 'u3');
@@ -239,6 +278,10 @@ describe('AgentClient retained answers', () => {
     expect(text.indexOf(ANSWER_LINE)).toBeLessThan(text.indexOf(LATEST_TEXT));
     expect(text.endsWith(LATEST_TEXT)).toBe(true);
     expect(client.options.agent.additional_instructions ?? '').not.toContain(ANSWER_LINE);
+    expect(text).toContain('Deployed.');
+    expect(text).not.toContain('Checking the pipeline.');
+    expect(tokenCountMap.a2).toBeGreaterThan(0);
+    expect(tokenCountMap.a2).toBeLessThan(storedResponseTokens);
     expect(cut[1].text).toBe(LATEST_TEXT);
     expect(cut[1].content).toBeUndefined();
     expect(counts[prompt.length - 1]).toBe(tokenCountMap.u3);

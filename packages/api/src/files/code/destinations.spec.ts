@@ -1,5 +1,9 @@
+import { FileContext } from 'librechat-data-provider';
 import {
   claimCodeDestination,
+  selectCodeFileGenerations,
+  getCodeFileDestination,
+  planCodeSnapshotMounts,
   reserveCodeDestination,
   createCodeDestinationSet,
   sortCodeFilesByDestinationPriority,
@@ -304,4 +308,106 @@ describe('sortCodeFilesByDestinationPriority', () => {
     sortCodeFilesByDestinationPriority(input);
     expect(input).toEqual([older, newer]);
   });
+});
+
+describe('scoped generated destination selection', () => {
+  const snapshot = (file_id: string, time: number, overrides = {}) => ({
+    file_id,
+    user: 'owner',
+    tenantId: 'tenant-a',
+    filename: 'nested/report.txt',
+    type: 'text/plain',
+    context: FileContext.execute_code_snapshot,
+    metadata: { sourceDispatchedAt: time },
+    ...overrides,
+  });
+  it('arbitrates a rewritten upload alias at its real destination', () => {
+    const upload = {
+      ...snapshot('upload', 50),
+      context: FileContext.message_attachment,
+      filename: 'display.txt',
+      createdAt: new Date(50),
+      metadata: {
+        codeEnvRef: {
+          kind: 'user' as const,
+          id: 'owner',
+          storage_session_id: 'session',
+          file_id: 'object',
+          sandboxFilename: 'nested/report.txt',
+        },
+      },
+    };
+    expect(
+      selectCodeFileGenerations([upload, snapshot('v2', 200)]).files.map((file) => file?.file_id),
+    ).toEqual(['v2']);
+  });
+  it('never lets tenant or private generations supersede the shared owner generation', () => {
+    const result = selectCodeFileGenerations(
+      [
+        snapshot('v1', 100),
+        snapshot('v2', 200),
+        snapshot('tenant-b', 300, { tenantId: 'tenant-b' }),
+        snapshot('private', 400),
+      ],
+      new Set(['private']),
+    );
+    expect(result.files.map((file) => file?.file_id)).toEqual(['tenant-b', 'v2', 'private']);
+  });
+  it('does not treat a mutable receipt alias as a snapshot identity', () => {
+    const file = snapshot('v1', 100, {
+      metadata: {
+        codeEnvRef: {
+          kind: 'user',
+          id: 'owner',
+          storage_session_id: 'session',
+          file_id: 'object',
+          sandboxFilename: 'wrong-alias.txt',
+        },
+      },
+    });
+    expect(getCodeFileDestination(file)).toBe('nested/report.txt');
+  });
+});
+
+describe('legacy capture mount preferences', () => {
+  it.each([
+    ['nested/chart.png', 'nested/chart.webp', 'image/webp', 'nested/chart.webp'],
+    ['report.txt', 'report-assigned.txt', 'text/plain', 'report.txt'],
+  ])(
+    'preserves the turn plan but not persistent alias lineage for %s',
+    (capture, name, type, canonical) => {
+      const legacy = {
+        file_id: 'legacy',
+        filename: capture,
+        type,
+        context: FileContext.execute_code,
+        metadata: {
+          codeEnvRef: {
+            kind: 'user' as const,
+            id: 'owner',
+            storage_session_id: 'session',
+            file_id: 'object',
+            sandboxFilename: name,
+          },
+        },
+      };
+      const literal = {
+        file_id: 'literal',
+        filename: name,
+        type,
+        context: FileContext.execute_code_snapshot,
+      };
+      const admitted = planCodeSnapshotMounts([legacy, literal]);
+      const alias = admitted.get(legacy.file_id)!;
+      expect(admitted.get(literal.file_id)).toBe(name);
+      expect(alias).not.toBe(name);
+      expect(
+        planCodeSnapshotMounts([legacy], undefined, 'default', admitted).get(legacy.file_id),
+      ).toBe(alias);
+      legacy.metadata.codeEnvRef.sandboxFilename = alias;
+      expect(planCodeSnapshotMounts([legacy]).get(legacy.file_id)).toBe(canonical);
+      legacy.metadata.codeEnvRef.sandboxFilename = name;
+      expect(planCodeSnapshotMounts([legacy]).get(legacy.file_id)).toBe(canonical);
+    },
+  );
 });

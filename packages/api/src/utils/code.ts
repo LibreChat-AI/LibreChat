@@ -3,6 +3,7 @@ import https from 'https';
 import { isAxiosError } from 'axios';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ServerRequest } from '~/types';
+import { CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS } from '~/code/limits';
 
 /**
  * Dedicated agents for code-server requests, preventing socket pool contamination.
@@ -44,7 +45,7 @@ export function getCodeApiRetryAfterMs(error: unknown): number | null {
 
 /** Total time one operation may spend waiting out Code API rate limits.
  *  Keeps recovery bounded inside a live chat turn. */
-export const MAX_CODE_API_RATE_LIMIT_WAIT_MS = 20_000;
+export const MAX_CODE_API_RATE_LIMIT_WAIT_MS: number = CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS;
 export const CODE_API_UPLOAD_CONCURRENCY_DEFAULT = 3;
 
 export interface CodeApiUploadRegistry {

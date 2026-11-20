@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import TimePicker, { MinutePicker } from './TimePicker';
 
 const LABELS = { hour: 'Hour', minute: 'Minute', meridiem: 'AM or PM', am: 'AM', pm: 'PM' };
@@ -35,6 +35,14 @@ describe('TimePicker', () => {
     expect(screen.getByRole('radiogroup', { name: 'Hour' })).toBeInTheDocument();
     expect(screen.getByRole('radiogroup', { name: 'Minute' })).toBeInTheDocument();
     expect(screen.getByRole('radiogroup', { name: 'AM or PM' })).toBeInTheDocument();
+  });
+
+  it('inks its value in the field role like every other field', () => {
+    render(<Harness />);
+
+    const trigger = screen.getByRole('button', { name: 'Time 9:00 AM' });
+    expect(trigger).toHaveClass('text-field-text');
+    expect(trigger).not.toHaveClass('text-text-primary');
   });
 
   it('announces the selected time, not just the field label', () => {
@@ -163,5 +171,23 @@ describe('MinutePicker', () => {
 
     await user.click(within(minutes).getByRole('radio', { name: '30' }));
     expect(screen.getByTestId('minute')).toHaveTextContent('30');
+  });
+
+  it('keeps ArrowRight advancing like ArrowDown in an RTL document, since the column is vertical', async () => {
+    const user = userEvent.setup();
+    document.documentElement.setAttribute('dir', 'rtl');
+    try {
+      render(<MinuteHarness />);
+      await user.click(screen.getByRole('button', { name: 'Minutes past the hour 00' }));
+      const minutes = screen.getByRole('radiogroup', { name: 'Minute' });
+      const options = within(minutes).getAllByRole('radio');
+
+      fireEvent.keyDown(options[0], { key: 'ArrowRight' });
+      expect(screen.getByTestId('minute')).toHaveTextContent(
+        options[1].getAttribute('data-value') ?? '',
+      );
+    } finally {
+      document.documentElement.removeAttribute('dir');
+    }
   });
 });

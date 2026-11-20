@@ -42,3 +42,16 @@ export const useGraphTokenQuery = (
     ...config,
   });
 };
+
+export const usePasskeysQuery = (
+  config?: UseQueryOptions<t.TPasskeysResponse>,
+): QueryObserverResult<t.TPasskeysResponse> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  return useQuery<t.TPasskeysResponse>([QueryKeys.passkeys], () => dataService.getPasskeys(), {
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+    ...config,
+    enabled: (config?.enabled ?? true) === true && queriesEnabled,
+  });
+};

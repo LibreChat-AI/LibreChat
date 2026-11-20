@@ -1,6 +1,14 @@
 import { ErrorTypes, stripLangChainTroubleshootingUrl } from 'librechat-data-provider';
 import type { ErrorPayload, ErrorRendererProps, UnclassifiedErrorProps } from './parts';
-import { ErrorBody, ErrorDetails, readObject, readString, useErrorEndpoint } from './parts';
+import type { TranslationKeys } from '~/hooks';
+import {
+  ErrorBody,
+  ErrorDetails,
+  ErrorWithDetail,
+  readObject,
+  readString,
+  useErrorEndpoint,
+} from './parts';
 import { extractJson } from '~/utils/json';
 import { useLocalize } from '~/hooks';
 
@@ -31,6 +39,11 @@ function readRefusalExplanation(json: ErrorPayload): string | undefined {
     readString(readObject(readObject(json, 'info'), 'stop_details'), 'explanation')
   );
 }
+
+const langChainErrorCopy: Record<string, TranslationKeys> = {
+  [ErrorTypes.MODEL_NOT_FOUND]: 'com_error_model_not_found',
+  [ErrorTypes.MODEL_RATE_LIMIT]: 'com_error_model_rate_limit',
+};
 
 /** A provider's own message, flat or nested under `error` the way OpenAI-style bodies carry it. */
 function readProviderError(json: ErrorPayload | undefined): string | undefined {
@@ -85,6 +98,18 @@ export default function ProviderError({ json, message }: ErrorRendererProps) {
         });
   }
 
+  /** Classified LangChain failures: a gateway may explain the limit or the model in `info`. */
+  const classifiedKey = errorKey != null ? langChainErrorCopy[errorKey] : undefined;
+  if (classifiedKey != null) {
+    return (
+      <ErrorWithDetail
+        headline={localize(classifiedKey)}
+        detail={readString(json, 'info')}
+        label={localize('com_error_details_provider')}
+      />
+    );
+  }
+
   if (errorKey === ErrorTypes.NO_SYSTEM_MESSAGES) {
     return provider != null
       ? localize('com_error_no_system_messages', { 0: provider })
@@ -108,6 +133,23 @@ export function UnclassifiedError({ json, text, message }: UnclassifiedErrorProp
   const withoutPayload =
     jsonString !== '' ? text.replace(jsonString, () => payloadProse ?? '') : text;
   const prose = stripLangChainTroubleshootingUrl(withoutPayload).trim() || payloadProse;
+  if (
+    prose != null &&
+    (/^This turn exceeds the configured (attachment count|total attachment size|extracted document text) limit \(/.test(
+      prose,
+    ) ||
+      /^The attached file ".*" is over the [\d.]+ MB limit for a file sent to this model\./.test(
+        prose,
+      ))
+  ) {
+    return (
+      <ErrorWithDetail
+        headline={localize('com_error_attachment_limit')}
+        detail={prose}
+        label={localize('com_error_details_attachment')}
+      />
+    );
+  }
   /** A payload that told us nothing usable is its own statement; otherwise name who failed. */
   const providerHeadline =
     provider != null
@@ -115,21 +157,11 @@ export function UnclassifiedError({ json, text, message }: UnclassifiedErrorProp
       : localize('com_error_upstream_model');
   const headline = prose == null && json != null ? localize('com_error_unknown') : providerHeadline;
 
-  if (prose == null) {
-    return headline;
-  }
-
-  if (prose.length <= 240 && !/[\r\n]/.test(prose)) {
-    return (
-      <ErrorBody>
-        <div>{headline}</div>
-        <div className="text-text-secondary">{prose}</div>
-      </ErrorBody>
-    );
-  }
-
-  return withHeadline(headline, {
-    label: localize('com_error_details_provider'),
-    value: prose,
-  });
+  return (
+    <ErrorWithDetail
+      headline={headline}
+      detail={prose}
+      label={localize('com_error_details_provider')}
+    />
+  );
 }

@@ -29,7 +29,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
       projects.map((item) => ({
         label: item.name,
         value: item._id,
-        icon: <Folder className="h-4 w-4 text-text-secondary" aria-hidden="true" />,
+        icon: <Folder className="text-text-secondary h-4 w-4" aria-hidden="true" />,
       })),
     [projects],
   );
@@ -53,7 +53,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
   );
 
   return (
-    <div className="flex items-center gap-0.5 px-2.5 pt-2">
+    <div className="flex items-center gap-0.5">
       <ControlCombobox
         selectId="project-landing-select"
         selectedValue={project._id}
@@ -64,7 +64,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
             applyProject(value);
           }
         }}
-        SelectIcon={<Folder className="h-3.5 w-3.5 text-text-secondary" aria-hidden="true" />}
+        SelectIcon={<Folder className="text-text-secondary h-3.5 w-3.5" aria-hidden="true" />}
         ariaLabel={localize('com_ui_change_project')}
         searchPlaceholder={localize('com_ui_search_projects')}
         isCollapsed={false}
@@ -73,8 +73,8 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
         gutter={12}
         matchTriggerWidth={false}
         containerClassName="w-auto min-w-0 px-0"
-        className="h-8 w-auto min-w-[7.5rem] max-w-[14rem] gap-1.5 rounded-full border-0 bg-transparent px-2.5 text-sm font-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-        popoverClassName="animate-popover-bottom min-w-64 rounded-2xl shadow-xl"
+        className="text-text-secondary hover:bg-surface-hover hover:text-text-primary h-8 w-auto max-w-[14rem] min-w-[7.5rem] gap-1.5 rounded-full border-0 bg-transparent px-2.5 text-sm font-medium"
+        popoverClassName="animate-popover-bottom min-w-[min(16rem,90vw)] rounded-2xl shadow-xl"
       />
       <TooltipAnchor
         description={localize('com_ui_remove_from_project')}
@@ -83,7 +83,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
             type="button"
             aria-label={localize('com_ui_remove_from_project')}
             onClick={() => applyProject(null)}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary outline-none transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+            className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary flex size-8 shrink-0 items-center justify-center rounded-full outline-hidden transition-colors focus-visible:ring-2 focus-visible:ring-inset"
           >
             <X className="h-3.5 w-3.5" aria-hidden="true" />
           </button>

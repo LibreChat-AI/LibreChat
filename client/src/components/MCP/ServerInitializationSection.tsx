@@ -3,6 +3,8 @@ import { RefreshCw, Trash2 } from 'lucide-react';
 import { Button, Spinner } from '@librechat/client';
 import { useLocalize, useMCPServerManager } from '~/hooks';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
+import { getMCPControlState } from './mcpServerUtils';
+import { openInNewTab } from '~/utils';
 
 interface ServerInitializationSectionProps {
   sidePanel?: boolean;
@@ -32,6 +34,7 @@ export default function ServerInitializationSection({
     availableMCPServers,
     availableMCPServersMap,
     connectionStatus,
+    connectionViews,
     revokeOAuthForServer,
   } = useMCPServerManager({
     conversationId,
@@ -42,7 +45,8 @@ export default function ServerInitializationSection({
   useMCPRefresh({ enabled: availableMCPServers.length > 0 });
 
   const serverStatus = connectionStatus?.[serverName];
-  const isConnected = serverStatus?.connectionState === 'connected';
+  const view = connectionViews?.[serverName];
+  const isConnected = getMCPControlState(serverStatus, view) === 'connected';
   const hasPendingOAuth =
     requiresOAuth &&
     serverStatus?.requiresOAuth === true &&
@@ -97,11 +101,7 @@ export default function ServerInitializationSection({
           >
             {localize('com_ui_cancel')}
           </Button>
-          <Button
-            variant="submit"
-            onClick={() => window.open(serverOAuthUrl, '_blank', 'noopener,noreferrer')}
-            className="flex-1"
-          >
+          <Button variant="submit" onClick={() => openInNewTab(serverOAuthUrl)} className="flex-1">
             {localize('com_ui_continue_oauth')}
           </Button>
         </div>
@@ -135,7 +135,7 @@ export default function ServerInitializationSection({
       {shouldShowRevoke && (
         <Button
           size="sm"
-          variant="destructive"
+          variant="destructive-soft"
           onClick={() => revokeOAuthForServer?.(serverName)}
           aria-label={localize('com_ui_revoke')}
         >

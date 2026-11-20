@@ -35,17 +35,6 @@ export function isIPLiteral(normalized: string): boolean {
   return normalized.includes(':');
 }
 
-/**
- * Detects `host:port` and `[ipv6]:port` shapes. Bare `::1`, `[::1]`, and
- * IPv6 literals with no port are not matched.
- */
-export function looksLikeHostPort(entry: string): boolean {
-  if (/^\[[^\]]+\]:\d+$/.test(entry)) return true;
-  const colonCount = (entry.match(/:/g) ?? []).length;
-  if (colonCount !== 1) return false;
-  return /^[^:]+:\d+$/.test(entry);
-}
-
 export function normalizePort(port: unknown): string {
   if (typeof port !== 'string' && typeof port !== 'number') return '';
   const portString = String(port).trim();

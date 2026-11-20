@@ -3,7 +3,7 @@ const { ErrorTypes } = require('librechat-data-provider');
 const { createSocialUser, handleExistingUser } = require('./process');
 const socialLogin = require('./socialLogin');
 const { findUser } = require('~/models');
-const { resolveAppConfigForUser } = require('@librechat/api');
+const { isEmailDomainAllowed, resolveAppConfigForUser } = require('@librechat/api');
 const { getAppConfig } = require('~/server/services/Config');
 
 jest.mock('@librechat/data-schemas', () => {
@@ -57,6 +57,11 @@ describe('socialLogin', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    isEmailDomainAllowed.mockReset().mockReturnValue(true);
+    getAppConfig.mockReset().mockResolvedValue({
+      fileStrategy: 'local',
+      balance: { enabled: false },
+    });
   });
 
   describe('Finding users by provider ID', () => {
@@ -349,7 +354,7 @@ describe('socialLogin', () => {
         username: 'New',
         name: 'New User',
         emailVerified: true,
-        appConfig: expect.any(Object),
+        lookup: { findUser, provider, providerId: googleId, email },
       });
 
       expect(callback).toHaveBeenCalledWith(null, newUser);
@@ -427,7 +432,7 @@ describe('socialLogin', () => {
       expect(resolveAppConfigForUser).toHaveBeenCalledWith(getAppConfig, existingUser);
     });
 
-    it('should use baseConfig for non-tenant user without calling resolveAppConfigForUser', async () => {
+    it('should use the pre-auth config for a new user without calling resolveAppConfigForUser', async () => {
       const provider = 'google';
       const googleId = 'google-new-tenant';
       const email = 'new@example.com';
@@ -453,11 +458,68 @@ describe('socialLogin', () => {
       await loginFn(null, null, null, mockProfile, callback);
 
       expect(resolveAppConfigForUser).not.toHaveBeenCalled();
-      expect(getAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+      expect(getAppConfig).toHaveBeenCalledWith({
+        skipRuntimeAugmentation: true,
+        failClosed: true,
+      });
+      expect(getAppConfig).not.toHaveBeenCalledWith({ baseOnly: true });
+    });
+
+    it('should resolve the account config for an existing user without a tenant', async () => {
+      const email = 'deployment@example.com';
+      const existingUser = {
+        _id: 'userDeployment',
+        email,
+        provider: 'google',
+        googleId: 'google-deployment-user',
+        role: 'USER',
+      };
+      findUser.mockResolvedValue(existingUser);
+      resolveAppConfigForUser.mockResolvedValue({ fileStrategy: 'local' });
+
+      const mockProfile = {
+        id: 'google-deployment-user',
+        emails: [{ value: email, verified: true }],
+        name: { givenName: 'Deployment', familyName: 'User' },
+      };
+      const callback = jest.fn();
+
+      await socialLogin('google', mockGetProfileDetails)(null, null, null, mockProfile, callback);
+
+      expect(resolveAppConfigForUser).toHaveBeenCalledWith(getAppConfig, existingUser);
+      expect(handleExistingUser).toHaveBeenCalledWith(
+        existingUser,
+        null,
+        { fileStrategy: 'local' },
+        email,
+      );
+    });
+
+    it('should reject before the user lookup when the __base__ override excludes the domain', async () => {
+      isEmailDomainAllowed.mockImplementation(
+        jest.requireActual('@librechat/api').isEmailDomainAllowed,
+      );
+      getAppConfig.mockImplementation(async (options) =>
+        options?.baseOnly ? {} : { registration: { allowedDomains: ['corp.example'] } },
+      );
+
+      const mockProfile = {
+        id: 'google-outsider',
+        emails: [{ value: 'outsider@example.com', verified: true }],
+        name: { givenName: 'Out', familyName: 'Sider' },
+      };
+      const callback = jest.fn();
+
+      await socialLogin('google', mockGetProfileDetails)(null, null, null, mockProfile, callback);
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Email domain not allowed' }),
+      );
+      expect(findUser).not.toHaveBeenCalled();
+      expect(createSocialUser).not.toHaveBeenCalled();
     });
 
     it('should block login when tenant config restricts the domain', async () => {
-      const { isEmailDomainAllowed } = require('@librechat/api');
       const provider = 'google';
       const googleId = 'google-tenant-blocked';
       const email = 'blocked@example.com';

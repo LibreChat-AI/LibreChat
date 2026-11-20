@@ -42,8 +42,10 @@ type ShareMiddleware = (
   next: NextFunction,
 ) => Promise<Response | void>;
 
-const resourceToPermissionType: Record<ResourceType, PermissionTypes> = {
+const resourceToPermissionType: Record<ResourceType, PermissionTypes | undefined> = {
   [ResourceType.AGENT]: PermissionTypes.AGENTS,
+  // Bot managers are granted only by installation admins through the dedicated workflow.
+  [ResourceType.SLACK_BOT]: undefined,
   /** Environment sharing is capability-gated by MANAGE_CODE_ENVIRONMENTS.
    * RUN_CODE intentionally has no public-sharing bit, so public grants remain denied. */
   [ResourceType.CODE_ENVIRONMENT]: PermissionTypes.RUN_CODE,

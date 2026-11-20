@@ -3,3 +3,5 @@ cache: true
 endpoints:
   openAI:
     titleConvo: false
+openapi:
+  enabled: true

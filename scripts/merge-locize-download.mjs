@@ -86,4 +86,6 @@ for (const relative of await jsonFiles(baseDir)) {
   changedFiles += 1;
 }
 
-console.log(`Preserved ${restored} repository translation value(s) across ${changedFiles} file(s).`);
+console.log(
+  `Preserved ${restored} repository translation value(s) across ${changedFiles} file(s).`,
+);

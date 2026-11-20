@@ -1,11 +1,20 @@
+import express from 'express';
 import jwt from 'jsonwebtoken';
+import request from 'supertest';
+import { Types } from 'mongoose';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import type { NextFunction, Request, Response } from 'express';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
 import type { ImageAuthorizationDeps } from './authorization';
 import { createImageAuthorizationMiddleware } from './authorization';
+import staticCache from '~/api/server/utils/staticCache';
 
 const VIEWER_ID = '65cfb246f7ecadb8b1e8036b';
 const OWNER_ID = '65cfb246f7ecadb8b1e8036c';
+const VICTIM_ID = '65cfb246f7ecadb8b1e8036f';
 const AGENT_DB_ID = '65cfb246f7ecadb8b1e8036d';
 const AGENT_PATH = `/images/${OWNER_ID}/agent-agent_abc123-avatar-12345.png`;
 const USER_AVATAR_PATH = `/images/${OWNER_ID}/avatar-12345.png`;
@@ -69,11 +78,20 @@ function signOpenIdUser(userId: string, refreshToken: string): string {
 }
 
 describe('createImageAuthorizationMiddleware', () => {
+  const originalEnforcement = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+  afterAll(() => {
+    if (originalEnforcement === undefined) {
+      delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+    } else {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = originalEnforcement;
+    }
+  });
   let deps: ImageAuthorizationDeps;
   let response: Response;
   let next: jest.MockedFunction<NextFunction>;
 
   beforeEach(() => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'false';
     process.env.JWT_REFRESH_SECRET = 'image-authorization-secret';
     deps = createDeps();
     response = createResponse();
@@ -92,6 +110,130 @@ describe('createImageAuthorizationMiddleware', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(deps.findSession).toHaveBeenCalledWith({ userId: VIEWER_ID, refreshToken: token });
+  });
+
+  describe('required enrollment and credential retirement', () => {
+    const originalEnforcement = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+
+    afterEach(() => {
+      if (originalEnforcement === undefined) {
+        delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+      } else {
+        process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = originalEnforcement;
+      }
+    });
+
+    it.each(['local', 'ldap', undefined])(
+      'refuses an unenrolled %s viewer without an extra owner read',
+      async (provider) => {
+        process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+        (deps.getUserById as jest.Mock).mockResolvedValue({ provider, twoFactorEnabled: false });
+        const middleware = createImageAuthorizationMiddleware({}, deps);
+
+        await middleware(
+          createRequest(`/images/${VIEWER_ID}/private.png`, `refreshToken=${signUser(VIEWER_ID)}`),
+          response,
+          next,
+        );
+
+        expect(next).not.toHaveBeenCalled();
+        expect(response.status).toHaveBeenCalledWith(403);
+        expect(deps.getUserById).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['local', 'openid', 'legacy-openid'])(
+      'dates a %s credential against both account cutoffs',
+      async (kind) => {
+        const issuedAtMs = Date.now();
+        const refreshToken =
+          kind === 'local'
+            ? jwt.sign({ id: VIEWER_ID, issuedAtMs }, process.env.JWT_REFRESH_SECRET as string, {
+                expiresIn: '1h',
+              })
+            : 'provider-refresh';
+        const marker = jwt.sign(
+          {
+            id: VIEWER_ID,
+            issuedAtMs,
+            ...(kind === 'openid'
+              ? { refreshTokenHash: createHash('sha256').update(refreshToken).digest('base64url') }
+              : {}),
+          },
+          process.env.JWT_REFRESH_SECRET as string,
+          { expiresIn: '1h' },
+        );
+        (deps.isOpenIdReuseEnabled as jest.Mock).mockReturnValue(kind !== 'local');
+        const cookie =
+          kind === 'local'
+            ? `refreshToken=${refreshToken}`
+            : `refreshToken=${refreshToken}; token_provider=openid; openid_user_id=${marker}`;
+        const req = Object.assign(createRequest(`/images/${VIEWER_ID}/private.png`, cookie), {
+          session: { openidTokens: { refreshToken } },
+        });
+        const middleware = createImageAuthorizationMiddleware({}, deps);
+
+        for (const field of ['twoFactorEnrolledAt', 'credentialsChangedAt']) {
+          (deps.getUserById as jest.Mock).mockResolvedValue({
+            [field]: new Date(issuedAtMs + 1),
+            twoFactorEnabled: true,
+          });
+          await middleware(req, response, next);
+          expect(next).not.toHaveBeenCalled();
+          expect(response.status).toHaveBeenCalledWith(403);
+        }
+        (deps.getUserById as jest.Mock).mockResolvedValue({
+          twoFactorEnrolledAt: new Date(issuedAtMs - 1),
+          credentialsChangedAt: new Date(issuedAtMs - 1),
+          twoFactorEnabled: true,
+        });
+        await middleware(req, response, next);
+        expect(next).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('checks the authenticated viewer rather than the image owner and preserves public access', async () => {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      (deps.getUserById as jest.Mock).mockImplementation(async (id: string) => ({
+        role: 'USER',
+        tenantId: 'tenant-a',
+        provider: 'local',
+        twoFactorEnabled: id === OWNER_ID,
+      }));
+      (deps.getAgent as jest.Mock).mockResolvedValue({ _id: AGENT_DB_ID });
+      (deps.hasPermission as jest.Mock).mockResolvedValue(false);
+      const middleware = createImageAuthorizationMiddleware({}, deps);
+      const req = createRequest(AGENT_PATH, `refreshToken=${signUser(VIEWER_ID)}`);
+      await middleware(req, response, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(deps.getUserPrincipals).not.toHaveBeenCalled();
+      expect(deps.getUserById).toHaveBeenCalledTimes(2);
+
+      (deps.hasPermission as jest.Mock).mockResolvedValue(true);
+      await middleware(req, response, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(deps.hasPermission).toHaveBeenLastCalledWith(
+        [{ principalType: 'public' }],
+        expect.anything(),
+        AGENT_DB_ID,
+        expect.anything(),
+      );
+    });
+
+    it('keeps federated users exempt from the enrollment policy', async () => {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      (deps.getUserById as jest.Mock).mockResolvedValue({
+        provider: 'openid',
+        twoFactorEnabled: false,
+      });
+      const middleware = createImageAuthorizationMiddleware({}, deps);
+      await middleware(
+        createRequest(`/images/${VIEWER_ID}/private.png`, `refreshToken=${signUser(VIEWER_ID)}`),
+        response,
+        next,
+      );
+      expect(next).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('rejects a signed refresh token whose session was revoked', async () => {
@@ -307,9 +449,47 @@ describe('createImageAuthorizationMiddleware', () => {
           `${assistantPath}?manual=true`,
         ],
       },
-      { _id: 1, assistant_id: 1, endpoint: 1 },
+      { _id: 1, assistant_id: 1, endpoint: 1, user: 1 },
     );
   });
+
+  it.each([
+    { user: VIEWER_ID, tenantId: 'tenant-a', allowed: true },
+    { user: OWNER_ID, tenantId: 'tenant-a', allowed: false },
+    { user: VIEWER_ID, tenantId: 'tenant-b', allowed: false },
+  ])(
+    'checks private assistant ownership and tenant before granting image access: %p',
+    async ({ user, tenantId, allowed }) => {
+      (deps.getAssistant as jest.Mock).mockResolvedValue({
+        _id: '65cfb246f7ecadb8b1e8036e',
+        assistant_id: 'asst_private',
+        endpoint: 'assistants',
+        user,
+      });
+      (deps.getUserById as jest.Mock)
+        .mockResolvedValueOnce({ tenantId: 'tenant-a' })
+        .mockResolvedValueOnce({ tenantId });
+      const middleware = createImageAuthorizationMiddleware(
+        { assistantEndpoints: [{ endpoint: 'assistants', privateAssistants: true }] },
+        deps,
+      );
+      await middleware(
+        createRequest(
+          `/images/${OWNER_ID}/assistant-avatar.png`,
+          `refreshToken=${signUser(VIEWER_ID)}`,
+        ),
+        response,
+        next,
+      );
+      if (allowed) {
+        expect(next).toHaveBeenCalledTimes(1);
+        expect(deps.getUserPrincipals).not.toHaveBeenCalled();
+      } else {
+        expect(next).not.toHaveBeenCalled();
+        expect(response.status).toHaveBeenCalledWith(403);
+      }
+    },
+  );
 
   it('requires authentication for an otherwise shared assistant avatar', async () => {
     (deps.getAssistant as jest.Mock).mockResolvedValue({
@@ -368,9 +548,9 @@ describe('createImageAuthorizationMiddleware', () => {
     expect(deps.getUserById).toHaveBeenNthCalledWith(
       1,
       OWNER_ID,
-      'role tenantId idOnTheSource avatar',
+      'role tenantId idOnTheSource avatar provider twoFactorEnabled twoFactorEnrolledAt credentialsChangedAt',
     );
-    expect(deps.getUserById).toHaveBeenNthCalledWith(2, VIEWER_ID, 'tenantId');
+    expect(deps.getUserById).toHaveBeenCalledTimes(2);
   });
 
   it('denies the stored user avatar to a viewer from another tenant', async () => {
@@ -515,19 +695,233 @@ describe('createImageAuthorizationMiddleware', () => {
     expect(response.locals.privateImageCache).toBe(true);
   });
 
-  it('rejects encoded traversal before any resource lookup', async () => {
-    const token = signUser(VIEWER_ID);
+  it.each([
+    '..%2F..%2Fetc%2Fpasswd',
+    'x%3F%2F..%2F..%2Fsecret.png',
+    'x%23%2F..%2F..%2Fsecret.png',
+    'x%3f%2f..%2f..%2fsecret.png',
+    '%2e%2e',
+    'x%5C..%5Csecret.png',
+    'x%00.png',
+    'x%ZZ.png',
+  ])('rejects invalid pathname %s before any resource lookup', async (filename) => {
     const middleware = createImageAuthorizationMiddleware({}, deps);
 
     await middleware(
-      createRequest(`/images/${VIEWER_ID}/..%2F..%2Fetc%2Fpasswd`, `refreshToken=${token}`),
+      createRequest(`/images/${VIEWER_ID}/${filename}`, `refreshToken=${signUser(VIEWER_ID)}`),
       response,
       next,
     );
 
     expect(next).not.toHaveBeenCalled();
     expect(response.status).toHaveBeenCalledWith(403);
+    expect(deps.getUserById).not.toHaveBeenCalled();
     expect(deps.getAgent).not.toHaveBeenCalled();
     expect(deps.getAssistant).not.toHaveBeenCalled();
+  });
+
+  it('forwards the authorized pathname with filename delimiters still encoded', async () => {
+    const req = createRequest(
+      `/images//${VIEWER_ID}/profile%3Fdraft%23one%252F.png?manual=true`,
+      `refreshToken=${signUser(VIEWER_ID)}`,
+    );
+    const middleware = createImageAuthorizationMiddleware({}, deps);
+
+    await middleware(req, response, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.url).toBe(`/${VIEWER_ID}/profile%3Fdraft%23one%252F.png`);
+  });
+
+  describe.each([true, false])('HTTP image serving, skipGzipScan=%s', (skipGzipScan) => {
+    const privateBytes = Buffer.from('VICTIM_PRIVATE_BYTES');
+    const ownerBytes = Buffer.from('OWNER_IMAGE_BYTES');
+    const publicBytes = Buffer.from('PUBLIC_AVATAR_BYTES');
+    const assistantFilenames = ['company logo.png', '会社.png', 'company+logo.png'];
+    let imageRoot: string;
+
+    beforeAll(() => {
+      imageRoot = mkdtempSync(join(tmpdir(), 'image-authorization-'));
+      for (const id of [VIEWER_ID, OWNER_ID, VICTIM_ID]) {
+        mkdirSync(join(imageRoot, id));
+      }
+      const files = [
+        [`${VICTIM_ID}/secret.png`, privateBytes],
+        [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}`, publicBytes],
+        [`${VIEWER_ID}/profile.png`, ownerBytes],
+        [`${VIEWER_ID}/profile?draft.png`, ownerBytes],
+        [`${VIEWER_ID}/profile#draft.png`, ownerBytes],
+        [`${VIEWER_ID}/profile with spaces.png`, ownerBytes],
+        [`${VIEWER_ID}/profile%2F.png`, ownerBytes],
+        [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}?private.png`, privateBytes],
+        [`${OWNER_ID}/${AGENT_PATH.split('/').pop()}?manual=true`, privateBytes],
+        ...assistantFilenames.map((filename) => [`${OWNER_ID}/${filename}`, publicBytes] as const),
+        [`${OWNER_ID}/company logo.png?manual=true`, privateBytes],
+        [`${OWNER_ID}/company logo.png#private`, privateBytes],
+        [`${OWNER_ID}/company%20logo.png`, privateBytes],
+      ] as const;
+      for (const [filename, bytes] of files) {
+        writeFileSync(join(imageRoot, filename), bytes);
+        writeFileSync(join(imageRoot, `${filename}.gz`), gzipSync(bytes));
+      }
+    });
+
+    afterAll(() => {
+      rmSync(imageRoot, { recursive: true, force: true });
+    });
+
+    describe.each(['', '/chat'])('base path "%s"', (basePath) => {
+      let app: Express;
+
+      beforeEach(() => {
+        jest.mocked(deps.getBasePath).mockReturnValue(basePath);
+        jest.mocked(deps.getUserById).mockImplementation(async (id) => ({
+          role: 'USER',
+          tenantId: id === VICTIM_ID ? 'tenant-b' : 'tenant-a',
+        }));
+        jest
+          .mocked(deps.getAgent)
+          .mockImplementation(async (query) =>
+            query.id === 'agent_abc123' &&
+            query['avatar.filepath']?.$in?.includes(`${AGENT_PATH}?manual=true`)
+              ? { _id: new Types.ObjectId(AGENT_DB_ID) }
+              : null,
+          );
+        jest
+          .mocked(deps.hasPermission)
+          .mockImplementation(
+            async (principals, resourceType, resourceId, permission) =>
+              principals.length === 1 &&
+              principals[0].principalType === 'public' &&
+              resourceType === 'agent' &&
+              resourceId.toString() === AGENT_DB_ID &&
+              permission === 1,
+          );
+        app = express();
+        const router = express.Router();
+        router.use(staticCache(imageRoot, { skipGzipScan }) as RequestHandler);
+        app.use(
+          `${basePath}/images`,
+          createImageAuthorizationMiddleware(
+            { assistantEndpoints: [{ endpoint: 'assistants', privateAssistants: false }] },
+            deps,
+          ),
+          router,
+        );
+      });
+
+      it('denies direct victim requests with and without an active session', async () => {
+        const path = `${basePath}/images/${VICTIM_ID}/secret.png`;
+        const anonymous = await request(app).get(path);
+        const authenticated = await request(app)
+          .get(path)
+          .set('Cookie', `refreshToken=${signUser(VIEWER_ID)}`);
+        expect(anonymous.status).toBe(401);
+        expect(authenticated.status).toBe(403);
+      });
+
+      it.each(['%3F', '%23'])('rejects an owner-prefix %s traversal', async (delimiter) => {
+        const response = await request(app)
+          .get(`${basePath}/images//${VIEWER_ID}/x${delimiter}%2F..%2F..%2F${VICTIM_ID}/secret.png`)
+          .set('Cookie', `refreshToken=${signUser(VIEWER_ID)}`);
+        expect(response.body).not.toEqual(privateBytes);
+        expect(response.status).toBe(403);
+        expect(deps.getUserById).not.toHaveBeenCalled();
+      });
+
+      it.each(['%3F', '%23'])(
+        'rejects an anonymous public-avatar %s traversal',
+        async (delimiter) => {
+          const response = await request(app).get(
+            `${basePath}${AGENT_PATH}${delimiter}%2F..%2F..%2F${VICTIM_ID}/secret.png`,
+          );
+          expect(response.body).not.toEqual(privateBytes);
+          expect(response.status).toBe(401);
+          expect(deps.getAgent).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        'profile.png?manual=true&ignored=%ZZ',
+        'profile%3Fdraft.png',
+        'profile%23draft.png',
+        'profile%20with%20spaces.png',
+        'profile%252F.png',
+      ])('serves only the authorized owner file for %s', async (filename) => {
+        const response = await request(app)
+          .get(`${basePath}/images//${VIEWER_ID}/${filename}`)
+          .set('Cookie', `refreshToken=${signUser(VIEWER_ID)}`)
+          .set('Accept-Encoding', 'gzip')
+          .expect(200);
+        expect(response.body).toEqual(ownerBytes);
+        expect(response.headers['cache-control']).toBe('private, no-store');
+        expect(response.headers['content-encoding']).toBe(skipGzipScan ? undefined : 'gzip');
+      });
+
+      describe.each(['raw', 'encoded'])('stored assistant paths: %s', (representation) => {
+        it.each(assistantFilenames)(
+          'serves shared assistant avatar %s to a non-owner',
+          async (filename) => {
+            const storedPath = `/images/${OWNER_ID}/${
+              representation === 'raw' ? filename : encodeURIComponent(filename)
+            }`;
+            for (const suffix of ['', '?manual=false', '?manual=true']) {
+              jest.mocked(deps.getAssistant).mockImplementation(async (query) =>
+                query.avatarFilepath?.includes(`${storedPath}${suffix}`)
+                  ? {
+                      _id: new Types.ObjectId(AGENT_DB_ID),
+                      assistant_id: 'asst_shared',
+                      endpoint: 'assistants',
+                    }
+                  : null,
+              );
+              const result = await request(app)
+                .get(`${basePath}/images/${OWNER_ID}/${encodeURIComponent(filename)}`)
+                .set('Cookie', `refreshToken=${signUser(VIEWER_ID)}`)
+                .set('Accept-Encoding', 'gzip');
+              expect(result.status).toBe(200);
+              expect(result.body).toEqual(publicBytes);
+              expect(result.headers['cache-control']).toBe('private, no-store');
+            }
+          },
+        );
+      });
+
+      it.each(['%3Fmanual=true', '%23private', '%2520logo.png'])(
+        'does not alias an assistant filename suffix %s to a stored URL',
+        async (suffix) => {
+          const storedPath = `/images/${OWNER_ID}/${
+            suffix === '%2520logo.png' ? 'company%20logo.png' : 'company logo.png'
+          }?manual=true`;
+          jest.mocked(deps.getAssistant).mockImplementation(async (query) =>
+            query.avatarFilepath?.includes(storedPath)
+              ? {
+                  _id: new Types.ObjectId(AGENT_DB_ID),
+                  assistant_id: 'asst_shared',
+                  endpoint: 'assistants',
+                }
+              : null,
+          );
+          const filename =
+            suffix === '%2520logo.png' ? `company${suffix}` : `company%20logo.png${suffix}`;
+          const result = await request(app)
+            .get(`${basePath}/images/${OWNER_ID}/${filename}`)
+            .set('Cookie', `refreshToken=${signUser(VIEWER_ID)}`);
+          expect(result.status).toBe(403);
+          expect(result.body).not.toEqual(privateBytes);
+        },
+      );
+
+      it('serves the exact PUBLIC avatar but not a filename with an encoded delimiter', async () => {
+        const response = await request(app)
+          .get(`${basePath}${AGENT_PATH}?manual=false`)
+          .set('Accept-Encoding', 'gzip')
+          .expect(200);
+        expect(response.body).toEqual(publicBytes);
+        expect(response.headers['cache-control']).toBe('private, no-store');
+        await request(app).get(`${basePath}${AGENT_PATH}%3Fprivate.png`).expect(401);
+        await request(app).get(`${basePath}${AGENT_PATH}%3Fmanual=true`).expect(401);
+      });
+    });
   });
 });

@@ -5,17 +5,39 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
-import { render, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, act, waitFor } from '@testing-library/react';
+import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  FileSources,
+  roleDefaults,
+  SystemRoles,
+  QueryKeys,
+  dataService,
+  readTwoFactorSetupToken,
+  clearTwoFactorSetupToken,
+  persistTwoFactorSetupToken,
+} from 'librechat-data-provider';
+import type { TRole, TUser } from 'librechat-data-provider';
 import type { TAuthConfig } from '~/common';
+import {
+  SESSION_KEY,
+  getCachedTTSAudio,
+  setCachedTTSAudio,
+  retainFileDeletion,
+  getTTSCacheGeneration,
+  clearRetainedFileDeletions,
+  takeRetainedFileDeletions,
+} from '~/utils';
 import {
   chatFilterStatusAtom,
   chatFilterTagsAtom,
   chatSortAtom,
   resetChatFilterSessionAtom,
 } from '~/components/Conversations/chatFilters';
+import { mcpConnectResultsAtom, mcpServerInitStatesAtom } from '~/store/mcp';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
-import { SESSION_KEY } from '~/utils';
+import { useGetRole as useRoleQuery } from '~/data-provider/roles';
+import store from '~/store';
 
 const mockNavigate = jest.fn();
 jest.mock('react-router-dom', () => ({
@@ -28,6 +50,10 @@ const mockApiBaseUrl = jest.fn(() => '');
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   setTokenHeader: jest.fn(),
+  dataService: {
+    ...jest.requireActual('librechat-data-provider').dataService,
+    getRole: jest.fn(),
+  },
   apiBaseUrl: () => mockApiBaseUrl(),
 }));
 
@@ -41,7 +67,12 @@ let mockCapturedLogoutOptions: {
   onError: (...args: unknown[]) => void;
 };
 
+const mockEndPullRequestSession = jest.fn();
+const mockClearTitleGenerationState = jest.fn();
 const mockRefreshMutate = jest.fn();
+const mockLoginMutate = jest.fn();
+const mockLogoutMutate = jest.fn();
+let capturedAuthContext: ReturnType<typeof useAuthContext> | undefined;
 
 jest.mock('~/data-provider', () => ({
   useLoginUserMutation: jest.fn(
@@ -50,7 +81,7 @@ jest.mock('~/data-provider', () => ({
       onError: (...args: unknown[]) => void;
     }) => {
       mockCapturedLoginOptions = options;
-      return { mutate: jest.fn() };
+      return { mutate: mockLoginMutate };
     },
   ),
   useLogoutUserMutation: jest.fn(
@@ -59,7 +90,7 @@ jest.mock('~/data-provider', () => ({
       onError: (...args: unknown[]) => void;
     }) => {
       mockCapturedLogoutOptions = options;
-      return { mutate: jest.fn() };
+      return { mutate: mockLogoutMutate };
     },
   ),
   useRefreshTokenMutation: jest.fn(() => ({ mutate: mockRefreshMutate })),
@@ -69,6 +100,9 @@ jest.mock('~/data-provider', () => ({
     error: null,
   })),
   useGetRole: jest.fn(() => ({ data: null })),
+  endPullRequestSession: jest.fn(() => mockEndPullRequestSession()),
+  clearTitleGenerationState: jest.fn(() => mockClearTitleGenerationState()),
+  setPullRequestSessionOwner: jest.fn(),
   useListRoles: jest.fn(() => ({ data: undefined })),
 }));
 
@@ -76,6 +110,7 @@ const authConfig: TAuthConfig = { loginRedirect: '/login', test: true };
 
 function TestConsumer() {
   const ctx = useAuthContext();
+  capturedAuthContext = ctx;
   return (
     <div
       data-testid="consumer"
@@ -92,7 +127,7 @@ function renderProvider() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
 
-  return render(
+  const tree = () => (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
         <MemoryRouter>
@@ -101,8 +136,10 @@ function renderProvider() {
           </AuthContextProvider>
         </MemoryRouter>
       </RecoilRoot>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const result = render(tree());
+  return { ...result, rerenderProvider: () => result.rerender(tree()) };
 }
 
 /** Renders without test:true so silentRefresh actually runs */
@@ -142,7 +179,7 @@ function renderOptionalProvider() {
   );
 }
 
-describe('AuthContextProvider — test mode', () => {
+describe('AuthContextProvider: test mode', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -153,9 +190,188 @@ describe('AuthContextProvider — test mode', () => {
     expect(getByTestId('consumer')).toHaveAttribute('data-auth-ready', 'true');
     expect(mockRefreshMutate).not.toHaveBeenCalled();
   });
+
+  it('preserves auth context when mutation result objects change without an auth change', () => {
+    const { rerenderProvider } = renderProvider();
+    const previousContext = capturedAuthContext;
+
+    rerenderProvider();
+
+    expect(capturedAuthContext?.login).toBe(previousContext?.login);
+    expect(capturedAuthContext?.logout).toBe(previousContext?.logout);
+    expect(capturedAuthContext).toBe(previousContext);
+  });
 });
 
-describe('AuthContextProvider — login onError redirect handling', () => {
+describe('AuthContextProvider two-factor login handoff', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    sessionStorage.clear();
+    capturedAuthContext = undefined;
+    window.history.replaceState({}, '', '/login');
+  });
+
+  afterEach(() => {
+    sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('routes unenrolled users to required setup', () => {
+    renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'setup-token',
+      });
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith('/login/2fa/setup', { replace: true });
+    /** The credential is handed over out of band, never through the address bar. */
+    expect(readTwoFactorSetupToken()).toBe('setup-token');
+  });
+
+  it('retains a non-default destination through setup reload and consumes it after completion', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/login?redirect_to=%2Fc%2Fredirect-lifecycle-proof%3Fmodel%3Dtest',
+    );
+    const firstRender = renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'setup-token',
+      });
+    });
+
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe('/c/redirect-lifecycle-proof?model=test');
+    firstRender.unmount();
+    window.history.replaceState({}, '', '/login/2fa/setup');
+    renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+
+    expect(mockNavigate).toHaveBeenLastCalledWith('/c/redirect-lifecycle-proof?model=test', {
+      replace: true,
+    });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+    expect(mockNavigate).toHaveBeenLastCalledWith('/c/new', { replace: true });
+  });
+
+  it('keeps enrolled users on the existing verification route', () => {
+    renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        tempToken: 'challenge-token',
+      });
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith('/login/2fa?tempToken=challenge-token', {
+      replace: true,
+    });
+  });
+
+  /**
+   * An abandoned setup token outlives the screen that staged it, so a later sign-in in the same tab
+   * must not leave the previous user's enrollment credential available to finish.
+   */
+  it('drops an abandoned setup token when the next sign-in succeeds', () => {
+    renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'abandoned-token',
+      });
+    });
+    expect(readTwoFactorSetupToken()).toBe('abandoned-token');
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        token: 'other-user-token',
+        user: { id: 'user-2' },
+      });
+    });
+
+    expect(readTwoFactorSetupToken()).toBe('');
+  });
+
+  it('drops an abandoned setup token when the next sign-in is challenged', () => {
+    renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'abandoned-token',
+      });
+    });
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        tempToken: 'challenge-token',
+      });
+    });
+
+    expect(readTwoFactorSetupToken()).toBe('');
+  });
+
+  it('drops an abandoned setup token when the next sign-in fails', () => {
+    renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'abandoned-token',
+      });
+    });
+
+    act(() => {
+      mockCapturedLoginOptions.onError({ response: { status: 401 } });
+    });
+
+    expect(readTwoFactorSetupToken()).toBe('');
+  });
+
+  it('still hands the fresh credential to a setup that follows another sign-in', () => {
+    renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'first-token',
+      });
+    });
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'second-token',
+      });
+    });
+
+    expect(readTwoFactorSetupToken()).toBe('second-token');
+  });
+});
+
+describe('AuthContextProvider: login onError redirect handling', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     window.history.replaceState({}, '', '/login');
@@ -213,21 +429,24 @@ describe('AuthContextProvider — login onError redirect handling', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/login', { replace: true });
   });
 
-  it('surfaces the cross-origin rejection code instead of the HTTP status message', () => {
-    jest.useFakeTimers();
-    const { getByTestId } = renderProvider();
+  it.each(['auth_cross_origin', 'TWO_FACTOR_FEDERATED_LOGIN_BLOCKED'])(
+    'surfaces the recognized %s rejection code instead of the HTTP status message',
+    (code) => {
+      jest.useFakeTimers();
+      const { getByTestId } = renderProvider();
 
-    act(() => {
-      mockCapturedLoginOptions.onError({
-        message: 'Request failed with status code 403',
-        response: { data: { message: 'Cross-site request rejected', code: 'auth_cross_origin' } },
+      act(() => {
+        mockCapturedLoginOptions.onError({
+          message: 'Request failed with status code 403',
+          response: { data: { code } },
+        });
+        jest.advanceTimersByTime(400);
       });
-      jest.advanceTimersByTime(400);
-    });
 
-    expect(getByTestId('consumer')).toHaveAttribute('data-error', 'auth_cross_origin');
-    jest.useRealTimers();
-  });
+      expect(getByTestId('consumer')).toHaveAttribute('data-error', code);
+      jest.useRealTimers();
+    },
+  );
 
   it('keeps the HTTP status message for other rejections that carry a code', () => {
     jest.useFakeTimers();
@@ -309,6 +528,61 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
     jotaiStore.set(resetChatFilterSessionAtom);
   });
 
+  it('clears MCP connection results and pending OAuth at logout', () => {
+    const session = getDefaultStore();
+    session.set(mcpConnectResultsAtom, {
+      server: { id: 'attempt', configKey: 'user-config', state: 'connected' },
+    });
+    session.set(mcpServerInitStatesAtom, {
+      server: {
+        isInitializing: true,
+        isCancellable: true,
+        oauthUrl: 'https://auth.example.test',
+        oauthStartTime: Date.now(),
+        connectionDeferred: false,
+      },
+    });
+    renderProvider();
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+    expect(session.get(mcpConnectResultsAtom)).toEqual({});
+    expect(session.get(mcpServerInitStatesAtom)).toEqual({});
+  });
+
+  it('ends the sidebar pull request queue at the logout session boundary', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(mockEndPullRequestSession).toHaveBeenCalled();
+  });
+
+  it('clears module-level title generation state at the logout session boundary', () => {
+    mockClearTitleGenerationState.mockClear();
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(mockClearTitleGenerationState).toHaveBeenCalled();
+  });
+
+  it('does not end the sidebar pull request queue while a session is being established', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+
+    expect(mockEndPullRequestSession).not.toHaveBeenCalled();
+  });
+
   it('does not call window.location.replace when redirect is absent', async () => {
     const replaceSpy = jest.spyOn(window.location, 'replace').mockImplementation(() => {});
 
@@ -376,6 +650,50 @@ describe('AuthContextProvider — silentRefresh post-login redirect', () => {
     jest.useRealTimers();
   });
 
+  /**
+   * A federated sign-in lands here rather than through the login mutation, so the previous user's
+   * abandoned enrollment credential has to be dropped on this path too.
+   */
+  it('drops an abandoned setup token when a refresh sign-in is accepted', () => {
+    jest.useFakeTimers();
+    persistTwoFactorSetupToken('abandoned-token');
+
+    renderProviderLive();
+
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onSuccess: (data: unknown) => void },
+    ];
+
+    act(() => {
+      refreshOptions.onSuccess({ user: { id: '1', role: 'USER' }, token: 'new-token' });
+    });
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(readTwoFactorSetupToken()).toBe('');
+    jest.useRealTimers();
+  });
+
+  it('routes an unenrolled refresh session to setup and preserves the requested destination', () => {
+    window.history.replaceState({}, '', '/c/requested?model=test#latest');
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onSuccess: (data: unknown) => void },
+    ];
+
+    act(() => {
+      refreshOptions.onSuccess({ twoFASetupRequired: true, tempToken: 'setup token' });
+    });
+
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe('/c/requested?model=test#latest');
+    expect(mockNavigate).toHaveBeenCalledWith('/login/2fa/setup', { replace: true });
+    /** Carried verbatim rather than URL-encoded, because it never enters a URL. */
+    expect(readTwoFactorSetupToken()).toBe('setup token');
+  });
+
   it('navigates to current URL when no stored redirect exists', () => {
     jest.useFakeTimers();
     window.history.replaceState({}, '', '/c/new');
@@ -397,6 +715,57 @@ describe('AuthContextProvider — silentRefresh post-login redirect', () => {
 
     expect(mockNavigate).toHaveBeenCalledWith('/c/new', { replace: true });
     jest.useRealTimers();
+  });
+
+  it('keeps the enforcement destination when refresh lands on the setup route', () => {
+    window.history.replaceState({}, '', '/login/2fa/setup?redirect_to=%2Fc%2Frequested');
+    persistTwoFactorSetupToken('setup-token');
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onSuccess: (data: unknown) => void },
+    ];
+
+    act(() => {
+      refreshOptions.onSuccess({ twoFASetupRequired: true, tempToken: 'refreshed token' });
+    });
+
+    /** Replacing the route again would drop the query holding the only copy of the destination. */
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(window.location.search).toBe('?redirect_to=%2Fc%2Frequested');
+    /** The setup route is not a safe redirect, so it must never be banked as one either. */
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+    expect(readTwoFactorSetupToken()).toBe('refreshed token');
+  });
+
+  it('keeps a required setup route mounted when refresh fails after reload', () => {
+    window.history.replaceState({}, '', '/login/2fa/setup');
+    persistTwoFactorSetupToken('setup-token');
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: Error) => void },
+    ];
+
+    act(() => refreshOptions.onError(new Error('No refresh session')));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe('/login/2fa/setup');
+  });
+
+  it('keeps a required setup route mounted when refresh returns no token after reload', () => {
+    window.history.replaceState({}, '', '/login/2fa/setup');
+    persistTwoFactorSetupToken('setup-token');
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onSuccess: (data: unknown) => void },
+    ];
+
+    act(() => refreshOptions.onSuccess({}));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe('/login/2fa/setup');
   });
 
   it('does not re-trigger silentRefresh after successful redirect', () => {
@@ -499,6 +868,33 @@ describe('AuthContextProvider — optional authentication', () => {
   });
 });
 
+describe('AuthContextProvider — prerendered page', () => {
+  const setPrerendering = (value: boolean) =>
+    Object.defineProperty(document, 'prerendering', { configurable: true, value });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setPrerendering(true);
+  });
+
+  afterEach(() => {
+    delete (document as Document & { prerendering?: boolean }).prerendering;
+  });
+
+  it('defers the silent refresh until the prerendered page is shown', () => {
+    renderProviderLive();
+
+    expect(mockRefreshMutate).not.toHaveBeenCalled();
+
+    setPrerendering(false);
+    act(() => {
+      document.dispatchEvent(new Event('prerenderingchange'));
+    });
+
+    expect(mockRefreshMutate).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('AuthContextProvider — silentRefresh subdirectory deployment', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -594,7 +990,7 @@ describe('AuthContextProvider — custom role detection and fetching', () => {
   const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
   const staffPermissions = {
     name: 'STAFF',
-    permissions: { PROMPTS: { USE: true, CREATE: false } },
+    permissions: { PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false } },
   };
 
   beforeEach(() => {
@@ -714,5 +1110,472 @@ describe('AuthContextProvider — custom role detection and fetching', () => {
 
     mockUseGetRole.mockReturnValue({ data: null });
     jest.useRealTimers();
+  });
+});
+
+describe('AuthContextProvider: enrollment hand-off that keeps the document', () => {
+  const mockUseGetUserQuery = jest.requireMock('~/data-provider').useGetUserQuery;
+
+  const dispatchHandoff = (inDocument: boolean) =>
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('authRedirectStarted', {
+          detail: { href: '/login/2fa/setup', inDocument },
+        }),
+      );
+    });
+
+  const lastUserQueryConfig = () => {
+    const calls = mockUseGetUserQuery.mock.calls;
+    return calls[calls.length - 1][0];
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    capturedAuthContext = undefined;
+    window.history.replaceState({}, '', '/c/some-chat');
+  });
+
+  afterEach(() => {
+    clearRetainedFileDeletions();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('finishes enrollment with a ready session that can retain its own failed deletions', () => {
+    clearRetainedFileDeletions();
+    const { getByTestId } = renderProviderLive();
+    expect(getByTestId('consumer')).toHaveAttribute('data-auth-ready', 'false');
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+    const deletion = {
+      file_id: 'enrolled-user-file',
+      embedded: false,
+      filepath: '/uploads/user-1/file.txt',
+      source: FileSources.local,
+    };
+    retainFileDeletion(deletion);
+
+    expect(getByTestId('consumer')).toHaveAttribute('data-auth-ready', 'true');
+    expect(takeRetainedFileDeletions()).toEqual([deletion]);
+
+    dispatchHandoff(true);
+    expect(takeRetainedFileDeletions()).toEqual([]);
+    retainFileDeletion(deletion);
+    expect(takeRetainedFileDeletions()).toEqual([]);
+  });
+
+  /**
+   * Where session storage is blocked the hand-off routes in place instead of replacing the
+   * document, so this provider stays mounted and the session it redirects away from would live on.
+   * An enabled user query leaves for the login page as soon as it fails, which would pull the user
+   * off the enrollment the server is demanding.
+   */
+  it('releases the replaced session so its user query cannot navigate away', () => {
+    const jotaiStore = getDefaultStore();
+    jotaiStore.set(chatFilterStatusAtom, 'archived');
+    jotaiStore.set(chatFilterTagsAtom, ['previous-session']);
+    const { getByTestId } = renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+    expect(getByTestId('consumer').getAttribute('data-authenticated')).toBe('true');
+    expect(lastUserQueryConfig()).toEqual(expect.objectContaining({ enabled: true }));
+
+    dispatchHandoff(true);
+
+    expect(getByTestId('consumer').getAttribute('data-authenticated')).toBe('false');
+    expect(lastUserQueryConfig()).toEqual(expect.objectContaining({ enabled: false }));
+    expect(jotaiStore.get(chatFilterStatusAtom)).toBe('active');
+    expect(jotaiStore.get(chatFilterTagsAtom)).toEqual([]);
+  });
+
+  /** A replaced document discards the session on its own, so nothing is released early here. */
+  it('leaves the session alone when the hand-off replaces the document', () => {
+    const { getByTestId } = renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+
+    dispatchHandoff(false);
+
+    expect(getByTestId('consumer').getAttribute('data-authenticated')).toBe('true');
+    expect(lastUserQueryConfig()).toEqual(expect.objectContaining({ enabled: true }));
+  });
+
+  /** With storage blocked the in-memory mirror is the only copy the setup screen can read. */
+  it('keeps the setup credential the surviving document is holding', () => {
+    renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+    persistTwoFactorSetupToken('setup-token');
+
+    dispatchHandoff(true);
+
+    expect(readTwoFactorSetupToken()).toBe('setup-token');
+  });
+});
+
+describe('AuthContextProvider: read-aloud cache at every session end', () => {
+  const mockUseGetUserQuery = jest.requireMock('~/data-provider').useGetUserQuery;
+  const cacheAudio = () =>
+    setCachedTTSAudio('departing', new Blob(['audio']), getTTSCacheGeneration());
+  const refreshOptions = () =>
+    mockRefreshMutate.mock.calls[0][1] as {
+      onSuccess: (data: unknown) => void;
+      onError: (error: unknown) => void;
+    };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(window.location, 'replace').mockImplementation(() => {});
+    cacheAudio();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('empties on logout', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' }));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties on an IdP logout redirect', () => {
+    renderProvider();
+    act(() =>
+      mockCapturedLogoutOptions.onSuccess({
+        message: 'Logout successful',
+        redirect: 'https://idp.example.com/logout',
+      }),
+    );
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the logout request fails', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onError(new Error('network')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the refresh token is rejected', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onError(new Error('401')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when a refresh returns no session', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onSuccess({}));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the user query fails', () => {
+    mockUseGetUserQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: new Error('401'),
+    });
+    renderProvider();
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+    mockUseGetUserQuery.mockReturnValue({ data: undefined, isError: false, error: null });
+  });
+
+  it('empties when a different account signs in without a logout', () => {
+    jest.useFakeTimers();
+    renderProviderLive();
+    act(() => {
+      refreshOptions().onSuccess({ user: { id: 'first', role: 'USER' }, token: 'first-token' });
+      jest.advanceTimersByTime(100);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('second-token', { id: 'second' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('keeps the cache when the same account signs in again', () => {
+    renderProvider();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token', { id: 'same' } as never);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token-2', { id: 'same' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeDefined();
+  });
+});
+
+describe('AuthContextProvider: browser setup destination', () => {
+  const destination = '/code/setup/browser-attempt';
+  const authenticated = { token: 'auth-token', user: { id: 'setup-user', role: 'USER' } };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    capturedAuthContext = undefined;
+    window.history.replaceState({}, '', `/login?redirect_to=${encodeURIComponent(destination)}`);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    mockApiBaseUrl.mockReturnValue('');
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('returns password sign-in to the setup without approving it', () => {
+    renderProvider();
+    act(() => mockCapturedLoginOptions.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('retains the destination through the normal 2FA challenge', () => {
+    renderProvider();
+    act(() => mockCapturedLoginOptions.onSuccess({ twoFAPending: true, tempToken: 'challenge' }));
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    window.history.replaceState({}, '', '/login/2fa?tempToken=challenge');
+    act(() =>
+      capturedAuthContext?.completeAuthentication(authenticated.token, authenticated.user as never),
+    );
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('retains the destination through mandatory 2FA enrollment and reload', () => {
+    const first = renderProvider();
+    act(() =>
+      mockCapturedLoginOptions.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }),
+    );
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    first.unmount();
+    window.history.replaceState({}, '', '/login/2fa/setup');
+    renderProvider();
+    act(() =>
+      capturedAuthContext?.completeAuthentication(authenticated.token, authenticated.user as never),
+    );
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+  });
+
+  it.each(['OAuth', 'OIDC'])('returns %s silent refresh to the stored setup destination', () => {
+    sessionStorage.setItem(SESSION_KEY, destination);
+    window.history.replaceState({}, '', '/');
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('keeps the exact setup destination when refreshing under a basename', () => {
+    mockApiBaseUrl.mockReturnValue('/librechat');
+    window.history.replaceState({}, '', `/librechat${destination}`);
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+  });
+
+  it('preserves the setup destination through refresh-enforced enrollment under a basename', () => {
+    mockApiBaseUrl.mockReturnValue('/librechat');
+    window.history.replaceState({}, '', `/librechat${destination}`);
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }));
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    expect(mockNavigate).toHaveBeenLastCalledWith('/login/2fa/setup', { replace: true });
+  });
+});
+
+describe('AuthContextProvider: role request priority', () => {
+  const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
+  let queryClient: QueryClient;
+  let requests: string[];
+  let resolveRoles: Map<string, (role: TRole) => void>;
+
+  const roleData = (name: string): TRole => ({
+    name,
+    permissions: {
+      ...roleDefaults[SystemRoles.USER].permissions,
+      PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false },
+    },
+  });
+
+  function Discovery() {
+    const { isAuthenticated } = useAuthContext();
+    useQuery(
+      ['auth-priority-discovery'],
+      async () => {
+        requests.push('discovery');
+        return [];
+      },
+      { enabled: isAuthenticated },
+    );
+    return <TestConsumer />;
+  }
+
+  function renderPriorityProvider() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot>
+          <MemoryRouter>
+            <AuthContextProvider authConfig={authConfig}>
+              <Discovery />
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+  }
+
+  function authenticate(role: string) {
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', {
+        id: 'priority-user',
+        role,
+      } as TUser);
+    });
+  }
+
+  beforeEach(() => {
+    jest.useRealTimers();
+    jest.clearAllMocks();
+    sessionStorage.clear();
+    capturedAuthContext = undefined;
+    requests = [];
+    resolveRoles = new Map();
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: 3, retryDelay: 0 }, mutations: { retry: false } },
+      logger: { log: console.log, warn: console.warn, error: jest.fn() },
+    });
+    mockUseGetRole.mockImplementation(useRoleQuery);
+    jest
+      .mocked(dataService.getRole)
+      .mockReset()
+      .mockImplementation((name) => {
+        requests.push(name);
+        return new Promise<TRole>((resolve) => resolveRoles.set(name, resolve));
+      });
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    mockUseGetRole.mockReturnValue({ data: null });
+    sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it.each([
+    ['USER', ['USER']],
+    ['ADMIN', ['USER', 'ADMIN']],
+    ['STAFF', ['USER', 'STAFF']],
+  ])('starts %s permissions once before descendant discovery', async (role, expectedRoles) => {
+    const { getByTestId } = renderPriorityProvider();
+    authenticate(role);
+
+    expect(requests).toEqual([...expectedRoles, 'discovery']);
+    expect(dataService.getRole).toHaveBeenCalledTimes(expectedRoles.length);
+    expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+      USER: null,
+      ADMIN: null,
+    });
+
+    await act(async () => {
+      for (const name of expectedRoles) {
+        resolveRoles.get(name)?.(roleData(name));
+      }
+    });
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+        USER: roleData('USER'),
+        ADMIN: role === 'ADMIN' ? roleData('ADMIN') : null,
+        ...(role === 'STAFF' ? { STAFF: roleData('STAFF') } : {}),
+      });
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(expectedRoles.length);
+    expect(queryClient.getQueryData([QueryKeys.roles, '_'])).toBeUndefined();
+  });
+
+  it('does not fetch roles for an unauthenticated stored user or a user without a role', () => {
+    const { unmount } = renderPriorityProvider();
+    expect(requests).toEqual([]);
+    unmount();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot
+          initializeState={({ set }) => set(store.user, { id: 'stored', role: 'ADMIN' } as TUser)}
+        >
+          <MemoryRouter>
+            <AuthContextProvider authConfig={authConfig}>
+              <Discovery />
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    expect(requests).toEqual([]);
+    authenticate('');
+    expect(requests).toEqual(['discovery']);
+    expect(dataService.getRole).not.toHaveBeenCalled();
+  });
+
+  it('keeps failures permissionless and preserves remount retry and invalidation', async () => {
+    const failure = new Error('role unavailable');
+    jest
+      .mocked(dataService.getRole)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue(roleData('USER'));
+    const { getByTestId, rerender } = renderPriorityProvider();
+    authenticate('USER');
+
+    await waitFor(() => {
+      expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.status).toBe('error');
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.fetchFailureCount).toBe(1);
+    expect(JSON.parse(getByTestId('consumer').getAttribute('data-roles') ?? '{}')).toEqual({
+      USER: null,
+      ADMIN: null,
+    });
+
+    function AnotherRoleObserver() {
+      useRoleQuery('USER');
+      return null;
+    }
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <AnotherRoleObserver />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(queryClient.getQueryState([QueryKeys.roles, 'USER'])?.status).toBe('success');
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await queryClient.invalidateQueries([QueryKeys.roles, 'USER']);
+    });
+    expect(dataService.getRole).toHaveBeenCalledTimes(3);
+    expect(queryClient.getQueryData([QueryKeys.roles, 'USER'])).toEqual(roleData('USER'));
   });
 });

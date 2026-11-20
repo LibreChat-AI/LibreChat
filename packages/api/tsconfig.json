@@ -8,7 +8,7 @@
     "target": "es2015",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "lib": ["es2017", "dom", "ES2021.String", "ES2021.WeakRef"],
+    "lib": ["es2017", "dom", "ES2021.String", "ES2021.WeakRef", "ES2022.Error"],
     "allowJs": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -18,7 +18,11 @@
     "isolatedModules": true,
     "noEmit": true,
     "sourceMap": true,
+    // A few specs import client modules to assert both sides agree on a shared contract.
+    "rootDir": "../..",
+    "types": ["node", "jest", "multer", "passport", "bun"],
     "paths": {
+      "~/api/*": ["../../api/*"],
       "~/*": ["./src/*"],
       // @librechat/agents ships declaration files that import its internal "@/" alias, which
       // package exports cannot map; resolve them into its published types until the SDK

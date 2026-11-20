@@ -7,6 +7,8 @@ const { getImporter } = require('./importers');
 const importConversations = require('./importConversations');
 
 jest.mock('~/models', () => ({
+  initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   bulkIncrementTagCounts: jest.fn(),
   bulkSaveConvos: jest.fn(),
   bulkSaveMessages: jest.fn(),

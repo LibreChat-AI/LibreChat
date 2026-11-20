@@ -19,15 +19,18 @@ const MCP_SERVER_TITLE = 'E2E Memory';
 
 const uniqueText = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 
-const mcpBadge = (page: Page) => page.getByRole('button', { name: new RegExp(MCP_SERVER_TITLE) });
+const mcpBadge = (page: Page) =>
+  page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true });
 
-/** Select the MCP server from the composer's ephemeral MCP dropdown. */
+/** Select the MCP server from the composer palette. */
 async function selectEphemeralMCP(page: Page) {
-  await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-  const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(MCP_SERVER_TITLE) });
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const serverItem = page
+    .getByRole('dialog', { name: 'Attach and tools' })
+    .getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) });
   await expect(serverItem).toBeVisible();
   await serverItem.click();
-  await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+  await expect(serverItem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
   await expect(mcpBadge(page)).toBeVisible();
 }

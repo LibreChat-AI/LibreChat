@@ -5,7 +5,6 @@ import {
   assertModelBoundContent,
   assertModelBoundProviderContent,
   collectModelBoundHistoricalFileIdState,
-  collectModelBoundHistoricalFileIds,
   createModelBoundChatModelCallback,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
@@ -21,6 +20,27 @@ const filters: FiltersConfig = {
       customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
     },
   },
+};
+
+const makeLargeToolCatalog = (deferred = false, length = 1_000) =>
+  Array.from({ length }, (_, index) => ({
+    name: `mcp_tool_${index}`,
+    description: `Tool ${index}`,
+    defer_loading: deferred,
+    parameters: {
+      type: 'object',
+      properties: Object.fromEntries(
+        Array.from({ length: 4 }, (_, field) => [
+          `field_${field}`,
+          { type: 'string', enum: ['one', 'two', 'three'], description: 'A value' },
+        ]),
+      ),
+    },
+  }));
+
+const legacyPii = {
+  starterPatterns: [],
+  customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
 };
 
 const makeTraversalOverflowContent = () => [
@@ -2152,6 +2172,186 @@ describe('assertModelBoundContent', () => {
     ).toThrow('Submitted content contains a private value');
   });
 
+  it.each([false, true])(
+    'allows a new conversation with a large legacy-only tool catalog (deferred: %s)',
+    (deferred) => {
+      const toolDefinitions = makeLargeToolCatalog(deferred);
+
+      expect(() =>
+        assertModelBoundContent({
+          legacyPii: { starterPatterns: ['sk_prefix', 'bearer_header', 'api_key_header'] },
+          submittedMessages: [{ role: 'user', content: 'Hello' }],
+          agents: [{ name: 'Large Catalog Agent', instructions: 'Be helpful.', toolDefinitions }],
+        }),
+      ).not.toThrow();
+    },
+  );
+
+  it('does not apply legacy blocking to an exhausted tool-definition array', () => {
+    expect(() =>
+      assertModelBoundContent({
+        legacyPii,
+        agents: [{ toolDefinitions: makeLargeToolCatalog(false, 4_200) }],
+      }),
+    ).not.toThrow();
+  });
+
+  it.each([false, true])(
+    'keeps large schema catalogs fail-closed under new argument policy (legacy: %s)',
+    (legacy) => {
+      expect(() =>
+        assertModelBoundContent({
+          legacyPii: legacy ? legacyPii : undefined,
+          filters: { toolArguments: { pii: { ...legacyPii, fields: ['arguments'] } } },
+          agents: [{ toolDefinitions: makeLargeToolCatalog(true) }],
+        }),
+      ).toThrow('Submitted content could not be completely inspected before processing.');
+    },
+  );
+
+  it.each(['name', 'description'] as const)(
+    'inspects later tool %s without spending its budget on unselected schemas',
+    (field) => {
+      const toolDefinitions = makeLargeToolCatalog();
+      toolDefinitions[999][field] = 'PRIVATE-LATE';
+      expect(() =>
+        assertModelBoundContent({
+          legacyPii,
+          filters: { agentInstructions: { pii: { ...legacyPii, fields: [field] } } },
+          agents: [{ toolDefinitions }],
+        }),
+      ).toThrow('Submitted content contains a private value');
+    },
+  );
+
+  it('does not let argument schemas consume a tool-name-only inspection budget', () => {
+    const toolDefinitions = makeLargeToolCatalog();
+    toolDefinitions[999].name = 'PRIVATE-NAME';
+    expect(() =>
+      assertModelBoundContent({
+        legacyPii,
+        filters: { toolArguments: { pii: { ...legacyPii, fields: ['name'] } } },
+        agents: [{ toolDefinitions }],
+      }),
+    ).toThrow('Submitted content contains a private value');
+  });
+
+  it('keeps selected catalog metadata fail-closed at the array bound', () => {
+    expect(() =>
+      assertModelBoundContent({
+        legacyPii,
+        filters: { agentInstructions: { pii: { ...legacyPii, fields: ['description'] } } },
+        agents: [{ toolDefinitions: makeLargeToolCatalog(false, 4_200) }],
+      }),
+    ).toThrow('Submitted content could not be completely inspected before processing.');
+  });
+
+  it('keeps model parameters protected after unselected schemas', () => {
+    expect(() =>
+      assertModelBoundContent({
+        legacyPii,
+        filters: { modelParameters: { pii: { ...legacyPii, fields: ['stop'] } } },
+        agents: [{ toolDefinitions: makeLargeToolCatalog(), stop: ['PRIVATE-STOP'] }],
+      }),
+    ).toThrow('Submitted content contains a private value');
+  });
+
+  it.each(['submitted', 'stored'] as const)(
+    'keeps legacy %s message PII protected with large catalogs',
+    (source) => {
+      expect(() =>
+        assertModelBoundContent({
+          legacyPii,
+          ...(source === 'submitted'
+            ? { submittedMessages: [{ role: 'user', content: 'PRIVATE-MESSAGE' }] }
+            : {
+                storedMessages: [{ role: 'user', isCreatedByUser: true, text: 'PRIVATE-MESSAGE' }],
+              }),
+          agents: [{ toolDefinitions: makeLargeToolCatalog() }],
+        }),
+      ).toThrow('Submitted content contains a private value');
+    },
+  );
+
+  it.each([
+    ['depth', () => makeDeepModelParameter()],
+    ['nodes', () => Array.from({ length: 4_200 }, () => 'safe')],
+    [
+      'accessor',
+      () =>
+        Object.defineProperty({}, 'value', {
+          enumerable: true,
+          get() {
+            throw new Error('blocked');
+          },
+        }),
+    ],
+    [
+      'reflection',
+      () =>
+        new Proxy(
+          {},
+          {
+            ownKeys() {
+              throw new Error('blocked');
+            },
+          },
+        ),
+    ],
+  ] as const)(
+    'preserves the selected schema %s boundary without legacy-only schema inspection',
+    (_label, makeParameters) => {
+      const agent = { toolDefinitions: [{ name: 'tool', parameters: makeParameters() }] };
+      expect(() => assertModelBoundContent({ legacyPii, agents: [agent] })).not.toThrow();
+      expect(() =>
+        assertModelBoundContent({
+          legacyPii,
+          filters: { toolArguments: { pii: { ...legacyPii, fields: ['arguments'] } } },
+          agents: [agent],
+        }),
+      ).toThrow('Submitted content could not be completely inspected before processing.');
+    },
+  );
+
+  it('never reads a schema accessor under legacy-only policy', () => {
+    const readParameters = jest.fn(() => {
+      throw new Error('unselected schema');
+    });
+    const tool = Object.defineProperty({ name: 'tool' }, 'parameters', { get: readParameters });
+    expect(() =>
+      assertModelBoundContent({ legacyPii, agents: [{ toolDefinitions: [tool] }] }),
+    ).not.toThrow();
+    expect(readParameters).not.toHaveBeenCalled();
+  });
+
+  it('still audits selected schemas alongside legacy protection', () => {
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => logger);
+    try {
+      expect(() =>
+        assertModelBoundContent({
+          legacyPii,
+          filters: {
+            toolArguments: { pii: { ...legacyPii, fields: ['arguments'], action: 'audit' } },
+          },
+          agents: [
+            {
+              toolDefinitions: [
+                { name: 'tool', parameters: { description: 'PRIVATE-SCHEMA' } },
+                ...makeLargeToolCatalog(),
+              ],
+            },
+          ],
+        }),
+      ).not.toThrow();
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"ruleId":"private"'),
+        expect.objectContaining({ source: 'tool_argument', action: 'audit' }),
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   it('blocks initialized action schemas before they become model-bound', () => {
     expect(() =>
       assertModelBoundContent({
@@ -2566,7 +2766,7 @@ describe('assertModelBoundProviderContent', () => {
 
   it('collects every provider-supported historical file locator', () => {
     expect(
-      collectModelBoundHistoricalFileIds([
+      collectModelBoundHistoricalFileIdState([
         {
           files: [{ file_id: 'top-file' }],
           attachments: [{ file_id: 'display-file' }],
@@ -2578,7 +2778,7 @@ describe('assertModelBoundProviderContent', () => {
             { type: 'input_file', files: [{ file_id: 'part-file' }] },
           ],
         },
-      ]),
+      ]).fileIds,
     ).toEqual([
       'top-file',
       'display-file',
@@ -6195,5 +6395,85 @@ describe('assertModelBoundProviderContent', () => {
     active = false;
     callback.handleChainError(new Error('Blocked fallback'), runs.agentNodeRunId);
     expect(onAllowed).not.toHaveBeenCalled();
+  });
+});
+
+it('admits only after every native batch passes and awaits the protected commit', async () => {
+  const onContentAllowed = jest.fn(async () => {});
+  const callback = createModelBoundChatModelCallback(
+    {
+      filters: {
+        messages: {
+          pii: {
+            fields: ['text', 'content_part'],
+            starterPatterns: [],
+            customPatterns: [{ id: 'secret', label: 'Secret', regex: 'BLOCK-ME' }],
+          },
+        },
+      },
+    },
+    { onContentAllowed },
+  );
+  expect(() =>
+    callback.handleChatModelStart(undefined, [
+      [{ role: 'user', content: 'safe' }],
+      [{ role: 'user', content: 'BLOCK-ME' }],
+    ]),
+  ).toThrow();
+  expect(onContentAllowed).not.toHaveBeenCalled();
+  let finish!: () => void;
+  onContentAllowed.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const pending = callback.handleChatModelStart(undefined, [[{ role: 'user', content: 'safe' }]]);
+  expect(pending).toBeInstanceOf(Promise);
+  finish();
+  await pending;
+  expect(onContentAllowed).toHaveBeenCalledTimes(1);
+});
+
+describe('provider instruction policy', () => {
+  const pii = {
+    fields: ['instructions'] as const,
+    starterPatterns: [],
+    customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-INSTRUCTION' }],
+  };
+  it.each(['system', 'developer'])(
+    'inspects %s instructions independently of user attribution',
+    (role) => {
+      for (const content of [
+        'PRIVATE-INSTRUCTION',
+        [
+          { type: 'text', text: 'PRIVATE-' },
+          { type: 'text', text: 'INSTRUCTION' },
+        ],
+      ]) {
+        expect(() =>
+          assertModelBoundProviderContent({
+            filters: { agentInstructions: { pii: { ...pii, fields: ['instructions'] } } },
+            providerMessages: [
+              { role, content, additional_kwargs: { isMeta: true, source: 'system' } },
+            ],
+          }),
+        ).toThrow('Submitted content contains a private value');
+      }
+    },
+  );
+  it('keeps instruction and user-message policies distinct', () => {
+    expect(() =>
+      assertModelBoundProviderContent({
+        filters: { messages: { pii: { ...pii, fields: ['text', 'content_part'] } } },
+        providerMessages: [{ role: 'system', content: 'PRIVATE-INSTRUCTION' }],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertModelBoundProviderContent({
+        filters: { agentInstructions: { pii: { ...pii, fields: ['instructions'] } } },
+        providerMessages: [{ role: 'assistant', content: 'PRIVATE-INSTRUCTION' }],
+      }),
+    ).not.toThrow();
   });
 });

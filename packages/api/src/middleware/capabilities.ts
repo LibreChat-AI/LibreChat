@@ -279,13 +279,13 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
     return async (req: ServerRequest, res: Response, next: NextFunction) => {
       try {
         if (!req.user) {
-          res.status(401).json({ message: 'Authentication required' });
+          res.status(401).json({ message: 'Authentication required', code: 'AUTH_REQUIRED' });
           return;
         }
 
         const id = req.user.id ?? req.user._id?.toString();
         if (!id) {
-          res.status(401).json({ message: 'Authentication required' });
+          res.status(401).json({ message: 'Authentication required', code: 'AUTH_REQUIRED' });
           return;
         }
 
@@ -305,7 +305,7 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
           `missing-capability:${id}:${capability}`,
           `[requireCapability] Forbidden: user ${id} missing capability '${capability}'`,
         );
-        res.status(403).json({ message: 'Forbidden' });
+        res.status(403).json({ message: 'Forbidden', code: 'FORBIDDEN' });
       } catch (err) {
         logger.error(`[requireCapability] Error checking capability: ${capability}`, err);
         res.status(500).json({ message: 'Internal Server Error' });

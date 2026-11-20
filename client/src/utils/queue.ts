@@ -29,3 +29,4 @@ const releaseTail = (key: string, settled: Promise<unknown>): void => {
     tails.delete(key);
   }
 };
+export { insertQueuedMessage, mergeQueuedMessages, compareQueuedMessages } from '@librechat/chat';

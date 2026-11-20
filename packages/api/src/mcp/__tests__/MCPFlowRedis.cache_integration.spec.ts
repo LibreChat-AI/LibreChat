@@ -64,6 +64,21 @@ describe('MCP OAuth flow state across Redis-backed instances', () => {
     );
   });
 
+  it('preserves a retryable handler failure across Redis pods', async () => {
+    const flowId = createFlowId();
+    await podA.initFlow(flowId, FLOW_TYPE);
+    const flow = await podA.getFlowState(flowId, FLOW_TYPE);
+    const waiter = podB.createFlowWithHandler(flowId, FLOW_TYPE, async () => 'unexpected');
+    const error = new Error('refresh lease unavailable');
+    error.name = 'MCPTokenRefreshUnavailableError';
+    await podA.failFlowIfCurrent(flowId, FLOW_TYPE, flow!.createdAt, '', error);
+    await expect(waiter).rejects.toMatchObject({ name: error.name, message: error.message });
+    expect(await podB.getFlowState(flowId, FLOW_TYPE)).toMatchObject({
+      error: error.message,
+      errorName: error.name,
+    });
+  });
+
   it('retains a terminal OAuth failure for polling on another pod', async () => {
     const flowId = createFlowId();
 

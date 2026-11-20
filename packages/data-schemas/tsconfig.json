@@ -13,6 +13,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "sourceMap": true,
+    "types": ["node", "jest"],
     "paths": {
       "~/*": ["./src/*"]
     }

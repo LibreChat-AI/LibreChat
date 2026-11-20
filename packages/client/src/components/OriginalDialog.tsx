@@ -1,13 +1,25 @@
 import * as React from 'react';
 import { X } from 'lucide-react';
 import { JSX } from 'react/jsx-runtime';
+import { cx } from 'class-variance-authority';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
+import type { FocusOutline } from './Focus';
+import { focusOutlineVariants } from './Focus';
 import { cn } from '~/utils';
 
 const DialogDepthContext = React.createContext(0);
 
 /** Current OGDialog nesting depth (0 when rendered outside any dialog). */
 export const useDialogDepth = (): number => React.useContext(DialogDepthContext);
+
+/**
+ * Counts a dialog that is not an OGDialog, such as a Headless UI panel, as one dialog level, so
+ * the popovers portaled out of it layer above it the way they do inside an OGDialog.
+ */
+export const DialogLayer = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
+  const depth = React.useContext(DialogDepthContext);
+  return <DialogDepthContext.Provider value={depth + 1}>{children}</DialogDepthContext.Provider>;
+};
 
 /**
  * z-index for a portaled popover so it renders above the dialog it lives in.
@@ -56,7 +68,7 @@ const escapeBelongsToPopup = (ownerDocument: Document): boolean => {
     return true;
   }
   const popovers = ownerDocument.querySelectorAll(
-    '[role="menu"], [role="listbox"], [role="combobox"]',
+    '[role="menu"], [role="listbox"], [role="combobox"][aria-expanded="true"]',
   );
   for (const popover of popovers) {
     if (popover.contains(activeElement)) {
@@ -72,9 +84,28 @@ const escapeBelongsToPopup = (ownerDocument: Document): boolean => {
   return false;
 };
 
+const dialogEscapeHandlers = new WeakMap<HTMLElement, (event: KeyboardEvent) => void>();
+
+/** Visual order can differ from registration order while portals mount or animate out. */
+const frontmostDialog = (ownerDocument: Document): HTMLElement | null => {
+  const stackOrder = (element: HTMLElement): number => {
+    const zIndex = Number(ownerDocument.defaultView?.getComputedStyle(element).zIndex);
+    return Number.isNaN(zIndex) ? 0 : zIndex;
+  };
+  return Array.from(
+    ownerDocument.querySelectorAll<HTMLElement>(
+      '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]',
+    ),
+  ).reduce<HTMLElement | null>(
+    (highest, candidate) =>
+      highest == null || stackOrder(candidate) >= stackOrder(highest) ? candidate : highest,
+    null,
+  );
+};
+
 interface OGDialogProps extends DialogPrimitive.DialogProps {
-  triggerRef?: React.RefObject<HTMLButtonElement | HTMLInputElement | HTMLDivElement | null>;
-  triggerRefs?: React.RefObject<HTMLButtonElement | HTMLInputElement | HTMLDivElement | null>[];
+  triggerRef?: React.RefObject<HTMLElement | null>;
+  triggerRefs?: React.RefObject<HTMLElement | null>[];
 }
 
 const Dialog: React.ForwardRefExoticComponent<OGDialogProps & React.RefAttributes<HTMLDivElement>> =
@@ -119,8 +150,34 @@ const DialogTrigger: React.ForwardRefExoticComponent<
 const DialogPortal: React.FC<DialogPrimitive.DialogPortalProps> = DialogPrimitive.Portal;
 
 const DialogClose: React.ForwardRefExoticComponent<
-  DialogPrimitive.DialogCloseProps & React.RefAttributes<HTMLButtonElement>
-> = DialogPrimitive.Close;
+  DialogPrimitive.DialogCloseProps & {
+    focusOutline?: FocusOutline;
+  } & React.RefAttributes<HTMLButtonElement>
+> = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Close>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Close> & { focusOutline?: FocusOutline }
+>(({ className, focusOutline, ...props }, ref) => (
+  <DialogPrimitive.Close
+    ref={ref}
+    className={cx(focusOutlineVariants({ focusOutline }), className) || undefined}
+    {...props}
+  />
+));
+DialogClose.displayName = DialogPrimitive.Close.displayName;
+
+/**
+ * The scrim. `surface-overlay` is the theme's own scrim color, so a theme that
+ * redefines it moves every OGDialog with it. The opacity is the theme's
+ * `scrimOpacity` role, which defaults to 80% because that leaves the themes
+ * whose overlay is black (dark, and both high-contrast
+ * modes) rendering exactly as before, and puts the light theme's gray scrim at
+ * 4.3:1 against the dialog it frames, past the 3:1 floor for a non-text
+ * boundary, and between the two other dialog families' scrims. Exported so a
+ * caller that has to animate its own backdrop, a shared-layout morph whose dim
+ * outlives the dialog's mount, consumes this appearance instead of restating it
+ * in feature code.
+ */
+export const DIALOG_SCRIM_CLASS = 'bg-scrim';
 
 export const DialogOverlay: React.ForwardRefExoticComponent<
   Omit<DialogPrimitive.DialogOverlayProps & React.RefAttributes<HTMLDivElement>, 'ref'> &
@@ -137,7 +194,9 @@ export const DialogOverlay: React.ForwardRefExoticComponent<
       ref={ref}
       style={{ ...style, zIndex: overlayZIndex }}
       className={cn(
-        'fixed inset-0 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+        'fixed inset-0',
+        DIALOG_SCRIM_CLASS,
+        'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         className,
       )}
       {...props}
@@ -150,13 +209,35 @@ type DialogContentProps = React.ComponentPropsWithoutRef<typeof DialogPrimitive.
   showCloseButton?: boolean;
   disableScroll?: boolean;
   overlayClassName?: string;
+  /**
+   * Drop the default centering, surface and enter/exit classes so the caller owns the
+   * dialog's geometry and animation (e.g. a shared-layout morph). Dialog semantics —
+   * focus trap, Escape, scroll lock, aria wiring — are unchanged.
+   */
+  bare?: boolean;
+  /** Keep the portal mounted while closed so the caller can animate the exit itself. */
+  forceMount?: true;
+  focusOutline?: FocusOutline;
 };
+
+/** Positioning and appearance a `bare` content opts out of. */
+const DIALOG_SURFACE_CLASSES =
+  /** `shadow-lg` is a black shadow, which carries no separation against
+   *  a pure black surface, so high contrast trades it for a real edge. The
+   *  theme's own edge is `dialogStroke`, none by default. The
+   *  centering `translate-*` is the `translate` property, which the enter and
+   *  exit keyframes' `transform` composes with instead of replacing, so the
+   *  slide names only the 2% the surface travels. */
+  'left-[50%] top-[50%] grid max-h-[90vh] w-full translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-2xl border-(length:--theme-dialog-stroke) border-border-light bg-surface-dialog py-6 px-theme-dialog-x shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-bottom-[2%] data-[state=open]:slide-in-from-bottom-[2%] high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none';
 
 const DialogContent: React.ForwardRefExoticComponent<
   Omit<DialogPrimitive.DialogContentProps & React.RefAttributes<HTMLDivElement>, 'ref'> & {
     showCloseButton?: boolean;
     disableScroll?: boolean;
     overlayClassName?: string;
+    bare?: boolean;
+    forceMount?: true;
+    focusOutline?: FocusOutline;
   } & React.RefAttributes<HTMLDivElement>
 > = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
   (
@@ -164,6 +245,9 @@ const DialogContent: React.ForwardRefExoticComponent<
       className,
       overlayClassName,
       showCloseButton = true,
+      bare = false,
+      forceMount,
+      focusOutline,
       children,
       style,
       onEscapeKeyDown: propsOnEscapeKeyDown,
@@ -174,9 +258,13 @@ const DialogContent: React.ForwardRefExoticComponent<
     const depth = React.useContext(DialogDepthContext);
     const contentZIndex = 140 + (depth - 1) * 60;
     const contentRef = React.useRef<HTMLDivElement | null>(null);
+    const closeOnEscapeRef = React.useRef<(event: KeyboardEvent) => void>(() => undefined);
     const composedRef = React.useCallback(
       (node: HTMLDivElement | null) => {
+        if (contentRef.current != null) dialogEscapeHandlers.delete(contentRef.current);
         contentRef.current = node;
+        if (node != null)
+          dialogEscapeHandlers.set(node, (event) => closeOnEscapeRef.current(event));
         if (typeof ref !== 'function') {
           if (ref) {
             (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
@@ -192,6 +280,7 @@ const DialogContent: React.ForwardRefExoticComponent<
           return undefined;
         }
         return () => {
+          if (node != null) dialogEscapeHandlers.delete(node);
           contentRef.current = null;
           (cleanup as () => void)();
         };
@@ -206,14 +295,19 @@ const DialogContent: React.ForwardRefExoticComponent<
      * it, and the reader has to press it twice.
      *
      * A toast is transient status, not something the reader is working in, so
-     * the dialog takes Escape back while one is up. Scoped to exactly that
-     * case: with no toast on screen Radix's own arbitration is untouched, and
-     * only the frontmost dialog acts, so an inner dialog still closes alone.
+     * the dialog takes Escape back while one is up. This listener handles
+     * only the toast case; native dialog callbacks also verify visual ownership.
      * Closing goes through a hidden `Dialog.Close`, which drives Radix's own
      * close path and therefore works for controlled and uncontrolled dialogs
      * alike.
      */
     const escapeFallbackRef = React.useRef<HTMLButtonElement>(null);
+    closeOnEscapeRef.current = (event) => {
+      propsOnEscapeKeyDown?.(event);
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      escapeFallbackRef.current?.click();
+    };
     React.useEffect(() => {
       const handleKeyDown = (event: KeyboardEvent) => {
         const content = contentRef.current;
@@ -238,41 +332,8 @@ const DialogContent: React.ForwardRefExoticComponent<
         if (toast == null) {
           return;
         }
-        /** Read the RESOLVED z-index: dialogs outside this primitive carry
-         *  theirs in a class (`ImagePreview` is `z-[250]`), and an inline-only
-         *  reading scores those zero and mistakes the dialog underneath for the
-         *  frontmost one. Ties fall to the later element, which is the one
-         *  painted on top. */
-        const stackOrder = (element: HTMLElement): number => {
-          const zIndex = Number(ownerDocument.defaultView?.getComputedStyle(element).zIndex);
-          return Number.isNaN(zIndex) ? 0 : zIndex;
-        };
-        const frontmost = Array.from(
-          ownerDocument.querySelectorAll<HTMLElement>(
-            '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]',
-          ),
-        ).reduce<HTMLElement | null>(
-          (highest, candidate) =>
-            highest == null || stackOrder(candidate) >= stackOrder(highest) ? candidate : highest,
-          null,
-        );
-        if (frontmost !== content) {
-          return;
-        }
-        /** Only now, with this dialog established as the one the Escape belongs
-         *  to. Every mounted dialog runs this listener, and calling a consumer's
-         *  handler from the ones underneath would fire their side effects for
-         *  someone else's keystroke — and a `preventDefault()` there would stop
-         *  the frontmost dialog from closing at all.
-         *
-         *  The consumer's own `onEscapeKeyDown` never ran: Radix calls it only
-         *  for the highest layer, which the toast is. Give it the say it would
-         *  have had, so a dialog that refuses to close on Escape still does. */
-        propsOnEscapeKeyDown?.(event);
-        if (event.defaultPrevented) {
-          return;
-        }
-        escapeFallbackRef.current?.click();
+        if (frontmostDialog(ownerDocument) !== content) return;
+        closeOnEscapeRef.current(event);
       };
       document.addEventListener('keydown', handleKeyDown);
       return () => document.removeEventListener('keydown', handleKeyDown);
@@ -283,27 +344,37 @@ const DialogContent: React.ForwardRefExoticComponent<
     that our tooltips be dismissable with Escape key) */
     const handleEscapeKeyDown = React.useCallback(
       (event: KeyboardEvent) => {
-        if (escapeBelongsToPopup(document)) {
+        if (event.defaultPrevented) return;
+        const content = contentRef.current;
+        const ownerDocument = content?.ownerDocument ?? document;
+        if (escapeBelongsToPopup(ownerDocument)) {
           event.preventDefault();
           return;
         }
 
+        const frontmost = frontmostDialog(ownerDocument);
+        const closeFrontmost = frontmost && dialogEscapeHandlers.get(frontmost);
+        if (frontmost != null && frontmost !== content) {
+          closeFrontmost?.(event);
+          event.preventDefault();
+          return;
+        }
         propsOnEscapeKeyDown?.(event);
       },
       [propsOnEscapeKeyDown],
     );
 
     return (
-      <DialogPortal>
+      <DialogPortal forceMount={forceMount}>
         <DialogOverlay className={overlayClassName} />
         <DialogPrimitive.Content
           ref={composedRef}
           style={{ ...style, zIndex: contentZIndex }}
           onEscapeKeyDown={handleEscapeKeyDown}
           className={cn(
-            /** `shadow-lg` is a black shadow, which carries no separation against
-             *  a pure black surface, so high contrast trades it for a real edge. */
-            'max-w-11/12 fixed left-[50%] top-[50%] grid max-h-[90vh] w-full translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-2xl bg-surface-dialog p-6 text-text-primary shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none',
+            'text-text-primary fixed',
+            !bare && DIALOG_SURFACE_CLASSES,
+            focusOutlineVariants({ focusOutline }),
             className,
           )}
           {...props}
@@ -316,8 +387,8 @@ const DialogContent: React.ForwardRefExoticComponent<
             aria-hidden="true"
           />
           {showCloseButton && (
-            <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-ring-primary ring-offset-surface-dialog transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-text-primary focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary">
-              <X className="h-6 w-6" aria-hidden="true" />
+            <DialogPrimitive.Close className="ring-ring-primary ring-offset-surface-dialog focus:ring-focus-control data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary min-h-theme-target min-w-theme-target absolute inset-e-4 top-4 inline-flex items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+              <X className="size-theme-icon-lg" aria-hidden="true" />
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
           )}
@@ -332,7 +403,10 @@ const DialogHeader: {
   ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element;
   displayName: string;
 } = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
-  <div className={cn('flex flex-col space-y-1.5 text-center sm:text-left', className)} {...props} />
+  <div
+    className={cn('space-y-theme-dialog-header flex flex-col text-center sm:text-start', className)}
+    {...props}
+  />
 );
 DialogHeader.displayName = 'DialogHeader';
 
@@ -348,15 +422,20 @@ const DialogFooter: {
 DialogFooter.displayName = 'DialogFooter';
 
 const DialogTitle: React.ForwardRefExoticComponent<
-  Omit<DialogPrimitive.DialogTitleProps & React.RefAttributes<HTMLHeadingElement>, 'ref'> &
-    React.RefAttributes<HTMLHeadingElement>
+  Omit<DialogPrimitive.DialogTitleProps & React.RefAttributes<HTMLHeadingElement>, 'ref'> & {
+    focusOutline?: FocusOutline;
+  } & React.RefAttributes<HTMLHeadingElement>
 > = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
->(({ className, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title> & { focusOutline?: FocusOutline }
+>(({ className, focusOutline, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn('text-lg font-semibold leading-none tracking-tight', className)}
+    className={cn(
+      'font-theme-dialog-title font-theme-dialog-title-weight text-dialog-title text-(length:--theme-dialog-title-size) leading-(--theme-dialog-title-leading) tracking-tight',
+      focusOutlineVariants({ focusOutline }),
+      className,
+    )}
     {...props}
   />
 ));
@@ -371,13 +450,24 @@ const DialogDescription: React.ForwardRefExoticComponent<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn('text-sm text-text-secondary', className)}
+    className={cn('text-text-secondary text-sm', className)}
     {...props}
   />
 ));
 DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
+/** `Dialog*` are the canonical names. The `OG*` names are the same components under the names the
+ *  app has always imported, kept so existing call sites need no change. */
 export {
+  Dialog,
+  DialogPortal,
+  DialogClose,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
   Dialog as OGDialog,
   DialogPortal as OGDialogPortal,
   DialogOverlay as OGDialogOverlay,

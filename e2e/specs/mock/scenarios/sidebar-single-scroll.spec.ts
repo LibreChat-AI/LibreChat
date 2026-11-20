@@ -83,7 +83,10 @@ async function openSidebar(page: Page): Promise<void> {
   await expect(historyRegion(page)).toBeVisible({ timeout: 30_000 });
   const placement = async () => {
     const box = await historyRegion(page).boundingBox();
-    return box === null ? 'unlaid' : box.x >= 0 ? 'on-screen' : 'off-screen';
+    if (box === null) {
+      return 'unlaid';
+    }
+    return box.x >= 0 ? 'on-screen' : 'off-screen';
   };
   await expect.poll(placement, { timeout: 30_000 }).not.toBe('unlaid');
   for (let attempt = 0; attempt < 3 && (await placement()) === 'off-screen'; attempt++) {

@@ -1,221 +1,28 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { expect, test } from '@playwright/test';
-import type { Locator, Page, Request, Route } from '@playwright/test';
-import type { AgentDetail } from './agents.helpers';
-import { cleanupAgent, openAgentBuilder, uniqueAgentName } from './agents.helpers';
+import type { Route } from '@playwright/test';
+import type { ApprovalResumeResponse } from './approvals.helpers';
 import {
-  MOCK_ENDPOINTS,
-  NEW_CHAT_PATH,
-  fetchJson,
-  getAccessToken,
-  messagesView,
-  requestJson,
-  sendMessage,
-} from './helpers';
-
-const MCP_SERVER_NAME = 'e2e-memory';
-const MCP_SERVER_TOOL_ID = `sys__server__sys_mcp_${MCP_SERVER_NAME}`;
-const APPROVAL_TOOL_NAME = 'approval_probe';
-const APPROVAL_TOOL_ID = `${APPROVAL_TOOL_NAME}_mcp_${MCP_SERVER_NAME}`;
-const APPROVAL_PROMPT_MARKER = 'E2E_TOOL_APPROVAL:';
-const BATCH_APPROVAL_PROMPT_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
-const RESTRICTED_APPROVAL_PROMPT_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
-const REWRITTEN_APPROVAL_PROMPT_MARKER = 'E2E_TOOL_APPROVAL_REWRITE:';
-const APPROVAL_REASON = `E2E approval required before running ${APPROVAL_TOOL_ID}.`;
-const APPROVAL_ERROR = 'Something went wrong submitting your decision. Please try again.';
-const APPROVAL_EXPIRED = 'This request expired or was already handled.';
-const DESCRIPTION = 'Verifies human approval behavior for MCP tool calls in mock E2E tests.';
-const APPROVAL_AUDIT_DIR = path.join('/tmp', 'librechat-e2e-approval-audit');
-const uniqueLabel = () => `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
-const approvalInvocationPath = (value: string) =>
-  path.join(APPROVAL_AUDIT_DIR, Buffer.from(value).toString('base64url'));
-
-function clearApprovalInvocations(...values: string[]) {
-  values.forEach((value) => fs.rmSync(approvalInvocationPath(value), { force: true }));
-}
-
-function approvalInvocationCount(value: string) {
-  const filename = approvalInvocationPath(value);
-  if (!fs.existsSync(filename)) {
-    return 0;
-  }
-  return fs
-    .readFileSync(filename, 'utf8')
-    .split('\n')
-    .filter((line) => line.length > 0).length;
-}
-
-async function expectApprovalInvocationCount(value: string, count: number) {
-  await expect.poll(() => approvalInvocationCount(value), { timeout: 30000 }).toBe(count);
-}
-
-type MCPToolsResponse = {
-  servers?: Record<string, { tools?: Array<{ pluginKey: string }> }>;
-};
-
-type ApprovalResumeBody = {
-  actionId?: string;
-  agent_id?: string;
-  conversationId?: string;
-  endpoint?: string;
-  decisions?: Array<{
-    tool_call_id?: string;
-    decision?: string;
-    reason?: string;
-    responseText?: string;
-    editedArguments?: Record<string, unknown>;
-  }>;
-};
-
-type ApprovalResumeResponse = {
-  conversationId?: string;
-  status?: string;
-  streamId?: string;
-};
-
-const approvalCards = (page: Page) => messagesView(page).getByTestId('tool-approval');
-const approvalCard = (page: Page, toolCallId: string) =>
-  messagesView(page).locator(`[data-testid="tool-approval"][data-tool-call-id="${toolCallId}"]`);
-const composerApprovalPanel = (page: Page) => page.locator('#pending-tool-approval-panel');
-
-async function collapseComposerApproval(page: Page) {
-  const panel = composerApprovalPanel(page);
-  await expect(panel).toBeVisible({ timeout: 30000 });
-  await panel.getByRole('button', { name: 'Collapse', exact: true }).click();
-  await expect(panel).toHaveCount(0);
-}
-
-function isResumeRequest(request: Request) {
-  return (
-    request.method() === 'POST' && new URL(request.url()).pathname === '/api/agents/chat/resume'
-  );
-}
-
-async function waitForApprovalTool(page: Page) {
-  const token = await getAccessToken(page);
-  let latestTools: MCPToolsResponse | null = null;
-
-  for (let attempt = 0; attempt < 20; attempt++) {
-    latestTools = await fetchJson<MCPToolsResponse>(page, '/api/mcp/tools', token);
-    const tools = latestTools.servers?.[MCP_SERVER_NAME]?.tools ?? [];
-    if (tools.some((tool) => tool.pluginKey === APPROVAL_TOOL_ID)) {
-      return;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  expect(
-    latestTools?.servers?.[MCP_SERVER_NAME]?.tools,
-    `Expected ${MCP_SERVER_NAME} to expose ${APPROVAL_TOOL_ID}`,
-  ).toEqual(expect.arrayContaining([expect.objectContaining({ pluginKey: APPROVAL_TOOL_ID })]));
-}
-
-async function createAndSelectApprovalAgent(page: Page): Promise<string> {
-  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await waitForApprovalTool(page);
-
-  const token = await getAccessToken(page);
-  const agentName = uniqueAgentName('E2E Tool Approval Agent');
-  const agent = await requestJson<AgentDetail>(page, {
-    path: '/api/agents',
-    token,
-    method: 'POST',
-    body: {
-      name: agentName,
-      description: DESCRIPTION,
-      instructions: 'Use the requested approval probe tools and report their results.',
-      provider: MOCK_ENDPOINTS[0].label,
-      model: MOCK_ENDPOINTS[0].model,
-      tools: [MCP_SERVER_TOOL_ID, APPROVAL_TOOL_ID],
-    },
-  });
-
-  const form = await openAgentBuilder(page);
-  await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
-  await page.getByRole('option', { name: agentName }).click();
-  await expect(form.getByLabel('Agent name')).toHaveValue(agentName);
-  await form.getByRole('button', { name: 'Select Agent' }).click();
-  return agent.id;
-}
-
-async function startApproval(
-  page: Page,
-  label: string,
-  marker = APPROVAL_PROMPT_MARKER,
-  expectedReason = APPROVAL_REASON,
-): Promise<Locator> {
-  const response = await sendMessage(page, `${marker}${label}`);
-  expect(response.ok()).toBeTruthy();
-  await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
-  const card = approvalCards(page).first();
-  await expect(card).toBeVisible({ timeout: 30000 });
-  await expect(card).toContainText(expectedReason);
-  /**
-   * The primary composer review opens automatically above the historical
-   * timeline card. Verify that entry point, then collapse it so these tests
-   * can keep exercising the timeline fallback without an overlay intercepting
-   * its controls. The native BYOM acceptance spec submits through the composer.
-   */
-  await collapseComposerApproval(page);
-  return card;
-}
-
-async function submitAndCapture(page: Page, submit: Locator) {
-  const [request, response] = await Promise.all([
-    page.waitForRequest(isResumeRequest),
-    page.waitForResponse(
-      (candidate) => isResumeRequest(candidate.request()) && candidate.status() === 200,
-    ),
-    submit.click(),
-  ]);
-  return {
-    body: request.postDataJSON() as ApprovalResumeBody,
-    response,
-  };
-}
-
-async function expectCompletedApprovalToolOutput(page: Page, toolCallId: string, output: string) {
-  const view = messagesView(page);
-  const groupToggle = view.getByRole('button', { name: /^Ran \d+ actions/ }).last();
-  const toolCall = view.locator(`[data-testid="tool-call"][data-tool-call-id="${toolCallId}"]`);
-
-  // On reload, the conversation arrives asynchronously and multi-tool groups
-  // start collapsed. Wait for either the target card or its group before
-  // deciding whether expansion is necessary.
-  await expect(toolCall.or(groupToggle).first()).toBeVisible({ timeout: 30000 });
-  // The final model turn is the quiescence barrier: all parallel tool work
-  // has settled before invocation-count assertions inspect the audit. It is
-  // also the fence the expansions below need, because the streamed response
-  // carries a placeholder id that the saved message replaces, remounting
-  // every card in the turn and closing whatever this helper had opened.
-  await expect(view.getByText(/^E2E approval outcomes:/).last()).toBeVisible({ timeout: 30000 });
-
-  const toggle = toolCall.getByRole('button', { name: /Ran approval_probe/ });
-  // Scope exact output to its stable call id. This catches both a dropped
-  // completion and an output accidentally attached to a sibling tool card.
-  const toolOutput = view
-    .locator(`[data-tool-call-output-id="${toolCallId}"]`)
-    .getByText(output, { exact: true });
-
-  // Re-open on every attempt rather than expanding once: a card that a late
-  // remount closes underneath would otherwise leave the assertion waiting on
-  // a body that nothing is going to mount again.
-  await expect(async () => {
-    if (!(await toolCall.isVisible())) {
-      const hasGroup = (await groupToggle.count()) > 0;
-      if (hasGroup && (await groupToggle.getAttribute('aria-expanded')) !== 'true') {
-        await groupToggle.click();
-      }
-    }
-    await expect(toolCall).toBeVisible({ timeout: 5000 });
-    await expect(toggle).toBeVisible({ timeout: 5000 });
-    if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
-      await toggle.click();
-    }
-    await expect(toolOutput).toBeVisible({ timeout: 5000 });
-  }).toPass({ timeout: 30000 });
-}
+  APPROVAL_ERROR,
+  APPROVAL_REASON,
+  APPROVAL_EXPIRED,
+  BATCH_APPROVAL_PROMPT_MARKER,
+  REWRITTEN_APPROVAL_PROMPT_MARKER,
+  RESTRICTED_APPROVAL_PROMPT_MARKER,
+  uniqueLabel,
+  approvalCard,
+  approvalCards,
+  isResumeRequest,
+  collapseComposerApproval,
+  clearApprovalInvocations,
+  startApproval,
+  submitAndCapture,
+  createAndSelectApprovalAgent,
+  expectApprovalInvocationCount,
+  expectCompletedApprovalToolOutput,
+} from './approvals.helpers';
+import { NEW_CHAT_PATH, getAccessToken, messagesView, requestJson } from './helpers';
+import { cleanupAgent } from './agents.helpers';
+import { unroute } from './fixtures';
 
 test.describe('tool approvals', () => {
   test('approves a paused tool with its original arguments', async ({ page }) => {
@@ -656,6 +463,61 @@ test.describe('tool approvals', () => {
     }
   });
 
+  test('submits a rehydrated approval when the status omits the generation epoch @scenario:approval-submit-without-epoch', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = uniqueLabel();
+    const toolCallId = `call_e2e_approval_${label}`;
+    const originalValue = `original-${label}`;
+    const executedText = `E2E approval probe executed: ${originalValue}`;
+    let agentId: string | undefined;
+    let statusHandler: ((route: Route) => Promise<void>) | undefined;
+    clearApprovalInvocations(originalValue);
+
+    try {
+      agentId = await createAndSelectApprovalAgent(page);
+      await startApproval(page, label);
+      const conversationPath = new URL(page.url()).pathname;
+
+      /** The status snapshot is where a reloaded page learns the generation epoch;
+       *  without it the rehydrated card has no epoch to send. */
+      let strippedEpochs = 0;
+      statusHandler = async (route) => {
+        const response = await route.fetch();
+        const status = (await response.json()) as Record<string, unknown>;
+        if (status.createdAt != null) {
+          strippedEpochs++;
+        }
+        delete status.createdAt;
+        await route.fulfill({ response, json: status });
+      };
+      await page.route('**/api/agents/chat/status/**', statusHandler);
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await expect.poll(() => new URL(page.url()).pathname).toBe(conversationPath);
+      await collapseComposerApproval(page);
+      const card = approvalCard(page, toolCallId);
+      await expect(card).toBeVisible({ timeout: 30000 });
+      expect(strippedEpochs).toBeGreaterThan(0);
+
+      await card.getByRole('button', { name: 'Approve' }).click();
+      const { body } = await submitAndCapture(page, card.getByRole('button', { name: 'Submit' }));
+      expect(body.actionId).toBeTruthy();
+      expect(body.conversationId).toBe(conversationPath.replace('/c/', ''));
+      expect(body).not.toHaveProperty('generationCreatedAt');
+      await expectCompletedApprovalToolOutput(page, toolCallId, executedText);
+      await expectApprovalInvocationCount(originalValue, 1);
+      await expect(approvalCards(page)).toHaveCount(0);
+    } finally {
+      if (statusHandler) {
+        await page.unroute('**/api/agents/chat/status/**', statusHandler);
+      }
+      clearApprovalInvocations(originalValue);
+      await cleanupAgent(page, agentId);
+    }
+  });
+
   test('sends only one resume request for two synchronous submit clicks', async ({ page }) => {
     test.setTimeout(120000);
     const label = uniqueLabel();
@@ -709,7 +571,7 @@ test.describe('tool approvals', () => {
     } finally {
       releaseResume();
       if (resumeHandler) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       clearApprovalInvocations(originalValue);
       await cleanupAgent(page, agentId);
@@ -777,7 +639,7 @@ test.describe('tool approvals', () => {
       await expect(approvalCards(page)).toHaveCount(0);
     } finally {
       if (resumeHandler) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       clearApprovalInvocations(originalValue);
       await cleanupAgent(page, agentId);
@@ -828,7 +690,7 @@ test.describe('tool approvals', () => {
       await expect(submit).toBeDisabled();
       expect(capturedResumeBody).toBeDefined();
 
-      await page.unroute('**/api/agents/chat/resume', resumeHandler);
+      await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       routeInstalled = false;
       const token = await getAccessToken(page);
       await requestJson(page, {
@@ -843,7 +705,7 @@ test.describe('tool approvals', () => {
       await expect(approvalCards(page)).toHaveCount(0);
     } finally {
       if (routeInstalled) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       if (!backendResolved && capturedResumeBody) {
         const token = await getAccessToken(page);

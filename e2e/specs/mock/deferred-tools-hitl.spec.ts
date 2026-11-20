@@ -171,7 +171,8 @@ test.describe('deferred tools across HITL resume', () => {
         new RegExp(`^E2E deferred HITL (?:passed|failed) ${escapeRegExp(label)}:`),
       );
       await expect(terminal).toBeVisible({ timeout: 30000 });
-      expect(await terminal.textContent()).toBe(expectedFinal);
+      /* The terminal line appears while the slow echo is still streaming into it. */
+      await expect(terminal).toHaveText(expectedFinal, { timeout: 30000 });
     } finally {
       await cleanupAgent(page, agentId);
     }

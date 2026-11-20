@@ -1,20 +1,15 @@
+import { isInlineablePastedText } from '@librechat/chat';
 import {
-  TextPaths,
-  FilePaths,
-  CodePaths,
-  AudioPaths,
-  VideoPaths,
-  SheetPaths,
-} from '@librechat/client';
-import {
+  Tools,
+  LocalStorageKeys,
   megabyte,
   Providers,
   QueryKeys,
   inferMimeType,
-  excelMimeTypes,
   EToolResources,
   EModelEndpoint,
   retrievalMimeTypes,
+  isEphemeralAgentId,
   isBedrockDocumentType,
   isExplicitMimeConfig,
   codeInterpreterMimeTypes,
@@ -23,7 +18,6 @@ import {
 } from 'librechat-data-provider';
 import type {
   TFile,
-  TMessage,
   DeleteFilesResponse,
   EndpointFileConfig,
   FileConfig,
@@ -33,172 +27,17 @@ import type {
 import type { QueryClient } from '@tanstack/react-query';
 import type { ExtendedFile } from '~/common';
 
-export const partialTypes = ['text/x-'];
-
-/** Text-routed images use the file action so their extracted preview is reachable. */
-export function usesImagePreview(file: Partial<Pick<TFile, 'type' | 'llmDeliveryPath'>>): boolean {
-  return file.type?.startsWith('image/') === true && file.llmDeliveryPath !== 'text';
-}
-
-export type FileDeliveryMetadataMap = Readonly<
-  Record<string, Pick<TFile, 'llmDeliveryPath'> | undefined>
->;
-
-/** Restores display-only delivery metadata that an older replica may have
- * omitted from a persisted attachment ref. The persisted ref wins, followed
- * by the matching process-local ref, then the owner-scoped stored file map. */
-export function hydrateFileDeliveryMetadata(
-  persistedFiles: TMessage['files'],
-  localFiles?: TMessage['files'],
-  storedFiles?: FileDeliveryMetadataMap,
-): TMessage['files'] {
-  if (persistedFiles == null || persistedFiles.length === 0) {
-    return persistedFiles;
-  }
-  const localById = new Map(
-    (localFiles ?? []).flatMap((file) =>
-      file.file_id != null ? [[file.file_id, file] as const] : [],
-    ),
-  );
-  let changed = false;
-  const hydrated = persistedFiles.map((file) => {
-    const local = file.file_id == null ? undefined : localById.get(file.file_id);
-    const stored = file.file_id == null ? undefined : storedFiles?.[file.file_id];
-    const llmDeliveryPath = local?.llmDeliveryPath ?? stored?.llmDeliveryPath;
-    if (file.llmDeliveryPath != null || llmDeliveryPath == null) {
-      return file;
-    }
-    changed = true;
-    return { ...file, llmDeliveryPath };
-  });
-  return changed ? hydrated : persistedFiles;
-}
+export { hydrateFileDeliveryMetadata, usesImagePreview } from '@librechat/chat';
+export type { FileDeliveryMetadataMap } from '@librechat/chat';
 
 export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
   for (const file of files.values()) {
-    if (file.progress < 1) {
+    if (file.progress < 1 && !isInlineablePastedText(file)) {
       return true;
     }
   }
   return false;
 }
-
-const textDocument = {
-  paths: TextPaths,
-  fill: '#FF5588',
-  title: 'Document',
-};
-
-const spreadsheet = {
-  paths: SheetPaths,
-  fill: '#10A37F',
-  title: 'Spreadsheet',
-};
-
-const codeFile = {
-  paths: CodePaths,
-  fill: '#FF6E3C',
-  // TODO: make this dynamic to the language
-  title: 'Code',
-};
-
-const artifact = {
-  paths: CodePaths,
-  fill: '#2D305C',
-  title: 'Code',
-};
-
-const audioFile = {
-  paths: AudioPaths,
-  fill: '#FF6B35',
-  title: 'Audio',
-};
-
-const videoFile = {
-  paths: VideoPaths,
-  fill: '#8B5CF6',
-  title: 'Video',
-};
-
-export const fileTypes = {
-  /* Category matches */
-  file: {
-    paths: FilePaths,
-    fill: '#0000FF',
-    title: 'File',
-  },
-  text: textDocument,
-  txt: textDocument,
-  audio: audioFile,
-  video: videoFile,
-  // application:,
-
-  /* Partial matches */
-  csv: spreadsheet,
-  'application/pdf': textDocument,
-  pdf: textDocument,
-  'text/x-': codeFile,
-  artifact: artifact,
-
-  /* Exact matches */
-  // 'application/json':,
-  // 'text/html':,
-  // 'text/css':,
-  // image,
-};
-
-// export const getFileType = (type = '') => {
-//   let fileType = fileTypes.file;
-//   const exactMatch = fileTypes[type];
-//   const partialMatch = !exactMatch && partialTypes.find((type) => type.includes(type));
-//   const category = (!partialMatch && (type.split('/')[0] ?? 'text') || 'text');
-
-//   if (exactMatch) {
-//     fileType = exactMatch;
-//   } else if (partialMatch) {
-//     fileType = fileTypes[partialMatch];
-//   } else if (fileTypes[category]) {
-//     fileType = fileTypes[category];
-//   }
-
-//   if (!fileType) {
-//     fileType = fileTypes.file;
-//   }
-
-//   return fileType;
-// };
-
-export const getFileType = (
-  type = '',
-): {
-  paths: React.FC;
-  fill: string;
-  title: string;
-} => {
-  // Direct match check
-  if (fileTypes[type]) {
-    return fileTypes[type];
-  }
-
-  if (excelMimeTypes.test(type)) {
-    return spreadsheet;
-  }
-
-  // Partial match check
-  const partialMatch = partialTypes.find((partial) => type.includes(partial));
-  if (partialMatch && fileTypes[partialMatch]) {
-    return fileTypes[partialMatch];
-  }
-
-  // Category check
-  const category = type.split('/')[0] || 'text';
-  if (fileTypes[category]) {
-    return fileTypes[category];
-  }
-
-  // Default file type
-  return fileTypes.file;
-};
 
 /**
  * Format a date string to a human readable format
@@ -243,9 +82,31 @@ export function formatDate(dateString: string, isSmallScreen = false) {
 }
 
 /**
+ * Matches every `[QueryKeys.files, 'recent', limit]` cache entry regardless of
+ * the requested limit, so any writer that patches the plain `[QueryKeys.files]`
+ * list can keep the composer palette's recent-files list in step with it.
+ */
+export const isRecentFilesQueryKey = (queryKey: readonly unknown[]): boolean =>
+  queryKey[0] === QueryKeys.files && queryKey[1] === 'recent';
+
+/**
+ * The recent-files query is server-sorted and mounted with refetching off, so a
+ * new file only reaches it when something invalidates it explicitly.
+ */
+export const invalidateRecentFiles = (queryClient: QueryClient): void => {
+  queryClient.invalidateQueries({
+    predicate: (query) => isRecentFilesQueryKey(query.queryKey),
+  });
+};
+
+/**
  * Adds a file to the query cache
  */
 export function addFileToCache(queryClient: QueryClient, newfile: TFile) {
+  /* Ahead of the early returns below: the full list may not be cached at all
+     while the palette's recent list is, and that list still has to learn about
+     the new file. */
+  invalidateRecentFiles(queryClient);
   const currentFiles = queryClient.getQueryData<TFile[]>([QueryKeys.files]);
 
   if (!currentFiles) {
@@ -279,6 +140,17 @@ export function formatBytes(bytes: number, decimals = 2) {
   const dm = decimals < 0 ? 0 : decimals;
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm));
+}
+
+/** Formats bytes with unit suffix (differs from ~/utils/formatBytes which returns a raw number). */
+export function formatFileSize(bytes: number): string {
+  if (bytes >= 1048576) {
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
 }
 
 const { checkType } = defaultFileConfig;
@@ -595,6 +467,34 @@ const isContextType = (type: string, fileConfig: FileConfig | null): boolean =>
   ]);
 
 /**
+ * Which tool destinations an upload may be routed to, before the files
+ * themselves are considered.
+ *
+ * A saved agent's tool list is the authority: it can only receive uploads for
+ * the tools it was built with. Everywhere else the destination is offered
+ * whether or not the tool is currently switched on, because choosing it is what
+ * switches it on.
+ *
+ * Shared by the `+` menu and the drag-and-drop router so a file has the same
+ * destinations however it arrives.
+ */
+export interface UploadToolAllowances {
+  fileSearchAllowedByAgent: boolean;
+  codeAllowedByAgent: boolean;
+}
+
+export const getUploadToolAllowances = (
+  agentId: string | null | undefined,
+  tools: string[] | undefined,
+): UploadToolAllowances => {
+  const isSavedAgent = agentId != null && agentId !== '' && !isEphemeralAgentId(agentId);
+  return {
+    fileSearchAllowedByAgent: !isSavedAgent || (tools?.includes(Tools.file_search) ?? false),
+    codeAllowedByAgent: !isSavedAgent || (tools?.includes(Tools.execute_code) ?? false),
+  };
+};
+
+/**
  * Upload destinations a file set can be routed to, given the active endpoint and agent
  * capabilities. `undefined` is direct provider attachment; the rest are tool resources.
  * Each option requires every file to be valid for it, so the caller can decide between
@@ -658,20 +558,6 @@ export const getViableUploadOptions = (
 export const PASTE_AS_FILE_MIN_LENGTH = 2500;
 
 export const PASTED_TEXT_FILENAME = 'pasted-text.txt';
-
-/** Matches every name `nextPastedTextFilename` can produce, and nothing else: the counter
- * starts at the bare name and jumps to 2, so `-0`, `-1`, and zero-padded variants are never
- * generated and must not read as generated. The alternation is "any integer of 2 or more":
- * a single digit 2-9, or two or more digits. */
-const PASTED_TEXT_FILENAME_PATTERN = /^pasted-text(-([2-9]|[1-9]\d+))?\.txt$/;
-
-/**
- * Whether a filename is one `nextPastedTextFilename` can produce. Name alone cannot prove an
- * attachment is a paste, though: a user can deliberately upload a file with one of these names.
- * Provenance comes from the paste registry and the files draft, not the name.
- */
-export const isPastedTextFilename = (filename?: string | null): boolean =>
-  filename != null && PASTED_TEXT_FILENAME_PATTERN.test(filename);
 
 /** Paste provenance is genuinely per-tab: it decides which chips offer the paste affordances, and
  * `sessionStorage` is exactly that scope, surviving this tab's reloads without reaching another.
@@ -767,23 +653,33 @@ const readSubmittedPastes = (): SubmittedPastes => {
  * draft keeps its provenance, and the run ending (including by Stop or an error) is not evidence
  * the paste is unsent: only this is. Without it, discarding afterwards would delete a file the
  * sent turn already references. */
-export const markPasteSubmitted = (fileId?: string | null): void => {
-  if (fileId == null || fileId === '') {
+export const markPasteSubmitted = (...fileIds: (string | null | undefined)[]): void => {
+  let ids: SubmittedPastes | undefined;
+  const submittedAt = Date.now();
+  for (const fileId of fileIds) {
+    if (fileId == null || fileId === '') {
+      continue;
+    }
+    ids ??= { ...readSubmittedPastes() };
+    ids[fileId] = submittedAt;
+  }
+  if (ids == null) {
     return;
   }
-  const ids: SubmittedPastes = { ...readSubmittedPastes(), [fileId]: Date.now() };
-  let entries = Object.entries(ids);
-  if (entries.length > SUBMITTED_PASTE_LIMIT) {
-    entries = entries.sort((a, b) => b[1] - a[1]).slice(0, SUBMITTED_PASTE_LIMIT);
+  if (Object.keys(ids).length > SUBMITTED_PASTE_LIMIT) {
+    ids = Object.fromEntries(
+      Object.entries(ids)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, SUBMITTED_PASTE_LIMIT),
+    );
   }
-  const bounded = Object.fromEntries(entries);
+  const raw = JSON.stringify(ids);
   try {
-    localStorage.setItem(SUBMITTED_PASTES_STORAGE_KEY, JSON.stringify(bounded));
-    submittedPastesCache = null;
+    localStorage.setItem(SUBMITTED_PASTES_STORAGE_KEY, raw);
+    submittedPastesCache = { raw, ids };
   } catch {
-    /** The write is the protection, so a failure has to be remembered in memory at least: this
-     * tab's own cleanup must not turn around and delete what it just sent. */
-    submittedPastesCache = { raw: submittedPastesCache?.raw ?? null, ids: bounded };
+    /** Keep protection in memory if storage fails. */
+    submittedPastesCache = { raw: submittedPastesCache?.raw ?? null, ids };
   }
 };
 
@@ -809,13 +705,15 @@ const RETAINED_DELETION_STORAGE_KEY = 'librechat-retained-file-deletions';
 const RETAINED_RETRY_BASE_DELAY_MS = 5_000;
 const RETAINED_RETRY_MAX_DELAY_MS = 60_000;
 
-const readStoredRetainedDeletions = (): PendingFileDeletion[] => {
+type RetainedFileDeletion = PendingFileDeletion & { attempts?: number };
+
+const readStoredRetainedDeletions = (): RetainedFileDeletion[] => {
   try {
     const raw = sessionStorage.getItem(RETAINED_DELETION_STORAGE_KEY);
     if (raw == null || raw === '') {
       return [];
     }
-    const parsed = JSON.parse(raw) as PendingFileDeletion[] | null;
+    const parsed = JSON.parse(raw) as RetainedFileDeletion[] | null;
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -824,12 +722,15 @@ const readStoredRetainedDeletions = (): PendingFileDeletion[] => {
 
 /** Survives a reload: the chip these came from is gone, so once the tab forgets the payload the
  * upload on the server has no reference left at all. */
-const retainedFileDeletions = new Map<string, PendingFileDeletion>(
+const retainedFileDeletions = new Map<string, RetainedFileDeletion>(
   readStoredRetainedDeletions().map((record) => [record.file_id, record]),
 );
 const retainedFileDeletionListeners = new Set<() => void>();
 
 const persistRetainedFileDeletions = (): void => {
+  if (retainedFileDeletions.size === 0) {
+    retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
+  }
   try {
     if (retainedFileDeletions.size === 0) {
       sessionStorage.removeItem(RETAINED_DELETION_STORAGE_KEY);
@@ -858,17 +759,20 @@ const bindOnlineRetainedRetry = (): void => {
   }
   onlineRetryBound = true;
   window.addEventListener('online', () => {
-    retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
-    notifyRetainedFileDeletions();
+    if (retainedFileDeletions.size > 0) {
+      retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
+      notifyRetainedFileDeletions();
+    }
   });
 };
 
-/** A retry that fails again changes nothing the cleanup effect depends on, and the files query
- * does not refetch on reconnect, so without an explicit wake-up the payload would sit untouched
- * until some unrelated cache update happened to arrive. Backs off to a slow poll rather than
- * giving up, because giving up is what orphans the upload. */
-export const scheduleRetainedFileDeletionRetry = (): void => {
-  if (retainedRetryTimer != null) {
+/** Wake unchanged queues after a failure, with backoff between automatic attempts. */
+export const scheduleRetainedFileDeletionRetry = (pendingDiscard = false): void => {
+  if (
+    retainedRetryTimer != null ||
+    (retainedFileDeletions.size === 0 && !pendingDiscard) ||
+    !retentionOpen
+  ) {
     return;
   }
   bindOnlineRetainedRetry();
@@ -924,12 +828,11 @@ export const openFileDeletionRetention = (): void => {
 };
 
 export const retainFileDeletion = (record: PendingFileDeletion): void => {
-  if (!retentionOpen) {
+  if (!retentionOpen || retainedFileDeletions.has(record.file_id)) {
     return;
   }
   retainedFileDeletions.set(record.file_id, record);
   persistRetainedFileDeletions();
-  retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
   notifyRetainedFileDeletions();
 };
 
@@ -938,12 +841,88 @@ export const clearRetainedFileDeletion = (fileId: string): void => {
     return;
   }
   persistRetainedFileDeletions();
-  retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
 };
 
-/** The deletions waiting for a retry; ownership stays with the store until one succeeds. */
+/** Keep retry accounting private rather than sending it in the delete payload. */
 export const takeRetainedFileDeletions = (): PendingFileDeletion[] =>
-  Array.from(retainedFileDeletions.values());
+  Array.from(retainedFileDeletions.values(), ({ attempts: _attempts, ...record }) => record);
+
+/** Persist before dispatch so a reload during the request cannot reset its budget. */
+export const claimFileDeletionRetries = (
+  records: PendingFileDeletion[],
+  limit = defaultFileConfig.deletionRetryLimit,
+): PendingFileDeletion[] => {
+  if (!retentionOpen) {
+    return [];
+  }
+  const batch: PendingFileDeletion[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (seen.has(record.file_id)) {
+      continue;
+    }
+    seen.add(record.file_id);
+    const attempts = retainedFileDeletions.get(record.file_id)?.attempts ?? 0;
+    if (attempts >= limit) {
+      retainedFileDeletions.delete(record.file_id);
+      continue;
+    }
+    retainedFileDeletions.set(record.file_id, { ...record, attempts: attempts + 1 });
+    batch.push(record);
+  }
+  persistRetainedFileDeletions();
+  return batch;
+};
+
+/** Successful and exhausted records leave the queue; only retryable failures remain. */
+export const settleFileDeletionRetries = (
+  records: PendingFileDeletion[],
+  failedIds: Set<string>,
+  limit = defaultFileConfig.deletionRetryLimit,
+): void => {
+  let changed = false;
+  for (const record of records) {
+    if (
+      !failedIds.has(record.file_id) ||
+      (retainedFileDeletions.get(record.file_id)?.attempts ?? 0) >= limit
+    ) {
+      changed = retainedFileDeletions.delete(record.file_id) || changed;
+    }
+  }
+  if (changed) {
+    persistRetainedFileDeletions();
+  }
+};
+
+/** Move the legacy remount queue into the same bounded, ownership-checked retry path. */
+export const migrateStoredFileDeletions = (): void => {
+  try {
+    const raw = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
+    if (raw == null) {
+      return;
+    }
+    const map = JSON.parse(raw) as Record<string, ExtendedFile> | null;
+    for (const file of Object.values(map ?? {})) {
+      if (
+        file?.file_id &&
+        file.filepath != null &&
+        file.source &&
+        !(file.embedded ?? false) &&
+        file.temp_file_id
+      ) {
+        retainFileDeletion({
+          file_id: file.file_id,
+          filepath: file.filepath,
+          source: file.source as FileSources,
+          embedded: false,
+        });
+      }
+    }
+    localStorage.removeItem(LocalStorageKeys.FILES_TO_DELETE);
+  } catch {
+    // Unavailable storage cannot supply legacy cleanup work.
+  }
+};
 
 /** Subscribe to a retained deletion being recorded so a retry effect can run without waiting
  * for an unrelated files-cache update. */

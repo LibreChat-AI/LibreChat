@@ -16,7 +16,7 @@ let reconcileInFlight: Promise<void> | undefined;
 
 function agentReferenceFilter(environmentId: string, tenantId?: string) {
   return {
-    code_environment_id: environmentId,
+    $or: [{ code_environment_id: environmentId }, { code_environment_ids: environmentId }],
     ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }),
   };
 }
@@ -138,6 +138,7 @@ export async function reconcileCodeEnvironmentLifecycle({
     }
     const staleRegistration = new Date(Date.now() - REGISTRATION_STALE_MS);
     const registrationCandidates = await CodeEnvironment.find({
+      setupAttemptId: { $exists: false },
       registrationPendingAt: { $lte: staleRegistration },
       $and: [
         {

@@ -416,6 +416,90 @@ describe('isPrivateIP - IPv4-mapped IPv6 hex-normalized form (CVE-style SSRF byp
   });
 });
 
+describe('IPv4-translated IPv6 SSRF protection', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const privateAddresses = [
+    '::ffff:0:a00:1',
+    '::ffff:0:ac10:1',
+    '::ffff:0:c0a8:101',
+    '::ffff:0:a9fe:a9fe',
+    '::ffff:0:7f00:1',
+    '::ffff:0:0:1',
+    '::ffff:0:6440:1',
+    '::ffff:0:c000:1',
+    '::ffff:0:c612:1',
+    '::ffff:0:e000:1',
+    '::ffff:0:ffff:ffff',
+    '::ffff:0:10.0.0.1',
+    '0:0:0:0:ffff:0:a00:1',
+    '0000:0000:0000:0000:FFFF:0000:0A00:0001',
+    '0:0:0:0:ffff::a00:1',
+    '0:0:0:0:ffff::',
+    '[::FFFF:0:A00:1]',
+  ];
+
+  it.each(privateAddresses)(
+    'blocks private translated address %s in every preflight guard',
+    async (address) => {
+      expect(isPrivateIP(address)).toBe(true);
+      expect(isSSRFTarget(address)).toBe(true);
+      expect(await resolveHostnameSSRF(address)).toBe(true);
+      const host = address.replace(/^\[|\]$/g, '');
+      const url = `http://[${host}]/`;
+      expect(await isActionDomainAllowed(url)).toBe(false);
+      expect(await isMCPDomainAllowed({ url })).toBe(false);
+      expect(mockedLookup).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['fe80::1%lo', 'fe90::1%eth0', 'fd00::1%3', '::ffff:0:a00:1%lo'])(
+    'blocks private scoped IPv6 address %s',
+    (address) => {
+      expect(isPrivateIP(address)).toBe(true);
+      expect(isSSRFTarget(address)).toBe(true);
+    },
+  );
+
+  it.each(['::ffff:0:a00:1', '0:0:0:0:ffff:0:10.0.0.1'])(
+    'blocks raw translated DNS answer %s',
+    async (address) => {
+      mockedLookup.mockResolvedValue([{ address, family: 6 }] as never);
+      expect(await resolveHostnameSSRF('translated.example.com')).toBe(true);
+      expect(await isActionDomainAllowed('http://translated.example.com')).toBe(false);
+      expect(await isMCPDomainAllowed({ url: 'http://translated.example.com' })).toBe(false);
+    },
+  );
+
+  it.each(['::ffff:0:808:808', '0:0:0:0:ffff:0:8.8.8.8', '::ffff:1:a00:1'])(
+    'allows public or non-translated address %s',
+    async (address) => {
+      expect(isPrivateIP(address)).toBe(false);
+      const url = `http://[${address}]/`;
+      expect(await isActionDomainAllowed(url)).toBe(true);
+      expect(await isMCPDomainAllowed({ url })).toBe(true);
+    },
+  );
+
+  it('keeps translated-address exemptions scoped to the configured port', async () => {
+    const allowedAddresses = ['[::ffff:0:10.0.0.1]:8080'];
+    expect(
+      await isActionDomainAllowed('http://[::ffff:0:a00:1]:8080', null, allowedAddresses),
+    ).toBe(true);
+    expect(
+      await isActionDomainAllowed('http://[::ffff:0:a00:1]:8081', null, allowedAddresses),
+    ).toBe(false);
+    expect(
+      await isMCPDomainAllowed({ url: 'http://[::ffff:0:a00:1]:8080' }, null, allowedAddresses),
+    ).toBe(true);
+    expect(
+      await isMCPDomainAllowed({ url: 'http://[::ffff:0:a00:1]:8081' }, null, allowedAddresses),
+    ).toBe(false);
+  });
+});
+
 describe('isActionDomainAllowed - IPv4-mapped IPv6 hex SSRF bypass (end-to-end)', () => {
   beforeEach(() => {
     mockedLookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);

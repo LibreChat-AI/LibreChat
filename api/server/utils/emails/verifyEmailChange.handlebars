@@ -1,0 +1,46 @@
+<html lang='en'>
+  <head>
+    <meta charset='utf-8' />
+    <meta name='viewport' content='width=device-width, initial-scale=1' />
+    <title>Verify your new email address</title>
+  </head>
+  <body style='margin:0;background:#f5f5f5;font-family:Arial,sans-serif;color:#1f2937'>
+    <table role='presentation' width='100%' cellpadding='0' cellspacing='0'>
+      <tr>
+        <td align='center' style='padding:32px 16px'>
+          <table
+            role='presentation'
+            width='100%'
+            cellpadding='0'
+            cellspacing='0'
+            style='max-width:560px;background:#ffffff;border-radius:12px'
+          >
+            <tr>
+              <td style='padding:32px'>
+                <h1 style='margin:0 0 20px;font-size:24px'>Verify your new email address</h1>
+                <p>Hello {{name}},</p>
+                <p>
+                  Confirm
+                  <strong>{{newEmail}}</strong>
+                  as the new email address for your
+                  {{appName}}
+                  account. This link expires in {{linkLifetime}}.
+                </p>
+                <p style='margin:28px 0'>
+                  <a
+                    href='{{verificationLink}}'
+                    style='display:inline-block;border-radius:8px;background:#2563eb;padding:12px 20px;color:#ffffff;text-decoration:none'
+                  >Verify new email</a>
+                </p>
+                <p>If you did not request this change, you can ignore this email.</p>
+                <p style='margin-top:28px;color:#6b7280;font-size:12px'>&copy;
+                  {{year}}
+                  {{appName}}</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

@@ -1,12 +1,10 @@
 import React, { memo, useRef, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
+import { FADE_HYDRATION_THRESHOLD } from '@librechat/chat/components';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
-import { FADE_HYDRATION_THRESHOLD } from './animate';
-import { useMessageContext } from '~/Providers';
 import MarkdownBlocks from './MarkdownBlocks';
-import store from '~/store';
+import { useRehypeModules } from './rehype';
 
 type TContentProps = {
   content: string;
@@ -14,12 +12,15 @@ type TContentProps = {
 };
 
 const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TContentProps) {
-  const { isSubmitting = false } = useMessageContext() ?? {};
+  const { useMessage, useLaTeXParsing, useSmoothStreaming } = useMessagePartsHost();
+  const { isSubmitting = false } = useMessage();
   const smoothStreaming = useSmoothStreaming();
-  const LaTeXParsing = useRecoilValue<boolean>(store.LaTeXParsing);
+  const LaTeXParsing = useLaTeXParsing();
+  const rehypeModules = useRehypeModules(content);
   const isInitializing = content === '';
 
-  const animate = smoothStreaming && isLatestMessage && isSubmitting;
+  const streaming = isLatestMessage && isSubmitting;
+  const animate = smoothStreaming && streaming;
 
   // Hydration signal for the fade: substantial content already present at the
   // render where `animate` flips on means resumed/switched-to/follow-up
@@ -52,8 +53,9 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
     <MarkdownErrorBoundary content={content} codeExecution={true}>
       <MarkdownBlocks
         content={content}
+        streaming={streaming}
         remarkPlugins={getRemarkPlugins(LaTeXParsing)}
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(rehypeModules)}
         components={getMarkdownComponents()}
         animate={animate}
         hydrated={hydratedRef.current}

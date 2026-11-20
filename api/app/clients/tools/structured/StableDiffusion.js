@@ -7,7 +7,11 @@ const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
-const { applySSRFSafeAgentIfDirect, getBasePath } = require('@librechat/api');
+const {
+  getBasePath,
+  configuredRequestBudget,
+  applySSRFSafeAgentIfDirect,
+} = require('@librechat/api');
 const paths = require('~/config/paths');
 
 const stableDiffusionJsonSchema = {
@@ -118,9 +122,10 @@ class StableDiffusionAPI extends Tool {
     let generationResponse;
     try {
       const requestUrl = `${url}/sdapi/v1/txt2img`;
-      const requestConfig = this.isUserProvidedEndpoint
-        ? applySSRFSafeAgentIfDirect({}, requestUrl)
-        : undefined;
+      const requestConfig = {
+        ...(this.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect({}, requestUrl) : {}),
+        ...configuredRequestBudget(this.req?.config, 'imageGenerationMs'),
+      };
       generationResponse = await axios.post(requestUrl, payload, requestConfig);
     } catch (error) {
       logger.error('[StableDiffusion] Error while generating image:', error);

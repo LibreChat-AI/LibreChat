@@ -1,0 +1,15 @@
+/**
+ * Repository entry for the library lint and compile checks. The app composes the same
+ * semantic tokens and legacy compatibility scales in client/src/style.css.
+ * Consumers import tokens.css through the package export and use the published preset;
+ * neither public entry overrides their standard Tailwind palettes.
+ */
+@import 'tailwindcss';
+@import './tokens.css';
+@config '../../tailwind.config.js';
+
+/* Close the legacy palette scales only inside this repository. */
+@theme inline {
+  --color-gray-*: initial;
+  --color-green-*: initial;
+}

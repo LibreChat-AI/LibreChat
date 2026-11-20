@@ -10,6 +10,34 @@ export const MCP_STATUS_LABELS: Record<ScheduleMCPStatus, TranslationKeys> = {
   mcp_unavailable: 'com_ui_schedule_mcp_unavailable',
 };
 
+/** Refusals the owner clears in the schedule's authorization dialog, not by reconnecting. */
+const AUTHORIZATION_REASONS: ReadonlySet<ScheduleMCPOutcome['reason']> = new Set([
+  'consent_missing',
+  'consent_expired',
+  'consent_revoked',
+  'binding_mismatch',
+]);
+
+function needsScheduleAuthorization(outcome: ScheduleMCPOutcome): boolean {
+  return outcome.status === 'mcp_reauth_required' && AUTHORIZATION_REASONS.has(outcome.reason);
+}
+
+export function scheduleMCPStatusLabel(outcome: ScheduleMCPOutcome): TranslationKeys {
+  if (outcome.detail === 'unattended_auth_required') return 'com_ui_schedule_mcp_unattended_auth';
+  if (needsScheduleAuthorization(outcome)) return 'com_ui_schedule_mcp_authorization';
+  return MCP_STATUS_LABELS[outcome.status];
+}
+
+export function scheduleDisabledMCPLabel(
+  reason: TSchedule['disabledReason'],
+  outcomes: ScheduleMCPOutcome[],
+): TranslationKeys | undefined {
+  return reason === 'mcp_configuration_missing' &&
+    outcomes.some((outcome) => outcome.detail === 'unattended_auth_required')
+    ? 'com_ui_schedule_disabled_mcp_unattended_auth'
+    : undefined;
+}
+
 export function scheduleMCPRecoveryOutcomes(
   schedule: Pick<TSchedule, 'enabled' | 'disabledReason' | 'lastRun'>,
 ) {
@@ -45,7 +73,11 @@ export function scheduleMCPCardOutcomes(
 
 export function scheduleMCPNeedsAgentRecovery(outcomes: ScheduleMCPOutcome[]): boolean {
   return outcomes.some(
-    (outcome) => outcome.status !== 'ready' && outcome.status !== 'mcp_permission_denied',
+    (outcome) =>
+      outcome.status !== 'ready' &&
+      outcome.status !== 'mcp_permission_denied' &&
+      outcome.detail !== 'unattended_auth_required' &&
+      !needsScheduleAuthorization(outcome),
   );
 }
 
@@ -56,7 +88,7 @@ export function scheduleMCPErrorMessage(
   const failures = scheduleMCPErrorOutcomes(error).filter((item) => item.status !== 'ready');
   if (failures.length > 0) {
     return failures
-      .map((item) => `${item.server}: ${localize(MCP_STATUS_LABELS[item.status])}`)
+      .map((item) => `${item.server}: ${localize(scheduleMCPStatusLabel(item))}`)
       .join('; ');
   }
   const response = (
@@ -65,6 +97,12 @@ export function scheduleMCPErrorMessage(
   return response?.data?.code === 'mcp_unavailable'
     ? localize(MCP_STATUS_LABELS.mcp_unavailable)
     : undefined;
+}
+
+/** The server turned down the authorization sent with a create, by one of its `consent_` codes. */
+export function scheduleAuthorizationRejected(error: Error): boolean {
+  const code = (error as Error & { response?: { data?: { code?: unknown } } }).response?.data?.code;
+  return typeof code === 'string' && code.startsWith('consent_');
 }
 
 /** Preserves the structured recovery projection for immediate create, update, and

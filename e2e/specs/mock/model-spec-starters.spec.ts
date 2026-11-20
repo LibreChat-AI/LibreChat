@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { clickHouseTheme } from '../../../packages/client/src/theme/themes/clickhouse';
 import { messagesView, NEW_CHAT_PATH, replyPrompt, replyText, selectModelSpec } from './helpers';
 
 /** Spec with five `conversation_starters` in e2e/config/librechat.e2e.yaml; only four may render. */
@@ -15,7 +16,9 @@ const STARTER_BEYOND_CAP = 'Fifth starter beyond the cap';
 const PLAIN_SPEC_LABEL = 'E2E Soft Default';
 
 test.describe('model spec conversation starters', () => {
-  test('starter prompts render on the landing for a spec that defines them', async ({ page }) => {
+  test('starter prompts render on the landing for a spec that defines them @scenario:spec-starters-render-up-to-the-cap', async ({
+    page,
+  }) => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectModelSpec(page, STARTER_SPEC_LABEL);
 
@@ -23,6 +26,12 @@ test.describe('model spec conversation starters', () => {
       await expect(page.getByRole('button', { name: text })).toBeVisible();
     }
     await expect(page.getByRole('button', { name: STARTER_BEYOND_CAP })).toBeHidden();
+
+    /** The entrance is staggered by position: the unlayered `.fade-in` rule sets the animation
+     *  shorthand, so a delay or fill mode that loses to it leaves every chip animating at once. */
+    const second = page.getByRole('button', { name: STARTER_PROMPTS[1], exact: true });
+    await expect(second).toHaveCSS('animation-delay', '0.075s');
+    await expect(second).toHaveCSS('animation-fill-mode', 'backwards');
   });
 
   test('a spec without starters shows none', async ({ page }) => {
@@ -34,7 +43,9 @@ test.describe('model spec conversation starters', () => {
     }
   });
 
-  test('clicking a starter submits it as the first message', async ({ page }) => {
+  test('clicking a starter submits it as the first message @scenario:clicking-a-starter-sends-it', async ({
+    page,
+  }) => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectModelSpec(page, STARTER_SPEC_LABEL);
 
@@ -45,5 +56,31 @@ test.describe('model spec conversation starters', () => {
     await expect(messagesView(page).getByText(replyText('starter'))).toBeVisible({
       timeout: 30000,
     });
+  });
+
+  test('a starter takes its fill and ink from the theme in light and dark @scenario:starter-follows-the-reference-theme', async ({
+    page,
+  }) => {
+    await page.addInitScript((definition) => {
+      const mode = new URL(location.href).searchParams.get('e2eThemeMode');
+      if (mode) {
+        localStorage.setItem('color-theme', mode);
+      }
+      localStorage.setItem('theme-definition', JSON.stringify(definition));
+      localStorage.setItem('theme-source', 'definition');
+    }, clickHouseTheme);
+
+    for (const mode of ['light', 'dark'] as const) {
+      const colors = clickHouseTheme.modes[mode]?.colors ?? {};
+      const rgb = (key: string) => `rgb(${(colors[key] ?? '').split(' ').join(', ')})`;
+      await page.goto(`${NEW_CHAT_PATH}?e2eThemeMode=${mode}`, { timeout: 10000 });
+      await selectModelSpec(page, STARTER_SPEC_LABEL);
+
+      const starter = page.getByRole('button', { name: STARTER_PROMPTS[1], exact: true });
+      await expect(starter).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+      await expect(starter).toHaveCSS('background-color', rgb('rgb-surface-secondary'));
+      await expect(starter).toHaveCSS('color', rgb('rgb-text-secondary'));
+    }
   });
 });

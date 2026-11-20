@@ -1,5 +1,5 @@
 import { atom } from 'jotai';
-import type { ConversationListParams } from 'librechat-data-provider';
+import type { ConversationListParams, TConversationTag } from 'librechat-data-provider';
 import { createStorageAtom } from '~/store/jotai-utils';
 
 /** Which slice of the user's chats the sidebar list is showing. */
@@ -66,17 +66,34 @@ export const chatSortAtom = atom(
   },
 );
 
+const storedShowProjectChatsAtom = createStorageAtom<boolean>('chatListShowProjectChats', false);
+
+/** Whether chats filed in a project also list under Chats. Off by default, so a chat is
+ *  shown once, under its project. A display preference, so it is kept like the sort;
+ *  anything but an explicit `true` reads as the default. */
+export const showProjectChatsAtom = atom(
+  (get) => get(storedShowProjectChatsAtom) === true,
+  (_get, set, next: boolean) => {
+    set(storedShowProjectChatsAtom, next);
+  },
+);
+
 /** Read by conversation rows to offer restoring instead of archiving. */
 export const isArchivedChatViewAtom = atom((get) => get(chatFilterStatusAtom) === 'archived');
 
 /** Drives the trigger's badge: how many choices differ from the default list. */
+/** Each property that departs from the default counts once, however many values it
+ *  carries: bookmarks count as one, the way the Filter row and the endpoint facet count. */
 export const chatFilterCountAtom = atom((get) => {
   const sort = get(chatSortAtom);
-  let count = get(chatFilterTagsAtom).length;
+  let count = get(chatFilterTagsAtom).length > 0 ? 1 : 0;
   if (get(chatFilterStatusAtom) !== 'active') {
     count += 1;
   }
   if (sort.field !== DEFAULT_CHAT_SORT.field || sort.direction !== DEFAULT_CHAT_SORT.direction) {
+    count += 1;
+  }
+  if (get(showProjectChatsAtom)) {
     count += 1;
   }
   return count;
@@ -86,6 +103,7 @@ export const resetChatFiltersAtom = atom(null, (_get, set) => {
   set(chatFilterStatusAtom, 'active');
   set(chatFilterTagsAtom, []);
   set(storedChatSortAtom, DEFAULT_CHAT_SORT);
+  set(storedShowProjectChatsAtom, false);
 });
 
 /**
@@ -111,3 +129,26 @@ export const toggleChatFilterTagAtom = atom(null, (get, set, tag: string) => {
     tags.includes(tag) ? tags.filter((current) => current !== tag) : [...tags, tag],
   );
 });
+
+export type BookmarkChoice = Pick<TConversationTag, 'tag' | 'count'>;
+
+/**
+ * The bookmarks worth offering as filters: those some chat carries, since one no chat
+ * carries filters the list down to nothing, plus every selected one, including a bookmark
+ * no chat carries any more or one that was deleted, so a chosen bookmark can always be
+ * turned off.
+ */
+export const selectableBookmarks = (
+  bookmarks: TConversationTag[] | undefined,
+  selected: string[],
+): BookmarkChoice[] => {
+  const known = new Set<string>();
+  const listed: BookmarkChoice[] = [];
+  for (const bookmark of bookmarks ?? []) {
+    known.add(bookmark.tag);
+    if (bookmark.count > 0 || selected.includes(bookmark.tag)) {
+      listed.push(bookmark);
+    }
+  }
+  return listed.concat(selected.filter((tag) => !known.has(tag)).map((tag) => ({ tag, count: 0 })));
+};

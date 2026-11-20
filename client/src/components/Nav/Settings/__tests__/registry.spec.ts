@@ -1,5 +1,5 @@
 import { isValidElementType } from 'react-is';
-import { SettingsTabValues } from 'librechat-data-provider';
+import { SettingsTabValues, isTwoFactorPolicyProvider } from 'librechat-data-provider';
 import type { SettingsContextValue } from '../types';
 import en from '~/locales/en/translation.json';
 import { registry } from '../registry';
@@ -17,13 +17,33 @@ const settingsContext: SettingsContextValue = {
   hasMultiConvo: false,
   hasPrompts: false,
   isLocalProvider: true,
+  emailEnabled: true,
+  allowEmailChange: true,
+  passkeyLoginEnabled: false,
+  hasPullRequestConnect: false,
+  isTwoFactorPolicyProvider: true,
   twoFactorEnabled: false,
   allowAccountDeletion: true,
   aboutEnabled: false,
+  mascotAllowed: true,
+  sessionRailAutoOpenAllowed: true,
+  engineSTT: 'browser',
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',
+  replyTabBadgeAllowed: true,
+  replyNotificationsAllowed: true,
+  replyNotificationSoundAllowed: true,
+  analyticsConfigured: false,
 };
+
+const policyProviders = ['local', 'ldap', null, undefined];
+const federatedProviders = ['openid', 'google', 'saml'];
+
+const contextForProvider = (provider: string | null | undefined): SettingsContextValue => ({
+  ...settingsContext,
+  isTwoFactorPolicyProvider: isTwoFactorPolicyProvider(provider),
+});
 
 describe('settings registry', () => {
   it('has unique ids', () => {
@@ -51,6 +71,91 @@ describe('settings registry', () => {
     }
   });
 
+  it('offers the analytics consent toggle only when GTM is configured', () => {
+    const entry = registry.find((e) => e.id === 'analyticsConsent');
+    expect(entry?.show?.(settingsContext)).toBe(false);
+    expect(entry?.show?.({ ...settingsContext, analyticsConfigured: true })).toBe(true);
+  });
+
+  it('offers the session rail switch only where the deployment lets the rail show itself', () => {
+    const entry = registry.find((e) => e.id === 'sessionRailAutoOpen');
+    expect(entry?.show?.(settingsContext)).toBe(true);
+    expect(entry?.show?.({ ...settingsContext, sessionRailAutoOpenAllowed: false })).toBe(false);
+  });
+
+  describe('setting applicability', () => {
+    it.each(['usernameDisplay', 'saveBadgesState'])(
+      'does not offer the obsolete %s control',
+      (id) => {
+        expect(registry.find((entry) => entry.id === id)).toBeUndefined();
+      },
+    );
+
+    it.each(['advancedPrompts', 'alwaysMakeProd', 'autoSendPrompts'])(
+      'offers %s only with prompt access',
+      (id) => {
+        const entry = registry.find((setting) => setting.id === id);
+        expect(entry?.show?.(settingsContext)).toBe(false);
+        expect(entry?.show?.({ ...settingsContext, hasPrompts: true })).toBe(true);
+      },
+    );
+
+    it.each(['playbackRate', 'cacheTTS'])('offers %s only for external speech synthesis', (id) => {
+      const entry = registry.find((setting) => setting.id === id);
+      expect(entry?.show?.(settingsContext)).toBe(false);
+      expect(entry?.show?.({ ...settingsContext, engineTTS: 'external' })).toBe(true);
+    });
+
+    it('offers silence sensitivity only for external speech recognition', () => {
+      const entry = registry.find((setting) => setting.id === 'decibelValue');
+      expect(entry?.show?.(settingsContext)).toBe(false);
+      expect(entry?.show?.({ ...settingsContext, engineSTT: 'external' })).toBe(true);
+    });
+  });
+
+  describe('two-factor security visibility', () => {
+    const twoFactorEntry = registry.find((entry) => entry.id === 'twoFactor');
+    const backupCodesEntry = registry.find((entry) => entry.id === 'backupCodes');
+
+    it.each(policyProviders)(
+      'shows two-factor authentication for policy provider %s',
+      (provider) => {
+        expect(twoFactorEntry?.show?.(contextForProvider(provider))).toBe(true);
+      },
+    );
+
+    it.each(federatedProviders)(
+      'hides two-factor authentication for federated provider %s',
+      (provider) => {
+        expect(twoFactorEntry?.show?.(contextForProvider(provider))).toBe(false);
+      },
+    );
+
+    it.each(policyProviders)('shows backup codes for enrolled policy provider %s', (provider) => {
+      expect(
+        backupCodesEntry?.show?.({ ...contextForProvider(provider), twoFactorEnabled: true }),
+      ).toBe(true);
+    });
+
+    it.each(federatedProviders)(
+      'hides backup codes for enrolled federated provider %s',
+      (provider) => {
+        expect(
+          backupCodesEntry?.show?.({ ...contextForProvider(provider), twoFactorEnabled: true }),
+        ).toBe(false);
+      },
+    );
+
+    it.each(policyProviders)(
+      'hides backup codes before enrollment for policy provider %s',
+      (provider) => {
+        expect(
+          backupCodesEntry?.show?.({ ...contextForProvider(provider), twoFactorEnabled: false }),
+        ).toBe(false);
+      },
+    );
+  });
+
   describe('Langfuse connection visibility', () => {
     const langfuseEntry = registry.find((entry) => entry.id === 'langfuseConnection');
 
@@ -66,6 +171,16 @@ describe('settings registry', () => {
         langfuseEntry?.show?.({
           ...settingsContext,
           langfuseConnectionAccess: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('shows prompt settings without connection access', () => {
+      expect(
+        langfuseEntry?.show?.({
+          ...settingsContext,
+          langfuseConnectionAccess: false,
+          langfusePromptSyncAccess: true,
         }),
       ).toBe(true);
     });
@@ -98,6 +213,33 @@ describe('settings registry', () => {
 
     it('hides the setting when stateful code sessions are unavailable', () => {
       expect(entry?.show?.({ ...settingsContext, hasStatefulCodeSessions: false })).toBe(false);
+    });
+  });
+
+  describe('email change visibility', () => {
+    const emailChangeEntry = registry.find((entry) => entry.id === 'changeEmail');
+
+    it('places email changes in the Account profile section', () => {
+      expect(emailChangeEntry).toMatchObject({
+        tab: SettingsTabValues.ACCOUNT,
+        section: 'profile',
+      });
+    });
+
+    it('shows email changes for local accounts when email delivery is configured', () => {
+      expect(emailChangeEntry?.show?.(settingsContext)).toBe(true);
+    });
+
+    it('hides email changes for federated accounts', () => {
+      expect(emailChangeEntry?.show?.({ ...settingsContext, isLocalProvider: false })).toBe(false);
+    });
+
+    it('hides email changes when email delivery is unavailable', () => {
+      expect(emailChangeEntry?.show?.({ ...settingsContext, emailEnabled: false })).toBe(false);
+    });
+
+    it('hides email changes when administrators disable them', () => {
+      expect(emailChangeEntry?.show?.({ ...settingsContext, allowEmailChange: false })).toBe(false);
     });
   });
 });

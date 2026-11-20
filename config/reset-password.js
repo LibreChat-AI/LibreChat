@@ -2,10 +2,15 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const readline = require('readline');
 const mongoose = require('mongoose');
-const { User } = require('@librechat/data-schemas').createModels(mongoose);
+const { createPasswordResetUpdate, restampRetirementCutoff } = require('@librechat/api');
+const { createModels, createMethods } = require('@librechat/data-schemas');
+const { User, Passkey, Session } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
+const getLogStores = require('~/cache/getLogStores');
 const { askSilentQuestion } = require('./helpers');
 const connect = require('./connect');
+
+const methods = createMethods(mongoose, { getCache: getLogStores });
 
 const question = (query) => {
   const rl = readline.createInterface({
@@ -55,15 +60,64 @@ const resetPassword = async () => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    await User.updateOne(
-      { email },
-      {
-        password: hashedPassword,
-        passwordVersion: Date.now(), // Invalidate old sessions
+    /**
+     * Routes the write through the data-schemas method so the auth user doc
+     * cache entry for this user is invalidated; a raw updateOne would leave a
+     * cached document that keeps pre-reset access tokens verifying for the
+     * cache TTL.
+     */
+    const userId = user._id.toString();
+    /** Stamps credentialsChangedAt and drops any staged enrollment, as the web reset does. */
+    const update = createPasswordResetUpdate(hashedPassword);
+    const updated = await methods.updateUser(userId, update, {}, { preserveExpiresAt: true });
+
+    if (!updated) {
+      console.error('User not found during update!');
+      process.exit(1);
+    }
+
+    /**
+     * A passkey signs in on its own, so leaving one in place would keep an attacker
+     * logged in after an administrator believes the account has been recovered.
+     */
+    let deletedCount;
+    let failure;
+    /**
+     * The password is already changed, so every step runs and the first failure exits non-zero.
+     * The cache settles last: an eviction before the re-stamp could leave a document carrying the
+     * earlier cutoff, which keeps accepting a credential minted during the password write.
+     */
+    for (const step of [
+      async () => {
+        ({ deletedCount } = await Passkey.deleteMany({ user: user._id }));
       },
-    );
+      /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
+      () => Session.deleteMany({ user: user._id }),
+      () =>
+        restampRetirementCutoff(
+          'credentialsChangedAt',
+          userId,
+          update.credentialsChangedAt,
+          (cutoff, expectedState) =>
+            methods.updateUser(userId, cutoff, expectedState, { preserveExpiresAt: true }),
+        ),
+      () => methods.awaitAuthUserDocEviction(userId),
+    ]) {
+      try {
+        await step();
+      } catch (err) {
+        console.error('Password reset step failed:', err);
+        failure ??= err;
+      }
+    }
+    if (failure) {
+      throw failure;
+    }
 
     console.log('Password successfully reset!');
+    if (deletedCount > 0) {
+      console.log(`Removed ${deletedCount} passkey(s); the user must enroll again.`);
+    }
     process.exit(0);
   } catch (err) {
     console.error('Error resetting password:', err);

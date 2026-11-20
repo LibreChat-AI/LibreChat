@@ -37,7 +37,7 @@ type ProjectStoredMemories = <T extends MemoryContentInput>(
 
 export interface MemoryManagementHandlersDeps
   extends Pick<MemoryMethods, 'setMemoryById' | 'deleteMemoryById'> {
-  countTokens: (value: string) => number;
+  countTokens: (value: string) => number | Promise<number>;
   projectStoredMemories: ProjectStoredMemories;
 }
 
@@ -112,7 +112,7 @@ export function createMemoryManagementHandlers(deps: MemoryManagementHandlersDep
         id: req.params.id,
         key,
         value,
-        tokenCount: deps.countTokens(value),
+        tokenCount: await deps.countTokens(value),
         agentId: getAgentId(req.query.agentId),
       });
       if (result.conflict) {

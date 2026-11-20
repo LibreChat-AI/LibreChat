@@ -4,6 +4,7 @@ import type { MCPOptions } from './types';
 import { isRetryableOboExchangeError } from './oauth/obo';
 import { MCPAuthenticationRefreshError } from './errors';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
+import { getAdminApiKeyHeader } from './headers';
 import { isAbortError } from '~/utils/errors';
 
 const OPENID_ACCESS_TOKEN_PATTERN = /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|TOKEN)\}\}/;
@@ -35,13 +36,7 @@ function getAuthorizationTemplateValue(value: string): string {
 }
 
 function apiKeyOwnsAuthorization(config: DirectBearerConfig): boolean {
-  const apiKey = config.apiKey;
-  return !!(
-    apiKey?.source === 'admin' &&
-    apiKey.key &&
-    (apiKey.authorization_type !== 'custom' ||
-      apiKey.custom_header?.toLowerCase() === 'authorization')
-  );
+  return getAdminApiKeyHeader(config.apiKey)?.name.toLowerCase() === 'authorization';
 }
 
 function resolveAccessTokenPlaceholders(

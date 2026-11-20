@@ -9,9 +9,12 @@ import type {
 } from 'librechat-data-provider';
 import type { LCToolRegistry, LCTool, InjectedMessage } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
+import { getSkillToolDefinition, isSkillToolAvailable, registerCodeExecutionTools } from './tools';
 import { createSkillContentDigest } from './compatibility';
-import { registerCodeExecutionTools } from './tools';
+import { getLookupConcurrency } from '~/utils/concurrency';
+import { mapWithConcurrency } from '~/utils/promise';
 import { logAxiosError } from '~/utils';
 
 /**
@@ -250,6 +253,8 @@ export interface ResolveModelSpecSkillIdsParams {
   accessibleSkillIds: Types.ObjectId[];
   /** DB lookup: name → skill doc constrained to the user's accessible IDs. */
   getSkillByName?: TGetSkillByName;
+  /** Source of the `concurrency` bounds; defaults apply when absent. */
+  appConfig?: Pick<AppConfig, 'concurrency'>;
 }
 
 /**
@@ -262,6 +267,7 @@ export async function resolveModelSpecSkillIds({
   names,
   accessibleSkillIds,
   getSkillByName,
+  appConfig,
 }: ResolveModelSpecSkillIdsParams): Promise<Types.ObjectId[]> {
   if (!names.length || accessibleSkillIds.length === 0 || !getSkillByName) {
     return [];
@@ -289,23 +295,25 @@ export async function resolveModelSpecSkillIds({
     boundedNames = uniqueNames.slice(0, MAX_MODEL_SPEC_SKILLS);
   }
 
-  const resolved: Array<Types.ObjectId | null> = [];
-  for (const name of boundedNames) {
-    try {
-      const skill = await getSkillByName(name, accessibleSkillIds, {
-        preferModelInvocable: true,
-      });
-      if (!skill) {
-        logger.warn('[resolveModelSpecSkillIds] Requested skill not found or not accessible');
-        resolved.push(null);
-        continue;
+  const resolved = await mapWithConcurrency(
+    boundedNames,
+    getLookupConcurrency(appConfig, 'skillNameLookups'),
+    async (name): Promise<Types.ObjectId | null> => {
+      try {
+        const skill = await getSkillByName(name, accessibleSkillIds, {
+          preferModelInvocable: true,
+        });
+        if (!skill) {
+          logger.warn('[resolveModelSpecSkillIds] Requested skill not found or not accessible');
+          return null;
+        }
+        return skill._id;
+      } catch {
+        logger.warn('[resolveModelSpecSkillIds] Failed to resolve a requested skill');
+        return null;
       }
-      resolved.push(skill._id);
-    } catch {
-      logger.warn('[resolveModelSpecSkillIds] Failed to resolve a requested skill');
-      resolved.push(null);
-    }
-  }
+    },
+  );
 
   const seenIds = new Set<string>();
   return resolved.filter((id): id is Types.ObjectId => {
@@ -440,7 +448,15 @@ export interface InjectSkillCatalogParams {
   workspaceOperations?: ReadonlySet<CodeWorkspaceOperation>;
   /** Deployment ceiling advertised on attached Bash tool definitions. */
   workspaceCommandTimeoutMaxMs?: number;
+  workspaceCommandTimeoutDefaultMs?: number;
+  workspaceReadFileDefaultLines?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
+  /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
+  workspaceLinkedWorktrees?: boolean;
+  /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
+  workspaceNativeSandbox?: boolean;
+  /** Background commands are sent detached; tell the model they overlap later commands. */
+  workspaceDetachedCommands?: boolean;
   /** Current user ID — used to determine skill ownership for active-state resolution. */
   userId?: string;
   /** Per-user skill overrides: `{ [skillId]: boolean }`. Missing entries use the default. */
@@ -449,6 +465,12 @@ export interface InjectSkillCatalogParams {
   defaultActiveOnShare?: boolean;
   /** Admin-configured cap on the model-visible catalog. Defaults to 100. */
   maxCatalogSkills?: number;
+  /**
+   * When true, the model may author skills this run, so the `skill` tool
+   * registers even with an empty catalog and its guidance accepts a name the
+   * model creates mid-run. See `isSkillToolAvailable`.
+   */
+  skillAuthoringAvailable?: boolean;
   /** Read-only catalog snapshot preloaded for current-policy inspection. */
   resolvedCatalog?: ResolvedSkillCatalog;
 }
@@ -670,12 +692,18 @@ export async function injectSkillCatalog(
     workspaceTools,
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
+    workspaceCommandTimeoutDefaultMs,
+    workspaceReadFileDefaultLines,
     workspaceEnvironment,
+    workspaceLinkedWorktrees,
+    workspaceNativeSandbox,
+    workspaceDetachedCommands,
     userId,
     skillStates,
     defaultActiveOnShare = false,
     maxCatalogSkills,
     resolvedCatalog,
+    skillAuthoringAvailable = false,
   } = params;
   const { activeSkills, catalogLimit, visibleCount, reachedEnd } =
     resolvedCatalog ??
@@ -688,7 +716,14 @@ export async function injectSkillCatalog(
       maxCatalogSkills,
     }));
 
-  if (activeSkills.length === 0) {
+  /**
+   * Nothing to catalog and nothing the model could author: skip registration
+   * entirely rather than spend description tokens on tools with no targets.
+   * Authoring runs fall through — the `skill` tool still registers below so a
+   * skill created mid-run is invocable, and `read_file` stays available for
+   * its bundled files.
+   */
+  if (activeSkills.length === 0 && !skillAuthoringAvailable) {
     return {
       toolDefinitions: inputDefs,
       skillCount: 0,
@@ -752,9 +787,10 @@ export async function injectSkillCatalog(
   /**
    * Catalog text is gated on the visible subset — `disable-model-invocation`
    * skills cost zero context tokens. When no visible skills exist, the
-   * model gets no catalog and the `skill` tool is omitted from the
-   * registry (registering it would burn description tokens for a tool
-   * the model has no targets for). `read_file` and `bash_tool` are still
+   * model gets no catalog, and the `skill` tool is omitted from the
+   * registry unless this run can author one (registering it otherwise
+   * would burn description tokens for a tool the model has no targets
+   * for). `read_file` and `bash_tool` are still
    * registered though: manually-primed disabled skills can have their
    * SKILL.md body in context referring to `references/*` and `scripts/*`,
    * and those reads would otherwise be impossible.
@@ -788,14 +824,16 @@ export async function injectSkillCatalog(
     }
   }
 
-  const skillToolDef: LCTool = {
-    name: SkillToolDefinition.name,
-    description: SkillToolDefinition.description,
-    parameters: SkillToolDefinition.parameters as unknown as LCTool['parameters'],
-  };
+  const skillToolDef = getSkillToolDefinition(skillAuthoringAvailable);
+  const skillToolAvailable = isSkillToolAvailable({
+    modelInvocableSkillsAvailable: catalogVisibleSkills.length > 0,
+    skillAuthoringAvailable,
+  });
 
   /**
-   * `skill` tool is conditional on having anything for the model to invoke.
+   * `skill` tool is conditional on having anything for the model to invoke —
+   * a catalog-visible skill, or an authoring run where the model can create
+   * one and invoke it in the same conversation.
    * `read_file` + `bash_tool` go through `registerCodeExecutionTools` so
    * a prior registration from `initializeAgent` (for the `execute_code`
    * capability) upgrades to the skill-aware `read_file` definition without
@@ -805,8 +843,22 @@ export async function injectSkillCatalog(
    * `codeEnvAvailable` as before.
    */
   let workingDefs: LCTool[] = [...(inputDefs ?? [])];
-  if (catalogVisibleSkills.length > 0) {
-    workingDefs.push(skillToolDef);
+  if (skillToolAvailable) {
+    /**
+     * Replace rather than skip, so the registry the host handler resolves and
+     * the array the model reads never disagree about which variant is live.
+     * Skipping would leave an earlier catalog-only definition telling an
+     * authoring run's model that a skill it just created is an invalid name —
+     * the exact failure this registration exists to prevent — while the
+     * registry claimed otherwise. Mirrors how `registerCodeExecutionTools`
+     * upgrades a code-only `read_file` in place instead of suppressing it.
+     */
+    const existingIndex = workingDefs.findIndex((def) => def.name === skillToolDef.name);
+    if (existingIndex >= 0) {
+      workingDefs[existingIndex] = skillToolDef;
+    } else {
+      workingDefs.push(skillToolDef);
+    }
     toolRegistry?.set(skillToolDef.name, skillToolDef);
   }
 
@@ -831,14 +883,18 @@ export async function injectSkillCatalog(
     workspaceTools: workspaceTools === true,
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
+    workspaceCommandTimeoutDefaultMs,
+    workspaceReadFileDefaultLines,
     workspaceEnvironment,
+    workspaceLinkedWorktrees,
+    workspaceNativeSandbox,
+    workspaceDetachedCommands,
   });
   workingDefs = codeExecResult.toolDefinitions;
 
-  const toolNames =
-    catalogVisibleSkills.length > 0
-      ? [skillToolDef.name, ReadFileToolDefinition.name]
-      : [ReadFileToolDefinition.name];
+  const toolNames = skillToolAvailable
+    ? [skillToolDef.name, ReadFileToolDefinition.name]
+    : [ReadFileToolDefinition.name];
 
   return {
     toolDefinitions: workingDefs,

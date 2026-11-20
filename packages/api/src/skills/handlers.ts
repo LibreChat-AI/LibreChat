@@ -29,15 +29,19 @@ import type {
   ListSkillsByAccessParams,
   UpdateSkillResult,
   ValidationIssue,
+  DeleteSkillResult,
 } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { Types } from 'mongoose';
 import type { ServerRequest, StrategyFunctions } from '~/types';
+import type { SkillDeletionProgress } from './deletion';
 import { extractSkillContent, inspectContentWithTraversal } from '~/protection';
 import { contentFilterBlockResponse } from '~/middleware/contentFilter';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { getDeploymentSkillIds } from './deployment';
 import { resolveDownloadPath } from '~/storage/path';
 import { resolveSkillFilePathParam } from './path';
+import { deleteSkillWithRetry } from './cleanup';
 import { parseSkillMarkdown } from './parse';
 import { isBinaryBuffer } from './binary';
 
@@ -46,6 +50,13 @@ type SkillValidationError = Error & { code?: string; issues?: ValidationIssue[] 
 
 /** Mongo duplicate-key shape. */
 type DuplicateKeyError = Error & { code?: number | string };
+
+/** Only authorized, loaded SkillFile records may select another storage owner. */
+function skillFileDeletionRequest(req: ServerRequest, file: ISkillFile): ServerRequest {
+  const ownerId = file.author?.toString();
+  if (!ownerId || !req.user) throw new Error('Skill file has no storage owner');
+  return { ...req, user: { ...req.user, id: ownerId, _id: file.author } } as ServerRequest;
+}
 
 /**
  * All dependencies required to serve skill HTTP requests. Every dep is resolved
@@ -62,13 +73,15 @@ export interface SkillsHandlersDeps {
     expectedVersion: number;
     update: UpdateSkillInput;
   }) => Promise<UpdateSkillResult>;
-  deleteSkill: (id: string) => Promise<{ deleted: boolean }>;
+  deleteSkill: (id: string) => Promise<DeleteSkillResult>;
+  deleteSkillById: (id: string) => Promise<SkillDeletionProgress>;
   listSkillFiles: (
     skillId: string | Types.ObjectId,
   ) => Promise<Array<ISkillFile & { _id: Types.ObjectId }>>;
   deleteSkillFile: (
     skillId: string | Types.ObjectId,
     relativePath: string,
+    expectedFileId?: string,
   ) => Promise<{ deleted: boolean }>;
 
   /** Access-control primitives from PermissionService. */
@@ -105,6 +118,7 @@ export interface SkillsHandlersDeps {
     skillId: string | Types.ObjectId,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ) => Promise<void>;
 
   /** Storage strategy resolver — returns stream/URL helpers keyed by source. */
@@ -157,7 +171,7 @@ function serializeSkill(
     author: skill.author.toString(),
     authorName: skill.authorName,
     version: skill.version,
-    source: skill.source,
+    source: skill.source ?? 'inline',
     sourceMetadata: serializeSourceMetadata(skill.sourceMetadata),
     fileCount: skill.fileCount,
     alwaysApply: skill.alwaysApply,
@@ -185,7 +199,7 @@ function serializeSkillSummary(
     author: skill.author.toString(),
     authorName: skill.authorName,
     version: skill.version,
-    source: skill.source,
+    source: skill.source ?? 'inline',
     sourceMetadata: serializeSourceMetadata(skill.sourceMetadata),
     fileCount: skill.fileCount,
     alwaysApply: skill.alwaysApply,
@@ -326,6 +340,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
     listSkillsByAccess,
     updateSkill,
     deleteSkill,
+    deleteSkillById,
     listSkillFiles,
     deleteSkillFile,
     getSkillFileByPath,
@@ -471,7 +486,12 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
           permissionError,
         );
         try {
-          await deleteSkill(skill._id.toString());
+          const deletion = await deleteSkillWithRetry(deleteSkill, skill._id.toString());
+          if (!deletion.cleanupComplete) {
+            logger.error(
+              `[POST /skills] Compensating delete incomplete for orphaned skill ${skill._id.toString()}: ${deletion.failedCleanupSteps.join(', ')}`,
+            );
+          }
         } catch (rollbackError) {
           logger.error(
             `[POST /skills] Compensating delete failed for orphaned skill ${skill._id.toString()}:`,
@@ -593,34 +613,18 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
         return res.status(400).json({ error: 'Invalid skill id' });
       }
 
-      // Collect file records before deletion so we can clean up storage blobs
-      const files = await listSkillFiles(id);
-
-      const result = await deleteSkill(id);
-      if (!result.deleted) {
+      const progress = await deleteSkillById(id);
+      if (!progress.found) {
         return res.status(404).json({ error: 'Skill not found' });
       }
-
-      // Fire-and-forget blob cleanup for each file
-      for (const file of files) {
-        const { deleteFile: deleteBlob } = getStrategyFunctions(file.source);
-        if (deleteBlob) {
-          deleteBlob(req, {
-            filepath: file.filepath,
-            storageKey: file.storageKey,
-            storageRegion: file.storageRegion,
-            user: file.author?.toString?.(),
-            tenantId: file.tenantId?.toString?.(),
-          }).catch((e) =>
-            logger.error(`[deleteSkill] Blob cleanup failed for ${file.relativePath}:`, e),
-          );
-        }
-      }
-
-      const response: TDeleteSkillResponse = { id, deleted: true };
+      const response: TDeleteSkillResponse = {
+        id,
+        deleted: true,
+        cleanupComplete: progress.cleanupComplete,
+      };
       return res.status(200).json(response);
     } catch (error) {
-      logger.error('[DELETE /skills/:id] Error deleting skill', error);
+      logger.error('[DELETE /skills/:id] Error deleting skill', getSafeErrorMetadata(error));
       return res.status(500).json({ error: 'Error deleting skill' });
     }
   }
@@ -712,11 +716,18 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
             res.destroy();
           }
         });
+        /** Release the upstream when the client leaves before the body is flushed. */
+        res.once('close', () => {
+          if ('destroy' in stream && typeof stream.destroy === 'function') {
+            stream.destroy();
+          }
+        });
         stream.pipe(res);
         return;
       }
 
       const base: Omit<TSkillFileContentResponse, 'content' | 'isBinary'> = {
+        fileId: file.file_id,
         mimeType: file.mimeType,
         relativePath: file.relativePath,
         filename: file.filename,
@@ -750,7 +761,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
         if (!binaryChecked && totalBytes >= 8192) {
           binaryChecked = true;
           if (isBinaryBuffer(Buffer.concat(chunks))) {
-            updateSkillFileContent(id, decodedPath, { isBinary: true }).catch((e) =>
+            updateSkillFileContent(id, decodedPath, { isBinary: true }, file.file_id).catch((e) =>
               logger.error('[downloadFile] Cache write failed:', e),
             );
             if ('destroy' in stream && typeof stream.destroy === 'function') {
@@ -773,7 +784,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
 
       const buffer = Buffer.concat(chunks);
       if (isBinaryBuffer(buffer)) {
-        updateSkillFileContent(id, decodedPath, { isBinary: true }).catch((e) =>
+        updateSkillFileContent(id, decodedPath, { isBinary: true }, file.file_id).catch((e) =>
           logger.error('[downloadFile] Cache write failed:', e),
         );
         return res.status(200).json({ ...base, isBinary: true });
@@ -781,9 +792,12 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
 
       const text = buffer.toString('utf-8');
       if (buffer.length <= MAX_TEXT_CACHE_BYTES) {
-        updateSkillFileContent(id, decodedPath, { content: text, isBinary: false }).catch((e) =>
-          logger.error('[downloadFile] Cache write failed:', e),
-        );
+        updateSkillFileContent(
+          id,
+          decodedPath,
+          { content: text, isBinary: false },
+          file.file_id,
+        ).catch((e) => logger.error('[downloadFile] Cache write failed:', e));
       }
       return res.status(200).json({ ...base, isBinary: false, content: text });
     } catch (error) {
@@ -808,21 +822,22 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
         return res.status(404).json({ error: 'Skill file not found' });
       }
 
-      const result = await deleteSkillFile(id, decodedPath);
-      if (!result.deleted) {
-        return res.status(404).json({ error: 'Skill file not found' });
-      }
-
-      // Clean up the stored blob — fire-and-forget so the response isn't delayed
       const { deleteFile: deleteBlob } = getStrategyFunctions(file.source);
-      if (deleteBlob) {
-        deleteBlob(req, {
-          filepath: file.filepath,
-          storageKey: file.storageKey,
-          storageRegion: file.storageRegion,
-          user: file.author?.toString?.(),
-          tenantId: file.tenantId?.toString?.(),
-        }).catch((e) => logger.error('[deleteFile] Storage cleanup failed:', e));
+      if (!deleteBlob) {
+        logger.error(`[deleteFile] No delete strategy for ${file.source}`);
+        return res.status(500).json({ error: 'Error deleting skill file' });
+      }
+      await deleteBlob(skillFileDeletionRequest(req, file), {
+        filepath: file.filepath,
+        storageKey: file.storageKey,
+        storageRegion: file.storageRegion,
+        user: file.author?.toString?.(),
+        tenantId: file.tenantId?.toString?.(),
+      });
+
+      const result = await deleteSkillFile(id, decodedPath, file.file_id);
+      if (!result.deleted) {
+        return res.status(409).json({ error: 'Skill file changed while it was being deleted' });
       }
 
       const response: TDeleteSkillFileResponse = {
@@ -832,7 +847,10 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
       };
       return res.status(200).json(response);
     } catch (error) {
-      logger.error('[DELETE /skills/:id/files/*relativePath] Error', error);
+      if ((error as { code?: unknown })?.code === 'SKILL_DELETING') {
+        return res.status(409).json({ error: 'SKILL_DELETING' });
+      }
+      logger.error('[DELETE /skills/:id/files/*relativePath] Error', getSafeErrorMetadata(error));
       return res.status(500).json({ error: 'Error deleting skill file' });
     }
   }

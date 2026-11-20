@@ -8,9 +8,10 @@ import type { ParsedServerConfig } from '../types';
 import {
   notifyMCPToolsChanged,
   setMCPToolsChangedHandler,
-  getMCPAppToolsPublicationGeneration,
+  getMCPToolCatalogGeneration,
   setMCPToolsChangedRevisionHandler,
 } from '../toolsChanged';
+import { STANDARD_MCP_CAPABILITY_PROFILE } from '../capabilities';
 import { createMCPCatalogStore } from '../catalog/store';
 import { createMCPToolCacheService } from '../tools';
 import { MCPConnection } from '../connection';
@@ -71,6 +72,7 @@ function createHarness() {
       serverConfig: event.serverConfig as ParsedServerConfig,
       publicationGeneration: event.publicationGeneration,
       publicationRevision: event.publicationRevision,
+      capabilityProfile: event.capabilityProfile,
     });
   });
 
@@ -90,7 +92,11 @@ async function createConnection(tools: Tool[]) {
   await server.connect(serverTransport);
 
   /** No userId: this is an app-shared connection, the scope agents read from. */
-  const connection = new MCPConnection({ serverName: SERVER_NAME, serverConfig: appConfig });
+  const connection = new MCPConnection({
+    serverName: SERVER_NAME,
+    serverConfig: appConfig,
+    capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+  });
   await connection.client.connect(clientTransport);
   connection.emit('connectionChange', 'connected');
 
@@ -106,7 +112,7 @@ async function createConnection(tools: Tool[]) {
 }
 
 describe('app-level tool publication', () => {
-  const configGeneration = getMCPAppToolsPublicationGeneration(appConfig);
+  const configGeneration = getMCPToolCatalogGeneration(appConfig);
   let harness: Awaited<ReturnType<typeof createConnection>> | undefined;
 
   afterEach(async () => {
@@ -131,6 +137,7 @@ describe('app-level tool publication', () => {
       serverConfig: appConfig,
       publicationGeneration: configGeneration,
       publicationRevision: snapshot.publicationRevision,
+      capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
     });
 
     const published = await service.getMCPServerTools('user-1', SERVER_NAME, appConfig);
@@ -163,6 +170,7 @@ describe('app-level tool publication', () => {
       serverConfig: appConfig,
       publicationGeneration: configGeneration,
       publicationRevision: current.publicationRevision,
+      capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
     });
     await notifyMCPToolsChanged({
       tools: stale.tools,
@@ -170,6 +178,7 @@ describe('app-level tool publication', () => {
       serverConfig: appConfig,
       publicationGeneration: configGeneration,
       publicationRevision: stale.publicationRevision,
+      capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
     });
 
     const published = await service.getMCPServerTools('user-1', SERVER_NAME, appConfig);

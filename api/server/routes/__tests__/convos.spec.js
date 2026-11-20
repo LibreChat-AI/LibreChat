@@ -2,6 +2,7 @@ const express = require('express');
 const request = require('supertest');
 
 const MOCKS = '../__test-utils__/convos-route-mocks';
+jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
 const {
   archiveAllHandler,
   generationJobManager,
@@ -42,6 +43,7 @@ jest.mock('@librechat/api', () =>
 jest.mock('@librechat/data-schemas', () => require(MOCKS).dataSchemas());
 jest.mock('librechat-data-provider', () => require(MOCKS).dataProvider());
 jest.mock('~/models', () => require(MOCKS).sharedModels());
+jest.mock('~/server/services/Config', () => require(MOCKS).appConfig());
 jest.mock('~/server/middleware/requireJwtAuth', () => require(MOCKS).requireJwtAuth());
 jest.mock('~/server/middleware', () => require(MOCKS).middlewarePassthrough());
 jest.mock('~/server/utils/import/fork', () => require(MOCKS).forkUtils());
@@ -54,6 +56,9 @@ jest.mock('~/server/services/Endpoints/assistants', () => require(MOCKS).assista
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () =>
   require(MOCKS).subagentThreadStore(),
 );
+jest.mock('~/server/services/Endpoints/agents/backgroundCompletion', () => ({
+  pendingBackgroundToolCompletions: { list: jest.fn() },
+}));
 
 describe('Convos Routes', () => {
   let app;
@@ -64,6 +69,8 @@ describe('Convos Routes', () => {
     deleteMessages,
     getConvo,
     saveConvo,
+    markConvoSeen,
+    markConvoUnread,
   } = require('~/models');
   const {
     deleteOwnedAgentCheckpoints,
@@ -230,6 +237,21 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('GET /:conversationId/pull-request', () => {
+    it('is registered and reaches the pull request handler', async () => {
+      const response = await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ pullRequest: null });
+    });
+
+    it('does not fall through to the conversation read', async () => {
+      await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(getConvo).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /import', () => {
     const { importConversations } = require('~/server/utils/import');
 
@@ -342,6 +364,30 @@ describe('Convos Routes', () => {
             starterPatterns: ['sk_prefix'],
           },
         }),
+      );
+    });
+
+    it('forwards excludeFiles only when it is exactly true', async () => {
+      forkConversation.mockResolvedValue({ conversation: { conversationId: 'forked-convo' } });
+
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: true,
+      });
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: 'true',
+      });
+
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ excludeFiles: true }),
+      );
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ excludeFiles: false }),
       );
     });
 
@@ -1872,6 +1918,119 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('GET / list facets', () => {
+    const { getConvosByCursor } = require('~/models');
+    const { getAppConfig } = require('~/server/services/Config');
+
+    beforeEach(() => {
+      getConvosByCursor.mockResolvedValue({ conversations: [], nextCursor: null });
+    });
+
+    it('forwards the date cutoffs as dates', async () => {
+      const response = await request(app)
+        .get('/api/convos')
+        .query({ updatedAfter: '2026-09-01T00:00:00.000Z' });
+
+      expect(response.status).toBe(200);
+      const [, options] = getConvosByCursor.mock.calls.at(-1);
+      expect(options.updatedAfter).toBeInstanceOf(Date);
+      expect(options.updatedAfter.toISOString()).toBe('2026-09-01T00:00:00.000Z');
+    });
+
+    it('forwards repeated endpoint params as one list', async () => {
+      const response = await request(app)
+        .get('/api/convos')
+        .query('endpoints=openAI&endpoints=agents');
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ endpoints: ['openAI', 'agents'] }),
+      );
+    });
+
+    it('forwards the attachment flag only when it is on', async () => {
+      await request(app).get('/api/convos').query({ hasFiles: 'true' });
+      expect(getConvosByCursor).toHaveBeenLastCalledWith(
+        'test-user-123',
+        expect.objectContaining({ hasFiles: true }),
+      );
+
+      await request(app).get('/api/convos').query({ hasFiles: 'false' });
+      const [, options] = getConvosByCursor.mock.calls.at(-1);
+      expect(options.hasFiles).toBeUndefined();
+    });
+
+    /** Dropping a filter the caller sent would answer with conversations they asked
+     *  to exclude, which is worse than refusing the request. */
+    it('refuses a malformed cutoff instead of listing unfiltered', async () => {
+      const response = await request(app)
+        .get('/api/convos')
+        .query({ updatedAfter: 'last tuesday' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/updatedAfter/);
+      expect(getConvosByCursor).not.toHaveBeenCalled();
+    });
+
+    it('refuses a mistyped flag instead of listing unfiltered', async () => {
+      const response = await request(app).get('/api/convos').query({ hasFiles: 'tru' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/hasFiles/);
+      expect(getConvosByCursor).not.toHaveBeenCalled();
+    });
+
+    /** The limits are deployment-level, so the list reads the base config instead of
+     *  resolving the caller's merged config on every sidebar request. */
+    it('enforces the endpoint limit the deployment configures', async () => {
+      const query = 'endpoints=openAI&endpoints=agents&endpoints=google';
+
+      const withinDefault = await request(app).get('/api/convos').query(query);
+      expect(withinDefault.status).toBe(200);
+
+      getAppConfig.mockResolvedValueOnce({
+        conversationList: { maxEndpointFilters: 2, maxEndpointNameLength: 128 },
+      });
+      const overConfigured = await request(app).get('/api/convos').query(query);
+      expect(overConfigured.status).toBe(400);
+      expect(overConfigured.body.error).toMatch(/at most 2 names/);
+    });
+
+    it('answers the route error when an endpoint filter cannot read its limits', async () => {
+      getAppConfig.mockRejectedValueOnce(new Error('config unavailable'));
+
+      const response = await request(app).get('/api/convos').query({ endpoints: 'openAI' });
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Error fetching conversations');
+      expect(getConvosByCursor).not.toHaveBeenCalled();
+    });
+
+    it('forwards the shared flag only when it is on', async () => {
+      await request(app).get('/api/convos').query({ sharedOnly: 'true' });
+      expect(getConvosByCursor).toHaveBeenLastCalledWith(
+        'test-user-123',
+        expect.objectContaining({ sharedOnly: true }),
+      );
+
+      await request(app).get('/api/convos').query({ sharedOnly: 'false' });
+      const [, options] = getConvosByCursor.mock.calls.at(-1);
+      expect(options.sharedOnly).toBeUndefined();
+    });
+
+    it('sends no facet keys when the request carries none', async () => {
+      await request(app).get('/api/convos');
+
+      const [, options] = getConvosByCursor.mock.calls.at(-1);
+      expect(options.updatedAfter).toBeUndefined();
+      expect(options.createdAfter).toBeUndefined();
+      expect(options.endpoints).toBeUndefined();
+      expect(options.hasFiles).toBeUndefined();
+      expect(options.sharedOnly).toBeUndefined();
+    });
+  });
+
   describe('GET / sort normalization', () => {
     const { getConvosByCursor } = require('~/models');
 
@@ -1906,190 +2065,116 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('POST /seen', () => {
+    /* The handler's own validation and error mapping live in `packages/api` and are covered
+       against the real implementation there; what matters here is that the route reaches it
+       with the authenticated user. */
+    it('routes to the handler for the authenticated user', async () => {
+      markConvoSeen.mockResolvedValue({ modified: true });
+
+      const response = await request(app)
+        .post('/api/convos/seen')
+        .send({ arg: { conversationId: 'conv-seen-1' } });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ modified: true });
+      expect(markConvoSeen).toHaveBeenCalledWith('test-user-123', 'conv-seen-1');
+    });
+  });
+
+  describe('POST /unread', () => {
+    it('routes to the handler for the authenticated user', async () => {
+      markConvoUnread.mockResolvedValue({ modified: true });
+
+      const response = await request(app)
+        .post('/api/convos/unread')
+        .send({ arg: { conversationId: 'conv-unread-1' } });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ modified: true });
+      expect(markConvoUnread).toHaveBeenCalledWith('test-user-123', 'conv-unread-1');
+    });
+  });
+
+  describe('POST /update running chat rename', () => {
+    it('delegates rename semantics to the injected TypeScript handler', async () => {
+      const { renameConversationHandler, renameHandlerInputs } = require(MOCKS);
+      const arg = { conversationId: 'running-rename', title: 'Renamed' };
+      expect((await request(app).post('/api/convos/update').send({ arg })).status).toBe(204);
+      expect(renameConversationHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { arg },
+          user: expect.objectContaining({ id: 'test-user-123' }),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(renameHandlerInputs.at(-1)).toEqual(
+        expect.objectContaining({
+          saveConvo,
+          getConvo,
+          getActiveRunIds: expect.any(Function),
+          logger: expect.anything(),
+        }),
+      );
+    });
+  });
+
   describe('POST /archive', () => {
-    it('should archive a conversation successfully', async () => {
-      const mockConversationId = 'conv-123';
-      const mockArchivedConvo = {
-        conversationId: mockConversationId,
-        title: 'Test Conversation',
-        isArchived: true,
-        user: 'test-user-123',
-      };
+    const { configMiddleware, validateConvoAccess } = require('~/server/middleware');
+    const { archiveConversationHandler, archiveHandlerInputs } = require(MOCKS);
+    const { getConvoRetention } = require('~/models');
+    const interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 24 };
+    const archiveRequest = { arg: { conversationId: 'conv-retention', isArchived: true } };
+    const order = [];
+    let configSeenByAccessCheck;
+    let configSeenByHandler;
 
-      saveConvo.mockResolvedValue(mockArchivedConvo);
-
-      const response = await request(app)
-        .post('/api/convos/archive')
-        .send({
-          arg: {
-            conversationId: mockConversationId,
-            isArchived: true,
-          },
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body).toEqual(mockArchivedConvo);
-      expect(saveConvo).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 'test-user-123' }),
-        {
-          conversationId: mockConversationId,
-          isArchived: true,
-        },
-        {
-          context: `POST /api/convos/archive ${mockConversationId}`,
-          preserveUpdatedAt: true,
-          noUpsert: true,
-        },
-      );
-    });
-
-    it('should unarchive a conversation successfully', async () => {
-      const mockConversationId = 'conv-456';
-      const mockUnarchivedConvo = {
-        conversationId: mockConversationId,
-        title: 'Unarchived Conversation',
-        isArchived: false,
-        user: 'test-user-123',
-      };
-
-      saveConvo.mockResolvedValue(mockUnarchivedConvo);
-
-      const response = await request(app)
-        .post('/api/convos/archive')
-        .send({
-          arg: {
-            conversationId: mockConversationId,
-            isArchived: false,
-          },
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body).toEqual(mockUnarchivedConvo);
-      expect(saveConvo).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 'test-user-123' }),
-        { conversationId: mockConversationId, isArchived: false },
-        {
-          context: `POST /api/convos/archive ${mockConversationId}`,
-          preserveUpdatedAt: true,
-          noUpsert: true,
-        },
-      );
-    });
-
-    it('leaves archivedAt to saveConvo so a redundant archive cannot restamp it', async () => {
-      saveConvo.mockResolvedValue({ conversationId: 'conv-789', isArchived: true });
-
-      await request(app)
-        .post('/api/convos/archive')
-        .send({ arg: { conversationId: 'conv-789', isArchived: true } });
-
-      const [, data] = saveConvo.mock.calls[0];
-      expect(data).not.toHaveProperty('archivedAt');
-      expect(data.isArchived).toBe(true);
-    });
-
-    /** `updatedAt` stays the chat's own activity so unarchiving restores its real place
-     * in the date groups; when it was filed away is recorded on `archivedAt` instead. */
-    it('does not let archiving count as activity in the sidebar ordering', async () => {
-      saveConvo.mockResolvedValue({ conversationId: 'conv-789', isArchived: true });
-
-      await request(app)
-        .post('/api/convos/archive')
-        .send({ arg: { conversationId: 'conv-789', isArchived: true } });
-
-      expect(saveConvo).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        expect.objectContaining({ preserveUpdatedAt: true }),
-      );
-    });
-
-    it('should return 404 when the conversation does not exist', async () => {
-      saveConvo.mockResolvedValue(null);
-
-      const response = await request(app)
-        .post('/api/convos/archive')
-        .send({ arg: { conversationId: 'missing-convo', isArchived: true } });
-
-      expect(response.status).toBe(404);
-      expect(response.body).toEqual({ error: 'Conversation not found' });
-      expect(saveConvo).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        expect.objectContaining({ noUpsert: true }),
-      );
-    });
-
-    it('should return 400 when conversationId is missing', async () => {
-      const response = await request(app)
-        .post('/api/convos/archive')
-        .send({
-          arg: {
-            isArchived: true,
-          },
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body).toEqual({ error: 'conversationId is required' });
-      expect(saveConvo).not.toHaveBeenCalled();
-    });
-
-    it('should return 400 when isArchived is not a boolean', async () => {
-      const response = await request(app)
-        .post('/api/convos/archive')
-        .send({
-          arg: {
-            conversationId: 'conv-123',
-            isArchived: 'true',
-          },
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body).toEqual({ error: 'isArchived must be a boolean' });
-      expect(saveConvo).not.toHaveBeenCalled();
-    });
-
-    it('should return 400 when isArchived is undefined', async () => {
-      const response = await request(app)
-        .post('/api/convos/archive')
-        .send({
-          arg: {
-            conversationId: 'conv-123',
-          },
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body).toEqual({ error: 'isArchived must be a boolean' });
-      expect(saveConvo).not.toHaveBeenCalled();
-    });
-
-    it('should return 500 when saveConvo fails', async () => {
-      const mockConversationId = 'conv-error';
-      saveConvo.mockRejectedValue(new Error('Database error'));
-
-      const response = await request(app)
-        .post('/api/convos/archive')
-        .send({
-          arg: {
-            conversationId: mockConversationId,
-            isArchived: true,
-          },
-        });
-
-      expect(response.status).toBe(500);
-      expect(response.text).toBe('Error archiving conversation');
-
-      const { logger } = require('@librechat/data-schemas');
-      expect(logger.error).toHaveBeenCalledWith('Error archiving conversation', expect.any(Error));
-    });
-
-    it('should handle empty arg object', async () => {
-      const response = await request(app).post('/api/convos/archive').send({
-        arg: {},
+    /** Nothing mounts the config ahead of the convos router, so the route has to load it:
+     * without `interfaceConfig` the retention rules in `saveConvo` never see a mode. */
+    beforeEach(() => {
+      order.length = 0;
+      configSeenByAccessCheck = undefined;
+      configSeenByHandler = undefined;
+      configMiddleware.mockImplementation((req, res, next) => {
+        order.push('config');
+        req.config = { ...req.config, interfaceConfig };
+        next();
       });
+      validateConvoAccess.mockImplementation((req, res, next) => {
+        order.push('access');
+        configSeenByAccessCheck = req.config?.interfaceConfig;
+        next();
+      });
+      archiveConversationHandler.mockImplementation((req, res) => {
+        order.push('handler');
+        configSeenByHandler = req.config?.interfaceConfig;
+        return res.status(200).json({ conversationId: 'conv-retention' });
+      });
+    });
 
-      expect(response.status).toBe(400);
-      expect(response.body).toEqual({ error: 'conversationId is required' });
+    afterEach(() => {
+      configMiddleware.mockImplementation((req, res, next) => next());
+      validateConvoAccess.mockImplementation((req, res, next) => next());
+      archiveConversationHandler.mockImplementation((_req, res) => res.status(200).json({}));
+    });
+
+    it('serves the archive handler with the conversation store', () => {
+      expect(archiveHandlerInputs.at(-1)).toEqual({ saveConvo, getConvoRetention });
+    });
+
+    it('loads the config before the access check, which reads the retention mode from it', async () => {
+      const response = await request(app).post('/api/convos/archive').send(archiveRequest);
+
+      expect(response.status).toBe(200);
+      expect(order).toEqual(['config', 'access', 'handler']);
+      expect(configSeenByAccessCheck).toEqual(interfaceConfig);
+    });
+
+    it('hands the loaded config to the handler', async () => {
+      await request(app).post('/api/convos/archive').send(archiveRequest);
+
+      expect(configSeenByHandler).toEqual(interfaceConfig);
     });
   });
 

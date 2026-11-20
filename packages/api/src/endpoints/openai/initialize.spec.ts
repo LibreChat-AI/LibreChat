@@ -222,6 +222,30 @@ describe('initializeOpenAI – custom headers', () => {
     jest.clearAllMocks();
   });
 
+  it('forwards Agent model transport timeout policy to OpenAI configuration', async () => {
+    const params = createParams({ OPENAI_API_KEY: 'sk-test' });
+    (params.req.config as { endpoints: Record<string, unknown> }).endpoints = {
+      agents: {
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 120_000,
+      },
+    };
+
+    try {
+      await initializeOpenAI(params);
+    } finally {
+      (params as unknown as { _restore: () => void })._restore();
+    }
+
+    const options = mockGetOpenAIConfig.mock.calls[0][1] as {
+      transportTimeouts?: { bodyTimeout: number; headersTimeout: number };
+    };
+    expect(options.transportTimeouts).toEqual({
+      bodyTimeout: 1_800_000,
+      headersTimeout: 120_000,
+    });
+  });
+
   it('forwards configured endpoint headers (merged over endpoints.all) to getOpenAIConfig', async () => {
     const params = createParams({ OPENAI_API_KEY: 'sk-test' });
     (params.req.config as { endpoints: Record<string, unknown> }).endpoints = {

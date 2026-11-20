@@ -15,7 +15,7 @@ export default function PanelFooter({
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center justify-end gap-2 border-t border-border-light bg-surface-primary-alt px-3 py-2',
+        'border-border-light bg-surface-sidebar flex shrink-0 items-center justify-end gap-2 border-t px-3 py-2',
         className,
       )}
     >
