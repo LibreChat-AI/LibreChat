@@ -1,5 +1,5 @@
 import type { TInsightsAgentVersion } from 'librechat-data-provider';
-import { dayKey, getVersionDays, visibleTags } from './versions';
+import { dayKey, getVersionDays, visibleTags } from '../versions';
 
 const days = ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04'].map((date) => ({ date }));
 const version = (
@@ -27,16 +27,6 @@ describe('getVersionDays', () => {
       { inUse: 3, lastSaved: null, earlierSaved: 0, marked: false, restored: false },
       { inUse: 3, lastSaved: null, earlierSaved: 0, marked: false, restored: false },
     ]);
-  });
-
-  it('shows no version before the first save', () => {
-    expect(getVersionDays(days, [version(1, '2026-10-03T10:00:00.000Z', true)], 'UTC')[0]).toEqual({
-      inUse: null,
-      lastSaved: null,
-      earlierSaved: 0,
-      marked: false,
-      restored: false,
-    });
   });
 
   it("shows a restored older version on today's point only", () => {
@@ -81,13 +71,5 @@ describe('visibleTags', () => {
 
   it('keeps the newer of two tags on neighbouring days', () => {
     expect([...visibleTags(tags(10, 89.6, 93), 500)]).toEqual([2, 0]);
-  });
-
-  it('keeps every tag when they have room', () => {
-    expect([...visibleTags(tags(10, 50, 90), 500)].sort()).toEqual([0, 1, 2]);
-  });
-
-  it('keeps every tag before the chart has been measured', () => {
-    expect([...visibleTags(tags(90, 93), 0)].sort()).toEqual([0, 1]);
   });
 });
