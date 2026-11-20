@@ -653,6 +653,7 @@
   "com_auth_name_min_length": "Name must be at least 3 characters",
   "com_auth_name_required": "Name is required",
   "com_auth_no_account": "Don't have an account?",
+  "com_auth_openid_session_ended": "Your sign-in session ended or expired. Please sign in again.",
   "com_auth_or": "Or",
   "com_auth_passkey_already_registered": "This device already has a passkey for your account",
   "com_auth_passkey_error": "Passkey sign-in failed. Please try again.",
