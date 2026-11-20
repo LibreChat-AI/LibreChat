@@ -1,6 +1,7 @@
 const { logger } = require('@librechat/data-schemas');
 const {
   getSafeErrorMetadata,
+  releasePreparedCodeOutputBuffer,
   preflightCodeOutputBatch: runCodeOutputBatchPreflight,
 } = require('@librechat/api');
 const {
@@ -8,7 +9,7 @@ const {
   mergeFileConfig,
   getEndpointFileConfig,
 } = require('librechat-data-provider');
-const { prepareCodeOutputForInspection, releasePreparedCodeOutputBuffer } = require('./process');
+const { prepareCodeOutputForInspection } = require('./process');
 
 const preflightCodeOutputBatch = async ({ req, artifact, codeExecutionContext }) => {
   const mergedFileConfig = mergeFileConfig(req.config?.fileConfig);

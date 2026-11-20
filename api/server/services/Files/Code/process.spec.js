@@ -67,6 +67,11 @@ const passthroughWithTimeout = async (promise) => promise;
 jest.mock('@librechat/api', () => {
   return {
     withFileProvisioning: jest.requireActual('@librechat/api').withFileProvisioning,
+    getPreparedCodeOutputBuffer: jest.requireActual('@librechat/api').getPreparedCodeOutputBuffer,
+    cachePreparedCodeOutputBuffer:
+      jest.requireActual('@librechat/api').cachePreparedCodeOutputBuffer,
+    releasePreparedCodeOutputBuffer:
+      jest.requireActual('@librechat/api').releasePreparedCodeOutputBuffer,
     confirmFileProvision: jest.requireActual('@librechat/api').confirmFileProvision,
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
     createSandboxTextReader: jest.requireActual('@librechat/api').createSandboxTextReader,
@@ -283,7 +288,6 @@ const {
 const {
   processCodeOutput,
   prepareCodeOutputForInspection,
-  releasePreparedCodeOutputBuffer,
   getSessionInfo,
   readSandboxFile,
   readWorkspaceFile,
@@ -4034,7 +4038,11 @@ describe('Code Process', () => {
         session_id: 'artifact-session',
       });
 
-      releasePreparedCodeOutputBuffer({ req, id: 'artifact-file', session_id: 'artifact-session' });
+      jest.requireActual('@librechat/api').releasePreparedCodeOutputBuffer({
+        req,
+        id: 'artifact-file',
+        session_id: 'artifact-session',
+      });
       mockAxios.mockReset();
       mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
 
