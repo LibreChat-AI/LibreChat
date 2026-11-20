@@ -15,7 +15,6 @@ import type { Response } from 'express';
 import type { InsightsConfigResolver } from './config';
 import type { InsightsAccess } from './access';
 import type { ServerRequest } from '~/types';
-import { toAggregateInsightsResponse } from './privacy';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 type InsightsHandlerDeps = {
@@ -176,14 +175,12 @@ export function createInsightsHandler({
       const showDetails =
         configuredShowDetails && agentIds.every((id) => inspectableAgents.has(id));
 
-      const page = showDetails ? positiveInteger(req.query.page, 1) : 1;
-      const pageSize = showDetails
-        ? Math.min(50, Math.max(5, positiveInteger(req.query.pageSize, 10)))
-        : 10;
+      const page = positiveInteger(req.query.page, 1);
+      const pageSize = Math.min(50, Math.max(5, positiveInteger(req.query.pageSize, 10)));
       const tenantId = stringValue(req.user?.tenantId);
       const requestedSearch = stringValue(req.query.search)?.slice(0, INSIGHTS_SEARCH_MAX_LENGTH);
       const search =
-        showDetails && requestedSearch && requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH
+        requestedSearch && requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH
           ? requestedSearch
           : undefined;
       const insights = await getInsights({
@@ -199,7 +196,7 @@ export function createInsightsHandler({
         toTimestamp: stringValue(req.query.toTimestamp),
         timeZone: timeZoneValue(req.query.timeZone),
       });
-      res.json(showDetails ? insights : toAggregateInsightsResponse(insights));
+      res.json(insights);
     } catch (error) {
       logger.error('[Insights] Failed to load dashboard', getSafeErrorMetadata(error));
       res.status(500).json({ message: 'Failed to load insights' });

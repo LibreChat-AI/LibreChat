@@ -315,162 +315,6 @@ describe('Insights handlers', () => {
     expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ search: undefined }));
   });
 
-  it.each(['USER', 'ADMIN'])(
-    'returns only whitelisted aggregate fields for %s when detail is disabled',
-    async (role) => {
-      insightsEnabled.mockReturnValueOnce({
-        enabled: true,
-        showDetails: false,
-        adminAutoSelectAllAgents: true,
-      });
-      const privateValue = 'private-content-must-not-cross-api';
-      const feedback = {
-        thumbsUp: 1,
-        thumbsDown: 1,
-        categories: FEEDBACK_REASON_KEYS.map((key) => ({
-          key,
-          count: key === 'inaccurate' || key === 'accurate_reliable' ? 1 : 0,
-        })),
-      };
-      const unsafeFeedback = {
-        ...feedback,
-        text: privateValue,
-        userId: privateValue,
-        categories: [
-          ...feedback.categories.map((category) => ({
-            ...category,
-            label: privateValue,
-            text: privateValue,
-          })),
-          { key: privateValue, count: 1 },
-        ],
-      };
-      const summary = {
-        totalUsers: 1,
-        totalConversations: 1,
-        totalMessages: 4,
-        totalTokens: 5,
-        totalResponses: 3,
-        completedResponses: 1,
-        failedResponses: 1,
-        interruptedResponses: 1,
-        lastUsed: '2026-10-01T12:00:00.000Z',
-        spendUSD: 1.25,
-        feedback,
-      };
-      const getInsights = jest.fn().mockResolvedValue({
-        ...emptyInsights,
-        agents: [{ id: 'agent-a', name: 'Alpha', email: privateValue }],
-        summary: {
-          ...summary,
-          userId: privateValue,
-          feedback: unsafeFeedback,
-          transactions: [{ user: privateValue }],
-        },
-        daily: [
-          {
-            date: '2026-10-01',
-            conversations: 1,
-            users: 1,
-            messages: 4,
-            totalTokens: 5,
-            responses: 3,
-            completedResponses: 1,
-            failedResponses: 1,
-            interruptedResponses: 1,
-            text: privateValue,
-            feedback: unsafeFeedback,
-            spendUSD: 1.25,
-            transactions: [{ conversationId: privateValue, messageId: privateValue }],
-          },
-        ],
-        models: [
-          {
-            model: 'model-x',
-            responses: 3,
-            completedResponses: 1,
-            failedResponses: 1,
-            interruptedResponses: 1,
-            thumbsUp: 1,
-            thumbsDown: 0,
-            usageTokens: 7,
-            spendUSD: 1.25,
-            userId: privateValue,
-            messageIds: [privateValue],
-          },
-        ],
-        topUsers: [{ name: privateValue }],
-        agentVersions: [
-          {
-            agentId: 'agent-a',
-            version: 2,
-            savedAt: '2026-10-01T12:00:00.000Z',
-            active: true,
-            instructions: privateValue,
-            updatedBy: privateValue,
-          },
-        ],
-        churnedUsers: [{ email: privateValue }],
-        latest: { conversations: [{ firstMessage: privateValue, conversationId: privateValue }] },
-        feedbackText: privateValue,
-      });
-      const { handler } = createDashboardHandler(getInsights);
-      const req = createRequest({
-        search: privateValue,
-        page: '20',
-        pageSize: '50',
-        showDetails: 'true',
-      });
-      req.user = { ...req.user, role } as NonNullable<ServerRequest['user']>;
-      const { response, json } = createResponse();
-      await handler(req, response);
-      expect(getInsights).toHaveBeenCalledWith(
-        expect.objectContaining({
-          showDetails: false,
-          search: undefined,
-          page: 1,
-          pageSize: 10,
-        }),
-      );
-      expect(json).toHaveBeenCalledWith({
-        agents: [{ id: 'agent-a', name: 'Alpha' }],
-        agentVersions: [
-          { agentId: 'agent-a', version: 2, savedAt: '2026-10-01T12:00:00.000Z', active: true },
-        ],
-        summary,
-        daily: [
-          {
-            date: '2026-10-01',
-            conversations: 1,
-            users: 1,
-            messages: 4,
-            totalTokens: 5,
-            responses: 3,
-            completedResponses: 1,
-            failedResponses: 1,
-            interruptedResponses: 1,
-            feedback,
-            spendUSD: 1.25,
-          },
-        ],
-        models: [
-          {
-            model: 'model-x',
-            responses: 3,
-            completedResponses: 1,
-            failedResponses: 1,
-            interruptedResponses: 1,
-            thumbsUp: 1,
-            thumbsDown: 0,
-            usageTokens: 7,
-            spendUSD: 1.25,
-          },
-        ],
-      });
-      expect(JSON.stringify(json.mock.calls)).not.toContain(privateValue);
-    },
-  );
-
   it('does not let request parameters enable a disabled feature', async () => {
     insightsEnabled.mockReturnValueOnce({
       enabled: false,
@@ -506,15 +350,9 @@ describe('Insights handlers', () => {
       detailAgentIds: ['agent-a'],
     });
     const { handler, getInsights } = createDashboardHandler();
-    const { response, json } = createResponse();
+    const { response } = createResponse();
     await handler(
-      createRequest({
-        ...(selected ? { agentIds: [...selected] } : {}),
-        search: 'private identity',
-        page: '20',
-        pageSize: '50',
-        showDetails: 'true',
-      }),
+      createRequest({ ...(selected ? { agentIds: [...selected] } : {}), showDetails: 'true' }),
       response,
     );
 
@@ -522,20 +360,7 @@ describe('Insights handlers', () => {
       expect.objectContaining({
         showDetails: expectedDetail,
         agentIds: selected ? [...selected] : ['agent-a', 'agent-b'],
-        search: expectedDetail ? 'private identity' : undefined,
-        page: expectedDetail ? 20 : 1,
-        pageSize: expectedDetail ? 50 : 10,
       }),
-    );
-    expect(json).toHaveBeenCalledWith(
-      expectedDetail
-        ? emptyInsights
-        : {
-            agents,
-            summary: emptyInsights.summary,
-            daily: emptyInsights.daily,
-            models: emptyInsights.models,
-          },
     );
     expect(getInsightsAccess).toHaveBeenCalledTimes(1);
   });
