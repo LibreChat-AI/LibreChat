@@ -4,7 +4,6 @@ import { Navigate, useSearchParams } from 'react-router-dom';
 import { AlertCircle, Check, Info, Minus, Search } from 'lucide-react';
 import { Button, Input, MultiSelect, Spinner, TooltipAnchor } from '@librechat/client';
 import {
-  FEEDBACK_REASON_KEYS,
   INSIGHTS_MAX_RANGE_DAYS,
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
@@ -13,47 +12,29 @@ import type {
   InsightsRange,
   TInsightsChurnedUser,
   TInsightsConversation,
-  TInsightsDailyPoint,
-  TInsightsModel,
   TInsightsParams,
   TInsightsUser,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { useAuthContext, useDocumentTitle, useElementSize, useLocalize } from '~/hooks';
 import { clearAgentFilters, shouldRecoverAgentFilters } from './agentFilters';
+import { useAuthContext, useDocumentTitle, useLocalize } from '~/hooks';
 import { useGetStartupConfig, useInsightsQuery } from '~/data-provider';
-import { getVersionDays, tagAnchor, visibleTags } from './versions';
+import { EmptyState, LoadingState, Panel, TablePanel } from './Panel';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
+import { getVersionDays, getVersionMarks } from './versions';
 import { LocalizedDateRangePicker } from '~/components/ui';
+import { formatExactValue, formatValue } from './format';
 import { getRollingDateRange } from './dateRange';
+import FeedbackCategories from './Feedback';
+import { getMetricCards } from './metrics';
+import ModelsTable from './Models';
+import { KpiCard } from './Card';
 import { cn } from '~/utils';
 
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
 type Localize = ReturnType<typeof useLocalize>;
-type SparklinePoint = { date: string; value: number };
-type VersionMark = { label: string | null; marked: boolean; tag?: string };
 type CustomDateRange = { startDate: Date; endDate: Date };
-
-type KpiCardData = {
-  id:
-    | 'conversations'
-    | 'users'
-    | 'messages'
-    | 'tokens'
-    | 'responses'
-    | 'spend'
-    | 'completed'
-    | 'failed'
-    | 'interrupted'
-    | 'thumbs-up'
-    | 'thumbs-down';
-  title: string;
-  description?: string;
-  value: number;
-  format?: 'currency';
-  sparkline: SparklinePoint[];
-};
 
 const ranges: Array<{ value: ShortcutRange; labelKey: TranslationKeys; days: number }> = [
   { value: '24h', labelKey: 'com_insights_range_24_hours', days: 1 },
@@ -62,29 +43,6 @@ const ranges: Array<{ value: ShortcutRange; labelKey: TranslationKeys; days: num
 ];
 const dateRangeSelectionDelayMs = 350;
 const searchDelayMs = 350;
-
-function formatValue(value: number, locale: string) {
-  return new Intl.NumberFormat(locale, {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value);
-}
-
-function formatExactValue(value: number, locale: string) {
-  return new Intl.NumberFormat(locale).format(value);
-}
-
-function formatMetric(value: number, locale: string, format?: 'currency', compact = false) {
-  if (format !== 'currency') {
-    return compact ? formatValue(value, locale) : formatExactValue(value, locale);
-  }
-  const subCent = value !== 0 && Math.abs(value) < 0.01;
-  return new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency: 'USD',
-    ...(subCent ? { maximumSignificantDigits: 6 } : { maximumFractionDigits: 4 }),
-  }).format(value);
-}
 
 function formatDate(value: string, locale: string) {
   return new Intl.DateTimeFormat(locale, {
@@ -130,255 +88,6 @@ function responseStatus(error: unknown) {
 function getShortcutDateRange(range: ShortcutRange) {
   const days = ranges.find((item) => item.value === range)?.days ?? 7;
   return getRollingDateRange(new Date(), days);
-}
-
-function Panel({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <section
-      className={cn(
-        /** Click UI gives dashboard widgets their own surface and stroke, a step lighter
-         *  than the page in dark mode; in light they match the page surface and light rule. */
-        'border-chart-widget-stroke bg-chart-widget-surface min-w-0 rounded-lg border p-5',
-        className,
-      )}
-    >
-      {children}
-    </section>
-  );
-}
-
-function EmptyState({ message }: { message: string }) {
-  return (
-    <div className="text-text-secondary flex min-h-40 items-center justify-center text-sm">
-      {message}
-    </div>
-  );
-}
-
-function LoadingState({ message }: { message: string }) {
-  return (
-    <Panel className="flex min-h-52 flex-col items-center justify-center gap-3">
-      <Spinner tone="secondary" className="size-7" />
-      <span className="text-text-secondary text-sm">{message}</span>
-    </Panel>
-  );
-}
-
-const tagAlignment = { start: '', center: '-translate-x-1/2', end: '-translate-x-full' };
-
-function Sparkline({
-  values,
-  label,
-  locale,
-  format,
-  versionMarks,
-}: {
-  values: SparklinePoint[];
-  label: string;
-  locale: string;
-  format?: 'currency';
-  versionMarks?: VersionMark[];
-}) {
-  const patternId = useId().replace(/:/g, '');
-  const [activeIndex, setActiveIndex] = useState<number>();
-  const { ref: chartRef, width: chartWidth } = useElementSize<HTMLDivElement>();
-  const points = useMemo(() => {
-    if (values.length < 2) {
-      return [];
-    }
-    const maximum = Math.max(0, ...values.map((point) => point.value)) || 1;
-    return values.map((point, index) => ({
-      ...point,
-      x: (index / (values.length - 1)) * 300,
-      y: 52 - (point.value / maximum) * 46,
-    }));
-  }, [values]);
-
-  if (points.length < 2) {
-    return <div className="h-14" />;
-  }
-
-  const line = points.map((point) => `${point.x},${point.y}`).join(' ');
-  const area = `M 0 56 L ${points.map((point) => `${point.x} ${point.y}`).join(' L ')} L 300 56 Z`;
-  const activePoint = activeIndex == null ? undefined : points[activeIndex];
-  const activeVersion = activeIndex == null ? undefined : versionMarks?.[activeIndex]?.label;
-  const formatter = new Intl.DateTimeFormat(locale, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-  const markedVersions = points.flatMap((point, index) => {
-    const mark = versionMarks?.[index];
-    if (!mark?.marked || !mark.label || !mark.tag) return [];
-    return [
-      {
-        x: point.x,
-        position: (point.x / 300) * 100,
-        tag: mark.tag,
-        description: `${formatter.format(new Date(point.date))}: ${mark.label}`,
-      },
-    ];
-  });
-  const shownTags = visibleTags(
-    markedVersions.map(({ position, tag }) => ({ position, text: tag })),
-    chartWidth,
-  );
-
-  return (
-    <div
-      dir="ltr"
-      ref={chartRef}
-      className={cn(
-        'text-status-info relative h-14 w-full outline-hidden',
-        markedVersions.length > 0 ? 'mt-7' : 'mt-2',
-      )}
-      role="img"
-      tabIndex={0}
-      aria-label={[label, ...markedVersions.map(({ description }) => description)].join('. ')}
-      onFocus={() => setActiveIndex(points.length - 1)}
-      onBlur={() => setActiveIndex(undefined)}
-      onMouseLeave={() => setActiveIndex(undefined)}
-      onMouseMove={(event) => {
-        const bounds = event.currentTarget.getBoundingClientRect();
-        const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-        setActiveIndex(Math.round(ratio * (points.length - 1)));
-      }}
-    >
-      <svg
-        className="h-full w-full overflow-visible"
-        viewBox="0 0 300 56"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <defs>
-          <pattern id={patternId} width="6" height="6" patternUnits="userSpaceOnUse">
-            <path
-              d="M-1 1 L1 -1 M0 6 L6 0 M5 7 L7 5"
-              stroke="currentColor"
-              strokeWidth="0.8"
-              opacity="0.22"
-            />
-          </pattern>
-        </defs>
-        <path d={area} fill={`url(#${patternId})`} />
-        <polyline
-          points={line}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          vectorEffect="non-scaling-stroke"
-        />
-        {markedVersions.map(({ x }) => (
-          <line
-            key={x}
-            data-testid="insights-version-marker"
-            className="text-text-secondary"
-            x1={x}
-            x2={x}
-            y1={0}
-            y2={56}
-            stroke="currentColor"
-            strokeWidth="1"
-            strokeDasharray="3 3"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </svg>
-      {markedVersions.map(({ x, position, tag }, index) =>
-        shownTags.has(index) ? (
-          <span
-            key={x}
-            aria-hidden="true"
-            className={cn(
-              'text-text-secondary pointer-events-none absolute bottom-full mb-1 text-xs whitespace-nowrap',
-              tagAlignment[tagAnchor(position)],
-            )}
-            style={{ left: `${position}%` }}
-          >
-            {tag}
-          </span>
-        ) : null,
-      )}
-      {activePoint && (
-        <>
-          <span
-            className="bg-border-medium pointer-events-none absolute top-0 h-full w-px"
-            style={{ left: `${(activePoint.x / 300) * 100}%` }}
-          />
-          <span
-            className="bg-status-info ring-surface-primary pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2"
-            style={{
-              left: `${(activePoint.x / 300) * 100}%`,
-              top: `${(activePoint.y / 56) * 100}%`,
-            }}
-          />
-          <span
-            className="border-border-light bg-surface-primary text-text-primary pointer-events-none absolute bottom-full mb-2 -translate-x-1/2 rounded-lg border px-2.5 py-1.5 text-xs whitespace-nowrap shadow-lg"
-            style={{ left: `${Math.max(14, Math.min(86, (activePoint.x / 300) * 100))}%` }}
-          >
-            {formatter.format(new Date(activePoint.date))}{' '}
-            <strong>{formatMetric(activePoint.value, locale, format)}</strong>
-            {activeVersion && <span className="text-text-secondary block">{activeVersion}</span>}
-          </span>
-        </>
-      )}
-    </div>
-  );
-}
-
-function KpiCard({
-  card,
-  locale,
-  headingLevel: Heading = 'h2',
-  versionMarks,
-}: {
-  card: KpiCardData;
-  locale: string;
-  headingLevel?: 'h2' | 'h3';
-  versionMarks?: VersionMark[];
-}) {
-  const localize = useLocalize();
-  return (
-    <Panel>
-      <Heading className="text-text-muted inline-flex items-center gap-1.5 text-sm font-normal">
-        {card.title}
-        {card.description && (
-          <TooltipAnchor
-            description={card.description}
-            render={
-              <button
-                type="button"
-                aria-label={card.description}
-                className="text-text-muted hover:text-text-secondary"
-              >
-                <Info className="size-3.5" aria-hidden="true" />
-              </button>
-            }
-          />
-        )}
-      </Heading>
-      <div className="text-text-primary mt-3 text-4xl leading-none font-semibold break-words tabular-nums">
-        {formatMetric(card.value, locale, card.format, true)}
-      </div>
-      <Sparkline
-        values={card.sparkline}
-        label={localize('com_insights_sparkline_accessibility', { label: card.title })}
-        locale={locale}
-        format={card.format}
-        versionMarks={versionMarks}
-      />
-    </Panel>
-  );
-}
-
-function TablePanel({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <Panel className="overflow-hidden">
-      <h2 className="text-text-primary mb-3 text-base font-semibold">{title}</h2>
-      {children}
-    </Panel>
-  );
 }
 
 function UserCell({ name, email, localize }: { name: string; email: string; localize: Localize }) {
@@ -427,75 +136,6 @@ function TopUsersTable({
                   <td className="px-2 py-3 text-end tabular-nums">
                     {formatExactValue(entry.conversations, locale)}
                   </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </TablePanel>
-  );
-}
-
-const modelColumns: Array<{
-  labelKey: TranslationKeys;
-  value: (row: TInsightsModel) => number;
-  format?: 'currency';
-}> = [
-  { labelKey: 'com_insights_responses', value: (row) => row.responses },
-  { labelKey: 'com_insights_completed', value: (row) => row.completedResponses },
-  { labelKey: 'com_insights_failed', value: (row) => row.failedResponses },
-  { labelKey: 'com_insights_interrupted', value: (row) => row.interruptedResponses },
-  { labelKey: 'com_insights_thumbs_up', value: (row) => row.thumbsUp },
-  { labelKey: 'com_insights_thumbs_down', value: (row) => row.thumbsDown },
-  { labelKey: 'com_insights_usage_tokens', value: (row) => row.usageTokens },
-  { labelKey: 'com_insights_spend', value: (row) => row.spendUSD ?? 0, format: 'currency' },
-];
-
-function ModelsTable({
-  rows,
-  localize,
-  locale,
-}: {
-  rows: TInsightsModel[];
-  localize: Localize;
-  locale: string;
-}) {
-  return (
-    <TablePanel title={localize('com_insights_models')}>
-      <p className="text-text-secondary -mt-1 mb-3 text-sm">
-        {localize('com_insights_models_definition')}
-      </p>
-      {rows.length === 0 ? (
-        <EmptyState message={localize('com_insights_no_data')} />
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[50rem] text-left text-sm">
-            <thead className="border-border-medium text-text-secondary border-b text-xs">
-              <tr>
-                <th className="px-2 py-2 font-medium">{localize('com_insights_model')}</th>
-                {modelColumns.map(({ labelKey }) => (
-                  <th key={labelKey} className="px-2 py-2 text-right font-medium">
-                    {localize(labelKey)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-border-light divide-y">
-              {rows.map((row, index) => (
-                <tr key={row.model ?? `unknown-${index}`} className="hover:bg-surface-hover">
-                  <td className="max-w-[16rem] truncate px-2 py-3" title={row.model ?? undefined}>
-                    {row.model ?? (
-                      <span className="text-text-secondary">
-                        {localize('com_insights_unknown_model')}
-                      </span>
-                    )}
-                  </td>
-                  {modelColumns.map(({ labelKey, value, format }) => (
-                    <td key={labelKey} className="px-2 py-3 text-right tabular-nums">
-                      {formatMetric(value(row), locale, format)}
-                    </td>
-                  ))}
                 </tr>
               ))}
             </tbody>
@@ -825,128 +465,14 @@ export default function InsightsView() {
     return getVersionDays(data.daily, versions, timeZone);
   }, [data, effectiveAgentIds, timeZone]);
 
-  const versionMarks = useMemo<VersionMark[] | undefined>(() => {
-    if (!versionDays) return undefined;
-    return versionDays.map(({ inUse, lastSaved, earlierSaved, marked, restored }) => {
-      if (lastSaved != null) {
-        return {
-          marked,
-          label:
-            earlierSaved > 0
-              ? localize('com_insights_version_saved_earlier', {
-                  versionNumber: lastSaved,
-                  earlier: earlierSaved,
-                })
-              : localize('com_insights_version_saved_marker', { versionNumber: lastSaved }),
-          tag: localize('com_insights_version_tag', { versionNumber: lastSaved }),
-        };
-      }
-      if (inUse == null) return { marked: false, label: null };
-      return {
-        marked: false,
-        label: restored
-          ? localize('com_insights_version_restored', { versionNumber: inUse })
-          : localize('com_ui_agent_version_title', { versionNumber: inUse }),
-      };
-    });
-  }, [localize, versionDays]);
-
-  const { kpiCards, outcomeCards, feedbackCards } = useMemo<
-    Record<'kpiCards' | 'outcomeCards' | 'feedbackCards', KpiCardData[]>
-  >(() => {
-    if (!data) {
-      return { kpiCards: [], outcomeCards: [], feedbackCards: [] };
-    }
-    const daily = (value: (row: TInsightsDailyPoint) => number) =>
-      data.daily.map((row) => ({ date: row.date, value: value(row) }));
-    return {
-      kpiCards: [
-        {
-          id: 'conversations',
-          title: localize('com_insights_total_conversations'),
-          description: localize('com_insights_conversations_definition'),
-          value: data.summary.totalConversations,
-          sparkline: daily((row) => row.conversations),
-        },
-        {
-          id: 'users',
-          title: localize('com_insights_total_users'),
-          value: data.summary.totalUsers,
-          sparkline: daily((row) => row.users),
-        },
-        {
-          id: 'messages',
-          title: localize('com_insights_messages'),
-          value: data.summary.totalMessages,
-          sparkline: daily((row) => row.messages),
-        },
-        {
-          id: 'tokens',
-          title: localize('com_insights_total_tokens'),
-          value: data.summary.totalTokens,
-          sparkline: daily((row) => row.totalTokens),
-        },
-        {
-          id: 'responses',
-          title: localize('com_insights_responses'),
-          value: data.summary.totalResponses,
-          sparkline: daily((row) => row.responses),
-        },
-        {
-          id: 'spend',
-          title: localize('com_insights_spend'),
-          description: localize('com_insights_spend_definition'),
-          value: data.summary.spendUSD ?? 0,
-          format: 'currency',
-          sparkline: daily((row) => row.spendUSD ?? 0),
-        },
-      ],
-      outcomeCards: [
-        {
-          id: 'completed',
-          title: localize('com_insights_completed'),
-          description: localize('com_insights_completed_definition'),
-          value: data.summary.completedResponses,
-          sparkline: daily((row) => row.completedResponses),
-        },
-        {
-          id: 'failed',
-          title: localize('com_insights_failed'),
-          description: localize('com_insights_failed_definition'),
-          value: data.summary.failedResponses,
-          sparkline: daily((row) => row.failedResponses),
-        },
-        {
-          id: 'interrupted',
-          title: localize('com_insights_interrupted'),
-          description: localize('com_insights_interrupted_definition'),
-          value: data.summary.interruptedResponses,
-          sparkline: daily((row) => row.interruptedResponses),
-        },
-      ],
-      feedbackCards: [
-        {
-          id: 'thumbs-up',
-          title: localize('com_insights_thumbs_up'),
-          value: data.summary.feedback.thumbsUp,
-          sparkline: daily((row) => row.feedback.thumbsUp),
-        },
-        {
-          id: 'thumbs-down',
-          title: localize('com_insights_thumbs_down'),
-          value: data.summary.feedback.thumbsDown,
-          sparkline: daily((row) => row.feedback.thumbsDown),
-        },
-      ],
-    };
-  }, [data, localize]);
-
-  const feedbackCategories = useMemo(() => {
-    const counts = new Map(data?.summary.feedback.categories.map(({ key, count }) => [key, count]));
-    return FEEDBACK_REASON_KEYS.map((key) => ({ key, count: counts.get(key) ?? 0 })).filter(
-      ({ count }) => count > 0,
-    );
-  }, [data]);
+  const versionMarks = useMemo(
+    () => (versionDays ? getVersionMarks(versionDays, localize) : undefined),
+    [localize, versionDays],
+  );
+  const { kpiCards, outcomeCards, feedbackCards } = useMemo(
+    () => getMetricCards(data, localize),
+    [data, localize],
+  );
 
   const handleSelectDateRange = (startDate: Date, endDate: Date) => {
     if (dateRangeSelectionTimeout.current != null) {
@@ -1206,27 +732,7 @@ export default function InsightsView() {
                     />
                   ))}
                 </div>
-                <Panel className="mt-3">
-                  <h3 className="mb-3 text-sm font-semibold">
-                    {localize('com_insights_feedback_categories')}
-                  </h3>
-                  {feedbackCategories.length === 0 ? (
-                    <p className="text-text-secondary text-sm">
-                      {localize('com_insights_no_feedback_categories')}
-                    </p>
-                  ) : (
-                    <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
-                      {feedbackCategories.map(({ key, count }) => (
-                        <div key={key} className="flex items-start justify-between gap-4 text-sm">
-                          <dt>{localize(`com_ui_feedback_tag_${key}`)}</dt>
-                          <dd className="font-semibold tabular-nums">
-                            {formatExactValue(count, locale)}
-                          </dd>
-                        </div>
-                      ))}
-                    </dl>
-                  )}
-                </Panel>
+                <FeedbackCategories categories={data.summary.feedback.categories} locale={locale} />
               </section>
               <ModelsTable rows={data.models} localize={localize} locale={locale} />
               {(data.topUsers || data.churnedUsers) && (

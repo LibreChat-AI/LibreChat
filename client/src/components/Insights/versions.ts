@@ -1,4 +1,5 @@
 import type { TInsightsAgentVersion } from 'librechat-data-provider';
+import type { useLocalize } from '~/hooks';
 
 export const versionMarkerLimit = 5;
 
@@ -9,6 +10,8 @@ export type VersionDay = {
   marked: boolean;
   restored: boolean;
 };
+
+export type VersionMark = { label: string | null; marked: boolean; tag?: string };
 
 export function dayKey(instant: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -90,4 +93,32 @@ export function visibleTags(tags: Array<{ position: number; text: string }>, wid
     }
   }
   return visible;
+}
+
+export function getVersionMarks(
+  days: VersionDay[],
+  localize: ReturnType<typeof useLocalize>,
+): VersionMark[] {
+  return days.map(({ inUse, lastSaved, earlierSaved, marked, restored }) => {
+    if (lastSaved != null) {
+      return {
+        marked,
+        label:
+          earlierSaved > 0
+            ? localize('com_insights_version_saved_earlier', {
+                versionNumber: lastSaved,
+                earlier: earlierSaved,
+              })
+            : localize('com_insights_version_saved_marker', { versionNumber: lastSaved }),
+        tag: localize('com_insights_version_tag', { versionNumber: lastSaved }),
+      };
+    }
+    if (inUse == null) return { marked: false, label: null };
+    return {
+      marked: false,
+      label: restored
+        ? localize('com_insights_version_restored', { versionNumber: inUse })
+        : localize('com_ui_agent_version_title', { versionNumber: inUse }),
+    };
+  });
 }
