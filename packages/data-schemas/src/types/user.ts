@@ -138,6 +138,7 @@ export interface BalanceConfig {
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  refillAnchor?: string;
   reservationTtlMs?: number;
 }
 

@@ -58,7 +58,7 @@ services:
       - SESSION_COOKIE_SECURE=${ADMIN_PANEL_SESSION_COOKIE_SECURE:-false}
 
   client:
-    image: docker.io/library/nginx:1.27.0-alpine
+    image: docker.io/library/nginx:1.31.9-alpine
     container_name: LibreChat-NGINX
     ports:
       - 80:80

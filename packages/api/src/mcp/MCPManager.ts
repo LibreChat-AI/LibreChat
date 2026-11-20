@@ -4,6 +4,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol
 import { Permissions, PermissionTypes, DEFAULT_MCP_APPS_POLICY } from 'librechat-data-provider';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
+import type { MCPGrantIdentity } from 'librechat-data-provider';
 import type { TMCPAppsPolicy } from 'librechat-data-provider';
 import type {
   OboTokenResolver,
@@ -60,6 +61,7 @@ import {
   type MCPAppBindingSubject,
   type MCPAppRuntimeTarget,
 } from './apps/binding';
+import { assertToolApprovalTransportEpoch, getToolApprovalTransportCallId } from '~/tools/approval';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { mcpOptionsContainGraphTokenPlaceholder, preProcessGraphTokens } from '~/utils/graph';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
@@ -70,7 +72,6 @@ import { formatToolContent, selectResolvedAppResource } from './parsers';
 import { MCPServersInitializer } from './registry/MCPServersInitializer';
 import { OboTokenResolutionError, resolveOboToken } from '~/mcp/oauth';
 import { MCPServerCatalogRecoveryTracker } from './catalog/recovery';
-import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { getToolUiResourceUri, isToolHiddenFromApp } from './apps';
 import { MCPServerInspector } from './registry/MCPServerInspector';
 import { MCPServersRegistry } from './registry/MCPServersRegistry';
@@ -1551,7 +1552,8 @@ Please follow these instructions when using tools from the respective MCP server
     /** See {@link t.UserConnectionContext.unattended}. */
     unattended?: boolean;
     scheduledBearerInvocation?: ScheduledMCPBearerInvocation;
-    scheduledMCPInvocation?: ScheduledMCPInvocation;
+    /** The grant a run acts under, whether a schedule's or an API key's. */
+    scheduledMCPInvocation?: ScheduledMCPInvocation<MCPGrantIdentity>;
     user?: IUser;
     serverName: string;
     /** Pre-resolved config from tool creation context — avoids readThrough TTL and cross-tenant issues */
@@ -2021,6 +2023,7 @@ Please follow these instructions when using tools from the respective MCP server
             toolName,
             loadTools: () => connection!.fetchToolsSnapshot(undefined, options?.signal),
             signal: options?.signal,
+            toolCallId: getToolApprovalTransportCallId(),
           });
           options?.signal?.throwIfAborted();
           await assertToolApprovalTransportEpoch(

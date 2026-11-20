@@ -1,4 +1,4 @@
-import { AppService } from '@librechat/data-schemas';
+import { AppService, logger } from '@librechat/data-schemas';
 import { AuthType, PrincipalType, EModelEndpoint } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
@@ -22,6 +22,7 @@ import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from '../keys';
 import { createLoadConfigModels, configuredModelList } from './models';
 import { createEnvReferencePolicy } from '~/app/allowlist';
 import { mergeOverrideLayers } from '~/app/overrides';
+import { tokenConfigCache } from '~/cache';
 
 describe('createLoadConfigModels – user-provided baseURL header guard', () => {
   const fetchModels = jest.fn().mockResolvedValue([]);
@@ -264,6 +265,40 @@ describe('createLoadConfigModels – in-request fetch coalescing', () => {
     expect(headersByName.get('TenantB')).toEqual({ 'X-Tenant': 'b' });
   });
 
+  it.each([
+    [
+      'different keys',
+      'https://provider.example/v1',
+      'key-a',
+      'https://provider.example/v1',
+      'key-b',
+    ],
+    [
+      'delimiter collisions',
+      'https://provider.example/v1__a',
+      'b',
+      'https://provider.example/v1',
+      'a__b',
+    ],
+  ])('keeps fetches separate for %s', async (_case, firstURL, firstKey, secondURL, secondKey) => {
+    const load = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            { name: 'First', baseURL: firstURL, apiKey: firstKey, models: { fetch: true } },
+            { name: 'Second', baseURL: secondURL, apiKey: secondKey, models: { fetch: true } },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+
+    await load({ user: { id: 'user-1' } } as ServerRequest);
+
+    expect(fetchModels).toHaveBeenCalledTimes(2);
+  });
+
   it('still coalesces two endpoints that share baseURL+apiKey AND identical headers', async () => {
     const sharedHeaders = { Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}' };
     const loadConfigModels = createLoadConfigModels({
@@ -342,6 +377,120 @@ describe('createLoadConfigModels � configured model lists for built-in endpoin
     });
     expect(models[EModelEndpoint.google]).toEqual([]);
     expect(models[EModelEndpoint.bedrock]).toEqual(['ok']);
+  });
+});
+
+describe('createLoadConfigModels – safe failure logging', () => {
+  const apiKey = 'sk-CANARY-not-a-real-key-7f3a';
+  const baseURL = 'https://provider.example.com/v1?token=url-secret';
+  const headers = { Authorization: 'Bearer header-secret' };
+  const failure = Object.assign(new Error(`Request failed: ${apiKey} ${baseURL}`), {
+    status: 503,
+    config: { headers },
+    response: { data: apiKey, headers },
+  });
+
+  it.each([failure, apiKey])(
+    'logs only endpoint names and safe metadata for rejected fetches',
+    async (reason) => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation();
+      const fetchModels = jest.fn().mockRejectedValue(reason);
+      const load = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: ['First', 'Second'].map((name) => ({
+              name,
+              apiKey,
+              baseURL,
+              headers,
+              models: { fetch: true, default: [`${name}-fallback`] },
+            })),
+          },
+        }),
+        getUserKeyValues: jest.fn(),
+        fetchModels,
+      });
+
+      await expect(load({ user: { id: 'user-1' } } as ServerRequest)).resolves.toEqual({
+        First: ['First-fallback'],
+        Second: ['Second-fallback'],
+      });
+      expect(fetchModels).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[loadConfigModels] Model fetch failed for "First", "Second":',
+        reason instanceof Error ? { type: 'Error', status: 503 } : { type: 'UnknownError' },
+      );
+      const logged = JSON.stringify(warn.mock.calls);
+      for (const secret of [apiKey, baseURL, headers.Authorization]) {
+        expect(logged).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each(['get', 'set'] as const)(
+    'retains fetched models after a shared token-cache %s failure',
+    async (operation) => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation();
+      const cache = tokenConfigCache();
+      if (operation === 'set') {
+        await cache.set('First', { model: { context: 1024 } });
+      }
+      jest.spyOn(cache, operation).mockRejectedValue(failure);
+      const load = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: ['First', 'Second'].map((name) => ({
+              name,
+              apiKey,
+              baseURL,
+              models: { fetch: true },
+            })),
+          },
+        }),
+        getUserKeyValues: jest.fn(),
+        fetchModels: jest.fn().mockResolvedValue(['discovered-model']),
+      });
+
+      await expect(load({ user: { id: 'user-1' } } as ServerRequest)).resolves.toEqual({
+        First: ['discovered-model'],
+        Second: ['discovered-model'],
+      });
+      expect(warn).toHaveBeenCalledWith(
+        '[loadConfigModels] Failed to share token config for "First", "Second":',
+        { type: 'Error', status: 503 },
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(apiKey);
+    },
+  );
+
+  it('does not log raw user credential lookup errors', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation();
+    const load = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            {
+              name: 'UserEndpoint',
+              apiKey: AuthType.USER_PROVIDED,
+              baseURL,
+              models: { fetch: true },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn().mockRejectedValue(failure),
+      fetchModels: jest.fn(),
+    });
+
+    await expect(load({ user: { id: 'user-1' } } as ServerRequest)).resolves.toEqual({
+      UserEndpoint: [],
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[loadConfigModels] Failed to retrieve user key for "UserEndpoint":',
+      { type: 'Error', status: 503 },
+    );
   });
 });
 

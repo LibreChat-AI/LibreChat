@@ -1208,7 +1208,10 @@ describe('attached code environment user config schema', () => {
     [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
-  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    [{ detachedCommands: true }, true],
+    [{ detachedCommands: false }, true],
+    [{ detachedCommands: 'yes' }, false],
+  ])('validates the workspace toggles %p', (workspaces, valid) => {
     const result = configSchema.safeParse({
       version: '1.0',
       endpoints: {
@@ -3248,9 +3251,18 @@ describe('workspace admission configuration', () => {
     { jitterRatio: 1.1 },
     { maxDelayMs: Infinity },
     { queueWaitMs: 1.5 },
+    { resubmissionWindowMs: -1 },
+    { resubmissionWindowMs: 60_001 },
+    { resubmissionWindowMs: 1.5 },
     { unexpected: true },
   ])('rejects an invalid policy %j', (admission) => {
     expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 20_500, 60_000])('accepts a resubmission window of %i ms', (resubmissionWindowMs) => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ admission: { resubmissionWindowMs } }).admission,
+    ).toMatchObject({ resubmissionWindowMs });
   });
 
   it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
@@ -3519,6 +3531,56 @@ describe('complete channel operator configuration', () => {
 });
 
 describe('remote SDK runtime configuration', () => {
+  it('keeps native file reads opt-in and bounds process budgets', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostFiles).toBeUndefined();
+    const parsed = agentsEndpointSchema.parse({
+      sdkHostFiles: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostFiles: true },
+        },
+      },
+    });
+    expect(parsed.sdkHostFiles?.maxChunkBytes).toBe(262144);
+    expect(parsed.sdkRuntimes?.runtime).toMatchObject({ remote: { hostFiles: true } });
+    for (const field of Object.keys(parsed.sdkHostFiles!)) {
+      for (const value of [0, -1, Number.MAX_SAFE_INTEGER])
+        expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { [field]: value } }).success).toBe(
+          false,
+        );
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { unknown: true } }).success).toBe(false);
+  });
+  it('opts into builder models with bounded process-wide admission', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
+    const result = agentsEndpointSchema.parse({
+      sdkHostModels: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostModel: true },
+        },
+      },
+    });
+    expect(result.sdkHostModels).toEqual({
+      maxConcurrentCalls: 32,
+      maxAdmissionEntries: 4096,
+      maxBufferedRequestBytes: 67108864,
+      timeoutMs: 60000,
+      maxRequestBytes: 4194304,
+      maxResponseBytes: 4194304,
+    });
+    expect(result.sdkRuntimes?.runtime).toMatchObject({ remote: { hostModel: true } });
+    for (const field of Object.keys(result.sdkHostModels!)) {
+      expect(agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: 0 } }).success).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: Number.MAX_SAFE_INTEGER } })
+          .success,
+      ).toBe(false);
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostModels: { unknown: true } }).success).toBe(
+      false,
+    );
+  });
   it('keeps module registrations and supplies remote transport defaults', () => {
     const result = agentsEndpointSchema.parse({
       sdkRuntimes: {

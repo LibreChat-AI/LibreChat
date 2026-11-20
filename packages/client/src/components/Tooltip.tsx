@@ -28,6 +28,29 @@ interface TooltipAnchorProps extends Ariakit.TooltipAnchorProps {
   side?: 'top' | 'bottom' | 'left' | 'right';
 }
 
+type Sanitizer = ReturnType<typeof DOMPurify>;
+
+let sanitizer: Sanitizer | undefined;
+
+/**
+ * One sanitizer for every tooltip, built the first time a tooltip has markup to show. Building
+ * one is not cheap (it copies its allow lists and probes the document), and a tooltip with a
+ * plain description never uses it: an instance per tooltip was most of what a toolbar button
+ * cost to mount, on pages that mount hundreds of them.
+ */
+function getSanitizer(): Sanitizer {
+  if (sanitizer == null) {
+    sanitizer = DOMPurify();
+    sanitizer.addHook('afterSanitizeAttributes', (node) => {
+      if (node.tagName && node.tagName === 'A') {
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
+    });
+  }
+  return sanitizer;
+}
+
 /**
  * Isolated component that subscribes to tooltip store state independently,
  * so the anchor element never re-renders when the tooltip mounts/unmounts.
@@ -54,23 +77,12 @@ const TooltipPopup = memo(function TooltipPopup({
   const popoverZIndex = usePopoverZIndex();
   const resolvedZIndex = zIndex ?? (dialogDepth > 0 ? popoverZIndex : undefined);
 
-  const sanitizer = useMemo(() => {
-    const instance = DOMPurify();
-    instance.addHook('afterSanitizeAttributes', (node) => {
-      if (node.tagName && node.tagName === 'A') {
-        node.setAttribute('target', '_blank');
-        node.setAttribute('rel', 'noopener noreferrer');
-      }
-    });
-    return instance;
-  }, []);
-
   const sanitizedHTML = useMemo(() => {
     if (!enableHTML) {
       return '';
     }
     try {
-      return sanitizer.sanitize(description, {
+      return getSanitizer().sanitize(description, {
         ALLOWED_TAGS: ['a', 'strong', 'b', 'em', 'i', 'br', 'code'],
         ALLOWED_ATTR: ['href', 'class', 'target', 'rel'],
         ALLOW_DATA_ATTR: false,
@@ -80,7 +92,7 @@ const TooltipPopup = memo(function TooltipPopup({
       console.error('Sanitization failed', error);
       return description;
     }
-  }, [enableHTML, description, sanitizer]);
+  }, [enableHTML, description]);
 
   const { x, y } = useMemo(() => {
     const dir = placement.split('-')[0];

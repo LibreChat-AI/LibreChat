@@ -16,6 +16,7 @@ import {
   seedChat,
 } from './chats';
 import { buildFrames, startReplayServer } from './replay';
+import { setRail, stageBackgroundWork } from './rail';
 import { installRenderProbe } from './why';
 import { formatFrameCost, traceFrames, traceWindows } from './trace';
 
@@ -52,6 +53,11 @@ const LIST_ANIMATIONS = process.env.FADE_PERF_ANIMATIONS === '1';
 const WITH_WHY = process.env.FADE_PERF_WHY === '1';
 /** How many components the render count lists, most rendered first. */
 const WHY_LIMIT = Number(process.env.FADE_PERF_WHY_LIMIT) || 80;
+/**
+ * `closed` or `open`: gives the conversation background work for the session rail to list and
+ * leaves the rail closed or open for the run, so the two runs differ only in the rail.
+ */
+const RAIL = process.env.FADE_PERF_RAIL;
 const MARK = 'fade:';
 
 function variety(message: ExportedMessage): number {
@@ -161,7 +167,12 @@ test.describe('stream event cost', () => {
       const runId = randomUUID();
       const frames = buildFrames(content, runId);
       const why = WITH_WHY ? await installRenderProbe(page) : null;
+      const staged = RAIL ? await stageBackgroundWork(page, convo, messages) : null;
       const size = await openChat(page, convo);
+      if (RAIL) {
+        const rows = await setRail(page, RAIL === 'open');
+        console.log(`\nsession rail ${RAIL}, listing ${rows} rows`);
+      }
       console.log(
         `\n##### ${chatName(convo)}: ${size.rows} rows, ${size.nodes} elements; ` +
           `replaying ${content.length} parts as ${frames.length} frames, ${GAP_MS}ms apart, cpu x${CPU_RATE}`,
@@ -327,6 +338,8 @@ test.describe('stream event cost', () => {
             endpoint: ENDPOINT.label,
             endpointType: 'custom',
             model: ENDPOINT.model,
+            ...staged,
+            ...(staged ? { endpointType: undefined } : {}),
           },
           title: convo.title,
           requestMessage,

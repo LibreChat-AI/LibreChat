@@ -1,11 +1,12 @@
 import { Types } from 'mongoose';
-import { Permissions, PermissionTypes } from 'librechat-data-provider';
+import { SkillsScope, Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from '@librechat/data-schemas';
 import type { IUser, AppConfig, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { createScheduleMCPEnrollmentResolver } from './enrollment';
+import { createScheduleMCPEnrollmentResolver, createScheduleMCPOffer } from './enrollment';
+import { allowOffered, pinStorage } from './execution.helper';
 import { createScheduleMCPConsentService } from './service';
 import { createResolveAgentFireAccess } from '../access';
 
@@ -27,11 +28,6 @@ function setup() {
           schedules: {
             mcpConsent: {
               enabled: true,
-              readOnlyPolicy: {
-                warehouse: {
-                  tools: { query: { effect: 'read_only', definitionSha256: 'a'.repeat(64) } },
-                },
-              },
               resources: {
                 warehouse: {
                   url: 'https://warehouse.example/mcp',
@@ -105,21 +101,166 @@ it('requires operator-declared recipient metadata, not a successful login or too
   } as AppConfig);
   expect(await resolve(identity, {})).toEqual([]);
 });
-it('denies a changed resource URL even if the configured server name is unchanged', async () => {
+it("offers the agents' other tools beside their MCP tools, from one walk of the agent graph", async () => {
+  const { deps } = setup();
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools:
+        id === 'root'
+          ? ['query_mcp_warehouse', 'web_search', 'execute_code', 'send_action_mail.example']
+          : ['query_mcp_warehouse', 'web_search', 'tool_search'],
+      agent_ids: id === 'root' ? ['child'] : [],
+    })),
+  );
+  const offer = createScheduleMCPOffer(deps);
+  const [targets, tools] = await Promise.all([
+    offer.targets(identity, {}),
+    offer.tools(identity, {}),
+  ]);
+  // An agent with other tools is offered a grant like any other: they no longer rule it out.
+  expect(targets[0].permittedTools).toEqual([
+    { agentId: 'child', tools: ['query'] },
+    { agentId: 'root', tools: ['query'] },
+  ]);
+  // Each is its own item, per agent. The SDK's own controls are not the owner's to allow.
+  expect(tools).toEqual([
+    { agentId: 'child', tools: ['web_search'] },
+    { agentId: 'root', tools: ['execute_code', 'send_action_mail.example', 'web_search'] },
+  ]);
+  expect(deps.findUser).toHaveBeenCalledTimes(1);
+  expect(deps.getServers).toHaveBeenCalledTimes(1);
+  // A grant that limits MCP tools only, as an API key's does, offers none of them.
+  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  expect(await limited.tools(identity, {})).toEqual([]);
+});
+it('offers the skills of an agent as one item, where it uses any and the deployment has skills on', async () => {
+  const { deps } = setup();
+  const config = await deps.getAppConfig({});
+  const withSkills = (capabilities: string[]) =>
+    jest.mocked(deps.getAppConfig).mockResolvedValue({
+      ...config,
+      endpoints: { agents: { capabilities } },
+    } as unknown as AppConfig);
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools: ['web_search'],
+      agent_ids: id === 'root' ? ['all', 'picked', 'off', 'none'] : [],
+      // Every skill the owner can use, two picked ones, switched off, and on with none picked.
+      ...(id === 'root' && { skills_enabled: true }),
+      ...(id === 'all' && { skills_enabled: true, skills_scope: SkillsScope.all }),
+      ...(id === 'picked' && { skills_enabled: true, skills: ['a', 'b'] }),
+      ...(id === 'off' && { skills_enabled: false, skills: ['a'] }),
+      ...(id === 'none' && { skills_enabled: true, skills_scope: SkillsScope.none }),
+    })),
+  );
+  withSkills(['skills']);
+  const using = (tools: { agentId: string; tools: string[] }[]) =>
+    tools.filter((selection) => selection.tools.includes('skills')).map(({ agentId }) => agentId);
+  expect(using([...(await createScheduleMCPOffer(deps).tools(identity, {}))])).toEqual([
+    'all',
+    'picked',
+    'root',
+  ]);
+  // With the capability off no agent runs a skill, so there is nothing to allow.
+  withSkills([]);
+  expect(using([...(await createScheduleMCPOffer(deps).tools(identity, {}))])).toEqual([]);
+});
+it("offers the agents' other tools where the operator declared no MCP server at all", async () => {
+  const { deps } = setup();
+  jest.mocked(deps.getAppConfig).mockResolvedValue({
+    interfaceConfig: { schedules: { mcpConsent: { enabled: true } } },
+  } as AppConfig);
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      tools: ['web_search', 'query_mcp_warehouse'],
+    })),
+  );
+  const offer = createScheduleMCPOffer(deps);
+  expect(await offer.targets(identity, {})).toEqual([]);
+  expect(await offer.tools(identity, {})).toEqual([{ agentId: 'root', tools: ['web_search'] }]);
+  // A grant that limits MCP tools only has nothing to offer there, and walks no graph for it.
+  jest.mocked(deps.getNodes).mockClear();
+  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  expect(await limited.tools(identity, {})).toEqual([]);
+  expect(deps.getNodes).not.toHaveBeenCalled();
+});
+it('does not offer a server whose URL changed, even if its configured name did not', async () => {
   const { deps, resolve } = setup();
   jest.mocked(deps.getServers).mockResolvedValue({
     warehouse: { type: 'streamable-http', url: 'https://other.example/mcp' },
   });
-  await expect(resolve(identity, {})).rejects.toMatchObject({ code: 'consent_unavailable' });
+  expect(await resolve(identity, {})).toEqual([]);
 });
-it('does not expand wildcard tools into rolling consent', async () => {
+it('reports a selection of every tool on a server under its marker, not as a list of them', async () => {
   const { deps, resolve } = setup();
   jest
     .mocked(deps.getNodes)
     .mockResolvedValue([
       { id: 'root', provider: 'test', model: 'test', tools: ['sys__all__sys_mcp_warehouse'] },
     ]);
-  await expect(resolve(identity, {})).rejects.toMatchObject({ code: 'consent_unavailable' });
+  const targets = await resolve(identity, {});
+  expect(targets.map((target) => target.permittedTools)).toEqual([
+    [{ agentId: 'root', tools: ['sys__all__sys'] }],
+  ]);
+  expect(targets[0].resource.audience).toBe('warehouse');
+});
+it('still offers the rest when one server the agents use cannot be offered', async () => {
+  const { deps } = setup();
+  jest.mocked(deps.getServers).mockImplementation(async (_user, config) => ({
+    ...config,
+    notes: { type: 'stdio', command: 'notes', args: [] },
+    archive: { type: 'streamable-http', url: 'https://archive.example/mcp' },
+  }));
+  jest.mocked(deps.getNodes).mockImplementation(async (ids) =>
+    ids.map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test',
+      // One declared, one the operator never declared, one local, one named by no server.
+      tools: [
+        'query_mcp_warehouse',
+        'purge_mcp_archive',
+        'lookup_mcp_notes',
+        'lost_mcp_nowhere',
+        'web_search',
+      ],
+    })),
+  );
+  const offer = createScheduleMCPOffer(deps);
+  const targets = await offer.targets(identity, {});
+  expect(targets.map((target) => target.resource.serverName)).toEqual(['warehouse']);
+  expect(targets[0].permittedTools).toEqual([{ agentId: 'root', tools: ['query'] }]);
+  // A server the operator declared nothing for has no recipient to bind: its tools are
+  // offered among the other tools, under the key the agent has them by. A key that names no
+  // server the owner can reach is not offered at all.
+  expect(await offer.tools(identity, {})).toEqual([
+    { agentId: 'root', tools: ['lookup_mcp_notes', 'purge_mcp_archive', 'web_search'] },
+  ]);
+  // A grant that limits MCP tools only has no such list to put them in.
+  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  expect(await limited.tools(identity, {})).toEqual([]);
+  expect((await limited.targets(identity, {})).map((t) => t.resource.serverName)).toEqual([
+    'warehouse',
+  ]);
+  // Every server in use is reported by name, offered or not, so a grant can tell a server
+  // that lost its declaration from one the agents dropped.
+  expect(await offer.servers(identity, {})).toEqual(['archive', 'notes', 'warehouse']);
+  jest.mocked(deps.getAppConfig).mockResolvedValue({
+    interfaceConfig: { schedules: { mcpConsent: { enabled: true } } },
+    mcpConfig: { warehouse: { type: 'streamable-http', url: 'https://warehouse.example/mcp' } },
+  } as unknown as AppConfig);
+  const undeclared = createScheduleMCPOffer(deps);
+  expect(await undeclared.targets(identity, {})).toEqual([]);
+  expect(await undeclared.servers(identity, {})).toEqual(['archive', 'notes', 'warehouse']);
 });
 it('denies an owner/tenant mismatch and cancellation before resolving resources', async () => {
   const { deps, resolve } = setup();
@@ -228,17 +369,22 @@ it.each<Partial<Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }
     },
     revokeScheduleMCPConsent: async () => true,
     admitScheduleMCPConsent: admit,
+    ...pinStorage(() => snapshot.enrollment),
   };
   const service = createScheduleMCPConsentService({
     storage,
     resolveEnrollment: resolve,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => true,
-    checkToolPolicy: async () => true,
     now: () => 1000,
   });
   const preview = await service.view(identity);
-  const input = { offerDigest: preview.offer!.digest, expectedRevision: null, lifetimeHours: 1 };
+  const input = {
+    offerDigest: preview.offer!.digest,
+    expectedRevision: null,
+    lifetimeHours: 1,
+    allow: allowOffered(preview.targets),
+  };
   const enrolled = await service.confirm(identity, input);
   const oldResource = snapshot.enrollment!.consents[0].resource;
   server = { ...server, ...change };
@@ -344,72 +490,30 @@ it('does not offer owner consent for recipient-defining custom user variables', 
       confirmScheduleMCPConsent: confirm,
       revokeScheduleMCPConsent: async () => true,
       admitScheduleMCPConsent: async () => true,
+      ...pinStorage(() => snapshot.enrollment),
     },
     resolveEnrollment: resolve,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => true,
   });
-  await expect(service.view(identity)).rejects.toMatchObject({ code: 'consent_unavailable' });
+  // The server is not offered, so there is nothing to confirm for it.
+  expect(await service.view(identity)).toMatchObject({ state: 'unsupported', offer: null });
   await expect(
     service.confirm(identity, {
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
+      allow: { warehouse: ['query'] },
     }),
   ).rejects.toMatchObject({ code: 'consent_unavailable' });
   expect(confirm).not.toHaveBeenCalled();
 });
 
-it.each([
-  undefined,
-  {},
-  { tools: {} },
-  { tools: { query: { effect: 'write', definitionSha256: 'a'.repeat(64) } } },
-  { tools: { other: { effect: 'read_only', definitionSha256: 'a'.repeat(64) } } },
-])('does not offer or confirm unusable read-only consent for policy %s', async (policy) => {
+it('offers every MCP tool the agent graph selects, with no operator tool list', async () => {
   const f = setup();
-  const config = (await f.deps.getAppConfig({}))!;
-  if (typeof config.interfaceConfig?.schedules !== 'object')
-    throw new Error('Expected schedule config');
-  config.interfaceConfig.schedules.mcpConsent!.readOnlyPolicy = { warehouse: policy } as never;
-  jest.mocked(f.deps.getAppConfig).mockResolvedValue(config);
-  const storage: ScheduleMCPConsentStorage = {
-    readScheduleMCPConsent: jest.fn(async () => ({
-      agentId: 'root',
-      enabled: true,
-      configRevision: 0,
-      enrollment: null,
-    })),
-    confirmScheduleMCPConsent: jest.fn(async () => true),
-    revokeScheduleMCPConsent: jest.fn(async () => true),
-    admitScheduleMCPConsent: jest.fn(async () => true),
-  };
-  const service = createScheduleMCPConsentService({
-    storage,
-    resolveEnrollment: f.resolve,
-    getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
-    canUse: async () => true,
-  });
-  await expect(service.view(identity)).rejects.toMatchObject({ code: 'consent_unavailable' });
-  await expect(
-    service.confirm(identity, {
-      expectedRevision: null,
-      offerDigest: 'outdated',
-      lifetimeHours: 1,
-    }),
-  ).rejects.toMatchObject({ code: 'consent_unavailable' });
-  expect(storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
-});
+  const [target] = await f.resolve(identity, {});
 
-it('cannot offer read-only authority supplied only by a principal-specific configuration override', async () => {
-  const f = setup();
-  const effective = (await f.deps.getAppConfig({}))!;
-  const base = structuredClone(effective);
-  if (typeof base.interfaceConfig?.schedules !== 'object')
-    throw new Error('Expected schedule config');
-  delete base.interfaceConfig.schedules.mcpConsent!.readOnlyPolicy;
-  jest
-    .mocked(f.deps.getAppConfig)
-    .mockImplementation(async (options) => (options.baseOnly ? base : effective));
-  await expect(f.resolve(identity, {})).rejects.toMatchObject({ code: 'consent_unavailable' });
+  expect(target.resource.serverName).toBe('warehouse');
+  expect(target.permittedTools.flatMap((selection) => selection.tools)).toContain('query');
+  expect(f.deps.getAppConfig).not.toHaveBeenCalledWith(expect.objectContaining({ baseOnly: true }));
 });

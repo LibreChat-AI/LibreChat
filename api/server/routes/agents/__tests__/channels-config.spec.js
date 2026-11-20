@@ -13,14 +13,25 @@ jest.mock(
   '~/server/controllers/agents/v1',
   () => new Proxy({}, { get: () => (_req, res) => res.sendStatus(204) }),
 );
-jest.mock('~/server/middleware', () => ({
-  configMiddleware: async (req, _res, next) => {
-    req.config = await mockReadConfig();
-    next();
-  },
-  canAccessAgentResource: () => (_req, _res, next) => next(),
-  requireSameOrigin: (_req, _res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    configMiddleware: async (req, _res, next) => {
+      req.config = await mockReadConfig();
+      next();
+    },
+    canAccessAgentResource: () => (_req, _res, next) => next(),
+    requireSameOrigin: (_req, _res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 jest.mock('../middleware', () => ({ checkRemoteAgentsFeature: (_req, _res, next) => next() }));
 jest.mock('../actions', () => require('express').Router());
 jest.mock('../tools', () => require('express').Router());

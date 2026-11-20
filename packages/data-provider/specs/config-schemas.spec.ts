@@ -1594,6 +1594,12 @@ describe('interfaceSchema', () => {
     expect(interfaceSchema.parse({ landingFooter: 'composer' }).landingFooter).toBe('composer');
   });
 
+  it('accepts the conversation icons setting', () => {
+    expect(interfaceSchema.parse({ conversationIcons: false }).conversationIcons).toBe(false);
+    expect(interfaceSchema.parse({})).not.toHaveProperty('conversationIcons');
+    expect(interfaceSchema.safeParse({ conversationIcons: 'false' }).success).toBe(false);
+  });
+
   it('accepts the message author setting', () => {
     expect(interfaceSchema.parse({ messageAuthor: 'whenDifferent' }).messageAuthor).toBe(
       'whenDifferent',
@@ -2158,6 +2164,37 @@ describe('balance refill mode', () => {
   });
   test('rejects unsupported refill modes', () => {
     expect(balanceSchema.safeParse({ refillMode: 'rollover' }).success).toBe(false);
+  });
+});
+
+describe('balance refill anchor', () => {
+  test('is optional and keeps rolling periods by default', () => {
+    expect(balanceSchema.parse({ autoRefillEnabled: true }).refillAnchor).toBeUndefined();
+  });
+  test('accepts an ISO timestamp with an explicit offset', () => {
+    expect(
+      balanceSchema.parse({
+        refillMode: 'reset',
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        refillAnchor: '2026-01-05T00:00:00-05:00',
+      }).refillAnchor,
+    ).toBe('2026-01-05T00:00:00-05:00');
+  });
+  test.each(['2026-01-05T00:00:00', 'monday', '2026-02-30T00:00:00Z'])(
+    'rejects anchor %s',
+    (refillAnchor) => {
+      expect(balanceSchema.safeParse({ refillAnchor }).success).toBe(false);
+    },
+  );
+  test.each([0, 1.5])('rejects anchored interval %s even for additive refill', (value) => {
+    expect(
+      balanceSchema.safeParse({
+        refillMode: 'add',
+        refillIntervalValue: value,
+        refillAnchor: '2026-01-05T00:00:00Z',
+      }).success,
+    ).toBe(false);
   });
 });
 

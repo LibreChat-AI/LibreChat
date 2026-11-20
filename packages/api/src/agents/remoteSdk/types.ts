@@ -1,4 +1,14 @@
 import type {
+  AgentInputs,
+  createHostFileService,
+  HostFileBindings,
+  HostFileDescriptor,
+  HostFileServiceDescriptor,
+  createHostProviderTextService,
+  createHostModelService,
+  HostModelDescriptor,
+  HostChatModel,
+  HostProviderTextDescriptor,
   HostToolDescriptor,
   HostToolBindings,
   Run,
@@ -7,6 +17,7 @@ import type {
   IState,
   HookEvent,
 } from '@librechat/agents';
+import type { HostModelLifecycle } from './admission';
 import type { SdkAgentIdentity } from './identity';
 
 export interface RemoteSdkRecoveryOptions {
@@ -17,6 +28,10 @@ export interface RemoteSdkRecoveryOptions {
   maxJournalBytes: number;
 }
 export interface RemoteSdkOptions {
+  /** Opt in to the saved-agent host model, configured by the operator. */
+  hostModel?: boolean;
+  /** Opt in to native host attachment reads. */
+  hostFiles?: boolean;
   recovery?: RemoteSdkRecoveryOptions;
   url: string;
   secret: string;
@@ -51,8 +66,34 @@ export type SdkRun = Awaited<ReturnType<typeof Run.create>>;
 export type SdkRunInput = Parameters<SdkRun['processStream']>[0];
 export type SdkRunOptions = Parameters<SdkRun['processStream']>[1];
 export type SdkEventData = Parameters<EventHandler['handle']>[1];
+/** Public primary-model configuration required by the worker graph. */
+export interface RemoteSdkModelProfile {
+  provider: AgentInputs['provider'];
+  name: string;
+  streaming: boolean;
+}
+
+/** Explicit host-owned capabilities; never reconstructed from worker claims or YAML. */
+export interface RemoteSdkHostServices {
+  /** Already authorized host binding; storage credentials and policy stay with the host. */
+  files?: ReturnType<typeof createHostFileService> & { sources: readonly HostFileDescriptor[] };
+  modelLifecycle?: HostModelLifecycle;
+  modelProfile?: RemoteSdkModelProfile;
+  model?: ReturnType<typeof createHostModelService>;
+  providerText?: ReturnType<typeof createHostProviderTextService>;
+}
+
 export interface RemoteSdkStart {
   transportVersion: 2;
+  files?: {
+    version: 1;
+    publicKey: string;
+    descriptor: HostFileServiceDescriptor;
+    sources: HostFileDescriptor[];
+  };
+  modelAdmission?: { version: 1; maxEntries: number };
+  model?: { version: 1; publicKey: string; descriptor: HostModelDescriptor };
+  providerText?: { version: 1; publicKey: string; limits: HostProviderTextDescriptor };
   hostTools?: HostToolDescriptor[];
   operation: 'start' | 'resume';
   input: IState;
@@ -64,7 +105,7 @@ export interface RemoteSdkStart {
   checkpoint: boolean;
   humanInTheLoop?: RunConfig['humanInTheLoop'];
   streamLimits?: RunConfig['streamLimits'];
-  agent: { id: string; name?: string; instructions?: string };
+  agent: { id: string; name?: string; instructions?: string; model?: RemoteSdkModelProfile };
 }
 export interface RemoteSdkSnapshot {
   state?: {
@@ -86,10 +127,21 @@ export interface RemoteSdkSnapshot {
   runSteps?: ReturnType<NonNullable<SdkRun['Graph']>['createRunStepResumeState']>;
 }
 export interface RemoteSdkFactoryInput {
+  hostFiles?: HostFileBindings & { readonly sources: readonly HostFileDescriptor[] };
+  /** Retain this model as Graph.overrideModel when supplied by the authenticated host. */
+  hostModel?: ReturnType<HostChatModel['bindTools']>;
   hostTools?: HostToolBindings;
   identity: Readonly<SdkAgentIdentity>;
   /** Host-owned event, hook, and checkpoint adapters. Retain these in the returned Run. */
-  config: Pick<RunConfig, 'runId' | 'customHandlers' | 'hooks' | 'humanInTheLoop' | 'streamLimits'>;
+  config: Pick<
+    RunConfig,
+    | 'runId'
+    | 'customHandlers'
+    | 'hooks'
+    | 'humanInTheLoop'
+    | 'streamLimits'
+    | 'providerTextProtection'
+  >;
   compileOptions: NonNullable<RunConfig['graphConfig']['compileOptions']>;
   signal: AbortSignal;
   agent: RemoteSdkStart['agent'];

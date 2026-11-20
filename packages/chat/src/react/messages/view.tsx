@@ -79,6 +79,7 @@ export function MessagesViewProvider({ children }: { children: ReactNode }): Rea
   const {
     ask,
     index,
+    readOnly,
     regenerate,
     isSubmitting,
     conversation,
@@ -135,13 +136,14 @@ export function MessagesViewProvider({ children }: { children: ReactNode }): Rea
   /** Combine all values into final context value */
   const contextValue = useMemo<MessagesViewContextValue>(
     () => ({
-      readOnly: false,
+      /** A contract whose reader takes no turns keeps host-bound actions in its rows off too. */
+      readOnly: readOnly === true,
       ...conversationValues,
       ...submissionStates,
       ...messageOperations,
       ...messageState,
     }),
-    [conversationValues, submissionStates, messageOperations, messageState],
+    [readOnly, conversationValues, submissionStates, messageOperations, messageState],
   );
 
   return (

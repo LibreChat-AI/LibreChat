@@ -11,3 +11,4 @@ export * from './retention';
 export * from './save';
 export * from './title';
 export * from './rename';
+export * from './metadata';

@@ -53,19 +53,36 @@ export function duplicateIoRedisClient(
  * The heartbeat is the traffic the shared client gets for free.
  */
 export function createIoRedisSubscriber(client: Redis | Cluster, label: string): Redis | Cluster {
-  const subscriber = duplicateIoRedisClient(client);
+  // Retain idempotent SUBSCRIBE/PING commands across lost acknowledgements. Publishers
+  // keep their fail-fast policy so uncertain application writes are never replayed.
+  const redisOptions: RedisOptions = {
+    maxRetriesPerRequest: null,
+    autoResendUnfulfilledCommands: true,
+  };
+  const subscriber = duplicateIoRedisClient(
+    client,
+    client.isCluster
+      ? { redisOptions: { ...(client as Cluster).options.redisOptions, ...redisOptions } }
+      : redisOptions,
+  );
   subscriber.on('error', (error: Error) => {
     logger.error(`${label} error:`, error);
   });
   subscriber.on('ready', () => {
     logger.info(`${label} ready`);
   });
-  startRedisHeartbeat({
+  const stopHeartbeat = startRedisHeartbeat({
     client: subscriber,
     intervalMs: cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL * 1000,
     timeoutMs: cacheConfig.REDIS_PING_TIMEOUT,
     label,
   });
+  // An already-closed reconnecting socket need not emit another `end`.
+  const disconnect = subscriber.disconnect.bind(subscriber);
+  subscriber.disconnect = (reconnect?: boolean): void => {
+    if (reconnect !== true) stopHeartbeat();
+    disconnect(reconnect);
+  };
   return subscriber;
 }
 

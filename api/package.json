@@ -1,6 +1,6 @@
 {
   "name": "@librechat/backend",
-  "version": "v0.8.9-rc1",
+  "version": "v0.8.9",
   "description": "",
   "scripts": {
     "start": "echo 'please run this from the root directory'",
@@ -40,7 +40,7 @@
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^4.2.5",
+    "@librechat/agents": "^4.2.12",
     "@librechat/api": "*",
     "@librechat/data-schemas": "*",
     "@microsoft/microsoft-graph-client": "^3.0.7",

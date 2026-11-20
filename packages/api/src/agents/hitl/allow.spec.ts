@@ -131,6 +131,20 @@ describe('markToolApprovalAllowAlways', () => {
     expect(markToolApprovalAllowAlways(payload, { policy, agents: [{}], aliases })).toBe(payload);
   });
 
+  it('does not offer the choice for a tool something else asks about on every use', () => {
+    const payload = payloadFor(GITHUB_SEARCH, GITLAB_SEARCH);
+    const asksEveryUse = jest.fn((names: readonly string[]) =>
+      names.includes('legacy_search_mcp_github'),
+    );
+    const marked = markToolApprovalAllowAlways(payload, {
+      policy: enabled(),
+      aliases: [{ name: GITHUB_SEARCH, aliasName: 'legacy_search_mcp_github' }],
+      asksEveryUse,
+    });
+    // Asked by its other spelling: the tool is matched under every name the run knows it by.
+    expect(marked.review_configs.map((config) => config.allow_always)).toEqual([undefined, true]);
+  });
+
   it('stops offering new tools once the configured cap is reached', () => {
     const payload = payloadFor(GITHUB_SEARCH, GITLAB_SEARCH, GITHUB_SEARCH);
     const policy = enabled({ allowAlwaysMaxTools: 2 });
@@ -292,6 +306,29 @@ describe('recordToolApprovalAllows', () => {
       max: MAX_CONVERSATION_TOOL_ALLOWS,
     });
     expect(request.resolvedConversation.toolApprovalAllows).toEqual(['other_tool', GITHUB_SEARCH]);
+  });
+
+  it('approves once a tool that is asked about on every use by the time of the resume', async () => {
+    const addConvoToolApprovalAllows = jest.fn().mockResolvedValue(true);
+    const input = {
+      userId: 'u1',
+      conversationId: 'c1',
+      policy: enabled(),
+      pendingAction: { payload: offered },
+      resolutions,
+      request: {},
+      addConvoToolApprovalAllows,
+    };
+    expect(
+      await recordToolApprovalAllows({
+        ...input,
+        asksEveryUse: (names) => names.includes(GITHUB_SEARCH),
+      }),
+    ).toEqual([]);
+    expect(addConvoToolApprovalAllows).not.toHaveBeenCalled();
+    expect(await recordToolApprovalAllows({ ...input, asksEveryUse: () => false })).toEqual([
+      GITHUB_SEARCH,
+    ]);
   });
 
   it('passes the configured cap to storage and rechecks against healed rules', async () => {

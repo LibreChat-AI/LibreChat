@@ -182,6 +182,22 @@ const isExemptFromBedrockDocLimit = (model?: string, mimeType?: string): boolean
 };
 
 /**
+ * The size limit for one Bedrock document of this type on this model: the operator's limit when
+ * one is set, otherwise Bedrock's own. Known before anything is read, so it also bounds the read.
+ */
+export function getBedrockDocumentLimit(
+  mimeType: string,
+  configuredFileSizeLimit?: number,
+  model?: string,
+): number {
+  /** Default 4.5 MB; exempt models (Claude 4+ PDF, Nova PDF/DOCX) take the 32 MB request bound */
+  const providerLimit = isExemptFromBedrockDocLimit(model, mimeType)
+    ? mbToBytes(32)
+    : mbToBytes(4.5);
+  return configuredFileSizeLimit ?? providerLimit;
+}
+
+/**
  * Validates a document against Bedrock size limits. The default limit is 4.5 MB,
  * but Claude 4+ (PDF) and Nova (PDF/DOCX) models are exempt per AWS docs.
  * When exempt, falls back to a 32 MB request-level limit as a reasonable upper bound.
@@ -200,10 +216,7 @@ export async function validateBedrockDocument(
   model?: string,
 ): Promise<ValidationResult> {
   try {
-    const exempt = isExemptFromBedrockDocLimit(model, mimeType);
-    /** Default 4.5 MB; exempt models (Claude 4+ PDF, Nova PDF/DOCX) default to 32 MB when unconfigured */
-    const providerLimit = exempt ? mbToBytes(32) : mbToBytes(4.5);
-    const effectiveLimit = configuredFileSizeLimit ?? providerLimit;
+    const effectiveLimit = getBedrockDocumentLimit(mimeType, configuredFileSizeLimit, model);
 
     if (fileSize > effectiveLimit) {
       const limitMB = (effectiveLimit / (1024 * 1024)).toFixed(1);

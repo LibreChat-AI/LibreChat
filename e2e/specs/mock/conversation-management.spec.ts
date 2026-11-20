@@ -124,7 +124,8 @@ test.describe('conversation management', () => {
       await page.keyboard.press('ArrowDown');
       await expect(menu.getByRole('menuitem').first()).toBeFocused();
       const expectedOptions = ['Pin'];
-      if (background) expectedOptions.push('Mark as unread');
+      /** A chat that is not the one on screen can be marked unread, and opened beside it. */
+      if (background) expectedOptions.push('Mark as unread', 'Open beside chat');
       expectedOptions.push('Rename', 'Archive', 'Delete');
       await expect(menu.getByRole('menuitem')).toHaveText(expectedOptions);
       await test.info().attach('running-chat-menu', {

@@ -13,6 +13,21 @@ describe('Experimental server configuration', () => {
     expect(listenIndex).toBeLessThan(timeoutConfigIndex);
   });
 
+  it.each([
+    ['File', 'Files'],
+    ['Model', 'Models'],
+  ])('installs the SDK %s host from base config before serving requests', (host, setting) => {
+    const configIndex = source.indexOf('await getAppConfig({ baseOnly: true });');
+    const binding = `app.locals.sdk${host}Host = createSdk${host}Host(appConfig?.endpoints?.agents?.sdkHost${setting});`;
+    const bindingIndex = source.indexOf(binding);
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(bindingIndex).toBeGreaterThan(configIndex);
+    expect(listenIndex).toBeGreaterThan(bindingIndex);
+    expect(source.indexOf(binding, bindingIndex + 1)).toBe(-1);
+  });
+
   it('lets each worker drain registered services before cluster shutdown', () => {
     const listenIndex = source.indexOf('const server = app.listen');
     const gracefulShutdownIndex = source.indexOf('setupGracefulShutdown(server);');

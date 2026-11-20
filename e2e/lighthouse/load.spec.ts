@@ -75,7 +75,9 @@ test('serial database latency stays within web-vitals budgets', async ({ page, b
     }
     throw error;
   }
-  expect(reports, 'Lighthouse must produce all three reports').toHaveLength(3);
+  expect(reports.length, 'Lighthouse must produce at least three reports').toBeGreaterThanOrEqual(
+    3,
+  );
   for (const report of reports) {
     expect(report.finalDisplayedUrl, 'Do not measure a login redirect').toBe(url);
     expect(

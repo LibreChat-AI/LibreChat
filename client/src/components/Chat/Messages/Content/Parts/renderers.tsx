@@ -1,5 +1,5 @@
 import { EModelEndpoint } from 'librechat-data-provider';
-import type { Agent, TMessage } from 'librechat-data-provider';
+import type { AgentDisplay, TMessage } from 'librechat-data-provider';
 import type {
   MessagePartsImageProps,
   MessagePartsMarkdownProps,
@@ -26,7 +26,7 @@ setAppPartRenderers({
     ) : (
       <Markdown content={content} isLatestMessage={isLatestMessage} />
     ),
-  renderAgentIcon: (agent: Agent | undefined) => (
+  renderAgentIcon: (agent: AgentDisplay | undefined) => (
     <MessageIcon message={agentMessage} agent={agent} />
   ),
   renderImage: (props: MessagePartsImageProps) => <Image {...props} />,

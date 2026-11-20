@@ -294,7 +294,8 @@ export interface ToolExecuteOptions {
   /** Host observer, called only after authoring has bound an authorized identity. */
   onSkillAuthored?: (binding: Pick<AuthoredSkillBinding, 'name' | 'id' | 'primed'>) => void;
   /** Host-captured authority ceiling, never runnable/model metadata. */
-  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
+  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'> &
+    Partial<Pick<ScheduleMCPExecution, 'detaches'>>;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is
@@ -5707,18 +5708,6 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
       };
       // Only the SDK-owned batch field may establish a child execution. Runtime
       // configurable and callback metadata can otherwise carry inherited values.
-      /**
-       * Authored-skill identity has to outlive the per-batch copy below, which
-       * is what makes a skill created in one batch resolvable in the next.
-       * A shallow copy shares object references, so seeding the map on the
-       * run's own configurable lets `rememberAuthoredSkill` mutate it in place
-       * and later batches observe it, exactly as the shared
-       * `accessibleSkillIds` array already crosses batches. A fresh map
-       * assigned onto the copy would be discarded with the copy.
-       */
-      if (incomingConfigurable != null && incomingConfigurable.authoredSkillIdsByName == null) {
-        incomingConfigurable.authoredSkillIdsByName = {};
-      }
       const configurable: Record<string, unknown> | undefined =
         incomingConfigurable == null ? undefined : { ...incomingConfigurable, executionContext };
       const metadata: Record<string, unknown> | undefined =
@@ -5832,6 +5821,15 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
             const mergedConfigurable = resumedSkillConfigurable
               ? mergeToolConfigurables(resumedSkillConfigurable, baseConfigurable)
               : baseConfigurable;
+            /* The graph hands every tool step a fresh configurable, so skills authored in an
+             * earlier batch are bound again from this handler, which outlives the batches. */
+            for (const binding of authoredSkills.recorded(authoredScope)) {
+              rememberAuthoredSkill(
+                [mergedConfigurable],
+                { _id: new Types.ObjectId(binding.id), name: binding.name },
+                { prime: binding.primed },
+              );
+            }
             if (authoredSkills.hasPending) {
               const requestedSkills = new Map<string, ToolCallRequest[]>();
               for (const tc of allowedToolCalls) {
@@ -7346,7 +7344,12 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                 }
 
                 if (
-                  scheduledMCPExecution?.enrolled !== true &&
+                  // A run under a grant goes to the background only where its completion
+                  // turn can resolve that grant again: a schedule's can.
+                  !(
+                    scheduledMCPExecution?.enrolled === true &&
+                    scheduledMCPExecution.detaches !== true
+                  ) &&
                   backgroundToolSet.has(tc.name) &&
                   isBackgroundRequested(tc.args) &&
                   !toolRequiresEphemeralConnection(toolMap.get(tc.name)) &&
