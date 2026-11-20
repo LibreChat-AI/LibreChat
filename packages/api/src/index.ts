@@ -49,7 +49,10 @@ export * from './mcp/authorization';
 export * from './mcp/authorizationRetry';
 export * from './mcp/assistants';
 export * from './mcp/request';
+export * from './mcp/agent';
 export * from './mcp/reinitialize';
+export * from './mcp/readiness';
+export * from './mcp/connect';
 export * from './mcp/icons';
 /* Utilities */
 export * from './mcp/utils';

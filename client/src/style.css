@@ -1414,48 +1414,6 @@ html {
   }
 }
 
-/* Pre-response dot: enters on the streamed-text fade curve, then breathes
-   on opacity — replaces the legacy scale throb so waiting and text arrival
-   share one motion language.
-
-   Custom CSS exception: this indicator is a `::after` pseudo-element on the
-   `.result-thinking` hook, shown only while an ancestor carries `.submitting`
-   and the hook itself is `:empty`. No `@librechat/client` primitive can
-   express "render only while an ancestor is in state X and I have no
-   children" — a component would have to own that state, which the streaming
-   markdown path deliberately keeps in the DOM so the dot costs no React
-   renders per token. Scoped to the one selector, colored from
-   `--text-primary` so both themes follow, and disabled under
-   prefers-reduced-motion. */
-@keyframes lc-dot-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
-}
-.submitting .result-thinking:empty:last-child:after {
-  animation:
-    lc-fade-in 250ms ease-out both,
-    lc-dot-breathe 1.5s ease-in-out 250ms infinite;
-  background-color: rgb(var(--text-primary));
-  border-radius: 50%;
-  content: ' ';
-  display: block;
-  height: 0.75rem;
-  position: absolute;
-  top: -0.6875rem;
-  width: 0.75rem;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .submitting .result-thinking:empty:last-child:after {
-    animation: none;
-  }
-}
-
 .avatar-stroke {
   position: relative;
 }
@@ -1520,115 +1478,6 @@ html {
 .dark .assistant-item:after {
   --tw-shadow: inset 0 0 0 1px rgb(var(--black) / 0.25);
   --tw-shadow-colored: inset 0 0 0 0 1px var(--tw-shadow-color);
-}
-
-.result-streaming > :not(ol):not(ul):not(pre):last-child:after,
-.result-streaming > pre:last-child code:after {
-  display: inline-block;
-  content: '⬤';
-  width: 0.75rem;
-  height: 0.75rem;
-  font-family:
-    system-ui,
-    Inter,
-    Söhne Circle,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Ubuntu,
-    Cantarell,
-    Noto Sans,
-    sans-serif;
-  line-height: normal;
-  margin-inline-start: 0.25rem;
-  vertical-align: middle;
-  font-size: 0.5rem;
-}
-
-@supports (selector(:has(*))) {
-  .result-streaming > :is(ul, ol):last-child > li:last-child:not(:has(> :is(ul, ol, pre))):after {
-    content: '⬤';
-    font-family:
-      system-ui,
-      Inter,
-      Söhne Circle,
-      -apple-system,
-      Segoe UI,
-      Roboto,
-      Ubuntu,
-      Cantarell,
-      Noto Sans,
-      sans-serif;
-    line-height: normal;
-    margin-inline-start: 0.25rem;
-    vertical-align: middle;
-    font-size: 0.5rem;
-    display: inline-block;
-    width: 0.75rem;
-    height: 0.75rem;
-  }
-}
-
-@supports not (selector(:has(*))) {
-  .result-streaming > ol:last-child > li:last-child:after,
-  .result-streaming > ul:last-child > li:last-child:after {
-    content: '⬤';
-    font-family:
-      system-ui,
-      Inter,
-      Söhne Circle,
-      -apple-system,
-      Segoe UI,
-      Roboto,
-      Ubuntu,
-      Cantarell,
-      Noto Sans,
-      sans-serif;
-    line-height: normal;
-    margin-inline-start: 0.25rem;
-    vertical-align: middle;
-    font-size: 0.5rem;
-    display: inline-block;
-    width: 0.75rem;
-    height: 0.75rem;
-  }
-
-  .result-streaming > ol:last-child > li:last-child > :is(ul, ol, pre) ~ :after,
-  .result-streaming > ul:last-child > li:last-child > :is(ul, ol, pre) ~ :after {
-    display: none;
-  }
-
-  .result-streaming > ol:last-child > li:last-child > pre:last-child code:after,
-  .result-streaming > ul:last-child > li:last-child > pre:last-child code:after {
-    display: inline-block;
-  }
-}
-
-/* Remove cursors when streaming is complete */
-.result-streaming:not(.submitting) :is(ul, ol) li:after {
-  display: none !important;
-}
-
-/* Smooth streaming: one-shot fade-in on newly streamed words.
-   Duration must match FADE_DURATION_MS in Chat/Messages/Content/animate.tsx */
-@keyframes lc-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-[data-lc-fade] {
-  animation: lc-fade-in 250ms ease-out both;
-  animation-delay: var(--lc-delay, 0ms);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-lc-fade] {
-    animation: none;
-  }
 }
 
 /* Ordered Listing */
@@ -1832,6 +1681,9 @@ html {
   transform-origin: 50% 50%;
 }
 
+/* `.message-content` is also published in @librechat/client (theme/parts.css) for other hosts.
+ * That stylesheet loads before this one, so `.prose` and `.markdown` above would win; keeping the
+ * rule here at its original place preserves the app's message line height and width. */
 .message-content,
 .message-editor-text {
   font-size: var(--markdown-font-size, var(--font-size-base));
@@ -2117,61 +1969,12 @@ html[data-input-modality='keyboard']
   transform: scale(1) translate(0, 0);
 }
 
-/**
- * Composer popovers. Its own curve rather than `animate-popover`'s: these are
- * large surfaces, and the shared 150ms ease-in-out reads as a snap at that size.
- * Decelerating hard from the first frame and then settling is what makes a panel
- * feel placed rather than switched on. Leaving is quicker than entering, so
- * dismissing never feels like waiting.
- */
-.animate-composer-popover {
-  /* Ariakit resolves this to the edge nearest the trigger, so the panel grows
-     out of the button whether it opens below or flips above. `animate-popover`
-     pins the origin to the top and translates down, which is right one way
-     round and backwards the other. */
-  transform-origin: var(--popover-transform-origin, top center);
-  opacity: 0;
-  transform: scale(0.94);
-  transition:
-    opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
-    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
-  will-change: transform, opacity;
-}
-/* Resizable anchored panels share the composer entrance and exit clock. */
-.animate-composer-popover-resize {
-  transition-property: opacity, transform, width, max-height;
-}
-.animate-composer-popover[data-enter] {
-  opacity: 1;
-  transform: scale(1);
-}
-.animate-composer-popover[data-leave] {
-  transition-duration: 120ms, 140ms;
-}
-
 /* The Thinking pill's label slot resizes with the popover it opens: same
-   duration and curve as the opacity leg above. */
+   duration and curve as the opacity leg of `.animate-composer-popover`. */
 .composer-slot-resize {
   transition: width 190ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-/**
- * Palette list. `.scrollbar-hover` fades its thumb in on pointer-over, so on a
- * list this dense the scrollbar reads as appearing out of nowhere, and where
- * the platform draws classic rather than overlay scrollbars, a gutter that only
- * exists while the thumb does shifts every row sideways under the cursor. The
- * thumb stays drawn and the gutter stays reserved; the class is only applied
- * when the list actually overflows, so a short list keeps its full width.
- *
- * Standard properties only, deliberately: styling `::-webkit-scrollbar` opts an
- * element out of overlay scrollbars altogether, which would spend 8px of gutter
- * on the platforms that never had the problem.
- */
-.composer-palette-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1)) transparent;
-  scrollbar-gutter: stable;
-}
 /**
  * The thinking-level slider's stops. Position and size glide on a spring with a
  * slight overshoot, so the thumb and the fill settle onto a stop rather than
@@ -2262,80 +2065,18 @@ html[data-input-modality='keyboard']
   animation: composer-label-in-down 280ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-/** Trigger glyphs that turn as their popover opens, on the same curve. */
-.animate-composer-icon {
-  /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
-  transition-property: transform, rotate;
-  transition-duration: 260ms;
-  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
-}
-
-/**
- * The palette growing or shrinking as its list rearranges. The rows themselves
- * are moved from `Palette.tsx`, which plays each one back to where it was after
- * the list has been redrawn; a re-inserted node drops any transition it was
- * about to run, and starring an entry re-inserts every row it passed. The
- * panel's own height has no such problem: the list box is never re-inserted.
- */
-.composer-palette-rows .ReactVirtualized__Grid {
-  transition: height 260ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-/* Held for the frame a search redraws in: the list is being replaced rather
-   than rearranged there, and growing into its new size reads as the panel
-   lagging behind the typing. */
-.composer-palette-instant .ReactVirtualized__Grid {
-  transition-duration: 0s;
-}
-@keyframes composer-palette-row {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-.animate-composer-palette-row {
-  animation: composer-palette-row 200ms cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-@keyframes composer-palette-row-out {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
-}
-/* Accelerating away, unlike everything else here: the shared decelerating curve
-   spends this beat almost entirely at zero, leaving the rows gone well before
-   the list starts closing over them. */
-.animate-composer-palette-row-out {
-  animation: composer-palette-row-out 110ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .animate-composer-popover,
-  .animate-composer-popover[data-enter],
-  .animate-composer-popover[data-leave],
-  .animate-composer-icon,
   .composer-slot-resize,
   .composer-effort-glide,
   .composer-effort-thumb,
-  .composer-effort-fill,
-  .composer-palette-rows .ReactVirtualized__Grid {
+  .composer-effort-fill {
     transition-duration: 1ms;
   }
-  .animate-composer-palette-row,
-  .animate-composer-palette-row-out,
   .composer-label-out-up,
   .composer-label-out-down,
   .composer-label-in-up,
   .composer-label-in-down {
     animation-duration: 1ms;
-  }
-  .animate-composer-popover,
-  .animate-composer-popover[data-enter],
-  .animate-composer-popover[data-leave] {
-    transform: none;
   }
 }
 
@@ -2363,10 +2104,6 @@ html[data-input-modality='keyboard']
 .animate-gradient-x {
   background-size: 200% 200%;
   animation: gradient-x 15s ease infinite;
-}
-
-.animate-pulse-slow {
-  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 @keyframes fadeIn {

@@ -128,14 +128,18 @@ import { extractAgentContent, extractSkillContent } from '../protection/adapters
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
+import { narrowScheduledMCPTools } from '~/schedules/authorization/execution';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
+import { getPromptTime, isStableContextEnabled } from './promptCache';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
+import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -1238,7 +1242,27 @@ export async function initializeAgent(
     useChatProjectContext ?? params.req?.chatProjectContextEnabled === true;
   assertToolOptionsWithinLimits(suppliedAgent.tool_options);
   const inputAgent = restoreAgentInferenceInput(suppliedAgent);
-  const agent = shouldUseChatProjectContext ? { ...inputAgent } : inputAgent;
+  /**
+   * Under a schedule's grant an agent has only the tools its owner allowed. Narrowed here, at
+   * the one list everything below reads: the loader, and the markers that set up code
+   * execution and memory, so a tool the owner left out is not defined for the model at all.
+   */
+  const grantedTools =
+    inputAgent.tools == null
+      ? inputAgent.tools
+      : narrowScheduledMCPTools(params.req, inputAgent.id, inputAgent.tools);
+  const agent =
+    shouldUseChatProjectContext || grantedTools !== inputAgent.tools
+      ? { ...inputAgent, tools: grantedTools }
+      : inputAgent;
+  /**
+   * Skills are one item of a schedule's grant. Left out, the agent runs without them: none
+   * is resolved, no catalog is injected and the skill tool is not registered, so the model
+   * is not offered what it would only be refused.
+   */
+  const skillsGranted =
+    narrowScheduledMCPTools(params.req, inputAgent.id, [AgentCapabilities.skills]).length > 0;
+  const accessibleSkillIds = skillsGranted ? params.accessibleSkillIds : [];
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
   const requestFileOwnerScope: FileOwnerScope | undefined = requestFileOwnerId
@@ -1428,8 +1452,8 @@ export async function initializeAgent(
    * those exact model-bound skill bodies before file usage/resource priming or
    * tool loading, then reuse the results below when expanding allowed tools.
    */
-  const hasSkillAccess = (params.accessibleSkillIds?.length ?? 0) > 0;
-  const skillAuthoringAvailable = params.skillAuthoringAvailable === true;
+  const hasSkillAccess = (accessibleSkillIds?.length ?? 0) > 0;
+  const skillAuthoringAvailable = skillsGranted && params.skillAuthoringAvailable === true;
   let manualSkillPrimes: ResolvedManualSkill[] | undefined;
   let alwaysApplySkillPrimes: ResolvedAlwaysApplySkill[] | undefined;
   let extraAllowedToolNames: string[] = [];
@@ -1441,7 +1465,7 @@ export async function initializeAgent(
         ? resolveManualSkills({
             names: params.manualSkills,
             getSkillByName: db.getSkillByName,
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             userId: user?.id,
             skillStates: params.skillStates,
             defaultActiveOnShare: params.defaultActiveOnShare,
@@ -1450,7 +1474,7 @@ export async function initializeAgent(
       db.listAlwaysApplySkills
         ? resolveAlwaysApplySkills({
             listAlwaysApplySkills: db.listAlwaysApplySkills,
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             userId: user?.id,
             skillStates: params.skillStates,
             defaultActiveOnShare: params.defaultActiveOnShare,
@@ -1458,7 +1482,7 @@ export async function initializeAgent(
         : Promise.resolve<ResolvedAlwaysApplySkill[] | undefined>(undefined),
       hasActivePiiFields(appConfig?.filters?.skills?.pii, ['name', 'description'])
         ? resolveSkillCatalog({
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             listSkillsByAccess: db.listSkillsByAccess,
             userId: user?.id,
             skillStates: params.skillStates,
@@ -2233,7 +2257,8 @@ export async function initializeAgent(
     loadTools?.({
       provider,
       agentId: agent.id,
-      tools,
+      // Under a schedule's grant, only the MCP tools its owner allowed are loaded at all.
+      tools: narrowScheduledMCPTools(params.req, agent.id, tools),
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources: runtimeToolResources,
@@ -2434,6 +2459,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2641,16 +2667,21 @@ export async function initializeAgent(
     }
   }
 
+  let temporalInstructions: string | undefined;
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
       user: user ? (user as unknown as TUser) : null,
-      now: runtime.turnStartedAt,
+      now: getPromptTime(runtime.appConfig, runtime),
       timezone: runtime.requestBody.timezone,
     });
     if (hasTemporalSpecialVars(agent.instructions)) {
       agent.instructions = undefined;
-      appendAdditionalInstructions(agent, resolvedInstructions);
+      if (isStableContextEnabled(runtime.appConfig)) {
+        temporalInstructions = resolvedInstructions;
+      } else {
+        appendAdditionalInstructions(agent, resolvedInstructions);
+      }
     } else {
       agent.instructions = resolvedInstructions;
     }
@@ -2690,9 +2721,8 @@ export async function initializeAgent(
    * Ensures `getSkillByName` cannot resolve a deactivated skill even if the
    * LLM (or a direct-invocation path) names one.
    */
-  let executableSkillIds = params.accessibleSkillIds;
+  let executableSkillIds = accessibleSkillIds;
   let activeSkillNames: Set<string> | undefined;
-  const { accessibleSkillIds } = params;
   /**
    * Authoring runs go through catalog injection even with nothing accessible:
    * `injectSkillCatalog` owns the `skill` tool registration, and a model that
@@ -2719,6 +2749,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
@@ -2813,7 +2844,14 @@ export async function initializeAgent(
 
   const agentMaxContextNum = Number(agentMaxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS;
   const maxOutputTokensNum = Number(maxOutputTokens) || 0;
-  const baseContextTokens = Math.max(0, agentMaxContextNum - maxOutputTokensNum);
+  const sharedInputLimit =
+    agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI
+      ? (getGoogleInputTokenLimit(tokensModel ?? '', maxOutputTokensNum) ?? Infinity)
+      : Infinity;
+  const baseContextTokens = Math.max(
+    0,
+    Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit),
+  );
 
   const toMongoFiles = (files: Array<TFile | undefined> | undefined): IMongoFile[] =>
     (files ?? []).filter((a): a is TFile => a != null).map((a) => a as unknown as IMongoFile);
@@ -2944,7 +2982,9 @@ export async function initializeAgent(
     agentContextAttachments,
     fileConsumers,
     toolContextMap: toolContextMap ?? {},
-    dynamicToolContextMap: dynamicToolContextMap ?? {},
+    dynamicToolContextMap: temporalInstructions
+      ? { ...dynamicToolContextMap, [AGENT_TEMPORAL_INSTRUCTIONS_KEY]: temporalInstructions }
+      : (dynamicToolContextMap ?? {}),
     useLegacyContent: !!options.useLegacyContent,
     tools: (tools ?? []) as GenericTool[] & string[],
     maxToolResultChars: maxToolResultCharsResolved,
@@ -2953,7 +2993,7 @@ export async function initializeAgent(
       provisionWarnings != null && provisionWarnings.length > 0 ? provisionWarnings : undefined,
     maxContextTokens:
       maxContextTokens != null && maxContextTokens > 0
-        ? maxContextTokens
+        ? Math.min(maxContextTokens, sharedInputLimit)
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
     primedCodeFiles,
     codeContextEntries,

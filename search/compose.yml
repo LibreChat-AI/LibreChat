@@ -13,8 +13,8 @@
 # original registry checks):
 #   ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
 #   ghcr.io/ferretdb/ferretdb:2.7.0
-#   pgvector/pgvector:0.8.6-pg17-trixie
-#   clickhouse/clickhouse-server:26.3.62.3 (26.3 LTS)
+#   docker.io/pgvector/pgvector:0.8.6-pg17-trixie
+#   docker.io/clickhouse/clickhouse-server:26.3.62.3 (26.3 LTS)
 #
 # Host ports are chosen to avoid every port used by docker-compose.yml,
 # deploy-compose.yml, rag.yml, utils/docker/test-compose.yml,
@@ -86,7 +86,7 @@ services:
   # `vectordb` service used by rag_api file search (pinned pg15, superuser
   # bootstrap credential, live pgdata2 volume) - see PLAN.md decision 3.
   chat_search_db:
-    image: pgvector/pgvector:0.8.6-pg17-trixie
+    image: docker.io/pgvector/pgvector:0.8.6-pg17-trixie
     container_name: search-chat-search-db
     restart: on-failure
     environment:
@@ -113,7 +113,7 @@ services:
       start_period: 10s
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.3.62.3
+    image: docker.io/clickhouse/clickhouse-server:26.3.62.3
     container_name: search-clickhouse
     restart: on-failure
     environment:

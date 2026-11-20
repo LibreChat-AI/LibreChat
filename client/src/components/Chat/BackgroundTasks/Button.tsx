@@ -8,8 +8,9 @@ import {
   useParentSubagents,
 } from '@librechat/chat/react';
 import type { TaskRow } from './rows';
-import { RECENT_SUBAGENT_WINDOW_MS } from './rows';
+import { findTaskTarget, focusTaskTarget, scrollToTaskTarget } from './jump';
 import useBackgroundTasks from './useTasks';
+import { useTaskExpiry } from './clock';
 import { useLocalize } from '~/hooks';
 import Section from './Section';
 import TaskCard from './Card';
@@ -49,21 +50,7 @@ function BackgroundTasksButton({
     return () => clearInterval(timer);
   }, [open, activeCount]);
 
-  const nextExpiry = rows.reduce(
-    (next, row) =>
-      row.settledAt != null &&
-      row.delivery == null &&
-      row.status !== 'running' &&
-      row.status !== 'stopping'
-        ? Math.min(next, row.settledAt + RECENT_SUBAGENT_WINDOW_MS + 1)
-        : next,
-    Infinity,
-  );
-  useEffect(() => {
-    if (!Number.isFinite(nextExpiry)) return;
-    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, nextExpiry - Date.now()));
-    return () => clearTimeout(timer);
-  }, [nextExpiry]);
+  useTaskExpiry(rows, setNow);
 
   if (rows.length === 0 && !view.loadFailed && !incomplete) {
     return null;
@@ -111,52 +98,12 @@ function BackgroundTasksButton({
       openSubagentPanel({ ...selection, isSubmitting: false });
       return true;
     }
-    if (row.messageId == null) return false;
-    const message = document.getElementById(row.messageId);
-    if (message == null) return false;
-    const scope = message;
-    const destinations = Array.from(
-      scope.querySelectorAll<HTMLElement>('[data-task-tool-call]'),
-    ).filter(
-      (element) =>
-        element.dataset.taskToolCall === row.toolCallId &&
-        (row.stepId == null || element.dataset.taskStep === row.stepId),
-    );
-    const targets = Array.from(
-      scope.querySelectorAll<HTMLElement>(
-        '[data-tool-call-id], [data-subagent-tool-call], [data-subagent-thread]',
-      ),
-    ).filter(
-      (element) =>
-        (row.threadId != null && element.dataset.subagentThread === row.threadId) ||
-        (row.toolCallId != null &&
-          (element.dataset.toolCallId === row.toolCallId ||
-            element.dataset.subagentToolCall === row.toolCallId)),
-    );
-    // Legacy call ids are only usable when they identify one rendered call.
-    const threads =
-      row.threadId == null
-        ? []
-        : targets.filter((element) => element.dataset.subagentThread === row.threadId);
-    let target = message;
-    if (threads.length === 1) target = threads[0];
-    else if (destinations.length === 1) target = destinations[0];
-    else if (destinations.length === 0 && targets.length === 1) target = targets[0];
-    if (target == null || target.closest('[inert], [hidden], [aria-hidden="true"]') != null)
-      return false;
-    if (!target.hasAttribute('tabindex') && !target.matches('button')) {
-      target.tabIndex = -1;
-      target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
-    }
+    const target = findTaskTarget(row);
+    if (target == null) return false;
     finalFocusRef.current = null;
-    target.focus({ preventScroll: true });
+    focusTaskTarget(target);
     popover.hide();
-    target.scrollIntoView?.({
-      block: 'center',
-      behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-        ? 'instant'
-        : 'smooth',
-    });
+    scrollToTaskTarget(target);
     return true;
   };
   const card = (row: (typeof rows)[number]) => (

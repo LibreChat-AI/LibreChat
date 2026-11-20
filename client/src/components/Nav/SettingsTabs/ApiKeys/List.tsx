@@ -66,7 +66,7 @@ export default function List({ onCreate, headingId }: ListProps) {
       aria-label={headingId == null ? localize('com_ui_agent_api_keys') : undefined}
     >
       {keys.map((apiKey) => (
-        <Item key={apiKey.id} apiKey={apiKey} />
+        <Item key={apiKey.id} apiKey={apiKey} grants={data?.grants === true} />
       ))}
     </ul>
   );

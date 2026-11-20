@@ -1,7 +1,7 @@
-import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
+import { useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
+import { Lightbulb, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
-import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import {
   getOutcomeStatus,
   isSpanFailed,
@@ -14,6 +14,10 @@ import {
   useThrottledValue,
 } from '@librechat/chat/react';
 import {
+  PhaseLabel,
+  PhaseGlyph,
+  PhaseMarker,
+  LivePhaseHeader as PackageLivePhaseHeader,
   FOLD_RAIL_CLASSES,
   ROW_GLYPH_SLOT,
   TOOL_ROW_CLASSES,
@@ -52,17 +56,7 @@ import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
 import { cn } from '~/utils';
 
-/** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
- *  the same curve: two properties animating on two different easings is what
- *  makes a fold read as two separate movements.
- *
- *  Written as an arbitrary PROPERTY, not `ease-[…]`: `tailwindcss-animate`
- *  registers its own `ease` utility for `animation-timing-function` alongside
- *  Tailwind's `transition-timing-function` one, so an arbitrary value matches
- *  both, and Tailwind resolves that ambiguity by emitting NOTHING. The class
- *  this replaces had been inert since the plugin landed — the curve it names
- *  never reached the fold. */
-const FOLD_EASING = 'duration-300 [animation-timing-function:cubic-bezier(0.16,1,0.3,1)]';
+export { PhaseLabel } from '@librechat/chat/components';
 
 type ActivityPhasePart = Extract<TMessageContentParts, { type: ContentTypes.ACTIVITY_LABEL }> & {
   activity_label_type?: 'phase';
@@ -91,141 +85,6 @@ function schedulePostPaint(callback: () => void): () => void {
     }
   };
 }
-
-/** The header's icon slot. Its only job is geometric: every other row in the
- *  transcript opens with the same glyph slot and an 8px gap, so a summary
- *  rendered without one sits to the left of the rows it replaces — the fold
- *  then moves its own text sideways at the moment the reader is trying to
- *  follow it. */
-function PhaseGlyph({ failed, partial = false }: { failed: boolean; partial?: boolean }) {
-  let Icon = Check;
-  let tone = 'text-text-secondary';
-  if (failed) {
-    Icon = CircleX;
-    tone = 'text-status-error';
-  } else if (partial) {
-    Icon = TriangleAlert;
-    tone = 'text-status-warning';
-  }
-  return (
-    <span className={cn(ROW_GLYPH_SLOT, tone)} aria-hidden="true">
-      <Icon size={14} />
-    </span>
-  );
-}
-
-/**
- * The phase header is a ticker, not a title. A client-synthesized card
- * re-titles itself every time it absorbs another finished block, and swapping
- * that text instantly is what makes the absorbed row look like it simply
- * vanished from under the reader. The retired line rises out of the clipped
- * row while the new summary comes up from below, so the work visibly moves
- * into the line that now stands for it.
- */
-/**
- * The shimmering text of a live line, on its own element. `.shimmer` declares
- * `animation`, `position` and `display`, so sharing an element with the ticker
- * would replace the slide with the sweep — the retired line would never leave,
- * and would sit inline beside its successor. `align-top` keeps the inline box
- * from adding descender space, which made a live row 2px taller than the
- * settled row it becomes.
- */
-function LiveLine({ text }: { text: string }) {
-  return <span className="shimmer max-w-full truncate align-top">{text}</span>;
-}
-
-export const PhaseLabel = memo(function PhaseLabel({
-  text,
-  animate,
-  source,
-  live = false,
-  grow = true,
-  lineId,
-}: {
-  text: string;
-  animate: boolean;
-  /** Identity of what produced `text`. A streamed sentence keeps its source
-   *  while it grows, and sliding a line out to bring a longer copy of itself
-   *  in would read as flicker, so an unchanged source extends in place. */
-  source?: string;
-  live?: boolean;
-  /** Claim the row's free space, the default. Cleared when something has to
-   *  sit immediately after the text — the box then measures the line itself,
-   *  so its neighbour reads as part of it instead of drifting to the margin. */
-  grow?: boolean;
-  /** Id for the current line, so a live disclosure can be named by it alone. */
-  lineId?: string;
-}) {
-  const [lines, setLines] = useState<{
-    current: string;
-    retired: string | null;
-    entered: boolean;
-    source?: string;
-  }>({ current: text, retired: null, entered: false, source });
-
-  /** Adjusted during render rather than in an effect. A passive effect runs
-   *  after paint, so a swap with no animation would leave the previous summary
-   *  on screen for a frame while the button's `aria-label` already carried the
-   *  new one. React re-renders this component immediately instead. */
-  if (lines.current !== text || lines.source !== source) {
-    const moved = source == null || source !== lines.source;
-    const swaps = animate && lines.current.length > 0 && moved;
-    setLines({
-      current: text,
-      retired: swaps ? lines.current : null,
-      entered: swaps || (lines.entered && source != null && source === lines.source),
-      source,
-    });
-  }
-
-  /** Clears only the retired line. `entered` outlives it on purpose: dropping
-   *  the incoming line's animation class the moment its partner's
-   *  `animationend` fires would snap a still-running slide back to its resting
-   *  position. The class is inert once the animation has finished, and the
-   *  element is keyed by its text, so it cannot replay. */
-  const clearRetired = useCallback(() => {
-    setLines((previous) => (previous.retired == null ? previous : { ...previous, retired: null }));
-  }, []);
-
-  return (
-    <span
-      className={cn(
-        'tool-status-text relative block min-w-0 overflow-hidden text-start',
-        grow && 'flex-1',
-      )}
-      title={text}
-    >
-      {lines.retired != null && (
-        <span
-          key={`retired-${lines.retired}`}
-          className={cn(
-            'absolute inset-x-0 top-0 block truncate',
-            'animate-out fade-out-0 slide-out-to-top-5 [animation-fill-mode:forwards]',
-            FOLD_EASING,
-          )}
-          /** The sweep on the inner span loops forever and its `animationend`
-           *  never comes; only this element's own slide may clear the line. */
-          onAnimationEnd={(event) => event.target === event.currentTarget && clearRetired()}
-          aria-hidden="true"
-        >
-          {live ? <LiveLine text={lines.retired} /> : lines.retired}
-        </span>
-      )}
-      <span
-        /** Keyed by source while live, so a growing sentence updates one
-         *  element instead of remounting — and replaying its slide — per paint. */
-        key={`current-${source ?? lines.current}`}
-        id={lineId}
-        className={cn(
-          'block truncate',
-          lines.entered && `animate-in fade-in-0 slide-in-from-bottom-5 ${FOLD_EASING}`,
-        )}
-      >
-        {live ? <LiveLine text={lines.current} /> : lines.current}
-      </span>
-    </span>
-  );
-});
 
 /** Glyphs a span header shows: up to this many, of which at most `SPAN_SITES`
  *  are the sites a web search read. */
@@ -376,9 +235,20 @@ function LivePhaseHeader({
   }, [painted, detail, onAnnounce]);
 
   return (
-    <>
-      <RailGlyph hover={railHover}>
-        {iconNames.length === 0 ? (
+    <PackageLivePhaseHeader
+      text={painted.text}
+      source={painted.source}
+      animate={animate}
+      lineId={lineId}
+      comboId={comboId}
+      detailId={detailId}
+      combo={combo}
+      isBackgroundTaskCheck={painted.isBackgroundTaskCheck}
+      failedNote={failedNote}
+      cancelledNote={cancelledNote}
+      railHover={railHover}
+      glyph={
+        iconNames.length === 0 ? (
           /** A span that is only reasoning so far has no tool to show; it takes
            *  the glyph the reasoning row itself uses. */
           <span
@@ -399,59 +269,9 @@ function LivePhaseHeader({
               isAnimating
             />
           </span>
-        )}
-      </RailGlyph>
-      {/** The multiplier counts the line it is printed next to, so it travels
-       *  with that line instead of sitting out at the row's right edge beside
-       *  the chevron, where it read as a property of the row. `Create File ×2`
-       *  in the unfolded group is the same phrase in the same order. It is a
-       *  separate element rather than part of the line's text so the
-       *  disclosure's name keeps a space before it and the ticker still
-       *  animates one sentence at a time. */}
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        <PhaseLabel
-          text={painted.text}
-          source={painted.source}
-          animate={animate}
-          live
-          grow={combo === ''}
-          lineId={lineId}
-        />
-        {combo !== '' && (
-          <span
-            id={comboId}
-            className={
-              painted.isBackgroundTaskCheck
-                ? 'text-text-secondary shrink-0 text-xs font-normal'
-                : 'sr-only'
-            }
-            data-testid="live-phase-combo"
-          >
-            {combo}
-          </span>
-        )}
-      </span>
-      {detail !== '' && (
-        <span
-          id={detailId}
-          className="text-text-warning shrink-0 text-xs font-normal"
-          data-testid="live-phase-outcome"
-        >
-          {/** The failure count is spoken here, as part of the header's name,
-           *  and SHOWN by the pill beside the header, which is also the way to
-           *  the failed rows. Only a stop count has no pill and stays visible.
-           *  The verdict is the span's, not the newest line's, so it keeps its
-           *  own separator from whatever the row happens to be saying. */}
-          {failedNote !== '' && <span className="sr-only">· {failedNote}</span>}
-          {cancelledNote !== '' && (
-            <>
-              <span className="text-text-secondary me-1">·</span>
-              <span>{cancelledNote}</span>
-            </>
-          )}
-        </span>
-      )}
-    </>
+        )
+      }
+    />
   );
 }
 
@@ -705,22 +525,12 @@ export default function ActivityPhaseGroup({
     );
   }
   const group = !hasContent ? (
-    <div
-      className={cn(
-        'text-text-secondary mt-1 mb-2 flex min-h-7 w-full items-center gap-2 py-1',
-        shouldAnimateEntrance && `animate-in fade-in-0 motion-reduce:animate-none ${FOLD_EASING}`,
-      )}
-      data-testid="activity-phase-card"
-    >
-      <PhaseGlyph failed={allFailed} partial={partialMarkerFallback} />
-      <span
-        className="tool-status-text min-w-0 flex-1 truncate text-start font-medium"
-        role="status"
-        title={label}
-      >
-        {label}
-      </span>
-    </div>
+    <PhaseMarker
+      label={label}
+      failed={allFailed}
+      partial={partialMarkerFallback}
+      animate={shouldAnimateEntrance}
+    />
   ) : (
     /** No chrome. A phase summary is another row in the same list as the tool
      *  groups it stands for, so it carries the same geometry: 16px glyph, 8px

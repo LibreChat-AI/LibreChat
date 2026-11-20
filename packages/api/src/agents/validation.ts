@@ -12,6 +12,7 @@ import {
   ErrorTypes,
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_GRAPH_SUBAGENT_MEMBERS,
+  sdkRuntimeBindingSchema,
 } from 'librechat-data-provider';
 import type {
   Agent,
@@ -458,6 +459,7 @@ type AgentBaseShape = {
   code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
   repositoryInstructions: z.ZodOptional<EnumOf<'prefer' | 'defer' | 'off'>>;
   git_identity: typeof agentGitIdentitySchema;
+  sdk_runtime: z.ZodOptional<z.ZodNullable<typeof sdkRuntimeBindingSchema>>;
   artifacts: z.ZodOptional<z.ZodString>;
   recursion_limit: z.ZodOptional<z.ZodNumber>;
   conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -469,6 +471,7 @@ type AgentBaseShape = {
 };
 
 export const agentBaseSchema: z.ZodObject<AgentBaseShape> = z.object({
+  sdk_runtime: sdkRuntimeBindingSchema.nullable().optional(),
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   instructions: z.string().nullable().optional(),

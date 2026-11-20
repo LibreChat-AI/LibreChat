@@ -1,5 +1,6 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
+import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
 import { useComposerPresentsApproval, useOptionalChatSurface } from '@librechat/chat/react';
 import {
   X,
@@ -83,6 +84,11 @@ function seedArgs(args: string | Record<string, unknown> | undefined): string {
     return '{}';
   }
 }
+
+/** Explanations the server sends as a code, said here in the reader's language. */
+const descriptionKeys = new Map<string, TranslationKeys>([
+  [SCHEDULE_APPROVAL_REASON, 'com_ui_approval_schedule_owner'],
+]);
 
 /**
  * Renders approve / reject / edit / respond controls for a paused tool call,
@@ -174,8 +180,10 @@ export default function ToolApproval({
 
   const status = getStatus(actionId);
   const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
-  const safeDescription =
-    description == null ? undefined : boundApprovalLabel(description, 1024).label;
+  const descriptionKey = description == null ? undefined : descriptionKeys.get(description);
+  let safeDescription: string | undefined;
+  if (descriptionKey != null) safeDescription = localize(descriptionKey);
+  else if (description != null) safeDescription = boundApprovalLabel(description, 1024).label;
 
   /** Recompute and store this card's decision whenever inputs change. A null
    *  resolution (e.g. invalid edit JSON) clears it so submit stays disabled. */

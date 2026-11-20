@@ -21,6 +21,8 @@ export type ConvoActionsProps = {
   /** True once the pointer or focus has reached the row. */
   hasInteracted: boolean;
   retainView: () => void;
+  /** Leaves the sidebar the way selecting a conversation does; see `ConvoOptions`. */
+  toggleNav?: (afterSlide?: () => void) => void;
   renameHandler: (e: MouseEvent) => void;
   onOpenChange: (open: boolean) => void;
 };

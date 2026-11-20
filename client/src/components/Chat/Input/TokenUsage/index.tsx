@@ -17,7 +17,7 @@ import Balance, { Summary as BalanceSummary } from '~/components/Balance';
 import useBalanceSummary from '~/hooks/useBalanceSummary';
 import useTokenUsage from '~/hooks/Chat/useTokenUsage';
 import { contextBreakdownExpandedAtom } from './store';
-import { cn, formatTokens } from '~/utils';
+import { formatTokens } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 interface TokenUsageProps {
@@ -140,6 +140,7 @@ function TokenUsageIndicator({
       label={ariaLabel}
       cardLabel={localize(hasContext ? 'com_ui_context_usage' : 'com_nav_balance')}
       busy={compaction.isCompacting}
+      wide={hasContext && expanded}
       trigger={(open) =>
         compaction.isCompacting && !open ? (
           <Spinner tone="secondary" className="size-5" />
@@ -157,13 +158,7 @@ function TokenUsageIndicator({
         )
       }
     >
-      <div
-        className={cn(
-          'max-w-full space-y-3',
-          hasContext && expanded ? 'w-[min(44rem,calc(100vw-2.5rem))]' : 'w-72',
-        )}
-        data-testid="token-usage-card"
-      >
+      <div className="space-y-3" data-testid="token-usage-card">
         {hasContext && (
           <ContextCard
             view={view}
@@ -224,9 +219,7 @@ function BalanceIndicator({ conversationId }: { conversationId: string }) {
         )
       }
     >
-      <div className="w-72 max-w-full">
-        <BalanceSummary state={state} currency={currency} />
-      </div>
+      <BalanceSummary state={state} currency={currency} />
     </UsagePopover>
   );
 }

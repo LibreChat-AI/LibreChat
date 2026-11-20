@@ -79,6 +79,7 @@ export enum QueryKeys {
   categories = 'categories',
   randomPrompts = 'randomPrompts',
   agentCategories = 'agentCategories',
+  modelSpecHandoffs = 'modelSpecHandoffs',
   marketplaceAgents = 'marketplaceAgents',
   roles = 'roles',
   rolesList = 'rolesList',
@@ -102,6 +103,8 @@ export enum QueryKeys {
   runningConversation = 'runningConversation',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
+  apiKeyMCPConsent = 'apiKeyMCPConsent',
+  apiKeyAgents = 'apiKeyAgents',
   /* Skills */
   skills = 'skills',
   skill = 'skill',
@@ -119,9 +122,11 @@ export enum QueryKeys {
   /* Scheduled chats */
   schedules = 'schedules',
   scheduleMCPConsent = 'scheduleMCPConsent',
+  scheduleMCPOffer = 'scheduleMCPOffer',
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
+  subagentThreadToolCallPart = 'subagentThreadToolCallPart',
   subagentTaskContent = 'subagentTaskContent',
   subagentControlReceipt = 'subagentControlReceipt',
   backgroundTasks = 'backgroundTasks',
@@ -171,6 +176,8 @@ export enum MutationKeys {
   updateLangfusePromptSync = 'updateLangfusePromptSync',
   syncLangfusePrompts = 'syncLangfusePrompts',
   createAgentApiKey = 'createAgentApiKey',
+  confirmApiKeyMCPConsent = 'confirmApiKeyMCPConsent',
+  revokeApiKeyMCPConsent = 'revokeApiKeyMCPConsent',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',
   fileDelete = 'fileDelete',

@@ -26,6 +26,7 @@ const {
   checkAndIncrementPendingRequest,
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
+  createScheduleExecutionContext,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -60,6 +61,7 @@ const {
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
   savePrivateTextMessage,
+  getTurnUserMessageCreatedAt,
   savePrivateTextErrorTurn,
   getUserFacingGenerationError,
   stampPreliminaryPrivateTextMessage,
@@ -71,6 +73,7 @@ const {
   createDisconnectSnapshotQueue,
   isTemporaryTurn,
   getPreliminaryResponseMessageId,
+  describeCreatedTurn,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -517,7 +520,7 @@ async function saveErrorTurn(
           error: false,
           unfinished: false,
         },
-        { context },
+        { context, createdAtOnInsert: getTurnUserMessageCreatedAt(req) },
       );
       if (!savedUserMessage) {
         throw new Error('Failed user message could not be persisted');
@@ -2054,6 +2057,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       req,
       res,
       endpointOption,
+      executionContext: createScheduleExecutionContext(req),
       // Use the job's abort controller signal - allows abort via GenerationJobManager.abortJob()
       signal: job.abortController.signal,
       jobCreatedAt,
@@ -2450,6 +2454,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                   req.body.files.length > 0 && { files: req.body.files }),
               },
               streamId,
+              turn: describeCreatedTurn({
+                responseMessageId: respMsgId,
+                sourceMessageId: editedResponseMessageId,
+                isRegenerate,
+                isCompaction,
+                isContinued,
+                editedContent,
+              }),
             },
             { expectedCreatedAt: jobCreatedAt },
           ).catch((err) => {
@@ -2847,6 +2859,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                     },
                     userMessage,
                     {
+                      createdAtOnInsert: getTurnUserMessageCreatedAt(req),
                       context:
                         'api/server/controllers/agents/request.js - user message before HITL pause',
                     },
@@ -3093,6 +3106,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             reqCtx,
             userMessage,
             {
+              createdAtOnInsert: getTurnUserMessageCreatedAt(req),
               context: 'api/server/controllers/agents/request.js - resumable user message',
             },
           );

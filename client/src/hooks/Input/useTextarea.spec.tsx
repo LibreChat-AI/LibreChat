@@ -151,8 +151,9 @@ const createPasteEvent = (files: File[] = []) => ({
   preventDefault: jest.fn(),
 });
 
-const renderTextareaHook = (initialAnswerModeActive = false) => {
+const renderTextareaHook = (initialAnswerModeActive = false, initialText = '') => {
   const textArea = document.createElement('textarea');
+  textArea.value = initialText;
   const submitButton = document.createElement('button');
   const setIsScrollable = jest.fn();
   let answerModeActive = initialAnswerModeActive;
@@ -1089,6 +1090,17 @@ describe('useTextarea composer handoff', () => {
     expect(mockForceResize).toHaveBeenCalledWith(textArea);
     expect(mockSetPendingComposerText).toHaveBeenCalledWith(undefined);
     expect(getDraft('convo-1')).toBe('');
+  });
+
+  /** A conversation moved here from beside the chat brings its unsent words by hand, and the
+   *  draft saved for it can have put the same words in the composer already. */
+  it('adds nothing when the composer already holds the words handed to it', () => {
+    mockPendingComposerText = 'Take this further.';
+    renderTextareaHook(false, 'Take this further.');
+
+    expect(mockSetValue).not.toHaveBeenCalled();
+    expect(mockInsertTextAtCursor).not.toHaveBeenCalled();
+    expect(mockSetPendingComposerText).toHaveBeenCalledWith(undefined);
   });
 
   it('leaves the composer alone when nothing was handed to this conversation', () => {

@@ -38,63 +38,118 @@
   line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
+/* Half of the sweep: the band travels two label widths, one period of its mask. */
+@keyframes shimmer-band {
+  to {
+    transform: translateX(calc(200% / 3));
   }
 }
 
-@keyframes shimmer-rtl {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
+/* The other half: the copy inside the band travels the same distance back, so
+   its glyphs never leave the label they are drawn over. */
+@keyframes shimmer-copy {
+  to {
+    transform: translateX(-200%);
   }
 }
 
 /* The sweep every in-flight label shares: a running tool call, streaming
-   reasoning, the elapsed timer. Painted from theme roles rather than fixed
-   black/white keyed off `.dark`, so a stored or custom theme restates it the
-   way it restates any other color. Unset, the base falls back to whatever
-   `--text-primary` is in scope AT THE LABEL; resolving it in a `:root`
-   declaration instead would freeze the default and ignore theme scopes applied
-   further down. Dark declares a base outright: its established value is dimmer
-   than that theme's text color rather than equal to it. */
+   reasoning, the elapsed timer. `Shimmer` in `@librechat/client` renders the
+   elements below; a bare `.shimmer` with no band inside it is plain text.
+
+   Painted from theme roles rather than fixed black/white keyed off `.dark`, so
+   a stored or custom theme restates it the way it restates any other color.
+   Unset, the base falls back to whatever `--text-primary` is in scope AT THE
+   LABEL; resolving it in a `:root` declaration instead would freeze the default
+   and ignore theme scopes applied further down. Dark declares a base outright:
+   its established value is dimmer than that theme's text color rather than
+   equal to it. */
 .shimmer {
   display: inline-block;
   position: relative;
-  background: linear-gradient(
+}
+
+/* Nothing in the sweep may repaint. The label's own glyphs hold the dim stop;
+   `.shimmer-band` is three labels wide and carries a mask whose gap is one
+   label wide and repeats every two; `.shimmer-copy` inside it is the label
+   again at the base color. The band slides one way and the copy slides back, both by
+   transform, so the compositor moves the gap across glyphs that stay put.
+   Animating `background-position` under `background-clip: text` repainted the
+   label on every frame, and each repaint walked the transcript around it.
+
+   The dim color is conditional on the band so the two cannot come apart: a
+   label that has lost its band, or a browser that drops the motion, shows its
+   ordinary color instead of resting at the dim stop. */
+@media (prefers-reduced-motion: no-preference) {
+  .shimmer:has(> .shimmer-clip) {
+    color: rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1));
+  }
+}
+
+/* Clips the band to the label, so three label widths of it never become
+   scrollable overflow in whatever the label sits in. */
+.shimmer-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.shimmer-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -200%;
+  width: 300%;
+  /* An alpha mask: only the opacity of each stop is read, never its hue. */
+  --shimmer-mask: linear-gradient(
     90deg,
-    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 25%,
-    rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1)) 50%,
-    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 75%
+    rgb(var(--black)) 25%,
+    transparent 50%,
+    rgb(var(--black)) 75%
   );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 4s linear infinite;
+  -webkit-mask: var(--shimmer-mask) 0 0 / calc(200% / 3) 100% repeat-x;
+  mask: var(--shimmer-mask) 0 0 / calc(200% / 3) 100% repeat-x;
+  animation: shimmer-band 2s linear infinite;
 }
 
-[dir='rtl'] .shimmer,
-.shimmer:dir(rtl) {
-  animation-name: shimmer-rtl;
+/* Pinned to the band's far edge rather than given a third of its width: the
+   copy must be exactly as wide as the label, or a wrapped or truncated label
+   would break a line somewhere its copy does not. `white-space` inherits, and
+   the ellipsis is restated because `text-overflow` does not.
+
+   An element of its own, and not the band's `::before`: Chromium keeps a
+   pseudo-element's animation on the main thread when the element that
+   generates it is animating too, and a sweep that ticks there every frame is
+   the cost this arrangement exists to remove. Only the text is generated. */
+.shimmer-copy {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(200% / 3);
+  right: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1));
+  animation: shimmer-copy 2s linear infinite;
 }
 
-/* Halting the animation alone is not a fallback: the background would settle
-   at position 0 and show only half the sweep, stranding the tail of the label
-   in the near-invisible dip. Drop the gradient and hand the glyphs back to the
-   color they would have had. */
+.shimmer-copy::before {
+  content: attr(data-text);
+}
+
+[dir='rtl'] .shimmer-band,
+[dir='rtl'] .shimmer-copy,
+.shimmer-band:dir(rtl),
+.shimmer-copy:dir(rtl) {
+  animation-direction: reverse;
+}
+
+/* Without motion there is no sweep to draw, so the band goes and the label
+   keeps the color it would have had. */
 @media (prefers-reduced-motion: reduce) {
-  .shimmer,
-  [dir='rtl'] .shimmer {
-    background: none;
-    animation: none;
-    -webkit-text-fill-color: currentcolor;
+  .shimmer-clip {
+    display: none;
   }
 }
 
@@ -115,7 +170,423 @@
   line-height: inherit;
 }
 
+/**
+ * Entrance of a message attachment. `will-change` has no static utility that
+ * names both opacity and transform, and an inline style for it is rejected
+ * on package components.
+ */
+.attachment-settle {
+  transform-origin: center top;
+  will-change: opacity, transform;
+}
+
+/**
+ * Disclosure grid shared by message part rows. The open and closed sizes are
+ * animated numbers, and `prefers-reduced-motion` has to shorten that
+ * transition without dropping it: a closed panel waits on `transitionend`
+ * before it unmounts, and `transition: none` never fires.
+ */
+.part-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.part-fold[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .part-fold {
+    transition:
+      grid-template-rows 0.01ms linear,
+      opacity 0.01ms linear;
+  }
+}
+
+/**
+ * The open and closed heights of a tool call's parameter panel. The component
+ * sets the rows, opacity and transition so a reduced-motion reader still gets
+ * a transitionend the collapse waits on.
+ */
+.tool-call-expand {
+  display: grid;
+  grid-template-rows: var(--tool-expand-rows);
+  opacity: var(--tool-expand-opacity);
+  transition: var(--tool-expand-transition);
+}
+
 .progress-text-wrapper button {
   font-size: inherit;
   line-height: inherit;
+}
+
+/**
+ * Message body typography for the package's message text, steers and queued turns. Following the
+ * chat font setting, it ships here so a consumer with only `@librechat/client/style.css` gets it.
+ */
+.message-content {
+  font-size: var(--markdown-font-size, var(--font-size-base, 1rem));
+  line-height: 1.6;
+  /* `.prose` sets max-width: 65ch; fill the message column instead. */
+  max-width: none;
+}
+
+/**
+ * Composer palette list. The thumb stays drawn and the gutter stays reserved, and only when the
+ * list overflows, so a short list keeps its full width. Standard properties only: styling
+ * `::-webkit-scrollbar` opts an element out of overlay scrollbars.
+ */
+.composer-palette-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1)) transparent;
+  scrollbar-gutter: stable;
+}
+
+/**
+ * The palette growing or shrinking as its list rearranges. Rows are moved by the palette itself,
+ * which plays each one back to where it was after the list has been redrawn; a re-inserted node
+ * drops any transition it was about to run. The panel's own height has no such problem.
+ */
+.composer-palette-rows .ReactVirtualized__Grid {
+  transition: height 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* Held for the frame a search redraws in, so the panel does not lag behind the typing. */
+.composer-palette-instant .ReactVirtualized__Grid {
+  transition-duration: 0s;
+}
+@keyframes composer-palette-row {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-composer-palette-row {
+  animation: composer-palette-row 200ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+@keyframes composer-palette-row-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* Accelerating away: the shared decelerating curve would spend this beat almost entirely at
+   zero, leaving the rows gone well before the list starts closing over them. */
+.animate-composer-palette-row-out {
+  animation: composer-palette-row-out 110ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-palette-rows .ReactVirtualized__Grid {
+    transition-duration: 1ms;
+  }
+  .animate-composer-palette-row,
+  .animate-composer-palette-row-out {
+    animation-duration: 1ms;
+  }
+}
+
+/**
+ * Composer popovers. Its own curve rather than `animate-popover`'s: these are
+ * large surfaces, and the shared 150ms ease-in-out reads as a snap at that size.
+ * Decelerating hard from the first frame and then settling is what makes a panel
+ * feel placed rather than switched on. Leaving is quicker than entering, so
+ * dismissing never feels like waiting.
+ */
+.animate-composer-popover {
+  /* Ariakit resolves this to the edge nearest the trigger, so the panel grows
+     out of the button whether it opens below or flips above. `animate-popover`
+     pins the origin to the top and translates down, which is right one way
+     round and backwards the other. */
+  transform-origin: var(--popover-transform-origin, top center);
+  opacity: 0;
+  transform: scale(0.94);
+  transition:
+    opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform, opacity;
+}
+/* Resizable anchored panels share the composer entrance and exit clock. */
+.animate-composer-popover-resize {
+  transition-property: opacity, transform, width, max-height;
+}
+.animate-composer-popover[data-enter] {
+  opacity: 1;
+  transform: scale(1);
+}
+.animate-composer-popover[data-leave] {
+  transition-duration: 120ms, 140ms;
+}
+
+/** Trigger glyphs that turn as their popover opens, on the same curve. */
+.animate-composer-icon {
+  /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
+  transition-property: transform, rotate;
+  transition-duration: 260ms;
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave],
+  .animate-composer-icon {
+    transition-duration: 1ms;
+  }
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave] {
+    transform: none;
+  }
+}
+
+/**
+ * The grid collapse `useExpandCollapse` measures. Rows, opacity and the
+ * transition are custom properties so a reduced-motion reader still gets the
+ * 0.01ms transition that fires `transitionend`. Inline style cannot say that
+ * in the chat package.
+ */
+.disclosure-collapse {
+  display: grid;
+  grid-template-rows: var(--expand-rows, 1fr);
+  opacity: var(--expand-opacity, 1);
+  transition: var(--expand-transition);
+}
+
+/**
+ * Disclosure body that opens and closes on grid rows. `data-expanded="true"`
+ * opens it. Reduced motion keeps a 0.01ms transition so `transitionend` still
+ * fires and a collapsed body can unmount.
+ */
+.part-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.part-expand[data-expanded='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .part-expand {
+    transition:
+      grid-template-rows 0.01ms linear,
+      opacity 0.01ms linear;
+  }
+}
+
+/* A status card with no available details retains its surface and descendant ink. */
+[data-activity-card]:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+/**
+ * Slow pulse for a running subagent card and the searching field. The app used
+ * to define this in `style.css`; a package component cannot depend on that
+ * sheet. The keyframes live here so a host that loads only the client package
+ * still pulses, and reduced motion stops the loop.
+ */
+@keyframes pulse-slow {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse-slow,
+[data-activity-card][data-running='true'] {
+  animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-slow,
+  [data-activity-card][data-running='true'] {
+    animation: none;
+  }
+}
+
+/**
+ * Edge fade for a live reasoning peek. A mask stencil, not paint: only the
+ * alpha channel is read. Opaque black means "keep this pixel" and
+ * `transparent` means "hide it". The hue never reaches the screen.
+ */
+.thought-peek {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    rgb(var(--black) / 1) 1.25rem,
+    rgb(var(--black) / 1) calc(100% - 1.25rem),
+    transparent
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    rgb(var(--black) / 1) 1.25rem,
+    rgb(var(--black) / 1) calc(100% - 1.25rem),
+    transparent
+  );
+}
+
+/* Pre-response dot: enters on the streamed-text fade curve, then breathes
+   on opacity, replacing the legacy scale throb so waiting and text arrival
+   share one motion language.
+
+   Custom CSS exception: this indicator is a `::after` pseudo-element on the
+   `.result-thinking` hook, shown only while an ancestor carries `.submitting`
+   and the hook itself is `:empty`. No `@librechat/client` primitive can
+   express "render only while an ancestor is in state X and I have no
+   children"; a component would have to own that state, which the streaming
+   markdown path deliberately keeps in the DOM so the dot costs no React
+   renders per token. Scoped to the one selector, colored from
+   `--text-primary` so both themes follow, and disabled under
+   prefers-reduced-motion. */
+@keyframes lc-dot-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.submitting .result-thinking:empty:last-child:after {
+  animation:
+    lc-fade-in 250ms ease-out both,
+    lc-dot-breathe 1.5s ease-in-out 250ms infinite;
+  background-color: rgb(var(--text-primary));
+  border-radius: 50%;
+  content: ' ';
+  display: block;
+  height: 0.75rem;
+  position: absolute;
+  top: -0.6875rem;
+  width: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .submitting .result-thinking:empty:last-child:after {
+    animation: none;
+  }
+}
+
+.result-streaming > :not(ol):not(ul):not(pre):last-child:after,
+.result-streaming > pre:last-child code:after {
+  display: inline-block;
+  content: '⬤';
+  width: 0.75rem;
+  height: 0.75rem;
+  font-family:
+    system-ui,
+    Inter,
+    Söhne Circle,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Ubuntu,
+    Cantarell,
+    Noto Sans,
+    sans-serif;
+  line-height: normal;
+  margin-inline-start: 0.25rem;
+  vertical-align: middle;
+  font-size: 0.5rem;
+}
+
+@supports (selector(:has(*))) {
+  .result-streaming > :is(ul, ol):last-child > li:last-child:not(:has(> :is(ul, ol, pre))):after {
+    content: '⬤';
+    font-family:
+      system-ui,
+      Inter,
+      Söhne Circle,
+      -apple-system,
+      Segoe UI,
+      Roboto,
+      Ubuntu,
+      Cantarell,
+      Noto Sans,
+      sans-serif;
+    line-height: normal;
+    margin-inline-start: 0.25rem;
+    vertical-align: middle;
+    font-size: 0.5rem;
+    display: inline-block;
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+}
+
+@supports not (selector(:has(*))) {
+  .result-streaming > ol:last-child > li:last-child:after,
+  .result-streaming > ul:last-child > li:last-child:after {
+    content: '⬤';
+    font-family:
+      system-ui,
+      Inter,
+      Söhne Circle,
+      -apple-system,
+      Segoe UI,
+      Roboto,
+      Ubuntu,
+      Cantarell,
+      Noto Sans,
+      sans-serif;
+    line-height: normal;
+    margin-inline-start: 0.25rem;
+    vertical-align: middle;
+    font-size: 0.5rem;
+    display: inline-block;
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  .result-streaming > ol:last-child > li:last-child > :is(ul, ol, pre) ~ :after,
+  .result-streaming > ul:last-child > li:last-child > :is(ul, ol, pre) ~ :after {
+    display: none;
+  }
+
+  .result-streaming > ol:last-child > li:last-child > pre:last-child code:after,
+  .result-streaming > ul:last-child > li:last-child > pre:last-child code:after {
+    display: inline-block;
+  }
+}
+
+/* Remove cursors when streaming is complete */
+.result-streaming:not(.submitting) :is(ul, ol) li:after {
+  display: none !important;
+}
+
+/* Smooth streaming: one-shot fade-in on newly streamed words.
+   Duration must match FADE_DURATION_MS in packages/chat/src/components/fade.tsx */
+@keyframes lc-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+[data-lc-fade] {
+  animation: lc-fade-in 250ms ease-out both;
+  animation-delay: var(--lc-delay, 0ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-lc-fade] {
+    animation: none;
+  }
 }

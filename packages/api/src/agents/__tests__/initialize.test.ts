@@ -1,3 +1,4 @@
+import { modelSpecAgentId, loadModelSpecHandoff } from '../specs';
 /**
  * Stub `buildBashExecutionToolDescription` since the installed SDK version
  * may pre-date the export. Kept as a partial mock so `Providers` and the
@@ -42,20 +43,24 @@ import {
   ErrorTypes,
   Permissions,
   EModelEndpoint,
+  EImageOutputType,
   EToolResources,
   FileContext,
   FileSources,
   PermissionTypes,
   AgentCapabilities,
   configSchema,
+  setFileConfigRegexCompiler,
 } from 'librechat-data-provider';
-import type { IMongoFile } from '@librechat/data-schemas';
+import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
 import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import type { GraphSubagentHostConfig } from '../discovery';
+import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
+import { getMCPRequestContext } from '~/mcp/request';
 import type { ProjectFileRecord } from '../../projects/resources';
 import { toCanonicalProjectResource } from '../../projects/resources';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
@@ -147,6 +152,7 @@ import { selectCodeFiles } from '~/files/code/priming';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
+import { configureFileConfigRegexEngine } from '../../files/regexEngine';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 
@@ -2221,9 +2227,111 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     );
   });
 
-  it('resolves temporal special vars in the request timezone', async () => {
+  it('builds the instruction fields exactly as upstream without stableContext', async () => {
+    const { generateArtifactsPrompt } = jest.requireMock('~/prompts') as {
+      generateArtifactsPrompt: jest.Mock;
+    };
+    generateArtifactsPrompt.mockReturnValueOnce('Artifact guidance');
     const { agent, req, res, loadTools, db } = createMocks();
-    agent.instructions = 'It is currently {{current_datetime}}.';
+    loadTools.mockResolvedValueOnce({
+      tools: [],
+      toolContextMap: { web_search: 'Web search instructions' },
+      dynamicToolContextMap: { web_search: 'Conversation Date & Time: turn' },
+      toolDefinitions: [],
+      hasDeferredTools: false,
+    });
+    agent.instructions = 'Today is {{current_date}}, at {{current_datetime}}.';
+    agent.additional_instructions = 'Agent context';
+    agent.artifacts = 'enabled' as never;
+    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'Europe/Moscow' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect({
+      instructions: result.instructions,
+      additional_instructions: result.additional_instructions,
+      toolContextMap: result.toolContextMap,
+      dynamicToolContextMap: result.dynamicToolContextMap,
+    }).toMatchInlineSnapshot(`
+      {
+        "additional_instructions": "Agent context
+
+      Today is 2026-08-31 (Monday), at 2026-08-31 09:20:00 +03:00 (Monday).
+
+      Artifact guidance",
+        "dynamicToolContextMap": {
+          "web_search": "Conversation Date & Time: turn",
+        },
+        "instructions": undefined,
+        "toolContextMap": {
+          "web_search": "Web search instructions",
+        },
+      }
+    `);
+  });
+
+  it('anchors temporal special vars to the conversation start with stableContext', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.instructions = 'Today is {{current_date}}.';
+    agent.additional_instructions = 'Agent context';
+    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
+    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'UTC' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBe('Agent context');
+    expect(result.dynamicToolContextMap).toEqual({
+      agent_temporal_instructions: 'Today is 2026-08-25 (Tuesday).',
+    });
+  });
+
+  it('resolves a handoff preset template in the turn timezone and keeps it in the dynamic tail', async () => {
+    const { agent: primary, req, res, loadTools, db } = createMocks();
+    if (!req.config) throw new Error('Missing fixture configuration');
+    req.config.modelSpecs = {
+      list: [
+        {
+          name: 'clock',
+          label: 'Clock',
+          handoff: true,
+          preset: {
+            endpoint: EModelEndpoint.openAI,
+            model: primary.model,
+            promptPrefix: 'It is currently {{current_datetime}}.',
+          },
+        },
+      ],
+    };
+    const agent = await loadModelSpecHandoff(modelSpecAgentId('clock'), req);
+    if (!agent) throw new Error('Missing clock preset');
+    expect(agent.instructions).toBe('It is currently {{current_datetime}}.');
     req.turnStartedAt = new Date('2024-01-15T18:30:00.000Z').getTime();
     req.body = { timezone: 'America/New_York' };
 
@@ -5491,6 +5599,153 @@ describe('initializeAgent — authorized run file snapshots', () => {
     return result;
   }
 
+  it('hydrates TXT, Office and subsequent TXT through cached production MIME policy before inspection', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const officeMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const config: AppConfig = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain', officeMime],
+            defaultLLMDeliveryPath: { fallback: 'text' as const },
+          },
+        },
+      },
+      filters: {
+        messages: {
+          pii: {
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+          },
+        },
+      },
+    };
+    configureFileConfigRegexEngine();
+    try {
+      let cachedPolicy;
+      for (const type of ['text/plain', officeMime, 'text/plain']) {
+        const { agent, req, loadTools, db } = setup();
+        agent.tools = [];
+        req.config = config;
+        const file = Object.freeze(
+          inputFile({
+            type,
+            filename: type === officeMime ? 'context.docx' : 'context.txt',
+            text: 'safe extracted text',
+            llmDeliveryPath: 'text',
+          }),
+        );
+        const result = await initializeAgent(
+          {
+            req,
+            agent,
+            loadTools,
+            authorizedRunFiles: [file],
+            allowedProviders: new Set([Providers.OPENAI]),
+          },
+          db,
+        );
+        expect(result.requestAttachments).toHaveLength(1);
+        expect(result.requestAttachments[0].text).toBe('safe extracted text');
+        expect(() =>
+          assertModelBoundContent({ filters: config.filters, agents: [result as never] }),
+        ).not.toThrow();
+        cachedPolicy ??= result.deliveryRouting.fileConfig;
+        expect(result.deliveryRouting.fileConfig).toBe(cachedPolicy);
+        expect(file.filepath).toBe('/uploads/current.pdf');
+        expect(db.getFiles).not.toHaveBeenCalled();
+        expect(db.getConvoFiles).not.toHaveBeenCalled();
+        expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+      }
+    } finally {
+      setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+    }
+  });
+
+  it('inspects a hydrated initialized agent with a large tool catalog without extra file reads', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const loadedToolDefinitions = Array.from({ length: 67 }, (_, index) => ({
+      name: `report_${index}`,
+      description: 'Query a report',
+      parameters: {
+        type: 'object',
+        properties: Object.fromEntries(
+          Array.from({ length: 64 }, (_, field) => [
+            `field_${field}`,
+            { type: 'string', description: 'A report dimension', enum: ['one', 'two'] },
+          ]),
+        ),
+      },
+    }));
+    const { agent, req, loadTools, db } = createMocks({ loadedToolDefinitions });
+    req.config = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain'],
+            defaultLLMDeliveryPath: { fallback: 'text' },
+          },
+        },
+      },
+      filters: {
+        files: {
+          pii: {
+            starterPatterns: [],
+            fields: ['content', 'extracted_text'],
+            uninspectable: 'block',
+          },
+        },
+      },
+    };
+    const file = Object.freeze(
+      inputFile({
+        type: 'text/plain',
+        filename: 'context.txt',
+        text: 'safe extracted text',
+        llmDeliveryPath: 'text',
+      }),
+    );
+    const result = await initializeAgent(
+      {
+        req,
+        agent,
+        loadTools,
+        authorizedRunFiles: [file],
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      db,
+    );
+    expect(result.toolDefinitions).toHaveLength(67);
+    expect(result.requestAttachments).toHaveLength(1);
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).not.toThrow();
+    expect(db.getFiles).not.toHaveBeenCalled();
+    expect(db.getConvoFiles).not.toHaveBeenCalled();
+    expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+    expect(file.filepath).toBe('/uploads/current.pdf');
+
+    // Responses callers can merge definitions after initialization; the final check must see them.
+    result.toolDefinitions?.push({
+      name: 'caller',
+      description: 'data:application/pdf;base64,c2VjcmV0',
+      parameters: { type: 'object' },
+    });
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).toThrow('Submitted file content could not be inspected before processing.');
+  });
+
   it.each([undefined, 'Extracted document contents'])(
     'advertises a queued file before tool execution with extracted text %p',
     async (text) => {
@@ -7585,5 +7840,145 @@ describe('snapshot destination admission invariants', () => {
       snapshot('other', 200, { filename: 'other.txt', bytes: 9 * MB }),
     ]);
     expect([...staged.entries()]).toEqual([['first.txt', 'first']]);
+  });
+});
+
+describe("initializeAgent: under a schedule's grant", () => {
+  const selected = [
+    'query_mcp_warehouse',
+    'export_mcp_warehouse',
+    'purge_mcp_archive',
+    Tools.web_search,
+    Tools.execute_code,
+  ];
+  async function initialize(attach: boolean) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'root';
+    agent.tools = [...selected];
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+    if (attach) {
+      // The agents select `query` and `export` on the warehouse; the owner allowed `query`.
+      // Of the agent's other tools the owner allowed web search and left code execution out.
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        offered: ['export'],
+        tools: [Tools.execute_code, Tools.web_search],
+        allowTools: [Tools.web_search],
+      });
+      await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+    }
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([agent.provider]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    return loadTools.mock.calls.map(([call]) => call.tools as string[]);
+  }
+
+  it('loads only the tools the owner allowed, MCP or not, and nothing from a server left out', async () => {
+    const [tools, ...retries] = await initialize(true);
+    expect(retries).toEqual([]);
+    expect(tools).toContain('query_mcp_warehouse');
+    expect(tools).toContain(Tools.web_search);
+    expect(tools).not.toContain(Tools.execute_code);
+    expect(tools).not.toContain('export_mcp_warehouse');
+    // The loader is never asked about the archive server, so it is never connected to.
+    expect(tools).not.toContain('purge_mcp_archive');
+  });
+
+  it('sets up code execution and memory for the model only where the owner allowed them', async () => {
+    const defined = async (allowTools: string[]) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.id = 'root';
+      agent.tools = ['query_mcp_warehouse', Tools.execute_code, Tools.memory];
+      loadTools.mockResolvedValue({ toolDefinitions: [] });
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        tools: [Tools.execute_code, Tools.memory],
+        allowTools,
+      });
+      await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+          codeEnvAvailable: true,
+          memoryAvailable: true,
+        },
+        db,
+      );
+      return (result.toolDefinitions ?? []).map((tool) => tool.name);
+    };
+    // The markers on the agent's tool list set these up, not the loader: left out, they must
+    // not be read there either, or the model is shown a tool that is then refused.
+    const all = await defined([Tools.execute_code, Tools.memory]);
+    expect(all).toEqual(expect.arrayContaining(['bash_tool', 'set_memory', 'delete_memory']));
+    const none = await defined([]);
+    expect(none).not.toContain('bash_tool');
+    expect(none).not.toContain('set_memory');
+    expect(none).not.toContain('delete_memory');
+  });
+
+  it('gives the agent its skills only where the owner allowed them', async () => {
+    const { Types } = await import('mongoose');
+    const run = async (allowTools?: string[]) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.id = 'root';
+      agent.tools = ['query_mcp_warehouse'];
+      loadTools.mockResolvedValue({ toolDefinitions: [] });
+      if (allowTools) {
+        const fixture = await executionFixture('invoke', readTool, undefined, {
+          tools: [AgentCapabilities.skills],
+          allowTools,
+        });
+        await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+      }
+      const listSkillsByAccess = jest.fn(async () => ({
+        skills: [],
+        has_more: false,
+        after: null,
+      }));
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+          accessibleSkillIds: [new Types.ObjectId()],
+        },
+        { ...db, listSkillsByAccess },
+      );
+      return {
+        catalog: listSkillsByAccess.mock.calls.length > 0,
+        names: (result.toolDefinitions ?? []).map((tool) => tool.name),
+      };
+    };
+    // One item stands for every skill: allowed, the agent's catalog is read as in chat.
+    expect((await run([AgentCapabilities.skills])).catalog).toBe(true);
+    // Left out, nothing of it reaches the model: no catalog, no tool to be refused.
+    const left = await run([]);
+    expect(left.catalog).toBe(false);
+    expect(left.names).not.toContain('read_file');
+    expect(left.names).not.toContain('skill');
+    // A request with no grant is untouched.
+    expect((await run()).catalog).toBe(true);
+  });
+
+  it('loads everything the agent selects for a request with no grant', async () => {
+    const [tools] = await initialize(false);
+    expect(tools).toEqual(expect.arrayContaining(selected));
   });
 });

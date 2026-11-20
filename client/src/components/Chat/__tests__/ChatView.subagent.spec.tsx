@@ -1,12 +1,18 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { SteerHostProvider } from '@librechat/chat/react';
 import { MessagesHostTestProvider } from 'test/messagesHost';
+import { inertSteerHost } from 'test/inertSteerHost';
 import { ChatSurfaceHarness } from 'test/harness';
 import ChatView from '../ChatView';
 /** The app registers its parts host at boot (App.jsx); the child's list reads it. */
 import '~/Providers/MessagePartsHostContext';
 
 let mockConversation: Record<string, unknown> | null;
+
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: { id: 'user' } }),
+}));
 
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ conversationId: 'child-thread' }),
@@ -76,13 +82,11 @@ jest.mock('~/hooks/Chat/target', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
+  useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
 }));
 
 jest.mock('../Input/ConversationStarters', () => () => null);
-/** The package list renders the child's messages; the app's pieces of it are not under test. */
-jest.mock('../Messages/PendingTurn', () => () => null);
-jest.mock('../Messages/Content/Parts/PendingSteers', () => () => null);
 jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode }) => (
   <>{children}</>
 ));
@@ -130,7 +134,9 @@ describe('ChatView child-thread execution identity', () => {
     render(
       <ChatSurfaceHarness>
         <MessagesHostTestProvider>
-          <ChatView />
+          <SteerHostProvider host={inertSteerHost}>
+            <ChatView />
+          </SteerHostProvider>
         </MessagesHostTestProvider>
       </ChatSurfaceHarness>,
     );

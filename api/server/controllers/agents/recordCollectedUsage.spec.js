@@ -6,7 +6,7 @@
  * passing pricing and bulkWriteOps deps.
  */
 
-const { EModelEndpoint } = require('librechat-data-provider');
+const { ContentTypes, EModelEndpoint } = require('librechat-data-provider');
 
 const mockSpendTokens = jest.fn().mockResolvedValue();
 const mockSpendStructuredTokens = jest.fn().mockResolvedValue();
@@ -93,6 +93,45 @@ describe('AgentClient - recordCollectedUsage', () => {
 
   describe('recordTokenUsage fallback', () => {
     const estimate = { promptTokens: 40, completionTokens: 7 };
+
+    it.each([{ collectedUsage: [] }, { collectedUsage: [{ input_tokens: 0, output_tokens: 0 }] }])(
+      'does not estimate a terminal failure with no reported usage: %j',
+      async ({ collectedUsage }) => {
+        client.collectedUsage = collectedUsage;
+        client.contentParts = [{ type: ContentTypes.ERROR, error: 'Request failed' }];
+
+        await client.recordTokenUsage({ ...estimate, model: 'gpt-4' });
+
+        expect(mockSpendTokens).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not bill partial text by estimate after a terminal failure', async () => {
+      client.contentParts = [
+        { type: ContentTypes.TEXT, text: 'Partial answer' },
+        { type: ContentTypes.ERROR, error: 'Request failed' },
+      ];
+
+      await client.recordTokenUsage({ ...estimate, model: 'gpt-4' });
+
+      expect(mockSpendTokens).not.toHaveBeenCalled();
+    });
+
+    it('bounds successful missing-usage billing by the context budget', async () => {
+      client.maxContextTokens = 250000;
+      client.contentParts = [{ type: ContentTypes.TEXT, text: 'Answer' }];
+
+      await client.recordTokenUsage({
+        promptTokens: 2277630,
+        completionTokens: 7,
+        model: 'gpt-4',
+      });
+
+      expect(mockSpendTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ context: 'message' }),
+        { promptTokens: 250000, completionTokens: 7 },
+      );
+    });
 
     it('does not bill the estimate when provider usage was already recorded', async () => {
       await client.recordTokenUsage({

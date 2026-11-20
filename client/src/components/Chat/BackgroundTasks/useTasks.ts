@@ -22,6 +22,7 @@ import {
 
 const noThreads: ReadonlyMap<string, ParentSubagentSummary> = new Map();
 const noRefresh = async () => undefined;
+const noArgs: Record<string, ToolCallArgs> = {};
 
 export type BackgroundTasksView = {
   rows: TaskRow[];
@@ -56,15 +57,19 @@ const describeToolCall = (args: ToolCallArgs): Pick<TaskRow, 'title' | 'detail'>
 /**
  * Joins ordinary background tools (process registry) with detached subagents
  * (durable index) for one conversation, and stops one or every running task.
+ * A reader that only counts passes `details: false` and skips the scan of the
+ * loaded messages that titles each tool row.
  */
 export default function useBackgroundTasks({
   conversationId,
   isSubmitting,
   now,
+  details = true,
 }: {
   conversationId: string;
   isSubmitting: boolean;
   now: number;
+  details?: boolean;
 }): BackgroundTasksView {
   const parent = useParentSubagents();
   // The URL can advance before the host conversation context during navigation.
@@ -150,8 +155,9 @@ export default function useBackgroundTasks({
   /** Observe existing message data without fetching. Structural sharing of the
    * selected record ignores unrelated streaming text but includes late restoration. */
   const selectArgs = useCallback(
-    (messages: TMessage[]) => Object.fromEntries(findToolCallArgs(messages, data?.tasks ?? [])),
-    [data?.tasks],
+    (messages: TMessage[]) =>
+      details ? Object.fromEntries(findToolCallArgs(messages, data?.tasks ?? [])) : noArgs,
+    [details, data?.tasks],
   );
   const { data: selectedArgs } = useQuery<TMessage[], unknown, Record<string, ToolCallArgs>>({
     queryKey: [QueryKeys.messages, conversationId],

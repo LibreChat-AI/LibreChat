@@ -217,6 +217,12 @@ describe('createEndpointsConfigService', () => {
             endpoints: {
               [EModelEndpoint.agents]: {
                 allowedProviders: ['openAI', 'anthropic'],
+                sdkRuntimes: {
+                  private: {
+                    remote: { url: 'wss://private/sdk', secret: 'private-server-secret' },
+                    roles: ['ADMIN'],
+                  },
+                },
                 capabilities: [AgentCapabilities.execute_code],
                 maxSubagents: 20,
               },
@@ -229,6 +235,7 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.allowedProviders).toEqual(['openAI', 'anthropic']);
       expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
+      expect(result?.[EModelEndpoint.agents]).not.toHaveProperty('sdkRuntimes');
     });
 
     it.each([true, false, undefined])(
@@ -269,6 +276,26 @@ describe('createEndpointsConfigService', () => {
         expect(JSON.stringify(result)).not.toContain('private-slack');
       },
     );
+
+    it('tells the client the server resolves prompt variables only with stableContext', async () => {
+      const getConfig = async (promptCache?: { stableContext: boolean }) => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(
+              appConfig({ endpoints: { [EModelEndpoint.agents]: { promptCache } } }),
+            ),
+        });
+        const result = await createEndpointsConfigService(deps).getEndpointsConfig(fakeReq());
+        return result?.[EModelEndpoint.agents];
+      };
+
+      expect((await getConfig({ stableContext: true }))?.stableContext).toBe(true);
+      expect(await getConfig({ stableContext: false })).not.toHaveProperty('stableContext');
+    });
 
     it.each([true, false])(
       'exposes file sharing policy to the agent builder when enabled=%s',

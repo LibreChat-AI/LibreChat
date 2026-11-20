@@ -112,6 +112,10 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
       validate: (value: import('librechat-data-provider').ScheduledMCPEnrollment) =>
         scheduledMCPEnrollmentSchema.safeParse(value).success,
     },
+    mcpConsentRequired: {
+      type: Boolean,
+      default: undefined,
+    },
     cron: {
       type: String,
     },

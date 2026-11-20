@@ -14,6 +14,9 @@ const {
   createArchiveHandler,
   createSubagentActivityStreamHandler,
   createSubagentTaskContentHandler,
+  createChildThreadMessagesHandler,
+  createChildThreadToolCallPartHandler,
+  prepareToolCallPreviews,
   createSubagentControlHandler,
   createSubagentControlReceiptHandler,
   isValidSubagentControlRequest,
@@ -89,6 +92,17 @@ const subagentThreadViewHandler = createSubagentThreadViewHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
   getMessagesForSubagentThreadView: db.getMessagesForSubagentThreadView,
+});
+const childThreadMessagesHandler = createChildThreadMessagesHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getMessagesByCursor: db.getMessagesByCursor,
+  previewToolCalls: (req) => prepareToolCallPreviews(req, { getAppConfig }),
+});
+const childThreadToolCallPartHandler = createChildThreadToolCallPartHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getMessages: db.getMessages,
 });
 const parentSubagentIndexHandler = createParentSubagentIndexHandler({
   getConvoOwnership: db.getConvoOwnership,
@@ -311,6 +325,11 @@ router.post(
   '/:conversationId/background-tasks/cancel',
   backgroundTaskPolicy,
   backgroundTaskCancelHandler,
+);
+router.get('/:parentConversationId/subagents/:threadId/messages', childThreadMessagesHandler);
+router.get(
+  '/:parentConversationId/subagents/:threadId/messages/:messageId/parts/:partIndex',
+  childThreadToolCallPartHandler,
 );
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
 

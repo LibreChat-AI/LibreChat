@@ -7,7 +7,11 @@ import { render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
 import { MessageContext, ArtifactProvider, CodeBlockProvider } from '~/Providers';
+import { getLoadedRehypeModules, loadRehypeModules } from '../rehype';
 import Markdown from '../Markdown';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 /**
  * Mermaid blocks in the fixtures reach `useLocation`, so the markdown tree needs a
@@ -91,7 +95,7 @@ const OldMarkdown = ({ content }: { content: string }) => (
         /** @ts-ignore */
         remarkPlugins={getRemarkPlugins()}
         /** @ts-ignore */
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
         components={getMarkdownComponents()}
       >
         {content}

@@ -156,6 +156,9 @@ module.exports = {
     }),
     createSubagentThreadViewHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
     createSubagentTaskContentHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
+    createChildThreadMessagesHandler: jest.fn(() => (_req, res) => res.status(200).json([])),
+    createChildThreadToolCallPartHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
+    prepareToolCallPreviews: jest.fn(() => (messages) => messages),
     createSubagentControlHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
     createSubagentControlReceiptHandler: () => jest.fn(),
     createBackgroundTaskIndexHandler: jest.fn(

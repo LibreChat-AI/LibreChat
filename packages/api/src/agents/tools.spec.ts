@@ -798,6 +798,24 @@ describe('registerCodeExecutionTools', () => {
     );
   });
 
+  it('warns that background commands overlap later ones only when they are sent detached', () => {
+    const bashDescription = (workspaceDetachedCommands?: boolean): string | undefined =>
+      registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['execute_command']),
+        workspaceDetachedCommands,
+      }).toolDefinitions.find((def) => def.name === 'bash_tool')?.description;
+
+    const overlap =
+      'A run_in_background command runs alongside later commands in the same worktree; do not background one that later commands depend on finishing first (installs, git operations).';
+    expect(bashDescription(true)).toContain(overlap);
+    expect(bashDescription(false)).not.toContain('runs alongside');
+    expect(bashDescription()).toBe(bashDescription(false));
+  });
+
   it.each([
     {
       operations: ['read_file', 'execute_command'],

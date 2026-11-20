@@ -1,6 +1,7 @@
 import { useRef, createContext, useContext } from 'react';
 import type {
   Agent,
+  AgentDisplay,
   TFile,
   TMessage,
   Assistant,
@@ -152,7 +153,7 @@ export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: bool
 export type MessageIconProps = {
   iconData?: MessageIconData;
   assistant?: Assistant;
-  agent?: Agent;
+  agent?: AgentDisplay;
 };
 
 /** The button a read-aloud control draws, through the row's toolbar styling. */
@@ -232,6 +233,9 @@ export interface MessagesHost {
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
   /** Whether rows drop the reading-width cap and fill the pane. */
   useMaximizeChatSpace: () => boolean;
+  /** Whether the thread renders as a flat row list. The flat renderer is the default;
+   *  an app turns it off for the recursive tree. */
+  useFlatThread: () => boolean;
   /** Whether a response by the agent the header's model selector shows drops its avatar and name
    *  (`interface.messageAuthor: whenDifferent`). */
   useHideSelectedAuthor: () => boolean;
@@ -263,7 +267,8 @@ const fallbackForkPreferences: ForkPreferences = {
 };
 
 /** Read state with nothing behind it: no conversation is ever unseen, so nothing is written. */
-const inertSeenSource: ConversationSeenSource = {
+/** A seen source that records nothing, for a list whose conversation has no read state. */
+export const inertSeenSource: ConversationSeenSource = {
   readReply: () => undefined,
   hasReplyProof: () => false,
   markSeen: noop,
@@ -297,6 +302,7 @@ const fallbackHost: MessagesHost = {
   useMessageFeedback: () => noFeedback,
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
