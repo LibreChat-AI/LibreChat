@@ -62,8 +62,8 @@ export default function useBalanceSummary(): BalanceView {
     if (isError) {
       return { status: 'error' };
     }
-    return query.isFetched ? { status: 'empty' } : { status: 'loading' };
-  }, [data, isError, query.isFetched, display, startBalance]);
+    return query.isSuccess ? { status: 'empty' } : { status: 'loading' };
+  }, [data, isError, query.isSuccess, display, startBalance]);
 
   return {
     enabled,
