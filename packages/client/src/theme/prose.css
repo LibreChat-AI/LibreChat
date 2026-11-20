@@ -446,10 +446,10 @@ html.high-contrast .markdown td:last-child {
 }
 
 .markdown h1 {
-  font-size: calc(var(--markdown-font-size) * 1.75);
+  font-size: calc(var(--markdown-font-size, var(--font-size-base, 1rem)) * 1.75);
 }
 .markdown h2 {
-  font-size: calc(var(--markdown-font-size) * 1.5);
+  font-size: calc(var(--markdown-font-size, var(--font-size-base, 1rem)) * 1.5);
 }
 
 .markdown h2 {
@@ -459,7 +459,7 @@ html.high-contrast .markdown td:last-child {
 
 .markdown h3 {
   font-weight: 600;
-  font-size: calc(var(--markdown-font-size) * 1.25);
+  font-size: calc(var(--markdown-font-size, var(--font-size-base, 1rem)) * 1.25);
 }
 
 .markdown h3,
@@ -470,12 +470,12 @@ html.high-contrast .markdown td:last-child {
 
 .markdown h4 {
   font-weight: 400;
-  font-size: calc(var(--markdown-font-size) * 1.1);
+  font-size: calc(var(--markdown-font-size, var(--font-size-base, 1rem)) * 1.1);
 }
 
 .markdown h5 {
   font-weight: 600;
-  font-size: var(--markdown-font-size);
+  font-size: var(--markdown-font-size, var(--font-size-base, 1rem));
 }
 
 .markdown blockquote {

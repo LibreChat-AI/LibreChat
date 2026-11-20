@@ -47,6 +47,50 @@ function winner(sheets: string[], property: string): string | undefined {
   return value;
 }
 
+/** Every custom property a sheet sets, on any selector. */
+const declared = (css: string): string[] =>
+  Array.from(css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/(--[\w-]+)\s*:/g), ([, name]) => name);
+
+describe('the custom properties the published stylesheet reads', () => {
+  /**
+   * What the package gives a value: the theme's stock values, the tokens, and the sheets
+   * themselves. `--markdown-font-size` and `--font-size-base` are not among them; the LibreChat
+   * app sets those from the reader's settings, and nothing does in another app.
+   */
+  const defined = new Set(
+    [read('defaults.css'), read('tokens.css'), ...published].flatMap(declared),
+  );
+  /** A property a component writes on the element itself, such as a tool call's expand rows. */
+  const components = ['../components', '../../../chat/src/components'].map((directory) =>
+    fs
+      .readdirSync(path.resolve(__dirname, directory), { recursive: true, encoding: 'utf8' })
+      .filter((file) => /\.tsx$/.test(file) && !/\.(spec|test)\./.test(file))
+      .map((file) => read(directory, file))
+      .join('\n'),
+  );
+  const inline = (name: string): boolean =>
+    components.some((source) => source.includes(`'${name}'`));
+
+  it('falls back from every one the package does not set', () => {
+    const bare = published.flatMap((css) =>
+      Array.from(
+        css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/var\(\s*(--[\w-]+)\s*\)/g),
+        ([, name]) => name,
+      ),
+    );
+    expect(bare.length).toBeGreaterThan(0);
+    expect([...new Set(bare)].filter((name) => !defined.has(name) && !inline(name))).toEqual([]);
+  });
+
+  it('sizes a heading from the message size, or from a length where an app sets none', () => {
+    const sized = published.join('\n').match(/^\.markdown h[1-5] \{[^}]*font-size:[^;]*;/gm) ?? [];
+    expect(sized).toHaveLength(5);
+    for (const rule of sized) {
+      expect(rule).toContain('var(--markdown-font-size, var(--font-size-base, 1rem))');
+    }
+  });
+});
+
 describe('how a message’s text is set', () => {
   it('builds the published stylesheet from the typography and the parts', () => {
     expect(published.length).toBeGreaterThan(1);
