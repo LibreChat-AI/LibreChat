@@ -225,6 +225,16 @@
   line-height: inherit;
 }
 
+/** A scroll container that draws no scrollbar: the message rail, and the app's own side lists. */
+.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /**
  * Composer palette list. The thumb stays drawn and the gutter stays reserved, and only when the
  * list overflows, so a short list keeps its full width. Standard properties only: styling

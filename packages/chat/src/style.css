@@ -241,3 +241,30 @@
   height: auto !important;
   max-height: none !important;
 }
+
+/**
+ * Reserves the same band a `scrollbar-gutter: stable` container holds back, so a centered column
+ * lines up with the scrolling message column. Use this, not the gutter itself, wherever the
+ * column has content painted outside its box: `scrollbar-gutter` only applies to scroll
+ * containers, and a scroll container clips (the composer's in-flight steer overlay, a button's
+ * focus ring).
+ *
+ * `useScrollbarGutter` measures the band the message column really reserves and publishes it
+ * here. `--scrollbar-size` is the width an app gives its own scrollbars, and with the length
+ * after it only the fallback for before that first measurement.
+ *
+ * Below `sm` the composer runs edge to edge (it is squared off at the bottom and carries no
+ * horizontal padding there), so holding the band back would leave a dead strip down its right
+ * side instead of lining anything up. The message column it aligns to only shares a centre from
+ * `sm` up.
+ */
+@media (min-width: 640px) {
+  .scrollbar-gutter-spacer {
+    padding-inline-end: var(--message-scrollbar-gutter, var(--scrollbar-size, 0.5rem));
+  }
+}
+
+/** The Azure file-source chip: the blue gradient of Azure's own mark. */
+.azure-bg-color {
+  background: linear-gradient(0.375turn, #61bde2, #4389d0);
+}
