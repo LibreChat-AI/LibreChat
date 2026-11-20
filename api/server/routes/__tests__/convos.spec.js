@@ -71,6 +71,8 @@ describe('Convos Routes', () => {
     saveConvo,
     markConvoSeen,
     markConvoUnread,
+    setConvoFileExclusion,
+    getConvoExcludedFiles,
   } = require('~/models');
   const {
     deleteOwnedAgentCheckpoints,
@@ -249,6 +251,58 @@ describe('Convos Routes', () => {
       await request(app).get('/api/convos/ordinary/pull-request');
 
       expect(getConvo).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /:conversationId/files/exclusion', () => {
+    it('leaves files out of the caller’s conversation and answers with the list', async () => {
+      setConvoFileExclusion.mockResolvedValue({ ok: true, value: ['file-a'] });
+
+      const response = await request(app)
+        .post('/api/convos/ordinary/files/exclusion')
+        .send({ fileIds: ['file-a'], excluded: true });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ excludedFiles: ['file-a'] });
+      expect(setConvoFileExclusion).toHaveBeenCalledWith(
+        'test-user-123',
+        'ordinary',
+        ['file-a'],
+        true,
+      );
+    });
+
+    it('answers not found for a conversation the caller does not own', async () => {
+      setConvoFileExclusion.mockResolvedValue({ ok: false, error: { code: 'not_found' } });
+
+      const response = await request(app)
+        .post('/api/convos/someone-elses/files/exclusion')
+        .send({ fileIds: ['file-a'], excluded: true });
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'Conversation not found', code: 'not_found' });
+    });
+
+    it('reads the list for the caller, and not the conversation itself', async () => {
+      getConvoExcludedFiles.mockResolvedValue(['file-a']);
+
+      const response = await request(app).get('/api/convos/ordinary/files/exclusion');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ excludedFiles: ['file-a'] });
+      expect(getConvoExcludedFiles).toHaveBeenCalledWith('ordinary', 'test-user-123');
+      expect(getConvo).not.toHaveBeenCalled();
+    });
+
+    it('refuses a change that names no files before reaching the conversation', async () => {
+      setConvoFileExclusion.mockClear();
+
+      const response = await request(app)
+        .post('/api/convos/ordinary/files/exclusion')
+        .send({ fileIds: [], excluded: true });
+
+      expect(response.status).toBe(400);
+      expect(setConvoFileExclusion).not.toHaveBeenCalled();
     });
   });
 

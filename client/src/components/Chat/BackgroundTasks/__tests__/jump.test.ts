@@ -72,6 +72,33 @@ function fold(
   return { root, toggle, clicks: () => clicks };
 }
 
+/**
+ * A closed fold that still has its rows in the document, hidden: what the thread draws while a
+ * fold's closing animation runs, and for as long as a fold closed over a pending approval keeps
+ * its body. Its header opens it by showing the panel again.
+ */
+function heldFold(
+  holds: string[],
+  body: HTMLElement,
+): { root: HTMLElement; toggle: HTMLButtonElement; panel: HTMLElement } {
+  const root = document.createElement('div');
+  root.setAttribute('data-fold-root', '');
+  recordFold(root, holds.map(call));
+  const toggle = document.createElement('button');
+  toggle.setAttribute('data-fold-toggle', '');
+  toggle.setAttribute('aria-expanded', 'false');
+  const panel = document.createElement('div');
+  panel.setAttribute('aria-hidden', 'true');
+  panel.append(body);
+  toggle.addEventListener('click', () => {
+    const next = toggle.getAttribute('aria-expanded') !== 'true';
+    toggle.setAttribute('aria-expanded', String(next));
+    panel.setAttribute('aria-hidden', String(!next));
+  });
+  root.append(toggle, panel);
+  return { root, toggle, panel };
+}
+
 function message(...children: HTMLElement[]): HTMLElement {
   const element = document.createElement('div');
   element.id = 'message-1';
@@ -129,6 +156,57 @@ describe('visitTaskTarget', () => {
     await waitFor(() => expect(target.element.scrollIntoView).toHaveBeenCalled());
     expect(other.clicks()).toBe(0);
     expect(other.toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opens a closed fold whose rows are still in the document, hidden', async () => {
+    const target = toolRow('call-1');
+    const group = heldFold(['call-0', 'call-1'], target.element);
+    message(group.root);
+    const leave = jest.fn();
+
+    expect(visitTaskTarget(row(), leave)).toBe(true);
+    expect(leave).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(target.element.scrollIntoView).toHaveBeenCalled());
+    expect(group.toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(target.details).toHaveAttribute('aria-expanded', 'true');
+    expect(target.element).toHaveFocus();
+  });
+
+  it('opens a hidden fold inside a fold that has not drawn its rows', async () => {
+    const target = toolRow('call-1');
+    const group = heldFold(['call-1'], target.element);
+    const phase = fold(['call-1', 'call-2'], group.root);
+    message(phase.root);
+
+    expect(visitTaskTarget(row())).toBe(true);
+
+    await waitFor(() => expect(target.element.scrollIntoView).toHaveBeenCalled());
+    expect(phase.toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(group.toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('says there is nowhere to go when the message itself is hidden', () => {
+    const target = toolRow('call-1');
+    const element = message(heldFold(['call-1'], target.element).root);
+    const pane = document.createElement('div');
+    pane.setAttribute('inert', '');
+    document.body.append(pane);
+    pane.append(element);
+    const leave = jest.fn();
+
+    expect(visitTaskTarget(row(), leave)).toBe(false);
+    expect(leave).not.toHaveBeenCalled();
+  });
+
+  it('says there is nowhere to go when the call is hidden by something no fold explains', () => {
+    const target = toolRow('call-1');
+    const hidden = document.createElement('div');
+    hidden.setAttribute('aria-hidden', 'true');
+    hidden.append(target.element);
+    message(hidden);
+
+    expect(visitTaskTarget(row())).toBe(false);
   });
 
   it('settles on the message when the call is drawn nowhere in it', async () => {

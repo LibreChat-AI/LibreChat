@@ -453,6 +453,31 @@ export function readResolvedConversationFiles(
   return resolved.files ?? [];
 }
 
+/**
+ * The files the conversation leaves out, from the same earlier read. `undefined` when that read
+ * cannot speak for the database, as for `readResolvedConversationFiles`.
+ */
+export function readResolvedExcludedFiles(
+  runtime: Pick<AgentExecutionContext, 'resolvedConversation'>,
+  conversationId: string,
+): string[] | undefined {
+  if (!Object.prototype.hasOwnProperty.call(runtime, 'resolvedConversation')) {
+    return undefined;
+  }
+  const resolved = runtime.resolvedConversation;
+  if (resolved === null) {
+    return [];
+  }
+  if (
+    resolved == null ||
+    resolved.conversationId !== conversationId ||
+    (resolved as Record<symbol, unknown>)[PARTIAL_RESOLVED_CONVERSATION] === true
+  ) {
+    return undefined;
+  }
+  return resolved.excludedFiles ?? [];
+}
+
 export interface ResolveResendToolResourcesParams {
   /** Tool names as configured on the agent. */
   tools?: string[] | null;
@@ -788,6 +813,9 @@ export type InitializedAgent = Agent & {
   baseContextTokens?: number;
   useLegacyContent: boolean;
   resendFiles: boolean;
+  /** Files the conversation leaves out of this turn, for the history replay to honor as this
+   *  initialization did. Absent when it leaves none out. */
+  excludedFiles?: string[];
   /** Detail level LibreChat encodes image content blocks with, from the agent's
    * model parameters. Absent when the agent does not configure one. */
   imageDetail?: ImageDetail;
@@ -1125,6 +1153,9 @@ export interface InitializeAgentDbMethods extends EndpointDbMethods {
   ) => Promise<unknown[]>;
   /** Get conversation file IDs */
   getConvoFiles: (conversationId: string) => Promise<string[] | null>;
+  /** The file ids the conversation leaves out of later turns. Read only when the request did
+   *  not already load the conversation. */
+  getConvoExcludedFiles?: (conversationId: string) => Promise<string[] | null>;
   /** Get code-generated files by conversation ID and the file_ids
    *  referenced from messages in the current thread (collected via
    *  `messages.files[].file_id` during thread walk). */
@@ -1705,9 +1736,23 @@ export async function initializeAgent(
   });
   const attachedWorkspaceTools =
     effectiveCodeEnvAvailable && codeExecutionContext.environmentType === 'attached';
+  /* A file the conversation leaves out stays out however it would arrive: named again by the
+   * request (a regenerated turn re-sends its message's files), collected from the thread, or
+   * listed on the conversation. An isolated execution reads no parent history, so it has no
+   * list to apply. The conversation the request already loaded answers without a query. */
+  let excludedFileIds: string[] = [];
+  if (authorizedRunFiles === undefined && conversationId != null) {
+    excludedFileIds =
+      readResolvedExcludedFiles(runtime, conversationId) ??
+      (await db.getConvoExcludedFiles?.(conversationId)) ??
+      [];
+  }
+  const leftOut = new Set(excludedFileIds);
+  const sentRequestFiles =
+    leftOut.size === 0 ? requestFiles : requestFiles.filter((file) => !leftOut.has(file.file_id));
   const requestFileIds = [
     ...new Set(
-      requestFiles
+      sentRequestFiles
         .map((file) => file.file_id)
         .filter((fileId): fileId is string => typeof fileId === 'string' && fileId.length > 0),
     ),
@@ -1789,7 +1834,9 @@ export async function initializeAgent(
         ? getThreadMessages({ conversationId }, 'messageId parentMessageId files attachments')
         : null,
     ]);
-    const fileIds = convoFileIds ?? [];
+    const included = (ids: string[]): string[] =>
+      leftOut.size === 0 ? ids : ids.filter((fileId) => !leftOut.has(fileId));
+    const fileIds = included(convoFileIds ?? []);
 
     /** Walk the parent chain and collect file_ids referenced by
      *  any message in the thread (`messages.files[].file_id` +
@@ -1799,7 +1846,7 @@ export async function initializeAgent(
      *  this layer. */
     const threadFileIds =
       threadMessages && threadMessages.length > 0
-        ? getThreadData(threadMessages, threadAnchor).fileIds
+        ? included(getThreadData(threadMessages, threadAnchor).fileIds)
         : undefined;
 
     /* Linear continuation APIs supply no anchor: the Responses API always continues via
@@ -1943,7 +1990,7 @@ export async function initializeAgent(
       }
     }
     currentFiles = authorizedRunFiles.map((file) => structuredClone(file));
-  } else if (requestFiles.length > 0 || toolFileIds.length > 0) {
+  } else if (sentRequestFiles.length > 0 || toolFileIds.length > 0) {
     currentFiles = requestUsageFiles.concat(toolUsageFiles);
   }
   if (currentFiles?.length) {
@@ -2146,7 +2193,7 @@ export async function initializeAgent(
       ? (Promise.resolve(currentFiles) as unknown as Promise<TFile[]>)
       : undefined,
     tool_resources: runtimeToolResources,
-    requestFileSet: new Set((authorizedRunFiles ?? requestFiles).map((file) => file.file_id)),
+    requestFileSet: new Set((authorizedRunFiles ?? sentRequestFiles).map((file) => file.file_id)),
     enabledToolResources: toolResourceSet,
     checkSessionsAlive: db.checkSessionsAlive,
     loadCodeApiKey: db.loadCodeApiKey,
@@ -2937,6 +2984,7 @@ export async function initializeAgent(
     ...agent,
     azureOptions: options.azureOptions,
     resendFiles,
+    ...(excludedFileIds.length > 0 ? { excludedFiles: excludedFileIds } : {}),
     imageDetail,
     deliveryRouting,
     toolRegistry,

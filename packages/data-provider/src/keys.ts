@@ -130,6 +130,7 @@ export enum QueryKeys {
   subagentTaskContent = 'subagentTaskContent',
   subagentControlReceipt = 'subagentControlReceipt',
   backgroundTasks = 'backgroundTasks',
+  fileExclusion = 'fileExclusion',
   conversationPullRequest = 'conversationPullRequest',
   pullRequestConnection = 'pullRequestConnection',
   codeEnvironments = 'codeEnvironments',
@@ -164,6 +165,7 @@ export enum MutationKeys {
   resetToolApprovalGrants = 'resetToolApprovalGrants',
   subagentControl = 'subagentControl',
   cancelBackgroundTasks = 'cancelBackgroundTasks',
+  setFileExclusion = 'setFileExclusion',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
   cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',
   /** Whole-array favorites write, keyed so every hook instance's write is

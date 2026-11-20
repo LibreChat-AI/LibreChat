@@ -3759,6 +3759,122 @@ describe('BaseClient', () => {
       expect(TestClient.modelBoundHistoricalSteerFiles).toEqual([modelFile, modelFile]);
     });
 
+    describe('files the conversation leaves out', () => {
+      const keptFile = { ...ownerFile, metadata: undefined };
+      const leftFile = {
+        ...ownerFile,
+        metadata: undefined,
+        file_id: 'left-out-file',
+        filename: 'left-out.txt',
+        _id: 'left-out-mongo-id',
+      };
+
+      beforeEach(() => {
+        TestClient.options.excludedFiles = [leftFile.file_id];
+      });
+
+      afterEach(() => {
+        delete TestClient.options.excludedFiles;
+        delete TestClient.assertHistoricalAttachmentLimits;
+      });
+
+      test('replays what is kept, counts the left-out file toward no limit, and still shows it', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            text: 'Use the attachments',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([keptFile]);
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [keptFile]);
+        expect(TestClient.processAttachments.mock.calls[0][1]).toEqual([keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+        expect(message.files).toEqual([
+          expect.objectContaining({ file_id: keptFile.file_id }),
+          expect.objectContaining({ file_id: leftFile.file_id }),
+        ]);
+      });
+
+      test('replays nothing of a message whose only file is left out', async () => {
+        getFiles.mockResolvedValueOnce([leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          { messageId: 'msg-1', text: '', files: [{ file_id: leftFile.file_id }] },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([]);
+        expect(TestClient.addFileContextToMessage).not.toHaveBeenCalled();
+        expect(TestClient.processAttachments).not.toHaveBeenCalled();
+        expect(message.files).toEqual([expect.objectContaining({ file_id: leftFile.file_id })]);
+      });
+
+      test('leaves a left-out file out of a steer replay', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-steer',
+            content: [
+              {
+                type: 'steer',
+                steer: 'Use these',
+                files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+              },
+            ],
+          },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([keptFile]);
+        expect(TestClient.modelBoundHistoricalSteerFiles).toEqual([keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+      });
+
+      test('holds for a client that applies no admission step of its own', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            text: 'Use the attachments',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+        ]);
+
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+      });
+
+      test('keeps the left-out file out of the stored view the content guard checks', () => {
+        const stored = [
+          {
+            messageId: 'msg-1',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+          { messageId: 'msg-2', text: 'no files' },
+        ];
+
+        const view = TestClient.getModelBoundStoredMessages(stored);
+
+        expect(view[0].files).toEqual([{ file_id: keptFile.file_id }]);
+        expect(view[1]).toBe(stored[1]);
+        expect(stored[0].files).toHaveLength(2);
+      });
+
+      test('gives the content guard the stored messages themselves when nothing is left out', () => {
+        delete TestClient.options.excludedFiles;
+        const stored = [{ messageId: 'msg-1', files: [{ file_id: keptFile.file_id }] }];
+
+        expect(TestClient.getModelBoundStoredMessages(stored)).toBe(stored);
+      });
+    });
+
     test('keeps canonical byte metadata for processed historical survivors', async () => {
       const modelFile = { ...ownerFile, metadata: undefined, bytes: 120 * 1024 * 1024 };
       getFiles.mockResolvedValueOnce([modelFile]);

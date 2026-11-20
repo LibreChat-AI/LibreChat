@@ -74,6 +74,24 @@ function spread(offered: readonly string[], ticked: string[]): string[] {
 }
 
 /**
+ * The offer starts from the whole agent: a new grant that can be made for it, or a stored one
+ * that was. Its boxes then start ticked, every one of them, so that choosing tool by tool
+ * takes away what the owner unticks and nothing else. A grant for the whole agent stores a
+ * consent for each declared server and lists none of the other tools, which would otherwise
+ * show the first ticked and the second not.
+ */
+function startsWhole(data: ScheduleMCPConsentView): boolean {
+  return data.offer?.everything === true && (data.revision == null || data.everything);
+}
+
+/** The other tools ticked where the offer starts, kept to the ones still on offer. */
+function initialOther(data: ScheduleMCPConsentView): string[] {
+  return startsWhole(data)
+    ? data.tools.offered
+    : data.tools.allowed.filter((tool) => data.tools.offered.includes(tool));
+}
+
+/**
  * The owner's starting point: what the stored grant already allows and is still on offer.
  * A tool whose definition changed starts unticked, so allowing the new one is a decision.
  *
@@ -82,6 +100,7 @@ function spread(offered: readonly string[], ticked: string[]): string[] {
  * must not take them away.
  */
 function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
+  const whole = startsWhole(data);
   return Object.fromEntries(
     data.targets.map((target) => {
       const offered = offeredTools(target);
@@ -93,7 +112,7 @@ function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
           offered,
           offered.filter(
             (tool) =>
-              (allowed.includes(tool) || allowed.includes(Constants.mcp_all)) &&
+              (whole || allowed.includes(tool) || allowed.includes(Constants.mcp_all)) &&
               unmarked(tool, changed),
           ),
         ),
@@ -226,8 +245,7 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
   const offeredOther = data?.tools.offered ?? [];
   const other = (
     (editedOther?.revision === data?.revision ? editedOther?.tools : undefined) ??
-    data?.tools.allowed ??
-    []
+    (data ? initialOther(data) : [])
   ).filter((tool) => offeredOther.includes(tool));
   /** Null until the owner ticks or unticks the whole agent, with the grant it was changed against. */
   const [editedWhole, setEditedWhole] = useState<{
@@ -242,7 +260,7 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
   const everything =
     standing &&
     ((editedWhole?.revision === data?.revision ? editedWhole?.value : undefined) ??
-      (data?.revision == null ? true : data.everything));
+      (data ? startsWhole(data) : true));
   /** Null until the owner changes it, with the grant it was changed against. */
   const [editedKeeps, setEditedKeeps] = useState<{
     revision: string | null;
@@ -293,12 +311,11 @@ export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantC
   );
   const pristine =
     data != null &&
-    everything === (standing && (data.revision == null ? true : data.everything)) &&
+    everything === startsWhole(data) &&
     keepsAsking &&
     canonical(choice) === canonical(initialChoice(data)) &&
     canonical(asking) === canonical(data.asking) &&
-    canonical({ other }) ===
-      canonical({ other: data.tools.allowed.filter((tool) => offeredOther.includes(tool)) });
+    canonical({ other }) === canonical({ other: initialOther(data) });
   return {
     choice,
     ask,
@@ -371,6 +388,10 @@ export default function GrantTools({
     setOther,
     allowEverything,
   } = state;
+  /** A tool that can be set to "ask me first" is on offer: one named on a declared server. */
+  const askable = data.targets.some((target) =>
+    offeredTools(target).some((tool) => tool !== Constants.mcp_all),
+  );
   /** What the stored grant asks about, which a whole-agent confirmation keeps. */
   const kept = [...new Set(Object.values(data.asking).flat())].sort();
   /**
@@ -440,6 +461,11 @@ export default function GrantTools({
       {!choosing && data.everything && (
         <p className="text-text-secondary text-sm">
           {localize('com_ui_schedule_consent_everything_allowed')}
+        </p>
+      )}
+      {choosing && canAsk && !everything && askable && (
+        <p className="text-text-secondary text-sm">
+          {localize('com_ui_schedule_consent_ask_note')}
         </p>
       )}
       {!(choosing && everything) && (
@@ -683,72 +709,74 @@ function ToolChoice({
           </Label>
         </div>
       )}
-      <ul className="space-y-1 pl-6">
-        {named.map((tool) => {
-          const warned = changed.includes(tool);
-          const described = [
-            covered ? `${everyId}-label` : undefined,
-            warned ? `${groupId}-${tool}-changed` : undefined,
-          ].filter(Boolean);
-          return (
-            <li key={tool}>
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id={`${groupId}-${tool}`}
-                  checked={chosen.includes(tool)}
-                  disabled={disabled || covered}
-                  aria-labelledby={`${groupId}-${tool}-label`}
-                  aria-describedby={described.length > 0 ? described.join(' ') : undefined}
-                  onCheckedChange={(checked) =>
-                    onChange(
-                      checked === true
-                        ? offered.filter((name) => name === tool || chosen.includes(name))
-                        : chosen.filter((name) => name !== tool),
-                    )
-                  }
-                />
-                <Label
-                  id={`${groupId}-${tool}-label`}
-                  htmlFor={`${groupId}-${tool}`}
-                  className="text-xs break-all"
-                >
-                  {tool}
-                </Label>
-                {askable.includes(tool) && chosen.includes(tool) && (
-                  <span className="ml-auto flex shrink-0 items-center gap-2">
-                    <Checkbox
-                      id={`${groupId}-${tool}-ask`}
-                      checked={asking.includes(tool)}
-                      disabled={disabled}
-                      aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
-                      aria-describedby={askNoteId}
-                      onCheckedChange={(checked) =>
-                        onAskingChange(
-                          checked === true
-                            ? [...asking, tool]
-                            : asking.filter((name) => name !== tool),
-                        )
-                      }
-                    />
-                    <Label
-                      htmlFor={`${groupId}-${tool}-ask`}
-                      variant="secondary"
-                      className="text-xs"
-                    >
-                      {localize('com_ui_schedule_consent_ask_first')}
-                    </Label>
-                  </span>
+      {named.length > 0 && (
+        <ul className="space-y-1 pl-6">
+          {named.map((tool) => {
+            const warned = changed.includes(tool);
+            const described = [
+              covered ? `${everyId}-label` : undefined,
+              warned ? `${groupId}-${tool}-changed` : undefined,
+            ].filter(Boolean);
+            return (
+              <li key={tool}>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${groupId}-${tool}`}
+                    checked={chosen.includes(tool)}
+                    disabled={disabled || covered}
+                    aria-labelledby={`${groupId}-${tool}-label`}
+                    aria-describedby={described.length > 0 ? described.join(' ') : undefined}
+                    onCheckedChange={(checked) =>
+                      onChange(
+                        checked === true
+                          ? offered.filter((name) => name === tool || chosen.includes(name))
+                          : chosen.filter((name) => name !== tool),
+                      )
+                    }
+                  />
+                  <Label
+                    id={`${groupId}-${tool}-label`}
+                    htmlFor={`${groupId}-${tool}`}
+                    className="text-xs break-all"
+                  >
+                    {tool}
+                  </Label>
+                  {askable.includes(tool) && chosen.includes(tool) && (
+                    <span className="ml-auto flex shrink-0 items-center gap-2">
+                      <Checkbox
+                        id={`${groupId}-${tool}-ask`}
+                        checked={asking.includes(tool)}
+                        disabled={disabled}
+                        aria-label={localize('com_ui_schedule_consent_ask_tool', { tool })}
+                        aria-describedby={askNoteId}
+                        onCheckedChange={(checked) =>
+                          onAskingChange(
+                            checked === true
+                              ? [...asking, tool]
+                              : asking.filter((name) => name !== tool),
+                          )
+                        }
+                      />
+                      <Label
+                        htmlFor={`${groupId}-${tool}-ask`}
+                        variant="secondary"
+                        className="text-xs"
+                      >
+                        {localize('com_ui_schedule_consent_ask_first')}
+                      </Label>
+                    </span>
+                  )}
+                </div>
+                {warned && (
+                  <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
+                    {localize('com_ui_schedule_consent_tool_changed')}
+                  </p>
                 )}
-              </div>
-              {warned && (
-                <p id={`${groupId}-${tool}-changed`} className="text-status-warning pl-6 text-xs">
-                  {localize('com_ui_schedule_consent_tool_changed')}
-                </p>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </fieldset>
   );
 }

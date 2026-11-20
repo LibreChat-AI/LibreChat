@@ -108,7 +108,7 @@
     "test:packages:api": "cd packages/api && npm run test:ci",
     "test:packages:data-provider": "cd packages/data-provider && npm run test:ci",
     "test:packages:data-schemas": "cd packages/data-schemas && npm run test:ci",
-    "test:packages:chat": "npm run build:data-provider && cd packages/chat && npm run test:ci",
+    "test:packages:chat": "npm run build:data-provider && npm run build:client-package && cd packages/chat && npm run test:ci",
     "test:config": "jest --config config/jest.config.js",
     "test:dependencies": "node --test scripts/dependencies.test.mjs",
     "test:images": "node --test scripts/images.test.mjs",

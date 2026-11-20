@@ -331,6 +331,7 @@ describe('a grant that can be made for the whole agent', () => {
   };
   const whole = () => screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_everything' });
   const confirm = () => screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' });
+  const tool = (name: string) => screen.getByRole('checkbox', { name });
 
   it('starts on the whole agent, and confirms it with nothing chosen one by one', async () => {
     jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(standing);
@@ -357,13 +358,15 @@ describe('a grant that can be made for the whole agent', () => {
     );
   });
 
-  it('lets the owner choose tool by tool instead', async () => {
+  it('starts tool by tool from every box ticked, so only what the owner unticks is left out', async () => {
     jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(standing);
     jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(standing);
     display();
     await userEvent.click(await whole());
-    expect(confirm()).toBeDisabled();
-    await userEvent.click(screen.getByRole('checkbox', { name: 'query' }));
+    const web = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' });
+    for (const box of [web, tool('export'), tool('query')]) expect(box).toBeChecked();
+    expect(confirm()).toBeEnabled();
+    await userEvent.click(tool('export'));
     await userEvent.click(confirm());
     await waitFor(() =>
       expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith('schedule', {
@@ -372,9 +375,63 @@ describe('a grant that can be made for the whole agent', () => {
         lifetimeHours: 24,
         allow: { warehouse: ['query'] },
         ask: {},
-        tools: [],
+        tools: ['web_search'],
       }),
     );
+  });
+
+  it('starts a stored grant for the whole agent from every box ticked as well', async () => {
+    // Such a grant holds a consent for a declared server and lists none of the other tools.
+    const stored = {
+      ...standing,
+      state: 'active' as const,
+      revision: 'grant',
+      everything: true,
+      allowed: { warehouse: ['query'] },
+    };
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(stored);
+    jest.mocked(dataService.confirmScheduleMCPConsent).mockResolvedValue(stored);
+    display();
+    await userEvent.click(await whole());
+    const web = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' });
+    // A tool the agents took up after the grant was made is covered by it too.
+    for (const box of [web, tool('export'), tool('query')]) expect(box).toBeChecked();
+    await userEvent.click(tool('query'));
+    await userEvent.click(confirm());
+    await waitFor(() =>
+      expect(dataService.confirmScheduleMCPConsent).toHaveBeenCalledWith(
+        'schedule',
+        expect.objectContaining({
+          expectedRevision: 'grant',
+          allow: { warehouse: ['export'] },
+          tools: ['web_search'],
+        }),
+      ),
+    );
+  });
+
+  it('starts a stored grant that lists its tools from what it lists', async () => {
+    const listed = {
+      ...standing,
+      state: 'active' as const,
+      revision: 'grant',
+      allowed: { warehouse: ['query'] },
+    };
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(listed);
+    display();
+    expect(await whole()).not.toBeChecked();
+    const web = screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' });
+    expect(tool('query')).toBeChecked();
+    for (const box of [web, tool('export')]) expect(box).not.toBeChecked();
+    // Ticking the whole agent and unticking it again leaves the listed choice as it was.
+    await userEvent.click(await whole());
+    await userEvent.click(await whole());
+    expect(tool('query')).toBeChecked();
+    for (const box of [
+      screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' }),
+      tool('export'),
+    ])
+      expect(box).not.toBeChecked();
   });
 
   it('says which tools it still asks about, and renews without touching them', async () => {
@@ -1121,4 +1178,75 @@ it('keeps persisted inspection and revocation when CREATE is removed, without of
   expect(
     screen.queryByRole('button', { name: 'com_ui_schedule_consent_confirm' }),
   ).not.toBeInTheDocument();
+});
+
+describe('what the form says about asking first', () => {
+  const note = () => screen.queryByText('com_ui_schedule_consent_ask_note');
+
+  it('explains it where a run can pause and a tool can be set to ask', async () => {
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({ ...view, approval: true });
+    display();
+    await screen.findByRole('checkbox', { name: 'query' });
+    expect(note()).toBeVisible();
+  });
+
+  it('says nothing about it where a run cannot pause', async () => {
+    display();
+    await screen.findByRole('checkbox', { name: 'query' });
+    expect(note()).not.toBeInTheDocument();
+  });
+
+  it('says nothing about it while the whole agent is chosen, or with no tool that can ask', async () => {
+    const standing = {
+      ...view,
+      approval: true,
+      offer: { ...view.offer!, everything: true as const },
+    };
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(standing);
+    const { unmount } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Consent id="schedule" name="Digest" onOpenChange={jest.fn()} triggerRef={createRef()} />
+      </QueryClientProvider>,
+    );
+    const whole = await screen.findByRole('checkbox', {
+      name: 'com_ui_schedule_consent_everything',
+    });
+    expect(note()).not.toBeInTheDocument();
+    await userEvent.click(whole);
+    expect(note()).toBeVisible();
+    unmount();
+    // A selection of the whole server names no tool, and it cannot be asked about.
+    jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+      ...view,
+      approval: true,
+      targets: [
+        { ...view.targets[0], permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }] },
+      ],
+    });
+    display();
+    await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_server_every' });
+    expect(note()).not.toBeInTheDocument();
+  });
+});
+
+it('renders no list of tools under a server that offers only the whole of itself', async () => {
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue({
+    ...view,
+    targets: [
+      { ...view.targets[0], permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }] },
+    ],
+  });
+  display();
+  const every = await screen.findByRole('checkbox', {
+    name: 'com_ui_schedule_consent_server_every',
+  });
+  const server = every.closest('fieldset');
+  expect(server).not.toBeNull();
+  expect(server!.querySelector('ul')).toBeNull();
+  // A server with named tools still lists them.
+  cleanup();
+  jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(view);
+  display();
+  const query = await screen.findByRole('checkbox', { name: 'query' });
+  expect(query.closest('fieldset')!.querySelectorAll('li')).toHaveLength(2);
 });

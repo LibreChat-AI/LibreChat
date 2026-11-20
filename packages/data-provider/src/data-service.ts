@@ -1604,6 +1604,17 @@ export function cancelBackgroundTasks(
   return request.post(endpoints.backgroundTasksCancel(conversationId), body);
 }
 
+export function getFileExclusion(conversationId: string): Promise<t.TFileExclusion> {
+  return request.get(endpoints.fileExclusion(conversationId));
+}
+
+export function setFileExclusion(
+  conversationId: string,
+  body: t.TFileExclusionRequest,
+): Promise<t.TFileExclusion> {
+  return request.post(endpoints.fileExclusion(conversationId), body);
+}
+
 export function getConversationPullRequest(
   conversationId: string,
   options?: { signal?: AbortSignal },

@@ -14,5 +14,6 @@ export * from './priming';
 export * from './process';
 export * from './publication';
 export * from './receipt';
+export * from './scope';
 export * from './snapshot';
 export * from './text';
