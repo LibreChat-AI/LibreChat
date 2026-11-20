@@ -1,12 +1,17 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { DiscordChannelConfig, DiscordInboxResolution } from 'librechat-data-provider';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { DiscordApplicationObserver, DiscordObserver, DiscordTelemetry } from './observe';
 import type { DiscordGatewayOwner, DiscordGatewayDependencies } from './gateway';
+import type { DiscordHealthSnapshot } from './health';
 import type { SharedGatewayConfig } from '../config';
 import type { DiscordRetryState } from './recovery';
+import type { WorkerProvider } from '../provider';
 import type { Logger } from '../types';
+import { observeDiscordProvider, safeDiscordObserver, noopDiscordTelemetry } from './observe';
 import { DiscordReplyClient, deliverDiscordReply } from './reply';
 import { DiscordGatewayControlClient } from './ownership';
+import { ChannelWorker, recoveryEvent } from '../worker';
 import { createDiscordWorkerProvider } from './worker';
 import { withDiscordApplicationLease } from './lease';
 import { createDiscordGatewayDriver } from './socket';
@@ -18,7 +23,6 @@ import { runDiscordApplications } from './pool';
 import { discordRetryDelay } from './recovery';
 import { runDiscordSession } from './session';
 import { createDiscordWebhook } from './http';
-import { ChannelWorker } from '../worker';
 import { ChannelClient } from '../client';
 import { DiscordClient } from './client';
 
@@ -26,7 +30,13 @@ interface OwnedApplication {
   owner: DiscordGatewayOwner;
   signal: AbortSignal;
   rates: DiscordRateCoordinator;
+  observe: DiscordApplicationObserver;
   tasks: Set<Promise<void>>;
+}
+/** Optional telemetry and the private health read it feeds. Without it the app reports nothing. */
+export interface DiscordObservability {
+  telemetry: DiscordTelemetry;
+  health: { snapshot(): DiscordHealthSnapshot };
 }
 const untilAbort = (signal: AbortSignal): Promise<void> =>
   signal.aborted
@@ -44,6 +54,8 @@ export class DiscordGatewayApp {
   private readonly runtime: DiscordRuntimeClient;
   private readonly ownership: DiscordGatewayControlClient;
   private readonly ingress: ReturnType<typeof createDiscordWebhook>;
+  private readonly telemetry: DiscordTelemetry;
+  private readonly observe: DiscordObserver;
 
   constructor(
     private readonly config: SharedGatewayConfig,
@@ -51,7 +63,10 @@ export class DiscordGatewayApp {
     private readonly log: Logger,
     private readonly transport: typeof fetch = fetch,
     private readonly createDriver?: DiscordGatewayDependencies['createDriver'],
+    private readonly observability?: DiscordObservability,
   ) {
+    this.telemetry = observability?.telemetry ?? noopDiscordTelemetry;
+    this.observe = safeDiscordObserver(this.telemetry.observe);
     this.control = new DiscordControlClient(config, transport);
     this.runtime = new DiscordRuntimeClient(config, transport);
     this.ownership = new DiscordGatewayControlClient(config, transport);
@@ -63,12 +78,47 @@ export class DiscordGatewayApp {
       submit: (input, signal) => this.control.submit(input, signal),
       submitDm: (input, signal) => this.control.submitDm(input, signal),
       select: (input, signal) => this.control.select(input, signal),
+      observe: this.observe,
       log,
     });
   }
 
   http(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const health = this.observability?.health;
+    if (health && request.method === 'GET' && request.url?.split('?')[0] === '/healthz/detail') {
+      this.detail(response, health);
+      return Promise.resolve();
+    }
     return this.ingress.http(request, response);
+  }
+
+  /**
+   * Private aggregate health, served beside /metrics and never routed publicly. It names no
+   * application, channel, user or credential, and it never changes readiness: `status` only
+   * repeats what /readyz answers.
+   */
+  private detail(response: ServerResponse, health: DiscordObservability['health']): void {
+    const { applications, quarantined, workers, credentials, permissions, native } =
+      health.snapshot();
+    response.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+    response.end(
+      JSON.stringify({
+        status: this.ready && this.ownersHealthy && this.workersHealthy ? 'ready' : 'not_ready',
+        process: {
+          level: this.ready ? 'healthy' : 'degraded',
+          uptimeSeconds: Math.floor(process.uptime()),
+        },
+        workers: { level: workers },
+        applications,
+        quarantined,
+        credentials,
+        permissions,
+        native,
+      }),
+    );
   }
 
   private reportReadiness(): void {
@@ -86,10 +136,14 @@ export class DiscordGatewayApp {
         log: this.log,
       },
       async (ownedSignal) => {
+        // The health entry lives exactly as long as this lease: released with it, replaced by a new owner.
+        const scope = this.scope(owner);
+        const { observe } = scope;
         const context: OwnedApplication = {
           owner,
           signal: ownedSignal,
-          rates: new DiscordRateCoordinator(this.policy.rateLimits),
+          rates: new DiscordRateCoordinator(this.policy.rateLimits, observe),
+          observe,
           tasks: new Set(),
         };
         this.active.set(owner.applicationId, context);
@@ -98,11 +152,34 @@ export class DiscordGatewayApp {
           else await untilAbort(ownedSignal);
         } finally {
           this.active.delete(owner.applicationId);
-          await Promise.allSettled([...context.tasks]);
+          try {
+            await Promise.allSettled([...context.tasks]);
+          } finally {
+            scope.release();
+          }
         }
       },
       signal,
     );
+  }
+
+  private scope(owner: DiscordGatewayOwner): ReturnType<DiscordTelemetry['application']> {
+    const shards = this.policy.gateway.enabled ? this.policy.gateway.shardCount : 0;
+    try {
+      const scope = this.telemetry.application(owner, { shards });
+      return {
+        observe: scope.observe,
+        release: () => {
+          try {
+            scope.release();
+          } catch {
+            // Telemetry cannot fail the lease teardown that releases it.
+          }
+        },
+      };
+    } catch {
+      return noopDiscordTelemetry.application(owner, { shards });
+    }
   }
 
   /**
@@ -124,6 +201,7 @@ export class DiscordGatewayApp {
               this.createDriver ??
               ((options) => createDiscordGatewayDriver(options, this.transport, context.rates)),
             log: this.log,
+            observe: context.observe,
             dispatch: (application, event, dispatchSignal) =>
               dispatchDiscordEvent(
                 {
@@ -134,6 +212,7 @@ export class DiscordGatewayApp {
                   runtime: this.runtime,
                   gateway: this.ownership,
                   transport: this.transport,
+                  observe: context.observe,
                 },
                 event,
                 dispatchSignal,
@@ -153,11 +232,28 @@ export class DiscordGatewayApp {
     }
   }
 
-  private async task(context: OwnedApplication, work: () => Promise<void>): Promise<void> {
+  private async task(
+    context: OwnedApplication,
+    work: () => Promise<void>,
+    recover: (error: unknown) => string = (error) => recoveryEvent(error),
+  ): Promise<void> {
     if (context.signal.aborted) return;
-    const task = work().catch(() => {
-      if (!context.signal.aborted) this.log.warn('discord_application_work_unavailable');
-    });
+    const task = work().then(
+      () => this.observe({ type: 'task', ok: true }),
+      (error: unknown) => {
+        // An abort ends the work on purpose, so it is neither a failure nor a recovery.
+        if (context.signal.aborted) return;
+        this.log.warn('discord_application_work_unavailable');
+        this.observe({ type: 'task', ok: false });
+        let event = 'other';
+        try {
+          event = recover(error);
+        } catch {
+          // An unclassifiable failure is still counted, as other.
+        }
+        this.observe({ type: 'recovery', event });
+      },
+    );
     context.tasks.add(task);
     try {
       await task;
@@ -177,6 +273,7 @@ export class DiscordGatewayApp {
         cursor = page.next;
         this.workersHealthy = true;
         this.reportReadiness();
+        this.observe({ type: 'discovery', source: 'channels', ok: true });
         const tasks: (() => Promise<void>)[] = [];
         for (const context of this.active.values()) {
           tasks.push(() =>
@@ -206,6 +303,7 @@ export class DiscordGatewayApp {
                         botToken: application.botToken,
                         timeoutMs: this.policy.requestTimeoutMs,
                         maxResponseBytes: this.policy.maxResponseBytes,
+                        observe: context.observe,
                       },
                       this.transport,
                       context.rates,
@@ -246,38 +344,54 @@ export class DiscordGatewayApp {
         for (const row of page.channels) {
           const context = this.active.get(row.applicationId);
           if (!context || context.owner.applicationRevision !== row.applicationRevision) continue;
-          tasks.push(() =>
-            this.task(context, async () => {
-              const config = {
-                ...this.config,
-                CHANNEL_TENANT_ID: row.tenantId,
-                CHANNEL_ID: row.channelId,
-              };
-              const provider = createDiscordWorkerProvider({
-                owner: context.owner,
-                rates: context.rates,
-                createClient: (bundle, rates) =>
-                  new DiscordClient(
-                    {
-                      botToken: bundle.credentials.botToken,
-                      timeoutMs: bundle.discord.requestTimeoutMs,
-                      maxResponseBytes: bundle.discord.maxResponseBytes,
-                    },
-                    this.transport,
-                    rates,
-                  ),
-              });
-              await new ChannelWorker(
-                config,
-                new ChannelClient(config, this.transport, {
-                  type: 'discord',
-                  applicationRevision: row.applicationRevision,
-                }),
-                provider,
-                this.log,
-              ).tick(context.signal);
-            }),
-          );
+          tasks.push(() => {
+            let classify: WorkerProvider['recoveryEvent'] | undefined;
+            return this.task(
+              context,
+              async () => {
+                const config = {
+                  ...this.config,
+                  CHANNEL_TENANT_ID: row.tenantId,
+                  CHANNEL_ID: row.channelId,
+                };
+                const provider = observeDiscordProvider(
+                  createDiscordWorkerProvider({
+                    owner: context.owner,
+                    rates: context.rates,
+                    createClient: (bundle, rates) =>
+                      new DiscordClient(
+                        {
+                          botToken: bundle.credentials.botToken,
+                          timeoutMs: bundle.discord.requestTimeoutMs,
+                          maxResponseBytes: bundle.discord.maxResponseBytes,
+                          observe: context.observe,
+                        },
+                        this.transport,
+                        rates,
+                      ),
+                  }),
+                  this.observe,
+                );
+                classify = (failure) => provider.recoveryEvent(failure);
+                try {
+                  const worked = await new ChannelWorker(
+                    config,
+                    new ChannelClient(config, this.transport, {
+                      type: 'discord',
+                      applicationRevision: row.applicationRevision,
+                    }),
+                    provider,
+                    this.log,
+                  ).tick(context.signal);
+                  this.observe({ type: 'turn', outcome: worked ? 'worked' : 'idle' });
+                } catch (error) {
+                  if (!context.signal.aborted) this.observe({ type: 'turn', outcome: 'held' });
+                  throw error;
+                }
+              },
+              (error) => recoveryEvent(error, classify),
+            );
+          });
         }
         let next = 0;
         await Promise.all(
@@ -291,7 +405,10 @@ export class DiscordGatewayApp {
       } catch {
         this.workersHealthy = false;
         this.reportReadiness();
-        if (!signal.aborted) this.log.warn('discord_worker_discovery_unavailable');
+        if (!signal.aborted) {
+          this.log.warn('discord_worker_discovery_unavailable');
+          this.observe({ type: 'discovery', source: 'channels', ok: false });
+        }
       }
       await delay(this.policy.gateway.pollIntervalMs, undefined, { signal }).catch(() => {});
     }
@@ -310,10 +427,13 @@ export class DiscordGatewayApp {
               const page = await this.runtime.applications(cursor, discoverySignal);
               this.ownersHealthy = true;
               this.reportReadiness();
+              this.observe({ type: 'discovery', source: 'applications', ok: true });
               return page;
             } catch (error) {
               this.ownersHealthy = false;
               this.reportReadiness();
+              if (!discoverySignal.aborted)
+                this.observe({ type: 'discovery', source: 'applications', ok: false });
               throw error;
             }
           },

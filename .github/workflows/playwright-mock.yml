@@ -859,6 +859,14 @@ jobs:
       - name: Build the application
         run: npm run e2e:prepare
 
+      # The built bundle is what ships: it must serve signed ingress, the private health detail and
+      # metrics, and keep readiness unchanged, against a loopback backend with no secrets.
+      - name: Build the Discord gateway
+        run: npm run build --workspace @librechat/channel-gateway
+
+      - name: Smoke-test the built Discord gateway process
+        run: node .github/scripts/test-discord-process.mjs
+
       - name: Run Discord acceptance with disposable transactional storage
         run: node e2e/discord/run.mjs
 
