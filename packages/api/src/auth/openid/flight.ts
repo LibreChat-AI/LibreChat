@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { AUTH_SESSION_CHECK_UNAVAILABLE, OPENID_SESSION_ENDED } from 'librechat-data-provider';
 import type {
   AuthIdentityContext,
   LeaseContext,
@@ -13,9 +14,15 @@ import type {
 import {
   OPENID_REFRESH_CANCELLED_BEFORE_GRANT,
   createOpenIDRefreshOwnershipError,
+  createOpenIDSessionEndedError,
   isOpenIDRefreshOwnershipError,
+  isOpenIDSessionEndedError,
   toOpenIDLogArgument,
 } from './errors';
+import {
+  ProviderSessionUnavailableError,
+  isProviderSessionUnavailableError,
+} from './providerSession/errors';
 import { createOpenIDRefreshIdentityTuple, serializeAuthIdentityTuple } from '~/utils/identity';
 import { OPENID_EXPIRY_BUFFER_SECONDS } from '~/oauth/expiry';
 
@@ -177,6 +184,37 @@ export interface OpenIDRefreshFlightDeps {
   logger: Pick<OpenIDLogger, 'warn'>;
   encrypt: (value: string) => Promise<string>;
   decrypt: (value: string) => Promise<string>;
+}
+
+/**
+ * A failed flight stores a code in `errorMessage` for each failure that a waiter must answer the
+ * same way as the owner. Older versions read the code as a plain message, as for any other
+ * failure; a record without a code keeps the plain `Error`.
+ */
+function getFlightFailureCode(error?: Error | { message?: string } | null): string | undefined {
+  if (isOpenIDSessionEndedError(error)) return OPENID_SESSION_ENDED;
+  if (isProviderSessionUnavailableError(error)) return AUTH_SESSION_CHECK_UNAVAILABLE;
+  return undefined;
+}
+
+/** Rebuilds the owner's typed error for a waiter. The owner never used the refresh token before
+ *  a cancellation, so the waiter answers a retryable `503` and keeps its cookies. */
+function createFlightFailureError(code?: string): Error | undefined {
+  switch (code) {
+    case OPENID_SESSION_ENDED:
+      return createOpenIDSessionEndedError();
+    case AUTH_SESSION_CHECK_UNAVAILABLE:
+      return new ProviderSessionUnavailableError();
+    case OPENID_REFRESH_CANCELLED_BEFORE_GRANT:
+      return Object.assign(
+        new ProviderSessionUnavailableError(
+          'OpenID refresh owner stopped before starting the grant',
+        ),
+        { retryable: true },
+      );
+    default:
+      return undefined;
+  }
 }
 
 export function createOpenIDRefreshFlightService({
@@ -522,7 +560,10 @@ export function createOpenIDRefreshFlightService({
   }): Promise<RefreshFlightRecord | null> {
     if (!key || !ownerId) return null;
     const errorMessage =
-      typeof error?.message === 'string' && error.message ? error.message : 'OpenID refresh failed';
+      getFlightFailureCode(error) ??
+      (typeof error?.message === 'string' && error.message
+        ? error.message
+        : 'OpenID refresh failed');
     return db.failOpenIDRefreshFlight({
       key,
       ownerId,
@@ -595,14 +636,9 @@ export function createOpenIDRefreshFlightService({
     flight: RefreshFlightRecord | null,
   ): Promise<TokenResult | null> {
     if (!flight) return null;
-    if (
-      flight.status === 'failed' &&
-      flight.errorMessage === OPENID_REFRESH_CANCELLED_BEFORE_GRANT
-    ) {
-      throw Object.assign(new Error('OpenID refresh owner stopped before starting the grant'), {
-        status: 503,
-        retryable: true,
-      });
+    if (flight.status === 'failed') {
+      const typedError = createFlightFailureError(flight.errorMessage);
+      if (typedError) throw typedError;
     }
     if (flight.status === 'revoked')
       throw new Error(flight.errorMessage || 'OpenID refresh was revoked by logout');
