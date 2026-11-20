@@ -156,6 +156,28 @@ const cachePreparedCodeOutputBuffer = ({
   cache.totalBytes += buffer.length;
 };
 
+/** Evicts one preflight buffer, for a prefetched file its batch discarded. */
+const releasePreparedCodeOutputBuffer = ({
+  req,
+  id,
+  session_id,
+  codeApiBaseUrl,
+  executionProfile,
+  executionRouteKey,
+}) => {
+  const cache = req && typeof req === 'object' ? preparedCodeOutputBuffers.get(req) : undefined;
+  if (!cache || typeof id !== 'string' || typeof session_id !== 'string') {
+    return;
+  }
+  const routeKey = getCodeOutputRouteKey({ executionRouteKey, codeApiBaseUrl, executionProfile });
+  const key = codeOutputBufferKey(routeKey, session_id, id);
+  const cached = cache.buffers.get(key);
+  if (cached) {
+    cache.buffers.delete(key);
+    cache.totalBytes -= cached.buffer.length;
+  }
+};
+
 const getPreparedCodeOutputBuffer = ({
   req,
   file_path,
@@ -1706,6 +1728,7 @@ module.exports = {
   getSessionInfo,
   processCodeOutput,
   prepareCodeOutputForInspection,
+  releasePreparedCodeOutputBuffer,
   readWorkspaceFile,
   searchWorkspace,
   listWorkspaceFiles,
