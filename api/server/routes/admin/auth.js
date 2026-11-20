@@ -23,12 +23,9 @@ const {
   storeAndStripChallenge,
   tenantContextMiddleware,
   preAuthTenantMiddleware,
-  applyAdminRefresh,
   applyGoogleAdminRefresh,
-  prepareAdminOpenIdRefresh,
-  runAdminOpenIdRefreshGrant,
+  refreshAdminOpenIdSession,
   mapAdminAuthError,
-  mapAdminRefreshError,
   AdminRefreshError,
   buildOpenIDRefreshParams,
   isEmailDomainAllowed,
@@ -798,13 +795,22 @@ router.post(
         });
       }
 
-      const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
-
-      let prepared;
-      try {
-        prepared = await prepareAdminOpenIdRefresh(
+      const refreshParams = buildOpenIDRefreshParams();
+      logger.debug('[admin/oauth/refresh] OpenID refresh params', {
+        has_scope: Boolean(process.env.OPENID_SCOPE),
+        has_refresh_audience: Boolean(process.env.OPENID_REFRESH_AUDIENCE),
+      });
+      const outcome = await refreshAdminOpenIdSession(
+        {
           refreshToken,
-          {
+          userId: normalizedUserId,
+          tenantId,
+          expectedIssuer: openIdConfig.serverMetadata?.()?.issuer,
+        },
+        {
+          grant: (grantRefreshToken) =>
+            openIdClient.refreshTokenGrant(openIdConfig, grantRefreshToken, refreshParams),
+          providerSession: {
             authorizer: getProviderSessionAuthorizer(),
             getProviderSessionClient,
             findProviderSessionBinding,
@@ -816,29 +822,7 @@ router.post(
             deleteSession,
             getRefreshTokenExpiryMs,
           },
-          { expectedIssuer, userId: normalizedUserId, tenantId },
-        );
-      } catch (err) {
-        const mapped = mapAdminAuthError(err);
-        if (mapped) {
-          return res.status(mapped.status).json(mapped.body);
-        }
-        throw err;
-      }
-
-      const { providerSessionDeps, binding, grantRefreshToken } = prepared;
-      const refreshParams = buildOpenIDRefreshParams();
-      logger.debug('[admin/oauth/refresh] OpenID refresh params', {
-        has_scope: Boolean(process.env.OPENID_SCOPE),
-        has_refresh_audience: Boolean(process.env.OPENID_REFRESH_AUDIENCE),
-      });
-      let tokenset;
-      try {
-        tokenset = await runAdminOpenIdRefreshGrant(
-          () => openIdClient.refreshTokenGrant(openIdConfig, grantRefreshToken, refreshParams),
-          refreshToken,
-          prepared,
-          {
+          flight: {
             createRefreshTokenBridgeFlightKey,
             createAdminRefreshGrantFlightKey,
             acquireOpenIDRefreshFlight,
@@ -848,52 +832,16 @@ router.post(
             waitForOpenIDRefreshFlight,
             withOpenIDRefreshFlightLease,
           },
-        );
-        logger.debug('[admin/oauth/refresh] OpenID refresh succeeded', {
-          has_access_token: Boolean(tokenset.access_token),
-          has_id_token: Boolean(tokenset.id_token),
-          has_refresh_token: Boolean(tokenset.refresh_token),
-          expires_in: tokenset.expires_in,
-        });
-      } catch (err) {
-        logger.warn('[admin/oauth/refresh] IdP refresh grant failed', {
-          code: err?.code,
-          name: err?.name,
-        });
-        const mapped = mapAdminRefreshError(err);
-        return res.status(mapped.status).json(mapped.body);
+          user: { findUsers, getUserById, ...buildAdminRefreshClosures(sessionExpiry) },
+        },
+      );
+      if (!outcome.ok) {
+        return res.status(outcome.error.status).json(outcome.error.body);
       }
-
-      try {
-        const result = await applyAdminRefresh(
-          tokenset,
-          {
-            findUsers,
-            getUserById,
-            ...buildAdminRefreshClosures(sessionExpiry),
-            ...providerSessionDeps,
-          },
-          {
-            userId: normalizedUserId,
-            previousRefreshToken: refreshToken,
-            grantRefreshToken,
-            expectedIssuer,
-            tenantId,
-            boundProviderSession: binding.ref,
-            bridgeIdentity: prepared.identity,
-          },
-        );
-        req.user = { id: result.user._id };
-        await middleware.checkBan(req, res, () => {});
-        if (req.banned || res.headersSent) return;
-        return res.json(result);
-      } catch (err) {
-        const mapped = mapAdminAuthError(err);
-        if (mapped) {
-          return res.status(mapped.status).json(mapped.body);
-        }
-        throw err;
-      }
+      req.user = { id: outcome.value.user._id };
+      await middleware.checkBan(req, res, () => {});
+      if (req.banned || res.headersSent) return;
+      return res.json(outcome.value);
     } catch (error) {
       logger.error('[admin/oauth/refresh] Error:', error);
       res.status(500).json({

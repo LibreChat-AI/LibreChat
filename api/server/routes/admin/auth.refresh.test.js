@@ -51,7 +51,6 @@ jest.mock('@librechat/api', () => {
     storeAndStripChallenge: jest.fn(),
     tenantContextMiddleware: jest.fn((req, res, next) => next()),
     preAuthTenantMiddleware: jest.fn((req, res, next) => next()),
-    applyAdminRefresh: jest.fn(),
     applyGoogleAdminRefresh: jest.fn(),
     AdminRefreshError,
     buildOpenIDRefreshParams: jest.fn(() => {
@@ -146,7 +145,6 @@ const realOpenIdClient = jest.requireActual(dirname(require.resolve('openid-clie
 const { logger } = require('@librechat/data-schemas');
 const {
   isEnabled,
-  applyAdminRefresh,
   applyGoogleAdminRefresh,
   storeAndStripChallenge,
   buildOpenIDRefreshParams,
@@ -171,7 +169,7 @@ const {
   waitForOpenIDRefreshFlight,
   withOpenIDRefreshFlightLease,
 } = require('~/server/services/OpenIDRefreshFlight');
-const { findSession } = require('~/models');
+const { findSession, findUsers, upsertSession, deleteSession } = require('~/models');
 const adminAuthRouter = require('./auth');
 
 const ORIGINAL_OPENID_SCOPE = process.env.OPENID_SCOPE;
@@ -188,6 +186,13 @@ describe('admin auth OpenID refresh route', () => {
     refresh_token: 'new-admin-refresh',
     expires_in: 3600,
     claims: jest.fn(() => ({ sub: 'admin-openid-id' })),
+  };
+  const adminUser = {
+    _id: 'user-id',
+    email: 'admin@example.com',
+    role: 'ADMIN',
+    provider: 'openid',
+    openidId: 'admin-openid-id',
   };
 
   let app;
@@ -224,12 +229,7 @@ describe('admin auth OpenID refresh route', () => {
       operation({ assertLeaseOwned: jest.fn() }),
     );
     openIdClient.refreshTokenGrant.mockResolvedValue(tokenset);
-    applyAdminRefresh.mockResolvedValue({
-      token: 'admin-jwt',
-      refreshToken: 'new-admin-refresh',
-      user: { id: 'user-id', email: 'admin@example.com' },
-      expiresAt: 1234567890,
-    });
+    findUsers.mockResolvedValue([adminUser]);
   });
 
   afterAll(() => {
@@ -282,10 +282,8 @@ describe('admin auth OpenID refresh route', () => {
       'incoming-refresh-token',
       expectedParams,
     );
-    expect(applyAdminRefresh).toHaveBeenCalledWith(
-      tokenset,
-      expect.any(Object),
-      expect.objectContaining({ previousRefreshToken: 'incoming-refresh-token' }),
+    expect(response.body).toEqual(
+      expect.objectContaining({ token: 'minted-token', refreshToken: 'new-admin-refresh' }),
     );
   });
 
@@ -327,7 +325,7 @@ describe('admin auth OpenID refresh route', () => {
       error: 'Refresh failed',
       error_code: 'REFRESH_FAILED',
     });
-    expect(applyAdminRefresh).not.toHaveBeenCalled();
+    expect(findUsers).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -365,7 +363,7 @@ describe('admin auth OpenID refresh route', () => {
         ? { error: 'Refresh failed', error_code: 'REFRESH_FAILED' }
         : { error: 'Session renewal unavailable', error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE' },
     );
-    expect(applyAdminRefresh).not.toHaveBeenCalled();
+    expect(findUsers).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -382,7 +380,20 @@ describe('admin auth OpenID refresh route', () => {
       error: 'Session renewal unavailable',
       error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE',
     });
-    expect(applyAdminRefresh).not.toHaveBeenCalled();
+    expect(findUsers).not.toHaveBeenCalled();
+  });
+
+  it('answers 500 OPENID_CLIENT_MISCONFIGURED when the IdP rejects the OAuth client', async () => {
+    openIdClient.refreshTokenGrant.mockRejectedValue({ error: 'invalid_client', status: 401 });
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({
+      error: 'Identity provider client is misconfigured',
+      error_code: 'OPENID_CLIENT_MISCONFIGURED',
+    });
+    expect(findUsers).not.toHaveBeenCalled();
   });
 
   it('keeps admin refresh diagnostics free of token and audience values', async () => {
@@ -433,7 +444,7 @@ describe('admin auth OpenID refresh route', () => {
       error_code: 'OPENID_SESSION_ENDED',
     });
     expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
-    expect(applyAdminRefresh).not.toHaveBeenCalled();
+    expect(findUsers).not.toHaveBeenCalled();
   });
 
   describe('refresh-token bridge recovery (provider-session enforce mode)', () => {
@@ -453,9 +464,6 @@ describe('admin auth OpenID refresh route', () => {
     });
 
     it('503s on the first attempt, then a retry with the original refresh_token uses the bridged token and succeeds', async () => {
-      const { ProviderSessionUnavailableError } = require('@librechat/api');
-      applyAdminRefresh.mockRejectedValueOnce(new ProviderSessionUnavailableError('db down'));
-
       const firstResponse = await request(app)
         .post('/api/admin/oauth/refresh')
         .send({ refresh_token: 'original-refresh-token' });
@@ -472,12 +480,7 @@ describe('admin auth OpenID refresh route', () => {
       );
 
       getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh-token' });
-      applyAdminRefresh.mockResolvedValueOnce({
-        token: 'admin-jwt',
-        refreshToken: 'new-admin-refresh',
-        user: { id: 'user-id', email: 'admin@example.com' },
-        expiresAt: 1234567890,
-      });
+      getProviderSessionAuthorizer().authorize.mockResolvedValue({ ok: true });
 
       const retryResponse = await request(app)
         .post('/api/admin/oauth/refresh')
@@ -489,30 +492,23 @@ describe('admin auth OpenID refresh route', () => {
         'bridged-refresh-token',
         {},
       );
-      expect(applyAdminRefresh).toHaveBeenLastCalledWith(
-        expect.any(Object),
-        expect.any(Object),
+      expect(storeRefreshTokenBridge).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          bridgeIdentity: expect.objectContaining({ userId: 'admin-user-id' }),
+          oldRefreshToken: 'original-refresh-token',
+          newRefreshToken: 'new-admin-refresh',
+          userId: 'admin-user-id',
         }),
       );
     });
 
     it('wraps a bridged grant in the flight lease, keyed by createRefreshTokenBridgeFlightKey', async () => {
-      const { ProviderSessionUnavailableError } = require('@librechat/api');
-      applyAdminRefresh.mockRejectedValueOnce(new ProviderSessionUnavailableError('db down'));
       await request(app)
         .post('/api/admin/oauth/refresh')
         .send({ refresh_token: 'original-refresh-token' });
 
       getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh-token' });
       createRefreshTokenBridgeFlightKey.mockReturnValue('flight-key-1');
-      applyAdminRefresh.mockResolvedValueOnce({
-        token: 'admin-jwt',
-        refreshToken: 'new-admin-refresh',
-        user: { id: 'user-id', email: 'admin@example.com' },
-        expiresAt: 1234567890,
-      });
+      getProviderSessionAuthorizer().authorize.mockResolvedValue({ ok: true });
 
       const retryResponse = await request(app)
         .post('/api/admin/oauth/refresh')
@@ -541,12 +537,7 @@ describe('admin auth OpenID refresh route', () => {
 
     it('records a direct grant under the admin grant flight, keyed by createAdminRefreshGrantFlightKey', async () => {
       createAdminRefreshGrantFlightKey.mockReturnValue('admin-grant-key-1');
-      applyAdminRefresh.mockResolvedValueOnce({
-        token: 'admin-jwt',
-        refreshToken: 'new-admin-refresh',
-        user: { id: 'user-id', email: 'admin@example.com' },
-        expiresAt: 1234567890,
-      });
+      getProviderSessionAuthorizer().authorize.mockResolvedValue({ ok: true });
 
       const response = await request(app)
         .post('/api/admin/oauth/refresh')
@@ -572,9 +563,6 @@ describe('admin auth OpenID refresh route', () => {
     });
 
     it('passes the bridged token as grantRefreshToken on the retry, so a non-rotating IdP response returns it', async () => {
-      const { ProviderSessionUnavailableError } = require('@librechat/api');
-      applyAdminRefresh.mockRejectedValueOnce(new ProviderSessionUnavailableError('db down'));
-
       await request(app)
         .post('/api/admin/oauth/refresh')
         .send({ refresh_token: 'original-refresh-token' });
@@ -584,12 +572,7 @@ describe('admin auth OpenID refresh route', () => {
         ...tokenset,
         refresh_token: undefined,
       });
-      applyAdminRefresh.mockResolvedValueOnce({
-        token: 'admin-jwt',
-        refreshToken: 'bridged-refresh-token',
-        user: { id: 'user-id', email: 'admin@example.com' },
-        expiresAt: 1234567890,
-      });
+      getProviderSessionAuthorizer().authorize.mockResolvedValue({ ok: true });
 
       const retryResponse = await request(app)
         .post('/api/admin/oauth/refresh')
@@ -597,14 +580,12 @@ describe('admin auth OpenID refresh route', () => {
 
       expect(retryResponse.status).toBe(200);
       expect(retryResponse.body.refreshToken).toBe('bridged-refresh-token');
-      expect(applyAdminRefresh).toHaveBeenLastCalledWith(
-        expect.objectContaining({ refresh_token: undefined }),
+      expect(upsertSession).toHaveBeenLastCalledWith(
+        'user-id',
+        'bridged-refresh-token',
         expect.any(Object),
-        expect.objectContaining({
-          previousRefreshToken: 'original-refresh-token',
-          grantRefreshToken: 'bridged-refresh-token',
-        }),
       );
+      expect(deleteSession).toHaveBeenCalledWith({ refreshToken: 'original-refresh-token' });
     });
   });
 });
@@ -812,7 +793,7 @@ describe('admin auth Google refresh route', () => {
     expect(response.status).toBe(400);
     expect(response.body.error_code).toBe('INVALID_PROVIDER');
     expect(applyGoogleAdminRefresh).not.toHaveBeenCalled();
-    expect(applyAdminRefresh).not.toHaveBeenCalled();
+    expect(findUsers).not.toHaveBeenCalled();
   });
 
   it('re-runs checkBan with the resolved user identity and blocks a banned user', async () => {
