@@ -201,13 +201,15 @@ projects:
 
 # Custom interface configuration
 interface:
-  insights:
-    enabled: true
-    showDetails: false
-    # Set true to load every agent when an administrator (or a holder of the global
-    # READ_INSIGHTS capability) opens Insights (default: false). When false, they choose
-    # agents first; All agents can still be selected explicitly.
-    adminAutoSelectAllAgents: false
+  # Agent statistics in Insights (default: disabled). Without this block, ENABLE_INSIGHTS decides.
+  # showDetails also shows user names, emails and message content (default: false).
+  # insights:
+  #   enabled: false
+  #   showDetails: false
+  #   # Set true to load every agent when an administrator (or a holder of the global
+  #   # READ_INSIGHTS capability) opens Insights (default: false). When false, they choose
+  #   # agents first; All agents can still be selected explicitly.
+  #   adminAutoSelectAllAgents: false
 
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).

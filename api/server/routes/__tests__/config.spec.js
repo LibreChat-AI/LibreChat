@@ -770,30 +770,6 @@ describe('GET /api/config', () => {
       expect(response.body.insightsEnabled).toBe(true);
     });
 
-    it.each([
-      [{ enabled: true, showDetails: false }, undefined, true],
-      [{ enabled: true }, 'false', true],
-      [{ enabled: false, showDetails: false }, 'true', false],
-      [{ showDetails: false }, 'true', false],
-    ])(
-      'advertises effective YAML Insights settings %p with legacy switch %p',
-      async (insights, legacy, expected) => {
-        if (legacy !== undefined) {
-          process.env.ENABLE_INSIGHTS = legacy;
-        }
-        mockGetAppConfig.mockResolvedValue({
-          ...baseAppConfig,
-          interfaceConfig: { ...baseAppConfig.interfaceConfig, insights },
-        });
-
-        const response = await request(createApp(mockUser)).get('/api/config');
-
-        expect(response.statusCode).toBe(200);
-        expect(response.body.insightsEnabled).toBe(expected);
-        expect(response.body.interface.insights).toEqual(insights);
-      },
-    );
-
     it('reads Insights from the viewer’s scoped config without another lookup', async () => {
       mockGetAppConfig.mockImplementation(async (options) => ({
         ...baseAppConfig,

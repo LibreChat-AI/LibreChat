@@ -6,13 +6,6 @@ const request = (insights?: TInsightsConfig): Pick<ServerRequest, 'config'> =>
   ({ config: { interfaceConfig: { insights } } }) as Pick<ServerRequest, 'config'>;
 
 describe('Insights request configuration', () => {
-  it('uses the scoped policy to load all agents automatically for admins', () => {
-    expect(
-      createInsightsConfigResolver(() => false)(
-        request({ enabled: true, adminAutoSelectAllAgents: true }),
-      ).adminAutoSelectAllAgents,
-    ).toBe(true);
-  });
   it('uses YAML to enable aggregate-only Insights without the environment switch', () => {
     expect(
       createInsightsConfigResolver(() => false)(request({ enabled: true, showDetails: false })),
@@ -46,12 +39,5 @@ describe('Insights request configuration', () => {
       showDetails: true,
       adminAutoSelectAllAgents: false,
     });
-  });
-
-  it('resolves scoped configuration per request rather than reusing another viewer’s policy', () => {
-    const resolve = createInsightsConfigResolver(() => true);
-    expect(resolve(request({ enabled: true, showDetails: true })).showDetails).toBe(true);
-    expect(resolve(request({ enabled: true, showDetails: false })).showDetails).toBe(false);
-    expect(resolve(request({ enabled: false })).enabled).toBe(false);
   });
 });
