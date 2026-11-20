@@ -11,6 +11,26 @@ export const discordCredentialHealthSchema = z
   .strict();
 export type DiscordCredentialState = z.infer<typeof discordCredentialStateSchema>;
 
+/** Approved callback failure codes that same-origin pages may share with the initiating tab. */
+export const discordOAuthErrorCodeSchema = z.enum([
+  'discord_forbidden',
+  'discord_not_configured',
+  'discord_invalid_state',
+  'discord_invalid_input',
+  'discord_invalid_grant',
+  'discord_application_changed',
+  'discord_installation_changed',
+  'discord_guild_changed',
+  'discord_missing_permissions',
+  'discord_unsupported_installation',
+  'discord_provider_refused',
+  'discord_rate_limited',
+  'discord_provider_unavailable',
+  'discord_timeout',
+  'discord_transactions_unavailable',
+]);
+export type DiscordOAuthErrorCode = z.infer<typeof discordOAuthErrorCodeSchema>;
+
 /** Verified organization application metadata. Credentials are write-only. */
 export interface DiscordApplication {
   tenantId?: string;

@@ -1,5 +1,5 @@
-import { QueryKeys, dataService } from 'librechat-data-provider';
-import type { TPullRequestConnection } from 'librechat-data-provider';
+import { QueryKeys, dataService, discordOAuthErrorCodeSchema } from 'librechat-data-provider';
+import type { TPullRequestConnection, DiscordOAuthErrorCode } from 'librechat-data-provider';
 import type { QueryClient } from '@tanstack/react-query';
 import { syncPullRequestConnection } from './connection';
 
@@ -15,7 +15,11 @@ export const OAUTH_SETTLED_CHANNEL = 'librechat:oauth-settled';
 type Watch = { stop: () => void };
 
 /** What a landing page says about the sign-in it ends, and which one when it knows. */
-export type OAuthSettlement = { outcome: 'succeeded' | 'failed'; flowId?: string };
+export type OAuthSettlement = {
+  outcome: 'succeeded' | 'failed';
+  flowId?: string;
+  errorCode?: DiscordOAuthErrorCode;
+};
 
 const isSettlement = (value: unknown): value is OAuthSettlement =>
   typeof value === 'object' &&
@@ -24,6 +28,16 @@ const isSettlement = (value: unknown): value is OAuthSettlement =>
     (value as OAuthSettlement).outcome === 'failed') &&
   ((value as OAuthSettlement).flowId === undefined ||
     typeof (value as OAuthSettlement).flowId === 'string');
+
+/** Neither browser transport may relay provider payloads or arbitrary callback query text. */
+function settlementValue(value: OAuthSettlement): OAuthSettlement {
+  const code = discordOAuthErrorCodeSchema.safeParse(value.errorCode);
+  return {
+    outcome: value.outcome,
+    flowId: value.flowId,
+    ...(value.outcome === 'failed' && code.success ? { errorCode: code.data } : {}),
+  };
+}
 
 let announcement = 0;
 
@@ -39,7 +53,7 @@ export function watchOAuthSettlements(
       if (key === lastAnnouncement) return;
       lastAnnouncement = key;
     }
-    onSettled(value);
+    onSettled(settlementValue(value));
   };
   const onStorage = (event: StorageEvent) => {
     if (event.key !== OAUTH_SETTLED_CHANNEL || !event.newValue) return;
@@ -82,7 +96,10 @@ export function pullRequestSignInSession(): number {
  * window handle read as closed while the sign-in is still open).
  */
 export function announceOAuthSettled(settlement: OAuthSettlement): void {
-  const notice = { ...settlement, announcement: `${Date.now()}:${announcement++}` };
+  const notice = {
+    ...settlementValue(settlement),
+    announcement: `${Date.now()}:${announcement++}`,
+  };
   let channel: BroadcastChannel | undefined;
   try {
     if (typeof BroadcastChannel !== 'undefined') {
