@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import { Constants } from 'librechat-data-provider';
 import { createToolPolicyHook } from '@librechat/agents';
 import type { AgentToolOptions } from 'librechat-data-provider';
@@ -8,6 +9,7 @@ import type { ToolApprovalHook } from './hooks';
 import {
   agentRunUsesCheckpointer,
   canAgentGraphPause,
+  resolveScheduledPause,
   copyToolApprovalAdmissionMetadata,
 } from './admission';
 import { buildToolClassification, aliasMCPToolOptions } from '~/tools/classification';
@@ -1681,5 +1683,80 @@ describe('bounded approval admission', () => {
         resolvedProgrammaticHooks: [{ hook: askHook, toolNames: [name] }],
       }),
     ).toThrow('safety work limit');
+  });
+});
+
+describe('resolveScheduledPause', () => {
+  const saver = jest.fn(async () => ({}));
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    saver.mockClear();
+    warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+  });
+  afterEach(() => warn.mockRestore());
+
+  it('keeps the wiring of a run that is not scheduled, whatever the deployment has', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: false,
+        canPause: true,
+        sharedStore: false,
+        getCheckpointer: async () => null,
+      }),
+    ).resolves.toEqual({ capable: true, prunes: true });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the wiring of a scheduled run that cannot pause, without asking for a checkpointer', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: false,
+        sharedStore: false,
+        getCheckpointer: saver,
+      }),
+    ).resolves.toEqual({ capable: true, prunes: true });
+    expect(saver).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('starts a scheduled run that could pause without the wiring where there is no shared store, and says so', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: true,
+        sharedStore: false,
+        getCheckpointer: saver,
+        conversationId: 'run-1',
+      }),
+    ).resolves.toEqual({ capable: false, prunes: true, missing: 'shared_store' });
+    expect(saver).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('run-1');
+    expect(warn.mock.calls[0][0]).toContain('shared_store');
+  });
+
+  it('starts it without the wiring where there is no durable checkpointer, and prunes nothing', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: true,
+        sharedStore: true,
+        getCheckpointer: async () => null,
+      }),
+    ).resolves.toEqual({ capable: false, prunes: false, missing: 'durable_checkpointer' });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the wiring where the deployment can hold the pause', async () => {
+    await expect(
+      resolveScheduledPause({
+        scheduled: true,
+        canPause: true,
+        sharedStore: true,
+        getCheckpointer: saver,
+      }),
+    ).resolves.toEqual({ capable: true, prunes: true });
+    expect(warn).not.toHaveBeenCalled();
   });
 });

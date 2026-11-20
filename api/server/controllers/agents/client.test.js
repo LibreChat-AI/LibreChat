@@ -2400,9 +2400,31 @@ describe('AgentClient - startup telemetry', () => {
     },
   );
 
-  it('refuses scheduled pause-capable runs before provider startup without Redis', async () => {
+  /**
+   * Starts a scheduled run and returns what the run was created with. One that could pause,
+   * on a deployment that cannot hold its pause, starts without the pause wiring, as a caller
+   * with no resume path does.
+   */
+  const startScheduledRun = async (client) => {
+    mockDeleteAgentCheckpoint.mockReset().mockResolvedValue(undefined);
+    const processStream = jest.fn().mockResolvedValue();
+    mockCreateRun.mockResolvedValueOnce({
+      Graph: null,
+      processStream,
+      getCalibrationRatio: jest.fn(() => 0),
+      getInterrupt: jest.fn(() => undefined),
+    });
+    const before = mockCreateRun.mock.calls.length;
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+    client.checkpointNamespace = `${client.conversationId}-generation`;
+    await expect(client.chatCompletion({ payload: [] })).resolves.toBeUndefined();
+    expect(mockCreateRun).toHaveBeenCalledTimes(before + 1);
+    expect(processStream).toHaveBeenCalledTimes(1);
+    return mockCreateRun.mock.calls.at(-1)[0];
+  };
+
+  it('starts a scheduled run that could ask the user without its pause wiring where there is no Redis', async () => {
     mockIsHITLEnabled.mockReturnValue(false);
-    const createRunBefore = mockCreateRun.mock.calls.length;
     const client = new AgentClient({
       req: {
         user: { id: 'user-123' },
@@ -2429,15 +2451,51 @@ describe('AgentClient - startup telemetry', () => {
     client.responseMessageId = 'scheduled-hitl-response';
     client.parentMessageId = 'scheduled-hitl-parent';
 
-    await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-      code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      message: expect.stringContaining('USE_REDIS_STREAMS=true'),
+    expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+    // A checkpointer may exist without Redis, so what an earlier attempt left is still cleared.
+    expect(mockDeleteAgentCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a scheduled run without pruning where Redis is present and no durable checkpointer is', async () => {
+    mockIsHITLEnabled.mockReturnValue(false);
+    const isRedisSpy = jest.spyOn(GenerationJobManager, 'isRedis', 'get').mockReturnValue(true);
+    mockGetAgentCheckpointer.mockResolvedValueOnce(null);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _isScheduledFire: true,
+        _resumableStreamId: 'scheduled-hitl-no-checkpointer',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        tools: [{ name: 'ask_user_question' }],
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
     });
-    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    client.conversationId = 'scheduled-hitl-no-checkpointer';
+    client.responseMessageId = 'scheduled-hitl-no-checkpointer-response';
+    client.parentMessageId = 'scheduled-hitl-no-checkpointer-parent';
+
+    try {
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+      // With no checkpointer there is nothing to prune, and the prune would fail the run.
+      expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+    } finally {
+      isRedisSpy.mockRestore();
+    }
   });
 
   it('includes host-generated background tools in scheduled pause admission', async () => {
-    const createRunBefore = mockCreateRun.mock.calls.length;
     const client = new AgentClient({
       req: {
         user: { id: 'user-123' },
@@ -2475,10 +2533,7 @@ describe('AgentClient - startup telemetry', () => {
     client.responseMessageId = 'scheduled-background-response';
     client.parentMessageId = 'scheduled-background-parent';
 
-    await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-      code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-    });
-    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
   });
 
   it.each([
@@ -2636,9 +2691,8 @@ describe('AgentClient - startup telemetry', () => {
       ],
     },
   ])(
-    'rejects scheduled memory-store runs with a $name before provider execution',
+    'starts scheduled memory-store runs with a $name without the pause wiring',
     async (surface) => {
-      const createRunBefore = mockCreateRun.mock.calls.length;
       const client = new AgentClient({
         req: {
           user: { id: 'user-123' },
@@ -2670,10 +2724,7 @@ describe('AgentClient - startup telemetry', () => {
       client.conversationId = 'scheduled-agent-mode';
       client.responseMessageId = 'scheduled-agent-mode-response';
       client.parentMessageId = 'scheduled-agent-mode-parent';
-      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      });
-      expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
     },
   );
 
@@ -2685,7 +2736,6 @@ describe('AgentClient - startup telemetry', () => {
       const unregister = registerToolApprovalHook(() => hook, {
         matcher: `^${prefix}_query_mcp_db$`,
       });
-      const createRunBefore = mockCreateRun.mock.calls.length;
       const client = new AgentClient({
         req: {
           user: { id: 'user-123' },
@@ -2723,10 +2773,7 @@ describe('AgentClient - startup telemetry', () => {
       client.responseMessageId = 'scheduled-legacy-hook-response';
       client.parentMessageId = 'scheduled-legacy-hook-parent';
       try {
-        await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-          code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-        });
-        expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+        expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
         expect(hook).not.toHaveBeenCalled();
       } finally {
         unregister();
@@ -2826,9 +2873,7 @@ describe('AgentClient - startup telemetry', () => {
     client.parentMessageId = 'scheduled-deployment-parent';
 
     try {
-      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      });
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
     } finally {
       setPluginHookSource(previousSource);
     }
