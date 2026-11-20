@@ -219,6 +219,12 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       baseURLIsUserProvided,
     } of resolved) {
       const { models, headers: endpointHeaders } = endpoint;
+      const fetchTimeout =
+        models?.fetchTimeoutMs ??
+        models?.timeoutMs ??
+        models?.timeout ??
+        endpoint.fetchTimeoutMs ??
+        endpoint.timeoutMs;
       // Include the provider and a fingerprint of the headers so two admin-trusted
       // endpoints that happen to share the same baseURL+apiKey but configure
       // different (potentially user-bound) headers don't reuse each other's
@@ -254,6 +260,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             direct: endpoint.directEndpoint,
             userIdQuery: models.userIdQuery,
             tokenKey,
+            timeout: fetchTimeout,
           });
         }
         uniqueKeyToEndpointsMap[uniqueKey] = uniqueKeyToEndpointsMap[uniqueKey] || [];
@@ -300,6 +307,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
                 skipCache: true,
                 /** Fetched with the user's key/URL — always user-scoped */
                 tokenKey: getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId),
+                timeout: fetchTimeout,
               });
             })();
           uniqueKeyToEndpointsMap[userFetchKey] = uniqueKeyToEndpointsMap[userFetchKey] || [];
