@@ -331,7 +331,7 @@ export {
   completeProgressiveRowMounts,
 } from './react/messages/useProgressiveRowMount';
 export type { RowMountWindow } from './react/messages/useProgressiveRowMount';
-export { revealOffscreenRows } from './react/messages/offscreen';
+export { reachRow, revealOffscreenRows } from './react/messages/offscreen';
 export {
   default as useScrollbarGutter,
   useScrollbarGutterSeed,

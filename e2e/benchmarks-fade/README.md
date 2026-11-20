@@ -44,6 +44,18 @@ transcript, from a Chromium trace of the built client:
   the browser and laid out again as a scroll brings them near, so this is where that work
   shows up if it ever costs more than it saves.
 
+- **`open.perf.spec.ts`**: the cost of opening the thread: by reloading it, by switching to
+  it from the sidebar, and by switching to it while it has a reply in flight, which is the
+  thread a reader most often comes back to. A long thread mounts in steps, so the trace
+  reports how long the main thread was busy until every row was in, how many tasks ran over
+  50 ms and the longest of them: the freeze a reader feels is those tasks, not the total. The
+  switch also prints the row count at each frame; a single step from a few rows to all of
+  them is a thread mounted in one commit. `FADE_PERF_PROFILE=1` with `FADE_PERF_DUMP` writes
+  a trace and a CPU profile of one more switch on the same clock, so the profile's samples
+  can be read task by task. Run it with `FADE_PERF_LIGHT=1`: a thread mounting sets thousands
+  of timers, and the call stack the full trace records for each one is a third of what it
+  then measures.
+
 - **`restyle.perf.spec.ts`**: the cost of one small change in every row at once, which is
   what a run starting or ending is. It flips a class, flips `disabled` and mounts a button on
   each row by hand and times the style and layout pass that follows. With a stylesheet whose
@@ -78,6 +90,9 @@ by side.
 | `FADE_PERF_SKIP_LIVE`    | `1` stops the frame spec after the idle and label traces.            |
 | `FADE_PERF_PROFILE`      | `1` samples the page's JavaScript: a second live run, or the replay. |
 | `FADE_PERF_DUMP`         | A directory that receives raw traces, profiles and replay windows.   |
+| `FADE_PERF_LIGHT`        | `1` traces the timeline without call stacks, which cost per timer.   |
+| `FADE_PERF_ROUNDS`       | How many times the open spec repeats each measurement; 4 by default. |
+| `FADE_PERF_STORAGE`      | Local settings to open the chat with, as `key=value,key=value`.      |
 | `FADE_PERF_CATEGORIES`   | More trace categories for a dump, comma-separated.                   |
 | `FADE_PERF_REPLAY_INDEX` | Which message to replay (position in the flattened export).          |
 | `FADE_PERF_REPLAY_PARTS` | Replays only the first N content parts.                              |
