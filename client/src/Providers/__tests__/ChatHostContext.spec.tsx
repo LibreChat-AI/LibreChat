@@ -1,8 +1,14 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
-import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
+import {
+  ChatHostProvider,
+  isSubmittingFamily,
+  useChatSessionMessages,
+} from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import { appChatHost, createMessageCache } from '../ChatHostContext';
 
@@ -136,6 +142,46 @@ describe('appChatHost.useMessages', () => {
 
       it('takes the stored copy once no reply is being written', async () => {
         expect(await refetchBeside(false)).toEqual([asked]);
+      });
+
+      /**
+       * The stream itself can be what put the conversation in the cache, and a query made that
+       * way has no loader of its own. Until the session's reader fetches, a refetch borrows
+       * the loader of the first reader that has one, and a reader drawn under the session
+       * subscribes before it. So the screen's reader must say what the session says.
+       */
+      it('keeps the reply when the screen’s reader is the one a refetch takes its guard from', async () => {
+        /** Fresh for a minute, so the session's reader mounts without fetching. */
+        const queryClient = new QueryClient({
+          defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
+        });
+        queryClient.setQueryData([QueryKeys.messages, 'convo-1'], writing);
+        getMessages.mockResolvedValue([asked]);
+        getDefaultStore().set(isSubmittingFamily(0), true);
+        function Screen() {
+          useChatSessionMessages('convo-1', 0);
+          return null;
+        }
+        function Session() {
+          appChatHost.useMessages('convo-1', { isStreaming: true, messages: false });
+          return <Screen />;
+        }
+        const Wrapper = wrapperFor(queryClient);
+        const { unmount } = render(
+          <Wrapper>
+            <ChatHostProvider host={appChatHost}>
+              <Session />
+            </ChatHostProvider>
+          </Wrapper>,
+        );
+        expect(getMessages).not.toHaveBeenCalled();
+
+        await act(() => queryClient.refetchQueries({ queryKey: [QueryKeys.messages, 'convo-1'] }));
+
+        expect(getMessages).toHaveBeenCalledTimes(1);
+        expect(queryClient.getQueryData([QueryKeys.messages, 'convo-1'])).toEqual(writing);
+        unmount();
+        getDefaultStore().set(isSubmittingFamily(0), false);
       });
     });
 
