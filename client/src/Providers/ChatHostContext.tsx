@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { SIDE_CHAT_PANE } from '@librechat/chat/react';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
@@ -112,7 +113,9 @@ function useMessages(
  *  services, thread selection, transport and settings. */
 export const appChatHost: ChatHost = {
   usePaneConversation: (index) => useChatSettings().usePaneConversationState(index),
-  useNewConversation: (index) => useNewConvo(index).newConversation,
+  /** A conversation beside the chat has no route: its pane changes it in place or not at all. */
+  useNewConversation: (index) =>
+    useNewConvo(index, { routed: index !== SIDE_CHAT_PANE }).newConversation,
   useTurnServices,
   /** `mutateAsync` is bound once per observer; the mutation result object is fresh every
    *  render and would defeat the contract's memo. */

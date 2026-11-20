@@ -1873,6 +1873,85 @@ describe('passive route navigation', () => {
   );
 });
 
+describe('a pane the route does not address', () => {
+  const held = 'c1b2c3d4-0000-4000-8000-000000000001';
+  const change = {
+    template: { conversationId: held, endpoint: EModelEndpoint.anthropic, model: 'chosen' },
+    preset: { endpoint: EModelEndpoint.anthropic, model: 'chosen' },
+    keepAddedConvos: true,
+    buildDefault: false,
+    disableFocus: true,
+  };
+  beforeEach(() => {
+    mockRunSwitch = true;
+    mockNavigate.mockClear();
+    mockSetConversation.mockClear();
+    mockPreviousConversation = { conversationId: held, endpoint: EModelEndpoint.openAI };
+  });
+  afterEach(() => {
+    mockRunSwitch = false;
+    mockPreviousConversation = null;
+  });
+
+  it('changes the conversation it holds, and leaves the route where it is', async () => {
+    const { result } = renderHook(() => useNewConvo(3, { routed: false }), {
+      wrapper: QueryWrapper,
+    });
+    await act(async () => result.current.newConversation(change));
+
+    expect(mockSetConversation).toHaveBeenCalledTimes(1);
+    expect(mockSetConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: held,
+        endpoint: EModelEndpoint.anthropic,
+        model: 'chosen',
+      }),
+    );
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('takes nothing that would put another conversation in its place', async () => {
+    const { result } = renderHook(() => useNewConvo(3, { routed: false }), {
+      wrapper: QueryWrapper,
+    });
+    await act(async () => {
+      result.current.newConversation();
+      result.current.newConversation({ template: { endpoint: EModelEndpoint.anthropic } });
+      result.current.newConversation({
+        template: { ...change.template, conversationId: String(Constants.NEW_CONVO) },
+      });
+      result.current.newConversation({
+        template: { ...change.template, conversationId: 'another-conversation' },
+      });
+    });
+
+    expect(mockSetConversation).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('holds nothing to change before it has a saved conversation', async () => {
+    mockPreviousConversation = { conversationId: 'new', endpoint: EModelEndpoint.openAI };
+    const { result } = renderHook(() => useNewConvo(3, { routed: false }), {
+      wrapper: QueryWrapper,
+    });
+    await act(async () =>
+      result.current.newConversation({
+        template: { ...change.template, conversationId: String(Constants.NEW_CONVO) },
+      }),
+    );
+
+    expect(mockSetConversation).not.toHaveBeenCalled();
+  });
+
+  it('is the route’s to move for the pane the route does address', async () => {
+    const { result } = renderHook(() => useNewConvo(0), { wrapper: QueryWrapper });
+    await act(async () => result.current.newConversation(change));
+
+    expect(mockSetConversation).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith(`/c/${held}`, { replace: true });
+  });
+});
+
 describe('remembered New Chat identity', () => {
   beforeEach(() => {
     localStorage.clear();

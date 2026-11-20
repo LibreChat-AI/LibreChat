@@ -12,6 +12,8 @@ export type ComposerPreferences = {
   autoSendText: number;
   /** Whether the shell has loaded the speech settings yet; dictation stays off until it has. */
   speechSettingsInitialized: boolean;
+  /** Whether a conversation may change endpoint and keep its messages, or starts anew instead. */
+  modularChat: boolean;
 };
 
 /** The preferences' own defaults, for a composer drawn outside a chat view. */
@@ -19,6 +21,7 @@ export const defaultComposerPreferences: ComposerPreferences = {
   enterToSend: true,
   autoSendText: -1,
   speechSettingsInitialized: false,
+  modularChat: true,
 };
 
 export const ComposerPreferencesContext = createContext<ComposerPreferences>(

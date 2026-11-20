@@ -142,6 +142,8 @@ interface ChatFormProps {
   stopsUnnamed: boolean;
   /** From ChatContext: the chat takes the composer's during-run actions though not main chat. */
   steers: boolean;
+  /** From ChatContext: the chat changes its conversation's model in place though not main chat. */
+  retargets: boolean;
 }
 
 const ChatForm = memo(function ChatForm({
@@ -166,6 +168,7 @@ const ChatForm = memo(function ChatForm({
   stopGenerating,
   stopsUnnamed,
   steers,
+  retargets,
 }: ChatFormProps) {
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -509,11 +512,18 @@ const ChatForm = memo(function ChatForm({
   const idleActions = useMemo(
     () => ({
       prompts: hasPromptsAccess && slashCommandEnabled,
-      /* A mention picks the model for main chat's conversation, so only its composer offers it. */
-      mentions: atCommandEnabled && routed,
+      /* A mention picks the conversation's model: main chat's, or one that is changed in place. */
+      mentions: atCommandEnabled && (routed || retargets),
       attach: attachTarget.canAttach,
     }),
-    [hasPromptsAccess, slashCommandEnabled, atCommandEnabled, attachTarget.canAttach, routed],
+    [
+      routed,
+      retargets,
+      hasPromptsAccess,
+      atCommandEnabled,
+      slashCommandEnabled,
+      attachTarget.canAttach,
+    ],
   );
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
@@ -740,27 +750,28 @@ const ChatForm = memo(function ChatForm({
       popovers={
         <>
           {routed && (
-            <>
-              <Suspense fallback={null}>
-                <Mention
-                  index={index}
-                  popoverAtom={plusPopoverAtom}
-                  newConversation={generateConversation}
-                  textAreaRef={textAreaRef}
-                  commandChar="+"
-                  placeholder="com_ui_add_model_preset"
-                  includeAssistants={false}
-                />
-              </Suspense>
-              <Suspense fallback={null}>
-                <Mention
-                  index={index}
-                  popoverAtom={mentionPopoverAtom}
-                  newConversation={newConversation}
-                  textAreaRef={textAreaRef}
-                />
-              </Suspense>
-            </>
+            <Suspense fallback={null}>
+              <Mention
+                index={index}
+                popoverAtom={plusPopoverAtom}
+                newConversation={generateConversation}
+                textAreaRef={textAreaRef}
+                commandChar="+"
+                placeholder="com_ui_add_model_preset"
+                includeAssistants={false}
+              />
+            </Suspense>
+          )}
+          {(routed || retargets) && (
+            <Suspense fallback={null}>
+              <Mention
+                index={index}
+                popoverAtom={mentionPopoverAtom}
+                newConversation={newConversation}
+                textAreaRef={textAreaRef}
+                inPlace={!routed}
+              />
+            </Suspense>
           )}
           <Suspense fallback={null}>
             <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
@@ -979,6 +990,7 @@ function ChatFormWrapper({
     stopGenerating,
     stopsUnnamed = false,
     steers = false,
+    retargets = false,
   } = useChatContext();
 
   /**
@@ -1061,6 +1073,7 @@ function ChatFormWrapper({
       stopGenerating={stableStop}
       stopsUnnamed={stopsUnnamed}
       steers={steers}
+      retargets={retargets}
     />
   );
 }
