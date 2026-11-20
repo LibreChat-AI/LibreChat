@@ -12,7 +12,7 @@ import {
 } from '@librechat/client';
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
 import type { NamedExoticComponent, ReactNode } from 'react';
-import { MessageAudioSlot, useMessagesHost } from '../../react/messages/host';
+import { MessageAudioSlot, MessageUsageSlot, useMessagesHost } from '../../react/messages/host';
 import useGenerationsByLatest from '../../react/messages/generations';
 import { hasEditablePart } from '../../core/parts/editableParts';
 import { ChatContext } from '../../react/chat/context';
@@ -335,6 +335,13 @@ const HoverButtons = ({
           icon={icons.continue}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
+        />
+      )}
+      {!isCreatedByUser && (
+        <MessageUsageSlot
+          message={message}
+          conversationId={conversation.conversationId ?? undefined}
+          isLast={isLast}
         />
       )}
     </div>

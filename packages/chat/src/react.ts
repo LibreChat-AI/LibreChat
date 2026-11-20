@@ -192,6 +192,7 @@ export type {
   MessageIconData,
   MessageIconProps,
   MessageAudioProps,
+  MessageUsageProps,
   MessageAudioButtonProps,
   MessageSlotProps,
   WakeupSlotProps,

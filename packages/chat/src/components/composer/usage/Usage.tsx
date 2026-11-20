@@ -11,6 +11,8 @@ import type { BranchUsage, CurrencyConfig } from '../../../core/usage';
 import { formatTokens, formatCost, normalizeTokenCount } from '../../../core/usage';
 
 export interface UsageProps {
+  disclosure?: boolean;
+  hideHeading?: boolean;
   title: string;
   subtitle?: string;
   usage?: BranchUsage;
@@ -23,6 +25,8 @@ export interface UsageProps {
 }
 
 export default function Usage({
+  disclosure = true,
+  hideHeading = false,
   title,
   subtitle,
   usage,
@@ -48,6 +52,13 @@ export default function Usage({
   if (subagentTokens > 0) {
     rows.push({ label: localize('com_ui_context_subagents_all'), value: subagentTokens });
   }
+  const costDisplay =
+    cost != null && Number.isFinite(cost) ? (
+      <span className="text-text-primary text-sm font-medium tabular-nums" data-testid="usage-cost">
+        <span className="sr-only">{costLabel}: </span>
+        {formatCost(cost, currency)}
+      </span>
+    ) : null;
   const reading = (detailed: boolean) => (
     <dl
       className={cn(
@@ -74,6 +85,31 @@ export default function Usage({
     </dl>
   );
 
+  if (!disclosure) {
+    return (
+      <section
+        aria-label={hideHeading ? title : undefined}
+        aria-labelledby={hideHeading ? undefined : headingId}
+        data-testid={testId}
+        className="min-w-0"
+      >
+        {!hideHeading && (
+          <div className="flex items-baseline justify-between gap-3">
+            <h3 id={headingId} className="text-text-primary text-sm font-medium">
+              {title}
+            </h3>
+            {costDisplay}
+          </div>
+        )}
+        {usage == null ? (
+          <p className="text-text-secondary mt-3 text-xs">{unavailable}</p>
+        ) : (
+          <div className={hideHeading ? undefined : 'mt-3'}>{reading(true)}</div>
+        )}
+      </section>
+    );
+  }
+
   return (
     <section
       aria-labelledby={headingId}
@@ -98,15 +134,7 @@ export default function Usage({
               )}
             </span>
             <span className="ms-3 flex shrink-0 items-center gap-2">
-              {cost != null && Number.isFinite(cost) && (
-                <span
-                  className="text-text-primary text-sm font-medium tabular-nums"
-                  data-testid="usage-cost"
-                >
-                  <span className="sr-only">{costLabel}: </span>
-                  {formatCost(cost, currency)}
-                </span>
-              )}
+              {costDisplay}
               {usage != null && (
                 <ChevronDown
                   aria-hidden="true"
