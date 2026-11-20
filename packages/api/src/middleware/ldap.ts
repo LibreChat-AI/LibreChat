@@ -44,7 +44,7 @@ export function createRequireLdapAuth({ authenticate }: CreateRequireLdapAuthDep
           return;
         }
         if (!user) {
-          logger.error('(requireLdapAuth) Error: No user');
+          logger.warn('(requireLdapAuth) Error: No user');
           res.status(404).send(info);
           return;
         }
