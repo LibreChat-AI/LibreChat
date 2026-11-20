@@ -659,6 +659,30 @@ export class MCPOAuthHandler {
     );
   }
 
+  /** See `OAuthOptionsSchema.skip_offline_access_consent_prompt`. */
+  private static stripConsentPrompt(
+    authorizationUrl: URL,
+    config: MCPOptions['oauth'] | undefined,
+    serverName: string,
+  ): void {
+    if (config?.skip_offline_access_consent_prompt !== true) {
+      return;
+    }
+    const prompts = authorizationUrl.searchParams.getAll('prompt');
+    if (!prompts.includes('consent')) {
+      return;
+    }
+    authorizationUrl.searchParams.delete('prompt');
+    for (const prompt of prompts) {
+      if (prompt !== 'consent') {
+        authorizationUrl.searchParams.append('prompt', prompt);
+      }
+    }
+    logger.debug(
+      `[MCPOAuth] Removed prompt=consent from the authorization URL for ${serverName}; disabled by skip_offline_access_consent_prompt`,
+    );
+  }
+
   /**
    * Whether a pending flow's captured RFC 8707 decision still matches the live config.
    *
@@ -975,6 +999,7 @@ export class MCPOAuthHandler {
         /** Add cryptographic state parameter to the authorization URL */
         authorizationUrl.searchParams.set('state', state);
         logger.debug(`[MCPOAuth] Added state parameter to authorization URL`);
+        this.stripConsentPrompt(authorizationUrl, config, serverName);
 
         if (!sendResourceParameter) {
           this.stripInheritedResourceParameter(authorizationUrl, serverName);
@@ -1166,6 +1191,7 @@ export class MCPOAuthHandler {
         /** Add cryptographic state parameter to the authorization URL */
         authorizationUrl.searchParams.set('state', state);
         logger.debug(`[MCPOAuth] Added state parameter to authorization URL`);
+        this.stripConsentPrompt(authorizationUrl, config, serverName);
 
         if (!sendResourceParameter) {
           this.stripInheritedResourceParameter(authorizationUrl, serverName);

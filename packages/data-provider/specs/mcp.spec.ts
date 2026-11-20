@@ -600,6 +600,18 @@ describe('MCP schemas', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should reject the consent prompt opt-out from user-managed OAuth configuration', () => {
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          skip_offline_access_consent_prompt: true,
+        },
+      });
+
+      expect(result.success).toBe(false);
+    });
+
     it('should continue accepting non-audience OAuth fields from user-managed configuration', () => {
       const result = MCPServerUserInputSchema.safeParse({
         type: 'streamable-http',
@@ -779,6 +791,23 @@ describe('MCP schemas', () => {
       expect(result.success).toBe(true);
       if (result.success && result.data.oauth) {
         expect(result.data.oauth.send_resource_parameter).toBeUndefined();
+      }
+    });
+
+    it('should accept skip_offline_access_consent_prompt from admin config', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          client_id: 'app-id',
+          scope: 'openid offline_access',
+          skip_offline_access_consent_prompt: true,
+        },
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success && result.data.oauth) {
+        expect(result.data.oauth.skip_offline_access_consent_prompt).toBe(true);
       }
     });
 
