@@ -7,6 +7,9 @@ bound to that `sid` as revoked, across tenants, without a tenant-scoped or user-
 
 LibreChat enforces the logout at the session's next renewal or restoration, not on every request.
 An access token already issued stays valid until it expires (`SESSION_EXPIRY`, default 15 minutes).
+With CloudFront `imageSigning: "cookies"`, signed cookies for inline images and avatars also
+stay valid until they expire (`cookieExpiry`, default 1800 seconds). A denied renewal does not
+clear them.
 When the browser client's renewal request is denied, it signs the user out.
 
 ## Provider setup
@@ -33,8 +36,9 @@ number of times with its own backoff; it does not retry indefinitely.
 3. Rollback behavior depends on the target mode.
    - `enforce` back to `record` stops denials for a missing or unassociated session. It still
      denies a session already recorded as revoked.
-   - Switching to `off` turns off all checks and database operations. A session recorded as
-     revoked is not denied while the mode stays `off`.
+   - Switching to `off` turns off all checks and database operations once the configuration has
+     loaded. Until it loads, an OpenID renewal or login fails closed with `503`. A session
+     recorded as revoked is not denied while the mode stays `off`.
    No mode change clears a record's `revokedAt` field. Switching back to `record` or `enforce`
    enforces the same revocations again. Rollback does not delete authentication data.
    A session's existing association survives `off` too: a refresh taken while the mode is `off`
