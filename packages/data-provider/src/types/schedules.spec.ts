@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   getScheduleMCPDisabledReason,
   isScheduleMCPAuthorizationFailure,
+  projectScheduleMCPReceipt,
   readScheduleMCPOutcomes,
   scheduleMCPOutcomeSchema,
 } from './schedules';
@@ -53,4 +54,49 @@ it('recognizes durable structured denials without treating readiness snapshots a
       detail: 'unattended_auth_required',
     }),
   ).toBe(true);
+});
+
+describe('a server a run was started without', () => {
+  const skipped = {
+    server: 'Notion',
+    status: 'mcp_reauth_required' as const,
+    reason: 'consent_revoked' as const,
+    recovery: 'authorize' as const,
+    automaticReplay: false as const,
+    skipped: true as const,
+  };
+  const { skipped: _mark, ...denied } = skipped;
+
+  it('is carried on the wire with its reason', () => {
+    expect(scheduleMCPOutcomeSchema.parse(skipped)).toEqual(skipped);
+  });
+
+  it('is not a denial, where the same outcome without the mark is', () => {
+    expect(isScheduleMCPAuthorizationFailure(denied)).toBe(true);
+    expect(isScheduleMCPAuthorizationFailure(skipped)).toBe(false);
+    expect(
+      isScheduleMCPAuthorizationFailure({ ...skipped, detail: 'unattended_auth_required' }),
+    ).toBe(false);
+  });
+
+  it('does not suspend the schedule, and does not hide a server that does', () => {
+    expect(getScheduleMCPDisabledReason([denied])).toBe('mcp_reauth_required');
+    expect(getScheduleMCPDisabledReason([skipped])).toBeUndefined();
+    expect(
+      getScheduleMCPDisabledReason([
+        skipped,
+        { server: 'Linear', status: 'mcp_configuration_missing' },
+      ]),
+    ).toBe('mcp_configuration_missing');
+  });
+
+  it('leaves a successful run successful, and stays apart from a denial of the same server', () => {
+    expect(projectScheduleMCPReceipt({ status: 'success', mcp: [skipped] })).toEqual({
+      status: 'success',
+      mcp: [skipped],
+    });
+    const settled = projectScheduleMCPReceipt({ status: 'success', mcp: [skipped] }, [denied]);
+    expect(settled.status).toBe('error');
+    expect(settled.mcp).toEqual([skipped, denied]);
+  });
 });

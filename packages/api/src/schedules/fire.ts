@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { ScheduleEngineDeps, ScheduleLimits, FireResult, FireableSchedule } from './types';
 import type { AgentTriggerEnvelope } from '../agents/triggers/envelope';
 import type { JsonValue } from '../agents/json';
@@ -54,6 +55,8 @@ function buildScheduleTriggerEnvelope(
   conversationId: string,
   manual: boolean,
   chatProjectId?: string,
+  /** MCP servers that were not ready, which the run is started without. */
+  skip: string[] = [],
 ): AgentTriggerEnvelope {
   const occurrenceId = buildFireClientRequestId(schedule.id, scheduledFor);
   const triggerFiles: JsonValue[] = files.map((file) => {
@@ -94,9 +97,27 @@ function buildScheduleTriggerEnvelope(
         ...(typeof schedule.configRevision === 'number' && {
           configRevision: schedule.configRevision,
         }),
+        ...(skip.length > 0 && { skip }),
       },
     },
   });
+}
+
+/**
+ * How a server that was not ready is recorded on a run that starts without it: where, why
+ * and what its owner can do about it, marked as skipped. The fields that make an outcome a
+ * denial of the run (`reason`, `automaticReplay`, `detail`) are left off, since a run row
+ * that carries them is settled as an error and its schedule suspended.
+ */
+function skipUnready(outcome: ScheduleMCPOutcome): ScheduleMCPOutcome {
+  if (outcome.status === 'ready') return outcome;
+  return {
+    server: outcome.server,
+    ...(outcome.agentId != null && { agentId: outcome.agentId }),
+    ...(outcome.recovery != null && { recovery: outcome.recovery }),
+    status: outcome.status,
+    skipped: true,
+  };
 }
 
 async function enqueueScheduleTrigger(
@@ -484,7 +505,15 @@ export async function fireSchedule(
         return stepAsideSuperseded();
       }
       const failure = error instanceof ScheduleMCPError ? error : null;
-      mcpFailure = { error: failure, message: failure?.message ?? 'MCP preflight unavailable' };
+      // Unless its owner asked for every server to be ready, a schedule runs without the
+      // ones that are not: each is marked as skipped, which records why without failing the
+      // run or suspending the schedule. With no outcome there is no server to leave out, and
+      // a check that could not be made at all says nothing about any of them.
+      if (failure && schedule.mcpStrict !== true && failure.outcomes.length > 0) {
+        mcp = failure.outcomes.map(skipUnready);
+      } else {
+        mcpFailure = { error: failure, message: failure?.message ?? 'MCP preflight unavailable' };
+      }
     }
 
     if (options?.signal?.aborted) {
@@ -515,6 +544,7 @@ export async function fireSchedule(
         conversationId,
         options?.manual === true,
         chatProjectId,
+        [...new Set(mcp.filter((outcome) => outcome.skipped === true).map((o) => o.server))],
       );
     } catch (envelopeError) {
       logger.error(`[schedules] trigger envelope build failed for ${schedule.id}:`, envelopeError);

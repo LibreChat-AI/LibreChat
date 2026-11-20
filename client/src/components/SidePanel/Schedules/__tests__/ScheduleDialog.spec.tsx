@@ -1286,4 +1286,50 @@ describe('ScheduleDialog', () => {
       expect(await screen.findByRole('checkbox', { name: 'query' })).toBeVisible();
     });
   });
+
+  describe('running without a server that is not ready', () => {
+    const strict = () => screen.getByRole('checkbox', { name: 'com_ui_schedule_mcp_strict' });
+
+    it('creates a schedule that does, unless its owner asks for every server', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(strict()).not.toBeChecked();
+      await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('mcpStrict');
+    });
+
+    it('creates one that waits for every server when its owner ticks the box', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(strict());
+      await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0]).toMatchObject({ mcpStrict: true });
+    });
+
+    it('shows what a stored schedule is set to, and saves a change of it alone', async () => {
+      const user = userEvent.setup();
+      renderDialog(storedSchedule({ mcpStrict: true }));
+      expect(strict()).toBeChecked();
+      await user.click(strict());
+      await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      const { payload } = mockMutate.mock.calls[0][0];
+      expect(payload).toMatchObject({ mcpStrict: false });
+      for (const field of ['name', 'prompt', 'agent_id', 'cadence', 'timezone'])
+        expect(payload).not.toHaveProperty(field);
+    });
+
+    it('leaves the setting out of an edit that does not touch it', async () => {
+      const user = userEvent.setup();
+      renderDialog(storedSchedule({ mcpStrict: true }));
+      await user.type(screen.getByPlaceholderText('com_ui_schedule_name_placeholder'), ' v2');
+      await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0].payload).not.toHaveProperty('mcpStrict');
+    });
+  });
 });

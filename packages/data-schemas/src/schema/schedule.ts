@@ -124,6 +124,10 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
       default: true,
       required: true,
     },
+    /** Run only while every MCP server the agent uses is ready. Unset, one that is not is left out. */
+    mcpStrict: {
+      type: Boolean,
+    },
     disabledReason: {
       type: String,
       enum: [
@@ -251,6 +255,7 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
                 enum: ['authorize', 'configure', 'restore_permission', 'retry_later'],
               },
               automaticReplay: { type: Boolean, enum: [false] },
+              skipped: { type: Boolean, enum: [true] },
               status: {
                 type: String,
                 required: true,

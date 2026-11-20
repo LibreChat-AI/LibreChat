@@ -51,3 +51,31 @@ it('explains missing unattended credentials without suggesting interactive recon
   expect(screen.queryByRole('button')).not.toBeInTheDocument();
   expect(onOpenAgent).not.toHaveBeenCalled();
 });
+
+it('says a run went without a server as a note, and still offers the way to fix it', async () => {
+  const onOpenAgent = jest.fn();
+  render(
+    <ScheduleMCPRecovery
+      outcomes={[{ server: 'Notion', status: 'mcp_reauth_required', skipped: true }]}
+      fallbackAgentId="root-agent"
+      onOpenAgent={onOpenAgent}
+    />,
+  );
+  expect(screen.getByRole('status')).toHaveTextContent('com_ui_schedule_mcp_skipped');
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Notion, root-agent: com_ui_schedule_mcp_open_agent' }),
+  );
+  expect(onOpenAgent).toHaveBeenCalledWith('root-agent');
+});
+
+it('announces a failure that stopped the schedule as an alert, with no such note', () => {
+  render(
+    <ScheduleMCPRecovery
+      outcomes={[{ server: 'Notion', status: 'mcp_reauth_required' }]}
+      fallbackAgentId="root-agent"
+      onOpenAgent={jest.fn()}
+    />,
+  );
+  expect(screen.getByRole('alert')).not.toHaveTextContent('com_ui_schedule_mcp_skipped');
+});

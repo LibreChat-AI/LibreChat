@@ -40,6 +40,27 @@ configuration-store outages are transient; they must never be treated as proof o
 Failure records contain only server names and resolution statuses, never exception
 messages or OAuth URLs. Successful dispatch records also retain the server outcomes.
 
+### A server that is not ready
+
+By default a schedule runs with what is ready. A server its agent uses that needs sign-in, is
+unavailable, is not configured or may not be used does not refuse the schedule:
+
+- Creating, editing and enabling it are not refused.
+- At each occurrence the readiness check still runs. The servers that are not ready are
+  recorded on the run, each with its status and marked `skipped`, and named in the trigger
+  the run is started from (`metadata.skip`). The run loads no tool on them
+  (`withoutSkippedMCPServers`, through `narrowScheduledMCPTools`), so it does not stop to ask
+  for a sign-in nobody is there to give, and the rest of the agent runs.
+- A skipped server is a note, not a denial: it neither fails the run nor suspends the
+  schedule. It is recorded without `reason`, `automaticReplay` and `detail`, the fields a
+  denial carries. The card says which servers the last run went without.
+- A check that names no server, or that could not be made at all, still stops the occurrence.
+
+An owner who wants the schedule to run only with every server ready sets `mcpStrict` on it
+("Only run when every MCP server is ready" in the form). Such a schedule behaves as the
+paragraphs above describe: it is refused while a server is not ready, and a failed check
+stops the occurrence and suspends it.
+
 The schedule card shows failed servers and links to the selected agent for recovery.
 A pure pause remains available even when MCP validation fails. This change does not
 re-enable existing schedules automatically or repair credentials on the user's behalf.

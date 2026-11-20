@@ -3479,6 +3479,63 @@ describe('scheduled MCP failure policy', () => {
     });
   });
 
+  it('keeps a run that was started without a server successful, and its schedule on', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T12:10:00Z');
+    await methods.insertScheduleRun(
+      runData(schedule, { scheduledFor, conversationId: 'conversation-1' }),
+    );
+    const skipped = {
+      server: 'Notion',
+      status: 'mcp_reauth_required' as const,
+      recovery: 'authorize' as const,
+      skipped: true as const,
+    };
+    await methods.setRunFireDetails(schedule.id, scheduledFor, {
+      conversationId: 'conversation-1',
+      mcp: [skipped, { server: 'Linear', status: 'ready' }],
+    });
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'success',
+      autoDisableAfterFailures: 5,
+    });
+    const updated = await getSchedule(schedule.id);
+    expect(updated.enabled).toBe(true);
+    expect(updated.disabledReason).toBeUndefined();
+    expect(updated.failureCount).toBe(0);
+    expect(updated.lastRun?.status).toBe('success');
+    expect(updated.lastRun?.mcp).toEqual(
+      expect.arrayContaining([expect.objectContaining(skipped)]),
+    );
+  });
+
+  it('counts a failed run that was started without a server like any failure', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T12:20:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor }));
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'error',
+      error: 'The model provider refused the request',
+      mcp: [{ server: 'Notion', status: 'mcp_reauth_required', skipped: true }],
+      autoDisableAfterFailures: 5,
+    });
+    const updated = await getSchedule(schedule.id);
+    expect(updated.failureCount).toBe(1);
+    expect(updated.enabled).toBe(true);
+    expect(updated.disabledReason).toBeUndefined();
+  });
+
+  it('stores whether a schedule runs only with every server ready', async () => {
+    const strict = await methods.createSchedule({ ...scheduleData(), mcpStrict: true });
+    const plain = await methods.createSchedule(scheduleData());
+    expect((await getSchedule(strict.id)).mcpStrict).toBe(true);
+    expect((await getSchedule(plain.id)).mcpStrict).toBeUndefined();
+  });
+
   it('does not infer MCP disablement from an ordinary provider error prefix', async () => {
     const schedule = await methods.createSchedule(scheduleData());
     const scheduledFor = new Date('2026-09-09T12:30:00Z');

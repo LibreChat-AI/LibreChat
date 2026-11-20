@@ -4,6 +4,7 @@ import {
   scheduleMCPErrorOutcomes,
   scheduleMCPCardOutcomes,
   scheduleMCPRecoveryOutcomes,
+  scheduleMCPStatusLabel,
   scheduleMCPNeedsAgentRecovery,
   scheduleDisabledMCPLabel,
 } from '../errors';
@@ -202,4 +203,39 @@ it('sends the owner to the authorization dialog, not the agent, for a missing or
   expect(
     scheduleMCPNeedsAgentRecovery([{ server: 'warehouse', status: 'mcp_reauth_required' }]),
   ).toBe(true);
+});
+
+it('shows what the last run of a schedule that is on went without, and nothing else', () => {
+  const lastRun = {
+    status: 'success' as const,
+    firedAt: '2026-09-09T12:00:00.000Z',
+    mcp: [
+      { server: 'Notion', status: 'mcp_reauth_required' as const, skipped: true as const },
+      { server: 'Linear', status: 'ready' as const },
+    ],
+  };
+  expect(scheduleMCPRecoveryOutcomes({ enabled: true, lastRun })).toEqual([
+    { server: 'Notion', status: 'mcp_reauth_required', skipped: true },
+  ]);
+  // A server that was ready is nothing to tell the owner about, and neither is a failure
+  // a schedule that is still on has moved past.
+  expect(
+    scheduleMCPRecoveryOutcomes({
+      enabled: true,
+      lastRun: { ...lastRun, mcp: [{ server: 'Notion', status: 'mcp_reauth_required' as const }] },
+    }),
+  ).toEqual([]);
+  expect(scheduleMCPRecoveryOutcomes({ enabled: true })).toEqual([]);
+});
+
+it('says why a run went without a server, without telling the owner to enable anything', () => {
+  for (const [status, key] of [
+    ['mcp_reauth_required', 'com_ui_schedule_mcp_skipped_reauth'],
+    ['mcp_configuration_missing', 'com_ui_schedule_mcp_skipped_configuration'],
+    ['mcp_permission_denied', 'com_ui_schedule_mcp_skipped_permission'],
+    ['mcp_unavailable', 'com_ui_schedule_mcp_skipped_unavailable'],
+  ] as const) {
+    expect(scheduleMCPStatusLabel({ server: 'Notion', status, skipped: true })).toBe(key);
+    expect(scheduleMCPStatusLabel({ server: 'Notion', status })).not.toBe(key);
+  }
 });

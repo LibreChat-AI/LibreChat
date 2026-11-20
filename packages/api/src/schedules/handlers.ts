@@ -182,6 +182,9 @@ export function computeCreateDigest(payload: TCreateSchedule): string {
     // for the pinned row, i.e. success for the opposite of what it asked. A pre-scope
     // client never sent the field at all, so nothing legacy can carry an explicit null.
     ...(payload.chatProjectId !== undefined && { chatProjectId: payload.chatProjectId }),
+    // Omitted unless sent, for the same reason: a create from before the option existed
+    // must still match its own row.
+    ...(payload.mcpStrict !== undefined && { mcpStrict: payload.mcpStrict }),
     // Likewise omitted unless sent: what the owner allowed is part of what they asked for.
     ...(payload.authorization !== undefined && { authorization: payload.authorization }),
   });
@@ -271,6 +274,7 @@ export type WireSchedule = Pick<
   | 'chatProjectId'
   | 'file_ids'
   | 'enabled'
+  | 'mcpStrict'
   | 'disabledReason'
   | 'nextRunAt'
   | 'lastRun'
@@ -342,6 +346,7 @@ export function toWireSchedule(
     chatProjectId: resolveScheduleProjectId(limits ?? {}, schedule.chatProjectId),
     file_ids: schedule.file_ids,
     enabled: schedule.enabled,
+    ...(schedule.mcpStrict === true && { mcpStrict: true }),
     disabledReason: schedule.disabledReason,
     nextRunAt: schedule.nextRunAt,
     lastRun: schedule.lastRun,
@@ -432,6 +437,11 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     scheduleId: string,
     /** The grant a schedule is being created with: not stored yet, so not found by its id. */
     grant?: ISchedule['mcpConsent'],
+    /**
+     * The schedule runs only while every server is ready (`mcpStrict`). Otherwise a server
+     * that is not ready does not refuse the write: each run is started without it.
+     */
+    strict = false,
   ): Promise<boolean> {
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
@@ -445,6 +455,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       return true;
     } catch (error) {
       if (signal.aborted) return false;
+      // With no outcome there is no server to leave out: the owner could not be resolved.
+      if (error instanceof ScheduleMCPError && !strict && error.outcomes.length > 0) return true;
       if (error instanceof ScheduleMCPError) {
         res.status(error.code === 'mcp_unavailable' ? 503 : 400).json({
           code: error.code,
@@ -792,7 +804,16 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // they left out is neither connected to nor a reason to refuse the schedule.
     if (
       fields.enabled &&
-      !(await validateMCP(fields.agent_id, req, res, mcpSignal, limits, id, consent.mcpConsent))
+      !(await validateMCP(
+        fields.agent_id,
+        req,
+        res,
+        mcpSignal,
+        limits,
+        id,
+        consent.mcpConsent,
+        fields.mcpStrict === true,
+      ))
     )
       return;
     // Project policy applies to a NEW insert only, and is therefore resolved AFTER every
@@ -1110,6 +1131,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         limits,
         existing.id,
         regrant,
+        (parsed.data.mcpStrict ?? existing.mcpStrict) === true,
       ))
     )
       return;
