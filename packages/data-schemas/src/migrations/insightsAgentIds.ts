@@ -1,7 +1,7 @@
 import { Types } from 'mongoose';
 import type { AnyBulkWriteOperation, Collection, Document } from 'mongodb';
-import type { InsightsRecordIdentity } from './attribution';
-import { resolveInsightsAttributions, insightsIdentityKey } from './attribution';
+import type { InsightsRecordIdentity } from '~/methods/insightsAttribution';
+import { resolveInsightsAttributions, insightsIdentityKey } from '~/methods/insightsAttribution';
 import { runAsSystem } from '~/config/tenantContext';
 
 type IndexedRecord = InsightsRecordIdentity & { _id: Types.ObjectId; insightsAgentId?: string };

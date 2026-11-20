@@ -13,7 +13,7 @@ import type {
   IBalance,
 } from '~/types';
 import type { ITransaction } from '~/schema/transaction';
-import { withInsightsAttribution } from './insights/attribution';
+import { withInsightsAttribution } from './insightsAttribution';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';

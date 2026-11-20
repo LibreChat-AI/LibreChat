@@ -63,7 +63,7 @@ import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
-import { attributeEarlierRecords } from './insights/attribution';
+import { attributeEarlierRecords } from './insightsAttribution';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';

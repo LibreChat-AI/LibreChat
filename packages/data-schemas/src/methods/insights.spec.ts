@@ -3,7 +3,7 @@ import { FEEDBACK_TAGS } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { TFeedbackTagKey } from 'librechat-data-provider';
 import { createInsightsMethods as createIndexedInsightsMethods } from './insights';
-import { backfillInsightsAttribution } from './insights/backfill';
+import { backfillInsightsAttribution } from '../migrations/insightsAgentIds';
 import { createTransactionModel } from '../models/transaction';
 import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
@@ -367,7 +367,7 @@ describe('Insights methods', () => {
       tokenValue: -1_250_000,
       createdAt: now,
     });
-    const detailed = await methods.getInsights({ ...options, showDetails: true });
+    const detailed = await methods.getInsights(options);
     const userFind = jest.spyOn(mongoose.models.User, 'find');
     const conversationAggregate = jest.spyOn(mongoose.models.Conversation, 'aggregate');
     const messageAggregate = jest.spyOn(mongoose.models.Message, 'aggregate');

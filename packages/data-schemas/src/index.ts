@@ -177,6 +177,7 @@ export {
   backfillMCPServerNormalizedNames,
   backfillSearchTokens,
   warnOnMissingSearchTokens,
+  backfillInsightsAttribution,
 } from './migrations';
 export type { SearchTokenBackfillResult } from './migrations';
 
@@ -210,4 +211,3 @@ export * from './postgres/migrations';
 export * from './postgres/favorite';
 export * from './postgres/import';
 export * from './postgres/mongo';
-export { backfillInsightsAttribution } from './methods/insights/backfill';

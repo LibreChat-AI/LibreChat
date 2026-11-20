@@ -113,9 +113,8 @@ const ratingCount = (rating: string) => ({
   $sum: { $cond: [{ $eq: ['$insightsFeedbackRating', rating] }, 1, 0] },
 });
 
-function tenantMatch(tenantId?: string, prefix = '') {
-  const field = `${prefix}tenantId`;
-  return tenantId ? { [field]: tenantId } : { [field]: { $exists: false } };
+function tenantMatch(tenantId?: string) {
+  return tenantId ? { tenantId } : { tenantId: { $exists: false } };
 }
 
 function validTimeZone(timeZone?: string) {
@@ -219,26 +218,23 @@ const conversationOwnerMatch = ({ conversationId, userId }: ConversationOwner) =
   user: userId,
 });
 
-function rootAgentMatch(agentIds: string[], prefix = '') {
-  const initialField = `${prefix}initial_agent_id`;
-  const currentField = `${prefix}agent_id`;
+function rootAgentMatch(agentIds: string[]) {
   return {
     $or: [
-      { [initialField]: { $in: agentIds } },
-      { [initialField]: { $exists: false }, [currentField]: { $in: agentIds } },
+      { initial_agent_id: { $in: agentIds } },
+      { initial_agent_id: { $exists: false }, agent_id: { $in: agentIds } },
     ],
   };
 }
 
-/** Eligibility is independent of reporting dates and applies on either side of a join. */
-function conversationEligibility(agentIds: string[], tenantId?: string, prefix = '') {
+function conversationEligibility(agentIds: string[], tenantId?: string) {
   return {
-    ...tenantMatch(tenantId, prefix),
-    [`${prefix}conversationId`]: { $exists: true, $nin: [null, ''] },
-    [`${prefix}user`]: { $exists: true, $nin: [null, ''] },
-    [`${prefix}isTemporary`]: { $ne: true },
-    [`${prefix}subagentThread`]: { $exists: false },
-    ...rootAgentMatch(agentIds, prefix),
+    ...tenantMatch(tenantId),
+    conversationId: { $exists: true, $nin: [null, ''] },
+    user: { $exists: true, $nin: [null, ''] },
+    isTemporary: { $ne: true },
+    subagentThread: { $exists: false },
+    ...rootAgentMatch(agentIds),
   };
 }
 
