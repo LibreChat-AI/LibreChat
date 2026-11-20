@@ -1,6 +1,7 @@
 import { LocalStorageKeys } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import { FILE_SEARCH_CHOICE_PREFIX, clearFileSearchChoices } from './choices';
+import { PRODUCT_SESSION_KEY_PREFIX } from './productSession';
 
 export const FILE_SEARCH_UPLOAD_PREFIX = 'file-search-upload:';
 
@@ -52,6 +53,10 @@ export function clearLocalStorage(skipFirst?: boolean) {
   /** Ahead of `skipFirst`: that exception exists to preserve the first pane's settings, and a
    * shared browser is no place to make an exception for someone else's writing. */
   clearComposerDraftStorage();
+  /** Product sessions that are not shared across tabs live in this tab's `sessionStorage`. */
+  Object.keys(sessionStorage).forEach((key) => {
+    if (key.startsWith(PRODUCT_SESSION_KEY_PREFIX)) sessionStorage.removeItem(key);
+  });
   const keys = Object.keys(localStorage);
   keys.forEach((key) => {
     if (skipFirst === true && key.endsWith('0')) {
@@ -64,6 +69,7 @@ export function clearLocalStorage(skipFirst?: boolean) {
       key.startsWith(LocalStorageKeys.ASST_ID_PREFIX) ||
       key.startsWith(LocalStorageKeys.AGENT_ID_PREFIX) ||
       key.startsWith(LocalStorageKeys.LAST_CONVO_SETUP) ||
+      key.startsWith(PRODUCT_SESSION_KEY_PREFIX) ||
       key === LocalStorageKeys.LAST_SPEC ||
       key === LocalStorageKeys.LAST_TOOLS ||
       key === LocalStorageKeys.LAST_MODEL ||

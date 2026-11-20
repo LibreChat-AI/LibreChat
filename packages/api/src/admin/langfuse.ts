@@ -54,6 +54,7 @@ import {
 import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
+import { trackLangfuseTransition } from '~/langfuse/tracking';
 import { resolveLangfuseSession } from '~/langfuse/session';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAdminAuditEmitter } from './audit';
@@ -602,6 +603,11 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
         }
       }
 
+      /** Recorded before the audit and the activation error, since the patch has committed.
+       * Reactivating Base also restores its stored prompt-sync switch. */
+      if (updated) {
+        trackLangfuseTransition(req, existing, updated, isLangfusePromptSyncAvailable());
+      }
       const status = buildStatus(updated ?? existing);
       const changes = getConnectionChanges(
         stored,
@@ -748,6 +754,10 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     }
 
     try {
+      /** Read only to compare product facts. A failed read records no fact. */
+      const previous = req.productTracking?.enabled
+        ? await findBaseConfig({ includeInactive: true }).catch(() => undefined)
+        : undefined;
       // Omitting priority preserves the stored value. The patch also keeps
       // an inactive base config inactive.
       const updated = await patchConfigFields(
@@ -756,6 +766,10 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
         PrincipalModel.ROLE,
         { 'langfuse.promptSync.enabled': parsedBody.data.enabled },
       );
+      /** Recorded before the audit, which can fail closed after the patch has committed. */
+      if (updated && previous !== undefined) {
+        trackLangfuseTransition(req, previous, updated, isLangfusePromptSyncAvailable());
+      }
 
       invalidateConfigCaches?.(getTenantId(req))?.catch((err) =>
         logger.error('[adminLangfuse] Cache invalidation failed after prompt sync update:', err),
@@ -769,8 +783,7 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
       });
 
       // An inactive config is invisible to `getConnection` (which reads
-      // without `includeInactive`), so report the same empty status here
-      // rather than echoing back fields nobody else can see.
+      // without `includeInactive`), so report the same empty status here.
       return res.status(200).json(buildStatus(updated?.isActive === false ? null : updated));
     } catch (error) {
       logger.error('[adminLangfuse] updatePromptSync error:', error);

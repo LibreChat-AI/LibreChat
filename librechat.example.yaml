@@ -25,10 +25,18 @@ cache: true
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
 # omitting them preserves the corresponding environment settings.
+# Product event tracking uses YAML only and is off when omitted.
 # stackTraceLimit (1 to 1000) sets how many frames each error stack records; unset keeps
 # Node's default of 10, or --stack-trace-limit from NODE_OPTIONS.
 # telemetry:
 #   stackTraceLimit: 50
+#   productTracking:
+#     enabled: false # Requires a host-provided event callback. Off when omitted.
+#                    # Apply with a server restart and browser refresh.
+#     session:
+#       shareAcrossTabs: true # Same browser profile, signed-in user, and tenant.
+#       idleTimeoutMs: 1800000 # 30 minutes without user activity.
+#       activityIntervalMs: 60000 # Timestamp checkpoints; no clicks or text are collected.
 #   rum:
 #     enabled: true
 #     sessionReplay:

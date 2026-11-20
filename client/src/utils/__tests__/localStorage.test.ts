@@ -60,4 +60,22 @@ describe('clearLocalStorage', () => {
     expect(localStorage.getItem(`${LocalStorageKeys.FILES_DRAFT}new:0`)).toBeNull();
     expect(localStorage.getItem(`${LocalStorageKeys.TEXT_DRAFT}new:0`)).toBeNull();
   });
+
+  it('drops the product session record, whose key carries the account IDs', () => {
+    localStorage.setItem('lc-product-session:["user-1","tenant-1"]', '{}');
+
+    clearLocalStorage();
+
+    expect(localStorage.getItem('lc-product-session:["user-1","tenant-1"]')).toBeNull();
+  });
+
+  it('drops the tab-scoped product session record', () => {
+    sessionStorage.setItem('lc-product-session:["user-1","tenant-1"]:tab-1', '{}');
+    sessionStorage.setItem('unrelated-key', 'keep-me');
+
+    clearLocalStorage();
+
+    expect(sessionStorage.getItem('lc-product-session:["user-1","tenant-1"]:tab-1')).toBeNull();
+    expect(sessionStorage.getItem('unrelated-key')).toBe('keep-me');
+  });
 });
