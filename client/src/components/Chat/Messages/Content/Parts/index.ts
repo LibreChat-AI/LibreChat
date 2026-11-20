@@ -20,7 +20,7 @@ export {
 export { default as LogContent } from './LogContent';
 export { default as ExecuteCode } from './ExecuteCode';
 export { default as SkillCall } from './SkillCall';
-export { default as MemoryCall } from './MemoryCall';
+export { MemoryCall } from '@librechat/chat/components';
 export { default as ReadFileCall } from './ReadFileCall';
 export { default as FileAuthoringCall } from './FileAuthoringCall';
 export { default as BashCall } from './BashCall';

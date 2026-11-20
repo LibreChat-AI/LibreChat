@@ -1,12 +1,16 @@
+/**
+ * @jest-environment jsdom
+ */
 import { act, render, screen } from '@testing-library/react';
-import type { ToolCallPhase } from '@librechat/chat';
+import type { ToolCallPhase } from '../../../core/parts/toolCallPhase';
 import CommandTime, { useCommandClock } from '../CommandTime';
 
 function Clock({ phase, durationMs }: { phase: ToolCallPhase; durationMs?: number }) {
   return <CommandTime phase={phase} ms={useCommandClock(phase, durationMs)} />;
 }
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string, values: Record<string, string>) =>
     key === 'com_ui_duration_seconds' ? `${values[0]}s` : key,
 }));
