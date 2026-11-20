@@ -2,7 +2,6 @@ import { memo } from 'react';
 import type { NamedExoticComponent, ReactElement } from 'react';
 import type { ThreadMessageProps } from '../../../react/messages/types';
 import type { ThreadRow } from '../../../core/thread';
-import { RowGate } from '../../../react/messages/useProgressiveRowMount';
 import Row from './Row';
 
 type ListProps = Pick<ThreadMessageProps, 'currentEditId' | 'setCurrentEditId'> & {
@@ -19,9 +18,12 @@ function List({ rows, currentEditId, setCurrentEditId }: ListProps): ReactElemen
   return (
     <>
       {rows.map((row) => (
-        <RowGate key={row.depth} depth={row.depth}>
-          <Row row={row} currentEditId={currentEditId} setCurrentEditId={setCurrentEditId} />
-        </RowGate>
+        <Row
+          key={row.depth}
+          row={row}
+          currentEditId={currentEditId}
+          setCurrentEditId={setCurrentEditId}
+        />
       ))}
     </>
   );

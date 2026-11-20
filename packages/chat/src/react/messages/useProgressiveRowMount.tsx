@@ -110,11 +110,6 @@ export function useRowMounted(depth: number): boolean {
   return mounted || inside;
 }
 
-/** Renders its row once the window reaches `depth`, for a renderer that lists rows flat. */
-export function RowGate({ depth, children }: { depth: number; children: ReactNode }): ReactNode {
-  return useRowMounted(depth) ? children : null;
-}
-
 /**
  * Whether this row mounted in a widening step: one of the rows a long thread adds after its
  * first commit, away from where the reader is. Fixed for the row's life.
