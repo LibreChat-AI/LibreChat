@@ -5160,7 +5160,7 @@ export type TWebSearchConfigInput = Omit<
   NonNullable<TCustomConfig['webSearch']>,
   'searxngSearchOptions'
 > & {
-  searxngSearchOptions?: z.input<typeof webSearchSchema>['searxngSearchOptions'];
+  searxngSearchOptions?: DeepPartial<z.input<typeof webSearchSchema>['searxngSearchOptions']>;
 };
 export type TCustomEndpoints = z.infer<typeof customEndpointsSchema>;
 
