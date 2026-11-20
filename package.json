@@ -149,6 +149,8 @@
     "migrate:terms-timestamp": "node config/migrate-terms-timestamp.js",
     "migrate:search-tokens": "node config/migrate-search-tokens.js",
     "migrate:search-tokens:dry-run": "node config/migrate-search-tokens.js --dry-run",
+    "migrate:insights": "node config/migrate-insights.js",
+    "migrate:insights:dry-run": "node config/migrate-insights.js --dry-run",
     "flush-cache": "node config/flush-cache.js",
     "migrate:agent-permissions:dry-run": "node config/migrate-agent-permissions.js --dry-run",
     "migrate:agent-permissions": "node config/migrate-agent-permissions.js",
