@@ -67,7 +67,9 @@ function warmMessages() {
   preloadMessages().catch(() => undefined);
 }
 
-type ChatViewScreenProps = Required<Pick<ChatViewProps, 'index' | 'routePending' | 'historyReady'>> &
+type ChatViewScreenProps = Required<
+  Pick<ChatViewProps, 'index' | 'routePending' | 'historyReady'>
+> &
   Pick<ChatViewProps, 'project'> & {
     conversationId?: string;
     fileMap: ReturnType<typeof useFileMapContext>;
@@ -107,12 +109,7 @@ function ChatViewScreen({
   const { messages, isLoading, isFetching } = useChatSessionMessages(conversationId);
   /** Persist/restore the viewed branch after messages settle. Resume still owns
    *  in-flight generations and overwrites this from its effect. */
-  useBranchOnLoad(
-    conversationId,
-    getMessages,
-    index,
-    historyReady && !isLoading && !isFetching,
-  );
+  useBranchOnLoad(conversationId, getMessages, index, historyReady && !isLoading && !isFetching);
   return (
     <ChatScreen
       index={index}
