@@ -295,3 +295,13 @@
       opacity 0.01ms linear;
   }
 }
+
+/* A chat image whose dimensions are known reserves its box before it loads: as tall as its
+   aspect ratio makes it across the viewport or across its 512px frame, and never over 45vh. */
+.chat-image-sized {
+  height: min(
+    45vh,
+    calc(var(--chat-image-ratio, 1) * 100vw),
+    calc(var(--chat-image-ratio, 1) * 512px)
+  );
+}

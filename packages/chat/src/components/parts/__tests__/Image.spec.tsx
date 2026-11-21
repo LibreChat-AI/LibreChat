@@ -1,33 +1,31 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import Image, { _resetImageCaches } from '../Image';
-
-jest.mock('~/utils', () => ({
-  cn: (...classes: (string | boolean | undefined | null)[]) =>
-    classes
-      .flat(Infinity)
-      .filter((c): c is string => typeof c === 'string' && c.length > 0)
-      .join(' '),
-  /** Real implementation: URL resolution is what the cases below assert. */
-  toAbsoluteFilePath:
-    jest.requireActual<typeof import('~/utils/media')>('~/utils/media').toAbsoluteFilePath,
-}));
 
 jest.mock('librechat-data-provider', () => ({
   apiBaseUrl: () => '',
 }));
 
 jest.mock('@librechat/client', () => ({
+  cn: (...classes: (string | boolean | undefined | null)[]) =>
+    classes
+      .flat(Infinity)
+      .filter((c): c is string => typeof c === 'string' && c.length > 0)
+      .join(' '),
   Skeleton: ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
     <div data-testid="skeleton" className={className} {...props} />
   ),
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  DialogImage: ({ isOpen, src }: { isOpen: boolean; src: string }) =>
+jest.mock('../DialogImage', () => ({
+  __esModule: true,
+  default: ({ isOpen, src }: { isOpen: boolean; src: string }) =>
     isOpen ? <div data-testid="dialog-image" data-src={src} /> : null,
 }));
+
 describe('Image', () => {
   const defaultProps = {
     imagePath: '/images/test.png',
@@ -64,10 +62,11 @@ describe('Image', () => {
       expect(screen.queryByTestId('skeleton')).not.toBeInTheDocument();
     });
 
-    it('does not apply heightStyle without dimensions', () => {
+    it('reserves no box without dimensions', () => {
       render(<Image {...defaultProps} />);
       const button = screen.getByRole('button');
-      expect(button.style.height).toBeFalsy();
+      expect(button).not.toHaveClass('chat-image-sized');
+      expect(button.style.getPropertyValue('--chat-image-ratio')).toBe('');
     });
   });
 
@@ -77,11 +76,11 @@ describe('Image', () => {
       expect(screen.getByTestId('skeleton')).toBeInTheDocument();
     });
 
-    it('applies computed heightStyle to button', () => {
+    it('reserves the box from the image’s height over its width', () => {
       render(<Image {...defaultProps} width={1024} height={1792} />);
       const button = screen.getByRole('button');
-      expect(button.style.height).toBeTruthy();
-      expect(button.style.height).toContain('min(45vh');
+      expect(button).toHaveClass('chat-image-sized');
+      expect(button.style.getPropertyValue('--chat-image-ratio')).toBe('1.75');
     });
 
     it('uses size-full object-contain on image when dimensions provided', () => {

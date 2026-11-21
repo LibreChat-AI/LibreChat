@@ -186,6 +186,8 @@ export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/D
 export { default as Container } from './components/parts/Container';
 export { default as MemoryInfo } from './components/parts/MemoryInfo';
 export { default as DialogImage } from './components/parts/DialogImage';
+export { default as Image } from './components/parts/Image';
+export type { ImageProps } from './components/parts/Image';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
 export { default as ToolCall } from './components/parts/ToolCall';

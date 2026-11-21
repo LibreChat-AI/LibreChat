@@ -1,11 +1,11 @@
 import type { TAttachment } from 'librechat-data-provider';
 import {
-  attachmentIdentity,
   attachmentRenderKey,
   buildAttachmentsByName,
   resolveInlineMedia,
   toAbsoluteFilePath,
-} from '~/utils/media';
+} from '../media';
+import { attachmentIdentity } from '../attachments';
 
 const attachment = (overrides: Partial<TAttachment> = {}): TAttachment =>
   ({
