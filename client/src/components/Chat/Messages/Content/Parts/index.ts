@@ -19,7 +19,7 @@ export {
 } from '@librechat/chat/components';
 export { default as LogContent } from './LogContent';
 export { ExecuteCode } from '@librechat/chat/components';
-export { default as SkillCall } from './SkillCall';
+export { SkillCall } from '@librechat/chat/components';
 export { MemoryCall } from '@librechat/chat/components';
 export { ReadFileCall } from '@librechat/chat/components';
 export { FileAuthoringCall } from '@librechat/chat/components';

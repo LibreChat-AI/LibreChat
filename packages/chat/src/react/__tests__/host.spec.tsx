@@ -35,6 +35,7 @@ const createHost = (fontSize: string): MessagePartsHost => ({
   useToast: () => jest.fn(),
   useSandboxStarting: () => false,
   usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, jest.fn()],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,

@@ -36,6 +36,7 @@ export function createMessagePartsHost(
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, () => undefined],
     useShare: () => ({}),
+    useLoadedSkill: () => undefined,
     useToolCallChrome: emptyToolCallChrome,
     ...overrides,
   };

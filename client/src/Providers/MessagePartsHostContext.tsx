@@ -45,6 +45,7 @@ import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
+import useLoadedSkill from '~/hooks/Skills/useLoadedSkill';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
 import { fontSizeAtom } from '~/store/fontSize';
@@ -199,6 +200,7 @@ export const appMessagePartsHost: MessagePartsHost = {
     const { isSharedConvo, shareId } = useShareContext();
     return useMemo(() => ({ isSharedConvo, shareId }), [isSharedConvo, shareId]);
   },
+  useLoadedSkill,
   useToolCallChrome: useAppToolCallChrome,
 };
 

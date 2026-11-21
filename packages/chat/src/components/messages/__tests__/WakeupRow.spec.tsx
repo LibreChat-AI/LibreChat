@@ -114,6 +114,7 @@ const partsHost: MessagePartsHost = {
   useToast: () => () => undefined,
   useSandboxStarting: () => false,
   usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, () => undefined],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
