@@ -553,6 +553,29 @@ test.describe('core chat loop', () => {
     await page.setViewportSize({ width: viewport, height });
     await expect.poll(() => widthOf(rail)).toBeCloseTo(keyed, -1);
 
+    /** A press on the handle that changes nothing is not a choice of width: after a key that
+     *  does not resize, and after a click that does not drag, a squeeze is still not kept. */
+    const squeezeAndRestore = async (chosen: number) => {
+      await page.setViewportSize({ width: viewport - 300, height });
+      await expect.poll(() => widthOf(rail)).toBeLessThan(chosen - 40);
+      await page.setViewportSize({ width: viewport, height });
+      await expect.poll(() => widthOf(rail)).toBeCloseTo(chosen, -1);
+    };
+    await handle.focus();
+    await page.keyboard.press('Tab');
+    await squeezeAndRestore(keyed);
+    const idle = await handle.boundingBox();
+    await page.mouse.click((idle?.x ?? 0) + (idle?.width ?? 0) / 2, y);
+    await squeezeAndRestore(keyed);
+    /** Nor is a resizing key with nowhere to go: Home takes the rail to its widest, and a
+     *  second Home changes nothing. */
+    await handle.focus();
+    await page.keyboard.press('Home');
+    await expect.poll(() => widthOf(rail)).toBeGreaterThan(keyed + 40);
+    const widest = await widthOf(rail);
+    await page.keyboard.press('Home');
+    await squeezeAndRestore(widest);
+
     /** Closed, the column and its handle are gone and the thread has the room back. */
     await rail.getByRole('button', { name: 'Close session' }).click();
     await expect(rail).toHaveCount(0);

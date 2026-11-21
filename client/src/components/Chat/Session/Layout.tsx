@@ -13,6 +13,15 @@ import {
 import useDirection from '~/hooks/Nav/useDirection';
 import { useLocalize } from '~/hooks';
 
+/** The keys the library resizes a horizontal group with; any other key leaves the layout alone. */
+const RESIZE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End']);
+
+/**
+ * What ends a drag, as the library sees it: the release, a cancelled pointer, or a move with no
+ * button held, which is how a release outside the window shows up.
+ */
+const DRAG_END = ['pointerup', 'pointercancel', 'pointermove'] as const;
+
 /**
  * The conversation, handed past the resize group instead of through it. The layout above this
  * makes a new element for the conversation whenever it renders; passed as the group's child,
@@ -47,17 +56,39 @@ const Columns = memo(function Columns() {
   const [width, setWidth] = useAtom(sessionRailWidth);
   const railRef = usePanelRef();
   /**
-   * Only a width the reader chose is remembered, so the handle is watched for the press or key
-   * that starts a change. Any other change is the window: a narrow one squeezes the rail under
-   * its share of the room, and when the room comes back the rail goes back to the reader's
-   * width rather than staying where it was squeezed to.
+   * Only a width the reader chose is remembered, so the handle is watched for the drag or key
+   * that changes it. Any other change is the window: a narrow one squeezes the rail under its
+   * share of the room, and when the room comes back the rail goes back to the reader's width
+   * rather than staying where it was squeezed to.
+   *
+   * The mark lasts only as long as the press it was made for. The library reports a drag from
+   * the release that ends it and a key from the key press itself, both before the listeners
+   * here that take the mark away, so a press that changes nothing (a click, a key the handle
+   * does not resize with, an arrow at the limit) leaves no mark for the window to be read by.
    *
    * A key press is reported before the panel has its new size and a drag after, so the panel
    * is read on the next frame.
    */
   const resizing = useRef(false);
-  const startResize = useCallback(() => {
+  const startDrag = useCallback(() => {
     resizing.current = true;
+    const end = (event: PointerEvent) => {
+      if (event.type === 'pointermove' && event.buttons !== 0) {
+        return;
+      }
+      resizing.current = false;
+      DRAG_END.forEach((type) => window.removeEventListener(type, end));
+    };
+    DRAG_END.forEach((type) => window.addEventListener(type, end));
+  }, []);
+  const startKey = useCallback((event: React.KeyboardEvent) => {
+    if (!RESIZE_KEYS.has(event.key)) {
+      return;
+    }
+    resizing.current = true;
+    setTimeout(() => {
+      resizing.current = false;
+    });
   }, []);
   const settle = useCallback(() => {
     const chosen = resizing.current;
@@ -89,8 +120,8 @@ const Columns = memo(function Columns() {
         key="handle"
         withHandle
         aria-label={localize('com_ui_session_resize')}
-        onPointerDownCapture={startResize}
-        onKeyDownCapture={startResize}
+        onPointerDownCapture={startDrag}
+        onKeyDownCapture={startKey}
       />
     ),
     docked && (
