@@ -4,7 +4,6 @@ import {
   isScheduleMCPAuthorizationFailure,
   runGrantFailureReasonSchema,
   projectScheduleMCPReceipt,
-  mergeScheduleMCPReceipts,
 } from 'librechat-data-provider';
 import type { ScheduleRunStatus, ScheduleDisabledReason } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
@@ -15,13 +14,12 @@ import type {
   IScheduleRun,
   IScheduleRunDocument,
 } from '~/types/schedule';
-import type { TriggerRunRef } from '~/types/triggerRun';
+import type { TriggerRunReservation, TriggerRunClaim, RecordedRunRef } from '~/types/triggerRun';
+import type { DuplicateKeyError } from './triggerRun';
+import { createTriggerRuns, ACTIVE_RUN_STATUSES, DUPLICATE_KEY } from './triggerRun';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { createIndexesWithRetry } from '~/utils/retry';
-import { createTriggerRuns } from './triggerRun';
 import { unchangedRunGrant } from './runGrant';
-
-const DUPLICATE_KEY = 11000;
 
 /**
  * Tolerance for inter-replica wall-clock skew on the worker-clock lease
@@ -35,22 +33,12 @@ const DUPLICATE_KEY = 11000;
 const LEASE_SKEW_MARGIN_MS = 30_000;
 
 /**
- * Age past which an unresolved interactive-stop attempt is presumed dead and its
- * per-run serialization claim becomes takeable again. Mirrors the api layer's
- * ABORT_OWNER_PRESUMED_ALIVE_MS — one presumption, two enforcement points.
- */
-const ABORT_STAMP_STALE_MS = 30 * 60_000;
-
-/**
  * Upper bound on the per-schedule `countedFor` idempotency set. Far larger than
  * the number of a single schedule's occurrences that can be terminal (or awaiting
  * reconciliation) at once, so an occurrence's marker is never evicted before any
  * possible crash-replay, while the array stays bounded.
  */
 const COUNTED_FOR_WINDOW = 64;
-
-/** Statuses that occupy a schedule's live capacity / block a concurrent occurrence. */
-const ACTIVE_RUN_STATUSES: ScheduleRunStatus[] = ['started', 'requires_action'];
 
 /** Card statuses that represent a SETTLED occurrence — everything except the pause. */
 const TERMINAL_CARD_STATUSES: ScheduleRunStatus[] = [
@@ -60,49 +48,6 @@ const TERMINAL_CARD_STATUSES: ScheduleRunStatus[] = [
   'skipped_overlap',
   'skipped_balance',
 ];
-
-type DuplicateKeyError = {
-  code?: number;
-  keyPattern?: Record<string, number>;
-  errmsg?: string;
-  message?: string;
-};
-
-/** DocumentDB can omit keyPattern; retain the deployed default index names as a fallback. */
-function matchesRunDuplicate(
-  error: unknown,
-  fields: readonly string[],
-  indexName: string,
-): boolean {
-  const err = error as DuplicateKeyError;
-  if (err?.code !== DUPLICATE_KEY) {
-    return false;
-  }
-  const keyPattern = err.keyPattern;
-  if (keyPattern != null) {
-    return (
-      Object.keys(keyPattern).length === fields.length &&
-      fields.every((field) => Object.prototype.hasOwnProperty.call(keyPattern, field))
-    );
-  }
-  const message = err.errmsg || err.message;
-  return typeof message === 'string' && /\bindex:\s+(\S+)/.exec(message)?.[1] === indexName;
-}
-
-/** A duplicate-key error whose conflict is the {scheduleId, scheduledFor} occurrence index. */
-function isOccurrenceDuplicate(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['scheduleId', 'scheduledFor'], 'scheduleId_1_scheduledFor_1');
-}
-
-/** A duplicate-key error whose conflict is the single-active-run partial index. */
-function isActiveRunConflict(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['scheduleId'], 'scheduleId_1');
-}
-
-/** A duplicate-key error whose conflict is the GLOBAL {capacitySlot} cap index. */
-function isCapacitySlotConflict(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['capacitySlot'], 'capacitySlot_1');
-}
 
 /** A duplicate-key error whose conflict is the per-user {user, slot} cap index. */
 function isSlotConflict(error: unknown): boolean {
@@ -166,24 +111,6 @@ export interface RecordRunOutcomeParams {
    */
   resumeClaimStaleBefore?: Date;
 }
-
-/** Outcome of reserving the single-active-run slot for a fired occurrence. */
-export type StartedRunReservation =
-  | { run: IScheduleRun }
-  | {
-      conflict: 'duplicate' | 'overlap' | 'slot-taken';
-      /** For a `duplicate`, the status of the row that already holds this occurrence.
-       *  A TERMINAL status means the occurrence is finished and merely never advanced
-       *  past; an active one means another worker is still running it. */
-      existingStatus?: ScheduleRunStatus;
-    };
-
-/** Outcome of promoting a paused occurrence back into the capacity-consuming
- * `started` set. Both conflicts are database-arbitrated by the same partial
- * unique indexes used for a first fire. */
-export type ResumedRunReservation =
-  | { capacitySlot: number }
-  | { conflict: 'not-paused' | 'overlap' | 'slot-taken' };
 
 export interface UpdateScheduleOptions {
   expectedConfigRevision?: number;
@@ -290,7 +217,7 @@ export type ScheduleMethods = {
     scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
     conversationId: string,
   ) => Promise<ScheduleMCPOutcome[]>;
-  reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<StartedRunReservation>;
+  reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<TriggerRunReservation>;
   getCapacityOccupancy: () => Promise<{ takenSlots: number[]; unslotted: number }>;
   requestRunAbort: (
     scheduleId: string,
@@ -318,7 +245,7 @@ export type ScheduleMethods = {
     scheduleId: string,
     scheduledFor: Date,
     capacitySlot: number,
-  ) => Promise<ResumedRunReservation>;
+  ) => Promise<TriggerRunClaim>;
   releaseRunResumeClaim: (
     scheduleId: string,
     scheduledFor: Date,
@@ -383,7 +310,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
   const runs = createTriggerRuns(mongoose);
 
   /** One occurrence of a schedule, as the run it started is found by. */
-  const occurrence = (scheduleId: string, scheduledFor: string | Date): TriggerRunRef => ({
+  const occurrence = (scheduleId: string, scheduledFor: string | Date): RecordedRunRef => ({
     subject: { kind: 'schedule', id: scheduleId },
     delivery: { event: { occurredAt: new Date(scheduledFor).getTime() } },
   });
@@ -1012,32 +939,9 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * single-active partial index means another occurrence of the same schedule is
    * already active ('overlap'). The DB enforces both atomically — no read-then-insert.
    */
-  async function reserveStartedRun(data: Partial<IScheduleRun>): Promise<StartedRunReservation> {
-    try {
-      const doc = await ScheduleRun().create({ ...data, status: 'started' });
-      return { run: doc.toObject() };
-    } catch (error) {
-      if (isOccurrenceDuplicate(error)) {
-        // Report the EXISTING row's status. A duplicate means another fire owns this
-        // occurrence — but "owns" and "already finished" need opposite handling, and the
-        // caller cannot distinguish them without this.
-        const existing = await ScheduleRun()
-          .findOne({ scheduleId: data.scheduleId, scheduledFor: data.scheduledFor })
-          .select('status')
-          .lean<Pick<IScheduleRun, 'status'>>();
-        return { conflict: 'duplicate', existingStatus: existing?.status };
-      }
-      // Checked BEFORE overlap: the global cap index and the per-schedule active
-      // index are different failures and drive different caller behavior (retry the
-      // next slot vs skip the occurrence).
-      if (isCapacitySlotConflict(error)) {
-        return { conflict: 'slot-taken' };
-      }
-      if (isActiveRunConflict(error)) {
-        return { conflict: 'overlap' };
-      }
-      throw error;
-    }
+  async function reserveStartedRun(data: Partial<IScheduleRun>): Promise<TriggerRunReservation> {
+    // A reservation always names its occurrence; the row type leaves both columns optional.
+    return runs.reserve(occurrence(data.scheduleId as string, data.scheduledFor as Date), data);
   }
 
   /** Capacity-slot occupancy for the allocator: which slots are held by generation
@@ -1065,79 +969,13 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * Records that an abort was requested WITHOUT freeing the capacity slot: the run
    * keeps counting against fireConcurrency until its generation owner confirms
    * settlement by writing a terminal outcome.
-   *
-   * The stamp is RENEWED per attempt, not first-wins: the fences read
-   * `abortRequestedAt` for freshness, and a retry abort signalled against a live
-   * generation must re-arm them — a 31-minute-old stamp from a failed first attempt
-   * must not let a drain read the retry's post-abort job state as settled. Callers
-   * therefore only invoke this against a generation they observed LIVE (or unknown);
-   * stamping cleanup aborts of already-terminal jobs would re-fence a dead owner
-   * forever and block the reconciler's recovery.
-   *
-   * Source semantics: a 'stop' attempt takes the source and re-opens the persistence
-   * marker (the Stop route persists writes the owner's barrier must wait on, and each
-   * attempt resolves it anew); a 'deletion' request renews freshness but never steals
-   * the source from an UNRESOLVED stop attempt — the route may still be persisting,
-   * and the owner's barrier keys off `abortSource === 'stop'`.
-   * Classic operators only (DocumentDB).
    */
   async function requestRunAbort(
     scheduleId: string,
     scheduledFor: Date,
     source?: IScheduleRun['abortSource'],
   ): Promise<boolean | 'in_progress'> {
-    const now = new Date();
-    if (source === 'stop') {
-      // SERIALIZED per run: only one unresolved fresh stop attempt may exist. A second
-      // Stop stamping over a live one would re-open the persistence marker, and its
-      // own lost-CAS resolution would then release the settlement barrier while the
-      // FIRST attempt (the terminal-CAS winner) was still pruning and saving. The
-      // guarded update is the arbiter; a loser answers 'in_progress' and must neither
-      // signal the abort nor resolve anything. A stale unresolved attempt (its route
-      // presumed dead) is claimable again.
-      const staleCutoff = new Date(now.getTime() - ABORT_STAMP_STALE_MS);
-      const stamped = await ScheduleRun().updateOne(
-        {
-          scheduleId,
-          scheduledFor,
-          status: { $in: ACTIVE_RUN_STATUSES },
-          $nor: [
-            {
-              abortSource: 'stop',
-              abortPersistedAt: { $exists: false },
-              abortRequestedAt: { $gt: staleCutoff },
-            },
-          ],
-        },
-        { $set: { abortRequestedAt: now, abortSource: 'stop' }, $unset: { abortPersistedAt: 1 } },
-      );
-      if ((stamped.matchedCount ?? 0) > 0) {
-        return true;
-      }
-      const holder = await ScheduleRun()
-        .findOne({ scheduleId, scheduledFor, status: { $in: ACTIVE_RUN_STATUSES } })
-        .select('_id')
-        .lean();
-      return holder != null ? 'in_progress' : false;
-    }
-    const claimed = await ScheduleRun().updateOne(
-      {
-        scheduleId,
-        scheduledFor,
-        status: { $in: ACTIVE_RUN_STATUSES },
-        $or: [{ abortSource: { $ne: 'stop' } }, { abortPersistedAt: { $exists: true } }],
-      },
-      { $set: { abortRequestedAt: now, ...(source ? { abortSource: source } : {}) } },
-    );
-    if ((claimed.matchedCount ?? 0) > 0) {
-      return true;
-    }
-    // An unresolved stop attempt holds the source; renew freshness only.
-    const renewed = await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor, status: { $in: ACTIVE_RUN_STATUSES } },
-      { $set: { abortRequestedAt: now } },
-    );
-    return (renewed.matchedCount ?? 0) > 0;
+    return runs.abort(occurrence(scheduleId, scheduledFor), source);
   }
 
   /** Captured origin cannot adopt a later grant or a different schedule root. */
@@ -1177,40 +1015,13 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     ]);
   }
 
-  /**
-   * Stamps a paused run as RESUME-CLAIMED: its approval was consumed and a
-   * continuation is running. While fresh, a re-paused job's state is a hand-off in
-   * flight (segment writes still landing), not settleable evidence. The pause
-   * record ($unset below) is the completion signal; a crash leaves the stamp to
-   * age out on the caller's staleness bound.
-   */
+  /** Promotes a paused occurrence back into the capacity-consuming `started` set. */
   async function markRunResumeClaimed(
     scheduleId: string,
     scheduledFor: Date,
     capacitySlot: number,
-  ): Promise<ResumedRunReservation> {
-    try {
-      const claimed = await ScheduleRun().findOneAndUpdate(
-        { scheduleId, scheduledFor, status: 'requires_action' },
-        {
-          $set: {
-            status: 'started',
-            capacitySlot,
-            resumeClaimedAt: new Date(),
-          },
-        },
-        { new: true, timestamps: false },
-      );
-      return claimed == null ? { conflict: 'not-paused' } : { capacitySlot };
-    } catch (error) {
-      if (isCapacitySlotConflict(error)) {
-        return { conflict: 'slot-taken' };
-      }
-      if (isActiveRunConflict(error)) {
-        return { conflict: 'overlap' };
-      }
-      throw error;
-    }
+  ): Promise<TriggerRunClaim> {
+    return runs.claim(occurrence(scheduleId, scheduledFor), capacitySlot);
   }
 
   /** Roll back a resume reservation only while the exact slot this caller claimed
@@ -1222,26 +1033,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduledFor: Date,
     capacitySlot: number,
   ): Promise<boolean> {
-    const released = await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor, status: 'started', capacitySlot },
-      {
-        $set: { status: 'requires_action' },
-        $unset: { capacitySlot: 1, resumeClaimedAt: 1 },
-      },
-      { timestamps: false },
-    );
-    return (released.modifiedCount ?? 0) > 0;
+    return runs.release(occurrence(scheduleId, scheduledFor), capacitySlot);
   }
 
   /** Stamped by the interactive Stop route once ALL its writes (checkpoint prune,
    *  partial-response save) have landed; releases the generation owner's settlement
-   *  barrier. Bookkeeping only: never touches `updatedAt`. */
+   *  barrier. */
   async function markRunAbortPersisted(scheduleId: string, scheduledFor: Date): Promise<void> {
-    await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor },
-      { $set: { abortPersistedAt: new Date() } },
-      { timestamps: false },
-    );
+    await runs.abortSaved(occurrence(scheduleId, scheduledFor));
   }
 
   async function recordMCPToolAuthFailure({
@@ -1253,12 +1052,6 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     outcome,
     outcomes,
   }: Parameters<ScheduleMethods['recordMCPToolAuthFailure']>[0]): Promise<boolean> {
-    const binding = {
-      scheduleId,
-      scheduledFor,
-      conversationId,
-      ...(tenantId ? { tenantId } : { tenantId: { $exists: false } }),
-    };
     const receipts: ScheduleMCPOutcome[] = outcomes ?? [
       outcome ?? {
         server,
@@ -1266,24 +1059,11 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         detail: 'unattended_auth_required',
       },
     ];
-    const updated = await ScheduleRun().updateOne(
-      { ...binding, status: { $in: ['started', 'requires_action'] } },
-      { $addToSet: { mcp: { $each: receipts } } },
-      { timestamps: false },
+    return runs.receipt(
+      occurrence(scheduleId, scheduledFor),
+      { conversationId, tenantId },
+      receipts,
     );
-    if ((updated.matchedCount ?? 0) > 0) return true;
-    if (receipts.length === 0) return false;
-    // A durable replay acknowledges existing evidence, never appends a late diagnosis.
-    const terminal = await ScheduleRun()
-      .findOne({
-        ...binding,
-        status: { $in: ['success', 'error', 'interrupted', 'skipped_balance', 'skipped_overlap'] },
-      })
-      .select('mcp')
-      .lean<Pick<IScheduleRun, 'mcp'>>();
-    if (!terminal) return false;
-    const admitted = mergeScheduleMCPReceipts(terminal.mcp ?? []);
-    return mergeScheduleMCPReceipts(admitted, receipts).length === admitted.length;
   }
 
   /** Count of in-flight scheduled runs (across all schedules) for the fire cap. */
@@ -1844,16 +1624,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduledFor: Date,
     details: { conversationId: string; droppedFileIds?: string[]; mcp?: IScheduleRun['mcp'] },
   ): Promise<void> {
-    await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor, conversationId: details.conversationId },
-      {
-        $set: {
-          conversationId: details.conversationId,
-          ...(details.droppedFileIds?.length ? { droppedFileIds: details.droppedFileIds } : {}),
-        },
-        ...(details.mcp?.length ? { $addToSet: { mcp: { $each: details.mcp } } } : {}),
-      },
-    );
+    await runs.detail(occurrence(scheduleId, scheduledFor), details);
   }
 
   /**
@@ -1976,14 +1747,10 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     expectedStatus?: ScheduleRunStatus,
     expectedConversationId?: string,
   ): Promise<void> {
-    const filter: Record<string, unknown> = { scheduleId, scheduledFor };
-    if (expectedStatus !== undefined) {
-      filter.status = expectedStatus;
-    }
-    if (expectedConversationId !== undefined) {
-      filter.conversationId = expectedConversationId;
-    }
-    await ScheduleRun().deleteOne(filter);
+    await runs.remove(occurrence(scheduleId, scheduledFor), {
+      status: expectedStatus,
+      conversationId: expectedConversationId,
+    });
   }
 
   /**
