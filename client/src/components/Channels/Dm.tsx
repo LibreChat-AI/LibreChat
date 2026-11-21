@@ -41,7 +41,6 @@ import type { ReactNode } from 'react';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { LinkAgentName } from './Links';
-import Loading from './Loading';
 import Notice from './Notice';
 
 const editorAtom = atom<ChannelLinkView | null>(null);
@@ -318,20 +317,18 @@ function Selections({ principalKey }: { principalKey: string }) {
     else heading.current?.focus();
   };
   // Nothing to show or revoke while new selections are off: stay out of the way.
+  // Render nothing until there is something to show, so the section never flashes in and out.
+  if (selections.isLoading || links.isLoading) return null;
   if (selections.isSuccess && !enabled && rows.length === 0) return null;
   // Without a confirmed Discord link there is nothing to choose yet; linking happens in Discord.
   if (selections.isSuccess && links.isSuccess && active.length === 0 && rows.length === 0)
     return null;
   return (
-    <section
-      className="border-border-light space-y-3 not-first:border-t not-first:pt-6"
-      aria-labelledby={`${id}-heading`}
-    >
+    <section className="space-y-3" aria-labelledby={`${id}-heading`}>
       <h3 id={`${id}-heading`} ref={heading} tabIndex={-1} className="text-sm font-semibold">
         {localize('com_ui_discord_dm_title')}
       </h3>
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_description')}</p>
-      {selections.isLoading && <Loading />}
       {selections.isError && (
         <Notice
           message={localize('com_ui_discord_error')}
