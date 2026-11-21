@@ -10,7 +10,9 @@ a subject, and a subject supplies an identity, a storage object and a host.
 | A personal agent API key, per agent | `AgentKeyMCPIdentity`  | `createAgentKeyMCPConsentStorage` | `packages/api/src/apiKeys/grants.ts`                             |
 
 Both storages are `createEmbeddedGrantStorage` over the document that holds the grant
-(`packages/data-schemas/src/methods/runGrant.ts`), so a grant dies with its holder. The types a
+(`packages/data-schemas/src/methods/runGrant.ts`), so a grant dies with its holder. Every
+storage answers to the same six names, so each is built on its own and handed to its host;
+none is part of the shared method bag, where a second would replace the first. The types a
 grant is made of, and the request and view the routes exchange, are in
 `packages/data-provider/src/types/runGrant.ts`.
 

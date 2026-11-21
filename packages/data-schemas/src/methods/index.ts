@@ -17,11 +17,9 @@ export type {
   SubagentContentAppendResult,
 } from './subagentContent';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from './runGrant';
 import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
-import { createScheduleMCPConsentStorage } from './runGrant';
 export { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
 export type {
   RunGrantStorage,
@@ -366,7 +364,6 @@ export type AllMethods = PermissionPrincipalStorage &
   SkillLifecycleMethods &
   AgentTriggerDeliveryMethods &
   AgentQueuedTurnMethods &
-  ScheduleMCPConsentStorage &
   ScheduleMethods &
   AgentMethods &
   ConfigMethods &
@@ -625,7 +622,6 @@ export function createMethods(
     ...agentTriggerDeliveryMethods,
     ...agentQueuedTurnMethods,
     ...createScheduleMethods(mongoose),
-    ...createScheduleMCPConsentStorage(mongoose),
     /* Tier 5 */
     ...agentMethods,
     /* Config */

@@ -99,7 +99,7 @@ export function createScheduleMCPRuntimeHost(
     getAppConfig: (options) => deps.enrollment.getAppConfig({ ...options, failClosed: true }),
   }).consent.service.requiresGrant;
   const execution = createRunGrantExecution({
-    storage: deps.methods,
+    storage: deps.storage,
     requiresGrant: required,
     // A schedule's grant covers the whole run: the agents' other tools load only if listed.
     coversTools: true,

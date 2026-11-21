@@ -3,8 +3,12 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { AIMessage } from '@librechat/agents/langchain/messages';
-import { createModels, createMethods } from '@librechat/data-schemas';
 import { Constants, HookRegistry, ToolNode, executeHooks } from '@librechat/agents';
+import {
+  createModels,
+  createMethods,
+  createScheduleMCPConsentStorage,
+} from '@librechat/data-schemas';
 import type { AppConfig, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { SchedulesServiceDeps } from '../service';
 import {
@@ -67,6 +71,7 @@ afterEach(async () => {
  */
 async function setup(legacy = false, detaches = true) {
   const methods = createMethods(mongoose);
+  const storage = createScheduleMCPConsentStorage(mongoose);
   const owner = new mongoose.Types.ObjectId();
   const fixture = await executionFixture();
   const identity = { ...fixture.identity, ownerId: owner.toString() };
@@ -82,7 +87,7 @@ async function setup(legacy = false, detaches = true) {
     cadence: { frequency: 'hourly', minute: 0, hour: 1 },
   });
   const consent = createRunGrantService({
-    storage: methods,
+    storage,
     resolveEnrollment: async () => [fixture.target],
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
     canUse: async () => true,
@@ -98,7 +103,7 @@ async function setup(legacy = false, detaches = true) {
   };
   if (!legacy) await enroll();
   const loadAuthorization = jest.fn(async () => ({ authority: consent.authority }));
-  const factory = createRunGrantExecution({ storage: methods, loadAuthorization, detaches });
+  const factory = createRunGrantExecution({ storage, loadAuthorization, detaches });
   const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');
   await methods.insertScheduleRun({
@@ -153,6 +158,7 @@ async function setup(legacy = false, detaches = true) {
   )!;
   return {
     methods,
+    storage,
     execution,
     schedule,
     scheduledFor,
@@ -703,6 +709,7 @@ it('runs a completion turn under the grant the schedule holds when the turn star
     await resolveScheduleMCPCompletion(scope, f.methods.getScheduleMCPCompletionState),
   ).toEqual(identity);
   const host = createScheduleMCPRuntimeHost({
+    storage: f.storage,
     methods: f.methods,
     getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
     findUser: async () => null,
@@ -855,6 +862,7 @@ it('keeps a legacy continuation guarded if confirmation lands after request admi
   const f = await setup(true);
   const context = createMCPRequestContext();
   const host = createScheduleMCPRuntimeHost({
+    storage: f.storage,
     methods: f.methods,
     getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
     findUser: async () => null,
@@ -958,6 +966,7 @@ it('gives a resumed completion turn nothing to act with once the schedule was au
   const f = await setup(true);
   const identity = f.execution.identity;
   const host = createScheduleMCPRuntimeHost({
+    storage: f.storage,
     methods: f.methods,
     getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
     findUser: async () => null,
@@ -975,8 +984,8 @@ it('gives a resumed completion turn nothing to act with once the schedule was au
     },
   });
   await f.enroll();
-  const snapshot = await f.methods.readRunGrant(identity);
-  await f.methods.revokeRunGrant(identity, snapshot!.enrollment!.revision);
+  const snapshot = await f.storage.readRunGrant(identity);
+  await f.storage.revokeRunGrant(identity, snapshot!.enrollment!.revision);
   const context = createMCPRequestContext();
   const provider = jest.fn(async () => getScheduleMCPExecution(context));
   const req = {
@@ -1017,6 +1026,7 @@ it('gives a resumed completion turn nothing to act with once the schedule was au
 it('persists completion identity before tool construction and restores its monitor across repeated approvals', async () => {
   const f = await setup(true);
   const host = createScheduleMCPRuntimeHost({
+    storage: f.storage,
     methods: f.methods,
     getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
     findUser: async () => null,
@@ -1125,7 +1135,7 @@ it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
     if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
     if (phase === 'consent')
       jest.spyOn(f.consent.authority, 'authorize').mockRejectedValue(internal);
-    if (phase === 'admission') jest.spyOn(f.methods, 'admitRunGrant').mockRejectedValue(internal);
+    if (phase === 'admission') jest.spyOn(f.storage, 'admitRunGrant').mockRejectedValue(internal);
     const provider = jest.fn(async () => 'read executed');
     const tool = new DynamicStructuredTool({
       name: 'query_mcp_warehouse',
@@ -1202,6 +1212,7 @@ it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
 it('stores only a safe preparation outage when initial authorization fails after readiness', async () => {
   const f = await setup();
   const host = createScheduleMCPRuntimeHost({
+    storage: f.storage,
     methods: {
       ...f.methods,
       getScheduleById: async () => {
@@ -1296,6 +1307,7 @@ it.each(
     if (scheduleState === 'deleted')
       await mongoose.models.Schedule.deleteOne({ id: f.schedule.id });
     const host = createScheduleMCPRuntimeHost({
+      storage: f.storage,
       methods: f.methods,
       getScheduleMCPCompletionState: f.methods.getScheduleMCPCompletionState,
       findUser: async () => null,

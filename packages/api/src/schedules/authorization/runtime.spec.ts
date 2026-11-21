@@ -106,8 +106,8 @@ async function setup() {
   const host = createScheduleMCPRuntimeHost({
     canPauseRuns: async () => pausable,
     getScheduleMCPCompletionState,
+    storage: fixture.storage,
     methods: {
-      ...fixture.storage,
       getScheduleById,
       getScheduleRunMCP,
       getScheduleConversationMCP,
