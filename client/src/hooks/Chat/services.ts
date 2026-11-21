@@ -23,6 +23,7 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import { cancelUploads } from '~/hooks/Files/useFileHandling';
 import useUserKey from '~/hooks/Input/useUserKey';
+import useChatProductTracking from './tracking';
 import { isTargetReady } from './ask/guards';
 
 /** The app's side of a pane's turns: its catalogs, router, composer files, code workspace and
@@ -32,6 +33,7 @@ export default function useTurnServices({
   conversation,
 }: Pick<ChatTurnsParams, 'index' | 'conversation'>): TurnServices {
   const navigate = useNavigate();
+  const onProductSubmission = useChatProductTracking();
   const queryClient = useQueryClient();
   const discardFiles = useDiscardPastedFiles(index, conversation?.conversationId);
   const setFilesToDelete = useSetFilesToDelete();
@@ -86,6 +88,7 @@ export default function useTurnServices({
   }, [store, index]);
 
   return {
+    onProductSubmission,
     logger,
     isTemporary,
     user: auth.user,

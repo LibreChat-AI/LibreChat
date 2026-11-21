@@ -66,6 +66,7 @@ const transport = {
   }),
 } as unknown as ChatTransport;
 const legacyServices: LegacyStreamServices = {
+  onSubmissionFailure: jest.fn(),
   transport,
   refreshBalance: jest.fn(),
   reopenTermsOnRefusal: () => null,
@@ -279,4 +280,51 @@ describe('useLegacyStream', () => {
     expect(lastCall(mockErrorHandler)?.[0].data).toEqual({ text: 'Accept the terms' });
     unmount();
   });
+});
+
+it.each([
+  [403, 'rejected'],
+  [503, 'unconfirmed'],
+  [0, 'unconfirmed'],
+] as const)('reports an initial HTTP %s only once as %s', async (status, reason) => {
+  const submission = buildSubmission();
+  const { unmount } = renderHook(() => useLegacyStream(submission, buildChatHelpers()), {
+    wrapper,
+  });
+  await act(async () => {
+    emit({ type: 'error', status });
+    emit({ type: 'error', status });
+  });
+  expect(legacyServices.onSubmissionFailure).toHaveBeenCalledTimes(1);
+  expect(legacyServices.onSubmissionFailure).toHaveBeenCalledWith(submission, reason);
+  unmount();
+});
+
+it('does not label a disconnected accepted stream as a rejected submission', async () => {
+  const submission = buildSubmission();
+  const { unmount } = renderHook(() => useLegacyStream(submission, buildChatHelpers()), {
+    wrapper,
+  });
+  await act(async () => {
+    emitFrame({ created: true, message: submission.userMessage });
+    emit({ type: 'error', status: 0 });
+  });
+  expect(legacyServices.onSubmissionFailure).not.toHaveBeenCalled();
+  unmount();
+});
+
+it('passes captured session and submission IDs to the transport', () => {
+  const submission = buildSubmission();
+  submission.productTrackingContext = {
+    sessionId: 'd79706cc-4ddf-4cf7-b99a-333755af9be8',
+    submissionId: '1b7ff690-8b9b-4af6-b68d-9cab4a5f2f21',
+  };
+  const { unmount } = renderHook(() => useLegacyStream(submission, buildChatHelpers()), {
+    wrapper,
+  });
+  expect(transport.send).toHaveBeenCalledWith(
+    expect.objectContaining({ productTrackingContext: submission.productTrackingContext }),
+    expect.anything(),
+  );
+  unmount();
 });

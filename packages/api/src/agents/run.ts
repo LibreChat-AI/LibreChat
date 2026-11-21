@@ -71,6 +71,7 @@ import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
+import type { ProductTrackingRequest } from './product';
 import type { SdkModelHost } from './remoteSdk/builder';
 import type { RunFileSession } from './files/session';
 import type { SdkAgentRuntimeLoader } from './sdk';
@@ -139,6 +140,7 @@ import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
+import { observeProductRun, observeProductRunSetup } from './product';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
@@ -2307,7 +2309,8 @@ function resolveRunTraceContext({
   };
 }
 
-export async function createRun({
+async function buildRun({
+  productTrackingRequest,
   runId,
   signal,
   conversationId,
@@ -2361,6 +2364,7 @@ export async function createRun({
 }: {
   agents: RunAgent[];
   signal: AbortSignal;
+  productTrackingRequest?: ProductTrackingRequest;
   runId?: string;
   /** Conversation-stable identity, used by the e2e run hook to tell a resumed
    *  run apart from a fresh attempt (a resume carries no messages). */
@@ -3400,5 +3404,31 @@ export async function createRun({
     modelCallbacks,
     conversationId: conversationId ?? requestBody?.conversationId ?? undefined,
   });
-  return run;
+  return observeProductRun(
+    run,
+    productTrackingRequest,
+    {
+      runId: resolvedRunId,
+      conversationId: conversationId ?? requestBody?.conversationId,
+      agentId: agents[0]?.id,
+      model: agents[0]?.model_parameters?.model ?? agents[0]?.model ?? undefined,
+      provider: agents[0]?.provider,
+    },
+    signal,
+  );
+}
+
+/** Each caller starts setup once; a failure is terminal for that generation. */
+export async function createRun(params: Parameters<typeof buildRun>[0]): Promise<Run<IState>> {
+  const runId = params.runId ?? randomUUID();
+  const context = {
+    runId,
+    conversationId: params.conversationId ?? params.requestBody?.conversationId,
+    agentId: params.agents[0]?.id,
+    model: params.agents[0]?.model_parameters?.model ?? params.agents[0]?.model ?? undefined,
+    provider: params.agents[0]?.provider,
+  };
+  return observeProductRunSetup(params.productTrackingRequest, context, params.signal, () =>
+    buildRun({ ...params, runId }),
+  );
 }

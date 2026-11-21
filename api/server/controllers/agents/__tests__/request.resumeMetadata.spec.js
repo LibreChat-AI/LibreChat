@@ -260,6 +260,10 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  bindProductSubmissionContext: (...args) =>
+    jest
+      .requireActual('../../../../../packages/api/src/tracking/request')
+      .bindProductSubmissionContext(...args),
   getTrustedNewConversationId: (...args) =>
     jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   buildGenerationStartedResponse: (...args) =>
