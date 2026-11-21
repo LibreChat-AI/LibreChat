@@ -859,8 +859,15 @@ const ContentPartsBody = memo(function ContentPartsBody({
     ));
 
   const renderPart = useCallback(
-    (part: TMessageContentParts, idx: number, isLastPart: boolean) => {
+    (
+      part: TMessageContentParts,
+      idx: number,
+      isLastPart: boolean,
+      nextInLane?: TMessageContentParts['type'] | null,
+    ) => {
       const localIdx = localIndexByAbsolute?.get(idx) ?? idx - contentIndexOffset;
+      // A lane tail reports null rather than falling through to another lane's part.
+      const nextType = nextInLane === undefined ? content?.[localIdx + 1]?.type : nextInLane;
       return (
         <PartWithContext
           key={`provider-${messageId}-${getPartKeyIndex(part, idx)}`}
@@ -872,7 +879,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           conversationId={conversationId}
           isLatestMessage={isLatestMessage}
           isCreatedByUser={isCreatedByUser}
-          nextType={content?.[localIdx + 1]?.type}
+          nextType={nextType ?? undefined}
           isSubmitting={effectiveIsSubmitting}
           partAttachments={attachmentsForPart(part)}
           hideAttachments={hideAttachments}

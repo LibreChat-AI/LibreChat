@@ -175,6 +175,13 @@ export function groupParallelContent(
   return { parallelSections: sections, sequentialParts: noGroup };
 }
 
+type RenderPart = (
+  part: TMessageContentParts,
+  idx: number,
+  isLastPart: boolean,
+  nextInLane?: TMessageContentParts['type'] | null,
+) => React.ReactNode;
+
 type ParallelColumnsProps = {
   columns: ParallelColumn[];
   groupId: number;
@@ -183,7 +190,7 @@ type ParallelColumnsProps = {
   isSubmitting: boolean;
   lastContentIdx: number;
   conversationId?: string | null;
-  renderPart: (part: TMessageContentParts, idx: number, isLastPart: boolean) => React.ReactNode;
+  renderPart: RenderPart;
 };
 
 /**
@@ -234,10 +241,15 @@ export const ParallelColumns = memo(function ParallelColumns({
                 <EmptyText />
               </Container>
             ) : (
-              columnParts.map(({ part, idx }) => {
+              columnParts.map(({ part, idx }, index) => {
                 const isLastInColumn = idx === lastColumnCursorIdx;
                 const isLastContent = idx === lastContentIdx;
-                return renderPart(part, idx, isLastInColumn && isLastContent);
+                return renderPart(
+                  part,
+                  idx,
+                  isLastInColumn && isLastContent,
+                  columnParts[index + 1]?.part.type ?? null,
+                );
               })
             )}
           </div>
@@ -262,7 +274,7 @@ type ParallelContentRendererProps = {
   attachments?: TAttachment[];
   searchResults?: { [key: string]: SearchResultData };
   isSubmitting: boolean;
-  renderPart: (part: TMessageContentParts, idx: number, isLastPart: boolean) => React.ReactNode;
+  renderPart: RenderPart;
   /**
    * Author re-attribution for a part that resumes after an inline steer —
    * returns the header node to render before that part, or null. Only the
