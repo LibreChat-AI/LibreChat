@@ -206,7 +206,7 @@ export interface ActivityLabelHostDeps {
    * belongs in the exported type.
    */
   generateLabel?: (payload: GenerateLabelPayload) => Promise<string | null | undefined>;
-  getInvokeCallbacks?: () => ActivityLabelInvokeCallbacks;
+  getInvokeCallbacks?: (llm: ActivityLabelLLM) => ActivityLabelInvokeCallbacks;
 }
 
 /**

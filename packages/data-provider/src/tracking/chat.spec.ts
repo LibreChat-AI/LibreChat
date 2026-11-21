@@ -18,6 +18,18 @@ describe('chat facts', () => {
     expect(browser.safeParse({ ...fact, submissionId: undefined }).success).toBe(false);
     expect(browser.safeParse({ ...fact, text: 'private prompt' }).success).toBe(false);
   });
+  it('preserves unknown usage separately from zero and rejects payload content', () => {
+    const fact = {
+      name: 'librechat.chat.model.usage.recorded',
+      feature: 'chat',
+      callId: 'call',
+      outcome: 'completed',
+    };
+    expect(server.parse(fact)).not.toHaveProperty('input_tokens');
+    expect(server.safeParse({ ...fact, input_tokens: 0 }).success).toBe(true);
+    expect(server.safeParse({ ...fact, input_tokens: -1 }).success).toBe(false);
+    expect(server.safeParse({ ...fact, completion: 'private' }).success).toBe(false);
+  });
   it('keeps server outcomes off the browser contract', () => {
     expect(
       browser.safeParse({
@@ -33,11 +45,11 @@ describe('chat facts', () => {
 
 describe('chat fact privacy', () => {
   const usage = {
-    name: 'librechat.chat.response.finished',
+    name: 'librechat.chat.model.usage.recorded',
     feature: 'chat',
     runId: 'run',
+    callId: 'call',
     outcome: 'completed',
-    durationMs: 1,
   };
 
   it('retains only exact static model and provider names', () => {
@@ -70,7 +82,7 @@ describe('chat fact privacy', () => {
     'private-name',
   ])('omits ephemeral agent identity %s without dropping the fact', (agentId) => {
     const parsed = server.parse({ ...usage, agentId });
-    expect(parsed).toMatchObject({ runId: 'run' });
+    expect(parsed).toMatchObject({ callId: 'call', runId: 'run' });
     expect(parsed).not.toHaveProperty('agentId', agentId);
     expect(JSON.stringify(parsed)).not.toContain(agentId);
   });
