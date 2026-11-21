@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { act, renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import useLazyHighlight, { CodeHighlightThrottleContext } from '../useLazyHighlight';

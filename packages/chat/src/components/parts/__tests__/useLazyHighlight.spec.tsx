@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import useLazyHighlight, { HIGHLIGHT_THROTTLE_MS } from '../useLazyHighlight';
 

@@ -1,8 +1,12 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import FileAuthoringCall from '../FileAuthoringCall';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize:
     () =>
     (key: string, values?: Record<string | number, string>): string => {
@@ -19,11 +23,7 @@ jest.mock('~/hooks', () => ({
     },
 }));
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
+jest.mock('../ProgressText', () => ({
   __esModule: true,
   default: ({
     phase,
@@ -51,6 +51,8 @@ jest.mock('../CodeWindowHeader', () => ({
 }));
 
 jest.mock('../Attachment', () => ({
+  __esModule: true,
+  ...jest.requireActual('../Attachment'),
   AttachmentGroup: () => <div data-testid="attachment-group" />,
 }));
 

@@ -1,16 +1,18 @@
 import { useMemo } from 'react';
 import { FileText } from 'lucide-react';
-import { parseJsonField } from '@librechat/chat';
-import { TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
-import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
+import { cn, useLocalize } from '@librechat/client';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import type { CSSProperties } from 'react';
+import { toolPanelSpacingClassName } from '../../react/parts/disclosure';
+import { parseJsonField } from '../../core/parts/parseJsonField';
+import { useToolCallIntent } from '../../react/parts/intent';
+import CodeWindowHeader from './CodeWindowHeader';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
-import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { TOOL_ROW_CLASSES } from './rows';
+import ProgressText from './ProgressText';
+import BareStatus from './BareStatus';
 
 const LANG_MAP: Record<string, string> = {
   py: 'python',
@@ -85,7 +87,7 @@ export default function ReadFileCall({
   attachments?: TAttachment[];
   hideAttachments?: boolean;
   onExpand?: () => void;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   const filePath = useMemo(
     () => parseJsonField(args, 'path') || parseJsonField(args, 'file_path'),
@@ -143,7 +145,16 @@ export default function ReadFileCall({
           />
         </div>
       )}
-      <div style={expandStyle}>
+      <div
+        className="tool-call-expand"
+        style={
+          {
+            '--tool-expand-rows': expandStyle.gridTemplateRows,
+            '--tool-expand-opacity': expandStyle.opacity,
+            '--tool-expand-transition': expandStyle.transition,
+          } as CSSProperties
+        }
+      >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasOutput && (
             <div
