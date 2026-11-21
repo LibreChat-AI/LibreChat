@@ -1014,6 +1014,12 @@ describe.each(paths)('a run written through %s', (_name, build) => {
       expect(await only()).toEqual(row({ status: 'interrupted', mcp: [denied] }));
     });
 
+    it('holds no receipt for a settled run that recorded none', async () => {
+      await seed(row({ status: 'success' }));
+      expect(await write.receipt('sched_a', at, bound, [ready])).toBe(false);
+      expect(await only()).toEqual(row({ status: 'success' }));
+    });
+
     it('takes an empty list as delivered to a live run and to no other', async () => {
       await seed(row());
       expect(await write.receipt('sched_a', at, bound, [])).toBe(true);
@@ -1067,6 +1073,58 @@ describe.each(paths)('a run written through %s', (_name, build) => {
       await write.remove('sched_a', at, 'success', 'conversation-a');
       expect(await stored()).toEqual([]);
     });
+  });
+});
+
+describe.each(paths)('a refusal from the database, met through %s', (_name, build) => {
+  let write: Writers;
+  beforeEach(() => {
+    write = build();
+  });
+
+  /** The driver's answer is replaced; the model and everything after it stay real. */
+  const refuse = (error: unknown): void => {
+    jest.spyOn(ScheduleRun, 'create').mockRejectedValueOnce(error);
+    jest.spyOn(ScheduleRun, 'findOneAndUpdate').mockImplementationOnce(() => {
+      throw error;
+    });
+  };
+
+  it('reports a duplicate with no status when the row in the way is gone before it is read', async () => {
+    refuse({ code: 11000, keyPattern: { scheduleId: 1, scheduledFor: 1 } });
+    expect(await write.reserve(row())).toStrictEqual({
+      conflict: 'duplicate',
+      existingStatus: undefined,
+    });
+    expect(await stored()).toEqual([]);
+  });
+
+  it.each([
+    ['overlap', 'scheduleId_1'],
+    ['slot-taken', 'capacitySlot_1'],
+  ] as const)('reads %s from an index named after any run of spaces', async (conflict, index) => {
+    const error = {
+      code: 11000,
+      errmsg: `E11000 duplicate key error collection: test.scheduleruns index:  \t${index} dup key`,
+    };
+    refuse(error);
+    expect(await write.reserve(row())).toEqual({ conflict });
+    refuse(error);
+    expect(await write.claim('sched_a', at, 0)).toEqual({ conflict });
+  });
+
+  it.each([
+    ['nothing at all', null],
+    ['a duplicate that names no index', { code: 11000, message: 'E11000 duplicate key error' }],
+    [
+      'a message that is not text',
+      { code: 11000, message: { toString: (): string => 'E11000 index: scheduleId_1 dup key' } },
+    ],
+  ])('passes on, as it came, an error that holds %s', async (_held, error) => {
+    refuse(error);
+    await expect(write.reserve(row())).rejects.toBe(error);
+    refuse(error);
+    await expect(write.claim('sched_a', at, 0)).rejects.toBe(error);
   });
 });
 
