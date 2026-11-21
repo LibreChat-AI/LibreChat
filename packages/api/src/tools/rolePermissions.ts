@@ -61,6 +61,11 @@ export interface CheckToolRolePermissionParams {
    * the result. Callers that mutate pass this so the write aborts instead.
    */
   throwOnError?: boolean;
+  /**
+   * Log a denial as a forbidden request. Off for lookups that run ahead of any
+   * request for the tool, where a denial only means the tool stays unavailable.
+   */
+  logDenial?: boolean;
 }
 
 /**
@@ -76,6 +81,7 @@ export async function checkToolRolePermission({
   getRoleByName,
   context = 'toolRolePermissions',
   throwOnError = false,
+  logDenial = true,
 }: CheckToolRolePermissionParams): Promise<boolean> {
   let allowed = false;
   try {
@@ -93,7 +99,7 @@ export async function checkToolRolePermission({
     }
   }
 
-  if (!allowed) {
+  if (!allowed && logDenial) {
     logger.warn(
       `[${permissionType}] Forbidden: Insufficient permissions for User ${user?.id}: ${Permissions.USE}`,
     );
@@ -284,6 +290,9 @@ export interface ResolveToolRoleGrantsParams {
  * Callers that want the read off their critical path can start it early without
  * awaiting; the memoized promise is what later callers join.
  *
+ * Denials are not logged: the grants are read whether or not the request uses
+ * the tool. The gate that refuses a requested tool logs that refusal.
+ *
  * Fails closed: a missing user or a check that throws denies all three.
  */
 export function resolveToolRoleGrants({
@@ -328,6 +337,7 @@ export function resolveToolRoleGrants({
       permissionType: PermissionTypes.RUN_CODE,
       getRoleByName: getRoleOnce,
       context,
+      logDenial: false,
     }),
     checkToolRolePermission({
       req,
@@ -335,6 +345,7 @@ export function resolveToolRoleGrants({
       permissionType: PermissionTypes.FILE_SEARCH,
       getRoleByName: getRoleOnce,
       context,
+      logDenial: false,
     }),
     checkToolRolePermission({
       req,
@@ -342,6 +353,7 @@ export function resolveToolRoleGrants({
       permissionType: PermissionTypes.WEB_SEARCH,
       getRoleByName: getRoleOnce,
       context,
+      logDenial: false,
     }),
   ]).then(([runCode, fileSearch, webSearch]) => ({ runCode, fileSearch, webSearch }));
 
