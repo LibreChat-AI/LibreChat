@@ -282,6 +282,13 @@ the pause wiring, as a remote API run is (`resolveScheduledPause`): the ask-user
 out, a call whose policy asks is refused for that call, and every other tool runs. Nothing
 runs unapproved, and nothing waits for an answer that could not be delivered.
 
+The same holds for an agent whose code runs on a machine its owner attached. Any other caller
+with no resume path is refused such an agent before it starts; the scheduled run names what it
+is missing (`pauseGap`) and starts. The machine's own policy still decides each call: one it
+permits runs, one it denies is denied, and one it would ask about is denied, since there is
+nobody to ask. A machine set to ask about every command therefore runs none of them on that
+deployment: the model is told each call was refused and the run goes on to its answer.
+
 ### A schedule its owner never authorized
 
 A schedule with no grant keeps using its MCP tools unrestricted, as it did before consent

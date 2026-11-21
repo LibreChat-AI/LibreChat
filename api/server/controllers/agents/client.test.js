@@ -2495,6 +2495,59 @@ describe('AgentClient - startup telemetry', () => {
     }
   });
 
+  it('tells the run what a scheduled run that cannot pause is missing, and nothing where it can', async () => {
+    mockIsHITLEnabled.mockReturnValue(false);
+    const asker = (id) => {
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: { endpoints: { [EModelEndpoint.agents]: {} } },
+          _isScheduledFire: true,
+          _resumableStreamId: id,
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          tools: [{ name: 'ask_user_question' }],
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = id;
+      client.responseMessageId = `${id}-response`;
+      client.parentMessageId = `${id}-parent`;
+      return client;
+    };
+
+    expect(await startScheduledRun(asker('scheduled-gap-store'))).toMatchObject({
+      hitlCapable: false,
+      pauseGap: 'shared_store',
+    });
+
+    const isRedisSpy = jest.spyOn(GenerationJobManager, 'isRedis', 'get').mockReturnValue(true);
+    try {
+      mockGetAgentCheckpointer.mockResolvedValueOnce(null);
+      expect(await startScheduledRun(asker('scheduled-gap-checkpointer'))).toMatchObject({
+        hitlCapable: false,
+        pauseGap: 'durable_checkpointer',
+      });
+
+      mockGetAgentCheckpointer.mockResolvedValueOnce({});
+      const capable = await startScheduledRun(asker('scheduled-gap-none'));
+      expect(capable.hitlCapable).toBe(true);
+      expect(capable.pauseGap).toBeUndefined();
+    } finally {
+      isRedisSpy.mockRestore();
+    }
+  });
+
   it('includes host-generated background tools in scheduled pause admission', async () => {
     const client = new AgentClient({
       req: {
