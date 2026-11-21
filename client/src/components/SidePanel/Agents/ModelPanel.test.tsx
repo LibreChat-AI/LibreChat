@@ -182,9 +182,9 @@ describe('ModelPanel', () => {
     expect(formRef.current?.getValues('model_parameters')).toEqual(parameters);
   });
 
-  it('explains why native search is unavailable even before the agent requests it', () => {
+  it('does not show a search warning when web search is not enabled on the agent', () => {
     mockWebSearchAllowed.mockReturnValue(false);
-    const { getByRole } = render(
+    const { queryByRole } = render(
       <TestForm
         defaultProvider={EModelEndpoint.openAI}
         defaultModel="gpt-4o"
@@ -192,7 +192,7 @@ describe('ModelPanel', () => {
         modelsReady={true}
       />,
     );
-    expect(getByRole('status')).toHaveTextContent('com_ui_native_web_search_denied');
+    expect(queryByRole('status')).toBeNull();
   });
 
   it('does not show a search warning for a provider without native search', () => {

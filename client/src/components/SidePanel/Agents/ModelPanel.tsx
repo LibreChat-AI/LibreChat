@@ -91,10 +91,7 @@ export default function ModelPanel({
   /** The rendered set omits role-gated controls; `parameterSettings.parameters`
    *  stays complete so the pruning effect below still recognises them. */
   const { visibleParameters: parameters } = parameterSettings;
-  const webSearchBlocked =
-    !webSearchAllowed &&
-    (modelParameters?.web_search === true ||
-      parameterSettings.parameters.some((parameter) => parameter.key === 'web_search'));
+  const webSearchBlocked = !webSearchAllowed && modelParameters?.web_search === true;
 
   /**
    * Prunes `model_parameters` entries that no longer have a visible control (e.g. a
