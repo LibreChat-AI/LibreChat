@@ -28,6 +28,7 @@ export const MCPErrorCodes = {
   INSPECTION_FAILED: 'MCP_INSPECTION_FAILED',
   OAUTH_SECRET_REENTRY_REQUIRED: 'MCP_OAUTH_SECRET_REENTRY_REQUIRED',
   API_KEY_REENTRY_REQUIRED: 'MCP_API_KEY_REENTRY_REQUIRED',
+  HEADERS_REENTRY_REQUIRED: 'MCP_HEADERS_REENTRY_REQUIRED',
   AUTHENTICATION_REJECTED: 'MCP_AUTHENTICATION_REJECTED',
   AUTHENTICATION_REFRESH_FAILED: 'MCP_AUTHENTICATION_REFRESH_FAILED',
 } as const;
@@ -348,6 +349,23 @@ export class MCPApiKeyReentryRequiredError extends Error {
   }
 }
 
+/** Raised when an update would send retained custom header values to a new request boundary. */
+export class MCPHeadersReentryRequiredError extends Error {
+  public readonly code: 'MCP_HEADERS_REENTRY_REQUIRED' = MCPErrorCodes.HEADERS_REENTRY_REQUIRED;
+
+  public readonly statusCode = 400;
+  public readonly changedFields: readonly string[];
+
+  constructor(changedFields: readonly string[]) {
+    super(
+      `Re-enter custom header values when changing connection fields: ${changedFields.join(', ')}`,
+    );
+    this.name = 'MCPHeadersReentryRequiredError';
+    this.changedFields = changedFields;
+    Object.setPrototypeOf(this, MCPHeadersReentryRequiredError.prototype);
+  }
+}
+
 /**
  * A tool invocation was rejected before LibreChat could know whether the MCP
  * server executed it. Recovery may prepare a later deliberate retry, but this
@@ -419,6 +437,12 @@ export function isMCPApiKeyReentryRequiredError(
   return error instanceof MCPApiKeyReentryRequiredError;
 }
 
+export function isMCPHeadersReentryRequiredError(
+  error: unknown,
+): error is MCPHeadersReentryRequiredError {
+  return error instanceof MCPHeadersReentryRequiredError;
+}
+
 export type MCPErrorResponse = {
   statusCode: number;
   body: {
@@ -433,7 +457,8 @@ export function getMCPErrorResponse(error: unknown): MCPErrorResponse | null {
     isMCPDomainNotAllowedError(error) ||
     isMCPInspectionFailedError(error) ||
     isMCPOAuthSecretReentryRequiredError(error) ||
-    isMCPApiKeyReentryRequiredError(error)
+    isMCPApiKeyReentryRequiredError(error) ||
+    isMCPHeadersReentryRequiredError(error)
   ) {
     return {
       statusCode: error.statusCode,

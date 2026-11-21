@@ -24,6 +24,7 @@ export * from './mcp/capabilities';
 export * from './mcp/authority';
 export * from './mcp/registry/MCPServersRegistry';
 export * from './mcp/registry/policy';
+export { withRetainedHeaderValues } from './mcp/registry/headers';
 export { reportStoredMCPTombstones } from './mcp/registry/hidden';
 export * from './mcp/MCPManager';
 export * from './mcp/connection';

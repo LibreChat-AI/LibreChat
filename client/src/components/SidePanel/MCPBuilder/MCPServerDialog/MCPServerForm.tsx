@@ -5,6 +5,7 @@ import ConnectionSection from './sections/ConnectionSection';
 import BasicInfoSection from './sections/BasicInfoSection';
 import TransportSection from './sections/TransportSection';
 import { AuthTypeEnum } from './hooks/useMCPServerForm';
+import HeadersSection from './sections/HeadersSection';
 import TrustSection from './sections/TrustSection';
 import AuthSection from './sections/AuthSection';
 import { useHasAccess } from '~/hooks';
@@ -49,6 +50,8 @@ export default function MCPServerForm({ formHook }: MCPServerFormProps) {
           <TransportSection />
 
           <AuthSection isEditMode={isEditMode} serverName={server?.serverName} />
+
+          <HeadersSection isEditMode={isEditMode} />
 
           <TrustSection />
         </fieldset>
