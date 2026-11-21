@@ -1,16 +1,14 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { Tools } from 'librechat-data-provider';
 import { render, screen } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import MemoryCall from '../MemoryCall';
 
-/** Moved components read the localizer from the package, so it delegates to the `~/hooks` mock. */
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
-}));
-
-jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
     (key: string, params?: { tokens?: number }): string => {
@@ -29,11 +27,7 @@ jest.mock('~/hooks', () => ({
     },
 }));
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
+jest.mock('../ProgressText', () => ({
   __esModule: true,
   default: ({
     phase,
@@ -57,6 +51,8 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
 }));
 
 jest.mock('../Attachment', () => ({
+  __esModule: true,
+  ...jest.requireActual('../Attachment'),
   AttachmentGroup: () => <div data-testid="attachment-group" />,
 }));
 

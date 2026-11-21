@@ -1,4 +1,5 @@
 import React from 'react';
+import { MemoryCall } from '..';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
@@ -6,7 +7,6 @@ import { SoleToolContext } from '@librechat/chat/react';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import FileAuthoringCall from '../FileAuthoringCall';
 import ReadFileCall from '../ReadFileCall';
-import MemoryCall from '../MemoryCall';
 import SkillCall from '../SkillCall';
 import BashCall from '../BashCall';
 
@@ -130,7 +130,8 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+    /** The package's card draws its own row, so this is the real one, not the stub above. */
+    expect(document.querySelector('.progress-text-wrapper')).not.toBeNull();
   });
 
   it('SkillCall: a named skill keeps its row so the skill name stays visible', () => {

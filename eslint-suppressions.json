@@ -188,11 +188,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/MemoryCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/ReadFileCall.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
