@@ -19,6 +19,13 @@ export type ChatSubmissionKind = z.infer<typeof chatSubmissionKindSchema>;
 
 export const chatBrowserFacts = [
   z.strictObject({
+    name: z.literal('librechat.chat.message.steered'),
+    feature,
+    conversationId: id,
+    clientSteerId: id,
+    generationCreatedAt: z.number().finite().nonnegative().optional(),
+  }),
+  z.strictObject({
     name: z.literal('librechat.chat.message.submitted'),
     feature,
     submissionId: z.uuid(),

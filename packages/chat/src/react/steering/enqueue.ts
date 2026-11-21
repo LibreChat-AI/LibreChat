@@ -39,7 +39,8 @@ export type EnqueueOptions = {
 
 export interface QueueEnqueue {
   markQueuedFilesUsage: (files?: TMessage['files']) => void;
-  enqueue: (text: string, options?: EnqueueOptions) => void;
+  /** Returns the request ID sent to the server queue, or undefined when the row stays local. */
+  enqueue: (text: string, options?: EnqueueOptions) => string | undefined;
 }
 
 /** Adds follow-up messages to the conversation's queue, server-owned (a durable
@@ -101,7 +102,7 @@ export default function useQueueEnqueue({
     (text: string, options?: EnqueueOptions) => {
       const trimmed = text.trim();
       if (trimmed.length === 0) {
-        return;
+        return undefined;
       }
       const parentMessageId =
         options?.lineage?.parentMessageId ??
@@ -148,7 +149,7 @@ export default function useQueueEnqueue({
         markQueuedFilesUsage(options?.files);
       }
       if (!serverOwned || clientRequestId == null) {
-        return;
+        return undefined;
       }
       jotaiStore.set(pendingQueuedTurnEnqueueIdsByConvoId(queueKey), (previous) =>
         previous.includes(clientRequestId) ? previous : [...previous, clientRequestId],
@@ -226,6 +227,7 @@ export default function useQueueEnqueue({
           },
         ),
       );
+      return clientRequestId;
     },
     [
       queueKey,
