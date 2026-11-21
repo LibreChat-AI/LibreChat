@@ -2909,6 +2909,7 @@ const apiKeyPreviewSchema = z.string().optional();
 
 const ttsOpenaiSchema = z.object({
   url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   apiKey: z.string(),
   apiKeyPreview: apiKeyPreviewSchema,
   model: z.string(),
@@ -2963,6 +2964,7 @@ const ttsSchema = z.object({
 
 const sttOpenaiSchema = z.object({
   url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   apiKey: z.string(),
   apiKeyPreview: apiKeyPreviewSchema,
   model: z.string(),
