@@ -2103,6 +2103,7 @@ function buildSubagentConfigs(
 
   const configs: SubagentConfigEntry[] = [];
   const allowSelf = agent.subagents.allowSelf !== false;
+  let selfConfig: SubagentConfigEntry | undefined;
 
   if (allowSelf) {
     const selfName = agentInput.name ?? agent.name ?? 'self';
@@ -2122,7 +2123,7 @@ function buildSubagentConfigs(
       stripBackgroundFromToolRegistry(agentInput.toolRegistry, agent.backgroundToolNames),
       agent.intentToolNames,
     );
-    configs.push({
+    selfConfig = {
       self: true,
       type: SELF_SUBAGENT_TYPE,
       name: selfName,
@@ -2153,7 +2154,8 @@ function buildSubagentConfigs(
             },
           }
         : {}),
-    });
+    };
+    configs.push(selfConfig);
   }
 
   /** Cycle-safety: include the current agent in `ancestors` before
@@ -2266,6 +2268,17 @@ function buildSubagentConfigs(
       resultAgentId: definition.result_agent_id,
       maxTurns,
     });
+  }
+
+  if (selfConfig != null) {
+    const nestedConfigs = configs.filter((config) => !('self' in config && config.self));
+    if (nestedConfigs.length > 0) {
+      selfConfig.allowNested = true;
+      selfConfig.agentInputs = {
+        ...(selfConfig.agentInputs ?? agentInput),
+        subagentConfigs: nestedConfigs,
+      };
+    }
   }
 
   return configs;
