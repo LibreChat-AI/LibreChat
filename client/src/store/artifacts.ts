@@ -1,3 +1,4 @@
+import { atomWithReset } from 'jotai/utils';
 import { atom, atomFamily, selectorFamily } from 'recoil';
 import type { Artifact } from '~/common';
 import { logger } from '~/utils';
@@ -114,17 +115,4 @@ export const previewJustResolved = atomFamily<boolean, [messageId: string, fileI
   default: false,
 });
 
-export const visibleArtifacts = atom<Record<string, Artifact | undefined> | null>({
-  key: 'visibleArtifacts',
-  default: null,
-  effects: [
-    ({ onSet, node }) => {
-      onSet(async (newValue) => {
-        logger.log('artifacts', 'Recoil Effect: Setting `visibleArtifacts`', {
-          key: node.key,
-          newValue,
-        });
-      });
-    },
-  ] as const,
-});
+export const visibleArtifacts = atomWithReset<Record<string, Artifact | undefined> | null>(null);

@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo } from 'react';
+import { selectAtom } from 'jotai/utils';
 import { Button } from '@librechat/client';
-import { useRecoilValue, useSetRecoilState } from 'recoil';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { LangIcon, hasLangIcon } from '@librechat/chat/components';
 import { ArrowUpRight, CircleAlert, FileCode2, LoaderCircle } from 'lucide-react';
 import type { Artifact } from '~/common';
@@ -33,25 +34,6 @@ const ArtifactButton = memo(function ArtifactButton({
   const { getMessages } = useOptionalMessagesOperations();
   const { currentArtifactId, registered, register, open, close } =
     useMessagePartsHost().useArtifactPanel(artifact?.id ?? '');
-  const archive = useRecoilValue(store.visibleArtifacts);
-  const setArchive = useSetRecoilState(store.visibleArtifacts);
-
-  useEffect(() => {
-    if (artifact == null || !canOpen) {
-      return;
-    }
-    register(artifact);
-    setArchive((previous) => ({ ...previous, [artifact.id]: artifact }));
-  }, [artifact, canOpen, register, setArchive]);
-
-  const archived = artifact == null ? undefined : archive?.[artifact.id];
-  useEffect(() => {
-    // The pane clears its registry on close. Only the archived writer can refill a missing entry.
-    if (canOpen && artifact != null && registered == null && archived === artifact) {
-      register(artifact);
-    }
-  }, [archived, artifact, canOpen, register, registered]);
-
   const needsPrevious = artifact == null && canOpen && Boolean(identifier);
   const ancestors = useMemo(() => {
     if (!needsPrevious || conversationId == null) {
@@ -74,29 +56,63 @@ const ArtifactButton = memo(function ArtifactButton({
     return ordered;
   }, [needsPrevious, getMessages, conversationId, messageId]);
 
-  const previous = useMemo(() => {
-    if (ancestors == null || archive == null) {
-      return null;
+  const artifactId = artifact?.id;
+  const archiveEntry = useAtomValue(
+    useMemo(
+      () =>
+        selectAtom(store.visibleArtifacts, (archive) => {
+          if (artifactId != null) {
+            return archive?.[artifactId] ?? null;
+          }
+          if (ancestors == null || archive == null) {
+            return null;
+          }
+          let best: Artifact | null = null;
+          let bestDistance = Infinity;
+          for (const candidate of Object.values(archive)) {
+            if (candidate?.messageId == null || candidate.identifier !== identifier) {
+              continue;
+            }
+            const distance = ancestors.get(candidate.messageId);
+            if (
+              distance != null &&
+              (distance < bestDistance ||
+                (distance === bestDistance && (candidate.index ?? -1) > (best?.index ?? -1)))
+            ) {
+              best = candidate;
+              bestDistance = distance;
+            }
+          }
+          return best;
+        }),
+      [ancestors, artifactId, identifier],
+    ),
+  );
+  const setArchive = useSetAtom(store.visibleArtifacts);
+  useEffect(() => {
+    if (artifact == null || !canOpen) {
+      return;
     }
-    let best: Artifact | null = null;
-    let bestDistance = Infinity;
-    for (const candidate of Object.values(archive)) {
-      if (candidate?.messageId == null || candidate.identifier !== identifier) {
-        continue;
-      }
-      const distance = ancestors.get(candidate.messageId);
-      if (
-        distance != null &&
-        (distance < bestDistance ||
-          (distance === bestDistance && (candidate.index ?? -1) > (best?.index ?? -1)))
-      ) {
-        best = candidate;
-        bestDistance = distance;
-      }
-    }
-    return best;
-  }, [ancestors, archive, identifier]);
+    register(artifact);
+    setArchive((previous) => ({ ...previous, [artifact.id]: artifact }));
+  }, [artifact, canOpen, register, setArchive]);
 
+  useEffect(() => {
+    if (artifact == null || !canOpen) {
+      return;
+    }
+    // A warm route may mount rows before the conversation reset runs.
+    if (archiveEntry == null) {
+      setArchive((previous) =>
+        previous?.[artifact.id] == null ? { ...previous, [artifact.id]: artifact } : previous,
+      );
+    }
+    if (registered == null && archiveEntry === artifact) {
+      register(artifact);
+    }
+  }, [archiveEntry, artifact, canOpen, register, registered, setArchive]);
+
+  const previous = artifact == null ? archiveEntry : null;
   const target = artifact ?? previous;
   const isSelected = target != null && target.id === currentArtifactId;
   const kind = artifactRowKind({ type });

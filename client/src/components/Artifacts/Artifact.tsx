@@ -31,7 +31,7 @@ const trackClosers: Extension = {
 type Completion = 'open' | 'closing' | 'closed';
 
 export const artifactPlugin: Plugin<[], Root> = function () {
-  const data = this.data();
+  const data = this.data() as { fromMarkdownExtensions?: Array<Extension | Extension[]> };
   (data.fromMarkdownExtensions ??= []).push(trackClosers);
 
   return (tree, file) => {
@@ -42,7 +42,10 @@ export const artifactPlugin: Plugin<[], Root> = function () {
         }
         return;
       }
-      if (node.name !== 'artifact') {
+      if (
+        (node.type !== 'leafDirective' && node.type !== 'containerDirective') ||
+        node.name !== 'artifact'
+      ) {
         return;
       }
       let artifactCompletion: Completion = 'open';

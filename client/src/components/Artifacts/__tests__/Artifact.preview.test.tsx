@@ -1,24 +1,31 @@
 import React from 'react';
+import { useResetAtom } from 'jotai/utils';
 import { MemoryRouter } from 'react-router-dom';
+import { Provider as JotaiProvider } from 'jotai';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { PartsPreviewContext } from '@librechat/chat/react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { MessagesOperations } from '~/Providers/MessagesViewContext';
 import type { Artifact } from '~/common';
+import { artifactsState, currentArtifactId, visibleArtifacts } from '~/store/artifacts';
+import { loadRehypeModules } from '~/components/Chat/Messages/Content/rehype';
 import { MessagesOperationsContext } from '~/Providers/MessagesViewContext';
-import { artifactsState, currentArtifactId } from '~/store/artifacts';
 import Markdown from '~/components/Chat/Messages/Content/Markdown';
 import { MessageContext } from '~/Providers';
+
+beforeAll(() => loadRehypeModules());
 
 const header = ':::artifact{identifier="chart" title="Chart" type="text/markdown"}';
 const conversationId = 'conversation-1';
 let registered: Record<string, Artifact | undefined> | null;
 let selected: string | null;
+let resetArchive: () => void;
 
 function Registry() {
   registered = useRecoilValue(artifactsState);
   selected = useRecoilValue(currentArtifactId);
+  resetArchive = useResetAtom(visibleArtifacts);
   return null;
 }
 
@@ -29,14 +36,16 @@ const reply = (messageId: string, content: string, isSubmitting = false) => (
 );
 
 const page = (ui: React.ReactNode, operations?: MessagesOperations) => (
-  <RecoilRoot>
-    <MemoryRouter initialEntries={[`/c/${conversationId}`]}>
-      <MessagesOperationsContext.Provider value={operations}>
-        <Registry />
-        {ui}
-      </MessagesOperationsContext.Provider>
-    </MemoryRouter>
-  </RecoilRoot>
+  <JotaiProvider>
+    <RecoilRoot>
+      <MemoryRouter initialEntries={[`/c/${conversationId}`]}>
+        <MessagesOperationsContext.Provider value={operations}>
+          <Registry />
+          {ui}
+        </MessagesOperationsContext.Provider>
+      </MemoryRouter>
+    </RecoilRoot>
+  </JotaiProvider>
 );
 
 const savedVersion = `${header}\n\`\`\`markdown\nOld content\n\`\`\`\n:::`;
@@ -117,6 +126,8 @@ it('opens the closest completed ancestor, not a sibling, even after interruption
       operations,
     );
   const { rerender } = render(view(true));
+  expect(screen.getByText('Updating artifact…')).toBeVisible();
+  act(() => resetArchive());
   expect(screen.getByText('Updating artifact…')).toBeVisible();
   const previous = screen.getByRole('button', { name: /^Open previous version: Chart/ });
   fireEvent.click(previous);

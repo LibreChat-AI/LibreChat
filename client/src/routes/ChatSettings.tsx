@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
 import { useAtom } from 'jotai';
+import { useResetAtom } from 'jotai/utils';
+import { useRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import { supportsConversationTitleOwnership } from 'librechat-data-provider';
-import { useRecoilState, useRecoilValue, useRecoilCallback, useResetRecoilState } from 'recoil';
 import type { ReactNode } from 'react';
 import type {
   ChatAuth,
@@ -50,7 +51,7 @@ export function usePaneConversationState(index: string | number): PaneConversati
  *  config and signed-in account from the app's queries, and the transport its turns run over. */
 export default function ChatSettingsProvider({ children }: { children: ReactNode }) {
   const [duringRunDefaultAction, setDuringRunDefaultAction] = useAtom(duringRunActionAtom);
-  const resetVisibleArtifacts = useResetRecoilState(store.visibleArtifacts);
+  const resetVisibleArtifacts = useResetAtom(store.visibleArtifacts);
   const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
   const [isTemporary, setIsTemporary] = useRecoilState<boolean>(store.isTemporary);
   const getEphemeralAgent = useGetEphemeralAgent();
