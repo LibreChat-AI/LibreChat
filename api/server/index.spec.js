@@ -103,7 +103,7 @@ describe('Telemetry wiring', () => {
       "app.use('/api/agents/chat', agentStartupIngressMiddleware);",
     );
     const jsonParserIndex = source.indexOf(
-      "app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));",
+      "app.use(excludeBackchannelLogoutBodyParser(excludeRumBodyParser(express.json({ limit: '3mb' }))));",
     );
     const recorderIndex = source.indexOf(
       "app.use('/api/agents/chat', agentStartupTelemetryMiddleware);",
@@ -148,6 +148,21 @@ describe('Startup readiness wiring', () => {
 
       expect([name, appConfigIndex > -1]).toEqual([name, true]);
       expect([name, socialLoginsIndex > appConfigIndex]).toEqual([name, true]);
+    }
+  });
+
+  it('loads the back-channel logout config before accepting requests in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const [name, contents] of [
+      ['index.js', source],
+      ['experimental.js', experimental],
+    ]) {
+      const initIndex = contents.indexOf('await initializeBackchannelLogoutConfig();');
+      const listenIndex = contents.indexOf('const server = app.listen');
+
+      expect([name, initIndex > -1]).toEqual([name, true]);
+      expect([name, initIndex < listenIndex]).toEqual([name, true]);
     }
   });
 

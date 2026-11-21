@@ -68,6 +68,7 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       const currentSession = new Session({
         user: userId,
         expiration: options.expiration || new Date(Date.now() + expiresIn),
+        ...(options.providerSession ? { providerSession: options.providerSession } : {}),
         ...(options.authMethod ? { authMethod: options.authMethod } : {}),
       });
       const refreshToken = await generateRefreshToken(currentSession);
@@ -100,6 +101,9 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       };
       if (options.tenantId) {
         update.tenantId = options.tenantId;
+      }
+      if (options.providerSession) {
+        update.providerSession = options.providerSession;
       }
       if (options.authMethod) {
         update.authMethod = options.authMethod;

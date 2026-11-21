@@ -22,6 +22,7 @@ const CREDENTIAL_HEADER = /authorization|cookie|apikey|token|signature/i;
 const BODY_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.body$/i;
 const CREDENTIAL_ROUTES = [
   /\/oauth\/(?:google|facebook|openid|github|discord|apple|saml)(?:\/callback)?\/?$/i,
+  /\/oauth\/openid\/backchannel-logout\/?$/i,
   /\/api\/(?:auth|keys|api-keys)(?:\/|$)/i,
   /\/api\/user\/(?:verify|email)(?:\/|$)/i,
   /\/api\/user\/(?:plugins|delete)\/?$/i,
