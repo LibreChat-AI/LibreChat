@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   getScheduleMCPDisabledReason,
   isScheduleMCPAuthorizationFailure,
-  scheduledMCPFailureReasonSchema,
+  runGrantFailureReasonSchema,
   projectScheduleMCPReceipt,
   mergeScheduleMCPReceipts,
 } from 'librechat-data-provider';
@@ -17,6 +17,7 @@ import type {
 } from '~/types/schedule';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { unchangedRunGrant } from './runGrant';
 
 const DUPLICATE_KEY = 11000;
 
@@ -182,8 +183,24 @@ export type ResumedRunReservation =
   | { capacitySlot: number }
   | { conflict: 'not-paused' | 'overlap' | 'slot-taken' };
 
+export interface UpdateScheduleOptions {
+  expectedConfigRevision?: number;
+  preserveMCPConsentRevision?: string;
+  /**
+   * Required with `update.mcpConsent`: the stored grant the new one was decided against,
+   * `null` where there was none. The edit is refused unless the schedule still holds exactly
+   * that grant, with no pin or mark added to it since.
+   */
+  replacesMCPConsent?: ISchedule['mcpConsent'] | null;
+}
+
 export type ScheduleMethods = {
   /** Resolves live state only for a task's captured schedule identity. */
+  /**
+   * What a background task's completion turn may still act for. `null` when the schedule is
+   * gone, being deleted, erased, or now runs another agent: there is nothing left to act for.
+   * Otherwise whether it holds a grant, which the turn then runs under.
+   */
   getScheduleMCPCompletionState: (
     identity: ScheduledMCPIdentity,
   ) => Promise<{ identity: ScheduledMCPIdentity; enrolled: boolean } | null>;
@@ -198,7 +215,7 @@ export type ScheduleMethods = {
     userId: string | Types.ObjectId,
     update: Partial<ISchedule>,
     unset?: Record<string, 1>,
-    options?: { expectedConfigRevision?: number; preserveMCPConsentRevision?: string },
+    options?: UpdateScheduleOptions,
   ) => Promise<ISchedule | null>;
   deleteUnarmedSchedule: (
     id: string,
@@ -258,6 +275,19 @@ export type ScheduleMethods = {
     scheduleId: string,
     scheduledFor: string | Date,
   ) => Promise<{ recorded: boolean; chatProjectId?: string } | null>;
+  /** The MCP outcomes one occurrence's run holds; empty when the row is absent or holds none. */
+  getScheduleRunMCP: (
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ) => Promise<ScheduleMCPOutcome[]>;
+  /**
+   * The MCP outcomes of the occurrence that started a conversation, for the schedule and
+   * owner named; empty when no such run is on record or it holds none.
+   */
+  getScheduleConversationMCP: (
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ) => Promise<ScheduleMCPOutcome[]>;
   reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<StartedRunReservation>;
   getCapacityOccupancy: () => Promise<{ takenSlots: number[]; unslotted: number }>;
   requestRunAbort: (
@@ -437,9 +467,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     unset?: Record<string, 1>,
     /** Optional edit-generation fence, so two overlapping owner edits cannot each
      *  persist state derived from a row the other has already replaced. */
-    options?: { expectedConfigRevision?: number; preserveMCPConsentRevision?: string },
+    options?: UpdateScheduleOptions,
   ): Promise<ISchedule | null> {
     const preserveConsent = options?.preserveMCPConsentRevision != null;
+    // A grant written with an edit replaces the stored one whole. Consent writes do not move
+    // the edit generation, so without naming what it replaces the edit would undo a
+    // revocation, or drop a pin or mark, made since the new grant was decided.
+    if (update.mcpConsent != null && options?.replacesMCPConsent === undefined)
+      throw new Error('A grant written with an edit must name the grant it replaces');
     if (
       preserveConsent &&
       (options?.expectedConfigRevision == null ||
@@ -466,6 +501,9 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       ...(options?.expectedConfigRevision !== undefined
         ? { configRevision: options.expectedConfigRevision }
         : {}),
+      ...(update.mcpConsent != null &&
+        options?.replacesMCPConsent !== undefined &&
+        unchangedRunGrant(options.replacesMCPConsent)),
     };
     const mutation = {
       $set: {
@@ -893,6 +931,45 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       : { recorded };
   }
 
+  /**
+   * What an occurrence's readiness check and any receipt since left on its run row. A resumed
+   * run reads back from it the servers the occurrence was started without.
+   */
+  async function getScheduleRunMCP(
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await ScheduleRun()
+      .findOne({ scheduleId, scheduledFor: new Date(scheduledFor) })
+      .select('mcp')
+      .lean<{ mcp?: ScheduleMCPOutcome[] } | null>();
+    return run?.mcp ?? [];
+  }
+
+  /**
+   * The same outcomes, found by the conversation the occurrence started. Each occurrence
+   * starts a conversation of its own, so a later turn there (a background task or a
+   * subagent reporting back) is tied to its occurrence by where it runs. The schedule and
+   * its owner are part of the match: a conversation alone names no run of theirs. Should a
+   * conversation ever hold more than one run, the latest stands.
+   */
+  async function getScheduleConversationMCP(
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await ScheduleRun()
+      .findOne({
+        user: scope.ownerId,
+        tenantId: scope.tenantId,
+        conversationId,
+        scheduleId: scope.scheduleId,
+      })
+      .sort({ firedAt: -1 })
+      .select('mcp')
+      .lean<{ mcp?: ScheduleMCPOutcome[] } | null>();
+    return run?.mcp ?? [];
+  }
+
   async function persistResolvedProject(
     id: string,
     chatProjectId: string | undefined,
@@ -1071,15 +1148,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       .select('agent_id mcpConsent deleting erased')
       .read('primary')
       .lean<ISchedule>();
-    return {
-      identity,
-      enrolled:
-        !schedule ||
-        schedule.agent_id !== identity.agentId ||
-        schedule.deleting === true ||
-        schedule.erased === true ||
-        schedule.mcpConsent !== undefined,
-    };
+    if (
+      !schedule ||
+      schedule.agent_id !== identity.agentId ||
+      schedule.deleting === true ||
+      schedule.erased === true
+    )
+      return null;
+    return { identity, enrolled: schedule.mcpConsent !== undefined };
   }
 
   /** The generation owner's abort-coordination view (see abortPersistedAt). */
@@ -1511,7 +1587,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
             {
               mcp: {
                 $elemMatch: {
-                  reason: { $in: scheduledMCPFailureReasonSchema.options },
+                  reason: { $in: runGrantFailureReasonSchema.options },
                   status: { $ne: 'ready' },
                   automaticReplay: false,
                 },
@@ -1598,7 +1674,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       {
         mcp: {
           $elemMatch: {
-            reason: { $in: scheduledMCPFailureReasonSchema.options },
+            reason: { $in: runGrantFailureReasonSchema.options },
             status: { $ne: 'ready' },
             automaticReplay: false,
           },
@@ -2318,6 +2394,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     requestRunAbort,
     persistResolvedProject,
     getScheduleRunProject,
+    getScheduleRunMCP,
+    getScheduleConversationMCP,
     getScheduleRunAbortState,
     getScheduleMCPCompletionState,
     recordMCPToolAuthFailure,

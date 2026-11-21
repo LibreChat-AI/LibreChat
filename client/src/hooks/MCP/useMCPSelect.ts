@@ -9,7 +9,7 @@ import { useGetStartupConfig } from '~/data-provider';
 import { setTimestamp } from '~/utils/timestamps';
 import { getModelSpec } from '~/utils';
 
-/** Sentinel in `interface.defaultPinnedTools` that pins the MCP dropdown to the prompt bar. */
+/** Sentinel in `interface.defaultPinnedTools` that pins the MCP Servers chip to the prompt bar. */
 const MCP_PIN_KEYWORD = 'mcp';
 
 export function useMCPSelect({
@@ -87,10 +87,10 @@ export function useMCPSelect({
   const hasAppliedDefaultPin = useRef(false);
 
   /**
-   * Seed the MCP dropdown's pinned state from the admin-configured `defaultPinnedTools`:
+   * Seed the MCP Servers chip's pinned state from the admin-configured `defaultPinnedTools`:
    * pin when the array includes the `'mcp'` keyword or any configured server name.
    * Only applies on first load when the user has no stored preference; when the option
-   * is absent entirely, the legacy default (pinned) is kept.
+   * is absent entirely, the default (unpinned) is kept.
    */
   useEffect(() => {
     if (hasAppliedDefaultPin.current || !startupConfig) {

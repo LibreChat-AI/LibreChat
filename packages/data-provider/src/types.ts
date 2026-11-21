@@ -382,6 +382,8 @@ export type TAgentApiKeyListItem = {
   id: string;
   name: string;
   keyPrefix: string;
+  /** Issued to an integration, not the owner's personal key. It holds no MCP grants. */
+  bound?: boolean;
   lastUsedAt?: string;
   expiresAt?: string;
   createdAt: string;
@@ -389,6 +391,13 @@ export type TAgentApiKeyListItem = {
 
 export type TAgentApiKeyListResponse = {
   keys: TAgentApiKeyListItem[];
+  /** Runs started with a key may use only the MCP tools its owner granted it. */
+  grants?: boolean;
+};
+
+/** The agents an API key can be granted for: the ones its owner may run remotely. */
+export type TApiKeyAgentsResponse = {
+  agents: { id: string; name: string | null }[];
 };
 
 export type TUpdateConversationRequest = {
@@ -574,6 +583,17 @@ export type TForkConvoRequest = {
   excludeFiles?: boolean;
 };
 
+/** The files a conversation leaves out of later turns: not sent to the model or its tools. */
+export type TFileExclusion = {
+  excludedFiles: string[];
+};
+
+/** Leaves `fileIds` out (`excluded: true`) or takes them back in, one direction per request. */
+export type TFileExclusionRequest = {
+  fileIds: string[];
+  excluded: boolean;
+};
+
 export type TForkConvoResponse = {
   conversation: TConversation;
   messages: TMessage[];
@@ -666,6 +686,7 @@ export type TCodeEnvironmentMoveResponse = {
 
 /** Sanitized results of server request shaping for each saved toggle state. */
 export type ResponsesApiRoute = {
+  firstPartyEndpoint?: boolean;
   default: boolean;
   on: boolean;
   off: boolean;
@@ -1362,6 +1383,8 @@ export type TBalanceResponse = {
   lastRefill?: Date | string;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  /** ISO timestamp with offset that periods are aligned to; null or absent for rolling periods. */
+  refillAnchor?: string | null;
   /** Credits granted at the start of the current period; absent on records not yet granted one. */
   allotment?: number;
   /** When `allotment` was granted; a later `lastRefill` means a writer replaced the period without it. */

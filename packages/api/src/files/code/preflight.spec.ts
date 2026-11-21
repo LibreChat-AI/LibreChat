@@ -1,6 +1,8 @@
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { CodeOutputArtifact, PrepareCodeOutputInput, PreparedCodeOutput } from './preflight';
-import { CODE_OUTPUT_PREFLIGHT_MAX_BYTES, preflightCodeOutputBatch } from './preflight';
+import { preflightCodeOutputBatch, CODE_OUTPUT_PREFLIGHT_MAX_BYTES } from './preflight';
+import { getPreparedCodeOutputBuffer, cachePreparedCodeOutputBuffer } from './cache';
+import { DEFAULT_LOOKUP_CONCURRENCY } from '../../utils/concurrency';
 
 const BLOCK_PATTERN = {
   id: 'private-token',
@@ -65,9 +67,14 @@ describe('preflightCodeOutputBatch', () => {
   });
 
   it('treats zero byte limits as unlimited within the hard transport ceiling', async () => {
-    const prepare = jest.fn(async (input: PrepareCodeOutputInput) =>
-      prepared(input, { buffer: Buffer.alloc(4) }),
-    );
+    const sizes = [40 * 1024 * 1024, 4];
+    const prepare = jest.fn(async (input: PrepareCodeOutputInput) => {
+      const size = sizes[Number(input.file.id.split('-')[1])];
+      if (size > input.maxBytes) {
+        throw new Error('maxContentLength exceeded');
+      }
+      return prepared(input, { buffer: Buffer.alloc(size) });
+    });
 
     const result = await preflightCodeOutputBatch({
       artifact: artifact(2),
@@ -75,15 +82,16 @@ describe('preflightCodeOutputBatch', () => {
       prepare,
     });
 
-    expect(prepare).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ maxBytes: CODE_OUTPUT_PREFLIGHT_MAX_BYTES }),
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file: expect.objectContaining({ id: 'file-0' }),
+        maxBytes: CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
+      }),
     );
-    expect(prepare).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ maxBytes: CODE_OUTPUT_PREFLIGHT_MAX_BYTES - 4 }),
-    );
-    expect(result.map((entry) => entry.preparedBuffer?.length)).toEqual([4, 4]);
+    expect(
+      prepare.mock.calls.every(([input]) => input.maxBytes <= CODE_OUTPUT_PREFLIGHT_MAX_BYTES),
+    ).toBe(true);
+    expect(result.map((entry) => entry.preparedBuffer?.length)).toEqual(sizes);
     expect(result.every((entry) => entry.downloadFallback !== true)).toBe(true);
   });
 
@@ -312,6 +320,266 @@ describe('preflightCodeOutputBatch', () => {
     ).rejects.toMatchObject({
       code: 'content_filter_uninspectable',
       body: { source: 'file', field: 'transcript' },
+    });
+  });
+
+  describe('concurrent prefetch', () => {
+    const MB = 1024 * 1024;
+    const largeLimits = { fileLimit: 10, fileSizeLimit: 64 * MB, totalSizeLimit: 64 * MB };
+
+    /** Simulates the Code API: a file larger than the transport cap fails like a capped download. */
+    function sizedPrepare(sizes: number[], delayMs = 20) {
+      const calls: Array<{ id: string; maxBytes: number }> = [];
+      let open = 0;
+      let openBytes = 0;
+      let peakOpen = 0;
+      let peakOpenBytes = 0;
+      const prepare = jest.fn(async (input: PrepareCodeOutputInput) => {
+        calls.push({ id: input.file.id, maxBytes: input.maxBytes });
+        open++;
+        openBytes += input.maxBytes;
+        peakOpen = Math.max(peakOpen, open);
+        peakOpenBytes = Math.max(peakOpenBytes, openBytes);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          const size = sizes[Number(input.file.id.split('-')[1])];
+          if (size > input.maxBytes) {
+            throw new Error('maxContentLength exceeded');
+          }
+          return prepared(input, { buffer: Buffer.alloc(size) });
+        } finally {
+          open--;
+          openBytes -= input.maxBytes;
+        }
+      });
+      return {
+        prepare,
+        calls,
+        peak: () => ({ open: peakOpen, bytes: peakOpenBytes }),
+      };
+    }
+
+    /** The pre-prefetch algorithm, kept as the reference the batch must match. */
+    function serialOutcome(sizes: number[], maxBytes: number, fileSizeLimit: number) {
+      let used = 0;
+      return sizes.map((size) => {
+        const transport = Math.min(maxBytes - used, fileSizeLimit);
+        if (transport <= 0) {
+          return 'fallback';
+        }
+        if (size > transport) {
+          used += transport;
+          return 'fallback';
+        }
+        used += size;
+        return size;
+      });
+    }
+
+    function outcome(result: Awaited<ReturnType<typeof preflightCodeOutputBatch>>) {
+      return result.map((entry) =>
+        entry.downloadFallback === true ? 'fallback' : entry.preparedBuffer?.length,
+      );
+    }
+
+    it('downloads small outputs at the same time and prepares each file once', async () => {
+      const sizes = Array.from({ length: 8 }, () => 200 * 1024);
+      const { prepare, peak } = sizedPrepare(sizes);
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+      });
+
+      expect(outcome(result)).toEqual(sizes);
+      expect(prepare).toHaveBeenCalledTimes(sizes.length);
+      expect(peak().open).toBe(DEFAULT_LOOKUP_CONCURRENCY.codeOutputDownloads);
+    });
+
+    it('never holds more open transport capacity than the batch budget', async () => {
+      const sizes = Array.from({ length: 10 }, () => 3 * MB);
+      const { prepare, peak } = sizedPrepare(sizes);
+
+      await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+      });
+
+      expect(peak().bytes).toBeLessThanOrEqual(largeLimits.totalSizeLimit);
+    });
+
+    it.each([
+      ['a file above the prefetch slot', [1 * MB, 20 * MB, 2 * MB, 1 * MB]],
+      ['an aggregate above the budget', [30 * MB, 30 * MB, 10 * MB, 1 * MB]],
+      ['a file above the per-file limit', [70 * MB, 1 * MB, 1 * MB]],
+      ['an exhausted budget before the last file', [40 * MB, 24 * MB, 1 * MB]],
+    ])('matches the serial budget outcome for %s', async (_label, sizes) => {
+      const { prepare, calls } = sizedPrepare(sizes);
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+      });
+
+      expect(outcome(result)).toEqual(serialOutcome(sizes, 64 * MB, 64 * MB));
+      const accepted = new Set(
+        result.filter((entry) => entry.preparedBuffer != null).map((entry) => entry.file.id),
+      );
+      for (const id of accepted) {
+        expect(calls.filter((call) => call.id === id).length).toBeLessThanOrEqual(2);
+      }
+    });
+
+    it('releases later prefetched bytes before downloading a large output again', async () => {
+      const sizes = [60 * MB, ...Array.from({ length: 9 }, () => 6 * MB)];
+      const { prepare, calls } = sizedPrepare(sizes);
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+      });
+
+      expect(outcome(result)).toEqual(serialOutcome(sizes, 64 * MB, 64 * MB));
+      const fullCapRetry = calls.findIndex(
+        (call) => call.id === 'file-0' && call.maxBytes === 64 * MB,
+      );
+      expect(fullCapRetry).toBeGreaterThan(-1);
+      const reusedAfterRetry = result
+        .slice(1)
+        .filter((entry) => entry.preparedBuffer != null)
+        .map((entry) => entry.file.id)
+        .filter((id) => !calls.slice(fullCapRetry).some((call) => call.id === id));
+      expect(reusedAfterRetry).toEqual([]);
+    });
+
+    it('evicts every discarded prefetch from the request cache before the full-cap retry', async () => {
+      const sizes = [60 * MB, ...Array.from({ length: 3 }, () => 1 * MB)];
+      const req = {};
+      const bufferCache = { req, executionRouteKey: 'route' };
+      const cachedAtRetry: Array<string | null> = [];
+      const { prepare } = sizedPrepare(sizes);
+      const caching = jest.fn(async (input: PrepareCodeOutputInput) => {
+        if (input.file.id === 'file-0' && input.maxBytes === 64 * MB) {
+          for (let index = 1; index < sizes.length; index++) {
+            const buffer = getPreparedCodeOutputBuffer({
+              ...bufferCache,
+              file_path: `file-${index}.txt`,
+              files: [
+                {
+                  id: `file-${index}`,
+                  name: `file-${index}.txt`,
+                  storage_session_id: `storage-${index}`,
+                },
+              ],
+            });
+            cachedAtRetry.push(buffer == null ? null : `file-${index}`);
+          }
+        }
+        const result = await prepare(input);
+        cachePreparedCodeOutputBuffer({
+          ...bufferCache,
+          id: input.file.id,
+          name: input.file.name,
+          session_id: input.sessionId,
+          buffer: result.buffer,
+        });
+        return result;
+      });
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare: caching,
+        bufferCache,
+      });
+
+      expect(cachedAtRetry).toEqual([null, null, null]);
+      expect(outcome(result)).toEqual(serialOutcome(sizes, 64 * MB, 64 * MB));
+    });
+
+    it('reports a failed prefetch once, from the budgeted pass, with its original cause', async () => {
+      const cause = new Error('code api unavailable');
+      const onInspectionUnavailable = jest.fn();
+      const prepare = jest.fn(async (input: PrepareCodeOutputInput) => {
+        if (input.file.id === 'file-1') {
+          throw cause;
+        }
+        return prepared(input, { buffer: Buffer.alloc(1024) });
+      });
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(3),
+        limits: largeLimits,
+        prepare,
+        onInspectionUnavailable,
+      });
+
+      expect(onInspectionUnavailable).toHaveBeenCalledTimes(1);
+      expect(onInspectionUnavailable).toHaveBeenCalledWith(1, cause);
+      expect(result[0].preparedBuffer?.length).toBe(1024);
+      expect(result[1].downloadFallback).toBe(true);
+    });
+
+    it('keeps a batch under active inspection serial and still rejects a blocked file', async () => {
+      const filters: FiltersConfig = {
+        files: {
+          pii: { fields: ['content'], starterPatterns: [], customPatterns: [BLOCK_PATTERN] },
+        },
+      };
+      let open = 0;
+      let peakOpen = 0;
+      const prepare = jest.fn(async (input: PrepareCodeOutputInput) => {
+        open++;
+        peakOpen = Math.max(peakOpen, open);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        open--;
+        return prepared(input, {
+          file: {
+            ...input.file,
+            type: 'text/plain',
+            content: input.file.id === 'file-2' ? 'PRIVATE-SECRET' : 'safe',
+          },
+        });
+      });
+
+      await expect(
+        preflightCodeOutputBatch({ filters, artifact: artifact(4), limits: largeLimits, prepare }),
+      ).rejects.toMatchObject({ code: 'content_filter_block' });
+      expect(peakOpen).toBe(1);
+      expect(prepare).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the batch serial when the configured concurrency is one', async () => {
+      const sizes = Array.from({ length: 4 }, () => 200 * 1024);
+      const { prepare, peak } = sizedPrepare(sizes);
+
+      const result = await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+        concurrency: 1,
+      });
+
+      expect(outcome(result)).toEqual(sizes);
+      expect(peak().open).toBe(1);
+    });
+
+    it('uses the configured concurrency', async () => {
+      const sizes = Array.from({ length: 8 }, () => 200 * 1024);
+      const { prepare, peak } = sizedPrepare(sizes);
+
+      await preflightCodeOutputBatch({
+        artifact: artifact(sizes.length),
+        limits: largeLimits,
+        prepare,
+        concurrency: 2,
+      });
+
+      expect(peak().open).toBe(2);
     });
   });
 });

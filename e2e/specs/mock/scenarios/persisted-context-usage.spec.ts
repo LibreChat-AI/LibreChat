@@ -67,7 +67,7 @@ test.afterEach(async () => {
 test.describe('persisted context usage', () => {
   test('separates the selected turn from cumulative cache totals after reload @scenario:last-turn-cache-vs-branch', async ({
     page,
-  }) => {
+  }, testInfo) => {
     test.setTimeout(120000);
     const conversationId = randomUUID();
     cleanupConversationIds.push(conversationId);
@@ -132,15 +132,53 @@ test.describe('persisted context usage', () => {
       if ((await toggle.getAttribute('aria-expanded')) === 'false') {
         await toggle.click();
       }
-      const lastTurn = popover.getByTestId('token-usage-last-turn');
       const branch = popover.getByTestId('token-usage-totals');
-      await expect(lastTurn.getByRole('heading', { name: 'Last turn' })).toBeVisible();
+      await expect(branch).toHaveAccessibleName('Token totals');
+      await expect(branch.getByText('Cache read').locator('../..')).toContainText('500');
+      await testInfo.attach('context-persisted', {
+        body: await page.getByRole('dialog', { name: 'Context usage' }).screenshot(),
+        contentType: 'image/png',
+      });
+      await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
+      await expect(popover.getByTestId('token-usage-last-turn')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      const turnButton = page.getByTestId('message-usage-button').last();
+      const copyButton = page.getByTestId('copy-response-button').last();
+      const turnBounds = await turnButton.boundingBox();
+      const copyBounds = await copyButton.boundingBox();
+      expect(turnBounds?.width).toBe(copyBounds?.width);
+      expect(turnBounds?.height).toBe(copyBounds?.height);
+      await turnButton.click();
+      const lastTurn = page.getByTestId('message-turn-usage');
+      await expect(lastTurn.getByRole('heading', { name: 'Turn usage' })).toBeVisible();
       await expect(lastTurn.getByText('Cache read').locator('../..')).toContainText('400');
       await expect(lastTurn.getByText('Cache write').locator('../..')).toContainText('50');
-      await expect(branch.getByText('This branch')).toBeVisible();
-      await expect(branch.getByText('Cache read').locator('../..')).toContainText('500');
-      await expect(lastTurn.getByTestId('usage-cost')).toContainText('Cost (last turn)');
-      await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
+      await expect(lastTurn.getByTestId('usage-cost')).toContainText('$0.02');
+      await testInfo.attach('message-usage', {
+        body: await page.getByRole('dialog', { name: 'Turn usage' }).screenshot(),
+        contentType: 'image/png',
+      });
+      await page.keyboard.press('Escape');
+      await expect(lastTurn).toBeHidden();
+      await page.getByTestId('message-usage-button').first().click();
+      await expect(
+        page.getByTestId('message-turn-usage').getByText('Cache read').locator('../..'),
+      ).toContainText('100');
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('message-turn-usage')).toBeHidden();
+      await page.locator('#export-menu-button:visible, #header-menu-button:visible').click();
+      await page.getByTestId('conversation-info-menu-item').click();
+      const info = page.getByRole('dialog', { name: 'Conversation info' });
+      await expect(info.getByText(conversationId, { exact: true })).toBeVisible();
+      await expect(
+        info.getByTestId('conversation-total-usage').getByText('Cache read').locator('..'),
+      ).toContainText('500');
+      await testInfo.attach('conversation-info-persisted', {
+        body: await info.screenshot(),
+        contentType: 'image/png',
+      });
+      await page.keyboard.press('Escape');
+      await expect(info).toBeHidden();
       await page.keyboard.press('Escape');
     };
 
@@ -246,16 +284,11 @@ test.describe('persisted context usage', () => {
     const popover = page.getByRole('region', { name: 'Context usage' });
     await expect(popover).toBeVisible({ timeout: 10000 });
 
-    const breakdownToggle = popover.getByTestId('context-breakdown-toggle');
-    if ((await breakdownToggle.getAttribute('aria-expanded')) === 'false') {
-      await breakdownToggle.click();
-    }
-    await expect(breakdownToggle).toHaveAttribute('aria-expanded', 'true');
-
     /** 20 instruction + 160 message tokens of the 300-token budget: the deepest
      *  legacy snapshot on the branch, derived from its breakdown. Scoring the
      *  missing remaining count as zero would read 300 / 300 (100%) here. */
-    await expect(breakdownToggle).toContainText('180 / 300 (60%)');
+    await expect(popover.getByText('180 / 300', { exact: true })).toBeVisible();
+    await expect(popover.getByText('60%', { exact: true })).toBeVisible();
     await expect(popover.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '60');
 
     /** The snapshot path renders, so the reading really is the persisted
@@ -317,12 +350,6 @@ test.describe('persisted context usage', () => {
     const popover = page.getByRole('region', { name: 'Context usage' });
     await expect(popover).toBeVisible({ timeout: 10000 });
 
-    const breakdownToggle = popover.getByTestId('context-breakdown-toggle');
-    if ((await breakdownToggle.getAttribute('aria-expanded')) === 'false') {
-      await breakdownToggle.click();
-    }
-    await expect(breakdownToggle).toHaveAttribute('aria-expanded', 'true');
-
     const estimate = popover.getByTestId('context-estimate');
     await expect(estimate).toBeVisible({ timeout: 10000 });
     const toolRow = estimate.locator('div.ps-6').getByText('Tool calls', { exact: true });
@@ -341,9 +368,8 @@ test.describe('persisted context usage', () => {
         return sum + (value == null ? 0 : Number(value));
       }, 0),
     );
-    const readout = await breakdownToggle.textContent();
-    const used = readout?.match(/Context window\s*(\d+)/)?.[1];
-    expect(used).toBeDefined();
+    const used = await gauge.getByRole('meter').getAttribute('aria-valuenow');
+    expect(used).not.toBeNull();
     expect(peerSum).toBe(Number(used));
   });
 
@@ -351,7 +377,7 @@ test.describe('persisted context usage', () => {
    *  @librechat/chat, so an animation name of `none` here means the keyframes never reached
    *  the app's stylesheet and the panel snaps open. The expanded choice is the host's: the
    *  package only reads it through props, so a reload proves the app still persists it. */
-  test('rolls the breakdown open and keeps the choice across a reload @scenario:context-breakdown-rolls-open-and-remembers', async ({
+  test('rolls token totals open and keeps the choice across a reload @scenario:context-breakdown-rolls-open-and-remembers', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -401,20 +427,20 @@ test.describe('persisted context usage', () => {
     };
     const panelAnimation = (popover: Locator) =>
       popover
-        .getByTestId('context-details')
-        .locator('..')
+        .getByTestId('token-usage-totals')
+        .locator('../..')
         .evaluate((panel) => getComputedStyle(panel).animationName);
 
     await page.goto(`/c/${conversationId}`, { timeout: 30000 });
     const popover = await openPopover();
     const toggle = popover.getByTestId('context-breakdown-toggle');
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    await expect(popover.getByTestId('context-details')).toHaveCount(0);
+    await expect(popover.getByTestId('token-usage-totals')).toHaveCount(0);
 
     await toggle.focus();
     await page.keyboard.press('Enter');
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(popover.getByTestId('context-details')).toBeVisible();
+    await expect(popover.getByTestId('token-usage-totals')).toBeVisible();
     expect(await panelAnimation(popover)).toBe('collapsible-down');
     await page.keyboard.press('Escape');
 
@@ -422,15 +448,15 @@ test.describe('persisted context usage', () => {
     const reloaded = await openPopover();
     const reloadedToggle = reloaded.getByTestId('context-breakdown-toggle');
     await expect(reloadedToggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(reloaded.getByTestId('context-details')).toBeVisible();
+    await expect(reloaded.getByTestId('token-usage-totals')).toBeVisible();
 
     /** Reduced motion skips the roll in both directions and the panel still toggles. */
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await reloadedToggle.click();
     await expect(reloadedToggle).toHaveAttribute('aria-expanded', 'false');
-    await expect(reloaded.getByTestId('context-details')).toHaveCount(0);
+    await expect(reloaded.getByTestId('token-usage-totals')).toHaveCount(0);
     await reloadedToggle.click();
-    await expect(reloaded.getByTestId('context-details')).toBeVisible();
+    await expect(reloaded.getByTestId('token-usage-totals')).toBeVisible();
     expect(await panelAnimation(reloaded)).toBe('none');
   });
 });

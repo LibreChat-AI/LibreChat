@@ -397,6 +397,10 @@ const convoSchema: Schema<IConversation> = new Schema(
     files: {
       type: [String],
     },
+    excludedFiles: {
+      type: [String],
+      default: undefined,
+    },
     expiredAt: {
       type: Date,
     },

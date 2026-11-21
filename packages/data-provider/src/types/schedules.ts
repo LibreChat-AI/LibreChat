@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { scheduledMCPFailureReasonSchema } from './scheduleConsent';
+import {
+  scheduleAuthorizationSchema,
+  runGrantFailureReasonSchema,
+  scheduleReauthorizationSchema,
+} from './runGrant';
 import { partialWithoutDefaults } from '../zod';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
@@ -91,6 +95,12 @@ export const createSchedulePayloadSchema = z.object({
   chatProjectId: z.string().trim().min(1).nullable().optional(),
   enabled: z.boolean().default(true),
   /**
+   * Run only while every MCP server the agent uses is ready. Unset, a server that needs
+   * sign-in, is unavailable or is not configured is left out of the run, and the rest of the
+   * agent runs.
+   */
+  mcpStrict: z.boolean().optional(),
+  /**
    * Client-generated key making creation idempotent across retries. Creation commits
    * the row and arms it in two writes, so a failure between them leaves the client
    * unable to tell whether anything persisted; retrying blind can produce two recurring
@@ -99,13 +109,25 @@ export const createSchedulePayloadSchema = z.object({
    * that omits it, which is exactly the failure the key exists to close.
    */
   clientRequestId: z.string().trim().min(1).max(128),
+  /**
+   * What the owner allows the schedule to use while they are away, chosen from the offer for
+   * its agent. Read only where schedule consent is on. Left out there, the schedule is created
+   * needing authorization and none of its tools runs until the owner confirms.
+   */
+  authorization: scheduleAuthorizationSchema.optional(),
 });
 export type TCreateSchedule = z.infer<typeof createSchedulePayloadSchema>;
 
 /** Idempotency is a property of the CREATE attempt, not of the schedule's config. */
 export const updateSchedulePayloadSchema = partialWithoutDefaults(
-  createSchedulePayloadSchema.omit({ clientRequestId: true }),
+  createSchedulePayloadSchema.omit({ clientRequestId: true, authorization: true }),
 ).extend({
+  /**
+   * What the owner allows the schedule to use from this edit on. An edit ends the grant the
+   * schedule had; with this, the grant is made again in the same write. Read only where
+   * schedule consent is on. It is not an edit by itself.
+   */
+  authorization: scheduleReauthorizationSchema.optional(),
   /**
    * The configRevision the client's edit was computed from (captured when the
    * dialog opened). The server fences the update on it, so a concurrent edit
@@ -138,6 +160,8 @@ export type TSchedule = {
   file_ids?: string[];
   chatProjectId?: string | null;
   enabled: boolean;
+  /** Runs only while every MCP server its agent uses is ready. Unset, it runs without one that is not. */
+  mcpStrict?: boolean;
   disabledReason?: ScheduleDisabledReason;
   nextRunAt?: string;
   lastRun?: TScheduleLastRun;
@@ -198,6 +222,7 @@ export type TScheduleRunNowResponse = {
 
 /** A durable invocation receipt, not a readiness snapshot or an arbitrary tool error. */
 export function isScheduleMCPAuthorizationFailure(outcome: ScheduleMCPOutcome): boolean {
+  if (outcome.skipped === true) return false;
   return (
     outcome.detail === 'unattended_auth_required' ||
     (outcome.status !== 'ready' && outcome.reason != null && outcome.automaticReplay === false)
@@ -208,7 +233,10 @@ export function isScheduleMCPAuthorizationFailure(outcome: ScheduleMCPOutcome): 
 export function getScheduleMCPDisabledReason(
   outcomes?: ScheduleMCPOutcome[],
 ): 'mcp_reauth_required' | 'mcp_configuration_missing' | 'mcp_permission_denied' | undefined {
-  const statuses = new Set(outcomes?.map((outcome) => outcome.status));
+  // A server the run was started without is not a failure of the run.
+  const statuses = new Set(
+    outcomes?.filter((outcome) => outcome.skipped !== true).map((outcome) => outcome.status),
+  );
   if (statuses.has('mcp_permission_denied')) return 'mcp_permission_denied';
   if (statuses.has('mcp_configuration_missing')) return 'mcp_configuration_missing';
   if (statuses.has('mcp_reauth_required')) return 'mcp_reauth_required';
@@ -222,9 +250,15 @@ export const scheduleMCPOutcomeSchema = z.object({
   agentId: z.string().optional(),
   /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
   detail: z.enum(['unattended_auth_required']).optional(),
-  reason: scheduledMCPFailureReasonSchema.optional(),
+  reason: runGrantFailureReasonSchema.optional(),
   recovery: z.enum(['authorize', 'configure', 'restore_permission', 'retry_later']).optional(),
   automaticReplay: z.literal(false).optional(),
+  /**
+   * The server was not ready and the run was started without it, as its schedule allows
+   * (`mcpStrict` unset). The status says why. It is a note for the owner, not a denial:
+   * it neither fails the run nor suspends the schedule.
+   */
+  skipped: z.literal(true).optional(),
   status: z.enum([
     'ready',
     'mcp_reauth_required',
@@ -270,6 +304,7 @@ export function mergeScheduleMCPReceipts(
         outcome.recovery,
         outcome.detail,
         outcome.automaticReplay,
+        outcome.skipped,
       ]);
       merged.set(key, outcome);
     }

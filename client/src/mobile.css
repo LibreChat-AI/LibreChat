@@ -31,26 +31,6 @@
   }
 }
 
-/* Not a button its toolbar is concealing: this rule sits outside every cascade layer, so it
-   outranks the utilities that conceal one, and a rerun withheld during a run would stay on
-   screen and in the tab order. */
-@media (max-width: 1024px) {
-  .hover-button:not([data-concealed]) {
-    display: block;
-    visibility: visible;
-  }
-}
-
-.hide-scrollbar {
-  /* Hide scrollbar for Chrome, Safari, and Opera */
-  scrollbar-width: none; /* For Firefox */
-  -ms-overflow-style: none; /* For Internet Explorer and Edge */
-}
-
-.hide-scrollbar::-webkit-scrollbar {
-  display: none; /* For WebKit browsers */
-}
-
 @keyframes tuning {
   0% {
     transform: rotate(30deg);
@@ -73,10 +53,6 @@
   animation: tuning 2.1s 1;
 }
 
-.azure-bg-color {
-  background: linear-gradient(0.375turn, #61bde2, #4389d0);
-}
-
 @keyframes slowPulse {
   0%,
   100% {
@@ -89,30 +65,6 @@
 
 .slow-pulse {
   animation: slowPulse 2.5s ease-in-out infinite;
-}
-
-.scrollbar-gutter-stable {
-  scrollbar-gutter: stable;
-}
-
-/* Reserves the same band a `scrollbar-gutter: stable` container holds back, so
-   a centered column lines up with the scrolling message column. Use this, not
-   the gutter itself, wherever the column has content painted outside its box:
-   `scrollbar-gutter` only applies to scroll containers, and a scroll container
-   clips (the composer's in-flight steer overlay, a button's focus ring).
-
-   `useScrollbarGutter` measures the band the message column really reserves and
-   publishes it here. The token is only the fallback for before that first
-   measurement: it matches the `::-webkit-scrollbar` width, which Firefox
-   ignores and an overlay scrollbar drops to nothing. */
-/* Below `sm` the composer runs edge to edge (it is squared off at the bottom and
-   carries no horizontal padding there), so holding the band back would leave a
-   dead strip down its right side instead of lining anything up. The message
-   column it aligns to only shares a centre from `sm` up. */
-@media (min-width: 640px) {
-  .scrollbar-gutter-spacer {
-    padding-inline-end: var(--message-scrollbar-gutter, var(--scrollbar-size));
-  }
 }
 
 /* Base wrapper for both preview and editor */

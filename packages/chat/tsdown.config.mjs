@@ -21,6 +21,8 @@ export default defineConfig({
   // Same as @librechat/client: the package stays CommonJS for its jest and babel configs while
   // shipping .mjs/.cjs pairs.
   fixedExtension: true,
+  // The components' hand-written rules ship as they are written: `@librechat/chat/style.css`.
+  copy: [{ from: 'src/style.css', to: 'dist' }],
   // Every third-party import is a peer the consuming app provides; only the package's own
   // relative sources are bundled.
   deps: {

@@ -57,8 +57,8 @@ jest.mock('@librechat/api', () => {
     rejectToolCallPreviewWrites: (_req, _res, next) => next(),
     withMessageToolCallPreviews: (_req, message) => message,
     /** The real helper, without loading the rest of the package this suite mocks around. */
-    withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
-      .withoutTraceRefs,
+    withoutServerRecords: jest.requireActual('../../../../packages/api/src/utils/message.ts')
+      .withoutServerRecords,
     /** Mirrors the real parse (default 25, ceiling 1000) without loading the config service. */
     awaitPageSize: jest.fn((pageSize) => pageSize),
     resolveMessagesPageSize: jest.fn(async (_user, raw) => {
@@ -393,6 +393,30 @@ describe('message route conversation ownership filters', () => {
       );
     }
     expect(db.getConvo).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves no record of what started a turn from a message a client posts', async () => {
+    const db = require('~/models');
+    const { saveMessage } = db;
+    db.getConvo.mockResolvedValue({ conversationId: 'convo-1' });
+    require('@librechat/api').isSubagentThreadWriteBlocked.mockImplementationOnce(
+      async () => false,
+    );
+    saveMessage.mockClear();
+    saveMessage.mockImplementation(async (_ctx, message) => message);
+
+    const response = await request(app)
+      .post('/api/messages/convo-1')
+      .send({
+        messageId: 'message-1',
+        text: 'A detached subagent task has completed.',
+        trigger: { event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' } },
+      });
+
+    expect(response.status).toBe(201);
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(saveMessage.mock.calls[0][1]).toMatchObject({ messageId: 'message-1' });
+    expect(saveMessage.mock.calls[0][1]).not.toHaveProperty('trigger');
   });
 
   it.each([

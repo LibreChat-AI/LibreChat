@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type { ReactNode } from 'react';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
@@ -118,5 +118,59 @@ describe('ReasoningCompact', () => {
     const body = screen.getByRole('group', { hidden: true });
     expect(body).toHaveTextContent('Checking the manifest.');
     expect(body.textContent).not.toContain(prefix.slice(0, 32));
+  });
+
+  describe('watching its header for the floating bar', () => {
+    let observers: Array<{ disconnected: boolean }>;
+    const original = global.IntersectionObserver;
+
+    beforeEach(() => {
+      observers = [];
+      global.IntersectionObserver = class {
+        disconnected = false;
+        constructor() {
+          observers.push(this);
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {
+          this.disconnected = true;
+        }
+      } as unknown as typeof IntersectionObserver;
+    });
+
+    afterEach(() => {
+      global.IntersectionObserver = original;
+    });
+
+    const watching = () => observers.filter((observer) => !observer.disconnected).length;
+
+    /** A thread holds hundreds of these, and each observer measures on every scroll. */
+    it('watches only while the reader is on an open part', () => {
+      renderCompact(
+        <ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking />,
+      );
+      expect(watching()).toBe(0);
+
+      const part = screen
+        .getByRole('button', { name: 'Thoughts' })
+        .closest('.group\\/reasoning-compact') as HTMLElement;
+      fireEvent.mouseEnter(part);
+      expect(watching()).toBe(1);
+
+      fireEvent.mouseLeave(part);
+      expect(watching()).toBe(0);
+    });
+
+    it('does not watch a collapsed part, whose bar cannot show', () => {
+      renderCompact(
+        <ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />,
+      );
+      const part = screen
+        .getByRole('button', { name: 'Thoughts' })
+        .closest('.group\\/reasoning-compact') as HTMLElement;
+      fireEvent.mouseEnter(part);
+      expect(watching()).toBe(0);
+    });
   });
 });

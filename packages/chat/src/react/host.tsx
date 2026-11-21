@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type {
-  Agent,
+  AgentDisplay,
   TFile,
   TAttachment,
   SearchResultData,
@@ -8,7 +8,6 @@ import type {
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
-import type { ToolCallPhase } from '../core/parts/toolCallPhase';
 
 /** The message a part renders in, as its host reports it. */
 export type MessagePartMessage = {
@@ -77,40 +76,9 @@ export type MessagePartsShare = {
 /** Strings a tool call card asks the host to resolve. Values fill `{0}`-style placeholders. */
 export type ToolCallLocalize = (key: string, values?: Record<string, string | number>) => string;
 
-/** What the app's progress row draws for one tool call. */
-export type ToolCallProgressProps = {
-  phase: ToolCallPhase;
-  onClick: () => void;
-  inProgressText: string;
-  authText?: string;
-  finishedText: string;
-  subtitle?: string;
-  durationMs?: number;
-  toolPreparationDurationMs?: number;
-  toolExecutionDurationMs?: number;
-  phaseStartAt?: number;
-  phaseStepId?: string;
-  icon: ReactNode;
-  hasInput: boolean;
-  isExpanded: boolean;
-};
-
-/** What the app's parameter and output panel draws for one tool call. */
-export type ToolCallInfoProps = {
-  input: string;
-  output?: string | null;
-};
-
-/** What the app's tool icon draws for one tool call. `name` is the raw tool id. */
-export type ToolCallIconProps = {
-  name: string;
-  iconUrl?: string;
-  isAnimating: boolean;
-};
-
 /**
- * App services and renderers for a generic tool call card. The progress row, parameter panel,
- * icon and attachment stack stay in the app because other cards still share them.
+ * App services for a generic tool call card, and its one renderer: the attachment stack stays
+ * in the app because other cards still share it.
  */
 export type ToolCallChrome = {
   localize: ToolCallLocalize;
@@ -123,9 +91,6 @@ export type ToolCallChrome = {
   /** Opens a URL in a new tab. Called synchronously inside the sign-in click. */
   openUrl: (url: string) => void;
   logError: (message: string, error?: unknown) => void;
-  renderProgress: (props: ToolCallProgressProps) => ReactNode;
-  renderInfo: (props: ToolCallInfoProps) => ReactNode;
-  renderIcon: (props: ToolCallIconProps) => ReactNode;
   renderAttachments: (attachments: TAttachment[]) => ReactNode;
 };
 
@@ -137,9 +102,6 @@ const emptyChrome: ToolCallChrome = {
   bindActionOAuth: () => Promise.resolve(undefined),
   openUrl: () => undefined,
   logError: () => undefined,
-  renderProgress: () => null,
-  renderInfo: () => null,
-  renderIcon: () => null,
   renderAttachments: () => null,
 };
 
@@ -216,13 +178,13 @@ export interface MessagePartsHost {
   /** Whether streamed text fades in word by word: the viewer's setting, unless motion is reduced. */
   useSmoothStreaming: () => boolean;
   /** An agent the viewer can see, by id. */
-  useAgent: (agentId: string) => Agent | undefined;
+  useAgent: (agentId: string) => AgentDisplay | undefined;
   /** Draws a message's content parts with the app's renderer. */
   renderContentParts: (props: ContentPartsSlotProps) => ReactNode;
   /** Renders an agent's avatar; `undefined` when the agent is unknown. */
-  renderAgentIcon: (agent: Agent | undefined) => ReactNode;
+  renderAgentIcon: (agent: AgentDisplay | undefined) => ReactNode;
   /** Renders an agent's bare inline avatar, without the message icon around it. */
-  renderAgentAvatar: (agent: Agent | undefined) => ReactNode;
+  renderAgentAvatar: (agent: AgentDisplay | undefined) => ReactNode;
   /** The viewer's font size utility, applied to reasoning and summary text. */
   useFontSize: () => string;
   /** Whether the viewer wants reasoning expanded by default. */

@@ -1,7 +1,8 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { NavLink } from '~/common';
+import { createBalanceTestHarness } from 'test/balance';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -12,6 +13,7 @@ jest.mock('~/hooks/useKeyboardShortcuts', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   Button: jest
     .requireActual<typeof import('react')>('react')
     .forwardRef<
@@ -49,8 +51,40 @@ jest.mock('~/components/Chat/Menus/OpenSidebar', () => ({
 import Header from '../Header';
 
 const links = [] as NavLink[];
+let harness: ReturnType<typeof createBalanceTestHarness>;
+function Wrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <MemoryRouter>
+      <harness.Wrapper>{children}</harness.Wrapper>
+    </MemoryRouter>
+  );
+}
 
 describe('mobile drawer header', () => {
+  beforeEach(() => {
+    harness = createBalanceTestHarness();
+  });
+  afterEach(() => {
+    cleanup();
+    harness.client.clear();
+  });
+
+  it('renders account usage with the drawer providers', async () => {
+    render(
+      <Header
+        links={links}
+        expanded={true}
+        onClose={jest.fn()}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Account usage' }));
+    const card = await screen.findByRole('dialog', { name: 'Account usage' });
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+    expect(harness.getBalance).toHaveBeenCalledTimes(1);
+  });
   it('claims the close identity while the drawer is open', () => {
     render(
       <Header
@@ -61,7 +95,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
 
@@ -85,7 +119,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
 
@@ -104,7 +138,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
 
@@ -124,7 +158,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
 
@@ -147,7 +181,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
     expect(document.activeElement).toBe(document.body);
@@ -175,7 +209,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
 
@@ -197,7 +231,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
 
@@ -220,7 +254,7 @@ describe('mobile drawer header', () => {
         switchToHistory={true}
       />,
       {
-        wrapper: MemoryRouter,
+        wrapper: Wrapper,
       },
     );
 

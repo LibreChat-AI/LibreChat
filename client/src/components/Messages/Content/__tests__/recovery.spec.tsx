@@ -2,8 +2,9 @@ import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { getDefaultStore, useAtomValue } from 'jotai';
-import { act, render, screen } from '@testing-library/react';
-import { Constants, ContentTypes, ForkOptions } from 'librechat-data-provider';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Constants, ContentTypes, ForkOptions, dataService } from 'librechat-data-provider';
 import {
   getReasoningStateKey,
   pendingQuotesByConvoId,
@@ -33,6 +34,13 @@ let mockForkOptions: {
   onSuccess?: (data: { conversation: TConversation; messages: TMessage[] }) => void;
 } = {};
 
+/** A copy of the request layer, so a test can answer the requests the real hooks make. */
+jest.mock('librechat-data-provider', () => {
+  const actual =
+    jest.requireActual<typeof import('librechat-data-provider')>('librechat-data-provider');
+  return { ...actual, dataService: { ...actual.dataService } };
+});
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) =>
     (jest.requireActual('~/locales/en/translation.json') as Record<string, string>)[key] ?? key,
@@ -49,6 +57,8 @@ jest.mock('~/data-provider', () => ({
     mockForkOptions = options;
     return { mutate: mockForkMutate, isLoading: false };
   },
+  /** The left-out list runs on its real hooks; only the requests behind them are replaced. */
+  ...jest.requireActual('~/data-provider/FileExclusion'),
 }));
 
 jest.mock('@librechat/client', () => ({
@@ -140,17 +150,20 @@ function renderRecovery({
       </MessagesSubmittingContext.Provider>
     </MessagesOperationsContext.Provider>
   );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <RecoilRoot>
-      <ComposerProbe />
-      {inChat ? (
-        <ChatContext.Provider value={{ conversation } as unknown as ChatContract}>
-          {content}
-        </ChatContext.Provider>
-      ) : (
-        content
-      )}
-    </RecoilRoot>,
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot>
+        <ComposerProbe />
+        {inChat ? (
+          <ChatContext.Provider value={{ conversation } as unknown as ChatContract}>
+            {content}
+          </ChatContext.Provider>
+        ) : (
+          content
+        )}
+      </RecoilRoot>
+    </QueryClientProvider>,
   );
   return { ask };
 }
@@ -241,6 +254,163 @@ describe('AttachmentRecoveryActions', () => {
     expect(mockShowToast).toHaveBeenCalledWith(
       expect.objectContaining({ message: catalog.com_ui_branch_without_files_draft }),
     );
+  });
+
+  describe('when earlier messages carry other files', () => {
+    const diagram = { file_id: 'diagram', filename: 'diagram.png', type: 'image/png' };
+    const report = { file_id: 'report', filename: 'report.pdf', type: 'application/pdf' };
+    const olderFixture = () => [
+      user('u0', Constants.NO_PARENT, { files: [report] }),
+      answer('a0', 'u0', {
+        attachments: [{ file_id: 'chart', filename: 'chart.png' }] as TMessage['attachments'],
+      }),
+      user('u1', 'a0', { files: [diagram, screenshot] }),
+      answer('a1', 'u1'),
+      user('u2', 'a1', { files: [screenshot], quotes: ['quoted line'] }),
+      answer('a2', 'u2', { error: true }),
+    ];
+    const tooLarge =
+      'This turn exceeds the configured total attachment size limit (30 > 20). Remove some attachments or use smaller files and try again.';
+
+    type Excluded = { excludedFiles: string[] };
+    let getFileExclusion: jest.SpyInstance;
+    let setFileExclusion: jest.SpyInstance;
+    const olderButton = () =>
+      screen.queryByRole('button', { name: catalog.com_ui_retry_without_older_files });
+    /** The card has read the stored list once the request for it has been answered. */
+    const listRead = () => waitFor(() => expect(getFileExclusion).toHaveBeenCalledWith('convo'));
+
+    beforeEach(() => {
+      getFileExclusion = jest
+        .spyOn(dataService, 'getFileExclusion')
+        .mockResolvedValue({ excludedFiles: [] });
+      setFileExclusion = jest.spyOn(dataService, 'setFileExclusion');
+    });
+    afterEach(() => {
+      getFileExclusion.mockRestore();
+      setFileExclusion.mockRestore();
+    });
+
+    it('first offers to leave the older files out and send the turn again with its own', async () => {
+      let saved!: (value: Excluded) => void;
+      setFileExclusion.mockImplementation(() => new Promise((resolve) => (saved = resolve)));
+      const { ask } = renderRecovery({ messages: olderFixture(), text: tooLarge });
+      await listRead();
+
+      expect(
+        screen.getByText(catalog.com_error_attachments_older_info, { exact: false }),
+      ).toBeTruthy();
+      const [first] = screen.getAllByRole('button');
+      expect(first).toHaveAccessibleName(catalog.com_ui_retry_without_older_files);
+      await userEvent.click(first);
+
+      /** Every earlier file on the branch except the one the failed turn carries itself. */
+      expect(setFileExclusion).toHaveBeenCalledTimes(1);
+      expect(setFileExclusion).toHaveBeenCalledWith('convo', {
+        fileIds: ['diagram', 'chart', 'report'],
+        excluded: true,
+      });
+      /** Nothing is sent, and nothing else can be started, until the list is saved. */
+      expect(ask).not.toHaveBeenCalled();
+      for (const button of screen.getAllByRole('button')) {
+        expect(button).toBeDisabled();
+      }
+
+      await act(async () => saved({ excludedFiles: ['diagram', 'chart', 'report'] }));
+
+      await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+      expect(ask).toHaveBeenCalledWith(
+        { text: 'question u2', parentMessageId: 'a1', conversationId: 'convo' },
+        expect.objectContaining({ overrideFiles: [screenshot], overrideQuotes: ['quoted line'] }),
+      );
+      /** With every older file left out, the same action is not offered a second time. */
+      expect(olderButton()).toBeNull();
+    });
+
+    it('sends nothing again when the files could not be left out, says so, and offers it again', async () => {
+      setFileExclusion.mockRejectedValue(new Error('offline'));
+      const { ask } = renderRecovery({ messages: olderFixture(), text: tooLarge });
+      await listRead();
+
+      await userEvent.click(olderButton() as HTMLElement);
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: catalog.com_ui_retry_without_older_files_error,
+            status: 'error',
+          }),
+        ),
+      );
+      expect(ask).not.toHaveBeenCalled();
+      await waitFor(() => expect(olderButton()).toBeEnabled());
+    });
+
+    it('keeps the other two ways out beside it', () => {
+      renderRecovery({ messages: olderFixture(), text: tooLarge });
+
+      expect(screen.getByRole('button', { name: catalog.com_ui_retry_without_files })).toBeTruthy();
+      expect(
+        screen.getByRole('button', { name: catalog.com_ui_branch_without_files }),
+      ).toBeTruthy();
+    });
+
+    it('does not offer it for a turn with too many files of its own, and does not blame the conversation', () => {
+      renderRecovery({
+        messages: olderFixture(),
+        text: 'This turn exceeds the configured attachment count limit (11 > 10). Remove some attachments or use smaller files and try again.',
+      });
+
+      expect(
+        screen.queryByRole('button', { name: catalog.com_ui_retry_without_older_files }),
+      ).toBeNull();
+      expect(
+        screen.getByText(catalog.com_error_attachments_count_cause, { exact: false }),
+      ).toBeTruthy();
+      expect(screen.queryByText(catalog.com_error_attachments_cause, { exact: false })).toBeNull();
+    });
+
+    it('leaves out only what is not left out already', async () => {
+      getFileExclusion.mockResolvedValue({ excludedFiles: ['report'] });
+      setFileExclusion.mockResolvedValue({ excludedFiles: ['report', 'diagram', 'chart'] });
+      const { ask } = renderRecovery({ messages: olderFixture(), text: tooLarge });
+      await listRead();
+      await act(async () => {});
+
+      await userEvent.click(olderButton() as HTMLElement);
+
+      expect(setFileExclusion).toHaveBeenCalledWith('convo', {
+        fileIds: ['diagram', 'chart'],
+        excluded: true,
+      });
+      await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    });
+
+    it('does not offer it again once every older file is already left out', async () => {
+      getFileExclusion.mockResolvedValue({ excludedFiles: ['diagram', 'chart', 'report'] });
+      renderRecovery({ messages: olderFixture(), text: tooLarge });
+
+      await waitFor(() => expect(olderButton()).toBeNull());
+      expect(screen.getByRole('button', { name: catalog.com_ui_retry_without_files })).toBeTruthy();
+      expect(setFileExclusion).not.toHaveBeenCalled();
+    });
+
+    it('asks for the stored list only where the action could be offered', () => {
+      renderRecovery({ messages: retryFixture() });
+
+      expect(getFileExclusion).not.toHaveBeenCalled();
+    });
+
+    it('does not offer it when the only earlier file is one the failed turn carries too', () => {
+      renderRecovery({ messages: branchFixture(), text: tooLarge });
+
+      expect(
+        screen.queryByRole('button', { name: catalog.com_ui_retry_without_older_files }),
+      ).toBeNull();
+      expect(
+        screen.getByRole('button', { name: catalog.com_ui_branch_without_files }),
+      ).toBeTruthy();
+    });
   });
 
   it('reports a copy that still has its files instead of announcing a recovery', async () => {

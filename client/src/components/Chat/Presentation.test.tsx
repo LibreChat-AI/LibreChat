@@ -1,10 +1,18 @@
 import React from 'react';
-import { useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { activeSubagentPanel, isSubmittingFamily } from '@librechat/chat/react';
-import type { TConversation } from 'librechat-data-provider';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  sideChatAtom,
+  activeSubagentPanel,
+  isSubmittingFamily,
+  sideChatBesideAtom,
+  sideChatRequestAtom,
+  sideChatAvailableAtom,
+} from '@librechat/chat/react';
+import type { TConversation, TStartupConfig } from 'librechat-data-provider';
+import type { SideChat } from '@librechat/chat/react';
 import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
 import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
@@ -29,8 +37,32 @@ const mockArtifactPanelLabel = 'Artifact panel loaded';
 const mockOpenArtifactLabel = 'Open Artifact';
 const mockChildPanelLabel = 'Child activity panel loaded';
 const mockOpenChildLabel = 'Open Child Activity';
+const mockSideChatLabel = 'Side chat loaded';
+const mockOpenSideChatLabel = 'Open Side Chat';
+const mockAskSideChatLabel = 'Ask for a side chat';
+let mockSideChatProps: {
+  chat: SideChat;
+  onClose: () => void;
+  onHandedTextTaken: (expected: SideChat) => void;
+};
 const mockSelectAgentConversationLabel = 'Select Agent Conversation';
 const mockStartAgentRunLabel = 'Start Agent Run';
+/**
+ * The deployment's config, as the server would answer the app's own config query. It does not
+ * answer until a test makes it, so the config is unknown, as it is while the page loads.
+ */
+const mockGetStartupConfig = jest.fn<Promise<Partial<TStartupConfig>>, []>();
+const unanswered = () => new Promise<Partial<TStartupConfig>>(() => undefined);
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    dataService: {
+      ...actual.dataService,
+      getStartupConfig: () => mockGetStartupConfig(),
+    },
+  };
+});
 const mockUseParentSubagentsQuery = jest.fn(
   (_conversationId?: string, _config?: unknown, _isSubmitting?: boolean) => ({
     data: undefined,
@@ -58,6 +90,19 @@ jest.mock('@librechat/chat/components', () => {
     ...jest.requireActual<typeof import('@librechat/chat/components')>(
       '@librechat/chat/components',
     ),
+    loadSideChatPanel: () =>
+      Promise.resolve({
+        default: function MockSideChatPanel(props: typeof mockSideChatProps) {
+          mockSideChatProps = props;
+          const parent = useParentSubagents();
+          return (
+            <aside>
+              {mockSideChatLabel}
+              <span data-testid="side-parent">{parent.conversationId}</span>
+            </aside>
+          );
+        },
+      }),
     loadSubagentThreadPanel: () =>
       Promise.resolve({
         default: function MockSubagentThreadPanel() {
@@ -84,7 +129,7 @@ jest.mock('~/components/Chat/Input/Files/DragDropWrapper', () => ({
 
 jest.mock('~/components/SidePanel', () => ({
   SidePanelGroup: ({ panel, children }: { panel: React.ReactNode; children: React.ReactNode }) => (
-    <div>
+    <div data-testid="side-panel-group">
       {children}
       {panel}
     </div>
@@ -103,7 +148,9 @@ jest.mock('~/hooks/Artifacts/useArtifactsRegistryLifetime', () => ({
 
 jest.mock('~/data-provider', () => ({
   useDeleteFilesMutation: () => ({ mutateAsync: jest.fn() }),
-  useGetStartupConfig: () => ({ data: undefined }),
+  /** The app's real config query; what it is answered with is set at the data service. */
+  useGetStartupConfig: (...args: unknown[]) =>
+    jest.requireActual('~/data-provider').useGetStartupConfig(...args),
   useParentSubagentsQuery: (conversationId: string, config?: unknown, isSubmitting?: boolean) =>
     mockUseParentSubagentsQuery(conversationId, config, isSubmitting),
 }));
@@ -165,6 +212,26 @@ const OpenSubagentPanel = ({ durable = true }: { durable?: boolean }) => {
   );
 };
 
+const OpenSideChat = () => {
+  const setConversation = useSetRecoilState(store.conversationByIndex(0));
+  const setSideChat = useSetAtom(sideChatAtom);
+  const open = () => {
+    setConversation({ conversationId: 'parent-conversation' } as TConversation);
+    setSideChat({
+      conversation: {
+        conversationId: 'side-conversation',
+        endpoint: 'agents',
+        agent_id: 'agent-1',
+      } as TConversation,
+    });
+  };
+  return (
+    <button type="button" onClick={open}>
+      {mockOpenSideChatLabel}
+    </button>
+  );
+};
+
 const SelectAgentConversation = () => {
   const setConversation = useSetRecoilState(store.conversationByIndex(0));
   return (
@@ -193,6 +260,11 @@ const StartAgentRun = () => {
 };
 
 describe('Presentation Artifact loading', () => {
+  beforeEach(() => {
+    mockGetStartupConfig.mockReset();
+    mockGetStartupConfig.mockImplementation(unanswered);
+  });
+
   it('loads the Artifact panel bundle only when the panel is opened', async () => {
     const testGlobal = globalThis as typeof globalThis & {
       presentationArtifactModuleEvaluations?: number;
@@ -215,6 +287,26 @@ describe('Presentation Artifact loading', () => {
     expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
     expect(testGlobal.presentationArtifactModuleEvaluations).toBe(1);
     expect(mockUseParentSubagentsQuery).toHaveBeenCalledWith('', { enabled: false }, false);
+  });
+
+  it('gives the session rail a column of its own, past the side panel', () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <div />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    const slot = screen.getByTestId('session-rail-slot');
+    const group = screen.getByTestId('side-panel-group');
+    expect(group.nextElementSibling).toBe(slot);
+    expect(group).not.toContainElement(slot);
+    /** Empty, the column takes no room: it is not a box until a rail is drawn in it. */
+    expect(slot).toHaveClass('contents');
+    expect(slot).toBeEmptyDOMElement();
   });
 
   it('loads the parent child index only for Agent conversations', () => {
@@ -363,5 +455,256 @@ describe('Presentation Artifact loading', () => {
     await waitFor(() =>
       expect(detachedDocument.body.textContent).toContain(mockArtifactPanelLabel),
     );
+  });
+
+  it.each(['same', 'different'] as const)(
+    'an old pane callback cannot close or consume a newer %s destination handoff',
+    async (destination) => {
+      let atoms!: JotaiStore;
+      renderPresentation(
+        <ChatSurfaceHarness
+          seed={(store) => {
+            atoms = store;
+          }}
+        >
+          <RecoilRoot>
+            <Presentation>
+              <OpenSideChat />
+            </Presentation>
+          </RecoilRoot>
+        </ChatSurfaceHarness>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+      await screen.findByText(mockSideChatLabel);
+      const conversation = atoms.get(sideChatAtom)!.conversation;
+      const captured = mockSideChatProps.chat;
+      const consume = mockSideChatProps.onHandedTextTaken;
+      const close = mockSideChatProps.onClose;
+      act(() => {
+        atoms.set(sideChatAtom, {
+          conversation: {
+            ...conversation,
+            conversationId: destination === 'same' ? conversation.conversationId : 'new-side',
+          },
+          text: 'Same question.',
+        });
+      });
+      const replacement = atoms.get(sideChatAtom)!;
+      expect(replacement).not.toBe(captured);
+      act(() => {
+        consume(captured);
+        close();
+      });
+      expect(atoms.get(sideChatAtom)).toBe(replacement);
+      expect(atoms.get(sideChatAtom)?.text).toBe('Same question.');
+      act(() => mockSideChatProps.onHandedTextTaken(replacement));
+      expect(atoms.get(sideChatAtom)?.text).toBeUndefined();
+      act(() => mockSideChatProps.onClose());
+      expect(atoms.get(sideChatAtom)).toBeNull();
+    },
+  );
+
+  it('shows a side chat beside the conversation, with child activity read for its own conversation', async () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <OpenSideChat />
+            <OpenSubagentPanel />
+            <SelectAgentConversation />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+    /** Children its agent dispatches belong to the side conversation, not the one beside it. */
+    expect(screen.getByTestId('side-parent')).toHaveTextContent('side-conversation');
+    expect(mockUseParentSubagentsQuery).toHaveBeenCalledWith(
+      'side-conversation',
+      { enabled: true },
+      false,
+    );
+
+    /** One panel at a time: a child's activity opened afterwards takes its place. */
+    fireEvent.click(screen.getByRole('button', { name: mockOpenChildLabel }));
+    expect(await screen.findByText(mockChildPanelLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockSideChatLabel)).not.toBeInTheDocument();
+  });
+
+  it('closes the side chat when the conversation it sits beside changes', async () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <OpenSideChat />
+            <SelectAgentConversation />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: mockSelectAgentConversationLabel }));
+    await waitFor(() => expect(screen.queryByText(mockSideChatLabel)).not.toBeInTheDocument());
+  });
+
+  describe('whether a side chat can be opened', () => {
+    const SideChatAvailability = () => (
+      <>
+        <span data-testid="side-chat-available">{String(useAtomValue(sideChatAvailableAtom))}</span>
+        <span data-testid="side-chat-beside">
+          {JSON.stringify(useAtomValue(sideChatBesideAtom))}
+        </span>
+      </>
+    );
+    const mount = () =>
+      renderPresentation(
+        <ChatSurfaceHarness>
+          <RecoilRoot>
+            <SideChatAvailability />
+            <Presentation>
+              <SelectAgentConversation />
+            </Presentation>
+          </RecoilRoot>
+        </ChatSurfaceHarness>,
+      );
+    const available = () => screen.getByTestId('side-chat-available').textContent;
+
+    it('is not, until the deployment has answered, and is once it has', async () => {
+      let answer: (config: Partial<TStartupConfig>) => void = () => undefined;
+      mockGetStartupConfig.mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+      mount();
+      expect(available()).toBe('false');
+
+      await act(async () => answer({ interface: {} } as Partial<TStartupConfig>));
+
+      await waitFor(() => expect(available()).toBe('true'));
+    });
+
+    it('names the chat it would sit beside, and names another once the reader moves', async () => {
+      mockGetStartupConfig.mockResolvedValue({ interface: {} } as Partial<TStartupConfig>);
+      mount();
+      await waitFor(() =>
+        expect(screen.getByTestId('side-chat-beside')).toHaveTextContent(
+          JSON.stringify({ conversationId: null }),
+        ),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: mockSelectAgentConversationLabel }));
+
+      expect(screen.getByTestId('side-chat-beside')).toHaveTextContent(
+        JSON.stringify({ conversationId: 'agent-conversation' }),
+      );
+    });
+
+    it('is not where the deployment turned side chats off', async () => {
+      mockGetStartupConfig.mockResolvedValue({
+        interface: { sideChat: false },
+      } as Partial<TStartupConfig>);
+      mount();
+      /** The config is in: the answer is no, not merely not yet. */
+      await waitFor(() => expect(mockGetStartupConfig).toHaveBeenCalled());
+      await act(async () => undefined);
+
+      expect(available()).toBe('false');
+      expect(screen.getByTestId('side-chat-beside')).toHaveTextContent('null');
+    });
+  });
+
+  it('gives the panel slot to a side chat opened while another panel is showing', async () => {
+    renderPresentation(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Presentation>
+            <OpenSubagentPanel />
+            <OpenArtifactPanel />
+            <OpenSideChat />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    /** A child's activity holds the slot; the side chat asked for after it takes it. */
+    fireEvent.click(screen.getByRole('button', { name: mockOpenChildLabel }));
+    expect(await screen.findByText(mockChildPanelLabel)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockChildPanelLabel)).not.toBeInTheDocument();
+
+    /** The same from an artifact, and back: the panel asked for last is the one shown. */
+    fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
+    expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockSideChatLabel)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: mockOpenSideChatLabel }));
+    expect(await screen.findByText(mockSideChatLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockArtifactPanelLabel)).not.toBeInTheDocument();
+  });
+
+  describe('a side chat still being fetched', () => {
+    /** Stands in for a menu that asked to open one and is waiting on its record. */
+    const PendingSideChat = () => {
+      const [request, setRequest] = useAtom(sideChatRequestAtom);
+      return (
+        <>
+          <button type="button" onClick={() => setRequest({})}>
+            {mockAskSideChatLabel}
+          </button>
+          <span data-testid="side-chat-request">{request == null ? 'none' : 'waiting'}</span>
+        </>
+      );
+    };
+    const mount = () =>
+      renderPresentation(
+        <ChatSurfaceHarness>
+          <RecoilRoot>
+            <Presentation>
+              <PendingSideChat />
+              <OpenSubagentPanel />
+              <OpenArtifactPanel />
+            </Presentation>
+          </RecoilRoot>
+        </ChatSurfaceHarness>,
+      );
+    const request = () => screen.getByTestId('side-chat-request').textContent;
+
+    it('is withdrawn when a child’s activity is opened instead', async () => {
+      mount();
+      fireEvent.click(screen.getByRole('button', { name: mockAskSideChatLabel }));
+      expect(request()).toBe('waiting');
+
+      fireEvent.click(screen.getByRole('button', { name: mockOpenChildLabel }));
+
+      expect(await screen.findByText(mockChildPanelLabel)).toBeInTheDocument();
+      expect(request()).toBe('none');
+    });
+
+    it('is withdrawn when an artifact is opened instead', async () => {
+      mount();
+      fireEvent.click(screen.getByRole('button', { name: mockAskSideChatLabel }));
+
+      fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
+
+      expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
+      expect(request()).toBe('none');
+    });
+
+    it('stays asked for over an artifact that was already showing', async () => {
+      mount();
+      fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
+      expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
+
+      /** Asked after the artifact: the side chat is the newest ask, and waits for its record. */
+      fireEvent.click(screen.getByRole('button', { name: mockAskSideChatLabel }));
+
+      expect(request()).toBe('waiting');
+      expect(screen.getByText(mockArtifactPanelLabel)).toBeInTheDocument();
+    });
   });
 });

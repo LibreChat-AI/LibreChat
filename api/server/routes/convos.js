@@ -14,6 +14,9 @@ const {
   createArchiveHandler,
   createSubagentActivityStreamHandler,
   createSubagentTaskContentHandler,
+  createChildThreadMessagesHandler,
+  createChildThreadToolCallPartHandler,
+  prepareToolCallPreviews,
   createSubagentControlHandler,
   createSubagentControlReceiptHandler,
   isValidSubagentControlRequest,
@@ -37,6 +40,8 @@ const {
   createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
+  createFileExclusionHandler,
+  createFileExclusionReadHandler,
   createGetConversationHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
@@ -89,6 +94,17 @@ const subagentThreadViewHandler = createSubagentThreadViewHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
   getMessagesForSubagentThreadView: db.getMessagesForSubagentThreadView,
+});
+const childThreadMessagesHandler = createChildThreadMessagesHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getMessagesByCursor: db.getMessagesByCursor,
+  previewToolCalls: (req) => prepareToolCallPreviews(req, { getAppConfig }),
+});
+const childThreadToolCallPartHandler = createChildThreadToolCallPartHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getMessages: db.getMessages,
 });
 const parentSubagentIndexHandler = createParentSubagentIndexHandler({
   getConvoOwnership: db.getConvoOwnership,
@@ -191,6 +207,12 @@ const subagentControlHandler = createSubagentControlHandler({
 const markConvoSeenHandler = createMarkConvoSeenHandler({ markConvoSeen: db.markConvoSeen });
 const markConvoUnreadHandler = createMarkConvoUnreadHandler({
   markConvoUnread: db.markConvoUnread,
+});
+const fileExclusionHandler = createFileExclusionHandler({
+  setConvoFileExclusion: db.setConvoFileExclusion,
+});
+const fileExclusionReadHandler = createFileExclusionReadHandler({
+  getConvoExcludedFiles: db.getConvoExcludedFiles,
 });
 const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
 const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
@@ -306,11 +328,18 @@ router.post(
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
 router.post('/pull-requests', conversationPullRequestsHandler);
 router.get('/:conversationId/pull-request', conversationPullRequestHandler);
+router.get('/:conversationId/files/exclusion', fileExclusionReadHandler);
+router.post('/:conversationId/files/exclusion', fileExclusionHandler);
 router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
 router.post(
   '/:conversationId/background-tasks/cancel',
   backgroundTaskPolicy,
   backgroundTaskCancelHandler,
+);
+router.get('/:parentConversationId/subagents/:threadId/messages', childThreadMessagesHandler);
+router.get(
+  '/:parentConversationId/subagents/:threadId/messages/:messageId/parts/:partIndex',
+  childThreadToolCallPartHandler,
 );
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
 

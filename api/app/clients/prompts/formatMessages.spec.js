@@ -80,6 +80,21 @@ describe('formatMessage', () => {
     });
   });
 
+  it('keeps what started a triggered turn out of what the model reads', () => {
+    const trigger = {
+      event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+      subject: { kind: 'schedule', id: 'schedule-1' },
+      origin: { event: { type: 'schedule.occurrence', occurredAt: '2026-11-20T09:00:00.000Z' } },
+    };
+    const message = { sender: 'User', text: 'wake', isCreatedByUser: true, trigger };
+
+    for (const langChain of [false, true]) {
+      const formatted = formatMessage({ message, userName: 'John', langChain });
+      expect(formatted).not.toHaveProperty('trigger');
+      expect(JSON.stringify(formatted)).not.toMatch(/schedule|subagent\.completion/);
+    }
+  });
+
   it('formats assistant message', () => {
     const input = {
       message: {

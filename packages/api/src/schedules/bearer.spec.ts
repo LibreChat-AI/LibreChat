@@ -7,11 +7,8 @@ import type {
   IRole,
   AppConfig,
 } from '@librechat/data-schemas';
-import type { ScheduledMCPIdentity, ScheduledMCPTarget } from 'librechat-data-provider';
-import type {
-  ScheduledMCPBearerResult,
-  ScheduledMCPResourceBearerResolver,
-} from './authorization/contract';
+import type { ScheduledMCPIdentity, RunGrantTarget } from 'librechat-data-provider';
+import type { ScheduledMCPBearerResult, ScheduledMCPResourceBearerResolver } from './bearer';
 import type { MCPOAuthTokens } from '~/mcp/oauth/types';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
@@ -29,14 +26,14 @@ import {
   cleanupMCPRequestContext,
   quiesceMCPRequestContext,
 } from '~/mcp/request';
-import { createScheduleMCPExecution, bindScheduledMCPInvocation } from './authorization/execution';
+import { createRunGrantExecution, bindRunGrantInvocation } from '~/agents/authority/execution';
 import { MockKeyv, createOAuthMCPServer } from '~/mcp/__tests__/helpers/oauthTestServer';
-import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
-import { getScheduledMCPToolDefinitionDigest } from './authorization/policy';
-import { createScheduleMCPConsentService } from './authorization/service';
+import { getRunGrantConfigurationRevision } from '~/agents/authority/configuration';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
+import { restoreExecutionContext } from '~/agents/authority/context';
+import { createRunGrantService } from '~/agents/authority/service';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { restoreScheduledTokenContext } from './context';
+import { pinStorage } from '~/agents/authority/execution.helper';
 import { createScheduleMCPPreflight } from './mcp';
 import { FlowStateManager } from '~/flow/manager';
 import { MCPConnection } from '~/mcp/connection';
@@ -57,11 +54,14 @@ const config: ParsedServerConfig = {
   headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
 };
 
-async function bearerFixture(serverConfig = config) {
+/**
+ * `everything`: the owner allowed the whole agent, and listed no tool. `tools` is what the
+ * agents select on the server when the owner confirms.
+ */
+async function bearerFixture(serverConfig = config, everything = false, tools = ['echo']) {
   let time = Date.now();
   let allowed = true;
-  let policy = true;
-  const target: ScheduledMCPTarget = {
+  const target: RunGrantTarget = {
     resource: {
       serverName: 'Files',
       url: serverConfig.url!,
@@ -72,12 +72,12 @@ async function bearerFixture(serverConfig = config) {
       configurationRevision: '',
     },
     permittedTools: [
-      { agentId: 'root', tools: ['echo'] },
-      { agentId: 'child', tools: ['echo'] },
+      { agentId: 'root', tools: [...tools] },
+      { agentId: 'child', tools: [...tools] },
     ],
-    policyRevision: 'read-only-policy',
+    policyRevision: 'offered-selections',
   };
-  target.resource.configurationRevision = getScheduledMCPConfigurationRevision(
+  target.resource.configurationRevision = getRunGrantConfigurationRevision(
     serverConfig,
     target.resource,
   );
@@ -88,38 +88,41 @@ async function bearerFixture(serverConfig = config) {
     enrollment: null,
   };
   const storage: ScheduleMCPConsentStorage = {
-    readScheduleMCPConsent: async () => structuredClone(snapshot),
-    confirmScheduleMCPConsent: async (input) => {
+    readRunGrant: async () => structuredClone(snapshot),
+    confirmRunGrant: async (input) => {
       snapshot.enrollment = structuredClone(input.enrollment);
       return true;
     },
-    revokeScheduleMCPConsent: async () => {
+    // As the real storage does: the grant itself is marked, and each of its consents.
+    revokeRunGrant: async () => {
+      if (snapshot.enrollment) snapshot.enrollment.revokedAtMs = time;
       for (const c of snapshot.enrollment?.consents ?? []) c.revokedAtMs = time;
       return true;
     },
-    admitScheduleMCPConsent: async (input) =>
+    admitRunGrant: async (input) =>
       (input.requireEnabled === false || snapshot.enabled) &&
       snapshot.configRevision === input.expectedConfigRevision &&
       snapshot.enrollment?.revision === input.revision &&
       snapshot.enrollment.consents.every(
         (c) => c.revokedAtMs == null && c.absoluteExpiresAtMs > time,
       ),
+    ...pinStorage(() => snapshot.enrollment),
   };
   const resolveEnrollment = jest.fn(async () => [structuredClone(target)]);
-  const consent = createScheduleMCPConsentService({
+  const consent = createRunGrantService({
     storage,
     resolveEnrollment,
+    ...(everything && { resolveTools: async () => [] }),
     now: () => time,
     canUse: async () => allowed,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 1 }),
-    checkToolPolicy: async (request) =>
-      policy && request.selection.tools.every((tool) => tool === 'echo'),
   });
   const offer = await consent.view(identity);
   await consent.confirm(identity, {
     expectedRevision: null,
     offerDigest: offer.offer!.digest,
     lifetimeHours: 1,
+    ...(everything ? { allow: {}, everything: true as const } : { allow: { Files: [...tools] } }),
   });
   const resolveBearer = jest.fn(
     async (
@@ -162,8 +165,9 @@ async function bearerFixture(serverConfig = config) {
     deny: () => {
       allowed = false;
     },
-    denyPolicy: () => {
-      policy = false;
+    /** The agents stop selecting the tool the owner allowed. */
+    dropTool: () => {
+      for (const selection of target.permittedTools) selection.tools = ['other'];
     },
     revoke: () => consent.revoke(identity, snapshot.enrollment!.revision),
   };
@@ -204,7 +208,7 @@ it('can probe activation and owner-manual use while disabled, but never automati
     resolveScheduledMCPBearerConfig({ ...f.input, context: manual }),
   ).resolves.toBeDefined();
   await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  const execution = createScheduleMCPExecution({
+  const execution = createRunGrantExecution({
     storage: f.storage,
     loadAuthorization: async () => ({ authority: f.consent.authority }),
   });
@@ -243,6 +247,94 @@ it('checks authority on every cache hit while minting once for root, child and p
   await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
   expect(f.resolveBearer).toHaveBeenCalledTimes(1);
 });
+it('admits a connection for the tools the owner allowed when the agents select more', async () => {
+  const f = await bearerFixture();
+  for (const selection of f.target.permittedTools) selection.tools.push('write');
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  // The tool the owner left out still cannot be used through that connection.
+  await expect(f.call('root', ['write'])).rejects.toMatchObject({
+    failure: { reason: 'tool_policy_denied' },
+  });
+  // And a connection is refused once the agents select none of what was allowed.
+  f.dropTool();
+  await expect(resolveScheduledMCPBearerConfig(f.input)).rejects.toMatchObject({
+    failure: { reason: 'tool_policy_denied' },
+  });
+});
+
+it('admits a connection for whatever the agents select now under a grant of the whole agent', async () => {
+  const f = await bearerFixture(config, true);
+  // None of the tools the agents had when the owner confirmed is selected any more.
+  f.dropTool();
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await expect(f.call('root', ['other'])).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  f.deny();
+  await expect(f.call('root', ['other'])).rejects.toMatchObject({
+    failure: { reason: 'rbac_denied' },
+  });
+});
+
+it('admits a connection to a server the agents select as a whole when the whole agent is allowed', async () => {
+  // The resolver reports such a selection under its marker: there is no tool to list.
+  const f = await bearerFixture(config, true, ['sys__all__sys']);
+  expect(f.snapshot.enrollment).toMatchObject({
+    everything: true,
+    consents: [{ resource: { serverName: 'Files' } }],
+  });
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await expect(f.call('root', ['echo'])).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+});
+
+it('admits a connection to a declared server the agents took up after the whole agent was allowed', async () => {
+  const f = await bearerFixture(config, true);
+  // As stored when the grant was made before the agents used this server.
+  f.snapshot.enrollment!.consents = [];
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await f.revoke();
+  await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
+});
+
+it('admits a connection under a grant of the whole server, whatever the agents select there now', async () => {
+  // The owner ticked every tool on the server, in a grant that lists its tools.
+  const f = await bearerFixture(config, false, ['sys__all__sys']);
+  expect(f.snapshot.enrollment).not.toHaveProperty('everything');
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  // The agents go back to naming tools: all of them are within what was allowed.
+  for (const selection of f.target.permittedTools) selection.tools = ['read', 'write'];
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  await expect(f.call('root', ['write'])).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+});
+
+it('admits a connection for a named tool once the agents select its server as a whole', async () => {
+  const f = await bearerFixture();
+  for (const selection of f.target.permittedTools) selection.tools = ['sys__all__sys'];
+  await expect(resolveScheduledMCPBearerConfig(f.input)).resolves.toMatchObject({
+    headers: { Authorization: 'Bearer resource-only' },
+  });
+  // Still only the tool the owner named.
+  await expect(f.call('root', ['write'])).rejects.toMatchObject({
+    failure: { reason: 'tool_policy_denied' },
+  });
+});
+
 it('renews after synthetic expiry without a session, retaining no login refresh credentials', async () => {
   const f = await bearerFixture();
   await f.call();
@@ -254,14 +346,14 @@ it('renews after synthetic expiry without a session, retaining no login refresh 
     { signal: expect.any(AbortSignal) },
   ]);
 });
-it.each(['revoke', 'expiry', 'policy', 'root', 'revision', 'resource'] as const)(
+it.each(['revoke', 'expiry', 'selection', 'root', 'revision', 'resource'] as const)(
   'rejects %s after credential admission',
   async (mutation) => {
     const f = await bearerFixture();
     await f.call();
     if (mutation === 'revoke') await f.revoke();
     if (mutation === 'expiry') f.advance(3600_001);
-    if (mutation === 'policy') f.denyPolicy();
+    if (mutation === 'selection') f.dropTool();
     if (mutation === 'root') f.snapshot.agentId = 'other';
     if (mutation === 'revision') f.snapshot.configRevision++;
     if (mutation === 'resource') f.target.resource.url = 'https://other.test/mcp';
@@ -460,10 +552,10 @@ it('restores the enrolled root after restart, never serializing the resource bea
     scheduleId: identity.scheduleId,
     agent_id: identity.agentId,
   };
-  const restored = restoreScheduledTokenContext({ user }, metadata)!;
+  const restored = restoreExecutionContext({ user }, metadata)!;
   const req = { user, _isScheduledFire: true, body: {} };
   const context = createMCPRequestContext();
-  prepareScheduledMCPBearer({ req, restoredContext: restored, context, host: f.host });
+  prepareScheduledMCPBearer({ req, executionContext: restored, context, host: f.host });
   const invocation = bindScheduledMCPBearerInvocation(context, 'child', 'echo')!;
   await expect(invocation.resolve({ config, user, serverName: 'Files' })).resolves.toMatchObject({
     headers: { Authorization: 'Bearer resource-only' },
@@ -754,7 +846,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
         req: { user, _isScheduledFire: true, body: {} },
         context: resumed,
         host: f.host,
-        restoredContext: restoreScheduledTokenContext(
+        executionContext: restoreExecutionContext(
           { user },
           {
             userId: user.id,
@@ -829,7 +921,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
           req: { user, _isScheduledFire: true, body: {} },
           context: restored,
           host: f.host,
-          restoredContext: restoreScheduledTokenContext(
+          executionContext: restoreExecutionContext(
             { user },
             {
               userId: user.id,
@@ -915,18 +1007,9 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
           requestScopedConnections: f.context,
           flowManager,
         };
-        const connected = await manager.getConnection(input);
-        const catalog = await connected.fetchToolsSnapshot();
-        const echo = catalog.tools.find((tool) => tool.name === 'echo')!;
-        let digest = getScheduledMCPToolDefinitionDigest(echo);
-        const execution = createScheduleMCPExecution({
+        const execution = createRunGrantExecution({
           storage: f.storage,
-          loadAuthorization: async () => ({
-            authority: f.consent.authority,
-            policy: {
-              Files: { tools: { echo: { effect: 'read_only', definitionSha256: digest } } },
-            },
-          }),
+          loadAuthorization: async () => ({ authority: f.consent.authority }),
         });
         await execution.attach(f.context, identity, stage, true);
         const call = () =>
@@ -936,11 +1019,11 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
             toolName: 'echo',
             toolArguments: { message: 'guarded' },
             scheduledBearerInvocation: bindScheduledMCPBearerInvocation(f.context, 'child', 'echo'),
-            scheduledMCPInvocation: bindScheduledMCPInvocation(f.context, 'child', 'echo'),
+            scheduledMCPInvocation: bindRunGrantInvocation(f.context, 'child', 'echo'),
           });
         await call();
         expect(calls).toBe(1);
-        digest = '0'.repeat(64);
+        f.dropTool();
         await expect(call()).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
         expect(calls).toBe(1);
         expect(server.tokenRequests).toEqual([]);
@@ -1208,11 +1291,11 @@ it('cancels the occurrence-owned mint without aborting another occurrence or acc
 
 it('detaches stalled enrollment at the occurrence cutoff and withholds its late result', async () => {
   const f = await bearerFixture();
-  let entered!: () => void, release!: (value: ScheduledMCPTarget[]) => void;
+  let entered!: () => void, release!: (value: RunGrantTarget[]) => void;
   const started = new Promise<void>((resolve) => {
     entered = resolve;
   });
-  const enrollment = new Promise<ScheduledMCPTarget[]>((resolve) => {
+  const enrollment = new Promise<RunGrantTarget[]>((resolve) => {
     release = resolve;
   });
   f.resolveEnrollment.mockImplementationOnce(async () => {

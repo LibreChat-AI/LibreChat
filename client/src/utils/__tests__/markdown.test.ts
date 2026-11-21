@@ -1,4 +1,5 @@
-import { isSafeUrl, getMarkdownFiles, EMBEDDED_IS_SAFE_URL } from '../markdown';
+import { isSafeUrl } from '@librechat/chat';
+import { getMarkdownFiles, EMBEDDED_IS_SAFE_URL } from '../markdown';
 
 describe('isSafeUrl', () => {
   it('allows https URLs', () => {

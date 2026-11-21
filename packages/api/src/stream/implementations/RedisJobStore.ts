@@ -68,6 +68,7 @@ import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
 import { parseTerminalPersistenceOwner } from '~/stream/metadata';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
+import { parseRunTrigger } from '~/agents/authority/trigger';
 import { evalScript } from '~/cache/redisScript';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
@@ -4408,6 +4409,23 @@ export class RedisJobStore implements IJobStoreV2 {
   }
 
   /**
+   * A copy of the content of a run this replica hosts, taken synchronously. The run folds an
+   * event into that array and emits it in one synchronous step, so the copy holds exactly
+   * what the run had emitted at the instant of the call.
+   */
+  copyHostContent(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null {
+    const hostParts = this.getLocalEntry(
+      this.localContentParts,
+      streamId,
+      expectedCreatedAt,
+    )?.value.deref();
+    return hostParts != null && hostParts.length > 0 ? structuredClone(hostParts) : null;
+  }
+
+  /**
    * Store collectedUsage reference in local cache.
    * This is used for abort handling to spend tokens for all models.
    * Note: Only available on the generating instance; cross-replica abort uses fallback.
@@ -5868,6 +5886,7 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventSuspension)
         : undefined,
       agentEventLegacyTurnToken: data.agentEventLegacyTurnToken || undefined,
+      trigger: data.trigger === undefined ? undefined : parseRunTrigger(data.trigger, true),
       scheduleMCPCompletion:
         data.scheduleMCPCompletion === undefined
           ? undefined

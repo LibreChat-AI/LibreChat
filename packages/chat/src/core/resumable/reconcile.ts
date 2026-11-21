@@ -9,6 +9,7 @@ import {
 } from './terminal';
 import { completedResponseMessageId, isInitialNewConversation } from './messages';
 import { supportsGenerationProtocolV2 } from '../protocol';
+import { settleStoredSteers } from './steers';
 import { getRecoverySteerId } from './start';
 
 /** A synthesized lifecycle frame: the run ended without an ordinary final payload. */
@@ -159,39 +160,13 @@ export async function reconcileGenerationLifecycle(
     return;
   }
 
-  const authoritativeValues = [
-    ...(persistedMessages ?? []),
-    ...(status?.resumeState?.aggregatedContent ?? status?.aggregatedContent ?? []),
-  ];
-  const reconciledIds = new Set(host.steers.appliedIds(authoritativeValues));
-  host.steers.settleApplied(reconciliationConvoId, authoritativeValues);
-  for (const id of host.steers.adoptPromoted(
-    reconciliationConvoId,
-    Array.isArray(event.promotedSteers) ? event.promotedSteers : [],
-  )) {
-    reconciledIds.add(id);
-  }
-  const unrecovered = status?.unrecoveredSteers ?? [];
-  if (unrecovered.length > 0) {
-    const recoverySteerId = getRecoverySteerId(sub.submission);
-    host.steers.convertToQueued(reconciliationConvoId, unrecovered, {
-      ...(recoverySteerId != null && {
-        allowPreviouslyConvertedIds: [recoverySteerId],
-      }),
-    });
-    for (const steer of unrecovered) {
-      reconciledIds.add(steer.steerId);
-      if (steer.clientSteerId) {
-        reconciledIds.add(steer.clientSteerId);
-      }
-    }
-  }
-  if (persistedMessages) {
-    host.steers.convertLocalToQueued(reconciliationConvoId, {
-      excludeSteerIds: reconciledIds,
-      generationProtocolVersion,
-    });
-  }
+  settleStoredSteers(host.steers, reconciliationConvoId, {
+    messages: persistedMessages,
+    status,
+    promoted: event.promotedSteers,
+    recoverySteerId: getRecoverySteerId(sub.submission),
+    generationProtocolVersion,
+  });
 
   host.events.resetLive(sub.liveSubmission());
   host.cache.removeActiveJob(currentStreamId);

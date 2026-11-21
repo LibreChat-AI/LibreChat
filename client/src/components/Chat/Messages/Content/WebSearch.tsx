@@ -1,11 +1,13 @@
 import { useContext } from 'react';
-import { ToolCall, WebSearch as WebSearchPart } from '@librechat/chat/components';
+import {
+  ToolCall,
+  SearchVerticals,
+  HeaderActionSlotContext,
+  WebSearch as WebSearchPart,
+} from '@librechat/chat/components';
 import type { PartMetadata, TAttachment } from 'librechat-data-provider';
-import { FaviconImage } from '~/components/Web/SourceHovercard';
 import { StackedFavicons } from '~/components/Web/Sources';
-import { HeaderActionSlotContext } from './slot';
 import { useSearchContext } from '~/Providers';
-import SearchVerticals from './verticals';
 import './toolCallSlots';
 
 export default function WebSearch({
@@ -44,9 +46,6 @@ export default function WebSearch({
       runStepStatus={runStepStatus}
       searchResults={searchResults}
       headerSlot={headerSlot}
-      renderFavicon={({ domain, className }) => (
-        <FaviconImage domain={domain} className={className ?? ''} />
-      )}
       renderStackedFavicons={({ sources, start }) => (
         <StackedFavicons sources={sources} start={start} />
       )}

@@ -667,6 +667,15 @@ jobs:
           npx playwright test --config=e2e/playwright.config.mock.ts
           mcp-tool-list-changed.spec.ts --retries=0
 
+      - name: Test explicit MCP Connect across two replicas
+        if: matrix.replicas == 2
+        env:
+          E2E_STREAM_STORE: redis
+          REDIS_URI: redis://127.0.0.1:6379
+          E2E_MCP_CONNECTION_STATUS: 'true'
+          E2E_REPLICA_DIAGNOSTIC: 'true'
+        run: npx playwright test --config=e2e/playwright.config.mcp-connect.ts
+
       # Debugging aids that no job downloads: non-fatal and bounded, as the note on the
       # e2e_shards uploads explains.
       - name: Upload Playwright HTML report
@@ -753,6 +762,9 @@ jobs:
       # every shard for about 8 seconds each; this lane finishes minutes before the shards do.
       - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
         run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
+
+      - name: Check mock server readiness configuration
+        run: node --test e2e/readiness.test.mjs
 
       - name: Check MCP Apps result gating and same-repository PR eligibility
         run: node --test e2e/mcp-apps/results.test.mjs e2e/mcp-apps/workflow.test.mjs

@@ -29,10 +29,32 @@ transcript, from a Chromium trace of the built client:
   the slide; each direction is traced on its own. `ms/frame` and the longest task say whether
   the slide can hold a frame rate. `FADE_PERF_PROFILE=1` adds the script's self time and
   `FADE_PERF_WHY=1` the components that render for each toggle.
+- **`rail.perf.spec.ts`**: the cost of opening and closing the session rail beside the thread,
+  with the sidebar's toggle traced in the same run as the yardstick. The rail does not slide, so
+  the thread changes width once. `FADE_PERF_WHY=1` counts what renders for each toggle, beside an
+  idle second and the sidebar's: no message row should, at any thread length.
+  A second test grows the last reply for three seconds with the rail closed and then open and
+  listing running work, and prints the page's compositor layer count beside each: a row that
+  animates is a layer, and every frame of the thread pays for the layers on the page. For the
+  cost per kind of stream event, run the replay with `FADE_PERF_RAIL=closed` and then `open`:
+  the conversation becomes an agent's with running tools, finished tools and subagents staged
+  for the rail (`rail.ts`), and the two runs differ only in whether the rail is showing.
 - **`scroll.perf.spec.ts`**: the cost of reading back through the thread, a page at a time
   from the latest turn towards the first and back. Rows far from the viewport are skipped by
   the browser and laid out again as a scroll brings them near, so this is where that work
   shows up if it ever costs more than it saves.
+
+- **`open.perf.spec.ts`**: the cost of opening the thread: by reloading it, by switching to
+  it from the sidebar, and by switching to it while it has a reply in flight, which is the
+  thread a reader most often comes back to. A long thread mounts in steps, so the trace
+  reports how long the main thread was busy until every row was in, how many tasks ran over
+  50 ms and the longest of them: the freeze a reader feels is those tasks, not the total. The
+  switch also prints the row count at each frame; a single step from a few rows to all of
+  them is a thread mounted in one commit. `FADE_PERF_PROFILE=1` with `FADE_PERF_DUMP` writes
+  a trace and a CPU profile of one more switch on the same clock, so the profile's samples
+  can be read task by task. Run it with `FADE_PERF_LIGHT=1`: a thread mounting sets thousands
+  of timers, and the call stack the full trace records for each one is a third of what it
+  then measures.
 
 - **`restyle.perf.spec.ts`**: the cost of one small change in every row at once, which is
   what a run starting or ending is. It flips a class, flips `disabled` and mounts a button on
@@ -68,12 +90,16 @@ by side.
 | `FADE_PERF_SKIP_LIVE`    | `1` stops the frame spec after the idle and label traces.            |
 | `FADE_PERF_PROFILE`      | `1` samples the page's JavaScript: a second live run, or the replay. |
 | `FADE_PERF_DUMP`         | A directory that receives raw traces, profiles and replay windows.   |
+| `FADE_PERF_LIGHT`        | `1` traces the timeline without call stacks, which cost per timer.   |
+| `FADE_PERF_ROUNDS`       | How many times the open spec repeats each measurement; 4 by default. |
+| `FADE_PERF_STORAGE`      | Local settings to open the chat with, as `key=value,key=value`.      |
 | `FADE_PERF_CATEGORIES`   | More trace categories for a dump, comma-separated.                   |
 | `FADE_PERF_REPLAY_INDEX` | Which message to replay (position in the flattened export).          |
 | `FADE_PERF_REPLAY_PARTS` | Replays only the first N content parts.                              |
 | `FADE_PERF_GAP_MS`       | Pause after each replayed frame; 150 by default.                     |
 | `FADE_PERF_ANIMATIONS`   | `1` lists what is animating during the replay, and which properties. |
 | `FADE_PERF_WHY`          | `1` counts component renders across the replay, with their causes.   |
+| `FADE_PERF_RAIL`         | `closed` or `open`: stages background work for the session rail.     |
 | `FADE_PERF_WHY_LIMIT`    | How many components that count lists; 80 by default.                 |
 
 ## Reading the output

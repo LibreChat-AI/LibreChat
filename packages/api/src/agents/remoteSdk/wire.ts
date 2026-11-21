@@ -1,5 +1,6 @@
 import { isPlainObject } from 'lodash';
 import { Send } from '@langchain/langgraph';
+import { toStoredMessage } from '@librechat/agents';
 import { BaseMessage, mapStoredMessagesToChatMessages } from '@librechat/agents/langchain/messages';
 import type { StoredMessage } from '@librechat/agents/langchain/messages';
 
@@ -10,7 +11,7 @@ export function encodeSdkValue(value: unknown): unknown {
   if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0)))
     return { $sdk: 'number', value: Object.is(value, -0) ? '-0' : String(value) };
   if (value instanceof BaseMessage)
-    return { $sdk: 'message', value: encodeSdkValue(value.toDict()) };
+    return { $sdk: 'message', value: encodeSdkValue(toStoredMessage(value)) };
   if (value instanceof Uint8Array)
     return { $sdk: 'bytes', value: Buffer.from(value).toString('base64') };
   if (value instanceof Date) return { $sdk: 'date', value: value.toISOString() };

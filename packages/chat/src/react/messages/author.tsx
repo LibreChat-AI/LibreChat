@@ -17,3 +17,15 @@ export const AuthorContext: Context<TMessageAuthor | null> = createContext<TMess
   null,
 );
 export const useAuthorContext = (): TMessageAuthor | null => useContext(AuthorContext);
+
+/**
+ * Who wrote a list's user-side turns, when that is not the reader. A conversation the reader
+ * follows can hold such turns: a subagent's brief comes from the agent that dispatched it. A
+ * list under this context draws them with this author's name and face, shown, instead of the
+ * reader's.
+ */
+export const UserTurnAuthorContext: Context<TMessageAuthor | undefined> = createContext<
+  TMessageAuthor | undefined
+>(undefined);
+export const useUserTurnAuthor = (): TMessageAuthor | undefined =>
+  useContext(UserTurnAuthorContext);

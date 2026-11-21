@@ -23,6 +23,12 @@ export interface FinalDataLike {
 export interface UsageHandlers {
   /** Bind an optimistic, created, or resumed response without inventing usage. */
   bindResponse: (submission: UsageSubmissionLike) => string | null;
+  /**
+   * The turn's reply was drawn under a placeholder id and the stream has now named the id its
+   * row takes. Usage bound to that submission follows the row from here on, so the reply being
+   * written stays the one in progress.
+   */
+  nameResponse: (responseId: string, submission: UsageSubmissionLike) => void;
   contextHandler: (data: TContextUsageEvent, submission: UsageSubmissionLike) => void;
   usageHandler: (data: TTokenUsageEvent, submission: UsageSubmissionLike) => void;
   tapStream: (data: { delta?: { content?: unknown } }, submission: UsageSubmissionLike) => void;

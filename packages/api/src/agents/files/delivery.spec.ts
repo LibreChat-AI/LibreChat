@@ -304,6 +304,74 @@ describe('resolveScopedTurnAttachments', () => {
     ).toEqual([]);
   });
 
+  describe('a file the conversation leaves out', () => {
+    const kept = { ...file, file_id: 'kept', text: 'region,total' };
+    const historicalFiles = new Map([
+      [file.file_id, file],
+      [kept.file_id, kept],
+    ]);
+    const messages = [{ files: [{ file_id: 'csv' }, { file_id: 'kept' }] }];
+    const scoped = (excluded?: string[]) =>
+      resolveScopedTurnAttachments({
+        agents: [receiver],
+        sharedConversationAgentIds: ['handoff'],
+        messages,
+        historicalFiles,
+        requestAttachments: [],
+        sharedRunAttachmentIds: new Set(),
+        excluded,
+      })
+        .get('handoff')
+        ?.map((entry) => [entry.file_id, entry.llmDeliveryPath]);
+
+    it('reaches a receiver with no reader as text while it is included', () => {
+      expect(scoped()).toEqual([
+        ['csv', 'text'],
+        ['kept', 'text'],
+      ]);
+    });
+
+    /** Left out of the replay, it is no longer one of the shared prompt files, which is the
+     *  only thing that kept it from being a candidate here. */
+    it('does not reach any receiver as text once it is left out', () => {
+      expect(scoped(['csv'])).toEqual([['kept', 'text']]);
+      expect(scoped(['csv', 'kept'])).toEqual([]);
+    });
+
+    it('stays out when the request names it again', () => {
+      expect(
+        resolveScopedTurnAttachments({
+          agents: [receiver],
+          sharedConversationAgentIds: ['handoff'],
+          messages: [],
+          requestAttachments: [file, kept],
+          sharedRunAttachmentIds: new Set(),
+          excluded: ['csv'],
+        })
+          .get('handoff')
+          ?.map((entry) => entry.file_id),
+      ).toEqual(['kept']);
+    });
+
+    it('keeps what an agent was given as its own', () => {
+      const own = { ...file, file_id: 'own' };
+      expect(
+        resolveScopedTurnAttachments({
+          agents: [receiver],
+          sharedConversationAgentIds: ['handoff'],
+          messages,
+          historicalFiles,
+          requestAttachments: [],
+          sharedRunAttachmentIds: new Set(),
+          attachmentsByAgentId: new Map([['handoff', [own]]]),
+          excluded: ['csv', 'kept'],
+        })
+          .get('handoff')
+          ?.map((entry) => entry.file_id),
+      ).toEqual(['own']);
+    });
+  });
+
   it('ignores unhydrated and no-longer-retained history and deduplicates shared prompt files', () => {
     const stale = { ...file, file_id: 'stale' };
     const unhydrated = { file_id: 'unhydrated', text: 'untrusted' };

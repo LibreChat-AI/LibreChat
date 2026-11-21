@@ -1,13 +1,20 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 import { z } from 'zod';
 import type {
+  TPlugin,
+  TAttachment,
+  MemoryScope,
+  SkillsScope,
+  AgentProvider,
+  TMessageTrigger,
+} from 'src/schemas';
+import type {
   FunctionTool,
   ToolResources,
   AgentToolOptions,
   ToolApprovalGrantBinding,
 } from './tools';
 import type { TPromptGroupSource, NativePromptSelection, LangfusePromptSelection } from '../types';
-import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
@@ -345,6 +352,8 @@ export namespace Agents {
      *  until reload). */
     manualSkills?: string[];
     alwaysAppliedSkills?: string[];
+    /** What started the turn, when no person sent it. */
+    trigger?: TMessageTrigger;
   }
 
   /** Client-safe state for one MCP authorization prompt that remains actionable. */
@@ -1330,3 +1339,7 @@ export type AgentFile = {
   object: string;
   purpose: 'fine-tune' | 'fine-tune-results' | 'agents' | 'agents_output';
 };
+
+/** Display identity shared by saved agents and model-spec transcript targets. */
+export type AgentDisplay = Pick<Agent, 'id' | 'name' | 'provider' | 'model' | 'avatar'>;
+export type ModelSpecHandoffTarget = AgentDisplay;

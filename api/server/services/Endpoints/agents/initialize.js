@@ -40,6 +40,7 @@ const {
   createLazyAgentHistoryResolver,
   resolveToolRoleGrants,
   createChatRunFileBindings,
+  createChatSdkFileSession,
   createAxiosInstance,
   getCodeApiAuthHeaders,
   getCodeExecutionBaseUrl,
@@ -51,7 +52,7 @@ const {
   extractFileContext,
   createScheduleUpstreamTokenProviderResolver,
   initializeWithScheduledMCPBearer,
-  initializeWithScheduleMCPExecution,
+  initializeWithAuthority,
   retainScheduleMCPCompletion,
   getScheduleMCPExecution,
   getMCPRequestContext,
@@ -227,6 +228,7 @@ const initializeClientWithProvider = async ({
   res,
   signal,
   endpointOption,
+  executionContext: runContext,
   jobCreatedAt,
   checkpointNamespace,
   foregroundRunId,
@@ -470,6 +472,7 @@ const initializeClientWithProvider = async ({
   const invokedSkillIdentities = new Map();
   const toolExecuteOptions = {
     scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(req, res)),
+    runContext,
     // Keep foreground cancellation owned by this request even when the agents
     // SDK rebuilds a graph for approval resume. The SDK event's breaker signal
     // is composed with this authoritative job signal by the handler.
@@ -826,6 +829,7 @@ const initializeClientWithProvider = async ({
       getUserKey: db.getUserKey,
       getMessages: db.getMessages,
       getConvoFiles: db.getConvoFiles,
+      getConvoExcludedFiles: db.getConvoExcludedFiles,
       getAccessibleMcpServerNames,
       updateFilesUsage: db.updateFilesUsage,
       getUserKeyValues: db.getUserKeyValues,
@@ -923,6 +927,7 @@ const initializeClientWithProvider = async ({
         getUserKey: db.getUserKey,
         getMessages: db.getMessages,
         getConvoFiles: db.getConvoFiles,
+        getConvoExcludedFiles: db.getConvoExcludedFiles,
         getAccessibleMcpServerNames,
         updateFilesUsage: db.updateFilesUsage,
         getUserKeyValues: db.getUserKeyValues,
@@ -1468,6 +1473,7 @@ const initializeClientWithProvider = async ({
             getUserKey: db.getUserKey,
             getMessages: db.getMessages,
             getConvoFiles: db.getConvoFiles,
+            getConvoExcludedFiles: db.getConvoExcludedFiles,
             getAccessibleMcpServerNames,
             updateFilesUsage: db.updateFilesUsage,
             getUserKeyValues: db.getUserKeyValues,
@@ -1867,6 +1873,7 @@ const initializeClientWithProvider = async ({
             completionWakeups: completionWakeupsEnabled,
             requestScopedConnections: getMCPRequestContext(req, res),
             scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+            runContext,
           },
         )
       : undefined;
@@ -2101,15 +2108,26 @@ const initializeClientWithProvider = async ({
     iconURL: endpointOption.iconURL,
     chatProjectId: endpointOption.chatProjectId,
     attachments: primaryConfig.requestAttachments ?? primaryConfig.attachments,
+    currentRequestAttachments: primaryConfig.currentRequestAttachments,
     agentContextAttachmentsByAgentId,
     endpointType: endpointOption.endpointType,
     resendFiles: primaryConfig.resendFiles ?? true,
+    excludedFiles: primaryConfig.excludedFiles,
     imageDetail: primaryConfig.imageDetail,
     maxContextTokens: primaryConfig.maxContextTokens,
     endpoint: isEphemeralAgentId(primaryConfig.id) ? primaryConfig.endpoint : EModelEndpoint.agents,
     subagentAggregatorsByToolCallId,
     subagentTasks,
     runFiles: runFileBindings.session,
+    sdkFiles: createChatSdkFileSession({
+      audit: (event) => logger.warn('[agents:sdk-files]', event),
+      host: req.app?.locals?.sdkFileHost,
+      req,
+      getInputs: () => primaryConfig.currentRequestAttachments,
+      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId, { storageOnly: true }),
+      filterFiles: filterFilesByAgentAccess,
+      getStrategyFunctions,
+    }),
     /** Resolved endpoint token/pricing config so spending and cost reflect
      *  configured rates for custom-endpoint agents instead of defaults. */
     endpointTokenConfig: primaryConfig.endpointTokenConfig,
@@ -2150,9 +2168,9 @@ function createInitializeClient(dependencies = {}) {
       params.req,
       dependencies.resolveUpstreamTokenProvider,
       params.signal,
-      params.scheduledTokenContext,
+      params.executionContext,
     );
-    return initializeWithScheduleMCPExecution(
+    return initializeWithAuthority(
       {
         req: params.req,
         signal: params.signal,
@@ -2160,16 +2178,20 @@ function createInitializeClient(dependencies = {}) {
           params.req,
           params.res,
         ),
-        restoredContext: params.scheduledTokenContext,
+        executionContext: params.executionContext,
         restoredJob: params.scheduleJobIdentity,
+        approvedToolCalls: params.approvedToolCalls,
       },
-      () => require('~/server/services/Schedules/consent'),
+      () => ({
+        schedule: require('~/server/services/Schedules/consent'),
+        key: require('~/server/services/ApiKeys/grants'),
+      }),
       () =>
         initializeWithScheduledMCPBearer(
           {
             req: params.req,
             context: getMCPRequestContext(params.req),
-            restoredContext: params.scheduledTokenContext,
+            executionContext: params.executionContext,
             host: dependencies.scheduledBearerHost,
             signal: params.signal,
             streamId: params.req._resumableStreamId,

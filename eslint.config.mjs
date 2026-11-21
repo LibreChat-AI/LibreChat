@@ -338,6 +338,7 @@ export default [
             'animate-fadeIn',
             'slow-pulse',
             'hide-scrollbar',
+            'custom-icon-tint',
             'scrollbar-gutter-spacer',
             'progress-text-wrapper',
             'progress-text-content',
@@ -346,6 +347,8 @@ export default [
             'lucide',
             'lucide-*',
             'language-*',
+            'hljs',
+            'hljs-*',
             'i-heroicons-*',
             'form-check-label',
             // Markers a selector reads rather than Tailwind styling: each one is queried by a
@@ -359,9 +362,11 @@ export default [
             'hover-button-active',
             'open',
             'split-parent',
-            // Message-text markers the app's stylesheet paints; a @librechat/chat source cannot see
-            // that stylesheet, so its lint has no Tailwind entry that declares them.
+            // Message-text markers a stylesheet outside any Tailwind entry paints: the typography
+            // ships in the library's component CSS (`packages/client/src/theme/prose.css`), the
+            // rest in the app's stylesheet, which a @librechat/chat source cannot see.
             'markdown',
+            'markdown-table-wrapper',
             'prose',
             'prose-sm',
             'message-content',

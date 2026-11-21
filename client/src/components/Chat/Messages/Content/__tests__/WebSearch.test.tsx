@@ -4,14 +4,17 @@ import { Tools } from 'librechat-data-provider';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { ROW_GLYPH_SLOT, FailedRevealContext } from '@librechat/chat/components';
+import {
+  ROW_GLYPH_SLOT,
+  FailedRevealContext,
+  HeaderActionSlotContext,
+} from '@librechat/chat/components';
 import type {
   TAttachment,
   SearchResultData,
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
-import { HeaderActionSlotContext } from '../slot';
 import { SearchContext } from '~/Providers';
 import '~/Providers/MessagePartsHostContext';
 import WebSearch from '../WebSearch';
@@ -62,9 +65,6 @@ jest.mock('~/utils/cn', () => ({
 }));
 
 jest.mock('~/components/Web/SourceHovercard', () => ({
-  FaviconImage: ({ domain }: { domain: string }) => (
-    <span data-testid="favicon" data-domain={domain} />
-  ),
   getCleanDomain: (url: string) => {
     try {
       return new URL(url).hostname.replace('www.', '');
@@ -561,7 +561,7 @@ describe('WebSearch', () => {
 
       const completedRow = screen.getByRole('button', { name: /Searched the web/ });
       const completedSlot = completedRow.firstElementChild;
-      expect(completedSlot).toContainElement(screen.getByTestId('favicon'));
+      expect(completedSlot?.querySelector('img[alt="example.com"]')).not.toBeNull();
       for (const token of ROW_GLYPH_SLOT.split(' ')) {
         expect(completedSlot).toHaveClass(token);
       }

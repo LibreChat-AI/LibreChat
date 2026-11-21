@@ -10,7 +10,7 @@ import {
 } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
 
-const context = Buffer.from('librechat-sdk-provider-text/v1');
+type Purpose = 'provider-text' | 'model' | 'files';
 const base64 = z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/);
 const publicKeySchema = base64.length(60);
 const envelopeSchema = z
@@ -34,7 +34,12 @@ function publicKey(value: string): KeyObject {
   return key;
 }
 
-function deriveKey(privateKey: KeyObject, peerKey: KeyObject, nonce: Buffer): Buffer {
+function deriveKey(
+  privateKey: KeyObject,
+  peerKey: KeyObject,
+  nonce: Buffer,
+  context: Buffer,
+): Buffer {
   const secret = diffieHellman({ privateKey, publicKey: peerKey });
   try {
     return Buffer.from(hkdfSync('sha256', secret, nonce, context, 32));
@@ -43,12 +48,16 @@ function deriveKey(privateKey: KeyObject, peerKey: KeyObject, nonce: Buffer): Bu
   }
 }
 
-/** Per-run private key stays on the host; recovery journals receive ciphertext and public keys only. */
-export function createPolicyReceiver(maxBytes: number): {
+/** Per-run private key stays with its recipient; recovery journals receive ciphertext and public keys only. */
+export function createPolicyReceiver(
+  maxBytes: number,
+  purpose: Purpose = 'provider-text',
+): {
   publicKey: string;
   open(envelope: unknown): string;
   dispose(): void;
 } {
+  const context = Buffer.from(`librechat-sdk-${purpose}/v1`);
   const pair = generateKeyPairSync('x25519');
   let privateKey: KeyObject | undefined = pair.privateKey;
   return {
@@ -59,7 +68,7 @@ export function createPolicyReceiver(maxBytes: number): {
       if (envelope.ciphertext.length > Math.ceil(maxBytes / 3) * 4)
         throw new Error('SDK policy payload exceeds limit');
       const nonce = Buffer.from(envelope.nonce, 'base64');
-      const key = deriveKey(privateKey, publicKey(envelope.publicKey), nonce);
+      const key = deriveKey(privateKey, publicKey(envelope.publicKey), nonce, context);
       try {
         const decipher = createDecipheriv('aes-256-gcm', key, nonce);
         decipher.setAAD(context);
@@ -93,13 +102,15 @@ export function createPolicyReceiver(maxBytes: number): {
 export function createPolicySender(
   receiverKey: string,
   maxBytes: number,
+  purpose: Purpose = 'provider-text',
 ): (text: string) => Envelope {
+  const context = Buffer.from(`librechat-sdk-${purpose}/v1`);
   const recipient = publicKey(receiverKey);
   return (text) => {
     if (Buffer.byteLength(text) > maxBytes) throw new Error('SDK policy payload exceeds limit');
     const pair = generateKeyPairSync('x25519');
     const nonce = randomBytes(12);
-    const key = deriveKey(pair.privateKey, recipient, nonce);
+    const key = deriveKey(pair.privateKey, recipient, nonce, context);
     try {
       const cipher = createCipheriv('aes-256-gcm', key, nonce);
       cipher.setAAD(context);

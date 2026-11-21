@@ -57,7 +57,7 @@ jest.mock('@librechat/data-schemas', () => {
 });
 
 const axios = require('axios');
-const { loadYaml, expandCustomEndpoint } = require('@librechat/api');
+const { loadYaml, hashCustomConfig, expandCustomEndpoint } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { ReasoningParameterFormat, ReasoningResponseKey } = require('librechat-data-provider');
 const loadCustomConfig = require('./loadCustomConfig');
@@ -263,7 +263,7 @@ describe('loadCustomConfig', () => {
     expect(result).toEqual(mockConfig);
   });
 
-  it('should log the loaded custom config', async () => {
+  it('logs only the digest of the loaded custom config', async () => {
     const mockConfig = {
       version: '1.0',
       cache: true,
@@ -280,12 +280,14 @@ describe('loadCustomConfig', () => {
     process.env.CONFIG_PATH = 'validConfig.yaml';
     loadYaml.mockReturnValueOnce(mockConfig);
     await loadCustomConfig();
-    expect(logger.info).toHaveBeenCalledWith('Custom config file loaded:');
-    expect(logger.info).toHaveBeenCalledWith(JSON.stringify(mockConfig, null, 2));
-    expect(logger.debug).toHaveBeenCalledWith('Custom config:', mockConfig);
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      `Custom config file loaded (digest: ${hashCustomConfig(mockConfig)})`,
+    );
+    expect(logger.debug).not.toHaveBeenCalled();
   });
 
-  it('masks literal Langfuse header credentials in the startup log', async () => {
+  it('omits literal Langfuse header credentials from startup logs', async () => {
     const mockConfig = {
       version: '1.0',
       cache: true,
@@ -307,8 +309,8 @@ describe('loadCustomConfig', () => {
     const debugged = JSON.stringify(logger.debug.mock.calls);
     expect(logged).not.toContain('gateway-credential');
     expect(debugged).not.toContain('gateway-credential');
-    expect(logged).toContain('***');
-    // The masking is for logging only — the live config keeps real values.
+    expect(logged).toMatch(/^Custom config file loaded \(digest: [a-f0-9]{12}\)$/);
+    // The live config keeps real values.
     expect(result.langfuse.headers['CF-Access-Client-Secret']).toBe('gateway-credential');
   });
 

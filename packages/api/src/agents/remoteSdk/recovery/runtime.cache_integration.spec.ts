@@ -1,14 +1,20 @@
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
-import { randomUUID } from 'node:crypto';
 import { createServer, connect } from 'node:net';
 import { request as httpRequest } from 'node:http';
+import { randomUUID, createHash } from 'node:crypto';
 import { tool } from '@librechat/agents/langchain/tools';
 import { setTimeout as delay } from 'node:timers/promises';
+import { ChatGenerationChunk } from '@langchain/core/outputs';
+import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
+  createHostFileService,
+  HostFileAdmission,
   createHostProviderTextService,
+  createHostModelService,
+  HostModelAdmission,
   ProviderTextAdmission,
   Run,
   Providers,
@@ -17,7 +23,13 @@ import {
   MemorySaver,
   HookRegistry,
 } from '@librechat/agents';
-import type { RunConfig, ToolCallRequest, ToolExecuteBatchRequest } from '@librechat/agents';
+import type {
+  RunConfig,
+  ToolCallRequest,
+  ToolExecuteBatchRequest,
+  HostFileStageRequest,
+  HostFilePublishRequest,
+} from '@librechat/agents';
 import type { AddressInfo, Socket } from 'node:net';
 import type { RedisTestClient } from '../../../stream/__tests__/helpers/redis';
 import type { RemoteSdkFactoryInput } from '../types';
@@ -25,6 +37,8 @@ import {
   createRedisTestClient,
   clearRedisTestPrefix,
 } from '../../../stream/__tests__/helpers/redis';
+import { createInitialModelBoundAdmissionCallback } from '../../../middleware/modelBoundContent';
+import { createHostModelLifecycle, supportsModelInvocationContext } from '../admission';
 import { createRedisRuntimeJournal } from './redis';
 import { createRemoteSdkServer } from '../server';
 import { createRuntimeRecovery } from './server';
@@ -1012,6 +1026,231 @@ it('recovers a policy reply after a wire outage without repeating inspection or 
     expect(runtime.journalEntries.join('')).not.toContain(raw);
     expect(runtime.errors).toEqual([]);
     expect(admission.snapshot().inspections).toBe(0);
+  } finally {
+    await runtime.close();
+  }
+});
+
+it.each(['input', 'output', 'combined'] as const)(
+  'resumes host model chunks without repeating the provider (protection=%s)',
+  async (mode) => {
+    const inputAdmission = mode !== 'output';
+    const outputProtection = mode !== 'input';
+    const runtime = await fixture(async (input) => {
+      const run = await factory(input);
+      run.Graph!.overrideModel = input.hostModel;
+      return run;
+    });
+    const native = new TestModel({});
+    let invocations = 0;
+    let hostStarts = 0;
+    const persisted = jest.fn();
+    const initial = createInitialModelBoundAdmissionCallback({
+      agentIds: [identity.agentId],
+      isActive: () => true,
+      onAllowed: persisted,
+    });
+    const modelLifecycle = createHostModelLifecycle(identity.agentId, 64);
+    if (inputAdmission) native.callbacks = modelLifecycle.wrapCallbacks(native.callbacks);
+    native._streamResponseChunks = async function* () {
+      invocations++;
+      yield new ChatGenerationChunk({ text: 'first ', message: new AIMessageChunk('first ') });
+      runtime.drop();
+      await delay(50);
+      yield new ChatGenerationChunk({
+        text: outputProtection ? 'PRIVATE-CANDIDATE ' : 'approved ',
+        message: new AIMessageChunk(outputProtection ? 'PRIVATE-CANDIDATE ' : 'approved '),
+      });
+      yield new ChatGenerationChunk({ text: 'third', message: new AIMessageChunk('third') });
+    };
+    const admission = new HostModelAdmission({ maxConcurrentCalls: 1, maxRequestBytes: 65536 });
+    const model = createHostModelService({
+      identity,
+      model: native,
+      admission,
+      descriptor: {
+        version: 1,
+        reference: 'primary',
+        provider: Providers.OPENAI,
+        model: 'native',
+        streaming: true,
+        tools: [],
+      },
+      limits: { timeoutMs: 5000, maxRequestBytes: 65536, maxResponseBytes: 65536 },
+      config: {
+        callbacks: [
+          {
+            handleChatModelStart: () => {
+              hostStarts++;
+            },
+          },
+        ],
+      },
+    });
+    const providerText = createHostProviderTextService({
+      identity,
+      policy: {
+        version: 1,
+        timeoutMs: 5000,
+        maxAttemptBytes: 65536,
+        maxBufferedBytes: 131072,
+        classify: () => 'prose',
+        inspect: ({ content }) => ({
+          version: 1,
+          ok: true,
+          value: {
+            content: content.replaceAll('PRIVATE-CANDIDATE', 'approved'),
+            replacements: 1,
+            categories: [],
+          },
+        }),
+      },
+    });
+    try {
+      const run = await createRemoteSdkRun({
+        config: hostConfig(async () => {}),
+        identity,
+        remote: runtime.remote,
+        hostServices: {
+          model,
+          ...(inputAdmission && { modelLifecycle }),
+          ...(outputProtection && { providerText }),
+        },
+      });
+      const result = run.processStream(
+        { messages: [new HumanMessage('go')] },
+        {
+          version: 'v2',
+          configurable: { thread_id: identity.conversationId },
+          callbacks: inputAdmission
+            ? [
+                ensureHandler({
+                  ...initial,
+                  handleChatModelStart: (_llm, _messages, id, parent, extra, tags, metadata) =>
+                    initial.handleChatModelStart(undefined, [], id, parent, extra, tags, metadata),
+                }),
+              ]
+            : undefined,
+        },
+      );
+      if (mode === 'combined' && !supportsModelInvocationContext) {
+        await expect(result).rejects.toThrow();
+        expect(invocations).toBe(0);
+        expect(persisted).not.toHaveBeenCalled();
+        expect(runtime.createRun).not.toHaveBeenCalled();
+        return;
+      }
+      const content = await result;
+      expect(JSON.stringify(content)).toContain('first approved third');
+      expect(runtime.journalEntries.join('')).not.toContain('PRIVATE-CANDIDATE');
+      expect(invocations).toBe(1);
+      expect(persisted).toHaveBeenCalledTimes(inputAdmission ? 1 : 0);
+      expect(hostStarts).toBe(1);
+      expect(runtime.connections()).toBeGreaterThan(1);
+      expect(runtime.createRun).toHaveBeenCalledTimes(1);
+      expect(runtime.errors).toEqual([]);
+      expect(admission.snapshot().calls).toBe(0);
+    } finally {
+      await runtime.close();
+    }
+  },
+);
+
+it('recovers file upload chunks and a committed publication receipt without repeating mutations', async () => {
+  const raw = Buffer.from('PRIVATE-FILE-CONTENT-FOR-RECOVERY');
+  const descriptor = {
+    reference: 'input',
+    revision: 'v1',
+    filename: 'input.txt',
+    mediaType: 'text/plain',
+    bytes: raw.length,
+  };
+  let produced = 0;
+  const runtime = await fixture(async (input) => {
+    const files = input.hostFiles;
+    if (!files) throw new Error('Missing file capability');
+    const content = async function* () {
+      for await (const chunk of files.read(files.sources[0], input.signal)) {
+        produced++;
+        yield chunk;
+      }
+    };
+    const staged = await files.stage(
+      { operationId: 'upload', filename: 'output.txt', mediaType: 'text/plain', bytes: raw.length },
+      content(),
+      input.signal,
+    );
+    await files.publish(staged, 'publication', input.signal);
+    return factory(input);
+  });
+  const stage = jest.fn(
+    async (_request: HostFileStageRequest, content: AsyncIterable<Uint8Array>) => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of content) {
+        chunks.push(chunk);
+        if (chunks.length === 1) {
+          runtime.drop();
+          await delay(60);
+        }
+      }
+      const data = Buffer.concat(chunks);
+      expect(data).toEqual(raw);
+      return {
+        ...descriptor,
+        reference: 'staged',
+        sha256: createHash('sha256').update(data).digest('hex'),
+      };
+    },
+  );
+  const publish = jest.fn(async (request: HostFilePublishRequest) => {
+    const committed = {
+      operationId: request.operationId,
+      file: { ...descriptor, reference: 'published' },
+    };
+    runtime.drop();
+    await delay(60);
+    return committed;
+  });
+  const files = createHostFileService({
+    identity,
+    descriptor: {
+      version: 1,
+      operations: ['read', 'stage', 'publish'],
+      maxFileBytes: 1024,
+      maxChunkBytes: 8,
+    },
+    admission: new HostFileAdmission({ maxConcurrentOperations: 4, maxBufferedBytes: 64 }),
+    timeoutMs: 5000,
+    store: {
+      read: async (request) => ({
+        reference: request.reference,
+        revision: request.revision,
+        offset: request.offset,
+        data: raw.subarray(request.offset, request.offset + request.length),
+      }),
+      stage,
+      publish,
+    },
+  });
+  try {
+    const run = await createRemoteSdkRun({
+      config: hostConfig(async () => undefined),
+      identity,
+      remote: runtime.remote,
+      hostServices: { files: { ...files, sources: [descriptor] } },
+    });
+    await run.processStream(
+      { messages: [new HumanMessage('copy')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(produced).toBe(Math.ceil(raw.length / 8));
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(runtime.connections()).toBeGreaterThan(1);
+    expect(runtime.errors).toEqual([]);
+    expect(runtime.journalEntries.join('')).not.toContain('PRIVATE-FILE');
+    expect(runtime.journalEntries.join('')).not.toContain(raw.subarray(0, 8).toString('base64'));
   } finally {
     await runtime.close();
   }

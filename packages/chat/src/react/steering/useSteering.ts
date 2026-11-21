@@ -50,6 +50,12 @@ export interface UseSteeringParams<File extends ComposerFile = ComposerFile> {
   /** Consume the actual storage key selected by the composer’s autosave owner. */
   consumeDraft: () => void;
   index: number;
+  /**
+   * Whether this composer's chat takes what is done to a run in flight: a steer, a queued
+   * follow-up, an interrupt. Main chat's does. Any other pane's does only when its chat
+   * publishes its runs the way main chat's stream session does, and says so here.
+   */
+  duringRun?: boolean;
   conversationId: string;
   conversation: TConversation | null;
   addedConversation?: TConversation | null;
@@ -148,6 +154,7 @@ const pickLiveTail = (tail: TMessage | null): { parentMessageId?: string; paused
 export default function useSteering<File extends ComposerFile = ComposerFile>({
   consumeDraft: takeComposerDraft,
   index,
+  duringRun = index === 0,
   conversationId,
   conversation,
   addedConversation,
@@ -181,8 +188,8 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   const hasRealConvoId =
     conversationId != null && conversationId !== '' && conversationId !== Constants.NEW_CONVO;
   const serverQueueEnabled = isAgentsEndpoint(endpoint) && hasRealConvoId;
-  /** v1 gates the during-run UI to the primary composer, like the HITL popover. */
-  const enabled = steerable && index === 0;
+  /** The primary composer, and any other whose chat runs the during-run machinery. */
+  const enabled = steerable && duringRun;
   const queueKey = hasRealConvoId ? conversationId : Constants.NEW_CONVO;
   const reasoningStateKey = getReasoningStateKey(conversationId, index);
   const sendLockTimeoutMs = queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;

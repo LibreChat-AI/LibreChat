@@ -53,7 +53,6 @@ describe('WebSearch', () => {
         searchResults={{
           1: { turn: 1, organic: [source('https://other.example.com/1', 'Other')] },
         }}
-        renderFavicon={({ domain }) => <span data-testid="favicon">{domain}</span>}
       />,
     );
 

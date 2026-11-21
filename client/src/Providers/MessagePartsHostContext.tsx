@@ -17,7 +17,6 @@ import {
   useSetRecoilState,
 } from 'recoil';
 import type { ToolCallChrome } from '@librechat/chat/react';
-import type { Agent } from 'librechat-data-provider';
 import type { TOptions } from 'i18next';
 import type {
   MessagePartArtifactPanel,
@@ -32,7 +31,6 @@ import {
   useShareContext,
   useMessageContext,
   useFileMapContext,
-  useAgentsMapContext,
   useMessagesOperations,
   useMessagesConversation,
   useOptionalMessagesOperations,
@@ -41,12 +39,10 @@ import {
   getAppContentParts,
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
-import ToolIcon, { getToolIconType } from '~/components/Chat/Messages/Content/ToolOutput/ToolIcon';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import ToolCallInfo from '~/components/Chat/Messages/Content/ToolCallInfo';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
+import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { chatDirectionAtom } from '~/store/chatDirection';
@@ -70,11 +66,6 @@ function useAppMessagesEditing(): MessagesEditing {
     () => ({ conversation, ask, getMessages, setMessages }),
     [conversation, ask, getMessages, setMessages],
   );
-}
-
-function useAppAgent(agentId: string): Agent | undefined {
-  const agentsMap = useAgentsMapContext();
-  return useMemo(() => agentsMap?.[agentId], [agentsMap, agentId]);
 }
 
 function useAppUserTextPreferences(): MessagePartsUserTextPreferences {
@@ -159,11 +150,6 @@ function useAppToolCallChrome(): ToolCallChrome {
       bindActionOAuth,
       openUrl: openInNewTab,
       logError: logToolCallError,
-      renderProgress: (props) => <ProgressText {...props} />,
-      renderInfo: (props) => <ToolCallInfo input={props.input} output={props.output} />,
-      renderIcon: ({ name, iconUrl, isAnimating }) => (
-        <ToolIcon type={getToolIconType(name)} iconUrl={iconUrl} isAnimating={isAnimating} />
-      ),
       renderAttachments: (attachments) => getToolCallAttachments()(attachments),
     }),
     [localize, mcpServerNames, mcpIconMap],
@@ -181,7 +167,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   renderImage: (props) => getAppPartRenderers().renderImage(props),
   renderFilePreview: (props) => getAppPartRenderers().renderFilePreview(props),
   useSmoothStreaming,
-  useAgent: useAppAgent,
+  useAgent: useTranscriptAgent,
   renderAgentIcon: (agent) => getAppPartRenderers().renderAgentIcon(agent),
   renderContentParts: (props) => getAppContentParts()(props),
   renderAgentAvatar: (agent) => renderAgentAvatar(agent, { size: 'icon', showBorder: false }),

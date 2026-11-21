@@ -1,5 +1,5 @@
 import { Schema } from 'mongoose';
-import { scheduledMCPFailureReasonSchema } from 'librechat-data-provider';
+import { runGrantFailureReasonSchema } from 'librechat-data-provider';
 import type { IScheduleRunDocument } from '~/types/schedule';
 
 const SCHEDULE_RUN_TTL_SECONDS = 90 * 24 * 60 * 60;
@@ -73,12 +73,13 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
           server: { type: String, required: true },
           agentId: { type: String },
           detail: { type: String, enum: ['unattended_auth_required'] },
-          reason: { type: String, enum: scheduledMCPFailureReasonSchema.options },
+          reason: { type: String, enum: runGrantFailureReasonSchema.options },
           recovery: {
             type: String,
             enum: ['authorize', 'configure', 'restore_permission', 'retry_later'],
           },
           automaticReplay: { type: Boolean, enum: [false] },
+          skipped: { type: Boolean, enum: [true] },
           status: {
             type: String,
             required: true,

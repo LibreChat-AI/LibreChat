@@ -35,8 +35,8 @@ import type {
   ChannelLinkView,
 } from './types/channelIdentity';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
-import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
+import type { RunGrantView, ConfirmRunGrant } from './types/runGrant';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
@@ -559,6 +559,10 @@ export function getAgentApiKeys(): Promise<t.TAgentApiKeyListResponse> {
   return request.get(endpoints.apiKeys());
 }
 
+export function getApiKeyAgents(): Promise<t.TApiKeyAgentsResponse> {
+  return request.get(endpoints.apiKeyAgents());
+}
+
 export function createAgentApiKey(
   payload: t.TAgentApiKeyCreateRequest,
 ): Promise<t.TAgentApiKeyCreateResponse> {
@@ -1059,6 +1063,9 @@ export const deleteAgent = ({ agent_id }: m.DeleteAgentBody): Promise<void> => {
   );
 };
 
+export const getModelSpecHandoffs = (): Promise<ag.ModelSpecHandoffTarget[]> =>
+  request.get(endpoints.agents({ path: 'handoff-targets' }));
+
 export const listAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
@@ -1523,6 +1530,38 @@ export function getSubagentThread(
   return request.get(endpoints.subagentThread(parentConversationId, threadId, taskId, cursor));
 }
 
+/** The most rows one read of a child thread's messages asks for; the server holds the same bound. */
+export const SUBAGENT_THREAD_MESSAGES_PAGE = 50;
+
+/**
+ * One page of a child thread's messages, in the shape and with the previews of a conversation
+ * load: the thread's newest rows, or with `cursor` the rows before a page already read. A
+ * thread can hold more than is worth reading at once, so it is read a page at a time.
+ */
+export async function getSubagentThreadMessages(
+  parentConversationId: string,
+  threadId: string,
+  options?: { toolPreviews?: boolean; cursor?: string },
+): Promise<t.SubagentThreadMessagesPage> {
+  const url = endpoints.subagentThreadMessagesPage(parentConversationId, threadId, {
+    limit: SUBAGENT_THREAD_MESSAGES_PAGE,
+    cursor: options?.cursor,
+  });
+  const page = await request.get<s.TMessage[] | t.SubagentThreadMessagesPage>(
+    options?.toolPreviews === true ? withToolCallPreviews(url) : url,
+  );
+  /** A server that predates paging answers with the whole thread as a list. */
+  return Array.isArray(page) ? { messages: page, earlier: null } : page;
+}
+
+/** The full tool call behind a preview in a child thread; `params.conversationId` is the thread. */
+export function getSubagentThreadToolCallPart(
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.subagentThreadToolCallPart(parentConversationId, params));
+}
+
 export function getSubagentTaskContent(
   parentConversationId: string,
   threadId: string,
@@ -1563,6 +1602,17 @@ export function cancelBackgroundTasks(
   body: t.BackgroundTaskCancelRequest,
 ): Promise<t.BackgroundTaskCancelResponse> {
   return request.post(endpoints.backgroundTasksCancel(conversationId), body);
+}
+
+export function getFileExclusion(conversationId: string): Promise<t.TFileExclusion> {
+  return request.get(endpoints.fileExclusion(conversationId));
+}
+
+export function setFileExclusion(
+  conversationId: string,
+  body: t.TFileExclusionRequest,
+): Promise<t.TFileExclusion> {
+  return request.post(endpoints.fileExclusion(conversationId), body);
 }
 
 export function getConversationPullRequest(
@@ -2221,17 +2271,40 @@ export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
 };
 
-export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
+export function getScheduleMCPConsent(id: string): Promise<RunGrantView> {
   return request.get(endpoints.scheduleMCPConsent(id));
+}
+export function getScheduleMCPOffer(agentId: string): Promise<RunGrantView> {
+  return request.post(endpoints.scheduleMCPOffer(), { agent_id: agentId });
 }
 export function confirmScheduleMCPConsent(
   id: string,
-  payload: ConfirmScheduleMCPConsent,
-): Promise<ScheduleMCPConsentView> {
+  payload: ConfirmRunGrant,
+): Promise<RunGrantView> {
   return request.post(endpoints.scheduleMCPConsent(id), payload);
 }
 export function revokeScheduleMCPConsent(id: string, expectedRevision: string): Promise<void> {
   return request.deleteWithOptions(endpoints.scheduleMCPConsent(id), {
+    data: { expectedRevision },
+  });
+}
+
+export function getApiKeyMCPConsent(id: string, agentId: string): Promise<RunGrantView> {
+  return request.get(endpoints.apiKeyMCPConsent(id, agentId));
+}
+export function confirmApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  payload: ConfirmRunGrant,
+): Promise<RunGrantView> {
+  return request.post(endpoints.apiKeyMCPConsent(id, agentId), payload);
+}
+export function revokeApiKeyMCPConsent(
+  id: string,
+  agentId: string,
+  expectedRevision: string,
+): Promise<void> {
+  return request.deleteWithOptions(endpoints.apiKeyMCPConsent(id, agentId), {
     data: { expectedRevision },
   });
 }

@@ -1,4 +1,8 @@
-import { logger, SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT } from '@librechat/data-schemas';
+import {
+  logger,
+  CLIENT_MESSAGE_SELECT,
+  SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT,
+} from '@librechat/data-schemas';
 import type {
   ParentSubagentIndex,
   ParentSubagentSummary,
@@ -17,6 +21,8 @@ import type {
   SubagentThreadViewMessageRecord,
 } from '@librechat/data-schemas';
 import type { Response } from 'express';
+import type { MessageRequestValidation } from '~/middleware/messageValidation';
+import type { ToolCallPartDeps, ToolCallPartRequest } from '~/messages/parts';
 import type { ServerRequest } from '~/types';
 import {
   projectPersistedMessageActivity,
@@ -24,6 +30,7 @@ import {
   projectSubagentActivity,
   SUBAGENT_ACTIVITY_LIMITS,
 } from './activity';
+import { createToolCallPartHandler } from '~/messages/parts';
 
 const MAX_THREAD_MESSAGES = 50;
 const MAX_MESSAGE_TEXT_BYTES = 32 * 1024;
@@ -457,6 +464,7 @@ const publicTaskSummaries = (
       taskId: truncateUtf8(taskId, MAX_PUBLIC_ID_BYTES).text,
       status: publicTaskStatus(task.status, taskId === activeTaskId, task.statusDerived),
       ...(isoDate(task.createdAt) == null ? {} : { createdAt: isoDate(task.createdAt) }),
+      ...(isoDate(task.startedAt) == null ? {} : { startedAt: isoDate(task.startedAt) }),
     });
   }
   if (activeTaskId != null) {
@@ -839,3 +847,220 @@ export const PARENT_SUBAGENT_INDEX_LIMITS: Readonly<{
   tasksPerChild: MAX_PARENT_TASKS_PER_CHILD,
   responseBytes: MAX_PARENT_INDEX_BYTES,
 });
+
+type ChildThreadAccessDependencies = Pick<
+  ConversationMethods,
+  'getConvoOwnership' | 'getSubagentThreadForParent'
+>;
+
+type ChildThreadAccess = {
+  /** An event binding's thread, whose inputs are the raw payloads of external events. */
+  eventThread: boolean;
+};
+
+/** The same parent, lineage and tenant check the durable thread view runs. Null refuses. */
+async function authorizeChildThread(
+  deps: ChildThreadAccessDependencies,
+  req: ServerRequest,
+): Promise<(ChildThreadAccess & { threadId: string; userId: string }) | null> {
+  const userId = req.user?.id;
+  const tenantId = req.user?.tenantId || undefined;
+  const { parentConversationId, threadId } = req.params as SubagentThreadViewParams;
+  if (
+    !userId ||
+    !validConversationId(parentConversationId) ||
+    !validConversationId(threadId) ||
+    parentConversationId === threadId
+  ) {
+    return null;
+  }
+  const [parent, child] = await Promise.all([
+    deps.getConvoOwnership(userId, parentConversationId, tenantId ?? null),
+    deps.getSubagentThreadForParent({
+      user: userId,
+      parentConversationId,
+      conversationId: threadId,
+      ...(tenantId == null ? {} : { tenantId }),
+    }),
+  ]);
+  const lineage = child?.subagentThread;
+  if (
+    parent == null ||
+    child == null ||
+    lineage == null ||
+    lineage.parentConversationId !== parentConversationId ||
+    !tenantMatches(parent.tenantId, tenantId) ||
+    !tenantMatches(child.tenantId, tenantId)
+  ) {
+    return null;
+  }
+  return { threadId, userId, eventThread: lineage.parentToolCallId.startsWith('event-binding:') };
+}
+
+type ChildThreadMessage = { isCreatedByUser?: boolean; [field: string]: unknown };
+
+/** What an event thread's input row may show: who and when, never the external payload. */
+const EVENT_INPUT_FIELDS = [
+  'messageId',
+  'parentMessageId',
+  'conversationId',
+  'sender',
+  'isCreatedByUser',
+  'endpoint',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+/**
+ * An event thread's input is the raw payload of an external event. The durable thread view
+ * never sends it, and neither does this read: the row keeps its place in the thread with
+ * empty text.
+ */
+function withoutEventInput(message: ChildThreadMessage): ChildThreadMessage {
+  if (message.isCreatedByUser !== true) return message;
+  const visible: Record<string, unknown> = { text: '' };
+  for (const field of EVENT_INPUT_FIELDS) {
+    if (message[field] !== undefined) visible[field] = message[field];
+  }
+  return visible;
+}
+
+/**
+ * The most rows, and the most stored bytes, one read of a child thread's messages returns. A
+ * thread holds as much as its agent wrote, and a page is read for every card that previews a
+ * running child, so the rest is read a page at a time, on request. These bound a response, as
+ * `MAX_THREAD_MESSAGES` does for the thread view; they are not tuning levers.
+ */
+export const MAX_CHILD_MESSAGES_PAGE: number = 50;
+export const MAX_CHILD_MESSAGES_PAGE_BYTES: number = 2 * 1024 * 1024;
+
+/** A page position as the messages reader formats it: the row's creation time and its id. */
+const CHILD_MESSAGES_CURSOR = /^[^|]{1,64}\|[0-9a-f]{24}$/i;
+
+/** One page of a child thread's messages, oldest first, and where the page before it starts. */
+export type ChildThreadMessagesPage = {
+  messages: ChildThreadMessage[];
+  /** The cursor that reads the page before this one; `null` when this page holds the first row. */
+  earlier: string | null;
+};
+
+export type ChildThreadMessagesDependencies = ChildThreadAccessDependencies & {
+  /** Reads a page newest first, stopping at the row limit or the byte budget. */
+  getMessagesByCursor: (
+    filter: { conversationId: string; user: string },
+    options: {
+      sortField: 'createdAt';
+      sortOrder: -1;
+      limit: number;
+      maxBytes: number;
+      cursor?: string | null;
+      select: string;
+    },
+  ) => Promise<{ messages: ChildThreadMessage[]; nextCursor: string | null }>;
+  /** The conversation messages route's tool-call previewer for this request. */
+  previewToolCalls: (
+    req: ServerRequest,
+  ) => (messages: ChildThreadMessage[]) => Promise<ChildThreadMessage[]> | ChildThreadMessage[];
+};
+
+/**
+ * `GET /api/convos/:parentConversationId/subagents/:threadId/messages`: a child thread's rows
+ * as the conversation messages route would send them, with the same projection and tool-call
+ * previews, reachable only through the parent the requester owns. The rows are read beside
+ * the access check and sent only once it passes.
+ *
+ * Every read is one page: the thread's newest rows, or with `cursor` the rows before a page
+ * already read, never more than `MAX_CHILD_MESSAGES_PAGE` rows or
+ * `MAX_CHILD_MESSAGES_PAGE_BYTES` stored bytes. A request that names `limit` or `cursor` is
+ * answered with the page and the cursor of the one before it. A request that names neither is
+ * from a client that predates paging and reads a bare list, so it gets the newest page as one.
+ */
+export function createChildThreadMessagesHandler(deps: ChildThreadMessagesDependencies) {
+  return async (req: ServerRequest, res: Response): Promise<void> => {
+    try {
+      const previewToolCalls = deps.previewToolCalls(req);
+      const userId = req.user?.id;
+      const { threadId } = req.params as SubagentThreadViewParams;
+      const { limit: requestedLimit, cursor } = req.query ?? {};
+      const paged = requestedLimit != null || cursor != null;
+      const limit = requestedLimit == null ? MAX_CHILD_MESSAGES_PAGE : Number(requestedLimit);
+      if (
+        !Number.isInteger(limit) ||
+        limit < 1 ||
+        (cursor != null && (typeof cursor !== 'string' || !CHILD_MESSAGES_CURSOR.test(cursor)))
+      ) {
+        res.status(400).json({ error: 'Invalid page request' });
+        return;
+      }
+      const reading =
+        userId && validConversationId(threadId)
+          ? deps
+              .getMessagesByCursor(
+                { conversationId: threadId, user: userId },
+                {
+                  sortField: 'createdAt',
+                  sortOrder: -1,
+                  limit: Math.min(limit, MAX_CHILD_MESSAGES_PAGE),
+                  maxBytes: MAX_CHILD_MESSAGES_PAGE_BYTES,
+                  cursor: typeof cursor === 'string' ? cursor : null,
+                  select: CLIENT_MESSAGE_SELECT,
+                },
+              )
+              .then(
+                (page) => ({ ok: true as const, page }),
+                (error: unknown) => ({ ok: false as const, error }),
+              )
+          : null;
+      const access = await authorizeChildThread(deps, req);
+      if (access == null || reading == null) {
+        notFound(res);
+        return;
+      }
+      const read = await reading;
+      if (!read.ok) throw read.error;
+      /** Read newest first so the bound keeps the newest rows; sent oldest first, as a list is. */
+      const stored = [...read.page.messages].reverse();
+      const messages = await previewToolCalls(
+        access.eventThread ? stored.map(withoutEventInput) : stored,
+      );
+      if (!paged) {
+        res.status(200).json(messages);
+        return;
+      }
+      const page: ChildThreadMessagesPage = { messages, earlier: read.page.nextCursor };
+      res.status(200).json(page);
+    } catch (error) {
+      logger.error('[subagentThreads] Failed to read child thread messages', error);
+      res.status(500).json({ error: 'Failed to load child messages' });
+    }
+  };
+}
+
+export type ChildThreadToolCallPartDependencies = ChildThreadAccessDependencies & ToolCallPartDeps;
+
+/**
+ * `GET /api/convos/:parentConversationId/subagents/:threadId/messages/:messageId/parts/:partIndex`:
+ * the full stored tool call behind a preview, read the way the conversation route reads it but
+ * authorized through the parent.
+ */
+export function createChildThreadToolCallPartHandler(deps: ChildThreadToolCallPartDependencies) {
+  const validate = (req: ToolCallPartRequest): MessageRequestValidation => ({
+    shouldFetchMessages: true,
+    promise: authorizeChildThread(deps, req as unknown as ServerRequest).then((access) =>
+      access == null
+        ? { ok: false, status: 404, body: { error: 'Tool call not found' } }
+        : { ok: true },
+    ),
+  });
+  const readPart = createToolCallPartHandler({
+    getMessages: deps.getMessages,
+    validate,
+    sendValidationResponse: (res, result) => res.status(result.status).json(result.body),
+  });
+  return (req: ServerRequest, res: Response): Promise<void> => {
+    /** The shared reader addresses a message by its conversation, which here is the thread. */
+    const params = req.params as SubagentThreadViewParams & { conversationId?: string };
+    params.conversationId = params.threadId;
+    return readPart(req as unknown as ToolCallPartRequest, res);
+  };
+}

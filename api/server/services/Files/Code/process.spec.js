@@ -67,6 +67,11 @@ const passthroughWithTimeout = async (promise) => promise;
 jest.mock('@librechat/api', () => {
   return {
     withFileProvisioning: jest.requireActual('@librechat/api').withFileProvisioning,
+    getPreparedCodeOutputBuffer: jest.requireActual('@librechat/api').getPreparedCodeOutputBuffer,
+    cachePreparedCodeOutputBuffer:
+      jest.requireActual('@librechat/api').cachePreparedCodeOutputBuffer,
+    releasePreparedCodeOutputBuffer:
+      jest.requireActual('@librechat/api').releasePreparedCodeOutputBuffer,
     confirmFileProvision: jest.requireActual('@librechat/api').confirmFileProvision,
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
     createSandboxTextReader: jest.requireActual('@librechat/api').createSandboxTextReader,
@@ -4018,6 +4023,39 @@ describe('Code Process', () => {
       expect(result).toEqual({ base64: source.toString('base64'), bytes: source.length });
     });
 
+    it('downloads again once a discarded prefetch buffer is released', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('prefetched-bytes') });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'artifact-file',
+        name: 'chart.png',
+        session_id: 'artifact-session',
+      });
+
+      jest.requireActual('@librechat/api').releasePreparedCodeOutputBuffer({
+        req,
+        id: 'artifact-file',
+        session_id: 'artifact-session',
+      });
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req,
+        file_path: '/mnt/data/chart.png',
+        session_id: 'runtime-session',
+        files: [{ id: 'artifact-file', name: 'chart.png', storage_session_id: 'artifact-session' }],
+      });
+
+      expect(mockAxios).toHaveBeenCalled();
+    });
+
     it('does not reuse a same-path buffer for a different artifact ref', async () => {
       const req = {
         user: { id: 'artifact-user' },
@@ -4883,6 +4921,205 @@ describe('Code Process', () => {
       expect(files.map((f) => f.name)).toEqual(['report.pdf']);
       expect(toolContext).toContain('/mnt/data/report.pdf');
       expect(toolContext).not.toContain('uploaded as');
+    });
+  });
+
+  describe('primeFiles snapshot receipts and the turn identity (#18564 follow-up)', () => {
+    /**
+     * A snapshot is mounted from an earlier upload only while the object store still reports
+     * the uploaded bytes. The pointer must also have been filed under the identity this turn
+     * files the snapshot under: `kind` and `id` are what the Code API derives a storage
+     * session key from, and an agent key carries no user dimension, so the service answers
+     * for another agent's upload as readily as for this one's.
+     */
+    const crypto = require('crypto');
+    const { getFiles } = require('~/models');
+    const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+    const bytes = Buffer.from('captured bytes');
+    const content = {
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      md5: crypto.createHash('md5').update(bytes).digest('hex'),
+      bytes: bytes.length,
+    };
+    let upload;
+
+    const snapshot = (identity) => ({
+      file_id: 'snapshot',
+      user: 'user-123',
+      filename: 'chart.csv',
+      type: 'text/csv',
+      context: FileContext.execute_code_snapshot,
+      source: 'local',
+      filepath: '/uploads/snapshot',
+      metadata: {
+        sourceDispatchedAt: 1,
+        codeOutput: { messageId: 'message', sha256: content.sha256 },
+        codeEnvRefs: {
+          default: {
+            ...identity,
+            storage_session_id: 'upload-session',
+            file_id: 'upload-object',
+            sandboxFilename: 'chart.csv',
+            executionProfile: 'default',
+            provisionedAt: Date.now(),
+            content,
+          },
+        },
+      },
+    });
+
+    const prime = (tool_resources) =>
+      primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources,
+        agentId: 'agent-id',
+      });
+
+    beforeEach(() => {
+      upload = jest.fn(async ({ filename }) => ({
+        storage_session_id: 'fresh-session',
+        file_id: 'fresh-object',
+        filename,
+      }));
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue('primary-bytes'),
+        handleFileUpload: upload,
+      }));
+      mockCommitFileProvision.mockResolvedValue(true);
+      mockAxios.mockReset();
+      /* The Code API answers for the object whichever identity the pointer names. */
+      mockAxios.mockResolvedValue({
+        data: { lastModified: new Date().toISOString(), etag: content.md5, size: content.bytes },
+      });
+    });
+
+    it.each([
+      [
+        'the requesting user',
+        { kind: 'user', id: 'user-123' },
+        { execute_code: { files: [{ file_id: 'snapshot' }] } },
+      ],
+      [
+        'the executing agent, for one of its code resources',
+        { kind: 'agent', id: 'agent-id' },
+        { execute_code: { file_ids: ['snapshot'] } },
+      ],
+      [
+        'the executing agent, for one of its search resources',
+        { kind: 'agent', id: 'agent-id' },
+        {
+          execute_code: { files: [{ file_id: 'snapshot' }] },
+          file_search: { file_ids: ['snapshot'] },
+        },
+      ],
+    ])(
+      'mounts an upload filed under %s without uploading again',
+      async (_label, identity, resources) => {
+        getFiles.mockResolvedValue([snapshot(identity)]);
+
+        const result = await prime(resources);
+
+        expect(upload).not.toHaveBeenCalled();
+        expect(mockAxios).toHaveBeenCalledTimes(1);
+        expect(result.files).toEqual([
+          {
+            id: 'upload-object',
+            storage_session_id: 'upload-session',
+            name: 'chart.csv',
+            kind: identity.kind,
+            resource_id: identity.id,
+          },
+        ]);
+      },
+    );
+
+    it.each([
+      [
+        'another user',
+        { kind: 'user', id: 'user-456' },
+        { execute_code: { files: [{ file_id: 'snapshot' }] } },
+        { kind: 'user', id: 'user-123' },
+      ],
+      [
+        'another agent',
+        { kind: 'agent', id: 'agent-other' },
+        { execute_code: { files: [{ file_id: 'snapshot' }] } },
+        { kind: 'user', id: 'user-123' },
+      ],
+      [
+        'the executing agent, for a file none of its resources name',
+        { kind: 'agent', id: 'agent-id' },
+        { execute_code: { files: [{ file_id: 'snapshot' }] } },
+        { kind: 'user', id: 'user-123' },
+      ],
+      [
+        'the requesting user, for one of the agent code resources',
+        { kind: 'user', id: 'user-123' },
+        { execute_code: { file_ids: ['snapshot'] } },
+        { kind: 'agent', id: 'agent-id' },
+      ],
+    ])(
+      'uploads the stored bytes under this turn identity over a receipt filed under %s',
+      async (_label, identity, resources, scope) => {
+        getFiles.mockResolvedValue([snapshot(identity)]);
+
+        const result = await prime(resources);
+
+        expect(mockAxios).not.toHaveBeenCalled();
+        expect(upload).toHaveBeenCalledTimes(1);
+        expect(upload).toHaveBeenCalledWith(
+          expect.objectContaining({
+            stream: 'primary-bytes',
+            filename: 'chart.csv',
+            kind: scope.kind,
+            id: scope.id,
+          }),
+        );
+        expect(result.files).toEqual([
+          {
+            id: 'fresh-object',
+            storage_session_id: 'fresh-session',
+            name: 'chart.csv',
+            kind: scope.kind,
+            resource_id: scope.id,
+          },
+        ]);
+        expect(mockCommitFileProvision).toHaveBeenCalledWith(
+          expect.objectContaining({
+            code: expect.objectContaining({
+              routeKey: 'default',
+              ref: expect.objectContaining({
+                kind: scope.kind,
+                id: scope.id,
+                storage_session_id: 'fresh-session',
+                file_id: 'fresh-object',
+              }),
+            }),
+          }),
+        );
+      },
+    );
+
+    it('addresses a first upload on this route from the turn, not from another route pointer', async () => {
+      const record = snapshot({ kind: 'agent', id: 'agent-other' });
+      record.user = 'user-456';
+      record.metadata.codeEnvRefs = {
+        'stateful:other': {
+          ...record.metadata.codeEnvRefs.default,
+          executionProfile: 'stateful',
+          executionRouteKey: 'stateful:other',
+        },
+      };
+      getFiles.mockResolvedValue([record]);
+
+      const result = await prime({ execute_code: { files: [{ file_id: 'snapshot' }] } });
+
+      expect(upload).toHaveBeenCalledWith(
+        expect.objectContaining({ stream: 'primary-bytes', kind: 'user', id: 'user-123' }),
+      );
+      expect(result.files).toEqual([
+        expect.objectContaining({ id: 'fresh-object', kind: 'user', resource_id: 'user-123' }),
+      ]);
     });
   });
 });

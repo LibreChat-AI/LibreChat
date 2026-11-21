@@ -17,6 +17,27 @@ export type ChatSessionMessages = {
 };
 
 /**
+ * The messages of a pane's session, for whatever under `ChatSessionProvider` draws them. It
+ * subscribes for itself, so the reader is redrawn when the messages change, as they do on every
+ * frame of a reply, and what stands between the provider and the reader is not. Deliberately
+ * not a context: a context that changes this often has React search the whole thread under its
+ * provider for readers on every change.
+ *
+ * It follows what the session loads and loads nothing itself: the session's own query decides
+ * when the conversation is fetched. It says the same of the pane's stream as the session does,
+ * so the two readers of one query never disagree about whether a reply is being written: which
+ * of them a refetch takes its guard from is the query library's to choose.
+ */
+export function useChatSessionMessages(conversationId?: string, index = 0): ChatSessionMessages {
+  const isSubmitting = useIsSubmitting(index);
+  const { messages, isLoading } = useChatHost().useMessages(conversationId, {
+    isStreaming: isSubmitting,
+    enabled: false,
+  });
+  return { messages, isLoading };
+}
+
+/**
  * `ChatProvider` for the pane that owns the conversation's stream: it also loads the
  * conversation's messages and runs the stream, resume on load and the queued-turn drain
  * against the contract it serves.
@@ -24,8 +45,13 @@ export type ChatSessionMessages = {
  * Every session hook runs in this one component, in the order the pane has always run them:
  * the messages query subscribes (and starts its mount refetch) before the contract and the
  * session effects commit, and the queue drain commits after `useChatHelpers`, so `ask` has
- * released its in-flight guard and sees the refetch before the drain can call it. The pane is
- * a render function so it re-renders with every session render.
+ * released its in-flight guard and sees the refetch before the drain can call it.
+ *
+ * The pane under it is given as an element, and what draws the messages reads them with
+ * {@link useChatSessionMessages}: a frame of a reply then re-renders that reader, and neither
+ * the pane nor this session, which asks its host only whether the messages are loading. A
+ * render function is still taken; the session then reads the messages too, and calls it with
+ * them on every change.
  */
 export function ChatSessionProvider({
   index = 0,
@@ -39,12 +65,18 @@ export function ChatSessionProvider({
   conversationId?: string;
   /** The saved record is ready for stream recovery; history can load before it. */
   historyReady?: boolean;
-  children: (session: ChatSessionMessages) => ReactNode;
+  children: ReactNode | ((session: ChatSessionMessages) => ReactNode);
 }): ReactNode {
   const host = useChatHost();
   const isSubmitting = useIsSubmitting(index);
+  /**
+   * The session itself needs to know only whether the messages are loading, for resume. A pane
+   * given as an element reads them for itself, so the session is not re-rendered for them: every
+   * frame of a reply would otherwise run each session hook again for nothing.
+   */
   const { messages, isLoading, isFetching } = host.useMessages(conversationId, {
     isStreaming: isSubmitting,
+    messages: typeof children === 'function',
   });
 
   const chat = useChatHelpers(index, conversationId);
@@ -68,6 +100,8 @@ export function ChatSessionProvider({
   useQueueDrain(index, conversationId, chat.ask, revealQueuedTurn);
 
   return (
-    <ChatContext.Provider value={chat}>{children({ messages, isLoading })}</ChatContext.Provider>
+    <ChatContext.Provider value={chat}>
+      {typeof children === 'function' ? children({ messages, isLoading }) : children}
+    </ChatContext.Provider>
   );
 }

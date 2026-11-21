@@ -12,7 +12,7 @@ import {
 } from '@librechat/client';
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
 import type { NamedExoticComponent, ReactNode } from 'react';
-import { MessageAudioSlot, useMessagesHost } from '../../react/messages/host';
+import { MessageAudioSlot, MessageUsageSlot, useMessagesHost } from '../../react/messages/host';
 import useGenerationsByLatest from '../../react/messages/generations';
 import { hasEditablePart } from '../../core/parts/editableParts';
 import { ChatContext } from '../../react/chat/context';
@@ -151,7 +151,9 @@ const HoverButtons = ({
   const localize = useLocalize();
   /** Read from the pane's chat contract here rather than passed down: a send toggles the
    *  rerun controls on every row, and only this toolbar has to re-render for it. */
-  const isSubmitting = useContext(ChatContext)?.isSubmitting === true;
+  const chat = useContext(ChatContext);
+  const isSubmitting = chat?.isSubmitting === true;
+  const readOnly = chat?.readOnly === true;
   const [isCopied, setIsCopied] = useState(false);
   const { useGetMessages, useHasPendingTurn } = useMessagesHost();
   const getMessages = useGetMessages();
@@ -203,6 +205,7 @@ const HoverButtons = ({
     parentIsUserMessage,
     isUserInitiatedCompaction: isUserInitiatedCompaction(message),
     latestMessageId: latestMessageId,
+    readOnly,
   });
 
   const {
@@ -332,6 +335,13 @@ const HoverButtons = ({
           icon={icons.continue}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
+        />
+      )}
+      {!isCreatedByUser && (
+        <MessageUsageSlot
+          message={message}
+          conversationId={conversation.conversationId ?? undefined}
+          isLast={isLast}
         />
       )}
     </div>

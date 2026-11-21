@@ -53,6 +53,19 @@ export function matchesInterruptArm(armed: DrainAfterAbort | false, end: RunEnd)
   return sameConversation && armed.generationCreatedAt === end.generationCreatedAt;
 }
 
+/** The interrupt intent with the one armed for this exact generation taken back, if it is. */
+export function clearMatchingDrainAfterAbort(
+  armed: DrainAfterAbort | false,
+  conversationId: string,
+  generationCreatedAt: number,
+): DrainAfterAbort | false {
+  return armed !== false &&
+    armed.conversationId === conversationId &&
+    armed.generationCreatedAt === generationCreatedAt
+    ? false
+    : armed;
+}
+
 /** A run end parked under its own conversation, carrying any interrupt intent
  *  armed for it so another run on the same pane can neither consume nor clear it. */
 export function parkRunEnd(end: RunEnd, interruptArmed: boolean): RunEnd {

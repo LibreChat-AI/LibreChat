@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { scheduledMCPFailureReasonSchema } from 'librechat-data-provider';
+import { runGrantFailureReasonSchema } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type {
   ISchedule,
@@ -3087,7 +3087,7 @@ describe.each([
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_reauth_required' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.consent_revoked,
+    reason: runGrantFailureReasonSchema.enum.consent_revoked,
     recovery: 'authorize' as const,
     automaticReplay: false as const,
   },
@@ -3095,7 +3095,7 @@ describe.each([
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_permission_denied' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.tool_policy_denied,
+    reason: runGrantFailureReasonSchema.enum.tool_policy_denied,
     recovery: 'configure' as const,
     automaticReplay: false as const,
   },
@@ -3103,7 +3103,7 @@ describe.each([
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_reauth_required' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.credential_rejected,
+    reason: runGrantFailureReasonSchema.enum.credential_rejected,
     recovery: 'authorize' as const,
     automaticReplay: false as const,
   },
@@ -3294,7 +3294,7 @@ describe('scheduled MCP mixed receipt settlement', () => {
     server: 'Graph',
     agentId: 'root',
     status: 'mcp_unavailable' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.dependency_unavailable,
+    reason: runGrantFailureReasonSchema.enum.dependency_unavailable,
     recovery: 'retry_later' as const,
     automaticReplay: false as const,
   };
@@ -3302,7 +3302,7 @@ describe('scheduled MCP mixed receipt settlement', () => {
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_reauth_required' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.binding_mismatch,
+    reason: runGrantFailureReasonSchema.enum.binding_mismatch,
     recovery: 'authorize' as const,
     automaticReplay: false as const,
   };
@@ -3477,6 +3477,130 @@ describe('scheduled MCP failure policy', () => {
       agentId: 'research-agent',
       status: reason,
     });
+  });
+
+  it('keeps a run that was started without a server successful, and its schedule on', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T12:10:00Z');
+    await methods.insertScheduleRun(
+      runData(schedule, { scheduledFor, conversationId: 'conversation-1' }),
+    );
+    // The reason is kept, so the owner is told to authorize the schedule and not to reconnect.
+    const skipped = {
+      server: 'Notion',
+      status: 'mcp_reauth_required' as const,
+      reason: 'consent_revoked' as const,
+      recovery: 'authorize' as const,
+      skipped: true as const,
+    };
+    await methods.setRunFireDetails(schedule.id, scheduledFor, {
+      conversationId: 'conversation-1',
+      mcp: [skipped, { server: 'Linear', status: 'ready' }],
+    });
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'success',
+      autoDisableAfterFailures: 5,
+    });
+    const updated = await getSchedule(schedule.id);
+    expect(updated.enabled).toBe(true);
+    expect(updated.disabledReason).toBeUndefined();
+    expect(updated.failureCount).toBe(0);
+    expect(updated.lastRun?.status).toBe('success');
+    expect(updated.lastRun?.mcp).toEqual(
+      expect.arrayContaining([expect.objectContaining(skipped)]),
+    );
+    // What a resumed run reads back: every outcome of the check, skipped or ready.
+    expect(await methods.getScheduleRunMCP(schedule.id, scheduledFor)).toEqual([
+      expect.objectContaining(skipped),
+      expect.objectContaining({ server: 'Linear', status: 'ready' }),
+    ]);
+    expect(await methods.getScheduleRunMCP(schedule.id, new Date('2020-01-01T00:00:00Z'))).toEqual(
+      [],
+    );
+  });
+
+  it('counts a failed run that was started without a server like any failure', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T12:20:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor }));
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'error',
+      error: 'The model provider refused the request',
+      mcp: [{ server: 'Notion', status: 'mcp_reauth_required', skipped: true }],
+      autoDisableAfterFailures: 5,
+    });
+    const updated = await getSchedule(schedule.id);
+    expect(updated.failureCount).toBe(1);
+    expect(updated.enabled).toBe(true);
+    expect(updated.disabledReason).toBeUndefined();
+  });
+
+  it('finds what an occurrence went without by the conversation it started, for its schedule and owner alone', async () => {
+    const owner = new mongoose.Types.ObjectId();
+    const schedule = await methods.createSchedule(scheduleData({ user: owner }));
+    const other = await methods.createSchedule(scheduleData({ user: owner }));
+    const skipped = {
+      server: 'Notion',
+      status: 'mcp_reauth_required' as const,
+      skipped: true as const,
+    };
+    const ready = { server: 'Linear', status: 'ready' as const };
+    await methods.insertScheduleRun(
+      runData(schedule, {
+        scheduledFor: new Date('2026-09-09T13:00:00Z'),
+        conversationId: 'conversation-a',
+        // Settled, so the next occurrence can be on record beside it.
+        status: 'success',
+        mcp: [skipped, ready],
+      }),
+    );
+    await methods.insertScheduleRun(
+      runData(schedule, {
+        scheduledFor: new Date('2026-09-10T13:00:00Z'),
+        conversationId: 'conversation-b',
+        mcp: [ready],
+      }),
+    );
+    const scope = { scheduleId: schedule.id, ownerId: String(owner), tenantId: null };
+    expect(await methods.getScheduleConversationMCP(scope, 'conversation-a')).toEqual([
+      expect.objectContaining(skipped),
+      expect.objectContaining(ready),
+    ]);
+    // Another occurrence of the same schedule started another conversation.
+    expect(await methods.getScheduleConversationMCP(scope, 'conversation-b')).toEqual([
+      expect.objectContaining(ready),
+    ]);
+    // The conversation alone names no run: not for another schedule, nor another owner.
+    expect(
+      await methods.getScheduleConversationMCP(
+        { ...scope, scheduleId: other.id },
+        'conversation-a',
+      ),
+    ).toEqual([]);
+    expect(
+      await methods.getScheduleConversationMCP(
+        { ...scope, ownerId: String(new mongoose.Types.ObjectId()) },
+        'conversation-a',
+      ),
+    ).toEqual([]);
+    expect(
+      await methods.getScheduleConversationMCP(
+        { ...scope, tenantId: 'another-tenant' },
+        'conversation-a',
+      ),
+    ).toEqual([]);
+    expect(await methods.getScheduleConversationMCP(scope, 'conversation-unknown')).toEqual([]);
+  });
+
+  it('stores whether a schedule runs only with every server ready', async () => {
+    const strict = await methods.createSchedule({ ...scheduleData(), mcpStrict: true });
+    const plain = await methods.createSchedule(scheduleData());
+    expect((await getSchedule(strict.id)).mcpStrict).toBe(true);
+    expect((await getSchedule(plain.id)).mcpStrict).toBeUndefined();
   });
 
   it('does not infer MCP disablement from an ordinary provider error prefix', async () => {

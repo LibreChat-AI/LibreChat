@@ -487,6 +487,7 @@ describe('meta rules equal the rules the server applies', () => {
 
   it('lists the settings LibreChat reads from librechat.yaml itself or only at startup', () => {
     expect(meta.rules.deploymentOnlyPaths).toMatchObject({
+      roleCache: 'startup',
       'telemetry.rum': 'operator',
       clientLimits: 'operator',
       conversationList: 'operator',

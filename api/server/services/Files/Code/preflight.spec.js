@@ -72,6 +72,42 @@ describe('preflightCodeOutputBatch Code API routing', () => {
     });
   });
 
+  it('passes the configured code output download concurrency to the batch', async () => {
+    await preflightCodeOutputBatch({
+      req: { config: { concurrency: { codeOutputDownloads: 2 } }, user: { id: 'user-1' } },
+      artifact: { files: [{ id: 'file-1', name: 'output.txt' }] },
+    });
+
+    expect(mockRunCodeOutputBatchPreflight).toHaveBeenCalledWith(
+      expect.objectContaining({ concurrency: 2 }),
+    );
+  });
+
+  it('scopes prefetch eviction to the request and its Code API route', async () => {
+    const req = { config: {}, user: { id: 'user-1' } };
+
+    await preflightCodeOutputBatch({
+      req,
+      artifact: { files: [{ id: 'file-1', name: 'output.txt' }] },
+      codeExecutionContext: {
+        baseUrl: 'https://code-stateful.example.com',
+        executionProfile: 'stateful',
+        executionRouteKey: 'stateful:route',
+      },
+    });
+
+    expect(mockRunCodeOutputBatchPreflight).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bufferCache: {
+          req,
+          codeApiBaseUrl: 'https://code-stateful.example.com',
+          executionProfile: 'stateful',
+          executionRouteKey: 'stateful:route',
+        },
+      }),
+    );
+  });
+
   /* The batch degrades an uninspectable artifact to the download fallback and
    * the turn still succeeds, so this warning is the only trace it leaves.
    * Without the cause, a refused download, a misrouted execution profile and

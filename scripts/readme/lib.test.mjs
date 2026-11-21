@@ -3,9 +3,11 @@ import { test } from 'node:test';
 import {
   cleanOutput,
   definitions,
+  describe,
   isSwitcher,
   localizeAnchors,
   needsTranslation,
+  punctuate,
   renderSwitcher,
   reusable,
   splitChunks,
@@ -73,10 +75,31 @@ test('needsTranslation keeps alt text in either quote style and skips code and g
   assert.equal(needsTranslation('- **Agents:** build [docs](https://x.y)'), true);
 });
 
+test('needsTranslation treats bare domain and path labels as code, not prose', () => {
+  const rag =
+    '- **RAG API:** [github.com/LibreChat-AI/rag-api](https://github.com/LibreChat-AI/rag-api)';
+  assert.equal(needsTranslation(rag), false);
+  assert.equal(
+    needsTranslation('- **Blog:** [librechat.ai/blog](https://librechat.ai/blog)'),
+    true,
+  );
+  assert.equal(needsTranslation('Edit librechat.yaml to begin.'), true);
+});
+
 test('validate accepts a faithful translation', () => {
   const source = '- **Agents:** see [docs](https://librechat.ai/docs) and `npm run build`';
   const out = '- **Agents:** см. [документацию](https://librechat.ai/docs) и `npm run build`';
   assert.deepEqual(validate(source, out, 'ru'), []);
+});
+
+test('validate lets prose move around links, code and emphasis', () => {
+  const source = '- Text-to-image and image-to-image with [GPT-Image-1](https://x.y)';
+  assert.deepEqual(
+    validate(source, '- 使用 [GPT-Image-1](https://x.y) 进行文生图和图生图', 'zh'),
+    [],
+  );
+  assert.deepEqual(validate('Run `npm ci` first.', '`npm ci` を最初に実行します。', 'ja'), []);
+  assert.deepEqual(validate('**Agents** are here', 'ここに **エージェント**', 'ja'), []);
 });
 
 test('validate flags structural changes', () => {
@@ -296,4 +319,61 @@ test('localizeAnchors leaves external links and unknown fragments alone', () => 
   const source = '## Setup\n\n[Docs](https://example.com/#setup) and [Top](#top)';
   const translated = '## 设置\n\n[文档](https://example.com/#setup) 和 [顶部](#top)';
   assert.equal(localizeAnchors(source, translated), translated);
+});
+
+test('punctuate writes full-width punctuation beside Chinese text', () => {
+  assert.equal(
+    punctuate('- 文件处理:直接上传,处理和下载!', 'zh'),
+    '- 文件处理：直接上传，处理和下载！',
+  );
+  assert.equal(punctuate('- **账户保护:** 注册 passkey', 'zh'), '- **账户保护：** 注册 passkey');
+  assert.equal(
+    punctuate('- 🔍 **网络搜索** :  \n  - 搜索', 'zh'),
+    '- 🔍 **网络搜索**：  \n  - 搜索',
+  );
+  assert.equal(
+    punctuate('- **[可恢复流](https://x.y/a_b)**:  \n  - 绝不', 'zh'),
+    '- **[可恢复流](https://x.y/a_b)**：  \n  - 绝不',
+  );
+  assert.equal(punctuate('使用 API,用于测试', 'zh'), '使用 API，用于测试');
+});
+
+test('punctuate converts a lone mark after a label even though the source has it too', () => {
+  const source = '- 🌊 **[Resumable Streams](https://x.y)**:  \n  - Never lose a response';
+  assert.equal(
+    punctuate('- 🌊 **[可恢复流](https://x.y)**:  \n  - 绝不丢失回复', 'zh', source),
+    '- 🌊 **[可恢复流](https://x.y)**：  \n  - 绝不丢失回复',
+  );
+});
+
+test('punctuate keeps character references and backslash escapes intact', () => {
+  assert.equal(punctuate('你好&nbsp;世界!', 'zh'), '你好&nbsp;世界！');
+  assert.equal(punctuate('你好&#32;世界&#x4E2D;好', 'zh'), '你好&#32;世界&#x4E2D;好');
+  assert.equal(punctuate('中文\\!中文', 'zh'), '中文\\!中文');
+});
+
+test('punctuate leaves code, links, HTML, Latin text and copied source text alone', () => {
+  const untouched = [
+    '- Ollama, groq, Cohere',
+    '- **Agent controls:** 回答问题',
+    '运行 `中文:代码` 吧',
+    '见 [文档](https://x.y/中文:a,b)',
+    '<img alt="中文:标题" src="x.svg">',
+    '中文 https://x.y/a,中文',
+  ];
+  for (const markdown of untouched) assert.equal(punctuate(markdown, 'zh'), markdown);
+  const names = '  - Русский, 日本語, Svenska';
+  assert.equal(punctuate(names, 'zh', names), names);
+  assert.equal(punctuate('文件处理:直接上传', 'ru'), '文件处理:直接上传');
+});
+
+test('describe lists each regenerated language with its translated and cached counts', () => {
+  const body = describe([{ code: 'zh', translated: 3, cached: 63 }]);
+  assert.match(
+    body,
+    /Simplified Chinese \(`README\.zh\.md`\): 3 section\(s\) translated, 63 reused/,
+  );
+  assert.doesNotMatch(body, /Russian/);
+  assert.match(body, /unchanged come from the cache/);
+  assert.match(describe([{ code: 'ru', translated: 66, cached: 0 }], true), /ignored the cache/);
 });

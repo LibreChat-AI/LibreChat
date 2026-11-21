@@ -3,6 +3,7 @@ import type { IConversation } from '@librechat/data-schemas';
 import {
   partitionCommittedFiles,
   readResolvedConversationFiles,
+  readResolvedExcludedFiles,
   resolveResendToolResources,
 } from './initialize';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
@@ -56,6 +57,46 @@ describe('readResolvedConversationFiles', () => {
     expect(
       readResolvedConversationFiles(
         { resolvedConversation: { conversationId: 'other', files: ['file-1'] } },
+        conversationId,
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe('readResolvedExcludedFiles', () => {
+  const conversationId = 'conversation-1';
+
+  it('cannot speak for the database when the request loaded no conversation', () => {
+    expect(readResolvedExcludedFiles({}, conversationId)).toBeUndefined();
+  });
+
+  it('knows a conversation that does not exist leaves nothing out', () => {
+    expect(readResolvedExcludedFiles({ resolvedConversation: null }, conversationId)).toEqual([]);
+  });
+
+  it('reads the list off the loaded conversation, empty when it has none', () => {
+    expect(
+      readResolvedExcludedFiles(
+        { resolvedConversation: { conversationId, excludedFiles: ['file-1'] } },
+        conversationId,
+      ),
+    ).toEqual(['file-1']);
+    expect(
+      readResolvedExcludedFiles({ resolvedConversation: { conversationId } }, conversationId),
+    ).toEqual([]);
+  });
+
+  it('falls back to the database for a lineage-only partial or another conversation', () => {
+    const lineageOnly = {
+      [PARTIAL_RESOLVED_CONVERSATION]: true,
+      conversationId,
+    } as unknown as IConversation;
+    expect(
+      readResolvedExcludedFiles({ resolvedConversation: lineageOnly }, conversationId),
+    ).toBeUndefined();
+    expect(
+      readResolvedExcludedFiles(
+        { resolvedConversation: { conversationId: 'other', excludedFiles: ['file-1'] } },
         conversationId,
       ),
     ).toBeUndefined();

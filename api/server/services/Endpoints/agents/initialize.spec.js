@@ -45,6 +45,19 @@ jest.mock('@librechat/api', () => ({
   createSequentialChainEdges: jest.fn(),
 }));
 
+/** What the chat controller passes for a fresh occurrence, or the resume host for a restored one. */
+function scheduledContext(req, restored, scheduleId) {
+  const { restoreExecutionContext, createScheduleExecutionContext } = require('@librechat/api');
+  return restored
+    ? restoreExecutionContext(req, {
+        userId: req.user.id,
+        tenantId: req.user.tenantId,
+        scheduleId,
+        agent_id: PRIMARY_ID,
+      })
+    : createScheduleExecutionContext(req);
+}
+
 /** Captured by the `getDefaultHandlers` mock so tests can drive the
  *  `ON_TOOL_EXECUTE` pipeline with a real subagent id and observe whether
  *  the tool context (agent, tool_resources, skill ACLs) was preserved. */
@@ -223,14 +236,7 @@ describe('initializeClient — processAgent ACL gate', () => {
       req,
       res: {},
       signal,
-      scheduledTokenContext: restored
-        ? {
-            scheduleId: 'sched-1',
-            ownerId: req.user.id,
-            agentId: PRIMARY_ID,
-            invocationMode: 'delegated',
-          }
-        : undefined,
+      executionContext: scheduledContext(req, restored, 'sched-1'),
       endpointOption: makeEndpointOption(),
     });
 
@@ -298,14 +304,7 @@ describe('initializeClient — processAgent ACL gate', () => {
         signal: new AbortController().signal,
         endpointOption: makeEndpointOption(),
         jobCreatedAt: 42,
-        scheduledTokenContext: restored
-          ? {
-              scheduleId: 'sched-bearer',
-              ownerId: req.user.id,
-              agentId: PRIMARY_ID,
-              invocationMode: 'delegated',
-            }
-          : undefined,
+        executionContext: scheduledContext(req, restored, 'sched-bearer'),
       });
       expect(bind).toHaveBeenCalledWith(
         {
@@ -447,6 +446,26 @@ describe('initializeClient — processAgent ACL gate', () => {
       expect(mockInitializeAgent).not.toHaveBeenCalled();
     } finally {
       await store.destroy();
+    }
+  });
+
+  it('hands the approved tool calls of a resumed request to scheduled preparation', async () => {
+    const req = makeReq();
+    req._isScheduledFire = true;
+    const host = require('~/server/services/Schedules/consent');
+    const prepare = jest.spyOn(host, 'prepare').mockResolvedValue(undefined);
+    mockInitializeAgent.mockImplementationOnce(async () => makePrimaryConfig([]));
+    try {
+      await initializeClient({
+        req,
+        res: {},
+        endpointOption: makeEndpointOption(),
+        signal: new AbortController().signal,
+        approvedToolCalls: ['tc1'],
+      });
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ approvedToolCalls: ['tc1'] }));
+    } finally {
+      prepare.mockRestore();
     }
   });
 
@@ -1486,6 +1505,67 @@ describe('initializeClient — subagent loading', () => {
       userId: testUser._id.toString(),
       parentConversationId: 'conv_sub',
     });
+  });
+
+  it('hands the context of the run to the two places its background work starts', async () => {
+    const { createTriggerExecutionContext } = require('@librechat/api');
+    const subagentThreadTaskStore = require('./subagentThreadStore');
+    const start = jest
+      .spyOn(subagentThreadTaskStore, 'start')
+      .mockReturnValue({ accepted: false, reason: 'capacity' });
+    const initialize = async (executionContext) => {
+      mockInitializeAgent.mockResolvedValue(
+        makePrimaryConfig({ subagents: { enabled: true, allowSelf: true, agent_ids: [] } }),
+      );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('run_in_background');
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+        executionContext,
+      });
+      agentClientArgs.subagentTasks.store.start({ scopeId: agentClientArgs.subagentTasks.scopeId });
+      return start.mock.lastCall[0];
+    };
+    const executionContext = createTriggerExecutionContext({
+      user: { id: testUser._id.toString() },
+      _isAgentTrigger: true,
+      body: {
+        agent_id: PRIMARY_ID,
+        clientRequestId: 'trigger_abc',
+        agentTrigger: {
+          version: 1,
+          event: {
+            id: 'event-1',
+            type: 'review.submitted',
+            occurredAt: 1000,
+            source: { type: 'remote_api_key', id: 'key-1' },
+          },
+        },
+      },
+    });
+
+    try {
+      expect((await initialize(executionContext)).trigger).toEqual({
+        subject: { kind: 'key', id: 'key-1' },
+        origin: {
+          agentId: PRIMARY_ID,
+          delivery: {
+            key: 'trigger_abc',
+            event: { id: 'event-1', type: 'review.submitted', occurredAt: 1000 },
+          },
+        },
+      });
+      expect(capturedToolExecuteOptions.runContext).toBe(executionContext);
+
+      // An interactive chat has no such context, and its tasks keep nothing.
+      expect((await initialize(undefined)).trigger).toBeUndefined();
+      expect(capturedToolExecuteOptions.runContext).toBeUndefined();
+    } finally {
+      start.mockRestore();
+    }
   });
 
   it('uses one normalized MCP body for discovery, deferred execution, and AgentClient', async () => {

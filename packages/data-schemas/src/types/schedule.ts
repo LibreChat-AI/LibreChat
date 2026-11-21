@@ -24,8 +24,12 @@ export interface ISchedule {
   file_ids?: string[];
   tools?: string[];
   mcpConsent?: ScheduledMCPEnrollment;
+  /** Set when the owner edits a schedule they never authorized: its MCP tools then need a grant. */
+  mcpConsentRequired?: boolean;
   cron?: string;
   enabled: boolean;
+  /** Run only while every MCP server the agent uses is ready. Unset, one that is not is left out. */
+  mcpStrict?: boolean;
   disabledReason?: ScheduleDisabledReason;
   nextRunAt?: Date;
   leaseUntil?: Date;

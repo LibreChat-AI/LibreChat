@@ -28,6 +28,7 @@ const {
   recordCollectedUsage,
   resolveRunUsageContext,
   getScheduleMCPExecution,
+  scheduleAsksEveryUse,
   createScheduledMCPPolicyRecorder,
   recordFallbackTokenUsage,
   getAgentPromptTokenEstimate,
@@ -70,6 +71,7 @@ const {
   collectAttachedCodeApprovalPolicies,
   collectAttachedCodeRoutePolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
+  buildScheduledApprovalAdmissionHooks,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
   getCodeApprovalPreservedFields,
@@ -80,6 +82,7 @@ const {
   collectAllowAlwaysAliases,
   agentRunUsesCheckpointer,
   canAgentGraphPause,
+  resolveScheduledPause,
   getPluginHookSource,
   captureAgentCheckpointGeneration,
   isContentFilterError,
@@ -156,6 +159,7 @@ const {
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
   assertAgentAttachmentLimits,
+  collectTurnHistoricalIds,
   assertAgentAttachmentTopology,
   collectHistoricalAttachmentIds,
   admitSteerAttachmentHistory,
@@ -549,10 +553,11 @@ class AgentClient extends BaseClient {
     const compatibleCurrentAttachments =
       this.getModelBoundAttachmentsForEndpoint(currentAttachments);
     this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      historicalAttachments,
-      currentAttachments,
-    );
+    this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+      historical: historicalAttachments,
+      attachments: currentAttachments,
+      requested: this.options.currentRequestAttachments,
+    });
     const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
     const sharedAttachmentIds = collectFileIds(sharedAttachments);
     const agents = collectReachableAgents([
@@ -2515,6 +2520,7 @@ class AgentClient extends BaseClient {
       requestAttachments,
       sharedRunAttachmentIds,
       attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
+      excluded: this.options.excludedFiles,
     });
     const scopedAttachmentMap = buildAgentScopedAttachmentMap({
       agentIds: allAgents.map(({ agentId }) => agentId),
@@ -2526,10 +2532,11 @@ class AgentClient extends BaseClient {
       endpointsByAgentId,
     });
     this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
-      requestAttachments,
-    );
+    this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+      historical: this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
+      attachments: requestAttachments,
+      requested: this.options.currentRequestAttachments,
+    });
     this.turnSharedAttachmentFiles = sharedAttachmentFiles;
     this.turnAggregateOnlyAttachmentFiles = retainedHistoricalFileContexts;
     this.turnScopedAttachmentsByAgentId = scopedAttachmentMap;
@@ -3443,6 +3450,7 @@ class AgentClient extends BaseClient {
         hasEntityEmbeddings,
         getUserKey: db.getUserKey,
         getConvoFiles: db.getConvoFiles,
+        getConvoExcludedFiles: db.getConvoExcludedFiles,
         getAccessibleMcpServerNames,
         updateFilesUsage: db.updateFilesUsage,
         getUserKeyValues: db.getUserKeyValues,
@@ -4462,6 +4470,7 @@ class AgentClient extends BaseClient {
                 appConfig,
               },
               pluginHookSource: getPluginHookSource(),
+              asksEveryUse: scheduleAsksEveryUse(this.options.req),
             },
           )
         : interrupt.payload;
@@ -4595,8 +4604,8 @@ class AgentClient extends BaseClient {
        * replay context, and resolution fence must be shared across workers; their
        * LangGraph continuation must also use a durable shared checkpointer. Redis
        * provides the first half, while handleRunInterrupt verifies the exact durable
-       * checkpoint before exposing the pause. Refuse unsupported topologies before
-       * spending on provider work. */
+       * checkpoint before exposing the pause. On a topology that cannot hold a pause the
+       * run starts without the wiring (`resolveScheduledPause`), so it never reaches one. */
       /** @type {AppConfig['endpoints']['agents']} */
       const agentsEConfig = appConfig.endpoints?.[EModelEndpoint.agents];
       const topLevelAgents = [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
@@ -4609,9 +4618,11 @@ class AgentClient extends BaseClient {
         collectAttachedCodeApprovalPolicies(topLevelAgents),
         agentsEConfig?.toolApproval?.enabled !== false,
       );
+      const scheduledMCPExecution = getScheduleMCPExecution(getMCPRequestContext(this.options.req));
       const effectiveToolApprovalPolicy = resolveToolApprovalPolicy({
         endpoint: agentsEConfig?.toolApproval,
         attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+        ownerApproval: scheduledMCPExecution?.mayAsk === true,
       });
       const resolvedToolApprovalHooks = isHITLEnabled(effectiveToolApprovalPolicy)
         ? buildToolApprovalHooks({
@@ -4629,6 +4640,7 @@ class AgentClient extends BaseClient {
           codeApprovalMode,
           collectAttachedCodeRoutePolicies(topLevelAgents),
         ),
+        ...buildScheduledApprovalAdmissionHooks(scheduledMCPExecution),
       ];
       const askUserQuestionAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
       const runCanPause = canAgentGraphPause({
@@ -4650,24 +4662,13 @@ class AgentClient extends BaseClient {
         agents: topLevelAgents,
         askUserQuestionAdminDisabled,
       });
-      if (this.options.req?._isScheduledFire === true && runCanPause) {
-        if (!GenerationJobManager.isRedis) {
-          const error = new Error(
-            'Scheduled agent runs that can pause require a shared generation store. ' +
-              'Enable Redis streams with USE_REDIS_STREAMS=true.',
-          );
-          error.code = 'SCHEDULED_HITL_REQUIRES_SHARED_STORE';
-          throw error;
-        }
-        if (!(await getAgentCheckpointer(agentsEConfig?.checkpointer))) {
-          const error = new Error(
-            'Scheduled agent runs that can pause require a durable shared checkpointer. ' +
-              'Use the default MongoDB checkpointer.',
-          );
-          error.code = 'SCHEDULED_HITL_REQUIRES_DURABLE_CHECKPOINT';
-          throw error;
-        }
-      }
+      const pause = await resolveScheduledPause({
+        scheduled: this.options.req?._isScheduledFire === true,
+        canPause: runCanPause,
+        sharedStore: GenerationJobManager.isRedis,
+        getCheckpointer: () => getAgentCheckpointer(agentsEConfig?.checkpointer),
+        conversationId: this.conversationId,
+      });
 
       /** Fire-and-forget: boot each selected stateful environment in
        *  parallel with generation so the first execute_code/bash call lands
@@ -5003,7 +5004,7 @@ class AgentClient extends BaseClient {
         // Start the prune alongside graph construction. The all-settled barrier
         // below still guarantees it completes before the graph is exposed or run.
         const shouldPruneCheckpoint =
-          streamId && this.eventActorInvocationId == null && runUsesCheckpointer;
+          streamId && this.eventActorInvocationId == null && runUsesCheckpointer && pause.prunes;
         let checkpointPrunePromise = Promise.resolve();
         if (shouldPruneCheckpoint && this.checkpointNamespace !== '') {
           checkpointPrunePromise = deleteAgentCheckpoint(
@@ -5055,6 +5056,8 @@ class AgentClient extends BaseClient {
           activityPhase?.handlers(offsetHandlers) ??
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
+          sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+          sdkFiles: this.options.sdkFiles,
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
             getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5083,7 +5086,8 @@ class AgentClient extends BaseClient {
           // persists the pending action; the /resume route rebuilds + continues the run), so it
           // opts into the tool-approval wiring. Non-resumable callers (OpenAI-compat, Responses)
           // leave this off so an approval-gated tool can't pause where there's no resume path.
-          hitlCapable: true,
+          // So does a scheduled run on a deployment that could not hold its pause.
+          hitlCapable: pause.capable,
           toolApprovalStorage: db,
           resolvedToolApprovalHooks,
           toolApprovalAllows: resolveRunToolApprovalAllows(
@@ -5276,7 +5280,6 @@ class AgentClient extends BaseClient {
     } catch (err) {
       if (
         err?.code === 'SCHEDULED_HITL_REQUIRES_SHARED_STORE' ||
-        err?.code === 'SCHEDULED_HITL_REQUIRES_DURABLE_CHECKPOINT' ||
         err?.code === 'HITL_CHECKPOINT_UNAVAILABLE' ||
         err?.code === PENDING_ACTION_EXPIRED_CODE
       ) {
@@ -5357,7 +5360,7 @@ class AgentClient extends BaseClient {
       rejectPrivateTextAdmission(this.options.req);
       /** An aborted/erroring run can still have completed compaction before
        * the failure; retain that model-visible state for actor reconciliation. */
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the
@@ -5625,10 +5628,11 @@ class AgentClient extends BaseClient {
           .filter((file) => !file?.file_id || !checkpointFileIds.has(file.file_id)),
       ];
       this.turnSteerAttachmentHistory = undefined;
-      this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-        resumeContentProjection.checkpointFiles,
-        requestFiles,
-      );
+      this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+        historical: resumeContentProjection.checkpointFiles,
+        attachments: requestFiles,
+        requested: this.options.currentRequestAttachments,
+      });
       const resumeSharedFileIds = collectFileIds(resumeSharedFiles);
       const resumeEndpointsByAgentId = new Map(
         agents
@@ -5872,6 +5876,8 @@ class AgentClient extends BaseClient {
         activityPhase?.handlers(offsetHandlers) ??
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
+        sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+        sdkFiles: this.options.sdkFiles,
         sdkResumeState: { content: seedContent, steps: runSteps },
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
@@ -6072,7 +6078,7 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the

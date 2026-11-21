@@ -1,12 +1,16 @@
 import { useState, useRef, useEffect } from 'react';
-import { MCPIcon } from '@librechat/client';
+import { MCPIcon, CustomIcon } from '@librechat/client';
 import { PermissionBits, hasPermissions } from 'librechat-data-provider';
 import type { MCPServerStatusIconProps } from '~/components/MCP/MCPServerStatusIcon';
 import type { MCPServerDefinition } from '~/hooks';
+import {
+  getMCPControlState,
+  getMCPDisplayStatus,
+  getMCPStatusColor,
+  getMCPStatusLabelKey,
+} from '~/components/MCP/mcpServerUtils';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import { useMCPServerManager, useLocalize } from '~/hooks';
-import { getStatusDotColor } from './MCPStatusBadge';
-import CustomIcon from '~/components/ui/CustomIcon';
 import MCPServerDialog from './MCPServerDialog';
 import MCPCardActions from './MCPCardActions';
 import { cn } from '~/utils';
@@ -39,6 +43,7 @@ export default function MCPServerCard({
   const statusIconProps = getServerStatusIconProps(server.serverName);
   const {
     serverStatus,
+    view,
     onConfigClick,
     isInitializing,
     canCancel,
@@ -49,7 +54,8 @@ export default function MCPServerCard({
   const canEditThisServer = hasPermissions(server.effectivePermissions, PermissionBits.EDIT);
   const displayName = server.config?.title || server.serverName;
   const description = server.config?.description;
-  const statusDotColor = getStatusDotColor(serverStatus, isInitializing);
+  const displayStatus = getMCPDisplayStatus(serverStatus, view);
+  const statusDotColor = getMCPStatusColor(displayStatus, isInitializing);
   const canEdit = canCreateEditMCPs && canEditThisServer;
   /** The shared flow URL is cleared when its initialization ends, so it can never be stale. */
   const sharedOAuthUrl = getOAuthUrl(server.serverName);
@@ -68,7 +74,11 @@ export default function MCPServerCard({
     /** If server has custom user vars and is not already connected, show config dialog first
      *  This ensures users can enter credentials before initialization attempts
      */
-    if (hasCustomUserVars && serverStatus?.connectionState !== 'connected') {
+    if (
+      hasCustomUserVars &&
+      serverStatus?.configurationState !== 'configured' &&
+      getMCPControlState(serverStatus, view) !== 'connected'
+    ) {
       onConfigClick({ stopPropagation: () => {}, preventDefault: () => {} } as React.MouseEvent);
       return;
     }
@@ -89,22 +99,10 @@ export default function MCPServerCard({
     setDialogOpen(true);
   };
 
-  // Determine status text for accessibility
-  const getStatusText = () => {
-    if (isInitializing) return localize('com_nav_mcp_status_initializing');
-    if (!serverStatus) return localize('com_nav_mcp_status_unknown');
-    const { connectionState, requiresOAuth } = serverStatus;
-    if (connectionState === 'connecting') return localize('com_nav_mcp_status_connecting');
-    if (serverStatus.requestScoped) return localize('com_nav_mcp_status_on_demand');
-    if (connectionState === 'connected') return localize('com_nav_mcp_status_connected');
-    if (connectionState === 'error') return localize('com_nav_mcp_status_error');
-    if (connectionState === 'disconnected') {
-      return requiresOAuth
-        ? localize('com_nav_mcp_status_needs_auth')
-        : localize('com_nav_mcp_status_disconnected');
-    }
-    return localize('com_nav_mcp_status_unknown');
-  };
+  const statusLabelKey = getMCPStatusLabelKey(serverStatus, isInitializing, view);
+  const accessibleLabel = statusLabelKey
+    ? `${displayName} - ${localize(statusLabelKey, { 0: server.serverName })}`
+    : displayName;
 
   return (
     <>
@@ -114,7 +112,7 @@ export default function MCPServerCard({
           /** Flat row, not a card: the hover fill is the only affordance a list needs. */
           'hover:bg-surface-active-alt bg-transparent',
         )}
-        aria-label={`${displayName} - ${getStatusText()}`}
+        aria-label={accessibleLabel}
       >
         {/* Server Icon with Status Dot */}
         <div className="text-text-primary relative shrink-0">
@@ -152,6 +150,7 @@ export default function MCPServerCard({
           <MCPCardActions
             serverName={server.serverName}
             serverStatus={serverStatus}
+            view={view}
             isInitializing={isInitializing}
             canCancel={canCancel}
             hasCustomUserVars={hasCustomUserVars}

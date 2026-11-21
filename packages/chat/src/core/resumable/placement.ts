@@ -1,4 +1,5 @@
-import type { Agents, TMessage, TSubmission } from 'librechat-data-provider';
+import type { Agents, TMessage, TSubmission, EventSubmission } from 'librechat-data-provider';
+import { preferDefinedString } from './messages';
 
 export type ResumeMessageIndexes = {
   userIndex: number;
@@ -139,6 +140,104 @@ export const mergeResumeMessages = (
 
   return [...nextMessages, userMessage, responseMessage];
 };
+
+/** Where a resume snapshot's response landed in the list, and what the list is now. */
+export type ResumedResponsePlacement = {
+  messages: TMessage[];
+  response: TMessage;
+  /** The index the response already held, under its durable id or its preliminary one; else -1. */
+  responseIndex: number;
+  /** The list's own content was kept because the snapshot carried none. */
+  preservedLoadedContent: boolean;
+};
+
+/**
+ * Rebuilds the response a resume snapshot describes and places it, with its user turn, in the
+ * list. The snapshot's aggregated content is authoritative over what the list holds, with one
+ * exception: an EMPTY snapshot never erases content already loaded for the same response, which
+ * would leave a bare cursor.
+ *
+ * When loaded content is not preserved, the response holds completion-local content indexed from
+ * zero, so the caller must stop offsetting later steps by an edit's retained prefix.
+ */
+export function placeResumedResponse({
+  messages,
+  submission,
+  userMessage,
+  resumeState,
+  previous,
+}: {
+  messages: TMessage[];
+  /** The submission already rebuilt from the snapshot (`buildResumeEventSubmission`). */
+  submission: EventSubmission;
+  userMessage: TMessage;
+  resumeState: Agents.ResumeState;
+  /**
+   * The submission the run held before the snapshot. Its optimistic rows are replaced in place
+   * when the snapshot assigns the turn its durable ids.
+   */
+  previous?: Pick<TSubmission, 'userMessage' | 'initialResponse'> | null;
+}): ResumedResponsePlacement {
+  const { initialResponse } = submission;
+  const preliminaryResponseMessageId = previous?.initialResponse?.messageId;
+  const previousUserMessageId = previous?.userMessage?.messageId;
+  const preliminaryUserMessageId =
+    previousUserMessageId &&
+    (previous?.initialResponse?.parentMessageId === previousUserMessageId ||
+      preliminaryResponseMessageId === `${previousUserMessageId}_`)
+      ? previousUserMessageId
+      : undefined;
+  const responseId = initialResponse.messageId;
+  const resumedContent = initialResponse.content;
+  const indexes = getResumeMessageIndexes(
+    messages,
+    userMessage.messageId,
+    responseId,
+    preliminaryUserMessageId,
+    preliminaryResponseMessageId,
+  );
+  const responseIndex =
+    indexes.responseIndex >= 0 ? indexes.responseIndex : indexes.preliminaryResponseIndex;
+  const anchored = submission.compact === true;
+
+  if (responseIndex < 0) {
+    const response = {
+      ...initialResponse,
+      messageId: responseId,
+      parentMessageId: userMessage.messageId,
+      content: resumedContent,
+      isCreatedByUser: false,
+    } as TMessage;
+    return {
+      messages: mergeResumeMessages(messages, userMessage, response, indexes, anchored),
+      response,
+      responseIndex,
+      preservedLoadedContent: false,
+    };
+  }
+
+  const loaded = messages[responseIndex];
+  const loadedContent = loaded?.content;
+  /** Require an existing content array so it is never swapped for `undefined`. */
+  const preservedLoadedContent =
+    (resumedContent?.length ?? 0) === 0 && Array.isArray(loadedContent) && loadedContent.length > 0;
+  const response = {
+    ...initialResponse,
+    ...loaded,
+    messageId: responseId,
+    parentMessageId: userMessage.messageId,
+    content: preservedLoadedContent ? loadedContent : resumedContent,
+    sender: loaded?.sender ?? initialResponse.sender,
+    iconURL: preferDefinedString(loaded?.iconURL, initialResponse.iconURL ?? resumeState.iconURL),
+    model: preferDefinedString(loaded?.model, initialResponse.model ?? resumeState.model),
+  } as TMessage;
+  return {
+    messages: mergeResumeMessages(messages, userMessage, response, indexes, anchored),
+    response,
+    responseIndex,
+    preservedLoadedContent,
+  };
+}
 
 export function hasSubmissionUserMessage(
   submission: TSubmission | null,

@@ -36,6 +36,7 @@ import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
 import { ROW_GLYPH_SLOT } from './rows';
 import { classes } from './classes';
+import Favicon from './Favicon';
 
 /** What the app's tool card renders when a search fails. */
 export type WebSearchFailedCall = {
@@ -51,11 +52,6 @@ export type WebSearchFailedCall = {
   onExpand?: () => void;
 };
 
-export type WebSearchFaviconProps = {
-  domain: string;
-  className?: string;
-};
-
 export type WebSearchStackProps = {
   sources: ValidSource[];
   start?: number;
@@ -69,13 +65,7 @@ type ProgressKeys =
 
 const MAX_VISIBLE_FAVICONS = 3;
 
-function SourceFaviconStack({
-  sources,
-  renderFavicon,
-}: {
-  sources: ValidSource[];
-  renderFavicon: (props: WebSearchFaviconProps) => ReactNode;
-}) {
+function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
   const visible = getUniqueDomainSources(sources, MAX_VISIBLE_FAVICONS);
   return (
     <div className="flex items-center" aria-hidden="true">
@@ -89,7 +79,7 @@ function SourceFaviconStack({
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
         >
-          {renderFavicon({ domain: getCleanDomain(source.link), className: 'size-3 rounded-full' })}
+          <Favicon domain={getCleanDomain(source.link)} className="size-3 rounded-full" />
         </div>
       ))}
     </div>
@@ -108,7 +98,6 @@ export default function WebSearch({
   runStepStatus,
   searchResults,
   headerSlot = null,
-  renderFavicon,
   renderStackedFavicons,
   renderVerticals,
   renderFailedCall,
@@ -126,8 +115,6 @@ export default function WebSearch({
   searchResults?: { [key: string]: SearchResultData };
   /** The fold header's action slot, when a generated title replaced this row. */
   headerSlot?: HTMLElement | null;
-  /** One site's icon. Absent, a finished row with sources keeps the globe. */
-  renderFavicon?: (props: WebSearchFaviconProps) => ReactNode;
   /** Overlapping icons while results are still arriving. */
   renderStackedFavicons?: (props: WebSearchStackProps) => ReactNode;
   /** Image, shopping and place strips under a finished search. */
@@ -388,8 +375,8 @@ export default function WebSearch({
               }
             >
               <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-                {hasSourceData && renderFavicon != null ? (
-                  <SourceFaviconStack sources={allSources} renderFavicon={renderFavicon} />
+                {hasSourceData ? (
+                  <SourceFaviconStack sources={allSources} />
                 ) : (
                   <Globe className="text-text-secondary size-4 shrink-0" />
                 )}
@@ -438,20 +425,10 @@ export default function WebSearch({
                           i > 0 && 'border-border-light border-t',
                         )}
                       >
-                        {renderFavicon != null ? (
-                          renderFavicon({
-                            domain,
-                            className: classes('size-4 shrink-0 rounded-sm', snippet && 'mt-0.5'),
-                          })
-                        ) : (
-                          <Globe
-                            className={classes(
-                              'text-text-secondary size-4 shrink-0',
-                              snippet && 'mt-0.5',
-                            )}
-                            aria-hidden="true"
-                          />
-                        )}
+                        <Favicon
+                          domain={domain}
+                          className={classes('size-4 shrink-0 rounded-sm', snippet && 'mt-0.5')}
+                        />
                         <span className="min-w-0 flex-1">
                           <span className="text-text-primary block truncate text-xs font-medium">
                             {source.title || domain}

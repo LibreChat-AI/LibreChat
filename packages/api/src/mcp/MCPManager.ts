@@ -4,6 +4,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol
 import { Permissions, PermissionTypes, DEFAULT_MCP_APPS_POLICY } from 'librechat-data-provider';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
+import type { RunGrantIdentity } from 'librechat-data-provider';
 import type { TMCPAppsPolicy } from 'librechat-data-provider';
 import type {
   OboTokenResolver,
@@ -11,8 +12,8 @@ import type {
   UpstreamTokenProvider,
   UpstreamTokenProviderResolver,
 } from '~/mcp/oauth/obo';
-import type { ScheduledMCPInvocation } from '~/schedules/authorization/execution';
 import type { MCPAppOperationContext, MCPAppValidationContext } from './apps';
+import type { RunGrantInvocation } from '~/agents/authority/execution';
 import type { ScheduledMCPBearerInvocation } from '~/schedules/bearer';
 import type { MCPClientCapabilityProfile } from './capabilities';
 import type { AuthIdentityContext } from '~/utils/identity';
@@ -60,20 +61,20 @@ import {
   type MCPAppBindingSubject,
   type MCPAppRuntimeTarget,
 } from './apps/binding';
+import { assertToolApprovalTransportEpoch, getToolApprovalTransportCallId } from '~/tools/approval';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { mcpOptionsContainGraphTokenPlaceholder, preProcessGraphTokens } from '~/utils/graph';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
 import { createLazyOboUpstreamTokenProvider, awaitOboOperation } from '~/mcp/oauth/obo';
 import { MCPAppOperationBudget, getMCPAppOperationLimits } from './apps/budget';
-import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import { formatToolContent, selectResolvedAppResource } from './parsers';
 import { MCPServersInitializer } from './registry/MCPServersInitializer';
 import { OboTokenResolutionError, resolveOboToken } from '~/mcp/oauth';
 import { MCPServerCatalogRecoveryTracker } from './catalog/recovery';
-import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { getToolUiResourceUri, isToolHiddenFromApp } from './apps';
 import { MCPServerInspector } from './registry/MCPServerInspector';
 import { MCPServersRegistry } from './registry/MCPServersRegistry';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { UserConnectionManager } from './UserConnectionManager';
 import { ConnectionsRepository } from './ConnectionsRepository';
 import { MCPConnectionFactory } from './MCPConnectionFactory';
@@ -1551,7 +1552,8 @@ Please follow these instructions when using tools from the respective MCP server
     /** See {@link t.UserConnectionContext.unattended}. */
     unattended?: boolean;
     scheduledBearerInvocation?: ScheduledMCPBearerInvocation;
-    scheduledMCPInvocation?: ScheduledMCPInvocation;
+    /** The grant a run acts under, whether a schedule's or an API key's. */
+    scheduledMCPInvocation?: RunGrantInvocation<RunGrantIdentity>;
     user?: IUser;
     serverName: string;
     /** Pre-resolved config from tool creation context — avoids readThrough TTL and cross-tenant issues */
@@ -2021,6 +2023,7 @@ Please follow these instructions when using tools from the respective MCP server
             toolName,
             loadTools: () => connection!.fetchToolsSnapshot(undefined, options?.signal),
             signal: options?.signal,
+            toolCallId: getToolApprovalTransportCallId(),
           });
           options?.signal?.throwIfAborted();
           await assertToolApprovalTransportEpoch(
@@ -2058,7 +2061,7 @@ Please follow these instructions when using tools from the respective MCP server
         try {
           result = await requestTool();
         } catch (error) {
-          if (error instanceof ScheduledMCPPolicyError) throw error;
+          if (error instanceof RunGrantPolicyError) throw error;
           if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
             if (isMCPTransportAuthenticationError(error)) {
               const failure = createScheduledMCPTransportError(
@@ -2195,7 +2198,7 @@ Please follow these instructions when using tools from the respective MCP server
           } catch (error) {
             if (
               isScheduledMCPBearer(requestScopedConnections) &&
-              (error instanceof ScheduledMCPPolicyError ||
+              (error instanceof RunGrantPolicyError ||
                 isMCPInitializationError(error, options?.signal))
             )
               throw error;
@@ -2245,7 +2248,7 @@ Please follow these instructions when using tools from the respective MCP server
           } catch (error) {
             if (
               isScheduledMCPBearer(requestScopedConnections) &&
-              (error instanceof ScheduledMCPPolicyError ||
+              (error instanceof RunGrantPolicyError ||
                 isMCPInitializationError(error, options?.signal))
             )
               throw error;
@@ -2315,7 +2318,7 @@ Please follow these instructions when using tools from the respective MCP server
           throw error;
         }
         if (enforceSchedule && error instanceof MCPAuthenticationRejectedError) {
-          throw new ScheduledMCPPolicyError(
+          throw new RunGrantPolicyError(
             'credential_rejected',
             serverName,
             scheduledMCPInvocation?.agentId,

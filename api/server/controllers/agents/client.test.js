@@ -2400,9 +2400,31 @@ describe('AgentClient - startup telemetry', () => {
     },
   );
 
-  it('refuses scheduled pause-capable runs before provider startup without Redis', async () => {
+  /**
+   * Starts a scheduled run and returns what the run was created with. One that could pause,
+   * on a deployment that cannot hold its pause, starts without the pause wiring, as a caller
+   * with no resume path does.
+   */
+  const startScheduledRun = async (client) => {
+    mockDeleteAgentCheckpoint.mockReset().mockResolvedValue(undefined);
+    const processStream = jest.fn().mockResolvedValue();
+    mockCreateRun.mockResolvedValueOnce({
+      Graph: null,
+      processStream,
+      getCalibrationRatio: jest.fn(() => 0),
+      getInterrupt: jest.fn(() => undefined),
+    });
+    const before = mockCreateRun.mock.calls.length;
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+    client.checkpointNamespace = `${client.conversationId}-generation`;
+    await expect(client.chatCompletion({ payload: [] })).resolves.toBeUndefined();
+    expect(mockCreateRun).toHaveBeenCalledTimes(before + 1);
+    expect(processStream).toHaveBeenCalledTimes(1);
+    return mockCreateRun.mock.calls.at(-1)[0];
+  };
+
+  it('starts a scheduled run that could ask the user without its pause wiring where there is no Redis', async () => {
     mockIsHITLEnabled.mockReturnValue(false);
-    const createRunBefore = mockCreateRun.mock.calls.length;
     const client = new AgentClient({
       req: {
         user: { id: 'user-123' },
@@ -2429,15 +2451,51 @@ describe('AgentClient - startup telemetry', () => {
     client.responseMessageId = 'scheduled-hitl-response';
     client.parentMessageId = 'scheduled-hitl-parent';
 
-    await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-      code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      message: expect.stringContaining('USE_REDIS_STREAMS=true'),
+    expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+    // A checkpointer may exist without Redis, so what an earlier attempt left is still cleared.
+    expect(mockDeleteAgentCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a scheduled run without pruning where Redis is present and no durable checkpointer is', async () => {
+    mockIsHITLEnabled.mockReturnValue(false);
+    const isRedisSpy = jest.spyOn(GenerationJobManager, 'isRedis', 'get').mockReturnValue(true);
+    mockGetAgentCheckpointer.mockResolvedValueOnce(null);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _isScheduledFire: true,
+        _resumableStreamId: 'scheduled-hitl-no-checkpointer',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        tools: [{ name: 'ask_user_question' }],
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
     });
-    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    client.conversationId = 'scheduled-hitl-no-checkpointer';
+    client.responseMessageId = 'scheduled-hitl-no-checkpointer-response';
+    client.parentMessageId = 'scheduled-hitl-no-checkpointer-parent';
+
+    try {
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+      // With no checkpointer there is nothing to prune, and the prune would fail the run.
+      expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+    } finally {
+      isRedisSpy.mockRestore();
+    }
   });
 
   it('includes host-generated background tools in scheduled pause admission', async () => {
-    const createRunBefore = mockCreateRun.mock.calls.length;
     const client = new AgentClient({
       req: {
         user: { id: 'user-123' },
@@ -2475,10 +2533,7 @@ describe('AgentClient - startup telemetry', () => {
     client.responseMessageId = 'scheduled-background-response';
     client.parentMessageId = 'scheduled-background-parent';
 
-    await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-      code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-    });
-    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
   });
 
   it.each([
@@ -2636,9 +2691,8 @@ describe('AgentClient - startup telemetry', () => {
       ],
     },
   ])(
-    'rejects scheduled memory-store runs with a $name before provider execution',
+    'starts scheduled memory-store runs with a $name without the pause wiring',
     async (surface) => {
-      const createRunBefore = mockCreateRun.mock.calls.length;
       const client = new AgentClient({
         req: {
           user: { id: 'user-123' },
@@ -2670,10 +2724,7 @@ describe('AgentClient - startup telemetry', () => {
       client.conversationId = 'scheduled-agent-mode';
       client.responseMessageId = 'scheduled-agent-mode-response';
       client.parentMessageId = 'scheduled-agent-mode-parent';
-      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      });
-      expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
     },
   );
 
@@ -2685,7 +2736,6 @@ describe('AgentClient - startup telemetry', () => {
       const unregister = registerToolApprovalHook(() => hook, {
         matcher: `^${prefix}_query_mcp_db$`,
       });
-      const createRunBefore = mockCreateRun.mock.calls.length;
       const client = new AgentClient({
         req: {
           user: { id: 'user-123' },
@@ -2723,10 +2773,7 @@ describe('AgentClient - startup telemetry', () => {
       client.responseMessageId = 'scheduled-legacy-hook-response';
       client.parentMessageId = 'scheduled-legacy-hook-parent';
       try {
-        await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-          code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-        });
-        expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+        expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
         expect(hook).not.toHaveBeenCalled();
       } finally {
         unregister();
@@ -2826,9 +2873,7 @@ describe('AgentClient - startup telemetry', () => {
     client.parentMessageId = 'scheduled-deployment-parent';
 
     try {
-      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      });
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
     } finally {
       setPluginHookSource(previousSource);
     }
@@ -7088,6 +7133,198 @@ describe('AgentClient - titleConvo', () => {
       expect(client.processAttachments).not.toHaveBeenCalled();
     });
 
+    /** A tool-routed file with extracted text reaches an agent that has no tool to read it as
+     *  text, from the transcript, unless it is one of the shared prompt files. A file the
+     *  conversation leaves out is no longer one of those, so it has to be kept out by name. */
+    describe('a left-out file with extracted text', () => {
+      const { resolveTurnDeliveryRouting } = require('@librechat/api');
+      const csv = {
+        ...makeUploadedFile('left-out-csv', 'figures.csv', 'text/csv'),
+        text: 'region,total',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+      };
+      const transcript = () => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'Use the figures.',
+          isCreatedByUser: true,
+          files: [{ file_id: csv.file_id }],
+        },
+      ];
+      const scopedIds = () =>
+        (client.options.agentContextAttachmentsByAgentId.get(mockAgent.id) ?? []).map(
+          ({ file_id }) => file_id,
+        );
+
+      beforeEach(() => {
+        client.options.resendFiles = true;
+        client.options.attachments = [];
+        client.authorizedHistoricalFiles = new Map([[csv.file_id, csv]]);
+        mockAgent.fileConsumers = { executeCode: false, fileSearch: false };
+        mockAgent.deliveryRouting = resolveTurnDeliveryRouting({
+          agent: { provider: 'openAI' },
+          config: {
+            fileConfig: {
+              endpoints: {
+                openAI: {
+                  defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
+                  textFallbackWithoutTools: true,
+                },
+              },
+            },
+          },
+        });
+      });
+
+      it('reaches the agent as text while the conversation includes it', async () => {
+        await client.buildMessages(transcript(), 'msg-1', {});
+
+        expect(scopedIds()).toEqual([csv.file_id]);
+      });
+
+      it('does not reach the agent once the conversation leaves it out', async () => {
+        client.options.excludedFiles = [csv.file_id];
+
+        await client.buildMessages(transcript(), 'msg-1', {});
+
+        expect(scopedIds()).toEqual([]);
+      });
+    });
+
+    /** A file can be sent to the model and placed in the code environment at once (a screenshot
+     *  in a chat whose agent runs code). Agent setup primes every such file of the thread again
+     *  on each turn and hands it over with the request's own, so being in that list does not
+     *  make a file new: ten earlier screenshots and one new one is one new file. */
+    describe('earlier files that agent setup primed again', () => {
+      const screenshot = (id) => ({
+        ...makeUploadedFile(id, `${id}.png`, 'image/png'),
+        llmDeliveryPath: 'provider',
+        metadata: { codeEnvRef: { kind: 'user', id: 'user-123', file_id: `env-${id}` } },
+      });
+      const earlier = Array.from({ length: 10 }, (_, index) => screenshot(`earlier-${index}`));
+      const fresh = screenshot('fresh');
+      const thread = () =>
+        earlier.map((file, index) => ({
+          messageId: `msg-${index}`,
+          isCreatedByUser: true,
+          files: [{ file_id: file.file_id }],
+        }));
+
+      beforeEach(() => {
+        client.options.resendFiles = true;
+        mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 10 } } };
+        require('~/models').getFiles.mockResolvedValue(earlier);
+        client.addFileContextToMessage = jest.fn();
+        client.processAttachments = jest.fn(async (_message, files) => files);
+      });
+
+      it('does not count them toward the limit on files new to the turn', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh];
+
+        await expect(client.addPreviousAttachments(thread())).resolves.toHaveLength(10);
+        expect(client.turnHistoricalAttachmentIds).toEqual(
+          new Set(earlier.map(({ file_id }) => file_id)),
+        );
+        /** Handed over with the request's files, they are sent with it and not replayed twice. */
+        expect(client.processAttachments).not.toHaveBeenCalled();
+      });
+
+      /** The earlier-files set is worked out again once the prompt is built, from the same
+       *  mixed list, and the turn has to pass that admission as well as the replay's. */
+      it('lets the turn through the final admission once the prompt is built', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh];
+        const history = thread().map((message, index) => ({
+          ...message,
+          parentMessageId: index === 0 ? null : `msg-${index - 1}`,
+          sender: 'User',
+          text: `screenshot ${index}`,
+        }));
+        const replayed = await client.addPreviousAttachments(history);
+
+        await expect(
+          client.buildMessages(
+            [
+              ...replayed,
+              {
+                messageId: 'msg-new',
+                parentMessageId: 'msg-9',
+                sender: 'User',
+                text: 'now these',
+                isCreatedByUser: true,
+              },
+            ],
+            'msg-new',
+            {},
+          ),
+        ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+        expect(client.turnHistoricalAttachmentIds).toEqual(
+          new Set(earlier.map(({ file_id }) => file_id)),
+        );
+      });
+
+      it('refuses eleven new files at the final admission as it does at the replay', async () => {
+        const many = Array.from({ length: 11 }, (_, index) => screenshot(`fresh-${index}`));
+        client.options.attachments = [...many, ...earlier];
+        client.options.currentRequestAttachments = many;
+        client.authorizedHistoricalFiles = new Map(earlier.map((file) => [file.file_id, file]));
+
+        await expect(
+          client.buildMessages(
+            [
+              {
+                messageId: 'msg-new',
+                parentMessageId: null,
+                sender: 'User',
+                text: 'now these',
+                isCreatedByUser: true,
+              },
+            ],
+            'msg-new',
+            {},
+          ),
+        ).rejects.toMatchObject({ limitType: 'count', observed: 11, limit: 10 });
+      });
+
+      it('still counts an earlier file the request names again', async () => {
+        mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh, earlier[0]];
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+          limitType: 'count',
+          observed: 2,
+        });
+      });
+
+      it('refuses a turn whose own files are too many, whatever came before', async () => {
+        const many = Array.from({ length: 11 }, (_, index) => screenshot(`fresh-${index}`));
+        client.options.attachments = [...many, ...earlier];
+        client.options.currentRequestAttachments = many;
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          limitType: 'count',
+          observed: 11,
+          limit: 10,
+        });
+      });
+
+      it('counts as before for a caller that does not say which files the request named', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        delete client.options.currentRequestAttachments;
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          limitType: 'count',
+          observed: 11,
+        });
+      });
+    });
+
     it('rejects combined historical and scoped bytes before history is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
@@ -10842,6 +11079,56 @@ describe('AgentClient - resumeCompletion content protection', () => {
     context.options.req.config.fileConfig = {
       endpoints: { agents: { fileLimit: 10 } },
     };
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).resolves.toBeUndefined();
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count history that agent setup primed again as new files on resume', async () => {
+    const historicalFiles = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `resume-primed-${index}`,
+      filename: `screenshot-${index}.png`,
+      source: 'local',
+      type: 'image/png',
+      bytes: 10,
+      llmDeliveryPath: 'provider',
+      metadata: { codeEnvRef: { kind: 'user', id: 'user-123', file_id: `env-${index}` } },
+    }));
+    require('~/models').getMessages.mockResolvedValue(
+      historicalFiles.map((file, index) => ({
+        messageId: index === historicalFiles.length - 1 ? 'parent-123' : `history-${index}`,
+        parentMessageId: index === 0 ? Constants.NO_PARENT : `history-${index - 1}`,
+        isCreatedByUser: true,
+        role: 'user',
+        text: 'inspect file',
+        files: [{ file_id: file.file_id }],
+      })),
+    );
+    require('~/models').getFiles.mockResolvedValue(historicalFiles);
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: historicalFiles.map((file) => ({
+              role: 'human',
+              files: [{ file_id: file.file_id }],
+            })),
+          },
+        },
+      }),
+    });
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
+    const context = makeContext(undefined);
+    context.options.req.body.isTemporary = false;
+    context.options.req.config.fileConfig = {
+      endpoints: { agents: { fileLimit: 10 } },
+    };
+    /** A resumed request names no file of its own; setup hands back the thread's. */
+    context.options.attachments = [...historicalFiles];
+    context.options.currentRequestAttachments = [];
 
     await expect(
       AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),

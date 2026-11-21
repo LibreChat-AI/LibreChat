@@ -1,4 +1,3 @@
-const path = require('path');
 const { logger } = require('@librechat/data-schemas');
 const { getCodeBaseURL } = require('@librechat/agents');
 const {
@@ -41,8 +40,8 @@ const {
   openCodeFileSource,
   createCodeFileUploadRef,
   checkCodeFileActive: checkIfActive,
-  CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
-  CODE_OUTPUT_PREFLIGHT_MAX_COUNT,
+  getPreparedCodeOutputBuffer,
+  cachePreparedCodeOutputBuffer,
   normalizeArtifactDeliveryFailure,
   processCodeOutput: processCodeOutputWithDeps,
   resolveDownloadPath,
@@ -66,136 +65,6 @@ const { getRetentionExpiry } = require('~/server/services/Files/retention');
 const { determineFileType } = require('~/server/utils');
 
 const axios = createAxiosInstance();
-
-/** Request-scoped references to buffers already fetched by artifact preflight.
- * The request object is the ownership boundary, and WeakMap keeps completed
- * requests from retaining generated-file bytes. */
-const preparedCodeOutputBuffers = new WeakMap();
-
-const codeOutputBufferKey = (routeKey, sessionId, fileId) => `${routeKey}\0${sessionId}\0${fileId}`;
-
-const getCodeOutputRouteKey = ({ executionRouteKey, codeApiBaseUrl, executionProfile }) =>
-  executionRouteKey ?? codeApiBaseUrl ?? executionProfile ?? 'default';
-
-const normalizeSandboxArtifactName = (filePath) => {
-  if (typeof filePath !== 'string' || filePath.length === 0) {
-    return null;
-  }
-  if (filePath.includes('\\')) {
-    return null;
-  }
-  const posixPath = filePath;
-  let relativePath = posixPath;
-  if (posixPath.startsWith('/mnt/data/')) {
-    relativePath = posixPath.slice('/mnt/data/'.length);
-  } else if (posixPath.startsWith('/')) {
-    return null;
-  }
-  if (relativePath.split('/').some((segment) => segment === '.' || segment === '..')) {
-    return null;
-  }
-  const normalized = path.posix.normalize(relativePath).replace(/^\.\//, '');
-  if (
-    normalized.length === 0 ||
-    normalized === '.' ||
-    normalized === '..' ||
-    normalized.startsWith('../')
-  ) {
-    return null;
-  }
-  return normalized;
-};
-
-const cachePreparedCodeOutputBuffer = ({
-  req,
-  id,
-  name,
-  session_id,
-  buffer,
-  codeApiBaseUrl,
-  executionProfile,
-  executionRouteKey,
-}) => {
-  if (
-    !req ||
-    (typeof req !== 'object' && typeof req !== 'function') ||
-    typeof id !== 'string' ||
-    typeof session_id !== 'string' ||
-    !Buffer.isBuffer(buffer)
-  ) {
-    return;
-  }
-  let cache = preparedCodeOutputBuffers.get(req);
-  if (!cache) {
-    cache = { buffers: new Map(), totalBytes: 0 };
-    preparedCodeOutputBuffers.set(req, cache);
-  }
-  const routeKey = getCodeOutputRouteKey({ executionRouteKey, codeApiBaseUrl, executionProfile });
-  const key = codeOutputBufferKey(routeKey, session_id, id);
-  const existing = cache.buffers.get(key);
-  if (existing) {
-    cache.totalBytes -= existing.buffer.length;
-    cache.buffers.delete(key);
-  }
-  if (buffer.length > CODE_OUTPUT_PREFLIGHT_MAX_BYTES) {
-    return;
-  }
-  while (
-    cache.buffers.size >= CODE_OUTPUT_PREFLIGHT_MAX_COUNT ||
-    cache.totalBytes + buffer.length > CODE_OUTPUT_PREFLIGHT_MAX_BYTES
-  ) {
-    const oldestKey = cache.buffers.keys().next().value;
-    if (oldestKey == null) {
-      break;
-    }
-    const oldest = cache.buffers.get(oldestKey);
-    cache.buffers.delete(oldestKey);
-    cache.totalBytes -= oldest.buffer.length;
-  }
-  cache.buffers.set(key, { name, buffer });
-  cache.totalBytes += buffer.length;
-};
-
-const getPreparedCodeOutputBuffer = ({
-  req,
-  file_path,
-  session_id,
-  files,
-  codeApiBaseUrl,
-  executionProfile,
-  executionRouteKey,
-}) => {
-  if (!req || (typeof req !== 'object' && typeof req !== 'function') || !Array.isArray(files)) {
-    return null;
-  }
-  const cache = preparedCodeOutputBuffers.get(req);
-  const requestedName = normalizeSandboxArtifactName(file_path);
-  if (!cache || !requestedName) {
-    return null;
-  }
-
-  const routeKey = getCodeOutputRouteKey({ executionRouteKey, codeApiBaseUrl, executionProfile });
-  for (const file of files) {
-    if (!file || typeof file.id !== 'string' || typeof file.name !== 'string') {
-      continue;
-    }
-    if (normalizeSandboxArtifactName(file.name) !== requestedName) {
-      continue;
-    }
-    const storageSessionId = file.storage_session_id ?? file.session_id ?? session_id;
-    if (typeof storageSessionId !== 'string') {
-      continue;
-    }
-    const key = codeOutputBufferKey(routeKey, storageSessionId, file.id);
-    const cached = cache.buffers.get(key);
-    if (cached && normalizeSandboxArtifactName(cached.name) === requestedName) {
-      cache.buffers.delete(key);
-      cache.totalBytes -= cached.buffer.length;
-      return cached.buffer;
-    }
-  }
-  return null;
-};
 
 class CodeOutputDownloadLimitError extends Error {
   constructor(maxBytes) {
@@ -759,6 +628,7 @@ const primeFiles = async (options) => {
     files: dbFiles,
     privateFileIds: agentResourceIds,
     routeKey: executionRouteKey,
+    identity: { userId: req?.user?.id, agentId, agentResources: tool_resources },
     getFileInfo: (ref) => getSessionFileInfo(ref, req, codeApiRoute, signal),
     concurrency: uploadOptions.concurrency,
     signal,

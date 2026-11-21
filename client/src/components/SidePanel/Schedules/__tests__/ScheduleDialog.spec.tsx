@@ -2,9 +2,10 @@ import { createElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
+import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
-import type { TSchedule } from 'librechat-data-provider';
+import type { TSchedule, RunGrantView } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import ScheduleDialog from '../ScheduleDialog';
 
@@ -25,6 +26,7 @@ jest.mock('react-i18next', () => ({
 
 const mockMutate = jest.fn();
 let createMutationOptions: { onError: (error: Error) => void } | undefined;
+let updateMutationOptions: { onError: (error: Error) => void } | undefined;
 
 /** Server-resolved schedule policy for the render under test. The dialog reads it from
  *  the schedules list query, the same cache entry the panel populates. */
@@ -33,6 +35,7 @@ let mockLimits: {
   minIntervalMinutes: number;
   requireProject: boolean;
   projectId?: string;
+  mcpConsent?: boolean;
 } = {
   maxPerUser: 10,
   minIntervalMinutes: 0,
@@ -73,8 +76,55 @@ jest.mock('~/data-provider', () => ({
     createMutationOptions = options;
     return { mutate: mockMutate, isLoading: false };
   },
-  useUpdateScheduleMutation: () => ({ mutate: mockMutate, isLoading: false }),
+  useUpdateScheduleMutation: (options: { onError: (error: Error) => void }) => {
+    updateMutationOptions = options;
+    return { mutate: mockMutate, isLoading: false };
+  },
 }));
+
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    dataService: {
+      ...actual.dataService,
+      getScheduleMCPOffer: jest.fn(),
+      getScheduleMCPConsent: jest.fn(),
+      confirmScheduleMCPConsent: jest.fn(),
+    },
+  };
+});
+
+/** What a schedule of an agent could be allowed, as the server offers it before creation. */
+const offerFor = (tools: string[], other: string[] = []): RunGrantView => ({
+  state: 'missing',
+  revision: null,
+  expiresAtMs: null,
+  targets: [
+    {
+      resource: {
+        serverName: 'warehouse',
+        url: 'https://warehouse.example/mcp',
+        issuer: null,
+        audience: null,
+        scopes: [],
+        credentialMode: 'anonymous',
+        configurationRevision: 'v1',
+      },
+      policyRevision: 'p1',
+      permittedTools: [{ agentId: 'root', tools }],
+    },
+  ],
+  allowed: {},
+  changed: {},
+  asking: {},
+  tools: { offered: other, allowed: [] },
+  everything: false,
+  approval: false,
+  required: false,
+  requireAfterMs: null,
+  offer: { digest: 'a'.repeat(64), maxLifetimeHours: 24 },
+});
 
 const renderDialog = (schedule?: Partial<TSchedule>, onOpenChange = jest.fn()) => {
   const queryClient = new QueryClient({
@@ -760,6 +810,526 @@ describe('ScheduleDialog', () => {
 
       expect(mockMutate).toHaveBeenCalledTimes(1);
       expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('chatProjectId');
+    });
+  });
+
+  describe('authorizing a schedule as it is created', () => {
+    const create = () => screen.getByRole('button', { name: 'com_ui_create' });
+
+    it('asks nothing and sends no authorization where consent is off', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(create());
+      expect(dataService.getScheduleMCPOffer).not.toHaveBeenCalled();
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('authorization');
+    });
+
+    it('shows what the agent could be allowed, and creates only once something is', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest
+        .mocked(dataService.getScheduleMCPOffer)
+        .mockResolvedValue(offerFor(['export', 'query'], ['web_search']));
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(await screen.findByText('com_ui_schedule_authorize_title')).toBeVisible();
+      expect(dataService.getScheduleMCPOffer).toHaveBeenCalledWith('agent-1');
+      // Something to allow and nothing allowed: the schedule would only be refused its tools.
+      await waitFor(() => expect(create()).toBeDisabled());
+      await user.click(screen.getByRole('checkbox', { name: 'query' }));
+      await user.click(screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_web' }));
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent_id: 'agent-1',
+          authorization: {
+            offerDigest: 'a'.repeat(64),
+            lifetimeHours: 24,
+            allow: { warehouse: ['query'] },
+            ask: {},
+            tools: ['web_search'],
+          },
+        }),
+      );
+    });
+
+    it('creates for the whole agent unless the owner chooses otherwise', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      const offer = offerFor(['export', 'query'], ['web_search']);
+      jest
+        .mocked(dataService.getScheduleMCPOffer)
+        .mockResolvedValue({ ...offer, offer: { ...offer.offer!, everything: true } });
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(
+        await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_everything' }),
+      ).toBeChecked();
+      // Nothing to tick first: the schedule runs with everything its agent has.
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate.mock.calls[0][0]).toMatchObject({
+        authorization: {
+          offerDigest: 'a'.repeat(64),
+          lifetimeHours: 24,
+          allow: {},
+          everything: true,
+        },
+      });
+      expect(mockMutate.mock.calls[0][0].authorization).not.toHaveProperty('tools');
+    });
+
+    it('starts over when another agent is picked', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest
+        .mocked(dataService.getScheduleMCPOffer)
+        .mockImplementation(async (agentId) =>
+          offerFor(agentId === 'agent-1' ? ['query'] : ['deploy', 'query']),
+        );
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(await screen.findByRole('checkbox', { name: 'query' }));
+      await waitFor(() => expect(create()).toBeEnabled());
+      const dialog = screen.getByRole('dialog');
+      await user.click(within(dialog).getByRole('combobox', { name: 'com_ui_agent' }));
+      await user.click(await within(dialog).findByRole('option', { name: /Digest Agent/ }));
+      expect(await screen.findByRole('checkbox', { name: 'deploy' })).not.toBeChecked();
+      // The same tool name on the same server, for another agent: not carried over.
+      expect(screen.getByRole('checkbox', { name: 'query' })).not.toBeChecked();
+      await waitFor(() => expect(create()).toBeDisabled());
+    });
+
+    it('reads the offer again when the server turns the authorization down, and sends the new one', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue(offerFor(['export', 'query']));
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(await screen.findByRole('checkbox', { name: 'query' }));
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+
+      const failed = (status: number, code?: string) =>
+        Object.assign(new Error('rejected'), { response: { status, data: { code } } });
+      // Any other failure leaves the offer alone.
+      act(() => createMutationOptions!.onError(failed(500)));
+      expect(dataService.getScheduleMCPOffer).toHaveBeenCalledTimes(1);
+
+      // The agent dropped a tool after the form read the offer.
+      let answer!: (offer: RunGrantView) => void;
+      jest.mocked(dataService.getScheduleMCPOffer).mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+      act(() => createMutationOptions!.onError(failed(409, 'consent_changed')));
+      // The offer in hand is the one just turned down: nothing is sent until the new one is read.
+      await waitFor(() => expect(create()).toBeDisabled());
+      await act(async () =>
+        answer({ ...offerFor(['query']), offer: { digest: 'b'.repeat(64), maxLifetimeHours: 24 } }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole('checkbox', { name: 'export' })).not.toBeInTheDocument(),
+      );
+      expect(dataService.getScheduleMCPOffer).toHaveBeenCalledTimes(2);
+      // The tick that still applies is kept, and the next create carries the offer just read.
+      expect(screen.getByRole('checkbox', { name: 'query' })).toBeChecked();
+      await waitFor(() => expect(create()).toBeEnabled());
+      await user.click(create());
+      expect(mockMutate).toHaveBeenCalledTimes(2);
+      expect(mockMutate.mock.calls[1][0]).toMatchObject({
+        authorization: { offerDigest: 'b'.repeat(64), allow: { warehouse: ['query'] } },
+      });
+    });
+
+    describe('and again as it is edited', () => {
+      const save = () => screen.getByRole('button', { name: 'com_ui_save' });
+      /** The schedule has a grant that lists `query` and asks nothing. */
+      const stored: RunGrantView = {
+        ...offerFor(['export', 'query']),
+        state: 'active',
+        revision: 'grant-1',
+        allowed: { warehouse: ['query'] },
+        offer: { digest: 'c'.repeat(64), maxLifetimeHours: 24, everything: true },
+      };
+      const rename = async (user: ReturnType<typeof userEvent.setup>) => {
+        const name = screen.getByPlaceholderText('com_ui_schedule_name_placeholder');
+        await user.clear(name);
+        await user.type(name, 'Morning digest');
+      };
+
+      it('starts from the grant the schedule has and sends the choice with the edit', async () => {
+        mockLimits = { ...mockLimits, mcpConsent: true };
+        jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(stored);
+        const user = userEvent.setup();
+        renderDialog(storedSchedule());
+        // The schedule's own offer, not the one for a schedule that does not exist yet.
+        expect(await screen.findByRole('checkbox', { name: 'query' })).toBeChecked();
+        expect(dataService.getScheduleMCPConsent).toHaveBeenCalledWith('sched-1');
+        expect(dataService.getScheduleMCPOffer).not.toHaveBeenCalled();
+        // A grant that lists its tools is not turned into one for the whole agent by an edit.
+        expect(
+          screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_everything' }),
+        ).not.toBeChecked();
+        await rename(user);
+        await user.click(save());
+        expect(mockMutate).toHaveBeenCalledWith({
+          id: 'sched-1',
+          payload: {
+            name: 'Morning digest',
+            authorization: {
+              offerDigest: 'c'.repeat(64),
+              expectedRevision: 'grant-1',
+              lifetimeHours: 24,
+              allow: { warehouse: ['query'] },
+              ask: {},
+              tools: [],
+            },
+            expectedConfigRevision: 3,
+          },
+        });
+      });
+
+      it('asks the offer of another agent when the edit moves the schedule to it', async () => {
+        mockLimits = { ...mockLimits, mcpConsent: true };
+        jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(stored);
+        const moved = offerFor(['deploy']);
+        jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue({
+          ...moved,
+          offer: { ...moved.offer!, everything: true },
+        });
+        const user = userEvent.setup();
+        renderDialog(storedSchedule());
+        await screen.findByRole('checkbox', { name: 'query' });
+        const dialog = screen.getByRole('dialog');
+        await user.click(within(dialog).getByRole('combobox', { name: 'com_ui_agent' }));
+        await user.click(await within(dialog).findByRole('option', { name: /Digest Agent/ }));
+        await waitFor(() =>
+          expect(dataService.getScheduleMCPOffer).toHaveBeenCalledWith('agent-2'),
+        );
+        // Nothing is stored for that agent: the choice starts where a new schedule's does.
+        expect(
+          await screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_everything' }),
+        ).toBeChecked();
+        await waitFor(() => expect(save()).toBeEnabled());
+        await user.click(save());
+        const { payload } = mockMutate.mock.calls[0][0];
+        expect(payload).toMatchObject({
+          agent_id: 'agent-2',
+          authorization: { offerDigest: 'a'.repeat(64), allow: {}, everything: true },
+        });
+        expect(payload.authorization).not.toHaveProperty('expectedRevision');
+      });
+
+      it('holds the save until something is allowed, and reads the offer again when it is refused', async () => {
+        mockLimits = { ...mockLimits, mcpConsent: true };
+        jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(stored);
+        const user = userEvent.setup();
+        renderDialog(storedSchedule());
+        await user.click(await screen.findByRole('checkbox', { name: 'query' }));
+        await rename(user);
+        await waitFor(() => expect(save()).toBeDisabled());
+        await user.click(screen.getByRole('checkbox', { name: 'export' }));
+        await waitFor(() => expect(save()).toBeEnabled());
+        await user.click(save());
+        expect(dataService.getScheduleMCPConsent).toHaveBeenCalledTimes(1);
+        act(() =>
+          updateMutationOptions!.onError(
+            Object.assign(new Error('rejected'), {
+              response: { status: 409, data: { code: 'consent_changed' } },
+            }),
+          ),
+        );
+        await waitFor(() => expect(dataService.getScheduleMCPConsent).toHaveBeenCalledTimes(2));
+      });
+
+      describe('with no field of the schedule edited', () => {
+        const confirmed = jest.mocked(dataService.confirmScheduleMCPConsent);
+        const open = async (view: RunGrantView = stored) => {
+          mockLimits = { ...mockLimits, mcpConsent: true };
+          jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(view);
+          confirmed.mockResolvedValue(view);
+          const onOpenChange = jest.fn();
+          renderDialog(storedSchedule(), onOpenChange);
+          await screen.findByText('com_ui_schedule_authorize_title');
+          return onOpenChange;
+        };
+
+        it('stores a tool the owner ticked through the authorization step, not an edit', async () => {
+          const user = userEvent.setup();
+          const onOpenChange = await open();
+          await user.click(screen.getByRole('checkbox', { name: 'export' }));
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith('sched-1', {
+              offerDigest: 'c'.repeat(64),
+              expectedRevision: 'grant-1',
+              lifetimeHours: 24,
+              allow: { warehouse: ['export', 'query'] },
+              ask: {},
+              tools: [],
+            }),
+          );
+          // An edit with no field is refused by the server, so none is sent.
+          expect(mockMutate).not.toHaveBeenCalled();
+          await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+        });
+
+        it('stores a narrower choice, so the tool the owner unticked stops being allowed', async () => {
+          const user = userEvent.setup();
+          await open({ ...stored, allowed: { warehouse: ['export', 'query'] } });
+          await user.click(screen.getByRole('checkbox', { name: 'export' }));
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith(
+              'sched-1',
+              expect.objectContaining({ allow: { warehouse: ['query'] } }),
+            ),
+          );
+        });
+
+        it('stores the whole agent when the owner ticks it', async () => {
+          const user = userEvent.setup();
+          await open();
+          await user.click(
+            screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_everything' }),
+          );
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith(
+              'sched-1',
+              expect.objectContaining({ allow: {}, everything: true, expectedRevision: 'grant-1' }),
+            ),
+          );
+        });
+
+        it('stores a question the owner adds about a tool that stays allowed', async () => {
+          const user = userEvent.setup();
+          await open({ ...stored, approval: true });
+          await user.click(
+            screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_ask_tool' }),
+          );
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith(
+              'sched-1',
+              expect.objectContaining({
+                allow: { warehouse: ['query'] },
+                ask: { warehouse: ['query'] },
+              }),
+            ),
+          );
+        });
+
+        it('stores one of the other tools the owner ticks or unticks', async () => {
+          const user = userEvent.setup();
+          await open({
+            ...stored,
+            tools: { offered: ['execute_code', 'web_search'], allowed: ['execute_code'] },
+          });
+          await user.click(
+            screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_tool_code' }),
+          );
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith(
+              'sched-1',
+              expect.objectContaining({ allow: { warehouse: ['query'] }, tools: [] }),
+            ),
+          );
+        });
+
+        it('stores the end of a question under a grant for the whole agent', async () => {
+          const user = userEvent.setup();
+          await open({
+            ...stored,
+            approval: true,
+            everything: true,
+            allowed: {},
+            asking: { warehouse: ['query'] },
+          });
+          await user.click(
+            screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_everything_asking' }),
+          );
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith(
+              'sched-1',
+              expect.objectContaining({ allow: {}, everything: true, ask: {} }),
+            ),
+          );
+        });
+
+        it('stores another lifetime alone', async () => {
+          const user = userEvent.setup();
+          await open();
+          const hours = screen.getByLabelText('com_ui_schedule_consent_hours');
+          await user.clear(hours);
+          await user.type(hours, '12');
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith(
+              'sched-1',
+              expect.objectContaining({ lifetimeHours: 12, allow: { warehouse: ['query'] } }),
+            ),
+          );
+        });
+
+        it('authorizes a schedule whose grant is not in force, as the form shows it', async () => {
+          const user = userEvent.setup();
+          const missing: RunGrantView = {
+            ...offerFor(['query']),
+            offer: { digest: 'd'.repeat(64), maxLifetimeHours: 24, everything: true },
+          };
+          const onOpenChange = await open(missing);
+          expect(
+            screen.getByRole('checkbox', { name: 'com_ui_schedule_consent_everything' }),
+          ).toBeChecked();
+          await user.click(save());
+          await waitFor(() =>
+            expect(confirmed).toHaveBeenCalledWith('sched-1', {
+              offerDigest: 'd'.repeat(64),
+              expectedRevision: null,
+              lifetimeHours: 24,
+              allow: {},
+              everything: true,
+            }),
+          );
+          await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+        });
+
+        it('sends nothing and closes when the grant in force is what the form shows', async () => {
+          const user = userEvent.setup();
+          const onOpenChange = await open();
+          await user.click(save());
+          expect(onOpenChange).toHaveBeenCalledWith(false);
+          expect(confirmed).not.toHaveBeenCalled();
+          expect(mockMutate).not.toHaveBeenCalled();
+        });
+
+        it('sends nothing for a choice put back the way it was', async () => {
+          const user = userEvent.setup();
+          const onOpenChange = await open();
+          await user.click(screen.getByRole('checkbox', { name: 'export' }));
+          await user.click(screen.getByRole('checkbox', { name: 'export' }));
+          await user.click(save());
+          expect(onOpenChange).toHaveBeenCalledWith(false);
+          expect(confirmed).not.toHaveBeenCalled();
+        });
+
+        it('stays open and reads the offer again when the choice is turned down', async () => {
+          const user = userEvent.setup();
+          const onOpenChange = await open();
+          confirmed.mockRejectedValue(
+            Object.assign(new Error('rejected'), {
+              response: { status: 409, data: { code: 'consent_changed' } },
+            }),
+          );
+          await user.click(screen.getByRole('checkbox', { name: 'export' }));
+          await user.click(save());
+          await waitFor(() => expect(confirmed).toHaveBeenCalledTimes(1));
+          await waitFor(() =>
+            expect(
+              jest.mocked(dataService.getScheduleMCPConsent).mock.calls.length,
+            ).toBeGreaterThan(1),
+          );
+          expect(onOpenChange).not.toHaveBeenCalledWith(false);
+          // The owner's tick is kept, to be sent again against the offer just read.
+          expect(screen.getByRole('checkbox', { name: 'export' })).toBeChecked();
+          await waitFor(() => expect(save()).toBeEnabled());
+        });
+      });
+
+      it('sends no choice where consent is off', async () => {
+        const user = userEvent.setup();
+        renderDialog(storedSchedule());
+        await rename(user);
+        await user.click(save());
+        expect(dataService.getScheduleMCPConsent).not.toHaveBeenCalled();
+        expect(mockMutate.mock.calls[0][0].payload).not.toHaveProperty('authorization');
+      });
+    });
+
+    it('creates as before when the agent has nothing to be allowed', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue({
+        ...offerFor([]),
+        state: 'unsupported',
+        targets: [],
+        offer: null,
+      });
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await waitFor(() => expect(dataService.getScheduleMCPOffer).toHaveBeenCalled());
+      expect(screen.queryByText('com_ui_schedule_authorize_title')).not.toBeInTheDocument();
+      await user.click(create());
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('authorization');
+    });
+
+    it('says so when the offer cannot be loaded, lets the owner retry, and does not block creating', async () => {
+      mockLimits = { ...mockLimits, mcpConsent: true };
+      jest.mocked(dataService.getScheduleMCPOffer).mockRejectedValueOnce(new Error('down'));
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'com_ui_schedule_authorize_unavailable',
+      );
+      expect(create()).toBeEnabled();
+      jest.mocked(dataService.getScheduleMCPOffer).mockResolvedValue(offerFor(['query']));
+      await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      expect(await screen.findByRole('checkbox', { name: 'query' })).toBeVisible();
+    });
+  });
+
+  describe('running without a server that is not ready', () => {
+    const strict = () => screen.getByRole('checkbox', { name: 'com_ui_schedule_mcp_strict' });
+
+    it('creates a schedule that does, unless its owner asks for every server', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      expect(strict()).not.toBeChecked();
+      await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('mcpStrict');
+    });
+
+    it('creates one that waits for every server when its owner ticks the box', async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await fillRequiredFields(user);
+      await user.click(strict());
+      await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0]).toMatchObject({ mcpStrict: true });
+    });
+
+    it('shows what a stored schedule is set to, and saves a change of it alone', async () => {
+      const user = userEvent.setup();
+      renderDialog(storedSchedule({ mcpStrict: true }));
+      expect(strict()).toBeChecked();
+      await user.click(strict());
+      await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      const { payload } = mockMutate.mock.calls[0][0];
+      expect(payload).toMatchObject({ mcpStrict: false });
+      for (const field of ['name', 'prompt', 'agent_id', 'cadence', 'timezone'])
+        expect(payload).not.toHaveProperty(field);
+    });
+
+    it('leaves the setting out of an edit that does not touch it', async () => {
+      const user = userEvent.setup();
+      renderDialog(storedSchedule({ mcpStrict: true }));
+      await user.type(screen.getByPlaceholderText('com_ui_schedule_name_placeholder'), ' v2');
+      await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+      await waitFor(() => expect(mockMutate).toHaveBeenCalledTimes(1));
+      expect(mockMutate.mock.calls[0][0].payload).not.toHaveProperty('mcpStrict');
     });
   });
 });

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   isAgentsStream,
+  getAccessToken,
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   messagesView,
@@ -366,6 +367,132 @@ test.describe('core chat loop', () => {
     await page.reload({ timeout: 10000 });
     await expect(page).toHaveURL(conversationUrl);
     await expect(fileChip).toBeVisible();
+  });
+
+  test('stops sending a file the conversation leaves out, and sends it again once taken back @scenario:conversation-leaves-file-out', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+
+    const csvFixture: UploadFixture = {
+      name: 'left-out-upload.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('name,value\nalpha,1\n'),
+    };
+    const filename = csvFixture.name;
+    const fileChip = messagesView(page).getByRole('button', { name: filename });
+    const listed = (label: string, names: string) =>
+      messagesView(page).getByText(`E2E provider files (${label}): ${names}`);
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const upload = await uploadProviderFile(page, csvFixture);
+    const { file_id: fileId } = (await upload.json()) as { file_id: string };
+    expect(fileId).toBeTruthy();
+
+    let response = await sendMessageAndWaitForCompletion(
+      page,
+      `E2E_ASSERT_PROVIDER_FILE:${filename}`,
+    );
+    expect(response.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E provider file assertion passed: ${filename}`),
+    ).toBeVisible();
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/);
+    const conversationId = page.url().split('/c/')[1];
+
+    /** A later turn sends the earlier message's file again: that is the cost being controlled. */
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:before');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('before', filename)).toBeVisible();
+
+    const token = await getAccessToken(page);
+    const setExcluded = (excluded: boolean) =>
+      page.request.post(`/api/convos/${conversationId}/files/exclusion`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { fileIds: [fileId], excluded },
+      });
+
+    const left = await setExcluded(true);
+    expect(left.ok()).toBeTruthy();
+    expect(await left.json()).toEqual({ excludedFiles: [fileId] });
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:left-out');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('left-out', 'none')).toBeVisible();
+    /** Left out of what the model is sent, not out of the conversation: the message keeps it. */
+    await expect(fileChip).toBeVisible();
+
+    const back = await setExcluded(false);
+    expect(back.ok()).toBeTruthy();
+    expect(await back.json()).toEqual({ excludedFiles: [] });
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:taken-back');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('taken-back', filename)).toBeVisible();
+  });
+
+  test('lists a chat’s files in the session rail and stops sending one switched off there @scenario:session-rail-files', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+
+    const csvFixture: UploadFixture = {
+      name: 'rail-upload.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('name,value\nalpha,1\n'),
+    };
+    const filename = csvFixture.name;
+    const listed = (label: string, names: string) =>
+      messagesView(page).getByText(`E2E provider files (${label}): ${names}`);
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await uploadProviderFile(page, csvFixture);
+    let response = await sendMessageAndWaitForCompletion(
+      page,
+      `E2E_ASSERT_PROVIDER_FILE:${filename}`,
+    );
+    expect(response.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E provider file assertion passed: ${filename}`),
+    ).toBeVisible();
+
+    await page.getByTestId('header-background-tasks-button').click();
+    const rail = page.getByRole('complementary', { name: 'Session' });
+    const row = rail.getByTestId('session-file').filter({ hasText: filename });
+    await expect(row).toContainText('Sent to the model');
+    const include = row.getByRole('switch', { name: `Use ${filename} in new messages` });
+    await expect(include).toBeChecked();
+    await testInfo.attach('session-rail-files', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+
+    await include.click();
+    await expect(include).not.toBeChecked();
+    await expect(row).toContainText('Left out');
+    await expect(rail).toContainText('1 left out');
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:switched-off');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('switched-off', 'none')).toBeVisible();
+    await testInfo.attach('session-rail-files-left-out', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+
+    /** The choice belongs to the conversation, not to this page. */
+    await page.reload({ timeout: 10000 });
+    await expect(rail).toBeVisible();
+    await expect(include).not.toBeChecked();
+
+    await include.click();
+    await expect(include).toBeChecked();
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:switched-on');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('switched-on', filename)).toBeVisible();
+    await rail.getByRole('button', { name: 'Close session' }).click();
   });
 
   test('supports attaching, removing, and sending provider files from the composer', async ({

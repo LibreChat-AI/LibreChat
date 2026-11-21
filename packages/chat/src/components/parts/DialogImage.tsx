@@ -9,6 +9,7 @@ import {
   useLocalize,
   useMediaQuery,
   useRemScale,
+  usePortalContainer,
 } from '@librechat/client';
 
 /** The lightbox is z-250 and not an OGDialog, so its tooltips would keep the default 150 and sit behind it. */
@@ -53,6 +54,7 @@ export default function DialogImage({
   title?: string;
 }): React.ReactElement | null {
   const localize = useLocalize();
+  const portals = usePortalContainer();
   const [isPromptOpen, setIsPromptOpen] = useState(false);
   const [imageSize, setImageSize] = useState<string | null>(null);
 
@@ -267,7 +269,7 @@ export default function DialogImage({
 
   return (
     <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
+      <DialogPrimitive.Portal container={portals}>
         <DialogPrimitive.Overlay
           className="bg-surface-media-overlay/90 fixed inset-0 z-[250]"
           onClick={handleBackgroundClick}

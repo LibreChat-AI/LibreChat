@@ -1,6 +1,7 @@
 import { useRef, createContext, useContext } from 'react';
 import type {
   Agent,
+  AgentDisplay,
   TFile,
   TMessage,
   Assistant,
@@ -152,7 +153,7 @@ export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: bool
 export type MessageIconProps = {
   iconData?: MessageIconData;
   assistant?: Assistant;
-  agent?: Agent;
+  agent?: AgentDisplay;
 };
 
 /** The button a read-aloud control draws, through the row's toolbar styling. */
@@ -174,6 +175,13 @@ export type MessageAudioProps = {
   content: string;
   className?: string;
   renderButton?: (props: MessageAudioButtonProps) => ReactNode;
+};
+
+/** A model response's usage control, rendered with the host's config and accounting data. */
+export type MessageUsageProps = {
+  message: TMessage;
+  conversationId?: string;
+  isLast?: boolean;
 };
 
 /**
@@ -201,6 +209,7 @@ export interface MessagesHost {
   useHasPendingTurn: (conversationId: string) => boolean;
   /** Renders the app's read-aloud control, or `null` while read-aloud is off. */
   renderMessageAudio: (props: MessageAudioProps) => ReactNode;
+  renderMessageUsage?: (props: MessageUsageProps) => ReactNode;
   /** The element the app's conversation screenshot captures; none outside a screenshot provider. */
   useScreenshotTarget: () => RefObject<HTMLDivElement> | undefined;
   /** Whether the viewer asked the thread to follow new content to the bottom. */
@@ -266,7 +275,8 @@ const fallbackForkPreferences: ForkPreferences = {
 };
 
 /** Read state with nothing behind it: no conversation is ever unseen, so nothing is written. */
-const inertSeenSource: ConversationSeenSource = {
+/** A seen source that records nothing, for a list whose conversation has no read state. */
+export const inertSeenSource: ConversationSeenSource = {
   readReply: () => undefined,
   hasReplyProof: () => false,
   markSeen: noop,
@@ -346,4 +356,9 @@ export function MessageIconSlot(props: MessageIconProps): ReactNode {
 /** A row's read-aloud control, drawn by the host's slot. */
 export function MessageAudioSlot(props: MessageAudioProps): ReactNode {
   return useMessagesHost().renderMessageAudio(props);
+}
+
+/** A response's token details, when the host enables usage reporting. */
+export function MessageUsageSlot(props: MessageUsageProps): ReactNode {
+  return useMessagesHost().renderMessageUsage?.(props) ?? null;
 }

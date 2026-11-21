@@ -46,7 +46,7 @@ describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (clust
   });
 
   const expectServersClosed = (): void => {
-    expect(servers).toHaveBeenCalledTimes(3);
+    expect(servers.mock.calls.length).toBeGreaterThanOrEqual(3);
     for (const result of servers.mock.results) {
       if (result.type === 'return') {
         expect(result.value.listening).toBe(false);
@@ -87,11 +87,34 @@ describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (clust
     await expectCleanup();
   });
 
-  it('closes the proxy if allocating the Redis directory fails', async () => {
+  it('closes the proxy and reused port reservations if allocating the Redis directory fails', async () => {
+    const listen = net.Server.prototype.listen;
+    const ports: number[] = [];
+    const reservePort = function (this: net.Server): net.Server {
+      this.once('listening', () => {
+        const address = this.address();
+        if (!address || typeof address === 'string') {
+          throw new Error('Expected a TCP reservation address');
+        }
+        ports.push(address.port);
+      });
+      return listen.call(this, { port: ports[0] ?? 0, host: '127.0.0.1' });
+    };
+    // Rebind the first released port twice, then leave allocation to the OS.
+    jest
+      .spyOn(net.Server.prototype, 'listen')
+      .mockImplementationOnce(reservePort)
+      .mockImplementationOnce(reservePort)
+      .mockImplementationOnce(reservePort);
     const error = new Error('fixture directory unavailable');
     directories.mockRejectedValueOnce(error);
     await expect(startRedis(cluster)).rejects.toBe(error);
+    expect(ports[0]).toBeGreaterThan(0);
+    expect(ports).toEqual([ports[0], ports[0], ports[0]]);
+    expect(servers.mock.calls.length).toBeGreaterThanOrEqual(5);
     expectServersClosed();
+    expect(directories).toHaveBeenCalledTimes(1);
+    expect(spawned).not.toHaveBeenCalled();
     expect(disconnect).not.toHaveBeenCalled();
   });
 });

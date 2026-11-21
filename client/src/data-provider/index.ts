@@ -15,6 +15,7 @@ export * from './Projects';
 export * from './Schedules';
 export * from './Subagents';
 export * from './BackgroundTasks';
+export * from './FileExclusion';
 export * from './PullRequest';
 export * from './Tools';
 export * from './Traces';

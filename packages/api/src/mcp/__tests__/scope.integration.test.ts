@@ -10,8 +10,8 @@ import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/
 import type { FlowStateManager } from '~/flow/manager';
 import type { MCPRequestContext } from '~/mcp/request';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
+import { executionFixture, allowOffered } from '~/agents/authority/execution.helper';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
-import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { getFreePort } from '~/mcp/__tests__/helpers/oauthTestServer';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
@@ -463,6 +463,7 @@ describe('request-scoped MCP lifecycle integration', () => {
         offerDigest: offer.offer!.digest,
         expectedRevision: null,
         lifetimeHours: 1,
+        allow: allowOffered(offer.targets),
       });
       await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
       expect(server.toolCallCount()).toBe(1);

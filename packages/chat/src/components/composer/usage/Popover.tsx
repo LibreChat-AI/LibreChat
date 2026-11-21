@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { cn } from '@librechat/client';
 import * as Ariakit from '@ariakit/react';
+import { Button } from '@librechat/client';
 import type { ReactNode } from 'react';
 
 /** Hover pacing: a brief intent delay so sweeping past the gauge doesn't pop
@@ -9,11 +10,10 @@ const SHOW_DELAY_MS = 100;
 const HIDE_DELAY_MS = 150;
 
 /** `--usage-card-wide` is the wide card's width, less the popover's padding and
- *  border when the viewport caps it. A panel inside reads it to keep its
- *  settled layout while the card resizes around it. Each direction borrows the
- *  pacing of the collapsible roll it travels with. */
+ *  border when the viewport caps it: room for the context legend's two columns.
+ *  Each direction borrows the pacing of the collapsible roll it travels with. */
 const CARD =
-  '[--usage-card-wide:min(44rem,calc(100vw_-_2.5rem_-_2px))] max-w-full transition-width motion-reduce:transition-none';
+  '[--usage-card-wide:min(24rem,calc(100vw_-_2.5rem_-_2px))] max-w-full transition-width motion-reduce:transition-none';
 const CARD_WIDE = 'w-(--usage-card-wide) duration-300 ease-out';
 const CARD_NARROW = 'w-72 duration-200 ease-in';
 
@@ -27,6 +27,8 @@ export interface UsagePopoverProps {
   busy?: boolean;
   /** Widens the card for content laid out in columns */
   wide?: boolean;
+  triggerVariant?: 'message-hover' | 'message-hover-reveal';
+  testId?: string;
   /** The gauge face; receives whether the card is open */
   trigger: (open: boolean) => ReactNode;
   /** Card content, mounted only while the card is open */
@@ -43,6 +45,8 @@ export default function UsagePopover({
   cardLabel,
   busy = false,
   wide = false,
+  triggerVariant,
+  testId = 'token-usage',
   trigger,
   children,
 }: UsagePopoverProps): React.JSX.Element {
@@ -126,7 +130,15 @@ export default function UsagePopover({
         ref={disclosureRef}
         store={popover}
         type="button"
-        data-testid="token-usage"
+        render={
+          <Button
+            variant={triggerVariant ?? 'ghost'}
+            size={triggerVariant == null ? 'icon-theme' : 'default'}
+            shape={triggerVariant == null ? 'round' : undefined}
+            data-hover-active={popoverOpen || undefined}
+          />
+        }
+        data-testid={testId}
         aria-label={label}
         aria-busy={busy}
         aria-haspopup="dialog"
@@ -163,9 +175,8 @@ export default function UsagePopover({
           popover.show();
         }}
         className={cn(
-          'size-theme-control rounded-theme-control-round flex items-center justify-center transition-colors',
-          'hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
-          'animate-in fade-in zoom-in-95 duration-300',
+          triggerVariant == null &&
+            'animate-in fade-in zoom-in-95 duration-300 motion-reduce:animate-none',
         )}
       >
         {trigger(popoverOpen)}
@@ -178,6 +189,7 @@ export default function UsagePopover({
       <Ariakit.Popover
         store={popover}
         gutter={8}
+        data-usage-popover
         portal
         unmountOnHide
         autoFocusOnShow={focusOnShow}
@@ -200,12 +212,7 @@ export default function UsagePopover({
             scheduleHide();
           }
         }}
-        className={cn(
-          'border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain border p-3 shadow-lg focus:outline-hidden',
-          'origin-bottom translate-y-1 scale-95 opacity-0 transition duration-150 ease-out motion-reduce:transition-none',
-          'data-[enter]:translate-y-0 data-[enter]:scale-100 data-[enter]:opacity-100',
-          'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
-        )}
+        className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain border p-3 shadow-lg focus:outline-hidden"
       >
         <div className={cn(CARD, wide ? CARD_WIDE : CARD_NARROW)}>{children}</div>
       </Ariakit.Popover>
