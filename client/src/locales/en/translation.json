@@ -27,6 +27,7 @@
   "com_ui_discord_commands_registering": "Registering commands...",
   "com_ui_discord_commands_help": "/librechat link and ask in bound channels, select in DMs. Discord can take a while to show updates.",
   "com_ui_discord_commands_success": "Commands updated.",
+  "com_ui_discord_commands_updated": "Updated",
   "com_ui_discord_binding_description": "Connect this agent to a Discord server text channel.",
   "com_ui_discord_binding_help": "Each Discord text channel has one agent binding. People must link their own LibreChat account and grant consent before chatting.",
   "com_ui_discord_binding_server": "Discord server",

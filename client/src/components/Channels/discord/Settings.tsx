@@ -1,8 +1,16 @@
 import { useId } from 'react';
-import { ExternalLink } from 'lucide-react';
-import { Button, Label, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
+import { Check } from 'lucide-react';
+import {
+  Button,
+  InfoHoverCard,
+  Label,
+  OGDialog,
+  OGDialogTemplate,
+  Spinner,
+} from '@librechat/client';
 import type { DiscordApplication, DiscordApplicationPage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
+import type { TranslationKeys } from '~/hooks';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
 import Callback from '../Callback';
@@ -50,6 +58,9 @@ export default function Settings({
   const localize = useLocalize();
   const id = useId();
   const name = app?.name ? `${app.name} · ${app.applicationId}` : app?.applicationId;
+  let commandLabel: TranslationKeys = 'com_ui_discord_commands_register';
+  if (registered) commandLabel = 'com_ui_discord_commands_updated';
+  if (registering) commandLabel = 'com_ui_discord_commands_registering';
   return (
     <OGDialog open={open && app !== undefined} onOpenChange={onOpenChange}>
       <OGDialogTemplate
@@ -102,12 +113,10 @@ export default function Settings({
                 )}
               </div>
               <div className="space-y-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
                     <h4 className="text-sm font-medium">{localize('com_ui_discord_commands')}</h4>
-                    <p className="text-text-secondary text-xs">
-                      {localize('com_ui_discord_commands_help')}
-                    </p>
+                    <InfoHoverCard text={localize('com_ui_discord_commands_help')} icon="info" />
                   </div>
                   <Button
                     ref={commandRef}
@@ -123,17 +132,14 @@ export default function Settings({
                     onClick={onRegister}
                   >
                     {registering && <Spinner className="size-4" aria-hidden="true" />}
-                    {localize(
-                      registering
-                        ? 'com_ui_discord_commands_registering'
-                        : 'com_ui_discord_commands_register',
-                    )}
+                    {registered && !registering && <Check className="size-4" aria-hidden="true" />}
+                    {localize(commandLabel)}
                   </Button>
                 </div>
                 {registered && (
-                  <p role="status" className="text-status-success text-xs">
+                  <span role="status" className="sr-only">
                     {localize('com_ui_discord_commands_success')}
-                  </p>
+                  </span>
                 )}
                 {failure && (
                   <Notice
@@ -145,16 +151,6 @@ export default function Settings({
                   />
                 )}
               </div>
-              <Button asChild variant="inline-link" className="w-fit">
-                <a
-                  href="https://discord.com/developers/applications"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {localize('com_ui_discord_developer_portal')}
-                  <ExternalLink className="size-3.5" aria-hidden="true" />
-                </a>
-              </Button>
             </div>
           )
         }

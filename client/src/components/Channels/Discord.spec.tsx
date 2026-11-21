@@ -769,7 +769,7 @@ test('registers commands only after explicit action using current revision and m
   jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
   const { user, client } = await page({ settings: true });
   expect(dataService.registerDiscordCommands).not.toHaveBeenCalled();
-  expect(screen.getByText('com_ui_discord_commands_help')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_commands_help' })).toBeVisible();
   const trigger = screen.getByRole('button', { name: 'com_ui_discord_commands_named' });
   await user.click(trigger);
   expect(await screen.findByText('com_ui_discord_commands_registering')).toBeVisible();
@@ -1790,8 +1790,8 @@ test('shows the callback and interactions URLs as copyable read-only rows', asyn
   ).toHaveLength(2);
   expect(within(dialog).queryByText('com_ui_discord_ingress_required')).toBeNull();
   expect(
-    within(dialog).getByRole('link', { name: 'com_ui_discord_developer_portal' }),
-  ).toHaveAttribute('href', 'https://discord.com/developers/applications');
+    within(dialog).queryByRole('link', { name: 'com_ui_discord_developer_portal' }),
+  ).toBeNull();
 });
 
 test('explains the missing public interactions endpoint instead of showing its row', async () => {
