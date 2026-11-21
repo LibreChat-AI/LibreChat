@@ -1,5 +1,5 @@
-import { Constants, splitMCPToolKey, buildServerNameAliases } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
+import type { Without } from '~/agents/authority/execution';
 
 interface ScheduleTriggerRequest {
   _isAgentTrigger?: boolean;
@@ -163,29 +163,13 @@ export function restoreSkippedMCPServers(
 }
 
 /**
- * A run's tool keys without those on an MCP server its occurrence went without. The server
- * was not ready when the schedule fired, and its owner did not ask for every server to be
- * ready: left in, the run would stop to ask for a sign-in nobody is there to give.
- *
- * A key is resolved to its server among every server the check covered, longest name first,
- * as tool loading resolves it: skipping `bar` leaves a tool on `foo_mcp_bar` alone. Returns
- * the same list when nothing is left out. Any other request keeps every key.
+ * What the request's occurrence went without, as its trigger or its run's record put it on
+ * the request. The run host hands it to the grant execution, which the run's tools are
+ * narrowed by; nothing else reads these fields.
  */
-export function withoutSkippedMCPServers(
+export function readSkippedMCPServers(
   req: ScheduleTriggerRequest | undefined,
-  toolKeys: string[],
-): string[] {
-  const skipped = req?._scheduleSkippedServers;
-  if (!skipped?.length) return toolKeys;
-  const known = [...new Set([...(req?._scheduleCheckedServers ?? []), ...skipped])];
-  const aliases = buildServerNameAliases(known);
-  const candidates = [...known, ...aliases.keys()];
-  const out = new Set(skipped);
-  const kept = toolKeys.filter((key) => {
-    if (!key.includes(Constants.mcp_delimiter)) return true;
-    const [, alias] = splitMCPToolKey(key, candidates);
-    const server = alias && (known.includes(alias) ? alias : aliases.get(alias));
-    return !(server && out.has(server));
-  });
-  return kept.length === toolKeys.length ? toolKeys : kept;
+): Without | undefined {
+  const skip = req?._scheduleSkippedServers;
+  return skip?.length ? { skip, servers: req?._scheduleCheckedServers ?? [] } : undefined;
 }

@@ -5,6 +5,12 @@ import type { ExecutionContext } from '~/agents/authority/context';
 import type { ScheduleMCPCompletionLookup } from './continuation';
 import type { RunGrantOfferDeps } from '~/agents/authority/offer';
 import {
+  readScheduleFireContext,
+  restoreSkippedMCPServers,
+  readSkippedMCPServers,
+  isScheduleFireRequest,
+} from '../trigger';
+import {
   isScheduledMCPCompletionRequest,
   resolveScheduleMCPCompletion,
   parseScheduleMCPCompletion,
@@ -14,11 +20,6 @@ import {
   scheduledMCPIdentity,
   getScheduleMCPExecution,
 } from '~/agents/authority/execution';
-import {
-  readScheduleFireContext,
-  isScheduleFireRequest,
-  restoreSkippedMCPServers,
-} from '../trigger';
 import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { createScheduleMCPConsentHost, createMCPUseCheck } from './host';
 import { RunGrantPolicyError } from '~/agents/authority/policy';
@@ -189,6 +190,7 @@ export function createScheduleMCPRuntimeHost(
             false,
             {
               completion: true,
+              without: readSkippedMCPServers(req),
               ...(completion !== undefined && { approvedToolCalls: input.approvedToolCalls }),
             },
           );
@@ -241,6 +243,8 @@ export function createScheduleMCPRuntimeHost(
           manual: restoredContext
             ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
             : fresh?.manual === true,
+          // From the trigger on a fresh occurrence, from its run row on a resumed one.
+          without: readSkippedMCPServers(req),
           // Only a resumed run can carry approvals: a fresh occurrence has asked nobody yet.
           ...(restoredContext && { approvedToolCalls: input.approvedToolCalls }),
         });

@@ -103,7 +103,13 @@ async function setup(legacy = false, detaches = true) {
   };
   if (!legacy) await enroll();
   const loadAuthorization = jest.fn(async () => ({ authority: consent.authority }));
-  const factory = createRunGrantExecution({ storage, loadAuthorization, detaches });
+  // A schedule's grant, as its run host builds it: it covers the run's other tools too.
+  const factory = createRunGrantExecution({
+    storage,
+    loadAuthorization,
+    detaches,
+    coversTools: true,
+  });
   const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');
   await methods.insertScheduleRun({

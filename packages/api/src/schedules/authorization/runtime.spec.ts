@@ -14,9 +14,10 @@ import {
 } from '~/agents/authority/execution';
 import { executionFixture, allowOffered, readTool } from '~/agents/authority/execution.helper';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
+import { createMCPRequestContext, getMCPRequestContext } from '~/mcp/request';
 import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { captureTrigger } from '~/agents/authority/trigger';
-import { createMCPRequestContext } from '~/mcp/request';
+import { captureScheduleFireContext } from '../trigger';
 import { createScheduleMCPPreflight } from '../mcp';
 
 async function setup() {
@@ -268,7 +269,8 @@ it('puts back on a resumed run the servers its occurrence went without, read fro
   } = { user: f.user, _isScheduledFire: true, body: {} };
   await f.host.prepare({
     req,
-    context: f.context,
+    // The request's own context, as the chat route passes it: tools are narrowed through it.
+    context: getMCPRequestContext(req)!,
     restoredJob: { scheduleId: 'schedule', scheduledFor },
     executionContext: restoreExecutionContext(req, {
       userId: 'owner',
@@ -290,6 +292,47 @@ it('reads no run row for a fresh occurrence, whose trigger already says what it 
   const f = await setup();
   await f.host.prepare({ req: f.req, context: f.context });
   expect(f.getScheduleRunMCP).not.toHaveBeenCalled();
+});
+
+describe('a server the grant allows and the occurrence went without', () => {
+  const keys = ['query_mcp_warehouse', 'web_search'];
+
+  it('is not loaded by a fresh occurrence, which hands its trigger’s lists to the grant', async () => {
+    const f = await setup();
+    // With nothing skipped the grant loads the tool: what follows is the skip list alone.
+    const ready = { ...f.req };
+    await f.host.prepare({ req: ready, context: getMCPRequestContext(ready)! });
+    expect(narrowGrantedTools(ready, 'root', keys)).toEqual(['query_mcp_warehouse']);
+    const req = { ...f.req, body: structuredClone(f.req.body) };
+    Object.assign(req.body.agentTrigger, {
+      metadata: { skip: ['warehouse'], servers: ['warehouse', 'notes'] },
+    });
+    // As the chat route does before the run host is asked.
+    captureScheduleFireContext(req);
+    await f.host.prepare({ req, context: getMCPRequestContext(req)! });
+    expect(narrowGrantedTools(req, 'root', keys)).toEqual([]);
+  });
+
+  it('is not loaded by the resumed run either, which reads the lists from its run row', async () => {
+    const f = await setup();
+    f.getScheduleRunMCP.mockResolvedValue([
+      { server: 'warehouse', status: 'mcp_reauth_required', skipped: true },
+      { server: 'notes', status: 'ready' },
+    ]);
+    const req = { user: f.user, _isScheduledFire: true, body: {} };
+    await f.host.prepare({
+      req,
+      context: getMCPRequestContext(req)!,
+      restoredJob: { scheduleId: 'schedule', scheduledFor: '2026-09-09T12:00:00.000Z' },
+      executionContext: restoreExecutionContext(req, {
+        userId: 'owner',
+        tenantId: 'tenant',
+        scheduleId: 'schedule',
+        agent_id: 'root',
+      }),
+    });
+    expect(narrowGrantedTools(req, 'root', keys)).toEqual([]);
+  });
 });
 
 describe('a turn that reports on a task a scheduled run started', () => {
@@ -325,7 +368,7 @@ describe('a turn that reports on a task a scheduled run started', () => {
     f.getScheduleConversationMCP.mockResolvedValue(wentWithout('warehouse'));
     const req: ReturnType<typeof completionRequest> & Marked = completionRequest(f);
     const keys = ['query_mcp_warehouse', 'post_mcp_ledger'];
-    await f.host.prepare({ req, context: f.context });
+    await f.host.prepare({ req, context: getMCPRequestContext(req)! });
     expect(f.getScheduleConversationMCP).toHaveBeenCalledWith(
       expect.objectContaining({
         scheduleId: f.identity.scheduleId,

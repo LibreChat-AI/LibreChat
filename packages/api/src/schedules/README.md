@@ -49,10 +49,12 @@ unavailable, is not configured or may not be used does not refuse the schedule:
 - At each occurrence the readiness check still runs. The servers that are not ready are
   recorded on the run, each with its status and marked `skipped`, and named in the trigger
   the run is started from (`metadata.skip`, beside `metadata.servers`: every server the check
-  covered). The run loads no tool on them (`withoutSkippedMCPServers`, through
-  `narrowGrantedTools`), so it does not stop to ask for a sign-in nobody is there to
-  give, and the rest of the agent runs. A tool key is resolved to its server among the
-  servers the check covered, longest name first, as tool loading resolves it.
+  covered). The run host hands both lists to the grant execution it attaches to the request
+  (`without`, read off the request by `readSkippedMCPServers`), and the run loads no tool on
+  those servers (`narrowGrantedTools`), with a grant or with none, so it does not stop to ask
+  for a sign-in nobody is there to give, and the rest of the agent runs. A tool key is
+  resolved to its server among the servers the check covered, longest name first, as tool
+  loading resolves it.
 - A run that pauses and is resumed rebuilds its tools on a request that is not a trigger. The
   run host (`prepare` in `authorization/runtime.ts`) reads the same two lists back from the
   occurrence's run row before any tool is loaded, so a resumed run goes without the same

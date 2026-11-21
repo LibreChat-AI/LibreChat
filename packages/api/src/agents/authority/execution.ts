@@ -22,7 +22,6 @@ import {
   listedMCPKeys,
 } from './policy';
 import { getRunGrantConfigurationRevision } from './configuration';
-import { withoutSkippedMCPServers } from '~/schedules/trigger';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { findMCPRequestContext } from '~/mcp/request';
 import { isOwnedAbortError } from '~/utils/errors';
@@ -93,6 +92,12 @@ export interface RunGrantExecution<Identity extends RunGrantIdentity = Scheduled
    * false where the grant does not cover the agents' other tools.
    */
   readonly grantsTool: (agentId: string, toolKey: string) => boolean;
+  /**
+   * Whether the grant decides the agents' other tools too. False where it limits MCP tools
+   * only: no other tool is the grant's to allow or refuse, and each MCP call is checked
+   * where it is made.
+   */
+  readonly coversTools: boolean;
   /** Whether the grant asks the owner about any tool, so this run may pause. */
   readonly mayAsk: boolean;
   /** Whether the owner approves each use of this tool, by the name the run calls it. */
@@ -105,10 +110,21 @@ export interface RunGrantExecution<Identity extends RunGrantIdentity = Scheduled
   ) => RunGrantInvocation<Identity>;
 }
 
+/**
+ * What one delivery runs without: MCP servers that were not ready when it started (`skip`),
+ * and every server that check covered (`servers`), which a tool key is resolved against.
+ */
+export interface Without {
+  readonly skip: readonly string[];
+  readonly servers: readonly string[];
+}
+
 const executions = new WeakMap<
   RequestScopedMCPConnectionStore,
   RunGrantExecution<RunGrantIdentity>
 >();
+/** Kept beside the execution, not on it: a run with no stored grant goes without them too. */
+const omissions = new WeakMap<RequestScopedMCPConnectionStore, Without>();
 
 /**
  * Captured at tool construction. Runnable config cannot remove or replace this guard.
@@ -123,10 +139,35 @@ export function bindRunGrantInvocation(
 }
 
 /**
- * What a run loads for an agent. Under a schedule's grant that is only what the owner
- * allowed: a tool left out is never defined for the model, and a server with nothing allowed
- * is never connected to. A scheduled run also loads nothing on a server its occurrence was
- * fired without. Any other request loads the agent's tools as they are.
+ * Tool keys without those on an MCP server the delivery runs without. The server was not
+ * ready when the delivery started and its owner did not ask for every server to be ready:
+ * left in, the run would stop to ask for a sign-in nobody is there to give.
+ *
+ * A key is resolved to its server among every server the check covered, longest name first,
+ * as tool loading resolves it: skipping `bar` leaves a tool on `foo_mcp_bar` alone. Returns
+ * the same list when nothing is left out.
+ */
+export function withoutServers(toolKeys: string[], without: Without | undefined): string[] {
+  if (!without?.skip.length) return toolKeys;
+  const known = [...new Set([...without.servers, ...without.skip])];
+  const aliases = buildServerNameAliases(known);
+  const candidates = [...known, ...aliases.keys()];
+  const out = new Set(without.skip);
+  const kept = toolKeys.filter((key) => {
+    if (!key.includes(Constants.mcp_delimiter)) return true;
+    const [, alias] = splitMCPToolKey(key, candidates);
+    const server = alias && (known.includes(alias) ? alias : aliases.get(alias));
+    return !(server && out.has(server));
+  });
+  return kept.length === toolKeys.length ? toolKeys : kept;
+}
+
+/**
+ * What a run loads for an agent. Under a grant that is only what the owner allowed: a tool
+ * left out is never defined for the model, and a server with nothing allowed is never
+ * connected to. A run also loads nothing on a server its delivery was started without
+ * (`Without`), with a grant or with none. Any other request loads the agent's tools as they
+ * are.
  */
 export function narrowGrantedTools(
   req: object | undefined,
@@ -134,8 +175,9 @@ export function narrowGrantedTools(
   toolKeys: string[],
 ): string[] {
   const context = findMCPRequestContext(req);
-  const granted = (context && executions.get(context)?.narrow(agentId, toolKeys)) ?? toolKeys;
-  return withoutSkippedMCPServers(req, granted);
+  if (!context) return toolKeys;
+  const granted = executions.get(context)?.narrow(agentId, toolKeys) ?? toolKeys;
+  return withoutServers(granted, omissions.get(context));
 }
 
 /**
@@ -195,6 +237,11 @@ export interface RunGrantExecutionOptions {
   approvedToolCalls?: readonly string[];
   /** Attached for the completion turn of work a run sent to the background. */
   completion?: boolean;
+  /**
+   * What this delivery runs without. Read by `attach` alone, which keeps it for the request
+   * whether or not the subject holds a grant.
+   */
+  without?: Without;
 }
 
 export interface RunGrantExecutionFactory<
@@ -391,6 +438,7 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
       narrow: (agentId: string, toolKeys: readonly string[]) =>
         enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
       grantsTool: allows,
+      coversTools: deps.coversTools === true,
       mayAsk: asking.size > 0 || askingAny.size > 0,
       asksAbout: (agentId: string, toolKey: string) =>
         asking.get(agentId)?.has(toolKey) === true || askingAny.has(toolKey),
@@ -544,6 +592,7 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
       if ((!execution || !execution.enrolled) && requireEnrollment)
         throw new RunGrantPolicyError('consent_missing', '');
       if (execution) executions.set(context, execution);
+      if (options?.without?.skip.length) omissions.set(context, options.without);
       return execution != null;
     },
   };
