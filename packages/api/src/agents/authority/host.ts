@@ -30,7 +30,8 @@ export function initializeWithAuthority<T>(
     input,
     () => getHosts().schedule,
     async () => {
-      if (input.executionContext?.source.type === 'trigger')
+      const source = input.executionContext?.source;
+      if (source?.type === 'trigger' && source.subject?.kind === 'key')
         await getHosts().key.prepare({
           req: input.req,
           executionContext: input.executionContext,

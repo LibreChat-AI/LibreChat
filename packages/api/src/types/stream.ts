@@ -14,6 +14,7 @@ import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { EarlyBufferOverflowState } from './earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
 import type { AuthoredSkillBinding } from '~/agents/authored';
+import type { RunTrigger } from '~/agents/authority/trigger';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
 
@@ -85,6 +86,11 @@ export interface GenerationJobMetadata {
   agentEventSuspension?: AgentEventSuspensionProjection;
   /** Exact durable legacy-turn fence carried across a HITL pause/resume. */
   agentEventLegacyTurnToken?: string;
+  /** The trigger that started this run: who it acts for and the delivery that carried it.
+   * Taken only from the context the server built for a verified trigger request, so a
+   * resumed run acts for the same subject. Absent on an untriggered run and on a job saved
+   * before it was recorded. */
+  trigger?: RunTrigger;
   /** Trusted scheduled-occurrence identity. These fields are accepted only from a
    * verified agent-trigger request and let pause/resume/reconciliation keep the
    * occurrence attached to the exact generation that owns it. */

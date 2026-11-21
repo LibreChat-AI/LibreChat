@@ -19,12 +19,15 @@ import type { ExecutionContext } from '~/agents/authority/context';
 import type { ApiKeyAuthRequest } from './middleware';
 import type { ServerRequest } from '~/types';
 import {
+  restoreExecutionContext,
   createRemoteExecutionContext,
   createTriggerExecutionContext,
 } from '~/agents/authority/context';
 import { pinStorage, untouchedSince, admitsDefinitions } from '~/agents/authority/execution.helper';
 import { getScheduleMCPExecution, bindRunGrantInvocation } from '~/agents/authority/execution';
 import { createAgentKeyMCPGrantHost, getRemoteRunKeyId } from './grants';
+import { initializeWithAuthority } from '~/agents/authority/host';
+import { sanitizeJobMetadata } from '~/stream/metadata';
 import { getMCPRequestContext } from '~/mcp/request';
 
 const queryTool: Tool = {
@@ -180,35 +183,60 @@ function setup(
    * A run of `agentId` on the chat route, started by a delivery of the trigger engine whose
    * event `keyId` posted: the request is the trigger host's, so it names no key itself.
    */
-  const deliver = async (agentId = 'agent_a', keyId = 'key-1') =>
-    start(
-      { user },
-      createTriggerExecutionContext({
-        user,
-        _isAgentTrigger: true,
-        body: {
-          agent_id: agentId,
-          clientRequestId: 'trigger_delivery',
-          agentTrigger: {
-            version: 1,
-            deliveryId: 'delivery-1',
-            event: {
-              id: 'event-1',
-              type: 'review.submitted',
-              occurredAt: 1_000,
-              source: { type: 'remote_api_key', id: keyId },
-            },
+  const delivered = (agentId: string, keyId: string) =>
+    createTriggerExecutionContext({
+      user,
+      _isAgentTrigger: true,
+      body: {
+        agent_id: agentId,
+        clientRequestId: 'trigger_delivery',
+        agentTrigger: {
+          version: 1,
+          deliveryId: 'delivery-1',
+          event: {
+            id: 'event-1',
+            type: 'review.submitted',
+            occurredAt: 1_000,
+            source: { type: 'remote_api_key', id: keyId },
           },
         },
-      }),
-      agentId,
+      },
+    });
+  const deliver = async (agentId = 'agent_a', keyId = 'key-1') =>
+    start({ user }, delivered(agentId, keyId), agentId);
+  /**
+   * The same run resumed after it paused for an approval: a request of its owner's, which is
+   * not a trigger, initialized as the chat route does with the context its saved job
+   * restores. `saved: false` is a job from before a job saved its trigger.
+   */
+  const resume = async (agentId = 'agent_a', keyId = 'key-1', saved = true) => {
+    const source = delivered(agentId, keyId)?.source;
+    const job = sanitizeJobMetadata({
+      agent_id: agentId,
+      ...(saved && source?.type === 'trigger' && { trigger: source }),
+    });
+    const req = { user, body: {} };
+    const executionContext = restoreExecutionContext(req, {
+      userId: 'owner',
+      tenantId: 'tenant',
+      ...job,
+    });
+    await initializeWithAuthority(
+      { req, executionContext },
+      () => ({ schedule: { prepare: async () => undefined }, key: host }),
+      async () => undefined,
     );
+    return started(req, agentId);
+  };
   const start = async (
     req: Parameters<typeof host.prepare>[0]['req'],
     executionContext: ExecutionContext | undefined,
     agentId: string,
   ) => {
     await host.prepare({ req, executionContext });
+    return started(req, agentId);
+  };
+  const started = (req: Parameters<typeof host.prepare>[0]['req'], agentId: string) => {
     const context = getMCPRequestContext(req)!;
     const call = async (tool = 'query'): Promise<'unrestricted' | 'authorized'> => {
       const invocation = bindRunGrantInvocation(context, agentId, tool);
@@ -232,6 +260,7 @@ function setup(
     allow,
     run,
     deliver,
+    resume,
     findUser,
     getAppConfig,
     getEffectivePermissions,
@@ -334,6 +363,24 @@ describe('a delivery of the trigger engine that an API key posted', () => {
     await expect(s.deliver('agent_a', 'key-deleted')).rejects.toMatchObject(
       refused('binding_mismatch'),
     );
+  });
+
+  it("is still under that key's grant when its run resumes after a pause", async () => {
+    const s = setup();
+    await expect((await s.resume()).call()).rejects.toMatchObject(refused('consent_missing'));
+    await s.allow('agent_a', ['query']);
+    const { call } = await s.resume();
+    await expect(call()).resolves.toBe('authorized');
+    await expect(call('list')).rejects.toMatchObject(refused('tool_policy_denied'));
+    // A key that is gone by the time its run resumes is not a reason to run unrestricted.
+    await expect(s.resume('agent_a', 'key-deleted')).rejects.toMatchObject(
+      refused('binding_mismatch'),
+    );
+  });
+
+  it('resumes as it always has from a job saved before a job saved its trigger', async () => {
+    const s = setup();
+    await expect((await s.resume('agent_a', 'key-1', false)).call()).resolves.toBe('unrestricted');
   });
 });
 

@@ -1156,6 +1156,32 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
   });
 
+  it('restores the trigger a paused run was started by, whatever the approval request says', async () => {
+    const trigger = {
+      subject: { kind: 'key', id: 'key-1' },
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1000 },
+      },
+    };
+    mockGenerationJobManager.getJob.mockResolvedValue(
+      makeToolApprovalJob({ metadata: { trigger } }),
+    );
+    const res = await post(
+      approveBody({ trigger: { subject: { kind: 'key', id: 'forged-key' } }, agentTrigger: {} }),
+    );
+    expect(res.status).toBe(200);
+    await settled;
+    expect(mockInitializeClient.mock.calls[0][0].executionContext).toEqual({
+      principal: { userId: USER_ID, tenantId: TENANT_ID },
+      agentId: AGENT_ID,
+      source: { type: 'trigger', ...trigger, manual: false, resumed: true },
+      unattended: false,
+    });
+    expect(capturedInit.isScheduledFire).not.toBe(true);
+    expect(mockClaimScheduleResume).not.toHaveBeenCalled();
+  });
+
   describe('scheduled occurrence lifecycle', () => {
     const scheduledFor = '2026-08-17T12:00:00.000Z';
     const makeScheduledJob = () =>
@@ -1396,7 +1422,12 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockInitializeClient.mock.calls[0][0].executionContext).toEqual({
         principal: { userId: USER_ID, tenantId: TENANT_ID },
         agentId: AGENT_ID,
-        source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: true },
+        source: {
+          type: 'trigger',
+          subject: { kind: 'schedule', id: 'schedule-1' },
+          manual: false,
+          resumed: true,
+        },
         unattended: false,
       });
       // The owner's validated decisions, not the request body, name what may now run.

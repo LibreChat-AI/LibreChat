@@ -1,8 +1,14 @@
 import type { AuthorityHosts } from './host';
-import { createRemoteExecutionContext, createTriggerExecutionContext } from './context';
+import {
+  getSourceKey,
+  restoreExecutionContext,
+  createRemoteExecutionContext,
+  createTriggerExecutionContext,
+} from './context';
 import { createMCPRequestContext } from '~/mcp/request';
 import { initializeWithAuthority } from './host';
 import { RunGrantPolicyError } from './policy';
+import { parseRunTrigger } from './trigger';
 
 const user = { id: 'owner', tenantId: 'tenant' };
 
@@ -108,6 +114,50 @@ it('sends a schedule occurrence to the schedule host and not to the key host', a
     h.initialize,
   );
   expect(h.order).toEqual(['schedule', 'initialize']);
+  expect(h.key.prepare).not.toHaveBeenCalled();
+});
+
+it("puts a key's delivery under the key host again when its saved job resumes it", async () => {
+  const h = hosts();
+  const req = { user, body: {} };
+  const executionContext = restoreExecutionContext(req, {
+    userId: 'owner',
+    tenantId: 'tenant',
+    agent_id: 'root-agent',
+    trigger: parseRunTrigger(createTriggerExecutionContext(delivery())?.source),
+  });
+  await initializeWithAuthority({ req, executionContext }, h.get, h.initialize);
+  expect(h.order).toEqual(['key', 'initialize']);
+  expect(h.key.prepare).toHaveBeenCalledWith({ req, executionContext, signal: undefined });
+  expect(getSourceKey(executionContext)).toBe('key-1');
+  expect(executionContext?.source).toMatchObject({ resumed: true });
+});
+
+it('initializes a delivery no subject started as it is', async () => {
+  const h = hosts();
+  const req = {
+    user,
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'root-agent',
+      conversationId: 'conversation',
+      clientRequestId: 'trigger_ghi',
+      agentEvent: {
+        id: 'event-2',
+        type: 'agent.queued-turn',
+        occurredAt: 2_000,
+        source: { type: 'internal', id: 'agent-queued-turn' },
+      },
+      agentContinuationAdmission: {},
+    },
+  };
+  const executionContext = createTriggerExecutionContext(req);
+  expect(executionContext?.source).toMatchObject({ type: 'trigger', resumed: false });
+  await initializeWithAuthority(
+    { req, context: createMCPRequestContext(), executionContext },
+    h.get,
+    h.initialize,
+  );
   expect(h.key.prepare).not.toHaveBeenCalled();
 });
 
