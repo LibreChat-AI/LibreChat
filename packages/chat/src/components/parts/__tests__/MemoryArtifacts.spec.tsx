@@ -1,12 +1,14 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import '@testing-library/jest-dom/extend-expect';
 import { Tools } from 'librechat-data-provider';
+import { render, screen, fireEvent } from '@testing-library/react';
 import type { TAttachment, MemoryArtifact } from 'librechat-data-provider';
 import MemoryArtifacts from '../MemoryArtifacts';
 
-// Mock the localize hook
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => {
     const translations: Record<string, string> = {
       com_ui_memory_updated: 'Updated saved memory',
@@ -16,9 +18,10 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  useExpandCollapse: (isExpanded: boolean) => ({
+jest.mock('../useExpandCollapse', () => ({
+  __esModule: true,
+  ...jest.requireActual('../useExpandCollapse'),
+  default: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
       gridTemplateRows: isExpanded ? '1fr' : '0fr',
@@ -28,10 +31,9 @@ jest.mock('@librechat/chat/components', () => ({
   }),
 }));
 
-// Mock the MemoryInfo component
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  MemoryInfo: ({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) => (
+jest.mock('../MemoryInfo', () => ({
+  __esModule: true,
+  default: ({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) => (
     <div data-testid="memory-info">
       {memoryArtifacts.map((artifact, index) => (
         <div key={index} data-testid={`memory-artifact-${artifact.type}`}>
@@ -41,6 +43,7 @@ jest.mock('@librechat/chat/components', () => ({
     </div>
   ),
 }));
+
 describe('MemoryArtifacts', () => {
   const createMemoryAttachment = (type: 'update' | 'delete' | 'error', key: string): TAttachment =>
     ({
@@ -65,7 +68,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-status-error');
+      expect(button.firstElementChild).toHaveClass('text-status-error');
     });
 
     test('displays normal styling when no errors present', () => {
@@ -77,8 +80,8 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-text-secondary');
-      expect(button).not.toHaveClass('text-status-error');
+      expect(button.firstElementChild).toHaveClass('text-text-secondary');
+      expect(button.firstElementChild).not.toHaveClass('text-status-error');
     });
 
     test('displays error message when errors are present', () => {
@@ -128,7 +131,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-status-error');
+      expect(button.firstElementChild).toHaveClass('text-status-error');
       expect(screen.getByText('Memory Error')).toBeInTheDocument();
     });
 
@@ -238,7 +241,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-status-error');
+      expect(button.firstElementChild).toHaveClass('text-status-error');
       expect(screen.getByText('Memory Error')).toBeInTheDocument();
     });
   });
