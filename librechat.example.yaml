@@ -628,6 +628,7 @@ registration:
 #   skillNameLookups: 8 # model spec skill name resolutions
 #   skillFileInspections: 4 # bundled skill file inspections before a skill is primed
 #   resumeAgentLoads: 4 # agent reads while building the resume snapshot of a paused run
+#   codeOutputDownloads: 4 # generated code output files downloaded at once before the tool result returns; 1 keeps them serial
 
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.

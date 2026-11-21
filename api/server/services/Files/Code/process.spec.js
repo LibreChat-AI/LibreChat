@@ -67,6 +67,11 @@ const passthroughWithTimeout = async (promise) => promise;
 jest.mock('@librechat/api', () => {
   return {
     withFileProvisioning: jest.requireActual('@librechat/api').withFileProvisioning,
+    getPreparedCodeOutputBuffer: jest.requireActual('@librechat/api').getPreparedCodeOutputBuffer,
+    cachePreparedCodeOutputBuffer:
+      jest.requireActual('@librechat/api').cachePreparedCodeOutputBuffer,
+    releasePreparedCodeOutputBuffer:
+      jest.requireActual('@librechat/api').releasePreparedCodeOutputBuffer,
     confirmFileProvision: jest.requireActual('@librechat/api').confirmFileProvision,
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
     createSandboxTextReader: jest.requireActual('@librechat/api').createSandboxTextReader,
@@ -4016,6 +4021,39 @@ describe('Code Process', () => {
 
       expect(mockAxios).not.toHaveBeenCalled();
       expect(result).toEqual({ base64: source.toString('base64'), bytes: source.length });
+    });
+
+    it('downloads again once a discarded prefetch buffer is released', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('prefetched-bytes') });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'artifact-file',
+        name: 'chart.png',
+        session_id: 'artifact-session',
+      });
+
+      jest.requireActual('@librechat/api').releasePreparedCodeOutputBuffer({
+        req,
+        id: 'artifact-file',
+        session_id: 'artifact-session',
+      });
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req,
+        file_path: '/mnt/data/chart.png',
+        session_id: 'runtime-session',
+        files: [{ id: 'artifact-file', name: 'chart.png', storage_session_id: 'artifact-session' }],
+      });
+
+      expect(mockAxios).toHaveBeenCalled();
     });
 
     it('does not reuse a same-path buffer for a different artifact ref', async () => {
