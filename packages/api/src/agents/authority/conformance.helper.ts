@@ -1,13 +1,13 @@
-import type { ScheduledMCPAuthorizationRequest, ScheduledMCPAuthorizationResult } from './contract';
+import type { RunGrantAuthorizationRequest, RunGrantAuthorizationResult } from './contract';
 import type { AuthorizationFacts, AuthorizationFixture } from './fixtures.helper';
 import { failureFixtures } from './fixtures.helper';
 
 /** Test-only adapter: supply these snapshots through an implementation's injected dependencies. */
 export type AuthorizationFixtureEvaluator = (
-  request: ScheduledMCPAuthorizationRequest,
+  request: RunGrantAuthorizationRequest,
   facts: AuthorizationFacts,
   options: { signal: AbortSignal },
-) => Promise<ScheduledMCPAuthorizationResult>;
+) => Promise<RunGrantAuthorizationResult>;
 
 /** Reuses the evaluator across fresh snapshots to expose stale authorization decisions. */
 export async function verifyAuthorizationFixture(

@@ -27,8 +27,8 @@ import {
   resolveOboToken,
 } from '~/mcp/oauth';
 import { withToolApprovalExecution, withToolApprovalTransport } from '~/tools/approval';
-import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
+import { executionFixture, readTool } from '~/agents/authority/execution.helper';
 import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';

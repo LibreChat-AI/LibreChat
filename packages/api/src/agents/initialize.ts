@@ -128,7 +128,6 @@ import { extractAgentContent, extractSkillContent } from '../protection/adapters
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
-import { narrowScheduledMCPTools } from '~/schedules/authorization/execution';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
@@ -137,6 +136,7 @@ import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { narrowGrantedTools } from '~/agents/authority/execution';
 import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
@@ -1279,7 +1279,7 @@ export async function initializeAgent(
   const grantedTools =
     inputAgent.tools == null
       ? inputAgent.tools
-      : narrowScheduledMCPTools(params.req, inputAgent.id, inputAgent.tools);
+      : narrowGrantedTools(params.req, inputAgent.id, inputAgent.tools);
   const agent =
     shouldUseChatProjectContext || grantedTools !== inputAgent.tools
       ? { ...inputAgent, tools: grantedTools }
@@ -1290,7 +1290,7 @@ export async function initializeAgent(
    * is not offered what it would only be refused.
    */
   const skillsGranted =
-    narrowScheduledMCPTools(params.req, inputAgent.id, [AgentCapabilities.skills]).length > 0;
+    narrowGrantedTools(params.req, inputAgent.id, [AgentCapabilities.skills]).length > 0;
   const accessibleSkillIds = skillsGranted ? params.accessibleSkillIds : [];
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
@@ -2303,7 +2303,7 @@ export async function initializeAgent(
       provider,
       agentId: agent.id,
       // Under a schedule's grant, only the MCP tools its owner allowed are loaded at all.
-      tools: narrowScheduledMCPTools(params.req, agent.id, tools),
+      tools: narrowGrantedTools(params.req, agent.id, tools),
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources: runtimeToolResources,

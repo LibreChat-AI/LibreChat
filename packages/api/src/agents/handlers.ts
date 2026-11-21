@@ -53,8 +53,8 @@ import type {
   BackgroundToolWakeupRegistration,
   PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
-import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
+import type { RunGrantExecution } from '~/agents/authority/execution';
 import type { InterruptibleToolBatchRequest } from './steering/tools';
 import type { ToolExecutionIdentity } from '~/telemetry/tools';
 import type { ArtifactDeliveryFailure } from '~/files/code';
@@ -294,8 +294,8 @@ export interface ToolExecuteOptions {
   /** Host observer, called only after authoring has bound an authorized identity. */
   onSkillAuthored?: (binding: Pick<AuthoredSkillBinding, 'name' | 'id' | 'primed'>) => void;
   /** Host-captured authority ceiling, never runnable/model metadata. */
-  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'> &
-    Partial<Pick<ScheduleMCPExecution, 'detaches'>>;
+  scheduledMCPExecution?: Pick<RunGrantExecution, 'enrolled' | 'identity'> &
+    Partial<Pick<RunGrantExecution, 'detaches'>>;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is

@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { scheduledMCPFailureReasonSchema } from 'librechat-data-provider';
+import { runGrantFailureReasonSchema } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type {
   ISchedule,
@@ -3087,7 +3087,7 @@ describe.each([
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_reauth_required' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.consent_revoked,
+    reason: runGrantFailureReasonSchema.enum.consent_revoked,
     recovery: 'authorize' as const,
     automaticReplay: false as const,
   },
@@ -3095,7 +3095,7 @@ describe.each([
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_permission_denied' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.tool_policy_denied,
+    reason: runGrantFailureReasonSchema.enum.tool_policy_denied,
     recovery: 'configure' as const,
     automaticReplay: false as const,
   },
@@ -3103,7 +3103,7 @@ describe.each([
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_reauth_required' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.credential_rejected,
+    reason: runGrantFailureReasonSchema.enum.credential_rejected,
     recovery: 'authorize' as const,
     automaticReplay: false as const,
   },
@@ -3294,7 +3294,7 @@ describe('scheduled MCP mixed receipt settlement', () => {
     server: 'Graph',
     agentId: 'root',
     status: 'mcp_unavailable' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.dependency_unavailable,
+    reason: runGrantFailureReasonSchema.enum.dependency_unavailable,
     recovery: 'retry_later' as const,
     automaticReplay: false as const,
   };
@@ -3302,7 +3302,7 @@ describe('scheduled MCP mixed receipt settlement', () => {
     server: 'Graph',
     agentId: 'child',
     status: 'mcp_reauth_required' as const,
-    reason: scheduledMCPFailureReasonSchema.enum.binding_mismatch,
+    reason: runGrantFailureReasonSchema.enum.binding_mismatch,
     recovery: 'authorize' as const,
     automaticReplay: false as const,
   };

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
-import type { ScheduleMCPConsentView } from 'librechat-data-provider';
+import type { RunGrantView } from 'librechat-data-provider';
 import { splitToolKey } from '~/components/MCP/GrantTools';
 import Consent from '../Consent';
 
@@ -23,7 +23,7 @@ jest.mock('librechat-data-provider', () => {
     },
   };
 });
-const view: ScheduleMCPConsentView = {
+const view: RunGrantView = {
   state: 'missing',
   revision: null,
   expiresAtMs: null,
@@ -71,7 +71,7 @@ beforeEach(() => {
   jest.mocked(dataService.getScheduleMCPConsent).mockResolvedValue(view);
 });
 it('renders loading, then the resource, each tool on offer unchecked, and a bounded lifetime', async () => {
-  let resolve!: (value: ScheduleMCPConsentView) => void;
+  let resolve!: (value: RunGrantView) => void;
   jest.mocked(dataService.getScheduleMCPConsent).mockReturnValue(
     new Promise((done) => {
       resolve = done;
@@ -324,7 +324,7 @@ it("lists each of the agent's other tools as its own item, and sends the ones th
   );
 });
 describe('a grant that can be made for the whole agent', () => {
-  const standing: ScheduleMCPConsentView = {
+  const standing: RunGrantView = {
     ...view,
     tools: { offered: ['web_search'], allowed: [] },
     offer: { ...view.offer!, everything: true },
@@ -571,7 +571,7 @@ it('reads the tool and the server out of a key against the servers in use, not b
 });
 
 it('offers a selection of a whole server as its own item, which ticks and locks each named tool', async () => {
-  const whole: ScheduleMCPConsentView = {
+  const whole: RunGrantView = {
     ...view,
     approval: true,
     targets: [
@@ -622,7 +622,7 @@ it('offers a selection of a whole server as its own item, which ticks and locks 
 });
 
 it('unticks the whole-server item and names the tools that changed under it', async () => {
-  const stored: ScheduleMCPConsentView = {
+  const stored: RunGrantView = {
     ...view,
     state: 'changed',
     revision: 'grant',
@@ -658,7 +658,7 @@ it('unticks the whole-server item and names the tools that changed under it', as
 
 it('keeps sending a question about a tool the whole-server item still covers', async () => {
   // The grant asks about `query`. No agent names `query` any more: only the whole server.
-  const stored: ScheduleMCPConsentView = {
+  const stored: RunGrantView = {
     ...view,
     approval: true,
     state: 'active',
@@ -691,10 +691,7 @@ describe('the whole-server item beside named tools', () => {
   const every = () =>
     screen.findByRole('checkbox', { name: 'com_ui_schedule_consent_server_every' });
   const confirm = () => screen.getByRole('button', { name: 'com_ui_schedule_consent_confirm' });
-  const stored = (
-    over: Partial<ScheduleMCPConsentView>,
-    tools: string[],
-  ): ScheduleMCPConsentView => ({
+  const stored = (over: Partial<RunGrantView>, tools: string[]): RunGrantView => ({
     ...view,
     approval: true,
     state: 'active',
@@ -752,7 +749,7 @@ describe('the whole-server item beside named tools', () => {
   it('allows a tool another agent names along with the whole server, not only for the agent that holds it', async () => {
     // The root selects the whole server and the child names `query`. The grant on file holds
     // the whole server alone, so the child is refused `query` while the root may call it.
-    const data: ScheduleMCPConsentView = {
+    const data: RunGrantView = {
       ...stored({ allowed: { warehouse: ['sys__all__sys'] }, asking: { warehouse: ['query'] } }, [
         'sys__all__sys',
       ]),

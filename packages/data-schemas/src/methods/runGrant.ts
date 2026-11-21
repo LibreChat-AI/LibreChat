@@ -1,47 +1,47 @@
 import { randomUUID } from 'node:crypto';
 import {
-  scheduledMCPToolPinSchema,
+  runGrantToolPinSchema,
   agentKeyMCPIdentitySchema,
   agentKeyMCPEnrollmentSchema,
   scheduledMCPEnrollmentSchema,
-  MAX_SCHEDULED_MCP_SERVER_TOOLS,
+  MAX_RUN_GRANT_SERVER_TOOLS,
   grantLifetime,
 } from 'librechat-data-provider';
 import type {
-  MCPGrantIdentity,
-  MCPGrantEnrollment,
+  RunGrantIdentity,
+  RunGrant,
   AgentKeyMCPIdentity,
   ScheduledMCPIdentity,
 } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 
-export interface MCPConsentSnapshot<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
+export interface RunGrantSnapshot<Identity extends RunGrantIdentity = ScheduledMCPIdentity> {
   compatible?: boolean;
   agentId: string;
   enabled: boolean;
   configRevision: number;
-  enrollment: MCPGrantEnrollment<Identity> | null;
+  enrollment: RunGrant<Identity> | null;
   /** The owner edited this schedule without ever authorizing it. */
   required?: boolean;
 }
-export type ScheduleConsentSnapshot = MCPConsentSnapshot<ScheduledMCPIdentity>;
+export type ScheduleConsentSnapshot = RunGrantSnapshot<ScheduledMCPIdentity>;
 
 /** A grant embedded in the document of the subject it acts for: a schedule, or an API key. */
-export interface MCPConsentStorage<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
-  readScheduleMCPConsent: (identity: Identity) => Promise<MCPConsentSnapshot<Identity> | null>;
-  confirmScheduleMCPConsent: (input: {
+export interface RunGrantStorage<Identity extends RunGrantIdentity = ScheduledMCPIdentity> {
+  readRunGrant: (identity: Identity) => Promise<RunGrantSnapshot<Identity> | null>;
+  confirmRunGrant: (input: {
     identity: Identity;
     expectedConfigRevision: number;
     expectedRevision: string | null;
-    enrollment: MCPGrantEnrollment<Identity>;
+    enrollment: RunGrant<Identity>;
     /**
      * The stored grant the new one was built from. The write is refused when a run has added
      * a pin or a mark to it since, so the caller reads again instead of dropping the addition.
      */
-    basis?: MCPGrantEnrollment<Identity> | null;
+    basis?: RunGrant<Identity> | null;
   }) => Promise<boolean>;
-  revokeScheduleMCPConsent: (identity: Identity, revision: string) => Promise<boolean>;
-  admitScheduleMCPConsent: (input: {
+  revokeRunGrant: (identity: Identity, revision: string) => Promise<boolean>;
+  admitRunGrant: (input: {
     identity: Identity;
     expectedConfigRevision: number;
     revision: string;
@@ -57,7 +57,7 @@ export interface MCPConsentStorage<Identity extends MCPGrantIdentity = Scheduled
    * Records the definition an allowed tool had on first use. False when the tool already has
    * a pin or the grant is no longer the live one; the caller reads again to tell which.
    */
-  pinScheduleMCPToolDefinition: (input: {
+  pinRunGrantTool: (input: {
     identity: Identity;
     revision: string;
     consentId: string;
@@ -65,20 +65,20 @@ export interface MCPConsentStorage<Identity extends MCPGrantIdentity = Scheduled
     digest: string;
   }) => Promise<boolean>;
   /** Marks a pinned tool as changed. The mark stays until the owner confirms again. */
-  flagScheduleMCPToolChange: (input: {
+  flagRunGrantTool: (input: {
     identity: Identity;
     revision: string;
     consentId: string;
     tool: string;
   }) => Promise<boolean>;
 }
-export type ScheduleMCPConsentStorage = MCPConsentStorage<ScheduledMCPIdentity>;
+export type ScheduleMCPConsentStorage = RunGrantStorage<ScheduledMCPIdentity>;
 
 type Filter = Record<string, unknown>;
 type Row = Record<string, unknown>;
 
 /** What differs between the documents a grant can live in. The writes are the same. */
-interface GrantHolder<Identity extends MCPGrantIdentity> {
+interface GrantHolder<Identity extends RunGrantIdentity> {
   model: () => Model<Row>;
   /** Where the grant sits inside the holder's document. */
   path: (identity: Identity) => string;
@@ -90,9 +90,9 @@ interface GrantHolder<Identity extends MCPGrantIdentity> {
     input: { expectedConfigRevision?: number; requireEnabled?: boolean },
   ) => Filter;
   select: string;
-  parse: (value: unknown) => MCPGrantEnrollment<Identity> | undefined;
+  parse: (value: unknown) => RunGrant<Identity> | undefined;
   sameIdentity: (stored: Identity, expected: Identity) => boolean;
-  describe: (row: Row) => Pick<MCPConsentSnapshot, 'enabled' | 'configRevision' | 'required'> & {
+  describe: (row: Row) => Pick<RunGrantSnapshot, 'enabled' | 'configRevision' | 'required'> & {
     agentId?: string;
   };
   /** Whether the holder's schema validates the grant on write. */
@@ -108,7 +108,7 @@ const REVOKE_ATTEMPTS = 4;
  */
 function untouchedSince(
   path: string,
-  basis: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+  basis: RunGrant<RunGrantIdentity> | null | undefined,
 ): Filter {
   if (!basis?.consents.length) return {};
   return {
@@ -130,7 +130,7 @@ function untouchedSince(
  * confirmation moves the revision, and a run's pin or mark grows a list. `null` is a
  * schedule with no grant.
  */
-export function unchangedScheduleGrant(basis: MCPGrantEnrollment<MCPGrantIdentity> | null): Filter {
+export function unchangedRunGrant(basis: RunGrant<RunGrantIdentity> | null): Filter {
   if (basis == null) return { mcpConsent: { $exists: false } };
   return {
     'mcpConsent.version': 1,
@@ -151,10 +151,10 @@ function unchangedDefinitions(definitions: Readonly<Record<string, string>> | un
   };
 }
 
-function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
+function createEmbeddedGrantStorage<Identity extends RunGrantIdentity>(
   holder: GrantHolder<Identity>,
   now: () => number,
-): MCPConsentStorage<Identity> {
+): RunGrantStorage<Identity> {
   const revisionFilter = (path: string, revision: string | null): Filter =>
     revision == null
       ? { [path]: { $exists: false } }
@@ -169,7 +169,7 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
       );
 
   return {
-    async readScheduleMCPConsent(identity) {
+    async readRunGrant(identity) {
       const row = await holder
         .model()
         .findOne(holder.scope(identity))
@@ -188,7 +188,7 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
         ...(required === true && { required: true }),
       };
     },
-    async confirmScheduleMCPConsent(input) {
+    async confirmRunGrant(input) {
       const enrollment = holder.parse(input.enrollment);
       if (
         !enrollment ||
@@ -223,7 +223,7 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
       );
       return result.matchedCount === 1;
     },
-    async revokeScheduleMCPConsent(identity, revision) {
+    async revokeRunGrant(identity, revision) {
       const path = holder.path(identity);
       const filter = { ...holder.scope(identity), ...revisionFilter(path, revision) };
       // The grant is rewritten whole. A pin or mark a run adds between the read and the write
@@ -261,7 +261,7 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
       }
       return false;
     },
-    async admitScheduleMCPConsent(input) {
+    async admitRunGrant(input) {
       const path = holder.path(input.identity);
       const result = await holder.model().updateOne(
         {
@@ -295,8 +295,8 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
       );
       return result.matchedCount === 1;
     },
-    async pinScheduleMCPToolDefinition(input) {
-      const pin = scheduledMCPToolPinSchema.parse({ tool: input.tool, digest: input.digest });
+    async pinRunGrantTool(input) {
+      const pin = runGrantToolPinSchema.parse({ tool: input.tool, digest: input.digest });
       const path = holder.path(input.identity);
       const result = await holder.model().updateOne(
         {
@@ -310,7 +310,7 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
               revokedAtMs: null,
               // No entry for this tool yet, and room for one more.
               'definitions.tool': { $ne: pin.tool },
-              [`definitions.${MAX_SCHEDULED_MCP_SERVER_TOOLS - 1}`]: { $exists: false },
+              [`definitions.${MAX_RUN_GRANT_SERVER_TOOLS - 1}`]: { $exists: false },
             },
           },
         },
@@ -319,7 +319,7 @@ function createEmbeddedGrantStorage<Identity extends MCPGrantIdentity>(
       );
       return result.matchedCount === 1;
     },
-    async flagScheduleMCPToolChange(input) {
+    async flagRunGrantTool(input) {
       const path = holder.path(input.identity);
       const result = await holder.model().updateOne(
         {
@@ -391,7 +391,7 @@ export function createScheduleMCPConsentStorage(
 export function createAgentKeyMCPConsentStorage(
   mongoose: typeof import('mongoose'),
   options: { now?: () => number } = {},
-): MCPConsentStorage<AgentKeyMCPIdentity> {
+): RunGrantStorage<AgentKeyMCPIdentity> {
   const now = options.now ?? Date.now;
   return createEmbeddedGrantStorage<AgentKeyMCPIdentity>(
     {

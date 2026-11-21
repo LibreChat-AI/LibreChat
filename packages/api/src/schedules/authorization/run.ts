@@ -7,12 +7,12 @@ import {
   Constants as ProviderConstants,
 } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
-import type { ScheduleMCPExecution } from './execution';
+import type { RunGrantExecution } from '~/agents/authority/execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from '~/agents/memory';
 import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
-import { ScheduledMCPPolicyError } from './policy';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 
 const MEMORY_TOOL_NAMES = new Set<string>([SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME]);
 /** What the skill catalog registers for an agent: the tool that runs a skill, and its file reader. */
@@ -53,10 +53,10 @@ export const SCHEDULE_TOOL_NOT_ALLOWED =
  * lists, the SDK's own controls, and nothing else.
  */
 export function createScheduledMCPRunPolicy(
-  execution: ScheduleMCPExecution,
+  execution: RunGrantExecution,
   agents: readonly ScheduledMCPPolicyAgent[],
   edges: readonly HandoffEdge[] = [],
-  recordDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>,
+  recordDenial?: (error: RunGrantPolicyError) => Promise<boolean>,
 ): {
   hook: HookCallback<'PreToolUse'>;
   receipt: HookCallback<'PreToolUse'>;
@@ -200,7 +200,7 @@ export function createScheduledMCPRunPolicy(
       )
     );
   };
-  const decisions = new WeakMap<object, Promise<ScheduledMCPPolicyError | undefined>>();
+  const decisions = new WeakMap<object, Promise<RunGrantPolicyError | undefined>>();
   const failure = (input: Parameters<HookCallback<'PreToolUse'>>[0]) => {
     const pending = decisions.get(input);
     if (pending) return pending;
@@ -211,17 +211,15 @@ export function createScheduledMCPRunPolicy(
       try {
         await execution.checkEnrollment(deadline);
       } catch (error) {
-        return new ScheduledMCPPolicyError(
-          error instanceof ScheduledMCPPolicyError
-            ? error.failure.reason
-            : 'dependency_unavailable',
+        return new RunGrantPolicyError(
+          error instanceof RunGrantPolicyError ? error.failure.reason : 'dependency_unavailable',
           '',
           input.executingAgentId,
         );
       }
       if (execution.enrolled)
         return denied(input)
-          ? new ScheduledMCPPolicyError('tool_policy_denied', '', input.executingAgentId)
+          ? new RunGrantPolicyError('tool_policy_denied', '', input.executingAgentId)
           : undefined;
       // No grant. Once one is required the run may use none of its tools: an MCP call is
       // refused where it is made, and any other tool here, with the same reason.
@@ -229,10 +227,10 @@ export function createScheduledMCPRunPolicy(
       try {
         held = denied(input) && (await execution.needsGrant(deadline));
       } catch {
-        return new ScheduledMCPPolicyError('dependency_unavailable', '', input.executingAgentId);
+        return new RunGrantPolicyError('dependency_unavailable', '', input.executingAgentId);
       }
       return held
-        ? new ScheduledMCPPolicyError('consent_missing', '', input.executingAgentId)
+        ? new RunGrantPolicyError('consent_missing', '', input.executingAgentId)
         : undefined;
     })();
     decisions.set(input, evaluated);

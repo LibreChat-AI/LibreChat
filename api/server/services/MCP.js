@@ -58,8 +58,8 @@ const {
   resolveMCPClientCapabilityProfile,
   getMCPConnectionPoolKey,
   getMCPUserConnectionPoolKey,
-  bindScheduledMCPInvocation,
-  ScheduledMCPPolicyError,
+  bindRunGrantInvocation,
+  RunGrantPolicyError,
 } = require('@librechat/api');
 const {
   Time,
@@ -1214,7 +1214,7 @@ async function createMCPToolImpl({
       agentId,
       toolName,
     ),
-    scheduledMCPInvocation: bindScheduledMCPInvocation(requestScopedConnections, agentId, toolName),
+    scheduledMCPInvocation: bindRunGrantInvocation(requestScopedConnections, agentId, toolName),
     res,
     mcpPermissionContext,
     user,
@@ -1458,7 +1458,7 @@ function createToolInstance({
       /** Carries the actionable re-auth message; the substring heuristic below would misreport it as an OAuth configuration problem */
       if (
         error instanceof ScheduledMCPBearerError ||
-        error instanceof ScheduledMCPPolicyError ||
+        error instanceof RunGrantPolicyError ||
         error instanceof OpenIDReauthRequiredError ||
         error instanceof MCPAuthenticationRefreshError ||
         error instanceof MCPAuthenticationRejectedError

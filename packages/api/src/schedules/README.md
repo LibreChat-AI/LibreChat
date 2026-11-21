@@ -50,7 +50,7 @@ unavailable, is not configured or may not be used does not refuse the schedule:
   recorded on the run, each with its status and marked `skipped`, and named in the trigger
   the run is started from (`metadata.skip`, beside `metadata.servers`: every server the check
   covered). The run loads no tool on them (`withoutSkippedMCPServers`, through
-  `narrowScheduledMCPTools`), so it does not stop to ask for a sign-in nobody is there to
+  `narrowGrantedTools`), so it does not stop to ask for a sign-in nobody is there to
   give, and the rest of the agent runs. A tool key is resolved to its server among the
   servers the check covered, longest name first, as tool loading resolves it.
 - A run that pauses and is resumed rebuilds its tools on a request that is not a trigger. The
@@ -143,7 +143,7 @@ out of what the owner is offered, and the rest is still offered.
 - A tool the owner left out does not keep the schedule from running, and the run never loads
   it. The readiness check looks only at what the grant lists. When the run initializes an
   agent, only the MCP tools the grant lists for that agent are asked for
-  (`narrowScheduledMCPTools`), so a left-out tool is not defined for the model and a server
+  (`narrowGrantedTools`), so a left-out tool is not defined for the model and a server
   with nothing allowed is not connected to. Should a call to such a tool be made anyway, the
   run's hook turns it away with a plain message and records nothing, and the check at the MCP
   call still refuses it.
@@ -260,7 +260,7 @@ Beside allowing a tool, the owner can set it to "ask me first". The grant stores
 - **In a run**, the schedule's `PreToolUse` hook answers `ask` for such a tool. The run pauses
   like any tool approval: the schedule shows "Needs approval" and links to the conversation,
   where the owner approves, edits or rejects that use.
-- **At the MCP call**, `ScheduledMCPInvocation.authorize` refuses the tool with
+- **At the MCP call**, `RunGrantInvocation.authorize` refuses the tool with
   `approval_required` unless the call's id is one the owner approved in the request that
   resumed the run. A hook that times out contributes nothing, so this check, not the hook,
   is what keeps an unapproved call from running.
@@ -355,58 +355,10 @@ definition that changes between confirming and the first use is the one that get
 
 ## Grants held by an API key
 
-The same consent service, storage writes and per-call check also serve a second subject: a
-personal agent API key, per agent (`packages/api/src/apiKeys/grants.ts`). The grant lives on
-the key's document (`AgentApiKey.mcpGrants.<agentId>`), so it dies with the key.
-
-```yaml
-endpoints:
-  agents:
-    remoteApi:
-      integrations:
-        mode: delegated # default `owner`: every server the key's owner can use
-        maxLifetimeHours: 168
-        resources: # the servers a key may be granted, as for schedules
-          warehouse: { url: ..., credentialMode: ..., issuer: ..., audience: ..., scopes: [] }
-```
-
-`owner` is the default: a key run can use every MCP server its owner can, and nothing here
-applies. Under `delegated` with no `resources` declared there is nothing an owner can grant, so
-every key run's MCP tools are refused; the config loader warns about that configuration.
-
-Under `delegated`, a run started with a personal key is put under that key's grant for the
-agent before any tool is loaded. A key with no grant for the agent may not use MCP tools at all
-(`consent_missing`). A key starts a run in two ways:
-
-- Directly: chat completions, Responses, and a background Responses worker. The run's source is
-  `remote_api`, and each controller calls the key host's `prepare`.
-- By posting an event to `/api/agents/v1/events`. The trigger engine delivers it to the chat
-  route, where the run's source is `{ type: 'trigger', subject: { kind: 'key', id }, delivery }`
-  (`createTriggerExecutionContext`, `packages/api/src/agents/authority/context.ts`). The subject
-  is read from the verified trigger request, whose event source the events route stamps with the
-  authenticated key; a request the trigger engine did not sign never gets one. The chat route
-  reaches the same `prepare` through `initializeWithAuthority`
-  (`packages/api/src/agents/authority/host.ts`). This covers a delivery that starts a turn and
-  one that continues the conversation bound to its source.
-
-`getSourceKey` names the key for both, so the lookup, the integration-key exemption and the
-refusal of an unknown key are one code path.
-
-An event delivery is restricted on the request that carries it. Later requests of the same run
-are not yet restricted by the key's grant: a run resumed after it paused for an approval, a
-request a detached subagent makes for the run, and the turn that reports a background task's
-result. These build their context without the trigger's subject.
-
-What differs from a schedule's grant:
-
-- It limits MCP tools only. The agent's other tools are untouched, and an agent that has them
-  can still be granted.
-- A remote run cannot pause for approval, so "ask me first" is not offered for a key.
-- A run started with an OIDC token, or with a key issued to an integration (a channel), names
-  no personal key and is not restricted.
-
-Routes: `GET`, `POST` and `DELETE /api/api-keys/:id/agents/:agentId/mcp-consent`, with the same
-bodies and view as a schedule's.
+The grant code a schedule runs under is not schedule code: it lives in
+`packages/api/src/agents/authority/` and serves any subject. A personal agent API key is the
+second subject, and its grant is described in that directory's
+[README](../agents/authority/README.md).
 
 ## Host token-provider context
 

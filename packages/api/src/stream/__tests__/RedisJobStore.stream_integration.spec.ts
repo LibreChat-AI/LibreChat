@@ -443,7 +443,7 @@ describe('RedisJobStore Integration Tests', () => {
     async (writer) => {
       expect(ioredisClient).not.toBeNull();
       const { RedisJobStore } = await import('../implementations/RedisJobStore');
-      const { ScheduledMCPPolicyError } = await import('../../schedules/authorization/policy');
+      const { RunGrantPolicyError } = await import('~/agents/authority/policy');
       const first = new RedisJobStore(ioredisClient!);
       const second = new RedisJobStore(ioredisClient!);
       const id = 'schedule-denial';
@@ -458,9 +458,9 @@ describe('RedisJobStore Integration Tests', () => {
       await first.updateJob(id, { scheduleMCPCompletion: lineage }, job.createdAt);
       expect((await second.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
 
-      const transient = new ScheduledMCPPolicyError('dependency_unavailable', 'warehouse', 'root')
+      const transient = new RunGrantPolicyError('dependency_unavailable', 'warehouse', 'root')
         .outcomes[0];
-      const permanent = new ScheduledMCPPolicyError('binding_mismatch', 'warehouse', 'child')
+      const permanent = new RunGrantPolicyError('binding_mismatch', 'warehouse', 'child')
         .outcomes[0];
       const patch = (scheduleMCPFailure: typeof permanent) => ({
         scheduleMCPFailure,
@@ -492,7 +492,7 @@ describe('RedisJobStore Integration Tests', () => {
         expect(readScheduleMCPReceipts(retained?.scheduleOutcomeError)).toHaveLength(2);
         await second.updateJob(
           id,
-          patch(new ScheduledMCPPolicyError('tool_policy_denied', 'warehouse').outcomes[0]),
+          patch(new RunGrantPolicyError('tool_policy_denied', 'warehouse').outcomes[0]),
           job.createdAt - 1,
         );
         expect((await first.getJob(id))?.scheduleMCPFailure).toEqual(permanent);

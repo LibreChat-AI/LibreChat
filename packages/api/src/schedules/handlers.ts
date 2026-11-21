@@ -13,7 +13,7 @@ import type {
   ScheduledMCPIdentity,
   ScheduleAuthorization,
   ScheduledMCPEnrollment,
-  ConfirmScheduleMCPConsent,
+  ConfirmRunGrant,
 } from 'librechat-data-provider';
 import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -33,7 +33,7 @@ import {
   isValidTimezone,
 } from './cadence';
 import { ScheduleMCPError, getScheduleMCPFailureCode } from './mcp';
-import { ScheduleMCPConsentError } from './authorization/service';
+import { RunGrantError } from '~/agents/authority/service';
 import { resolveScheduleProjectId } from './types';
 
 export interface SchedulesHandlersDeps {
@@ -44,7 +44,7 @@ export interface SchedulesHandlersDeps {
   canViewAgent: (agentId: string, req: ServerRequest) => Promise<boolean>;
   /**
    * The grant for a schedule about to be created, from its owner's choice. Throws a
-   * `ScheduleMCPConsentError` when the choice does not fit what can be offered. Absent, a
+   * `RunGrantError` when the choice does not fit what can be offered. Absent, a
    * schedule cannot be authorized as it is created.
    */
   grant?: (
@@ -55,11 +55,11 @@ export interface SchedulesHandlersDeps {
   /**
    * The grant an edit carries for a schedule that keeps its agent, from the owner's choice of
    * the schedule's own offer, for the configuration generation the edit makes. Throws a
-   * `ScheduleMCPConsentError` like `grant`. Absent, an edit cannot carry an authorization.
+   * `RunGrantError` like `grant`. Absent, an edit cannot carry an authorization.
    */
   renew?: (
     identity: ScheduledMCPIdentity,
-    choice: ConfirmScheduleMCPConsent,
+    choice: ConfirmRunGrant,
     revision: number,
     options: { signal?: AbortSignal },
   ) => Promise<{ enrollment: ScheduledMCPEnrollment; basis: ScheduledMCPEnrollment | null }>;
@@ -360,7 +360,7 @@ export function toWireSchedule(
 }
 
 /** The owner's choice no longer fits what can be offered, or never did. Nothing is written. */
-function refuseAuthorization(res: Response, error: ScheduleMCPConsentError): void {
+function refuseAuthorization(res: Response, error: RunGrantError): void {
   res
     .status(error.code === 'consent_forbidden' ? 403 : 409)
     .json({ error: 'Schedule authorization was not accepted', code: error.code });
@@ -794,7 +794,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
           };
         } catch (error) {
           if (mcpSignal.aborted) return;
-          if (!(error instanceof ScheduleMCPConsentError)) throw error;
+          if (!(error instanceof RunGrantError)) throw error;
           refuseAuthorization(res, error);
           return;
         }
@@ -1116,7 +1116,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         } else regrant = await deps.grant(identity, choice, { signal: mcpSignal, revision });
       } catch (error) {
         if (mcpSignal.aborted) return;
-        if (!(error instanceof ScheduleMCPConsentError)) throw error;
+        if (!(error instanceof RunGrantError)) throw error;
         refuseAuthorization(res, error);
         return;
       }
@@ -1288,7 +1288,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         // Same edit generation, so it was the grant that moved: revoked, confirmed again, or
         // marked by a run. The owner's choice was made from what is no longer stored.
         if (regrant && stillThere.configRevision === existing.configRevision) {
-          refuseAuthorization(res, new ScheduleMCPConsentError('consent_changed'));
+          refuseAuthorization(res, new RunGrantError('consent_changed'));
           return;
         }
         res.status(409).json({ error: 'Schedule was modified concurrently. Please retry.' });

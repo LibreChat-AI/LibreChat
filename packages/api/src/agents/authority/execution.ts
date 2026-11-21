@@ -7,29 +7,29 @@ import {
   stripServerNamePrefix,
   buildServerNameAliases,
 } from 'librechat-data-provider';
-import type { MCPGrantIdentity, ScheduledMCPIdentity } from 'librechat-data-provider';
-import type { MCPConsentStorage } from '@librechat/data-schemas';
+import type { RunGrantIdentity, ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { RunGrantStorage } from '@librechat/data-schemas';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
+import type { ScheduledTokenContext } from '~/schedules/context';
 import type { MCPToolsSnapshot } from '~/mcp/connection';
-import type { ScheduledMCPAuthority } from './contract';
-import type { ScheduledTokenContext } from '../context';
+import type { RunGrantAuthority } from './contract';
 import {
-  isScheduledToolItem,
-  ScheduledMCPPolicyError,
-  getScheduledMCPToolDefinitionDigest,
+  isRunGrantToolItem,
+  RunGrantPolicyError,
+  getRunGrantToolDefinitionDigest,
   listedMCPKeys,
 } from './policy';
-import { getScheduledMCPConfigurationRevision } from './configuration';
+import { getRunGrantConfigurationRevision } from './configuration';
+import { withoutSkippedMCPServers } from '~/schedules/trigger';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
-import { withoutSkippedMCPServers } from '../trigger';
 import { findMCPRequestContext } from '~/mcp/request';
-import { ScheduleMCPConsentError } from './service';
 import { isOwnedAbortError } from '~/utils/errors';
 import { waitUntilDeadline } from '~/mcp/utils';
+import { RunGrantError } from './service';
 
-export interface ScheduledMCPInvocation<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
+export interface RunGrantInvocation<Identity extends RunGrantIdentity = ScheduledMCPIdentity> {
   readonly identity: Identity;
   /** False only for a monitored legacy occurrence. */
   readonly enrolled?: boolean;
@@ -48,7 +48,7 @@ export interface ScheduledMCPInvocation<Identity extends MCPGrantIdentity = Sche
   }) => Promise<void>;
 }
 
-export interface ScheduleMCPExecution<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> {
+export interface RunGrantExecution<Identity extends RunGrantIdentity = ScheduledMCPIdentity> {
   readonly identity: Identity;
   readonly stage: 'activation' | 'invoke' | 'resume';
   /** Trusted admission provenance retained through credential/session preparation. */
@@ -102,23 +102,23 @@ export interface ScheduleMCPExecution<Identity extends MCPGrantIdentity = Schedu
   readonly bind: (
     agentId: string | undefined,
     selectionName: string,
-  ) => ScheduledMCPInvocation<Identity>;
+  ) => RunGrantInvocation<Identity>;
 }
 
 const executions = new WeakMap<
   RequestScopedMCPConnectionStore,
-  ScheduleMCPExecution<MCPGrantIdentity>
+  RunGrantExecution<RunGrantIdentity>
 >();
 
 /**
  * Captured at tool construction. Runnable config cannot remove or replace this guard.
  * Whatever the grant's subject, a schedule or an API key, the tool is checked the same way.
  */
-export function bindScheduledMCPInvocation(
+export function bindRunGrantInvocation(
   context: RequestScopedMCPConnectionStore | undefined,
   agentId: string | undefined,
   selectionName: string,
-): ScheduledMCPInvocation<MCPGrantIdentity> | undefined {
+): RunGrantInvocation<RunGrantIdentity> | undefined {
   return context && executions.get(context)?.bind(agentId, selectionName);
 }
 
@@ -128,7 +128,7 @@ export function bindScheduledMCPInvocation(
  * is never connected to. A scheduled run also loads nothing on a server its occurrence was
  * fired without. Any other request loads the agent's tools as they are.
  */
-export function narrowScheduledMCPTools(
+export function narrowGrantedTools(
   req: object | undefined,
   agentId: string,
   toolKeys: string[],
@@ -154,26 +154,24 @@ export function scheduleAsksEveryUse(
 }
 
 function actsForSchedule(
-  execution: ScheduleMCPExecution<MCPGrantIdentity>,
-): execution is ScheduleMCPExecution {
+  execution: RunGrantExecution<RunGrantIdentity>,
+): execution is RunGrantExecution {
   return 'scheduleId' in execution.identity;
 }
 
 /** The run's execution when it acts for a schedule. A run that acts for an API key has none. */
 export function getScheduleMCPExecution(
   context?: RequestScopedMCPConnectionStore,
-): ScheduleMCPExecution | undefined {
+): RunGrantExecution | undefined {
   const execution = context && executions.get(context);
   return execution && actsForSchedule(execution) ? execution : undefined;
 }
 
-export interface ScheduleMCPExecutionDeps<
-  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
-> {
-  storage: MCPConsentStorage<Identity>;
+export interface RunGrantExecutionDeps<Identity extends RunGrantIdentity = ScheduledMCPIdentity> {
+  storage: RunGrantStorage<Identity>;
   /** Fresh for each call; only this attempt may reuse its principal/configuration. */
   loadAuthorization: (identity: Identity) => Promise<{
-    authority: ScheduledMCPAuthority<Identity>;
+    authority: RunGrantAuthority<Identity>;
   }>;
   /** Whether a subject with no grant may not use MCP tools. Absent, it always may. */
   requiresGrant?: (identity: Identity) => Promise<boolean>;
@@ -190,7 +188,7 @@ export interface ScheduleMCPExecutionDeps<
   now?: () => number;
 }
 
-export interface ScheduleMCPExecutionOptions {
+export interface RunGrantExecutionOptions {
   manual?: boolean;
   legacy?: boolean;
   /** Tool calls the owner approved in the request that resumed this run. */
@@ -199,37 +197,36 @@ export interface ScheduleMCPExecutionOptions {
   completion?: boolean;
 }
 
-export interface ScheduleMCPExecutionFactory<
-  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+export interface RunGrantExecutionFactory<
+  Identity extends RunGrantIdentity = ScheduledMCPIdentity,
 > {
   resolve: (
     identity: Identity,
-    stage: ScheduleMCPExecution['stage'],
-    options?: ScheduleMCPExecutionOptions,
-  ) => Promise<ScheduleMCPExecution<Identity> | undefined>;
+    stage: RunGrantExecution['stage'],
+    options?: RunGrantExecutionOptions,
+  ) => Promise<RunGrantExecution<Identity> | undefined>;
   attach: (
     context: RequestScopedMCPConnectionStore,
     identity: Identity,
-    stage: ScheduleMCPExecution['stage'],
+    stage: RunGrantExecution['stage'],
     requireEnrollment?: boolean,
-    options?: ScheduleMCPExecutionOptions,
+    options?: RunGrantExecutionOptions,
   ) => Promise<boolean>;
 }
 
-export function createScheduleMCPExecution<
-  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
->(deps: ScheduleMCPExecutionDeps<Identity>): ScheduleMCPExecutionFactory<Identity> {
+export function createRunGrantExecution<Identity extends RunGrantIdentity = ScheduledMCPIdentity>(
+  deps: RunGrantExecutionDeps<Identity>,
+): RunGrantExecutionFactory<Identity> {
   async function resolve(
     identity: Identity,
-    stage: ScheduleMCPExecution['stage'],
-    options: ScheduleMCPExecutionOptions = {},
-  ): Promise<ScheduleMCPExecution<Identity> | undefined> {
-    const snapshot = await deps.storage.readScheduleMCPConsent(identity);
-    if (snapshot?.compatible === false) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+    stage: RunGrantExecution['stage'],
+    options: RunGrantExecutionOptions = {},
+  ): Promise<RunGrantExecution<Identity> | undefined> {
+    const snapshot = await deps.storage.readRunGrant(identity);
+    if (snapshot?.compatible === false) throw new RunGrantPolicyError('binding_mismatch', '');
     if (!snapshot) return;
     const enrolled = snapshot.enrollment != null;
-    if (enrolled && options.legacy === true)
-      throw new ScheduledMCPPolicyError('binding_mismatch', '');
+    if (enrolled && options.legacy === true) throw new RunGrantPolicyError('binding_mismatch', '');
     const capturedIdentity = Object.freeze({ ...identity });
     const manual = options.manual === true;
     const resources = new Map(
@@ -328,7 +325,7 @@ export function createScheduleMCPExecution<
     const loads = (agentId: string, toolKey: string): boolean => {
       if (!toolKey.includes(Constants.mcp_delimiter))
         return (
-          deps.coversTools !== true || !isScheduledToolItem(toolKey) || allows(agentId, toolKey)
+          deps.coversTools !== true || !isRunGrantToolItem(toolKey) || allows(agentId, toolKey)
         );
       if (whole || isGrantedKey(agentId, toolKey) || allows(agentId, toolKey)) return true;
       const marker = `${Constants.mcp_server}${Constants.mcp_delimiter}`;
@@ -352,20 +349,20 @@ export function createScheduleMCPExecution<
     const settleBy = (): number => Date.now() + DEFAULT_HOOK_TIMEOUT_MS / 2;
     const checkEnrollment = async (deadline = settleBy()): Promise<void> => {
       if (enrolled) return;
-      if (fenced) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+      if (fenced) throw new RunGrantPolicyError('binding_mismatch', '');
       // No allow decision cached.
       const observed = await waitUntilDeadline(
-        deps.storage.readScheduleMCPConsent(capturedIdentity),
+        deps.storage.readRunGrant(capturedIdentity),
         deadline,
       );
-      if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
+      if (!observed.settled) throw new RunGrantPolicyError('dependency_unavailable', '');
       if (
         !observed.value ||
         observed.value.compatible === false ||
         observed.value.enrollment != null
       ) {
         fenced = true;
-        throw new ScheduledMCPPolicyError('binding_mismatch', '');
+        throw new RunGrantPolicyError('binding_mismatch', '');
       }
     };
     return Object.freeze({
@@ -379,7 +376,7 @@ export function createScheduleMCPExecution<
       needsGrant: async (deadline = settleBy()) => {
         if (enrolled || deps.coversTools !== true) return false;
         const observed = await waitUntilDeadline(requiresGrant(), deadline);
-        if (!observed.settled) throw new ScheduledMCPPolicyError('dependency_unavailable', '');
+        if (!observed.settled) throw new RunGrantPolicyError('dependency_unavailable', '');
         return observed.value;
       },
       grants: (agentId: string, serverName: string, selectionName: string) => {
@@ -401,7 +398,7 @@ export function createScheduleMCPExecution<
         toolKeys.some(
           (key) => askingAny.has(key) || [...asking.values()].some((keys) => keys.has(key)),
         ),
-      bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation<Identity> {
+      bind(agentId: string | undefined, selectionName: string): RunGrantInvocation<Identity> {
         return Object.freeze({
           identity: capturedIdentity,
           agentId,
@@ -415,12 +412,10 @@ export function createScheduleMCPExecution<
             signal,
             toolCallId,
             readiness,
-          }: Parameters<ScheduledMCPInvocation<Identity>['authorize']>[0]): Promise<void> {
+          }: Parameters<RunGrantInvocation<Identity>['authorize']>[0]): Promise<void> {
             signal?.throwIfAborted();
-            const deny = (
-              reason: ConstructorParameters<typeof ScheduledMCPPolicyError>[0],
-            ): never => {
-              throw new ScheduledMCPPolicyError(reason, serverName, agentId);
+            const deny = (reason: ConstructorParameters<typeof RunGrantPolicyError>[0]): never => {
+              throw new RunGrantPolicyError(reason, serverName, agentId);
             };
             if (
               !agentId ||
@@ -435,7 +430,7 @@ export function createScheduleMCPExecution<
               } catch (error) {
                 signal?.throwIfAborted();
                 deny(
-                  error instanceof ScheduledMCPPolicyError
+                  error instanceof RunGrantPolicyError
                     ? error.failure.reason
                     : 'dependency_unavailable',
                 );
@@ -469,7 +464,7 @@ export function createScheduleMCPExecution<
                 if (standing.state === 'denied') deny(standing.failure.reason);
                 if (standing.state === 'cancelled') deny('dependency_unavailable');
               } catch (error) {
-                if (error instanceof ScheduledMCPPolicyError || isOwnedAbortError(error, signal))
+                if (error instanceof RunGrantPolicyError || isOwnedAbortError(error, signal))
                   throw error;
                 deny('dependency_unavailable');
               }
@@ -478,12 +473,12 @@ export function createScheduleMCPExecution<
             if (!resource) deny('tool_policy_denied');
             try {
               if (
-                getScheduledMCPConfigurationRevision(serverConfig, resource!) !==
+                getRunGrantConfigurationRevision(serverConfig, resource!) !==
                 resource!.configurationRevision
               )
                 deny('binding_mismatch');
             } catch (error) {
-              if (error instanceof ScheduleMCPConsentError) deny('binding_mismatch');
+              if (error instanceof RunGrantError) deny('binding_mismatch');
               throw error;
             }
             // Resolve the actual upstream operation, including legacy and prefix-stripped keys.
@@ -509,7 +504,7 @@ export function createScheduleMCPExecution<
                   ...(manual && { manual: true }),
                   selection: { agentId: agentId!, tools: [selectionName] },
                   definitions: {
-                    [selectionName]: getScheduledMCPToolDefinitionDigest(definitions[0]),
+                    [selectionName]: getRunGrantToolDefinitionDigest(definitions[0]),
                   },
                 },
                 { signal },
@@ -530,7 +525,7 @@ export function createScheduleMCPExecution<
               signal?.throwIfAborted();
             } catch (error) {
               if (
-                error instanceof ScheduledMCPPolicyError ||
+                error instanceof RunGrantPolicyError ||
                 error instanceof ScheduledMCPBearerError ||
                 isOwnedAbortError(error, signal)
               )
@@ -547,7 +542,7 @@ export function createScheduleMCPExecution<
     async attach(context, identity, stage, requireEnrollment = false, options) {
       const execution = await resolve(identity, stage, options);
       if ((!execution || !execution.enrolled) && requireEnrollment)
-        throw new ScheduledMCPPolicyError('consent_missing', '');
+        throw new RunGrantPolicyError('consent_missing', '');
       if (execution) executions.set(context, execution);
       return execution != null;
     },
@@ -559,7 +554,7 @@ export function createScheduleMCPExecution<
  * a paused scheduled run are checked before any provider work. Never asked for a decision.
  */
 export function buildScheduledApprovalAdmissionHooks(
-  execution?: Pick<ScheduleMCPExecution, 'mayAsk'>,
+  execution?: Pick<RunGrantExecution, 'mayAsk'>,
 ): ResolvedToolApprovalHook[] {
   return execution?.mayAsk === true ? [{ hook: async () => ({}) }] : [];
 }

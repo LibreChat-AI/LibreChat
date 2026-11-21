@@ -8,7 +8,7 @@ import {
   recordScheduledMCPToolAuthFailure,
   ScheduledMCPReceiptFencedError,
 } from './service';
-import { ScheduledMCPPolicyError } from './authorization/policy';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { isShutdownInProgress } from '../app/shutdown';
@@ -1079,7 +1079,7 @@ describe('scheduled OBO tool failure settlement', () => {
 
   it('records the public-safe policy denial for the exact scheduled generation', async () => {
     const { service, methods } = setup();
-    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Graph', 'child');
+    const error = new RunGrantPolicyError('tool_policy_denied', 'Graph', 'child');
     const input = { error, streamId: 'c1', jobCreatedAt: 42, userId: 'owner', serverName: 'Graph' };
     await expect(
       recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
@@ -1105,7 +1105,7 @@ describe('scheduled OBO tool failure settlement', () => {
     'settles a handled %s tool denial as an error with the durable diagnosis',
     async (reason) => {
       const { service, methods } = setup();
-      const error = new ScheduledMCPPolicyError(reason, 'Graph', 'child');
+      const error = new RunGrantPolicyError(reason, 'Graph', 'child');
       const input = {
         error,
         streamId: 'c1',
@@ -2695,7 +2695,7 @@ it.each(['false', 'throw'] as const)(
   'holds A3 policy failures behind durable admission when the recorder returns %s',
   async (mode) => {
     jest.useFakeTimers();
-    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child');
+    const error = new RunGrantPolicyError('tool_policy_denied', 'Files', 'child');
     const input = {
       error,
       streamId: 'policy-admission',
@@ -2757,11 +2757,11 @@ it('does not coalesce different A3 diagnoses for the same exact generation', asy
     },
   };
   const first = recordScheduledMCPToolAuthFailure(
-    { ...input, error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child') },
+    { ...input, error: new RunGrantPolicyError('tool_policy_denied', 'Files', 'child') },
     () => record,
   );
   const second = recordScheduledMCPToolAuthFailure(
-    { ...input, error: new ScheduledMCPPolicyError('binding_mismatch', 'Files', 'child') },
+    { ...input, error: new RunGrantPolicyError('binding_mismatch', 'Files', 'child') },
     () => record,
   );
   try {
@@ -2785,7 +2785,7 @@ it('fences a foreign or replaced A3 receipt instead of retrying an impossible ad
   await expect(
     recordScheduledMCPToolAuthFailure(
       {
-        error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child'),
+        error: new RunGrantPolicyError('tool_policy_denied', 'Files', 'child'),
         streamId: 'retired-policy',
         jobCreatedAt: 42,
         userId: 'owner',
@@ -2812,7 +2812,7 @@ it('interrupts an A3 admission wait at shutdown without a model-visible policy r
   const record = jest.fn(async () => false);
   const pending = recordScheduledMCPToolAuthFailure(
     {
-      error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child'),
+      error: new RunGrantPolicyError('tool_policy_denied', 'Files', 'child'),
       streamId: 'policy-shutdown',
       jobCreatedAt: 42,
       userId: 'owner',

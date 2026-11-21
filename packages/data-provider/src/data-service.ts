@@ -35,8 +35,8 @@ import type {
   ChannelLinkView,
 } from './types/channelIdentity';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
-import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
+import type { RunGrantView, ConfirmRunGrant } from './types/runGrant';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
@@ -2271,16 +2271,16 @@ export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
 };
 
-export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
+export function getScheduleMCPConsent(id: string): Promise<RunGrantView> {
   return request.get(endpoints.scheduleMCPConsent(id));
 }
-export function getScheduleMCPOffer(agentId: string): Promise<ScheduleMCPConsentView> {
+export function getScheduleMCPOffer(agentId: string): Promise<RunGrantView> {
   return request.post(endpoints.scheduleMCPOffer(), { agent_id: agentId });
 }
 export function confirmScheduleMCPConsent(
   id: string,
-  payload: ConfirmScheduleMCPConsent,
-): Promise<ScheduleMCPConsentView> {
+  payload: ConfirmRunGrant,
+): Promise<RunGrantView> {
   return request.post(endpoints.scheduleMCPConsent(id), payload);
 }
 export function revokeScheduleMCPConsent(id: string, expectedRevision: string): Promise<void> {
@@ -2289,14 +2289,14 @@ export function revokeScheduleMCPConsent(id: string, expectedRevision: string): 
   });
 }
 
-export function getApiKeyMCPConsent(id: string, agentId: string): Promise<ScheduleMCPConsentView> {
+export function getApiKeyMCPConsent(id: string, agentId: string): Promise<RunGrantView> {
   return request.get(endpoints.apiKeyMCPConsent(id, agentId));
 }
 export function confirmApiKeyMCPConsent(
   id: string,
   agentId: string,
-  payload: ConfirmScheduleMCPConsent,
-): Promise<ScheduleMCPConsentView> {
+  payload: ConfirmRunGrant,
+): Promise<RunGrantView> {
   return request.post(endpoints.apiKeyMCPConsent(id, agentId), payload);
 }
 export function revokeApiKeyMCPConsent(

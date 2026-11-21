@@ -9,9 +9,9 @@ import {
   executeHooks,
 } from '@librechat/agents';
 import type { GraphEdge } from '@librechat/agents';
+import { executionFixture, readTool } from '~/agents/authority/execution.helper';
 import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
-import { executionFixture, readTool } from './execution.helper';
-import { createScheduleMCPExecution } from './execution';
+import { createRunGrantExecution } from '~/agents/authority/execution';
 
 async function setup(edges: GraphEdge[]) {
   const fixture = await executionFixture();
@@ -135,7 +135,7 @@ it('denies safely when an unenrolled run cannot recheck enrollment', async () =>
   const legacy = (await f.factory.resolve(f.identity, 'invoke'))!;
   const record = jest.fn(async () => true);
   const policy = createScheduledMCPRunPolicy(legacy, [{ id: 'root' }], [], record);
-  jest.mocked(f.storage.readScheduleMCPConsent).mockRejectedValueOnce(new Error('PRIVATE outage'));
+  jest.mocked(f.storage.readRunGrant).mockRejectedValueOnce(new Error('PRIVATE outage'));
   const registry = new HookRegistry();
   registry.register('PreToolUse', { hooks: [policy.hook, policy.receipt], internal: true });
   const input = {
@@ -197,7 +197,7 @@ it('lets a granted tool run in the background, and a held schedule start nothing
   // No grant where one is required: nothing may be started in the background.
   const unenrolled = (required: boolean) => {
     f.snapshot.enrollment = null;
-    return createScheduleMCPExecution({
+    return createRunGrantExecution({
       storage: f.storage,
       loadAuthorization: f.loadAuthorization,
       requiresGrant: async () => required,

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import type { ScheduledMCPResourceBinding } from 'librechat-data-provider';
+import type { RunGrantResourceBinding } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
-import { ScheduleMCPConsentError } from './service';
+import { RunGrantError } from './service';
 
 type IdentityValue =
   | string
@@ -48,12 +48,12 @@ function hasRoutingTemplate(headers?: Record<string, string>): boolean {
  * the masked previews the admin config API stores beside them (`keyPreview`,
  * `client_secretPreview`), which change whenever an admin rotates the secret in place.
  */
-export function getScheduledMCPConfigurationRevision(
+export function getRunGrantConfigurationRevision(
   config: ParsedServerConfig,
-  binding: ScheduledMCPResourceBinding,
+  binding: RunGrantResourceBinding,
 ): string {
   if (config.type !== 'sse' && config.type !== 'http' && config.type !== 'streamable-http')
-    throw new ScheduleMCPConsentError('consent_unavailable');
+    throw new RunGrantError('consent_unavailable');
   const declared = {
     type: config.type,
     url: config.url,
@@ -74,7 +74,7 @@ export function getScheduledMCPConfigurationRevision(
   };
   const runtime = processMCPEnv({ options: declared });
   if (runtime.type !== 'sse' && runtime.type !== 'http' && runtime.type !== 'streamable-http')
-    throw new ScheduleMCPConsentError('consent_unavailable');
+    throw new RunGrantError('consent_unavailable');
   const request = processMCPEnv({ options: { ...declared, headers: config.requestHeaders } });
   const requestHeaders = 'headers' in request ? request.headers : undefined;
   if (
@@ -84,7 +84,7 @@ export function getScheduledMCPConfigurationRevision(
       hasRoutingTemplate(requestHeaders) ||
       hasRoutingTemplate(runtime.oauth_headers))
   )
-    throw new ScheduleMCPConsentError('consent_unavailable');
+    throw new RunGrantError('consent_unavailable');
   // Do not reparse through transforming schemas: plugin/DB URLs must remain literal.
   return createHash('sha256')
     .update(

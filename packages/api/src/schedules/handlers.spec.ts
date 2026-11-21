@@ -1658,12 +1658,12 @@ describe('createSchedule where the owner authorizes a schedule as it is created'
       expect.objectContaining({ scheduleId: insert!.id, stage: 'activation', grant: stored }),
     );
     // A choice that is turned down is answered as that, with no server probed for it.
-    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    const { RunGrantError } = jest.requireActual('~/agents/authority/service');
     preflightMCP.mockClear();
     await create(
       { authorization },
       {
-        grant: jest.fn().mockRejectedValue(new ScheduleMCPConsentError('consent_changed')),
+        grant: jest.fn().mockRejectedValue(new RunGrantError('consent_changed')),
         preflightMCP,
       },
     );
@@ -1686,7 +1686,7 @@ describe('createSchedule where the owner authorizes a schedule as it is created'
   });
 
   it('creates nothing when the choice does not fit what can be offered', async () => {
-    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    const { RunGrantError } = jest.requireActual('~/agents/authority/service');
     for (const [code, status] of [
       ['consent_changed', 409],
       ['consent_invalid', 409],
@@ -1694,7 +1694,7 @@ describe('createSchedule where the owner authorizes a schedule as it is created'
     ] as const) {
       const { captured, insert } = await create(
         { authorization },
-        { grant: jest.fn().mockRejectedValue(new ScheduleMCPConsentError(code)) },
+        { grant: jest.fn().mockRejectedValue(new RunGrantError(code)) },
       );
       expect(captured.status).toBe(status);
       expect(captured.body).toMatchObject({ code });
@@ -1844,7 +1844,7 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
   });
 
   it('changes nothing when the choice does not fit what can be offered', async () => {
-    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    const { RunGrantError } = jest.requireActual('~/agents/authority/service');
     for (const [code, status] of [
       ['consent_changed', 409],
       ['consent_forbidden', 403],
@@ -1853,7 +1853,7 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
       const { captured, write } = await patch(
         { name: 'renamed', authorization },
         {
-          renew: jest.fn().mockRejectedValue(new ScheduleMCPConsentError(code)),
+          renew: jest.fn().mockRejectedValue(new RunGrantError(code)),
           grant: jest.fn(),
           preflightMCP,
         },

@@ -1,24 +1,24 @@
 import type {
-  MCPGrantIdentity,
-  MCPGrantEnrollment,
-  ScheduledMCPIdentity,
-  ScheduledMCPTarget,
-} from 'librechat-data-provider';
-import type {
-  MCPConsentStorage,
+  RunGrantStorage,
   ScheduleMCPConsentStorage,
   ScheduleConsentSnapshot,
   IUser,
 } from '@librechat/data-schemas';
+import type {
+  RunGrantIdentity,
+  RunGrant,
+  ScheduledMCPIdentity,
+  RunGrantTarget,
+} from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { getScheduledMCPConfigurationRevision } from './configuration';
-import { createScheduleMCPConsentService } from './service';
-import { getScheduledMCPPolicyRevision } from './policy';
-import { createScheduleMCPExecution } from './execution';
+import { getRunGrantConfigurationRevision } from './configuration';
+import { createRunGrantExecution } from './execution';
+import { getRunGrantPolicyRevision } from './policy';
+import { createRunGrantService } from './service';
 
 /** The owner's choice in tests that are not about choosing: every tool on offer. */
-export function allowOffered(targets: readonly ScheduledMCPTarget[]): Record<string, string[]> {
+export function allowOffered(targets: readonly RunGrantTarget[]): Record<string, string[]> {
   return Object.fromEntries(
     targets.map((target) => [
       target.resource.serverName,
@@ -29,7 +29,7 @@ export function allowOffered(targets: readonly ScheduledMCPTarget[]): Record<str
 
 /** What admission checks in its write: no tool in use is marked or pinned to another digest. */
 export function admitsDefinitions(
-  enrollment: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+  enrollment: RunGrant<RunGrantIdentity> | null | undefined,
   consentId: string,
   definitions: Readonly<Record<string, string>> = {},
 ): boolean {
@@ -43,8 +43,8 @@ export function admitsDefinitions(
 
 /** What a confirmation checks in its write: no pin or mark was added to the grant it read. */
 export function untouchedSince(
-  enrollment: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
-  basis: MCPGrantEnrollment<MCPGrantIdentity> | null | undefined,
+  enrollment: RunGrant<RunGrantIdentity> | null | undefined,
+  basis: RunGrant<RunGrantIdentity> | null | undefined,
 ): boolean {
   return (basis?.consents ?? []).every((seen) => {
     const stored = enrollment?.consents.find((item) => item.id === seen.id);
@@ -57,16 +57,16 @@ export function untouchedSince(
 }
 
 /** The two pin writes over an enrollment a fake keeps in memory, with the real fences. */
-export function pinStorage<Identity extends MCPGrantIdentity = ScheduledMCPIdentity>(
-  current: () => MCPGrantEnrollment<Identity> | null | undefined,
-): Pick<MCPConsentStorage<Identity>, 'pinScheduleMCPToolDefinition' | 'flagScheduleMCPToolChange'> {
+export function pinStorage<Identity extends RunGrantIdentity = ScheduledMCPIdentity>(
+  current: () => RunGrant<Identity> | null | undefined,
+): Pick<RunGrantStorage<Identity>, 'pinRunGrantTool' | 'flagRunGrantTool'> {
   const find = (revision: string, consentId: string) => {
     const enrollment = current();
     if (enrollment?.revision !== revision) return;
     return enrollment.consents.find((consent) => consent.id === consentId);
   };
   return {
-    pinScheduleMCPToolDefinition: async ({ revision, consentId, tool, digest }) => {
+    pinRunGrantTool: async ({ revision, consentId, tool, digest }) => {
       const consent = find(revision, consentId);
       if (
         !consent ||
@@ -77,7 +77,7 @@ export function pinStorage<Identity extends MCPGrantIdentity = ScheduledMCPIdent
       consent.definitions = [...(consent.definitions ?? []), { tool, digest }];
       return true;
     },
-    flagScheduleMCPToolChange: async ({ revision, consentId, tool }) => {
+    flagRunGrantTool: async ({ revision, consentId, tool }) => {
       const consent = find(revision, consentId);
       if (!consent?.definitions?.some((pin) => pin.tool === tool)) return false;
       consent.changedTools = [...new Set([...(consent.changedTools ?? []), tool])];
@@ -131,7 +131,7 @@ export async function executionFixture(
     url,
   };
   const user = { id: 'owner', tenantId: 'tenant', role: 'USER' } as IUser;
-  const target: ScheduledMCPTarget = {
+  const target: RunGrantTarget = {
     resource: {
       serverName: 'warehouse',
       url: config.url,
@@ -147,12 +147,9 @@ export async function executionFixture(
     ],
     policyRevision: '',
   };
-  target.resource.configurationRevision = getScheduledMCPConfigurationRevision(
-    config,
-    target.resource,
-  );
+  target.resource.configurationRevision = getRunGrantConfigurationRevision(config, target.resource);
   const resolveEnrollment = async () => {
-    target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
+    target.policyRevision = getRunGrantPolicyRevision(target.permittedTools);
     return structuredClone([target]);
   };
   const snapshot: ScheduleConsentSnapshot = {
@@ -162,17 +159,17 @@ export async function executionFixture(
     enrollment: null,
   };
   const storage: ScheduleMCPConsentStorage = {
-    readScheduleMCPConsent: jest.fn(async () => structuredClone(snapshot)),
-    confirmScheduleMCPConsent: jest.fn(async ({ enrollment }) => {
+    readRunGrant: jest.fn(async () => structuredClone(snapshot)),
+    confirmRunGrant: jest.fn(async ({ enrollment }) => {
       snapshot.enrollment = structuredClone(enrollment);
       return true;
     }),
-    revokeScheduleMCPConsent: jest.fn(async () => {
+    revokeRunGrant: jest.fn(async () => {
       if (snapshot.enrollment) snapshot.enrollment.revokedAtMs = time;
       for (const consent of snapshot.enrollment?.consents ?? []) consent.revokedAtMs = time;
       return true;
     }),
-    admitScheduleMCPConsent: jest.fn(
+    admitRunGrant: jest.fn(
       async (input) =>
         (input.requireEnabled === false || snapshot.enabled) &&
         snapshot.configRevision === input.expectedConfigRevision &&
@@ -184,7 +181,7 @@ export async function executionFixture(
     ),
     ...pinStorage(() => snapshot.enrollment),
   };
-  const service = createScheduleMCPConsentService({
+  const service = createRunGrantService({
     storage,
     resolveEnrollment,
     resolveTools: async () =>
@@ -207,7 +204,7 @@ export async function executionFixture(
     ...(choice.everything && { everything: true as const }),
   });
   const loadAuthorization = jest.fn(async () => ({ authority: service.authority }));
-  const factory = createScheduleMCPExecution({
+  const factory = createRunGrantExecution({
     storage,
     loadAuthorization,
     coversTools: choice.coversTools ?? true,

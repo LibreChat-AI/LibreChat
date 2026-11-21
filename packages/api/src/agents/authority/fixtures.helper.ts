@@ -1,15 +1,15 @@
 import type {
   ScheduledMCPConsent,
-  ScheduledMCPFailure,
+  RunGrantFailure,
   ScheduledMCPIdentity,
-  ScheduledMCPResource,
-  ScheduledMCPConsentLookupResult,
-  ScheduledMCPAuthorizationRequest,
+  RunGrantResource,
+  RunGrantLookupResult,
+  RunGrantAuthorizationRequest,
 } from './contract';
 
 export interface AuthorizationFacts {
   readonly nowMs: number;
-  readonly consent: ScheduledMCPConsentLookupResult;
+  readonly consent: RunGrantLookupResult;
   readonly rbac: 'allowed' | 'denied' | 'unavailable';
   readonly scheduleActive: boolean;
   readonly graphAgentIds: readonly string[];
@@ -21,15 +21,15 @@ export interface AuthorizationFacts {
 }
 
 export interface AuthorizationStep {
-  readonly stage: ScheduledMCPAuthorizationRequest['stage'];
+  readonly stage: RunGrantAuthorizationRequest['stage'];
   readonly facts: AuthorizationFacts;
-  readonly expected: 'authorized' | 'cancelled' | ScheduledMCPFailure['reason'];
+  readonly expected: 'authorized' | 'cancelled' | RunGrantFailure['reason'];
   readonly aborted?: boolean;
 }
 
 export interface AuthorizationFixture {
   readonly id: string;
-  readonly request: Omit<ScheduledMCPAuthorizationRequest, 'stage'>;
+  readonly request: Omit<RunGrantAuthorizationRequest, 'stage'>;
   readonly steps: readonly AuthorizationStep[];
 }
 
@@ -40,7 +40,7 @@ const identity: ScheduledMCPIdentity = {
   agentId: 'root-agent',
   invocationMode: 'delegated',
 };
-const resource: ScheduledMCPResource = {
+const resource: RunGrantResource = {
   serverName: 'warehouse',
   url: 'https://warehouse.example/mcp',
   configurationRevision: 'configuration-1',

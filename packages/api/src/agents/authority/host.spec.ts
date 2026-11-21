@@ -1,8 +1,8 @@
 import type { AuthorityHosts } from './host';
 import { createRemoteExecutionContext, createTriggerExecutionContext } from './context';
 import { createMCPRequestContext } from '~/mcp/request';
-import { ScheduledMCPPolicyError } from '~/schedules';
 import { initializeWithAuthority } from './host';
+import { RunGrantPolicyError } from './policy';
 
 const user = { id: 'owner', tenantId: 'tenant' };
 
@@ -74,7 +74,7 @@ it("puts a key's delivery under the key host before the run initializes", async 
 
 it('does not initialize a run the key host refuses', async () => {
   const h = hosts();
-  const refusal = new ScheduledMCPPolicyError('binding_mismatch', '');
+  const refusal = new RunGrantPolicyError('binding_mismatch', '');
   h.key.prepare.mockRejectedValueOnce(refusal);
   const req = delivery();
   await expect(

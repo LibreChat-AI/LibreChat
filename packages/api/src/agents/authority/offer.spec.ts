@@ -3,13 +3,13 @@ import { SkillsScope, Permissions, PermissionTypes } from 'librechat-data-provid
 import type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from '@librechat/data-schemas';
 import type { IUser, AppConfig, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
-import type { ScheduleMCPEnrollmentDeps } from './enrollment';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { createScheduleMCPEnrollmentResolver, createScheduleMCPOffer } from './enrollment';
-import { getScheduledMCPConfigurationRevision } from './configuration';
+import type { RunGrantOfferDeps } from './offer';
+import { createRunGrantTargetResolver, createRunGrantOffer } from './offer';
+import { getRunGrantConfigurationRevision } from './configuration';
+import { createResolveAgentFireAccess } from '~/schedules/access';
 import { allowOffered, pinStorage } from './execution.helper';
-import { createScheduleMCPConsentService } from './service';
-import { createResolveAgentFireAccess } from '../access';
+import { createRunGrantService } from './service';
 
 const identity: ScheduledMCPIdentity = {
   scheduleId: 's',
@@ -19,7 +19,7 @@ const identity: ScheduledMCPIdentity = {
   invocationMode: 'delegated',
 };
 function setup() {
-  const deps: ScheduleMCPEnrollmentDeps = {
+  const deps: RunGrantOfferDeps = {
     getModelsConfig: jest.fn(async () => ({ test: ['test'] })),
     canUseRoot: jest.fn(async () => true),
     findUser: jest.fn(async () => ({ id: 'u', tenantId: 't', role: 'USER' }) as IUser),
@@ -56,7 +56,7 @@ function setup() {
     ),
     getServers: jest.fn(async (_user, config) => config),
   };
-  return { deps, resolve: createScheduleMCPEnrollmentResolver(deps) };
+  return { deps, resolve: createRunGrantTargetResolver(deps) };
 }
 it('resolves the configured root and declared resource without credentials or a connection', async () => {
   const { resolve, deps } = setup();
@@ -83,7 +83,7 @@ it('binds the configuration a run will see, which inspection completes, not the 
     .mockImplementation(async (_user, config) => ({ warehouse: inspected, ...config }));
   const [target] = await resolve(identity, {});
   const { serverName: _name, configurationRevision, ...binding } = target.resource;
-  expect(configurationRevision).toBe(getScheduledMCPConfigurationRevision(inspected, binding));
+  expect(configurationRevision).toBe(getRunGrantConfigurationRevision(inspected, binding));
   expect(deps.getServers).toHaveBeenCalledWith(expect.anything(), {});
 });
 it('inspects only the declared servers the agents select, and hands over no declared server as written', async () => {
@@ -184,7 +184,7 @@ it("offers the agents' other tools beside their MCP tools, from one walk of the 
       agent_ids: id === 'root' ? ['child'] : [],
     })),
   );
-  const offer = createScheduleMCPOffer(deps);
+  const offer = createRunGrantOffer(deps);
   const [targets, tools] = await Promise.all([
     offer.targets(identity, {}),
     offer.tools(identity, {}),
@@ -202,7 +202,7 @@ it("offers the agents' other tools beside their MCP tools, from one walk of the 
   expect(deps.findUser).toHaveBeenCalledTimes(1);
   expect(deps.getServers).toHaveBeenCalledTimes(1);
   // A grant that limits MCP tools only, as an API key's does, offers none of them.
-  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  const limited = createRunGrantOffer(deps, { otherTools: 'ignore' });
   expect(await limited.tools(identity, {})).toEqual([]);
 });
 it('offers the skills of an agent as one item, where it uses any and the deployment has skills on', async () => {
@@ -231,14 +231,14 @@ it('offers the skills of an agent as one item, where it uses any and the deploym
   withSkills(['skills']);
   const using = (tools: { agentId: string; tools: string[] }[]) =>
     tools.filter((selection) => selection.tools.includes('skills')).map(({ agentId }) => agentId);
-  expect(using([...(await createScheduleMCPOffer(deps).tools(identity, {}))])).toEqual([
+  expect(using([...(await createRunGrantOffer(deps).tools(identity, {}))])).toEqual([
     'all',
     'picked',
     'root',
   ]);
   // With the capability off no agent runs a skill, so there is nothing to allow.
   withSkills([]);
-  expect(using([...(await createScheduleMCPOffer(deps).tools(identity, {}))])).toEqual([]);
+  expect(using([...(await createRunGrantOffer(deps).tools(identity, {}))])).toEqual([]);
 });
 it("offers the agents' other tools where the operator declared no MCP server at all", async () => {
   const { deps } = setup();
@@ -253,12 +253,12 @@ it("offers the agents' other tools where the operator declared no MCP server at 
       tools: ['web_search', 'query_mcp_warehouse'],
     })),
   );
-  const offer = createScheduleMCPOffer(deps);
+  const offer = createRunGrantOffer(deps);
   expect(await offer.targets(identity, {})).toEqual([]);
   expect(await offer.tools(identity, {})).toEqual([{ agentId: 'root', tools: ['web_search'] }]);
   // A grant that limits MCP tools only has nothing to offer there, and walks no graph for it.
   jest.mocked(deps.getNodes).mockClear();
-  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  const limited = createRunGrantOffer(deps, { otherTools: 'ignore' });
   expect(await limited.tools(identity, {})).toEqual([]);
   expect(deps.getNodes).not.toHaveBeenCalled();
 });
@@ -304,7 +304,7 @@ it('still offers the rest when one server the agents use cannot be offered', asy
       ],
     })),
   );
-  const offer = createScheduleMCPOffer(deps);
+  const offer = createRunGrantOffer(deps);
   const targets = await offer.targets(identity, {});
   expect(targets.map((target) => target.resource.serverName)).toEqual(['warehouse']);
   expect(targets[0].permittedTools).toEqual([{ agentId: 'root', tools: ['query'] }]);
@@ -315,7 +315,7 @@ it('still offers the rest when one server the agents use cannot be offered', asy
     { agentId: 'root', tools: ['lookup_mcp_notes', 'purge_mcp_archive', 'web_search'] },
   ]);
   // A grant that limits MCP tools only has no such list to put them in.
-  const limited = createScheduleMCPOffer(deps, { otherTools: 'ignore' });
+  const limited = createRunGrantOffer(deps, { otherTools: 'ignore' });
   expect(await limited.tools(identity, {})).toEqual([]);
   expect((await limited.targets(identity, {})).map((t) => t.resource.serverName)).toEqual([
     'warehouse',
@@ -327,7 +327,7 @@ it('still offers the rest when one server the agents use cannot be offered', asy
     interfaceConfig: { schedules: { mcpConsent: { enabled: true } } },
     mcpConfig: { warehouse: { type: 'streamable-http', url: 'https://warehouse.example/mcp' } },
   } as unknown as AppConfig);
-  const undeclared = createScheduleMCPOffer(deps);
+  const undeclared = createRunGrantOffer(deps);
   expect(await undeclared.targets(identity, {})).toEqual([]);
   expect(await undeclared.servers(identity, {})).toEqual(['archive', 'notes', 'warehouse']);
 });
@@ -431,16 +431,16 @@ it.each<Partial<Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }
   };
   const admit = jest.fn(async () => true);
   const storage: ScheduleMCPConsentStorage = {
-    readScheduleMCPConsent: async () => structuredClone(snapshot),
-    confirmScheduleMCPConsent: async ({ enrollment }) => {
+    readRunGrant: async () => structuredClone(snapshot),
+    confirmRunGrant: async ({ enrollment }) => {
       snapshot.enrollment = enrollment;
       return true;
     },
-    revokeScheduleMCPConsent: async () => true,
-    admitScheduleMCPConsent: admit,
+    revokeRunGrant: async () => true,
+    admitRunGrant: admit,
     ...pinStorage(() => snapshot.enrollment),
   };
-  const service = createScheduleMCPConsentService({
+  const service = createRunGrantService({
     storage,
     resolveEnrollment: resolve,
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
@@ -553,12 +553,12 @@ it('does not offer owner consent for recipient-defining custom user variables', 
     enrollment: null,
   };
   const confirm = jest.fn(async () => true);
-  const service = createScheduleMCPConsentService({
+  const service = createRunGrantService({
     storage: {
-      readScheduleMCPConsent: async () => snapshot,
-      confirmScheduleMCPConsent: confirm,
-      revokeScheduleMCPConsent: async () => true,
-      admitScheduleMCPConsent: async () => true,
+      readRunGrant: async () => snapshot,
+      confirmRunGrant: confirm,
+      revokeRunGrant: async () => true,
+      admitRunGrant: async () => true,
       ...pinStorage(() => snapshot.enrollment),
     },
     resolveEnrollment: resolve,

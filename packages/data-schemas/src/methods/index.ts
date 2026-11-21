@@ -17,21 +17,18 @@ export type {
   SubagentContentAppendResult,
 } from './subagentContent';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from './scheduleConsent';
+import type { ScheduleMCPConsentStorage } from './runGrant';
 import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
-import { createScheduleMCPConsentStorage } from './scheduleConsent';
-export {
-  createScheduleMCPConsentStorage,
-  createAgentKeyMCPConsentStorage,
-} from './scheduleConsent';
+import { createScheduleMCPConsentStorage } from './runGrant';
+export { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
 export type {
-  MCPConsentStorage,
-  MCPConsentSnapshot,
+  RunGrantStorage,
+  RunGrantSnapshot,
   ScheduleMCPConsentStorage,
   ScheduleConsentSnapshot,
-} from './scheduleConsent';
+} from './runGrant';
 import type {
   FileMethods,
   FileOwnerScope,

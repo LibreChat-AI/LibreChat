@@ -59,7 +59,7 @@ import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import type { GraphSubagentHostConfig } from '../discovery';
-import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
+import { executionFixture, readTool } from '~/agents/authority/execution.helper';
 import { getMCPRequestContext } from '~/mcp/request';
 import type { ProjectFileRecord } from '../../projects/resources';
 import { toCanonicalProjectResource } from '../../projects/resources';

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   getScheduleMCPDisabledReason,
   isScheduleMCPAuthorizationFailure,
-  scheduledMCPFailureReasonSchema,
+  runGrantFailureReasonSchema,
   projectScheduleMCPReceipt,
   mergeScheduleMCPReceipts,
 } from 'librechat-data-provider';
@@ -16,8 +16,8 @@ import type {
   IScheduleRunDocument,
 } from '~/types/schedule';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
-import { unchangedScheduleGrant } from './scheduleConsent';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { unchangedRunGrant } from './runGrant';
 
 const DUPLICATE_KEY = 11000;
 
@@ -503,7 +503,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         : {}),
       ...(update.mcpConsent != null &&
         options?.replacesMCPConsent !== undefined &&
-        unchangedScheduleGrant(options.replacesMCPConsent)),
+        unchangedRunGrant(options.replacesMCPConsent)),
     };
     const mutation = {
       $set: {
@@ -1587,7 +1587,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
             {
               mcp: {
                 $elemMatch: {
-                  reason: { $in: scheduledMCPFailureReasonSchema.options },
+                  reason: { $in: runGrantFailureReasonSchema.options },
                   status: { $ne: 'ready' },
                   automaticReplay: false,
                 },
@@ -1674,7 +1674,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       {
         mcp: {
           $elemMatch: {
-            reason: { $in: scheduledMCPFailureReasonSchema.options },
+            reason: { $in: runGrantFailureReasonSchema.options },
             status: { $ne: 'ready' },
             automaticReplay: false,
           },

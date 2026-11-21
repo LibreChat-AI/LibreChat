@@ -2,27 +2,23 @@ import {
   Permissions,
   EModelEndpoint,
   PermissionTypes,
-  DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+  DEFAULT_RUN_GRANT_LIFETIME_HOURS,
 } from 'librechat-data-provider';
-import type { AgentKeyMCPIdentity, ScheduledMCPResourceBinding } from 'librechat-data-provider';
-import type { MCPConsentStorage, AppConfig, IUser } from '@librechat/data-schemas';
-import type {
-  ScheduleMCPConsentHandlers,
-  ScheduleMCPConsentService,
-  ScheduleMCPEnrollmentDeps,
-  ScheduleMCPExecutionFactory,
-} from '~/schedules';
+import type { AgentKeyMCPIdentity, RunGrantResourceBinding } from 'librechat-data-provider';
+import type { RunGrantStorage, AppConfig, IUser } from '@librechat/data-schemas';
+import type { RunGrantExecutionFactory } from '~/agents/authority/execution';
+import type { RunGrantHandlers } from '~/agents/authority/handlers';
 import type { ExecutionContext } from '~/agents/authority/context';
+import type { RunGrantService } from '~/agents/authority/service';
+import type { RunGrantOfferDeps } from '~/agents/authority/offer';
 import type { CheckAccessParams } from '~/middleware/access';
 import type { ApiKeyAuthRequest } from './middleware';
-import {
-  ScheduledMCPPolicyError,
-  createScheduleMCPExecution,
-  createScheduleMCPConsentService,
-  createScheduleMCPConsentHandlers,
-  createScheduleMCPEnrollmentResolver,
-} from '~/schedules';
 import { getBackgroundResponseWorkerRecord } from '~/agents/responses/worker';
+import { createRunGrantTargetResolver } from '~/agents/authority/offer';
+import { createRunGrantExecution } from '~/agents/authority/execution';
+import { createRunGrantHandlers } from '~/agents/authority/handlers';
+import { createRunGrantService } from '~/agents/authority/service';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { getSourceKey } from '~/agents/authority/context';
 import { getMCPRequestContext } from '~/mcp/request';
@@ -38,7 +34,7 @@ export interface RemoteIntegrations {
    */
   mode: 'owner' | 'delegated';
   maxLifetimeHours: number;
-  resources?: Record<string, ScheduledMCPResourceBinding>;
+  resources?: Record<string, RunGrantResourceBinding>;
 }
 
 /** How runs started through the remote agent API may use the owner's MCP servers. */
@@ -46,7 +42,7 @@ export function resolveRemoteIntegrations(appConfig?: AppConfig): RemoteIntegrat
   const integrations = appConfig?.endpoints?.[EModelEndpoint.agents]?.remoteApi?.integrations;
   return {
     mode: integrations?.mode ?? 'owner',
-    maxLifetimeHours: integrations?.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+    maxLifetimeHours: integrations?.maxLifetimeHours ?? DEFAULT_RUN_GRANT_LIFETIME_HOURS,
     ...(integrations?.resources && { resources: integrations.resources }),
   };
 }
@@ -62,9 +58,9 @@ export function getRemoteRunKeyId(req: ApiKeyAuthRequest): string | undefined {
 }
 
 export interface AgentKeyMCPGrantHost {
-  service: ScheduleMCPConsentService<AgentKeyMCPIdentity>;
-  handlers: ScheduleMCPConsentHandlers;
-  execution: ScheduleMCPExecutionFactory<AgentKeyMCPIdentity>;
+  service: RunGrantService<AgentKeyMCPIdentity>;
+  handlers: RunGrantHandlers;
+  execution: RunGrantExecutionFactory<AgentKeyMCPIdentity>;
   /**
    * Puts a run started with a personal API key under that key's grant for the agent, so every
    * MCP call is checked against it. Does nothing where the operator left key runs unrestricted,
@@ -91,7 +87,7 @@ export interface AgentKeyMCPGrantHost {
  * grant, held on the key instead.
  */
 export function createAgentKeyMCPGrantHost(deps: {
-  storage: MCPConsentStorage<AgentKeyMCPIdentity>;
+  storage: RunGrantStorage<AgentKeyMCPIdentity>;
   findUser: (id: string) => Promise<IUser | null>;
   getRoleByName: CheckAccessParams['getRoleByName'];
   /** Read to decide whether the owner may run an agent through the remote API. */
@@ -100,7 +96,7 @@ export function createAgentKeyMCPGrantHost(deps: {
   /** The stored key a run names, to tell a personal key from one issued to an integration. */
   getKey: (keyId: string, userId: string) => Promise<{ binding?: unknown } | null>;
   /** The owner and whether they may run the agent are supplied by this host. */
-  enrollment: Omit<ScheduleMCPEnrollmentDeps, 'findUser' | 'canUseRoot'>;
+  enrollment: Omit<RunGrantOfferDeps, 'findUser' | 'canUseRoot'>;
 }): AgentKeyMCPGrantHost {
   const canUseAgent = async (agentId: string, user: IUser): Promise<boolean> =>
     (
@@ -131,13 +127,12 @@ export function createAgentKeyMCPGrantHost(deps: {
   };
 
   /** The consent service over one way of reading the owner and their configuration. */
-  const createService = (source: Pick<ScheduleMCPEnrollmentDeps, 'findUser' | 'getAppConfig'>) => {
-    return createScheduleMCPConsentService<AgentKeyMCPIdentity>({
+  const createService = (source: Pick<RunGrantOfferDeps, 'findUser' | 'getAppConfig'>) => {
+    return createRunGrantService<AgentKeyMCPIdentity>({
       storage: deps.storage,
       getLimits: async (identity) => {
         const user = await loadOwner(identity, source.findUser);
-        if (!user)
-          return { enabled: false, maxLifetimeHours: DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS };
+        if (!user) return { enabled: false, maxLifetimeHours: DEFAULT_RUN_GRANT_LIFETIME_HOURS };
         const integrations = await integrationsFor(user, source.getAppConfig);
         return {
           enabled: integrations.mode === 'delegated',
@@ -163,7 +158,7 @@ export function createAgentKeyMCPGrantHost(deps: {
         ]);
         return permissions.every(Boolean) && (await canUseAgent(identity.agentId, user));
       },
-      resolveEnrollment: createScheduleMCPEnrollmentResolver<AgentKeyMCPIdentity>(
+      resolveEnrollment: createRunGrantTargetResolver<AgentKeyMCPIdentity>(
         { ...deps.enrollment, ...source, canUseRoot: canUseAgent },
         {
           resources: (appConfig) => resolveRemoteIntegrations(appConfig).resources,
@@ -177,7 +172,7 @@ export function createAgentKeyMCPGrantHost(deps: {
     getAppConfig: deps.enrollment.getAppConfig,
   });
 
-  const execution = createScheduleMCPExecution<AgentKeyMCPIdentity>({
+  const execution = createRunGrantExecution<AgentKeyMCPIdentity>({
     storage: deps.storage,
     async loadAuthorization(identity) {
       // Private to this attempt. The owner and their configuration are read once and shared
@@ -198,7 +193,7 @@ export function createAgentKeyMCPGrantHost(deps: {
     requiresGrant: async () => true,
   });
 
-  const handlers = createScheduleMCPConsentHandlers<AgentKeyMCPIdentity>({
+  const handlers = createRunGrantHandlers<AgentKeyMCPIdentity>({
     service,
     resolveIdentity: async (req) => {
       const user = req.user;
@@ -234,7 +229,7 @@ export function createAgentKeyMCPGrantHost(deps: {
       const context = getMCPRequestContext(req, res);
       // An agent the run cannot name, a request with nowhere to hold the check, or a key the
       // store no longer finds, is not a reason to run unrestricted.
-      if (!agentId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+      if (!agentId || !context) throw new RunGrantPolicyError('binding_mismatch', '');
       const identity: AgentKeyMCPIdentity = {
         keyId,
         ownerId: user.id,
@@ -243,7 +238,7 @@ export function createAgentKeyMCPGrantHost(deps: {
         invocationMode: 'delegated',
       };
       if (!(await execution.attach(context, identity, 'invoke')))
-        throw new ScheduledMCPPolicyError('binding_mismatch', '', agentId);
+        throw new RunGrantPolicyError('binding_mismatch', '', agentId);
       signal?.throwIfAborted();
     },
   };

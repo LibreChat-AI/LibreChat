@@ -1,8 +1,8 @@
 import type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from '@librechat/data-schemas';
-import type { ScheduledMCPIdentity, ScheduledMCPTarget } from 'librechat-data-provider';
+import type { ScheduledMCPIdentity, RunGrantTarget } from 'librechat-data-provider';
 import { pinStorage, untouchedSince, admitsDefinitions } from './execution.helper';
-import { createScheduleMCPConsentHandlers } from './handlers';
-import { createScheduleMCPConsentService } from './service';
+import { createRunGrantHandlers } from './handlers';
+import { createRunGrantService } from './service';
 
 const identity: ScheduledMCPIdentity = {
   scheduleId: 's',
@@ -11,7 +11,7 @@ const identity: ScheduledMCPIdentity = {
   agentId: 'root',
   invocationMode: 'delegated',
 };
-const target: ScheduledMCPTarget = {
+const target: RunGrantTarget = {
   resource: {
     serverName: 'warehouse',
     url: 'https://warehouse.example/mcp',
@@ -28,13 +28,10 @@ const target: ScheduledMCPTarget = {
   policyRevision: 'p1',
 };
 const jestPins = (
-  pins: Pick<
-    ScheduleMCPConsentStorage,
-    'pinScheduleMCPToolDefinition' | 'flagScheduleMCPToolChange'
-  >,
+  pins: Pick<ScheduleMCPConsentStorage, 'pinRunGrantTool' | 'flagRunGrantTool'>,
 ) => ({
-  pinScheduleMCPToolDefinition: jest.fn(pins.pinScheduleMCPToolDefinition),
-  flagScheduleMCPToolChange: jest.fn(pins.flagScheduleMCPToolChange),
+  pinRunGrantTool: jest.fn(pins.pinRunGrantTool),
+  flagRunGrantTool: jest.fn(pins.flagRunGrantTool),
 });
 function setup() {
   let time = 1000;
@@ -52,8 +49,8 @@ function setup() {
   /** The servers the agents use. Those on offer, unless a test says one lost its declaration. */
   let used: string[] | undefined;
   const storage: ScheduleMCPConsentStorage = {
-    readScheduleMCPConsent: jest.fn(async () => structuredClone(snapshot)),
-    confirmScheduleMCPConsent: jest.fn(async (input) => {
+    readRunGrant: jest.fn(async () => structuredClone(snapshot)),
+    confirmRunGrant: jest.fn(async (input) => {
       if (
         snapshot.configRevision !== input.expectedConfigRevision ||
         (snapshot.enrollment?.revision ?? null) !== input.expectedRevision ||
@@ -63,7 +60,7 @@ function setup() {
       snapshot.enrollment = structuredClone(input.enrollment);
       return true;
     }),
-    revokeScheduleMCPConsent: jest.fn(async (_identity, revision) => {
+    revokeRunGrant: jest.fn(async (_identity, revision) => {
       if (snapshot.enrollment?.revision !== revision) return false;
       snapshot.enrollment.revision = 'revoked';
       snapshot.enrollment.revokedAtMs = time;
@@ -74,7 +71,7 @@ function setup() {
       }));
       return true;
     }),
-    admitScheduleMCPConsent: jest.fn(
+    admitRunGrant: jest.fn(
       async ({ revision, consentId, definitions }) =>
         snapshot.enabled &&
         snapshot.enrollment?.revision === revision &&
@@ -85,7 +82,7 @@ function setup() {
     ),
     ...jestPins(pinStorage(() => snapshot.enrollment)),
   };
-  const service = createScheduleMCPConsentService({
+  const service = createRunGrantService({
     storage,
     canUse: async () => allowed,
     canPause: async () => pausable,
@@ -118,7 +115,7 @@ function setup() {
     setTime: (value: number) => {
       time = value;
     },
-    changeTarget: (...value: ScheduledMCPTarget[]) => {
+    changeTarget: (...value: RunGrantTarget[]) => {
       targets = value;
     },
     offerTools: (...value: { agentId: string; tools: string[] }[]) => {
@@ -233,7 +230,7 @@ it('authorizes each agent only for tools it selected and the owner allowed', asy
   ).toMatchObject({ state: 'denied', failure: { reason: 'tool_policy_denied' } });
 });
 
-const offering = (tools: string[], serverName = 'warehouse'): ScheduledMCPTarget => ({
+const offering = (tools: string[], serverName = 'warehouse'): RunGrantTarget => ({
   ...target,
   resource: { ...target.resource, serverName },
   permittedTools: [
@@ -311,7 +308,7 @@ it.each([
 ])('rejects a choice of %s without writing', async (_label, allow) => {
   const s = setup();
   await expect(s.enroll(allow)).rejects.toMatchObject({ code: 'consent_invalid' });
-  expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+  expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
 });
 
 it('stays active when the agent selects another tool, and changes when it drops an allowed one', async () => {
@@ -353,7 +350,7 @@ it('rejects stale offers/excessive lifetimes without writing', async () => {
       allow: { warehouse: ['query'] },
     }),
   ).rejects.toMatchObject({ code: 'consent_changed' });
-  expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+  expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
 });
 it('keeps owner revocation available after permission removal', async () => {
   const s = setup();
@@ -365,7 +362,7 @@ it('keeps owner revocation available after permission removal', async () => {
 });
 it('denies without a trusted resolver and preserves cancellation', async () => {
   const s = setup();
-  const service = createScheduleMCPConsentService({
+  const service = createRunGrantService({
     storage: s.storage,
     canUse: async () => true,
     getLimits: async () => ({ enabled: false, maxLifetimeHours: 24 }),
@@ -383,13 +380,11 @@ it('denies without a trusted resolver and preserves cancellation', async () => {
 });
 it('does not turn a storage outage into absent consent or leak it from the owner API', async () => {
   const s = setup();
-  jest
-    .mocked(s.storage.readScheduleMCPConsent)
-    .mockRejectedValue(new Error('secret-token-in-cause'));
+  jest.mocked(s.storage.readRunGrant).mockRejectedValue(new Error('secret-token-in-cause'));
   await expect(s.service.authority.lookupConsent(identity, target.resource, {})).rejects.toThrow(
     'secret-token-in-cause',
   );
-  const handlers = createScheduleMCPConsentHandlers({
+  const handlers = createRunGrantHandlers({
     service: s.service,
     resolveIdentity: async () => identity,
   });
@@ -469,7 +464,7 @@ describe("the agents' tools that are not MCP tools", () => {
     await expect(s.enroll(undefined, undefined, ['file_search'])).rejects.toMatchObject({
       code: 'consent_invalid',
     });
-    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
   });
 
   it('keeps the stored choice when a confirmation does not say, for the tools still on offer', async () => {
@@ -515,7 +510,7 @@ describe("the agents' tools that are not MCP tools", () => {
     await expect(s.enroll({ warehouse: [] }, undefined, [])).rejects.toMatchObject({
       code: 'consent_invalid',
     });
-    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
     // One of either kind is enough.
     expect(await s.enroll({ warehouse: [] }, undefined, ['web_search'])).toMatchObject({
       state: 'active',
@@ -560,7 +555,7 @@ describe('a schedule that is authorized as it is created', () => {
       tools: { offered: ['web_search'], allowed: [] },
       offer: { maxLifetimeHours: 24 },
     });
-    expect(s.storage.readScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.readRunGrant).not.toHaveBeenCalled();
     // Bound to the owner and the agent, so it holds for the id the schedule is then given.
     expect((await s.service.draft(created)).offer!.digest).toBe(offer.offer!.digest);
     expect((await s.service.draft({ ...draft, agentId: 'other' })).offer!.digest).not.toBe(
@@ -596,7 +591,7 @@ describe('a schedule that is authorized as it is created', () => {
       absoluteExpiresAtMs: 1000 + 2 * 3_600_000,
       revokedAtMs: null,
     });
-    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -637,7 +632,7 @@ describe('a schedule that is authorized as it is created', () => {
 });
 
 describe('a grant of the whole agent', () => {
-  const wider: ScheduledMCPTarget = {
+  const wider: RunGrantTarget = {
     ...target,
     permittedTools: [
       { agentId: 'root', tools: ['export', 'query'] },
@@ -736,8 +731,8 @@ describe('a grant of the whole agent', () => {
     expect(
       await s.service.authority.authorize(call('query', 'root', 'b'.repeat(64)), {}),
     ).toMatchObject({ state: 'authorized' });
-    expect(s.storage.pinScheduleMCPToolDefinition).not.toHaveBeenCalled();
-    expect(s.storage.flagScheduleMCPToolChange).not.toHaveBeenCalled();
+    expect(s.storage.pinRunGrantTool).not.toHaveBeenCalled();
+    expect(s.storage.flagRunGrantTool).not.toHaveBeenCalled();
     expect((await s.service.view(identity)).state).toBe('active');
   });
 
@@ -871,7 +866,7 @@ describe('a grant of the whole agent', () => {
     await whole(s);
     let mcp = true;
     let enabled = true;
-    const service = createScheduleMCPConsentService({
+    const service = createRunGrantService({
       storage: s.storage,
       canUse: async () => true,
       canUseMCP: async () => mcp,
@@ -897,7 +892,7 @@ describe('a grant of the whole agent', () => {
     const s = setup();
     await whole(s);
     // What the resolver reports for a selection of every tool: the server, under a marker.
-    const every: ScheduledMCPTarget = {
+    const every: RunGrantTarget = {
       ...target,
       permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }],
       policyRevision: 'p3',
@@ -919,7 +914,7 @@ describe('a grant of the whole agent', () => {
   });
 
   it('holds a consent for a server the agents select as a whole when it is made', async () => {
-    const every: ScheduledMCPTarget = {
+    const every: RunGrantTarget = {
       ...target,
       permittedTools: [{ agentId: 'root', tools: ['sys__all__sys'] }],
       policyRevision: 'p3',
@@ -965,7 +960,7 @@ describe('a grant of the whole agent', () => {
       consentRevision: s.snapshot.enrollment!.revision,
       validUntilMs: 1000 + 3_600_000,
     });
-    expect(s.storage.pinScheduleMCPToolDefinition).not.toHaveBeenCalled();
+    expect(s.storage.pinRunGrantTool).not.toHaveBeenCalled();
     // The recipient is the one the operator declares now, and no other.
     expect(
       await s.service.authority.authorize(
@@ -1050,7 +1045,7 @@ describe('a grant of the whole agent', () => {
 
 describe('a selection of every tool on a declared server, in a grant that lists its tools', () => {
   const marker = 'sys__all__sys';
-  const every: ScheduledMCPTarget = {
+  const every: RunGrantTarget = {
     ...target,
     permittedTools: [{ agentId: 'root', tools: [marker] }],
     policyRevision: 'p3',
@@ -1142,7 +1137,7 @@ describe('a selection of every tool on a declared server, in a grant that lists 
   });
 
   it('keeps a question about a tool it still covers after the agent that named the tool drops it', async () => {
-    const both: ScheduledMCPTarget = {
+    const both: RunGrantTarget = {
       ...target,
       permittedTools: [
         { agentId: 'child', tools: ['query'] },
@@ -1206,7 +1201,7 @@ describe('a selection of every tool on a declared server, in a grant that lists 
 describe('a grant of the whole agent, where it cannot be made', () => {
   it('is not offered, and is refused, where a grant limits MCP tools only', async () => {
     const s = setup();
-    const service = createScheduleMCPConsentService({
+    const service = createRunGrantService({
       storage: s.storage,
       canUse: async () => true,
       getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
@@ -1261,7 +1256,7 @@ describe('a grant made again with an edit of the schedule', () => {
       lifetimeHours: 2,
       allow: { warehouse: ['query'] },
     };
-    jest.mocked(s.storage.confirmScheduleMCPConsent).mockClear();
+    jest.mocked(s.storage.confirmRunGrant).mockClear();
     const { enrollment: renewed, basis } = await s.service.renew(identity, choice, 1);
     // What it was decided against goes with it, so the write can refuse anything newer.
     expect(basis).toEqual(before);
@@ -1272,7 +1267,7 @@ describe('a grant made again with an edit of the schedule', () => {
       consents: [{ askTools: ['query'], definitions: [{ tool: 'query' }] }],
     });
     expect(renewed.revision).not.toBe(before.revision);
-    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
     expect(s.snapshot.enrollment).toEqual(before);
     // The same checks: another grant than the one the owner saw, or an offer that moved.
     await expect(
@@ -1298,7 +1293,7 @@ describe('a grant made again with an edit of the schedule', () => {
       allow: { warehouse: ['query'] },
     };
     // The decision reads the grant twice. The owner revokes it, in another tab, in between.
-    const read = jest.mocked(s.storage.readScheduleMCPConsent);
+    const read = jest.mocked(s.storage.readRunGrant);
     const stored = read.getMockImplementation()!;
     let reads = 0;
     read.mockImplementation(async (...args) => {
@@ -1422,12 +1417,10 @@ describe('definition pins', () => {
     const s = setup();
     await s.enroll();
     const lose = (digest: string) =>
-      jest
-        .mocked(s.storage.pinScheduleMCPToolDefinition)
-        .mockImplementationOnce(async ({ tool }) => {
-          consent(s).definitions = [{ tool, digest }];
-          return false;
-        });
+      jest.mocked(s.storage.pinRunGrantTool).mockImplementationOnce(async ({ tool }) => {
+        consent(s).definitions = [{ tool, digest }];
+        return false;
+      });
     lose(first);
     expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
       state: 'authorized',
@@ -1463,11 +1456,11 @@ describe('definition pins', () => {
       lifetimeHours: 1,
       allow: { warehouse: ['query'] },
     };
-    jest.mocked(s.storage.confirmScheduleMCPConsent).mockClear();
+    jest.mocked(s.storage.confirmRunGrant).mockClear();
     await expect(s.service.confirm(identity, stale)).rejects.toMatchObject({
       code: 'consent_changed',
     });
-    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
     expect(consent(s).changedTools).toEqual(['query']);
     // Read again, the owner is shown the mark and can decide.
     const shown = await s.service.view(identity);
@@ -1489,7 +1482,7 @@ describe('definition pins', () => {
 
   /** Runs `between` after the next use has read the grant and before it is admitted. */
   const beforeAdmission = (s: ReturnType<typeof setup>, between: () => Promise<unknown>) => {
-    const admit = jest.mocked(s.storage.admitScheduleMCPConsent);
+    const admit = jest.mocked(s.storage.admitRunGrant);
     const real = admit.getMockImplementation()!;
     admit.mockImplementationOnce(async (input) => {
       await between();
@@ -1522,7 +1515,7 @@ describe('definition pins', () => {
       definitions: [{ tool: 'query', digest: second }],
       changedTools: ['query'],
     });
-    expect(s.storage.pinScheduleMCPToolDefinition).toHaveBeenCalledTimes(1);
+    expect(s.storage.pinRunGrantTool).toHaveBeenCalledTimes(1);
   });
 
   it('does not let a confirmation drop a pin or a mark stored while it was being made', async () => {
@@ -1530,7 +1523,7 @@ describe('definition pins', () => {
     s.changeTarget({ ...target, permittedTools: [{ agentId: 'root', tools: ['list', 'query'] }] });
     await s.enroll({ warehouse: ['list', 'query'] });
     await s.service.authority.authorize(use(first), {});
-    const confirm = jest.mocked(s.storage.confirmScheduleMCPConsent);
+    const confirm = jest.mocked(s.storage.confirmRunGrant);
     const real = confirm.getMockImplementation()!;
     const during = (run: () => Promise<unknown>) =>
       confirm.mockImplementationOnce(async (input) => {
@@ -1559,7 +1552,7 @@ describe('definition pins', () => {
   it('does not authorize a first use whose pin could not be stored', async () => {
     const s = setup();
     await s.enroll();
-    jest.mocked(s.storage.pinScheduleMCPToolDefinition).mockResolvedValueOnce(false);
+    jest.mocked(s.storage.pinRunGrantTool).mockResolvedValueOnce(false);
     expect(await s.service.authority.authorize(use(first), {})).toMatchObject({
       state: 'denied',
       failure: { reason: 'binding_mismatch' },
@@ -1624,7 +1617,7 @@ describe('tools the owner approves call by call', () => {
     await expect(s.enroll({ warehouse: ['query'] }, ask)).rejects.toMatchObject({
       code: 'consent_invalid',
     });
-    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
   });
 
   it('rejects it where a scheduled run cannot pause, and tells the dialog so', async () => {
@@ -1634,7 +1627,7 @@ describe('tools the owner approves call by call', () => {
     await expect(
       s.enroll({ warehouse: ['query'] }, { warehouse: ['query'] }),
     ).rejects.toMatchObject({ code: 'consent_invalid' });
-    expect(s.storage.confirmScheduleMCPConsent).not.toHaveBeenCalled();
+    expect(s.storage.confirmRunGrant).not.toHaveBeenCalled();
     expect(await s.enroll({ warehouse: ['query'] })).toMatchObject({ state: 'active' });
   });
 
