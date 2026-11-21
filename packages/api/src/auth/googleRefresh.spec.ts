@@ -125,13 +125,43 @@ describe('applyGoogleAdminRefresh', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('throws REFRESH_FAILED when Google rejects the grant', async () => {
-    fetchMock.mockResolvedValueOnce(makeStatus(401));
+  it.each([400, 403])(
+    'throws REFRESH_FAILED for a Google HTTP %s invalid grant',
+    async (status) => {
+      fetchMock.mockResolvedValueOnce(makeStatus(status, { error: 'invalid_grant' }));
+      await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({
+        code: 'REFRESH_FAILED',
+        status: 401,
+      });
+    },
+  );
+
+  it('throws OPENID_CLIENT_MISCONFIGURED when Google rejects the OAuth client', async () => {
+    fetchMock.mockResolvedValueOnce(makeStatus(401, { error: 'invalid_client' }));
     await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({
-      code: 'REFRESH_FAILED',
-      status: 401,
+      code: 'OPENID_CLIENT_MISCONFIGURED',
+      status: 500,
     });
   });
+
+  it('keeps network failures retryable', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({
+      code: 'AUTH_SESSION_CHECK_UNAVAILABLE',
+      status: 503,
+    });
+  });
+
+  it.each([429, 500, 503])(
+    'keeps a provider %s retryable even if its body says invalid_grant',
+    async (status) => {
+      fetchMock.mockResolvedValueOnce(makeStatus(status, { error: 'invalid_grant' }));
+      await expect(applyGoogleAdminRefresh(deps, baseOptions)).rejects.toMatchObject({
+        code: 'AUTH_SESSION_CHECK_UNAVAILABLE',
+        status: 503,
+      });
+    },
+  );
 
   it('throws IDP_INCOMPLETE when Google returns a non-JSON body', async () => {
     fetchMock.mockResolvedValueOnce(

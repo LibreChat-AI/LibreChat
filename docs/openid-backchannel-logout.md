@@ -42,7 +42,9 @@ number of times with its own backoff; it does not retry indefinitely.
    No mode change clears a record's `revokedAt` field. Switching back to `record` or `enforce`
    enforces the same revocations again. Rollback does not delete authentication data.
    A session's existing association survives `off` too: a refresh taken while the mode is `off`
-   carries it forward unchanged instead of clearing it.
+   carries it forward unchanged instead of clearing it. A session created or rotated by the admin
+   panel while the mode is `off` has no association; after switching back to `record`, that
+   session still authenticates, and after switching back to `enforce`, it must sign in once.
    This carry-forward has a limit: a ProviderSession record expires by a TTL (`expiresAt`).
    Only the `authorize`, `establish`, and `revoke` operations extend that TTL, and none of them
    run while the mode is `off`. So an association or a revocation survives `off` only until its
@@ -52,6 +54,24 @@ number of times with its own backoff; it does not retry indefinitely.
 4. A logout notification the provider never delivers (network failure, provider outage, a logout
    path that does not call the configured URL) cannot be enforced; this design does not poll the
    provider to compensate, so coverage is limited to notifications that are actually delivered.
+
+## Admin panel renewal limit
+
+The admin panel renews its OpenID session through `POST /api/admin/oauth/refresh`. The panel's
+server makes this call, so every admin who uses one panel shares that server's IP address. The
+route therefore has its own limit, `rateLimits.adminRefresh`, separate from the sign-in limit:
+
+```yaml
+rateLimits:
+  adminRefresh:
+    windowMs: 60000 # default: one minute
+    max: 30 # default: 30 renewals per window, per client IP address
+```
+
+Raise `max` when many admins use the same panel. A rejected renewal answers `429` and logs the
+warning `[adminRefreshLimiter] Admin token renewal rate limit exceeded` with the client address,
+the window and the limit. The route runs before authentication, so a rejection does not add to a
+user's violation score.
 
 ## Verifying before production
 

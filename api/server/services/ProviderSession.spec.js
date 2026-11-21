@@ -3,6 +3,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 jest.mock('~/strategies/openidStrategy', () => ({ getOpenIdConfig: jest.fn() }));
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
+jest.mock('~/server/services/AuthService', () => ({ storeOpenIDSession: jest.fn() }));
 jest.mock('~/models', () => ({
   establishProviderSession: jest.fn(),
   authorizeProviderSession: jest.fn(),
@@ -47,5 +48,31 @@ describe('ProviderSession wiring', () => {
     const { providerSessionAuthorizer } = require('./ProviderSession');
 
     expect(await providerSessionAuthorizer.getMode()).toBe('off');
+  });
+
+  it('binds persistOAuthAdminBinding to AuthService.storeOpenIDSession', async () => {
+    const { getAppConfig } = require('~/server/services/Config');
+    const { storeOpenIDSession } = require('~/server/services/AuthService');
+    getAppConfig.mockResolvedValue({
+      registration: { openidBackchannelLogout: { mode: 'record' } },
+    });
+    const { persistOAuthAdminBinding } = require('./ProviderSession');
+    const providerSession = {
+      issuer: 'https://idp.example.com',
+      clientId: 'librechat',
+      sid: 'sid-1',
+    };
+
+    await persistOAuthAdminBinding({
+      provider: 'openid',
+      refreshToken: 'refresh-1',
+      userId: 'user-1',
+      tenantId: undefined,
+      providerSession,
+    });
+
+    expect(storeOpenIDSession).toHaveBeenCalledWith('user-1', 'refresh-1', undefined, undefined, {
+      providerSession,
+    });
   });
 });

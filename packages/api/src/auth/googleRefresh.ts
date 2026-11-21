@@ -4,6 +4,7 @@ import type { IUser } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
 import type { AdminExchangeResponse } from '~/auth/exchange';
 import { SERVICE_REQUEST_TIMEOUT_MS } from '~/utils/timeouts';
+import { mapAdminRefreshError } from '~/auth/adminAuthErrors';
 import { serializeUserForExchange } from '~/auth/exchange';
 import { AdminRefreshError } from '~/auth/refresh';
 
@@ -115,14 +116,17 @@ async function fetchGoogleTokenset(
       name: error?.name,
       message: error?.message,
     });
-    throw new AdminRefreshError('REFRESH_FAILED', 401, 'Refresh failed');
+    const mapped = mapAdminRefreshError(err);
+    throw new AdminRefreshError(mapped.body.error_code, mapped.status, mapped.body.error);
   }
 
   if (!response.ok) {
     logger.warn('[admin/oauth/refresh] Google rejected refresh grant', {
       status: response.status,
     });
-    throw new AdminRefreshError('REFRESH_FAILED', 401, 'Refresh failed');
+    const body = await response.json().catch(() => undefined);
+    const mapped = mapAdminRefreshError({ error: body?.error, status: response.status });
+    throw new AdminRefreshError(mapped.body.error_code, mapped.status, mapped.body.error);
   }
 
   try {

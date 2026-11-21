@@ -19,6 +19,7 @@ describe('createProviderSessionService', () => {
       getAppConfig,
       getOpenIdClient: jest.fn(),
       getClientId: jest.fn(),
+      storeOpenIDSession: jest.fn(),
       logger: makeLogger(),
     });
 
@@ -44,6 +45,7 @@ describe('createProviderSessionService', () => {
       getAppConfig,
       getOpenIdClient: jest.fn(),
       getClientId: jest.fn(),
+      storeOpenIDSession: jest.fn(),
       logger: makeLogger(),
     });
 
@@ -61,6 +63,7 @@ describe('createProviderSessionService', () => {
       getAppConfig,
       getOpenIdClient: jest.fn(),
       getClientId: jest.fn(),
+      storeOpenIDSession: jest.fn(),
       logger,
     });
 
@@ -82,6 +85,7 @@ describe('createProviderSessionService', () => {
       getAppConfig,
       getOpenIdClient: jest.fn(),
       getClientId: jest.fn(),
+      storeOpenIDSession: jest.fn(),
       logger: makeLogger(),
     });
 
@@ -106,6 +110,7 @@ describe('createProviderSessionService', () => {
         getAppConfig: jest.fn(),
         getOpenIdClient: jest.fn(),
         getClientId: () => undefined,
+        storeOpenIDSession: jest.fn(),
         logger: makeLogger(),
       });
 
@@ -121,6 +126,7 @@ describe('createProviderSessionService', () => {
         getAppConfig: jest.fn(),
         getOpenIdClient,
         getClientId: () => 'librechat',
+        storeOpenIDSession: jest.fn(),
         logger: makeLogger(),
       });
 
@@ -134,6 +140,7 @@ describe('createProviderSessionService', () => {
         getAppConfig: jest.fn(),
         getOpenIdClient: () => openidClient,
         getClientId: () => 'librechat',
+        storeOpenIDSession: jest.fn(),
         logger: makeLogger(),
       });
 
@@ -148,6 +155,7 @@ describe('createProviderSessionService', () => {
         getAppConfig: jest.fn(),
         getOpenIdClient: () => openidClient,
         getClientId,
+        storeOpenIDSession: jest.fn(),
         logger: makeLogger(),
       });
 
@@ -167,6 +175,7 @@ describe('createProviderSessionService', () => {
       getAppConfig: jest.fn(),
       getOpenIdClient: jest.fn(),
       getClientId: jest.fn(),
+      storeOpenIDSession: jest.fn(),
       logger: makeLogger(),
     });
 
@@ -178,5 +187,88 @@ describe('createProviderSessionService', () => {
     };
     await expect(service.revokeProviderSession(data)).resolves.toEqual({ ok: true });
     expect(methods.revoke).toHaveBeenCalledWith(data);
+  });
+
+  describe('bound OAuth callback steps', () => {
+    const ORIGINAL_EXPIRY = process.env.REFRESH_TOKEN_EXPIRY;
+
+    afterEach(() => {
+      if (ORIGINAL_EXPIRY === undefined) {
+        delete process.env.REFRESH_TOKEN_EXPIRY;
+      } else {
+        process.env.REFRESH_TOKEN_EXPIRY = ORIGINAL_EXPIRY;
+      }
+    });
+
+    function makeRecordService(storeOpenIDSession = jest.fn()) {
+      const methods = makeMethods();
+      methods.establish.mockResolvedValue({ ok: true });
+      const service = createProviderSessionService({
+        methods,
+        getAppConfig: jest
+          .fn()
+          .mockResolvedValue({ registration: { openidBackchannelLogout: { mode: 'record' } } }),
+        getOpenIdClient: () => ({ issuer: 'https://idp.example.com/' }),
+        getClientId: () => 'librechat',
+        storeOpenIDSession,
+        logger: makeLogger(),
+      });
+      return { service, methods, storeOpenIDSession };
+    }
+
+    it('establishOAuthCallback binds the client and the REFRESH_TOKEN_EXPIRY lifetime', async () => {
+      process.env.REFRESH_TOKEN_EXPIRY = '60000';
+      const { service, methods } = makeRecordService();
+      const before = Date.now();
+
+      const ref = await service.establishOAuthCallback({
+        req: {
+          user: {
+            provider: 'openid',
+            tokenset: { claims: () => ({ sub: 'sub-1', sid: 'sid-1' }) },
+          },
+          session: { openidLoginIssuedAt: Date.now() },
+        },
+        res: {} as never,
+        clientDomain: 'http://client.test',
+      });
+
+      expect(ref).toEqual({
+        issuer: 'https://idp.example.com',
+        clientId: 'librechat',
+        sid: 'sid-1',
+      });
+      const [data] = methods.establish.mock.calls[0];
+      expect(data).toMatchObject({ sid: 'sid-1', subject: 'sub-1' });
+      expect(data.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 60000);
+      expect(data.expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 60000);
+    });
+
+    it('persistOAuthAdminBinding stores through the injected storeOpenIDSession', async () => {
+      const { service, storeOpenIDSession } = makeRecordService();
+      const providerSession = {
+        issuer: 'https://idp.example.com',
+        clientId: 'librechat',
+        sid: 'sid-1',
+      };
+
+      await service.persistOAuthAdminBinding({
+        provider: 'openid',
+        refreshToken: 'refresh-1',
+        userId: 'user-1',
+        tenantId: 'tenant-1',
+        providerSession,
+      });
+
+      expect(storeOpenIDSession).toHaveBeenCalledWith(
+        'user-1',
+        'refresh-1',
+        'tenant-1',
+        undefined,
+        {
+          providerSession,
+        },
+      );
+    });
   });
 });

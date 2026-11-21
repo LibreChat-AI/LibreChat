@@ -6,11 +6,13 @@ const { CacheKeys } = require('librechat-data-provider');
 const {
   logger,
   DEFAULT_SESSION_EXPIRY,
+  DEFAULT_REFRESH_TOKEN_EXPIRY,
   SystemCapabilities,
   getTenantId,
   tenantStorage,
 } = require('@librechat/data-schemas');
 const {
+  math,
   isEnabled,
   TENANT_CONTEXT_REQUIRED,
   createPreAuthTenantGuard,
@@ -21,18 +23,43 @@ const {
   storeAndStripChallenge,
   tenantContextMiddleware,
   preAuthTenantMiddleware,
-  applyAdminRefresh,
   applyGoogleAdminRefresh,
+  refreshAdminOpenIdSession,
+  mapAdminAuthError,
   AdminRefreshError,
   buildOpenIDRefreshParams,
   isEmailDomainAllowed,
+  createFindProviderSessionBinding,
 } = require('@librechat/api');
 const { loginController } = require('~/server/controllers/auth/LoginController');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
 const { createOAuthHandler } = require('~/server/controllers/auth/oauth');
 const {
+  getProviderSessionAuthorizer,
+  getProviderSessionClient,
+} = require('~/server/services/ProviderSession');
+const {
+  getRefreshTokenBridge,
+  storeRefreshTokenBridge,
+  deleteRefreshTokenBridges,
+  createRefreshTokenBridgeFlightKey,
+  createAdminRefreshGrantFlightKey,
+  OPENID_REFRESH_BRIDGE_GRACE_MS,
+} = require('~/server/services/RefreshTokenBridge');
+const {
+  acquireOpenIDRefreshFlight,
+  assertOpenIDRefreshFlightAvailable,
+  completeOpenIDRefreshFlight,
+  failOpenIDRefreshFlight,
+  waitForOpenIDRefreshFlight,
+  withOpenIDRefreshFlightLease,
+} = require('~/server/services/OpenIDRefreshFlight');
+const {
   findBalanceByUser,
   findUsers,
+  findSession,
+  upsertSession,
+  deleteSession,
   generateToken,
   getUserById,
   upsertBalanceFields,
@@ -44,11 +71,18 @@ const middleware = require('~/server/middleware');
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
 
+/** Same `REFRESH_TOKEN_EXPIRY` env read `~/server/services/OpenIDRefreshRecovery` injects for
+ *  the main refresh path, evaluated per call so a config reload is picked up without a restart. */
+const getRefreshTokenExpiryMs = () =>
+  math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY);
+
 const setBalanceConfig = createSetBalanceConfig({
   getAppConfig,
   findBalanceByUser,
   upsertBalanceFields,
 });
+
+const findProviderSessionBinding = createFindProviderSessionBinding({ findSession });
 
 const router = express.Router();
 
@@ -633,7 +667,10 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
 
     const cache = getLogStores(CacheKeys.ADMIN_OAUTH_EXCHANGE);
     const requestOrigin = resolveRequestOrigin(req);
-    const result = await exchangeAdminCode(cache, code, requestOrigin, codeVerifier);
+    const result = await exchangeAdminCode(cache, code, requestOrigin, codeVerifier, {
+      authorizeProviderSession: getProviderSessionAuthorizer().authorize,
+      getRefreshTokenExpiryMs,
+    });
 
     if (!result) {
       return res.status(401).json({
@@ -644,6 +681,10 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
 
     res.json(result);
   } catch (error) {
+    const mapped = mapAdminAuthError(error);
+    if (mapped) {
+      return res.status(mapped.status).json(mapped.body);
+    }
     logger.error('[admin/oauth/exchange] Error:', error);
     res.status(500).json({
       error: 'Internal server error',
@@ -668,22 +709,25 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
  * Errors (all responses are `{ error: string, error_code: string }`):
  *   400 MISSING_REFRESH_TOKEN  — refresh_token absent or empty
  *   400 INVALID_PROVIDER       — provider value not one of 'openid' | 'google'
- *   401 REFRESH_FAILED         — IdP rejected the refresh grant
+ *   401 REFRESH_FAILED         — IdP rejected the refresh token or requires a new sign-in
  *   401 USER_NOT_FOUND         — no LibreChat user matches the refreshed sub
  *   401 USER_ID_MISMATCH       — supplied user_id resolves to a different provider id
  *   401 ISSUER_MISMATCH        — refreshed tokenset was issued by an unexpected issuer
  *   401 TENANT_MISMATCH        — resolved user belongs to a different tenant than the request
+ *   401 OPENID_SESSION_ENDED   — the bound provider session has ended (openid provider only)
  *   403 FORBIDDEN              — resolved user no longer holds ACCESS_ADMIN
  *   403 TOKEN_REUSE_DISABLED   — OPENID_REUSE_TOKENS is not enabled (openid provider only)
  *   502 IDP_INCOMPLETE         — IdP returned a tokenset missing access_token / id_token
  *   502 CLAIMS_INCOMPLETE      — IdP tokenset has no readable claims or no sub
  *   503 OPENID_NOT_CONFIGURED  — OpenID is not configured on this server
  *   503 GOOGLE_NOT_CONFIGURED  — Google admin OAuth is not configured on this server
+ *   503 AUTH_SESSION_CHECK_UNAVAILABLE — session check or IdP renewal unavailable
+ *   500 OPENID_CLIENT_MISCONFIGURED — IdP rejected this server's OAuth client configuration
  *   500 INTERNAL_ERROR         — anything else (logged server-side)
  */
 router.post(
   '/oauth/refresh',
-  middleware.loginLimiter,
+  middleware.adminRefreshLimiter,
   middleware.checkBan,
   preAuthTenantMiddleware,
   async (req, res) => {
@@ -756,53 +800,48 @@ router.post(
         has_scope: Boolean(process.env.OPENID_SCOPE),
         has_refresh_audience: Boolean(process.env.OPENID_REFRESH_AUDIENCE),
       });
-      let tokenset;
-      try {
-        tokenset = await openIdClient.refreshTokenGrant(openIdConfig, refreshToken, refreshParams);
-        logger.debug('[admin/oauth/refresh] OpenID refresh succeeded', {
-          has_access_token: Boolean(tokenset.access_token),
-          has_id_token: Boolean(tokenset.id_token),
-          has_refresh_token: Boolean(tokenset.refresh_token),
-          expires_in: tokenset.expires_in,
-        });
-      } catch (err) {
-        logger.warn('[admin/oauth/refresh] IdP refresh grant failed', {
-          code: err?.code,
-          name: err?.name,
-        });
-        return res.status(401).json({
-          error: 'Refresh failed',
-          error_code: 'REFRESH_FAILED',
-        });
-      }
-
-      const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
-
-      try {
-        const result = await applyAdminRefresh(
-          tokenset,
-          {
-            findUsers,
-            getUserById,
-            ...buildAdminRefreshClosures(sessionExpiry),
+      const outcome = await refreshAdminOpenIdSession(
+        {
+          refreshToken,
+          userId: normalizedUserId,
+          tenantId,
+          expectedIssuer: openIdConfig.serverMetadata?.()?.issuer,
+        },
+        {
+          grant: (grantRefreshToken) =>
+            openIdClient.refreshTokenGrant(openIdConfig, grantRefreshToken, refreshParams),
+          providerSession: {
+            authorizer: getProviderSessionAuthorizer(),
+            getProviderSessionClient,
+            findProviderSessionBinding,
+            getRefreshTokenBridge,
+            storeRefreshTokenBridge,
+            deleteRefreshTokenBridges,
+            bridgeGraceMs: OPENID_REFRESH_BRIDGE_GRACE_MS,
+            upsertSession,
+            deleteSession,
+            getRefreshTokenExpiryMs,
           },
-          {
-            userId: normalizedUserId,
-            previousRefreshToken: refreshToken,
-            expectedIssuer,
-            tenantId,
+          flight: {
+            createRefreshTokenBridgeFlightKey,
+            createAdminRefreshGrantFlightKey,
+            acquireOpenIDRefreshFlight,
+            completeOpenIDRefreshFlight,
+            failOpenIDRefreshFlight,
+            assertOpenIDRefreshFlightAvailable,
+            waitForOpenIDRefreshFlight,
+            withOpenIDRefreshFlightLease,
           },
-        );
-        req.user = { id: result.user._id };
-        await middleware.checkBan(req, res, () => {});
-        if (req.banned || res.headersSent) return;
-        return res.json(result);
-      } catch (err) {
-        if (err instanceof AdminRefreshError) {
-          return res.status(err.status).json({ error: err.message, error_code: err.code });
-        }
-        throw err;
+          user: { findUsers, getUserById, ...buildAdminRefreshClosures(sessionExpiry) },
+        },
+      );
+      if (!outcome.ok) {
+        return res.status(outcome.error.status).json(outcome.error.body);
       }
+      req.user = { id: outcome.value.user._id };
+      await middleware.checkBan(req, res, () => {});
+      if (req.banned || res.headersSent) return;
+      return res.json(outcome.value);
     } catch (error) {
       logger.error('[admin/oauth/refresh] Error:', error);
       res.status(500).json({

@@ -95,6 +95,7 @@ jest.mock('~/server/middleware', () => {
     logHeaders: pass,
     requireSameOrigin: pass,
     loginLimiter: pass,
+    adminRefreshLimiter: pass,
     validateEmailLogin: pass,
     requireLocalAuth: pass,
     requireJwtAuth: pass,
