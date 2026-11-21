@@ -27,6 +27,7 @@ import type {
   FileExclusionResult,
   IChatProjectDocument,
   IActiveSubagentThreadLease,
+  IContextEntry,
   IConversation,
   IMessage,
   ISharedLink,
@@ -93,6 +94,9 @@ function stripActorCheckpointFields(record: Record<string, unknown>): void {
 
 /** Written only by the lane methods, so no save, unset or import may reach them. */
 const LANE_PRIVATE_FIELDS = ['laneGit', 'laneGitSeq', 'codeAttachmentEpoch'] as const;
+
+/** Written only by `setConvoContextAnchor`; may hold memory text. */
+const CONTEXT_PRIVATE_FIELDS = ['contextAnchor'] as const;
 
 /** The lane state a reader may see; the sequence number that fences writes stays private. */
 export type ConvoLaneGitView = Omit<NonNullable<IConversation['laneGit']>, 'seq'>;
@@ -390,6 +394,18 @@ export interface ConversationMethods {
     user: string,
     conversationId: string,
   ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null>;
+  /** The anchor of the user's conversation's first context segment, or null when none is stored. */
+  getConvoContextAnchor(user: string, conversationId: string): Promise<IContextEntry[] | null>;
+  /**
+   * Stores the anchor of the conversation's first context segment. A stored anchor is never
+   * replaced: concurrent first turns cannot move one in use.
+   * @returns whether the conversation now holds an anchor; false while it does not exist
+   */
+  setConvoContextAnchor(input: {
+    user: string;
+    conversationId: string;
+    anchor: IContextEntry[];
+  }): Promise<boolean>;
   getConvosLaneGit(
     user: string,
     conversationIds: string[],
@@ -453,7 +469,11 @@ export interface ConversationMethods {
     nextCursor: string | null;
     convoMap: Record<string, unknown>;
   }>;
-  getConvo(user: string, conversationId: string): Promise<IConversation | null>;
+  getConvo(
+    user: string,
+    conversationId: string,
+    fieldsToSelect?: string,
+  ): Promise<IConversation | null>;
   getConvoTitleState(user: string, conversationId: string): Promise<ConversationTitleState | null>;
   getSubagentThreadForParent(input: {
     user: string;
@@ -785,10 +805,11 @@ export function createConversationMethods(
   /**
    * Retrieves a single conversation for a given user and conversation ID.
    */
-  async function getConvo(user: string, conversationId: string) {
+  async function getConvo(user: string, conversationId: string, fieldsToSelect?: string) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      return await Conversation.findOne({ user, conversationId }).lean<IConversation>();
+      const query = Conversation.findOne({ user, conversationId });
+      return await (fieldsToSelect ? query.select(fieldsToSelect) : query).lean<IConversation>();
     } catch (error) {
       logger.error('[getConvo] Error getting single conversation', error);
       throw new Error('Error getting single conversation');
@@ -2495,6 +2516,7 @@ export function createConversationMethods(
        * carries a copy of the list would put back what another tab just changed. */
       delete update.excludedFiles;
       stripFields(update, LANE_PRIVATE_FIELDS);
+      stripFields(update, CONTEXT_PRIVATE_FIELDS);
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
         ...(convo.codeEnvironmentMode != null && {
@@ -2522,6 +2544,7 @@ export function createConversationMethods(
       delete unsetFields.toolApprovalAllows;
       delete unsetFields.excludedFiles;
       stripFields(unsetFields, LANE_PRIVATE_FIELDS);
+      stripFields(unsetFields, CONTEXT_PRIVATE_FIELDS);
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -3391,6 +3414,45 @@ export function createConversationMethods(
     return false;
   }
 
+  async function getConvoContextAnchor(
+    user: string,
+    conversationId: string,
+  ): Promise<IContextEntry[] | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.findOne({ user, conversationId })
+      .select('contextAnchor')
+      .lean<Pick<IConversation, 'contextAnchor'> | null>();
+    return stored?.contextAnchor ?? null;
+  }
+
+  async function setConvoContextAnchor({
+    user,
+    conversationId,
+    anchor,
+  }: {
+    user: string;
+    conversationId: string;
+    anchor: IContextEntry[];
+  }): Promise<boolean> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const result = await withoutMeiliIndexing(
+      Conversation.updateOne(
+        { user, conversationId, contextAnchor: { $exists: false } },
+        { $set: { contextAnchor: anchor } },
+        { timestamps: false },
+      ),
+    );
+    if (result.modifiedCount === 1) {
+      return true;
+    }
+    const anchored = await Conversation.exists({
+      user,
+      conversationId,
+      contextAnchor: { $exists: true },
+    });
+    return anchored != null;
+  }
+
   /** The last reported lane state, or null when the conversation has none or is not the owner's. */
   async function getConvoLaneGit(
     user: string,
@@ -3611,6 +3673,7 @@ export function createConversationMethods(
         delete sanitized.initial_agent_id;
         delete sanitized.toolApprovalAllows;
         stripFields(sanitized, LANE_PRIVATE_FIELDS);
+        stripFields(sanitized, CONTEXT_PRIVATE_FIELDS);
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
@@ -4762,6 +4825,8 @@ export function createConversationMethods(
     reserveConvoLaneGitSeq,
     setConvoLaneGit,
     getConvoLaneGit,
+    getConvoContextAnchor,
+    setConvoContextAnchor,
     getConvosLaneGit,
     getConvoLaneContext,
     readAdmittedConvoCodeEnvironmentDecision,
