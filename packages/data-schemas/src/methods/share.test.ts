@@ -80,6 +80,7 @@ describe('Share Methods', () => {
         privateTextTokens: { type: [String], select: false, default: undefined },
         isCreatedByUser: Boolean,
         isUserSubmitted: Boolean,
+        trigger: { type: mongoose.Schema.Types.Mixed, select: false, default: undefined },
         userSubmittedPaths: {
           type: [String],
           default: undefined,
@@ -670,6 +671,10 @@ describe('Share Methods', () => {
           text: 'Hello',
           isCreatedByUser: true,
           parentMessageId: Constants.NO_PARENT,
+          trigger: {
+            event: { type: 'schedule.occurrence', occurredAt: new Date(0) },
+            subject: { kind: 'schedule', id: 'schedule-1' },
+          },
         },
         {
           messageId: `msg_${nanoid()}`,
@@ -727,6 +732,11 @@ describe('Share Methods', () => {
       ]);
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'isUserSubmitted',
+      );
+      /** What started a turn is its owner's to see: a link's viewer is not told. */
+      expect(JSON.stringify(result)).not.toContain('schedule-1');
+      expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
+        'trigger',
       );
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'userSubmittedPaths',

@@ -16,7 +16,7 @@ grant is made of, and the request and view the routes exchange, are in
 
 | Module             | What it holds                                                                                                          |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `context.ts`       | The source of a run (`ExecutionContext`): a remote API request, or a trigger delivery with its subject.                |
+| `context.ts`       | The source of a run (`ExecutionContext`), and what a triggered turn's first message records of it.                     |
 | `trigger.ts`       | `Subject`, `Delivery`, `Origin` and the trigger a job saves and a task keeps (`RunTrigger`). Imports nothing.          |
 | `contract.ts`      | The questions a run asks of a grant and the answers (`RunGrantAuthority`).                                             |
 | `service.ts`       | `createRunGrantService`: read, confirm, revoke and admit a grant, and authorize each call against it.                  |
@@ -119,6 +119,54 @@ Three contexts carry less, by design:
 - Work started by a replica from before work kept its trigger has none, and the request that
   reports it has a delivery and no subject. The same holds while the wake-up is dispatched or
   the request is served by such a replica, which ignores the field.
+
+## What a triggered turn's first message records
+
+The context is also where a conversation learns what started a turn no person sent.
+`toMessageTrigger(context)` reads the same source and returns the one field the turn's first
+message stores, `trigger` (`tMessageTriggerSchema` in `librechat-data-provider`):
+
+```ts
+{
+  event: { type, occurredAt },             // the event the turn's own delivery carried
+  subject?: { kind, id },                  // the schedule or API key the run acts for
+  origin?: { event: { type, occurredAt } } // on a turn that reports work: the event that began the run
+}
+```
+
+```text
+chat route
+  createTriggerExecutionContext(req)   the run, verified
+  toMessageTrigger(context)            req._messageTrigger
+    BaseClient.createUserMessage       the saved first message, the created event and the final event
+    getPreliminaryUserMessage          the job's first metadata and the turn saved when the run fails early
+  GenerationJobManager                 job.userMessage.trigger: a resumed stream's row, a stopped turn's
+```
+
+- It is written from the context and from nothing else. A request cannot set it: the route
+  that saves a client's message and the importer both drop it, and a job takes it only from the
+  message the server emitted.
+- It is what the owner is shown, so it names events, not deliveries. The delivery key and the
+  event id stay on the job (`trigger`), and an event type an outside system named is bounded
+  and stripped of control and direction characters first.
+- A subject-less turn of an interactive chat (a wake-up, a queued turn) has `event` alone. A turn
+  whose delivery named no event records nothing, as does a run no trigger started.
+- The stored path is `select: false`. `CLIENT_MESSAGE_SELECT` asks for it, so the reads behind
+  the message list, a page of it, a subagent thread view and message parts return it to the
+  conversation's owner. A read that names no projection does not: the history a run loads for
+  a model has no such field, and `formatMessage` copies only role, name and content from the
+  turn in hand. A shared link reads through the client projection and then keeps an allow-list
+  of fields that does not name it. An export leaves it out (`useBuildMessageTree`).
+- The client draws a wake-up's task card from it (`parseWakeupMessage` in `@librechat/chat`):
+  `subagent.completion` and `background-tool.completion` are wake-ups whatever the prose line
+  says, and a turn anything else started is not one whatever its text says. A message stored
+  before the field existed has none and is still matched by its header.
+- It sits beside `subagentTriggerProjection`, which only a continuation bound to an event
+  source carries, is built from that request's event and expected action, and is read by the
+  subagent thread view. A bound continuation's first message has both.
+- A replica from before the field does not know the path, so its unprojected reads return it
+  where a newer replica stored it. Nothing there forwards it: the same formatter and the same
+  share allow-list apply.
 
 ## Grants held by an API key
 

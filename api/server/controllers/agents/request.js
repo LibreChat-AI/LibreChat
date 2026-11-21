@@ -27,6 +27,7 @@ const {
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
   createTriggerExecutionContext,
+  toMessageTrigger,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -266,6 +267,7 @@ function getPreliminaryUserMessage(
   },
   conversationId,
   subagentTriggerProjection,
+  trigger,
 ) {
   if (typeof messageId !== 'string' || messageId.length === 0) {
     return null;
@@ -300,6 +302,7 @@ function getPreliminaryUserMessage(
        the live user message, and compaction is projected before reaching here. */
     ...persistedReasoningOverrideFields({ rawReasoningOverride: reasoningOverride }),
     ...(subagentTriggerProjection != null && { subagentTriggerProjection }),
+    ...(trigger != null && { trigger }),
   };
 }
 
@@ -445,7 +448,12 @@ async function saveErrorTurn(
                   alwaysAppliedSkills: req.body.alwaysAppliedSkills,
                 }),
             }
-          : getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection);
+          : getPreliminaryUserMessage(
+              req.body,
+              conversationId,
+              req._agentEventTriggerProjection,
+              req._messageTrigger,
+            );
       if (!userMessage) {
         return;
       }
@@ -1670,6 +1678,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
+    const executionContext = createTriggerExecutionContext(req);
+    req._messageTrigger = toMessageTrigger(executionContext);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
       : stampPreliminaryPrivateTextMessage(
@@ -1678,9 +1688,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             { ...req.body, messageId: preallocatedUserMessageId },
             conversationId,
             req._agentEventTriggerProjection,
+            req._messageTrigger,
           ),
         );
-    const executionContext = createTriggerExecutionContext(req);
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
       startupTelemetry,
       ...(recoveredSteerId && { recoveredSteerId }),
@@ -2427,6 +2437,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 quotes: userMsg.quotes,
                 privacyRevision: userMsg.privacyRevision,
                 reasoningOverride: userMsg.reasoningOverride,
+                trigger: userMsg.trigger,
                 // Persist the turn's uploaded files here (authoritative job metadata) so a
                 // HITL resume sources them from the job, not the user DB row — which the
                 // approval prompt can race (the row save may still be in flight when a fast

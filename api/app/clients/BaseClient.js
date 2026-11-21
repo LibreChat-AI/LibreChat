@@ -502,6 +502,9 @@ class BaseClient {
       ...(this.options?.req?._agentEventTriggerProjection != null && {
         subagentTriggerProjection: this.options.req._agentEventTriggerProjection,
       }),
+      ...(this.options?.req?._messageTrigger != null && {
+        trigger: this.options.req._messageTrigger,
+      }),
     };
   }
 

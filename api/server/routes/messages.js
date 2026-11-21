@@ -593,6 +593,8 @@ router.post('/:conversationId', storedMessageMutationMiddleware, async (req, res
     /** Server-private run state: a client-authored row must never seed a run's
      * calibration or fading tiers, so the field only ever comes from the server. */
     delete message.contextMeta;
+    /** What started a turn is the server's to say, from the run it verified. */
+    delete message.trigger;
     const reqCtx = {
       userId: req?.user?.id,
       isTemporary: req.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,

@@ -944,6 +944,29 @@ const agentFadingTierSchema = z.object({
   masked: z.boolean(),
 });
 
+const tTriggerEventSchema = z.object({
+  type: z.string(),
+  /** ISO 8601. */
+  occurredAt: z.string(),
+});
+
+/**
+ * What started a turn no person sent, on the turn's first message. The server writes it from
+ * the run it verified and returns it to the conversation's owner alone: no request sets it,
+ * and it is left out of shared links, exports and what a model reads. Later servers may add
+ * fields; none is renamed or removed.
+ */
+export const tMessageTriggerSchema = z.object({
+  /** The event whose delivery started the turn. */
+  event: tTriggerEventSchema,
+  /** The schedule or API key the run acts for. Absent on a turn the server began for a chat. */
+  subject: z.object({ kind: z.string(), id: z.string() }).optional(),
+  /** On a turn that reports background work: the event that began the run the work belongs to. */
+  origin: z.object({ event: tTriggerEventSchema }).optional(),
+});
+
+export type TMessageTrigger = z.infer<typeof tMessageTriggerSchema>;
+
 export const tMessageSchema = z.object({
   messageId: z.string(),
   endpoint: z.string().optional(),
@@ -964,6 +987,7 @@ export const tMessageSchema = z.object({
   privacyRevision: z.string().optional(),
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted: z.boolean().optional(),
+  trigger: tMessageTriggerSchema.optional(),
   /** JSON pointers to caller-authored fields in an otherwise mixed model response. */
   userSubmittedPaths: z.array(z.string().startsWith('/')).optional(),
   /** Exact HITL message-field identity for caller-authored values stored in mixed responses. */
