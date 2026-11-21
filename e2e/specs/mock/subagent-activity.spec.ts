@@ -176,6 +176,19 @@ test.describe('detached subagent activity', () => {
       await expect(rows).toHaveCount(2, { timeout: 30_000 });
       await expect(rows.first()).toContainText(/child-1-phase-\d+/);
       await expect(rows.nth(1)).toContainText(/child-2-phase-\d+/);
+      const { gap, extraHeight, rem } = await rows.first().evaluate((row) => {
+        const card = row.previousElementSibling;
+        const header = card?.firstElementChild;
+        if (card == null || header == null) throw new Error('Missing subagent card header');
+        const headerRect = header.getBoundingClientRect();
+        return {
+          gap: row.getBoundingClientRect().top - headerRect.bottom,
+          extraHeight: card.getBoundingClientRect().height - headerRect.height,
+          rem: parseFloat(getComputedStyle(document.documentElement).fontSize),
+        };
+      });
+      expect(gap).toBeCloseTo(rem / 2, 1);
+      expect(extraHeight).toBeCloseTo(3.25 * rem + 2, 1);
       await expect(cards.first()).toContainText('Running');
       await expect.poll(() => messageReads).toContain(firstThreadId);
       /** A collapsed group shows no cards and follows nothing, so the count so far depends on

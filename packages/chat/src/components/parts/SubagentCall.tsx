@@ -659,7 +659,7 @@ function SubagentPreview({
       aria-hidden="true"
       data-subagent-preview
       className={cn(
-        'pointer-events-none absolute inset-x-[calc(0.75rem+1px)] bottom-[calc(0.5rem+1px)] overflow-hidden',
+        'pointer-events-none absolute inset-x-[calc(0.75rem+1px)] bottom-[calc(0.25rem+1px)] overflow-hidden',
         PREVIEW_ROW_HEIGHT,
         PREVIEW_FADE,
       )}
