@@ -11,16 +11,18 @@ import type {
   ReasoningParameterFormat,
 } from './schemas';
 import type {
+  CodeEnvironmentUserConfigSchema,
+  CodeEnvironmentUserSettings,
+  PromptCategoryColor,
+  PromptCategoryIcon,
+  TAgentsEndpoint,
+} from './config';
+import type {
   CodeWorkspaceDescriptor,
   CodeEnvironmentMode,
   CodeWorkspaceOperation,
   CodeWorkspaceSelection,
 } from './code/workspace';
-import type {
-  CodeEnvironmentUserConfigSchema,
-  CodeEnvironmentUserSettings,
-  TAgentsEndpoint,
-} from './config';
 import type { BalanceRefillMode, RefillIntervalUnit } from './balance';
 import type { StatefulCodeEnvironment } from './stateful-code';
 import type { CodeApprovalMode } from './code/approval';
@@ -289,6 +291,8 @@ export type TCategory = {
   value: string;
   label: string;
   description?: string;
+  icon?: PromptCategoryIcon;
+  color?: PromptCategoryColor;
   custom?: boolean;
 };
 
