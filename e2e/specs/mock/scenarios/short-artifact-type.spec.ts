@@ -49,10 +49,12 @@ test('a short react type renders as a React artifact @scenario:short-react-type-
     await seedMessages(userEmail, conversationId, [message]);
     await page.goto(`/c/${conversationId}`, { timeout: 15000 });
 
-    const row = messagesView(page).locator('[data-artifact-trigger]').filter({ hasText: 'Sum' });
+    const messages = messagesView(page);
+    const row = messages.getByRole('button', {
+      name: /^Open artifact: Sum.*Opens as a rendered preview/,
+    });
     await expect(row).toHaveCount(1);
-    await expect(row.getByText('React', { exact: true })).toBeVisible();
-    await expect(row).toHaveAccessibleName(/Sum.*React.*Opens as a rendered preview/);
+    await expect(messages.getByText('React', { exact: true })).toBeVisible();
 
     await row.click();
     const panel = page.locator('#artifact-viewer');

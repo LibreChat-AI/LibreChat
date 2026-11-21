@@ -21,6 +21,8 @@ type MarkdownBlockProps = SharedProps & {
   codeBaseIndex: number;
   artifactBaseIndex: number;
   mermaidBaseIndex: number;
+  /** Whether new tokens can still extend this block’s last line. */
+  provisionalEnd?: boolean;
 };
 
 /**
@@ -41,6 +43,7 @@ const MarkdownBlock = memo(
     components,
     animate = false,
     hydrated = false,
+    provisionalEnd = false,
   }: MarkdownBlockProps) {
     // One fade-plugin instance per block: its closure tracks this block's
     // character offsets so only newly streamed words animate. When `animate`
@@ -65,7 +68,7 @@ const MarkdownBlock = memo(
       fade?.commit();
     });
     return (
-      <ArtifactProvider baseIndex={artifactBaseIndex}>
+      <ArtifactProvider baseIndex={artifactBaseIndex} provisionalEnd={provisionalEnd}>
         <CodeBlockProvider baseIndex={codeBaseIndex} mermaidBaseIndex={mermaidBaseIndex}>
           <ReactMarkdown
             /** @ts-ignore */
@@ -86,6 +89,7 @@ const MarkdownBlock = memo(
     prev.artifactBaseIndex === next.artifactBaseIndex &&
     prev.mermaidBaseIndex === next.mermaidBaseIndex &&
     prev.animate === next.animate &&
+    prev.provisionalEnd === next.provisionalEnd &&
     /* The list is rebuilt every render, so identity says nothing; its length changes once,
        when math and highlighting finish loading, and every block must re-render then. */
     prev.rehypePlugins.length === next.rehypePlugins.length,
@@ -109,6 +113,7 @@ type BlockEntry = {
   codeBaseIndex: number;
   artifactBaseIndex: number;
   mermaidBaseIndex: number;
+  hasArtifact: boolean;
 };
 
 /**
@@ -128,6 +133,7 @@ const toBlockEntries = (content: string, splitMarkdown: MarkdownSplitter): Block
       codeBaseIndex,
       artifactBaseIndex,
       mermaidBaseIndex,
+      hasArtifact: block.artifactCount > 0,
     };
     codeBaseIndex += block.codeBlockCount;
     artifactBaseIndex += block.artifactCount;
@@ -143,7 +149,16 @@ const toBlockEntries = (content: string, splitMarkdown: MarkdownSplitter): Block
  */
 const toWholeMessage = (content: string): BlockEntry[] =>
   content
-    ? [{ key: 'whole', raw: content, codeBaseIndex: 0, artifactBaseIndex: 0, mermaidBaseIndex: 0 }]
+    ? [
+        {
+          key: 'whole',
+          raw: content,
+          codeBaseIndex: 0,
+          artifactBaseIndex: 0,
+          mermaidBaseIndex: 0,
+          hasArtifact: false,
+        },
+      ]
     : [];
 
 /**
@@ -189,7 +204,7 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
 
   return (
     <>
-      {blocks.map((block) => (
+      {blocks.map((block, index) => (
         <MarkdownBlock
           key={block.key}
           content={block.raw}
@@ -201,6 +216,12 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
           components={components}
           animate={animate}
           hydrated={hydrated}
+          provisionalEnd={
+            streaming &&
+            block.hasArtifact &&
+            index === blocks.length - 1 &&
+            content.endsWith(block.raw)
+          }
         />
       ))}
     </>
