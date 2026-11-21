@@ -264,6 +264,26 @@ it('returns a structured unsupported-version denial and never probes the provide
   expect(f.connect).not.toHaveBeenCalled();
 });
 
+it("refuses a resumed run whose saved job was restored for someone other than the request's user", async () => {
+  const f = await setup();
+  const other = { id: 'intruder', tenantId: 'tenant' };
+  const req = { user: f.user, _isScheduledFire: true, body: {} };
+  jest.mocked(f.storage.readRunGrant).mockClear();
+  await expect(
+    f.host.prepare({
+      req,
+      context: f.context,
+      restoredJob: { scheduleId: 'schedule' },
+      // A context restored from a job another user owns, on a request the owner authenticated.
+      executionContext: restoreExecutionContext(
+        { user: other },
+        { userId: 'intruder', tenantId: 'tenant', scheduleId: 'schedule', agent_id: 'root' },
+      ),
+    }),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(f.storage.readRunGrant).not.toHaveBeenCalled();
+});
+
 it('puts back on a resumed run the servers its occurrence went without, read from its run row', async () => {
   const f = await setup();
   f.getScheduleRunMCP.mockResolvedValue([
