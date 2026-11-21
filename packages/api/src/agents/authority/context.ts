@@ -1,6 +1,7 @@
+import type { TMessageTrigger } from 'librechat-data-provider';
 import type { ScheduledTokenContext } from '~/schedules/context';
+import type { Delivery, RunTrigger } from './trigger';
 import type { AgentRunProtocol } from '../envelope';
-import type { RunTrigger } from './trigger';
 import { readScheduleFireContext } from '~/schedules/trigger';
 import { toDelivery, readRunTrigger } from './trigger';
 
@@ -167,6 +168,70 @@ export function createTriggerExecutionContext(req: TriggerRequest): ExecutionCon
 export function createScheduleExecutionContext(req: TriggerRequest): ExecutionContext | undefined {
   const context = createTriggerExecutionContext(req);
   return getScheduleSource(context) ? context : undefined;
+}
+
+/** The longest event type a message keeps. */
+const TYPE_LIMIT = 256;
+/** Controls, format characters such as direction overrides, and line and paragraph breaks. */
+const UNSHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
+
+/**
+ * An event type as an owner may be shown it. An outside system names the type of an event
+ * it posts, so it may be any length and may carry characters that reorder what is on screen.
+ */
+function shown(type: string): string {
+  const bounded = type.length > TYPE_LIMIT * 2 ? type.slice(0, TYPE_LIMIT * 2) : type;
+  const plain = bounded.normalize('NFC').replace(UNSHOWN, ' ').trim();
+  return plain.length > TYPE_LIMIT ? Array.from(plain).slice(0, TYPE_LIMIT).join('') : plain;
+}
+
+function toEvent(delivery?: Delivery): TMessageTrigger['event'] | undefined {
+  if (!delivery) return;
+  const at = new Date(delivery.event.occurredAt);
+  const type = shown(delivery.event.type);
+  if (Number.isNaN(at.getTime()) || type.length === 0) return;
+  return { type, occurredAt: at.toISOString() };
+}
+
+/**
+ * What the first message of a triggered turn records of what started it: the event the
+ * turn's own delivery carried, who the run acts for and, on a turn that reports work an
+ * earlier run sent to the background, the event that began that run. Undefined for a run no
+ * trigger started, and for one whose delivery named no event.
+ *
+ * Read from the context alone, so a request cannot write it. It is what the owner is shown,
+ * so it names events and not deliveries, with their types made safe to show: the delivery
+ * key, the event id and the type as it was sent stay on the job.
+ */
+export function toMessageTrigger(context?: ExecutionContext): TMessageTrigger | undefined {
+  const source = context?.source;
+  if (source?.type !== 'trigger') return;
+  const event = toEvent(source.delivery);
+  if (!event) return;
+  const began = toEvent(source.origin?.delivery);
+  return {
+    event,
+    ...(source.subject && { subject: { kind: source.subject.kind, id: source.subject.id } }),
+    ...(began && { origin: { event: began } }),
+  };
+}
+
+/** The request a turn is served on, where the chat route keeps what `toMessageTrigger` returned. */
+interface TurnRequest {
+  _messageTrigger?: TMessageTrigger;
+}
+
+/**
+ * A first message of the turn a request serves, recording what started the turn. The message
+ * is returned as it is when the turn has no such record, so a caller stamps every first
+ * message it builds without asking whether a trigger started it.
+ */
+export function stampMessageTrigger<T extends object | null | undefined>(
+  req: TurnRequest | undefined,
+  message: T,
+): T {
+  const trigger = req?._messageTrigger;
+  return trigger == null || message == null ? message : { ...message, trigger };
 }
 
 /** The personal API key a run acts for, whichever way the key started it. */

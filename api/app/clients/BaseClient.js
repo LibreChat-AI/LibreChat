@@ -45,6 +45,7 @@ const {
   skillMessageFields,
   isTemporaryTurn,
   loadHistoryRows,
+  stampMessageTrigger,
 } = require('@librechat/api');
 const {
   Constants,
@@ -492,7 +493,7 @@ class BaseClient {
   }
 
   createUserMessage({ messageId, parentMessageId, conversationId, text }) {
-    return {
+    return stampMessageTrigger(this.options?.req, {
       messageId,
       parentMessageId,
       conversationId,
@@ -502,7 +503,7 @@ class BaseClient {
       ...(this.options?.req?._agentEventTriggerProjection != null && {
         subagentTriggerProjection: this.options.req._agentEventTriggerProjection,
       }),
-    };
+    });
   }
 
   /**

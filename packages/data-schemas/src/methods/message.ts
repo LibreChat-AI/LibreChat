@@ -560,6 +560,8 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-attachments.web_search.organic.sitelinks',
   '-attachments.web_search.organic.highlights',
   '-attachments.web_search.topStories.highlights',
+  /** Not selected by default, so that only these reads return it. */
+  '+trigger',
 ].join(' ');
 
 interface MessageQueryOptions {

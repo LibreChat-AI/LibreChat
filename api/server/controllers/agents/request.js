@@ -27,6 +27,8 @@ const {
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
   createTriggerExecutionContext,
+  toMessageTrigger,
+  stampMessageTrigger,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -445,7 +447,10 @@ async function saveErrorTurn(
                   alwaysAppliedSkills: req.body.alwaysAppliedSkills,
                 }),
             }
-          : getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection);
+          : stampMessageTrigger(
+              req,
+              getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection),
+            );
       if (!userMessage) {
         return;
       }
@@ -1670,17 +1675,21 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
+    const executionContext = createTriggerExecutionContext(req);
+    req._messageTrigger = toMessageTrigger(executionContext);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
-      : stampPreliminaryPrivateTextMessage(
+      : stampMessageTrigger(
           req,
-          getPreliminaryUserMessage(
-            { ...req.body, messageId: preallocatedUserMessageId },
-            conversationId,
-            req._agentEventTriggerProjection,
+          stampPreliminaryPrivateTextMessage(
+            req,
+            getPreliminaryUserMessage(
+              { ...req.body, messageId: preallocatedUserMessageId },
+              conversationId,
+              req._agentEventTriggerProjection,
+            ),
           ),
         );
-    const executionContext = createTriggerExecutionContext(req);
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
       startupTelemetry,
       ...(recoveredSteerId && { recoveredSteerId }),
@@ -2427,6 +2436,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 quotes: userMsg.quotes,
                 privacyRevision: userMsg.privacyRevision,
                 reasoningOverride: userMsg.reasoningOverride,
+                trigger: userMsg.trigger,
                 // Persist the turn's uploaded files here (authoritative job metadata) so a
                 // HITL resume sources them from the job, not the user DB row — which the
                 // approval prompt can race (the row save may still be in flight when a fast

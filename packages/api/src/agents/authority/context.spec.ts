@@ -3,6 +3,8 @@ import {
   getScheduleSource,
   restoreExecutionContext,
   toScheduledTokenContext,
+  stampMessageTrigger,
+  toMessageTrigger,
   createRemoteExecutionContext,
   createTriggerExecutionContext,
   createScheduleExecutionContext,
@@ -679,6 +681,116 @@ describe('createTriggerExecutionContext', () => {
     const unnamed = fire();
     Object.assign(unnamed.body.agentTrigger.event, { id: undefined });
     expect(() => createTriggerExecutionContext(unnamed)).toThrow(/API key/);
+  });
+
+  describe('what the first message of the turn records', () => {
+    const at = '1970-01-01T00:00:01.000Z';
+    const record = (req: Parameters<typeof createTriggerExecutionContext>[0]) =>
+      toMessageTrigger(createTriggerExecutionContext(req));
+
+    it('names the occurrence and the schedule for a scheduled turn', () => {
+      const req = scheduleFire();
+      Object.assign(req.body, { clientRequestId: 'trigger_occurrence' });
+      Object.assign(req.body.agentTrigger.event, { id: 'sched:schedule:1970' });
+
+      expect(record(req)).toEqual({
+        event: { type: 'schedule.occurrence', occurredAt: '1970-01-01T00:00:00.000Z' },
+        subject: { kind: 'schedule', id: 'schedule' },
+      });
+    });
+
+    it.each([
+      ['a new conversation', fire],
+      ['a bound continuation', bound],
+    ])('names the event and the key for %s an API key posted to', (_label, request) => {
+      expect(record(request())).toEqual({
+        event: { type: 'review.submitted', occurredAt: at },
+        subject: { kind: 'key', id: 'key-1' },
+      });
+    });
+
+    it.each([
+      ['a subagent wake-up', 'subagent-completion', 'subagent.completion'],
+      ['a background tool wake-up', 'background-tool-completion', 'background-tool.completion'],
+      ['a queued turn', 'agent-queued-turn', 'agent.queued-turn'],
+    ])('names the event alone for %s in an interactive chat', (_label, id, type) => {
+      expect(record(unbound({ type: 'internal', id }, type))).toEqual({
+        event: { type, occurredAt: at },
+      });
+    });
+
+    it('names the event that began the run on a turn that reports its work', () => {
+      const trigger = { subject: { kind: 'key', id: 'key-1' }, origin: began };
+
+      expect(record(completion(trigger, 'subagent-completion'))).toEqual({
+        event: { type: 'background_tool.completed', occurredAt: at },
+        subject: { kind: 'key', id: 'key-1' },
+        origin: { event: { type: 'review.submitted', occurredAt: '1970-01-01T00:00:00.500Z' } },
+      });
+    });
+
+    it('keeps no delivery key and no event id', () => {
+      const trigger = { subject: { kind: 'schedule', id: 'schedule' }, origin: began };
+      const stored = JSON.stringify(record(completion(trigger)));
+
+      for (const hidden of ['trigger_ghi', 'trigger_abc', 'event-1', 'event-0', 'root-agent'])
+        expect(stored).not.toContain(hidden);
+    });
+
+    it('records nothing for a turn a person sent, whatever its body says', () => {
+      const typed = { ...fire(), _isAgentTrigger: false };
+      const copied = { user, body: { trigger: { event: { type: 'subagent.completion' } } } };
+
+      expect(record(typed)).toBeUndefined();
+      expect(record(copied)).toBeUndefined();
+      expect(toMessageTrigger(undefined)).toBeUndefined();
+      expect(
+        toMessageTrigger(
+          createRemoteExecutionContext({
+            principal: { userId: 'owner' },
+            protocol: 'responses',
+            background: true,
+          }),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('records nothing for a trigger that names no event, as a host from before this sends', () => {
+      expect(record(scheduleFire())).toBeUndefined();
+    });
+
+    it('makes an event type an outside system named safe to show', () => {
+      const named = (type: string) => {
+        const req = fire();
+        Object.assign(req.body.agentTrigger.event, { type });
+        return record(req)?.event.type;
+      };
+
+      expect(named('x'.repeat(1_000))).toBe('x'.repeat(256));
+      expect(named('review.\u202Esubmitted\u2066\n')).toBe('review. submitted');
+      expect(named('\u202E\u2066')).toBeUndefined();
+    });
+
+    it('stamps a first message of the turn from what the route kept, and no other message', () => {
+      const trigger = record(fire());
+      const message = { messageId: 'first', text: 'hello', trigger: { event: { type: 'forged' } } };
+      const typed = { messageId: 'typed', text: 'hello' };
+
+      expect(stampMessageTrigger({ _messageTrigger: trigger }, message)).toEqual({
+        ...message,
+        trigger,
+      });
+      expect(stampMessageTrigger({}, typed)).toBe(typed);
+      expect(stampMessageTrigger(undefined, typed)).toBe(typed);
+      expect(stampMessageTrigger({ _messageTrigger: trigger }, null)).toBeNull();
+    });
+
+    it('records nothing for an event whose time is no date', () => {
+      const late = fire();
+      Object.assign(late.body.agentTrigger.event, { occurredAt: Number.MAX_SAFE_INTEGER });
+
+      expect(record(late)).toBeUndefined();
+    });
   });
 });
 

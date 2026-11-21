@@ -301,6 +301,9 @@ jest.mock('@librechat/api', () => ({
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),
   createTriggerExecutionContext: (...args) =>
     jest.requireActual('@librechat/api').createTriggerExecutionContext(...args),
+  toMessageTrigger: (...args) => jest.requireActual('@librechat/api').toMessageTrigger(...args),
+  stampMessageTrigger: (...args) =>
+    jest.requireActual('@librechat/api').stampMessageTrigger(...args),
   exemptFromConcurrencyLimiter: (...args) => mockExemptFromConcurrencyLimiter(...args),
   toPendingSteer: jest.fn((item) => item),
   promoteDrainedSteers: (...args) =>
@@ -6038,6 +6041,14 @@ describe('ResumableAgentController resume metadata', () => {
       occurredAt: new Date(event.occurredAt),
       expectedActionToolName: 'submit_ move',
     });
+    /** Beside it, from the run the server verified: the form every triggered turn records. */
+    const trigger = {
+      event: { type: 'chess. turn', occurredAt: new Date(event.occurredAt).toISOString() },
+    };
+    expect(req._messageTrigger).toEqual(trigger);
+    expect(
+      mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata.userMessage.trigger,
+    ).toEqual(trigger);
     expect(client).toMatchObject({
       checkpointNamespace: 'event-actor/fork',
       eventActorCheckpointId: 'checkpoint-base',
