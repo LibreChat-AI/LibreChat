@@ -459,7 +459,8 @@ export function createImageAuthorizationMiddleware(
     next: NextFunction,
   ): Promise<void> {
     try {
-      const imagePath = parseImagePath(req.originalUrl, deps.getBasePath());
+      const imagePath =
+        parseImagePath(req.originalUrl, deps.getBasePath()) ?? parseImagePath(req.originalUrl, '');
       if (!imagePath) {
         if (options.secureImageLinks === false) {
           next();
