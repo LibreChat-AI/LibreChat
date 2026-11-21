@@ -33,6 +33,7 @@ export async function initializeGoogle(
   const { appConfig, user, requestBody } = resolveEndpointRuntime(params);
   const { GOOGLE_KEY, GOOGLE_REVERSE_PROXY, GOOGLE_AUTH_HEADER, PROXY } = process.env;
   const isUserProvided = GOOGLE_KEY === 'user_provided';
+  const isADC = GOOGLE_KEY === 'ADC';
   const isVertexEndpoint = endpoint === Providers.VERTEXAI;
   const useUserProvidedGoogleKey = !isVertexEndpoint && isUserProvided;
   const { key: expiresAt } = requestBody;
@@ -71,7 +72,7 @@ export async function initializeGoogle(
     ? (userKey as GoogleCredentials)
     : {
         [AuthKeys.GOOGLE_SERVICE_KEY]: serviceKey,
-        ...(!isVertexEndpoint && { [AuthKeys.GOOGLE_API_KEY]: GOOGLE_KEY }),
+        ...(!isVertexEndpoint && !isADC && { [AuthKeys.GOOGLE_API_KEY]: GOOGLE_KEY }),
       };
 
   let clientOptions: GoogleConfigOptions = {};
@@ -118,8 +119,8 @@ export async function initializeGoogle(
     proxy: PROXY ?? undefined,
     ...(headers && { headers }),
     modelOptions: model_parameters ?? {},
-    forceVertex: isVertexEndpoint,
-    projectId: isVertexEndpoint
+    forceVertex: (isVertexEndpoint || isADC),
+    projectId: (isVertexEndpoint || isADC)
       ? (process.env.VERTEX_PROJECT_ID ??
         process.env.GOOGLE_CLOUD_PROJECT ??
         process.env.GCLOUD_PROJECT ??
