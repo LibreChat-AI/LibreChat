@@ -14,6 +14,7 @@ const mongoose = require('mongoose');
 const { actionDelimiter } = require('librechat-data-provider');
 const { agentSchema, actionSchema } = require('@librechat/data-schemas');
 const { MongoMemoryServer } = require('mongodb-memory-server');
+const { fileSchema } = require('@librechat/data-schemas');
 const { duplicateAgent } = require('../v1');
 
 let mongoServer;
@@ -27,6 +28,9 @@ beforeAll(async () => {
   if (!mongoose.models.Action) {
     mongoose.model('Action', actionSchema);
   }
+  if (!mongoose.models.File) {
+    mongoose.model('File', fileSchema);
+  }
   await mongoose.connect(mongoUri);
 }, 20000);
 
@@ -38,6 +42,9 @@ afterAll(async () => {
 beforeEach(async () => {
   await mongoose.models.Agent.deleteMany({});
   await mongoose.models.Action.deleteMany({});
+  if (mongoose.models.File) {
+    await mongoose.models.File.deleteMany({});
+  }
 });
 
 describe('duplicateAgentHandler — action domain extraction', () => {
@@ -198,5 +205,284 @@ describe('duplicateAgentHandler — action domain extraction', () => {
       action_id: 'act_secret',
     }).lean();
     expect(originalAction.metadata.api_key).toBe('sk-secret-key-12345');
+  });
+});
+
+describe('duplicateAgentHandler — tool_resources preservation', () => {
+  it('preserves execute_code file_ids when duplicating an agent', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const originalAgentId = 'agent_code_files';
+
+    await mongoose.models.Agent.create({
+      id: originalAgentId,
+      name: 'Code Agent',
+      author: userId.toString(),
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+      tool_resources: {
+        context: { file_ids: ['ctx-file-1'] },
+        execute_code: { file_ids: ['code-file-1', 'code-file-2'] },
+      },
+      versions: [{ name: 'Code Agent', createdAt: new Date(), updatedAt: new Date() }],
+    });
+
+    // Create File documents so pruneToolResourceFileIdsForAgent finds them
+    for (const fileId of ['ctx-file-1', 'code-file-1', 'code-file-2']) {
+      await mongoose.models.File.create({
+        file_id: fileId,
+        user: userId,
+        filename: fileId + '.txt',
+        filepath: '/tmp/' + fileId,
+        type: 'text/plain',
+        bytes: 100,
+      });
+    }
+
+    const req = {
+      params: { id: originalAgentId },
+      user: { id: userId.toString(), role: 'user' },
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    await duplicateAgent(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const { agent: newAgent } = res.json.mock.calls[0][0];
+
+    expect(newAgent.id).not.toBe(originalAgentId);
+    expect(newAgent.tool_resources).toBeDefined();
+    expect(newAgent.tool_resources.context).toBeDefined();
+    expect(newAgent.tool_resources.context.file_ids).toEqual(['ctx-file-1']);
+    expect(newAgent.tool_resources.execute_code).toBeDefined();
+    expect(newAgent.tool_resources.execute_code.file_ids).toEqual(['code-file-1', 'code-file-2']);
+  });
+
+  it('preserves execute_code even when no context files exist', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const originalAgentId = 'agent_code_only';
+
+    await mongoose.models.Agent.create({
+      id: originalAgentId,
+      name: 'Code Only Agent',
+      author: userId.toString(),
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+      tool_resources: {
+        execute_code: { file_ids: ['code-file-x'] },
+      },
+      versions: [{ name: 'Code Only Agent', createdAt: new Date(), updatedAt: new Date() }],
+    });
+
+    await mongoose.models.File.create({
+      file_id: 'code-file-x',
+      user: userId,
+      filename: 'code-file-x.txt',
+      filepath: '/tmp/code-file-x',
+      type: 'text/plain',
+      bytes: 100,
+    });
+
+    const req = {
+      params: { id: originalAgentId },
+      user: { id: userId.toString(), role: 'user' },
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    await duplicateAgent(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const { agent: newAgent } = res.json.mock.calls[0][0];
+
+    expect(newAgent.tool_resources).toBeDefined();
+    expect(newAgent.tool_resources.execute_code).toBeDefined();
+    expect(newAgent.tool_resources.execute_code.file_ids).toEqual(['code-file-x']);
+  });
+
+  it('does not set execute_code when the original has none', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const originalAgentId = 'agent_no_code';
+
+    await mongoose.models.Agent.create({
+      id: originalAgentId,
+      name: 'No Code Agent',
+      author: userId.toString(),
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+      tool_resources: {
+        context: { file_ids: ['ctx-file-1'] },
+      },
+      versions: [{ name: 'No Code Agent', createdAt: new Date(), updatedAt: new Date() }],
+    });
+
+    await mongoose.models.File.create({
+      file_id: 'ctx-file-1',
+      user: userId,
+      filename: 'ctx-file-1.txt',
+      filepath: '/tmp/ctx-file-1',
+      type: 'text/plain',
+      bytes: 100,
+    });
+
+    const req = {
+      params: { id: originalAgentId },
+      user: { id: userId.toString(), role: 'user' },
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    await duplicateAgent(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const { agent: newAgent } = res.json.mock.calls[0][0];
+
+    expect(newAgent.tool_resources).toBeDefined();
+    expect(newAgent.tool_resources.context.file_ids).toEqual(['ctx-file-1']);
+    expect(newAgent.tool_resources.execute_code).toBeUndefined();
+  });
+
+  it('preserves file_search file_ids when duplicating an agent', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const originalAgentId = 'agent_search_files';
+
+    await mongoose.models.Agent.create({
+      id: originalAgentId,
+      name: 'Search Agent',
+      author: userId.toString(),
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+      tool_resources: {
+        file_search: { file_ids: ['search-file-1'] },
+      },
+      versions: [{ name: 'Search Agent', createdAt: new Date(), updatedAt: new Date() }],
+    });
+
+    await mongoose.models.File.create({
+      file_id: 'search-file-1',
+      user: userId,
+      filename: 'search-file-1.txt',
+      filepath: '/tmp/search-file-1',
+      type: 'text/plain',
+      bytes: 100,
+    });
+
+    const req = {
+      params: { id: originalAgentId },
+      user: { id: userId.toString(), role: 'user' },
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    await duplicateAgent(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const { agent: newAgent } = res.json.mock.calls[0][0];
+
+    expect(newAgent.tool_resources).toBeDefined();
+    expect(newAgent.tool_resources.file_search).toBeDefined();
+    expect(newAgent.tool_resources.file_search.file_ids).toEqual(['search-file-1']);
+  });
+
+  it('preserves image_edit file_ids when duplicating an agent', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const originalAgentId = 'agent_image_edits';
+
+    await mongoose.models.Agent.create({
+      id: originalAgentId,
+      name: 'Image Agent',
+      author: userId.toString(),
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+      tool_resources: {
+        image_edit: { file_ids: ['image-file-1'] },
+      },
+      versions: [{ name: 'Image Agent', createdAt: new Date(), updatedAt: new Date() }],
+    });
+
+    await mongoose.models.File.create({
+      file_id: 'image-file-1',
+      user: userId,
+      filename: 'image-file-1.png',
+      filepath: '/tmp/image-file-1',
+      type: 'image/png',
+      bytes: 100,
+    });
+
+    const req = {
+      params: { id: originalAgentId },
+      user: { id: userId.toString(), role: 'user' },
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    await duplicateAgent(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const { agent: newAgent } = res.json.mock.calls[0][0];
+
+    expect(newAgent.tool_resources).toBeDefined();
+    expect(newAgent.tool_resources.image_edit).toBeDefined();
+    expect(newAgent.tool_resources.image_edit.file_ids).toEqual(['image-file-1']);
+  });
+
+  it('folds legacy ocr file_ids into context on the duplicate', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const originalAgentId = 'agent_legacy_ocr';
+
+    await mongoose.models.Agent.create({
+      id: originalAgentId,
+      name: 'Legacy OCR Agent',
+      author: userId.toString(),
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+      tool_resources: {
+        ocr: { file_ids: ['ocr-file-1'] },
+      },
+      versions: [{ name: 'Legacy OCR Agent', createdAt: new Date(), updatedAt: new Date() }],
+    });
+
+    await mongoose.models.File.create({
+      file_id: 'ocr-file-1',
+      user: userId,
+      filename: 'ocr-file-1.pdf',
+      filepath: '/tmp/ocr-file-1',
+      type: 'application/pdf',
+      bytes: 100,
+    });
+
+    const req = {
+      params: { id: originalAgentId },
+      user: { id: userId.toString(), role: 'user' },
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    await duplicateAgent(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const { agent: newAgent } = res.json.mock.calls[0][0];
+
+    expect(newAgent.tool_resources.context).toBeDefined();
+    expect(newAgent.tool_resources.context.file_ids).toEqual(['ocr-file-1']);
+    expect(newAgent.tool_resources.ocr).toBeUndefined();
   });
 });
