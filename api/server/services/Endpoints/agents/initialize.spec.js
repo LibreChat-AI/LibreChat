@@ -453,7 +453,7 @@ describe('initializeClient — processAgent ACL gate', () => {
     const req = makeReq();
     req._isScheduledFire = true;
     const host = require('~/server/services/Schedules/consent');
-    const prepare = jest.spyOn(host, 'prepare').mockResolvedValue(undefined);
+    const prepare = jest.spyOn(host, 'resolve').mockResolvedValue(undefined);
     mockInitializeAgent.mockImplementationOnce(async () => makePrimaryConfig([]));
     try {
       await initializeClient({

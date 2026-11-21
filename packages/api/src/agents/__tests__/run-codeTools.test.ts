@@ -609,7 +609,7 @@ describe('createRun code-tool eager/session wiring', () => {
       streaming: true,
       streamUsage: true,
       subagentTasks,
-      scheduledMCPExecution: execution,
+      grantExecution: execution,
     });
     const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
     // The detached child runs with this run's hooks, the schedule's among them.
@@ -631,7 +631,7 @@ describe('createRun code-tool eager/session wiring', () => {
       streaming: true,
       streamUsage: true,
       subagentTasks,
-      scheduledMCPExecution: bound.execution,
+      grantExecution: bound.execution,
     });
     expect((Run.create as jest.Mock).mock.calls[0][0].subagentTasks).toBeUndefined();
   });

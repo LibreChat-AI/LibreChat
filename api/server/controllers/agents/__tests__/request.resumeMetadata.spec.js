@@ -5065,7 +5065,8 @@ describe('ResumableAgentController resume metadata', () => {
   );
 
   it('never copies a preparation dependency diagnostic into the stream or scheduled outcome', async () => {
-    const { initializeWithScheduleMCPExecution } = jest.requireActual('@librechat/api');
+    const { initializeWithAuthority, scheduleSubject, createMCPRequestContext } =
+      jest.requireActual('@librechat/api');
     const privateError = new Error('PRIVATE schedule database query');
     const provider = jest.fn();
     const req = {
@@ -5083,13 +5084,15 @@ describe('ResumableAgentController resume metadata', () => {
       config: {},
     };
     const initializeClient = ({ signal }) =>
-      initializeWithScheduleMCPExecution(
-        { req, signal },
-        () => ({
-          prepare: async () => {
-            throw privateError;
-          },
-        }),
+      initializeWithAuthority(
+        { req, signal, context: createMCPRequestContext() },
+        [
+          scheduleSubject(() => ({
+            resolve: async () => {
+              throw privateError;
+            },
+          })),
+        ],
         provider,
       );
     const res = createResumableResponse();

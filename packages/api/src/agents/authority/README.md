@@ -2,12 +2,12 @@
 
 A run grant is what an unattended run may use: which MCP servers and tools, until when, and
 whether a tool stops to ask first. The code here does not know who holds the grant. A holder is
-a subject, and a subject supplies an identity, a storage object and a host.
+a subject, and a subject supplies an identity, a storage object, a host and an adapter.
 
-| Subject                             | Identity               | Storage                           | Host                                                             |
-| ----------------------------------- | ---------------------- | --------------------------------- | ---------------------------------------------------------------- |
-| A schedule                          | `ScheduledMCPIdentity` | `createScheduleMCPConsentStorage` | `packages/api/src/schedules/authorization/host.ts`, `runtime.ts` |
-| A personal agent API key, per agent | `AgentKeyMCPIdentity`  | `createAgentKeyMCPConsentStorage` | `packages/api/src/apiKeys/grants.ts`                             |
+| Subject                             | Identity               | Storage                           | Host                                                             | Adapter           |
+| ----------------------------------- | ---------------------- | --------------------------------- | ---------------------------------------------------------------- | ----------------- |
+| A schedule                          | `ScheduledMCPIdentity` | `createScheduleMCPConsentStorage` | `packages/api/src/schedules/authorization/host.ts`, `runtime.ts` | `scheduleSubject` |
+| A personal agent API key, per agent | `AgentKeyMCPIdentity`  | `createAgentKeyMCPConsentStorage` | `packages/api/src/apiKeys/grants.ts`                             | `keySubject`      |
 
 Both storages are `createEmbeddedGrantStorage` over the document that holds the grant
 (`packages/data-schemas/src/methods/runGrant.ts`), so a grant dies with its holder. Every
@@ -27,7 +27,9 @@ grant is made of, and the request and view the routes exchange, are in
 | `execution.ts`     | A run under a grant: the tools it is narrowed to (`narrowGrantedTools`) and the per-call check (`RunGrantInvocation`). |
 | `policy.ts`        | Which tools a grant can cover, the digest of a tool definition, and `RunGrantPolicyError`.                             |
 | `configuration.ts` | The revision of the operator configuration a grant was made under.                                                     |
+| `subject.ts`       | `SubjectAdapter`: the questions the run host asks of a kind of subject.                                                |
 | `host.ts`          | `initializeWithAuthority`: puts a run under its subject's grant before any tool is loaded.                             |
+| `run.ts`           | `createRunPolicy`: what a run under a grant may call, decided before each tool call.                                   |
 | `requirements.ts`  | `resolveRequirements`: the tools and MCP servers an agent and the agents it can reach select.                          |
 | `preflight.ts`     | `createPreflight`: the readiness check. Is each MCP server a run needs ready, and if not, why (`PreflightError`).      |
 
@@ -42,22 +44,62 @@ is read from the request itself:
 
 - **The grant.** `narrow` keeps the tool keys the grant lists for an agent. A grant either
   covers the agents' other tools too (`coversTools`, a schedule's) or limits MCP tools only (an
-  API key's). The run policy (`createScheduledMCPRunPolicy`) is the enforcement of a covering
-  grant. Under one that limits MCP tools only it leaves every other tool alone, reads nothing,
+  API key's). The run policy (`createRunPolicy`, built over whatever grant the run is under)
+  is the enforcement of a covering grant. Under one that limits MCP tools only it leaves every other tool alone, reads nothing,
   and says nothing about an MCP tool, which is checked where it is called
   (`RunGrantInvocation`). The one thing it still decides there is whether work may go to the
   background (`detaches`). The two things a run says in its subject's words, to the model about
-  a tool left out and to the client when it stops to ask, are an input (`PolicyWording`).
+  a tool left out and to the client when it stops to ask, come with the grant (`wording`, a
+  `PolicyWording` the subject's host supplies).
 - **What the delivery runs without** (`Without`): MCP servers that were not ready when it
   started, and every server that check covered. `narrowGrantedTools` drops the tool keys on
   them (`withoutServers`), whether or not the subject holds a grant. The subject's host says
   what they are; this code does not know where the list came from.
 
-`execution.ts` still holds four schedule accessors (`getScheduleMCPExecution`,
-`scheduleAsksEveryUse`, `buildScheduledApprovalAdmissionHooks`, `scheduledMCPIdentity`) because
-they read its module-private map of live executions. What a schedule's grant allows, and how a
-scheduled run is refused, is described in
+Three accessors read the grant a request's run is under, whatever subject holds it:
+`grantExecution`, `asksEveryUse` (for "Always allow" on an approval card) and `approvalHooks`
+(tells run admission the grant can pause the run). A run may pause for its owner only where
+its grant asks about a tool, and a grant can hold such a tool only where its subject's service
+was given a way to pause (`approval`): a schedule's is, a key's is not. Code that writes or
+reads a schedule's own records narrows to a schedule's grant with `scheduleExecution`
+(`packages/api/src/schedules/authorization/subject.ts`). What a schedule's grant allows, and
+how a scheduled run is refused, is described in
 [the schedules README](../../schedules/README.md).
+
+## Subjects and the run host
+
+The run host (`host.ts`) puts a request's run under its subject before any tool is loaded. It
+reads nothing of a schedule or a key. It holds a list of adapters (`SubjectAdapter`) and asks
+each the same questions:
+
+| Operation   | The question                                                              | Schedule                                                           | API key                                            |
+| ----------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------- |
+| `claims`    | Is this request mine? Answered from the request alone.                    | An occurrence, its resume, a completion turn that names a schedule | A trigger delivery whose subject is a key          |
+| `resolve`   | Who does the run act for, at what stage, and what must it not run without | The schedule and its root agent; its grant where it holds one      | The key and the agent; a place under the key       |
+| `restore`   | What does this delivery go without?                                       | Servers skipped by the readiness check, read back from the run row | Nothing                                            |
+| `execution` | The subject's grant, attached where the request's tools are built         | Covers every tool, may ask                                         | MCP tools only, never asks                         |
+| `retain`    | What must a later turn find again?                                        | The schedule, kept on a completion turn's job                      | Nothing: the task keeps the run's trigger          |
+| `opaque`    | Is an unexpected failure reported with nothing of what failed?            | Yes: it is stored on the run, where the owner reads it             | No: it reaches the API caller's own error handling |
+
+```
+initializeWithAuthority(input, adapters, initialize)
+  adapters.filter(claims)          none, and not a completion turn -> initialize(), nothing built
+  a completion turn                needs a context, and a marker of the host's own making
+  for each adapter that claimed    put(adapter, input)
+    resolve                        nothing -> the run is left as its user's
+    restore                        -> Without
+    execution.attach               the grant and the Without, by the request's MCP context
+    require: 'grant' | 'run'       refused where the subject lacks what it requires
+    retain
+  initialize()
+```
+
+An adapter is a thin object over a host that is built only for a request the adapter claims,
+so an ordinary chat request builds nothing. Another kind of subject is another adapter in the
+list: the host has no branch on `kind`. Two places outside it still name a schedule, because
+they write a schedule's stored fields and not because of how a run is held: the completion
+marker's `scheduleMCPIdentity` and the job's `scheduleMCPCompletion`, which is how a schedule's
+completion turn is claimed, and the request markers a schedule's skip list travels on.
 
 ## The context of a triggered run
 
@@ -112,7 +154,7 @@ trigger host, when the work is done
     request body                        agentCompletion.trigger / agentEventDelivery.trigger
 chat route
   createTriggerExecutionContext         subject, origin, agentId = origin.agentId
-  initializeWithAuthority               a key subject -> the key host attaches its grant
+  initializeWithAuthority               the key adapter claims it -> its grant is attached
 ```
 
 - `origin` is the run a delivery from outside started: its root agent and its delivery. A turn
@@ -222,7 +264,8 @@ agent before any tool is loaded. A key with no grant for the agent may not use M
 (`consent_missing`). A key starts a run in two ways:
 
 - Directly: chat completions, Responses, and a background Responses worker. The run's source is
-  `remote_api`, and each controller calls the key host's `prepare`.
+  `remote_api`, and each controller calls the key host's `prepare`, which the key adapter does
+  not claim again on the chat route.
 - By posting an event to `/api/agents/v1/events`. The trigger engine delivers it to the chat
   route, where the run's source is a trigger whose subject is `{ kind: 'key', id }`
   (`createTriggerExecutionContext`, `packages/api/src/agents/authority/context.ts`). The subject

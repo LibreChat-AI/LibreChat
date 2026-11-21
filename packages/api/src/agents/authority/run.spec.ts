@@ -9,14 +9,15 @@ import {
   executeHooks,
 } from '@librechat/agents';
 import type { GraphEdge } from '@librechat/agents';
-import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED, SCHEDULE_WORDING } from './run';
+import { SCHEDULE_TOOL_NOT_ALLOWED, SCHEDULE_WORDING } from '~/schedules/authorization/subject';
 import { executionFixture, readTool } from '~/agents/authority/execution.helper';
 import { createRunGrantExecution } from '~/agents/authority/execution';
+import { createRunPolicy } from './run';
 
 async function setup(edges: GraphEdge[]) {
   const fixture = await executionFixture();
   const agents = ['root', 'child', 'peer'].map((id) => ({ id }));
-  const policy = createScheduledMCPRunPolicy(fixture.execution, agents, edges);
+  const policy = createRunPolicy(fixture.execution, agents, edges);
   const hooks = new HookRegistry();
   hooks.register('PreToolUse', { hooks: [policy.hook] });
   const graph = new MultiAgentGraph({
@@ -92,7 +93,7 @@ it('does not invent transfer controls for direct or orphaned edges', async () =>
     decision: 'deny',
   });
   const fixture = await executionFixture();
-  const orphan = createScheduledMCPRunPolicy(
+  const orphan = createRunPolicy(
     fixture.execution,
     [{ id: 'root' }],
     [{ from: 'root', to: 'missing', edgeType: 'handoff' }],
@@ -134,7 +135,7 @@ it('denies safely when an unenrolled run cannot recheck enrollment', async () =>
   f.snapshot.enrollment = null;
   const legacy = (await f.factory.resolve(f.identity, 'invoke'))!;
   const record = jest.fn(async () => true);
-  const policy = createScheduledMCPRunPolicy(legacy, [{ id: 'root' }], [], record);
+  const policy = createRunPolicy(legacy, [{ id: 'root' }], [], record);
   jest.mocked(f.storage.readRunGrant).mockRejectedValueOnce(new Error('PRIVATE outage'));
   const registry = new HookRegistry();
   registry.register('PreToolUse', { hooks: [policy.hook, policy.receipt], internal: true });
@@ -176,7 +177,7 @@ it('lets a granted tool run in the background, and a held schedule start nothing
   // Under a grant: whatever the tool finishes with is picked up in a turn that resolves the
   // grant again, so the background is no different from the foreground.
   const f = await executionFixture();
-  const granted = createScheduledMCPRunPolicy(f.execution, [agent]);
+  const granted = createRunPolicy(f.execution, [agent]);
   for (const background of [true, false]) {
     expect(await granted.hook(input('query_mcp_warehouse', background), signal)).toEqual({});
     expect(await granted.hook(input(Constants.SUBAGENT, background), signal)).toEqual({});
@@ -188,7 +189,7 @@ it('lets a granted tool run in the background, and a held schedule start nothing
 
   // A grant the completion turn could not find again keeps its run in the foreground.
   const bound = await executionFixture('invoke', readTool, undefined, { detaches: false });
-  const foreground = createScheduledMCPRunPolicy(bound.execution, [agent]);
+  const foreground = createRunPolicy(bound.execution, [agent]);
   expect(await foreground.hook(input('query_mcp_warehouse', true), signal)).toMatchObject({
     decision: 'deny',
   });
@@ -204,17 +205,17 @@ it('lets a granted tool run in the background, and a held schedule start nothing
       coversTools: true,
     }).resolve(f.identity, 'invoke');
   };
-  const held = createScheduledMCPRunPolicy((await unenrolled(true))!, [agent]);
+  const held = createRunPolicy((await unenrolled(true))!, [agent]);
   for (const name of ['query_mcp_warehouse', Constants.SUBAGENT])
     expect(await held.hook(input(name, true), signal)).toMatchObject({ decision: 'deny' });
   // A schedule nobody has to authorize runs as it always did.
-  const exempt = createScheduledMCPRunPolicy((await unenrolled(false))!, [agent]);
+  const exempt = createRunPolicy((await unenrolled(false))!, [agent]);
   expect(await exempt.hook(input('query_mcp_warehouse', true), signal)).toEqual({});
 });
 
 it('lets a run ask what became of the work it sent off, under a grant that lists its tools', async () => {
   const f = await executionFixture();
-  const policy = createScheduledMCPRunPolicy(f.execution, [{ id: 'root' }]);
+  const policy = createRunPolicy(f.execution, [{ id: 'root' }]);
   const poll = {
     hook_event_name: 'PreToolUse' as const,
     runId: 'scheduled',
@@ -249,7 +250,7 @@ it('checks a completion turn rooted at the agent that started the work by what t
   const signal = new AbortController().signal;
   const completion = (await f.factory.resolve(f.identity, 'invoke', { completion: true }))!;
   expect(completion).toMatchObject({ enrolled: true, completion: true });
-  const policy = createScheduledMCPRunPolicy(completion, [child]);
+  const policy = createRunPolicy(completion, [child]);
   expect(await policy.hook(input('query_mcp_warehouse'), signal)).toEqual({});
   // Still only what the grant holds for that agent, and only for agents of this turn.
   expect(await policy.hook(input('web_search'), signal)).toMatchObject({ decision: 'deny' });
@@ -257,7 +258,7 @@ it('checks a completion turn rooted at the agent that started the work by what t
     decision: 'deny',
   });
   // An ordinary run without its root is not the schedule's graph at all.
-  const ordinary = createScheduledMCPRunPolicy(f.execution, [child]);
+  const ordinary = createRunPolicy(f.execution, [child]);
   expect(await ordinary.hook(input('query_mcp_warehouse'), signal)).toMatchObject({
     decision: 'deny',
   });
@@ -273,7 +274,7 @@ describe('a tool the owner left out of the grant', () => {
   async function partial() {
     const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
     const record = jest.fn(async () => true);
-    const policy = createScheduledMCPRunPolicy(
+    const policy = createRunPolicy(
       fixture.execution,
       [{ id: 'root', toolDefinitions: [tool('query'), tool('export')] }],
       [],
@@ -323,7 +324,7 @@ describe('a tool the owner left out of the grant', () => {
 
   it('leaves a tool whose key does not name its server to the check at the call', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
-    const policy = createScheduledMCPRunPolicy(fixture.execution, [
+    const policy = createRunPolicy(fixture.execution, [
       {
         id: 'root',
         toolDefinitions: [{ name: 'export', toolType: 'mcp', serverName: 'warehouse' }],
@@ -372,7 +373,7 @@ describe('a grant that limits MCP tools only', () => {
       ...choice,
     });
     const record = jest.fn(async () => true);
-    const policy = createScheduledMCPRunPolicy(fixture.execution, [agent], [], record);
+    const policy = createRunPolicy(fixture.execution, [agent], [], record);
     const reads = () => jest.mocked(fixture.storage.readRunGrant).mock.calls.length;
     return { fixture, policy, record, reads };
   }
@@ -393,7 +394,7 @@ describe('a grant that limits MCP tools only', () => {
     expect(reads()).toBe(before);
     expect(record).not.toHaveBeenCalled();
     const covering = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
-    const whole = createScheduledMCPRunPolicy(covering.execution, [agent]);
+    const whole = createRunPolicy(covering.execution, [agent]);
     expect(await whole.hook(input('web_search'), signal)).toMatchObject({ decision: 'deny' });
   });
 
@@ -431,7 +432,7 @@ describe('a grant that limits MCP tools only', () => {
         requiresGrant: async () => required,
       }).resolve(f.identity, 'invoke'))!;
       expect(execution).toMatchObject({ enrolled: false, coversTools: false });
-      const policy = createScheduledMCPRunPolicy(execution, [agent]);
+      const policy = createRunPolicy(execution, [agent]);
       const before = jest.mocked(f.storage.readRunGrant).mock.calls.length;
       for (const name of ['web_search', 'query_mcp_warehouse', Constants.SUBAGENT])
         for (const background of [false, true])
@@ -470,10 +471,10 @@ it('speaks to the model and the client in the words it is given, a schedule’s 
   const agents = [{ id: 'root', toolDefinitions: [tool('query'), tool('export')] }];
   const input = (toolName: string) =>
     ({ toolName, toolInput: {}, executingAgentId: 'root' }) as Parameters<
-      ReturnType<typeof createScheduledMCPRunPolicy>['hook']
+      ReturnType<typeof createRunPolicy>['hook']
     >[0];
   const signal = new AbortController().signal;
-  const schedule = createScheduledMCPRunPolicy(fixture.execution, agents);
+  const schedule = createRunPolicy(fixture.execution, agents);
   expect(await schedule.hook(input('export_mcp_warehouse'), signal)).toEqual({
     decision: 'deny',
     reason: SCHEDULE_WORDING.leftOut,
@@ -486,10 +487,10 @@ it('speaks to the model and the client in the words it is given, a schedule’s 
     leftOut: SCHEDULE_TOOL_NOT_ALLOWED,
     ask: 'schedule_owner_approval',
   });
-  const other = createScheduledMCPRunPolicy(fixture.execution, agents, [], undefined, {
-    leftOut: 'Not allowed here.',
-    ask: 'owner_approval',
-  });
+  const other = createRunPolicy(
+    { ...fixture.execution, wording: { leftOut: 'Not allowed here.', ask: 'owner_approval' } },
+    agents,
+  );
   expect(await other.hook(input('export_mcp_warehouse'), signal)).toEqual({
     decision: 'deny',
     reason: 'Not allowed here.',

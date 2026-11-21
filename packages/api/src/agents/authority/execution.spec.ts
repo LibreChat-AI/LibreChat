@@ -3,21 +3,19 @@ import { Constants, DEFAULT_HOOK_TIMEOUT_MS } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { HookCallback } from '@librechat/agents';
 import {
-  scheduleAsksEveryUse,
+  asksEveryUse,
   createRunGrantExecution,
   narrowGrantedTools,
   collectApprovedToolCalls,
   withoutServers,
   bindRunGrantInvocation,
 } from './execution';
-import {
-  createScheduledMCPRunPolicy,
-  SCHEDULE_TOOL_NOT_ALLOWED,
-} from '~/schedules/authorization/run';
+import { SCHEDULE_TOOL_NOT_ALLOWED } from '~/schedules/authorization/subject';
 import { createMCPRequestContext, getMCPRequestContext } from '~/mcp/request';
 import { executionFixture, readTool } from './execution.helper';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { RunGrantPolicyError } from './policy';
+import { createRunPolicy } from './run';
 
 const catalog = (tools: Tool[] = [readTool]) => ({ tools, complete: true });
 
@@ -273,7 +271,7 @@ it('admits disabled consent only for activation, not invocation', async () => {
 
 it('installs an independent ceiling for root, child, handoff, and lazy tools without loosening approval', async () => {
   const f = await executionFixture();
-  const policy = createScheduledMCPRunPolicy(f.execution, [
+  const policy = createRunPolicy(f.execution, [
     {
       id: 'root',
       toolDefinitions: [{ name: 'query_mcp_warehouse', serverName: 'warehouse', toolType: 'mcp' }],
@@ -328,7 +326,7 @@ it('installs an independent ceiling for root, child, handoff, and lazy tools wit
     decision: 'deny',
     reason: SCHEDULE_TOOL_NOT_ALLOWED,
   });
-  const lazy = createScheduledMCPRunPolicy(f.execution, [{ id: 'root' }]);
+  const lazy = createRunPolicy(f.execution, [{ id: 'root' }]);
   lazy.registerAgent({
     id: 'child',
     toolRegistry: new Map([
@@ -360,7 +358,7 @@ it('lets a run use the other tools its owner allowed, and code tools only with c
   });
   const mcp = [{ name: 'query_mcp_warehouse', serverName: 'warehouse', toolType: 'mcp' }];
   const decide = (execution: typeof f.execution, toolName: string, executingAgentId = 'root') =>
-    createScheduledMCPRunPolicy(execution, [
+    createRunPolicy(execution, [
       { id: 'root', toolDefinitions: mcp },
       { id: 'child', toolDefinitions: mcp },
     ]).hook(
@@ -573,7 +571,7 @@ describe('the tools a run loads under a grant', () => {
     expect(fixture.execution.narrow('stranger', all)).toEqual(all);
     expect(fixture.execution.grants('later', 'archive', 'purge')).toBe(true);
     expect(fixture.execution.grantsTool('root', 'execute_code')).toBe(true);
-    const policy = createScheduledMCPRunPolicy(fixture.execution, [
+    const policy = createRunPolicy(fixture.execution, [
       { id: 'root', toolDefinitions: [{ name: 'purge_mcp_archive', serverName: 'archive' }] },
     ]);
     const decide = (toolName: string) =>
@@ -672,7 +670,7 @@ describe('the tools a run loads under a grant', () => {
       expect(fixture.execution.narrow('root', ['skills'])).toEqual(
         allowTools.includes('skills') ? ['skills'] : [],
       );
-      return createScheduledMCPRunPolicy(fixture.execution, [{ id: 'root' }]).hook(
+      return createRunPolicy(fixture.execution, [{ id: 'root' }]).hook(
         { toolName, toolInput: {}, executingAgentId: 'root' } as Parameters<
           HookCallback<'PreToolUse'>
         >[0],
@@ -825,7 +823,7 @@ describe('the tools a run loads under a grant', () => {
       }).resolve(fixture.identity, 'invoke');
     const mcp = [{ name: 'query_mcp_warehouse', serverName: 'warehouse', toolType: 'mcp' }];
     const decide = (execution: typeof fixture.execution, toolName: string) =>
-      createScheduledMCPRunPolicy(execution, [{ id: 'root', toolDefinitions: mcp }]).hook(
+      createRunPolicy(execution, [{ id: 'root', toolDefinitions: mcp }]).hook(
         { toolName, toolInput: {}, executingAgentId: 'root' } as Parameters<
           HookCallback<'PreToolUse'>
         >[0],
@@ -869,7 +867,7 @@ describe('the tools a run loads under a grant', () => {
         coversTools: true,
       }).resolve(fixture.identity, 'invoke');
     const decide = async (execution: Awaited<ReturnType<typeof build>>) =>
-      createScheduledMCPRunPolicy(execution!, [{ id: 'root' }]).hook(
+      createRunPolicy(execution!, [{ id: 'root' }]).hook(
         { toolName: 'web_search', toolInput: {}, executingAgentId: 'root' } as Parameters<
           HookCallback<'PreToolUse'>
         >[0],
@@ -1076,14 +1074,14 @@ describe('a tool the owner approves call by call', () => {
       ask: ['query'],
     });
     const req = {};
-    const asks = scheduleAsksEveryUse(req);
+    const asks = asksEveryUse(req);
     // Built before the grant is attached, as on a resume, and false for any other request.
     expect(asks(['query_mcp_warehouse'])).toBe(false);
     await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
     expect(asks(['query_mcp_warehouse'])).toBe(true);
     expect(asks(['other_name', 'query_mcp_warehouse'])).toBe(true);
     expect(asks(['export_mcp_warehouse'])).toBe(false);
-    expect(scheduleAsksEveryUse(undefined)(['query_mcp_warehouse'])).toBe(false);
+    expect(asksEveryUse(undefined)(['query_mcp_warehouse'])).toBe(false);
   });
 
   it('runs the call the owner approved, and only that call', async () => {
@@ -1139,7 +1137,7 @@ describe('a tool the owner approves call by call', () => {
         serverName: 'warehouse',
       })),
     };
-    const policy = createScheduledMCPRunPolicy(fixture.execution, [agent]);
+    const policy = createRunPolicy(fixture.execution, [agent]);
     const decide = (toolName: string, executingAgentId = 'root') =>
       policy.hook(
         { toolName, toolInput: {}, executingAgentId } as Parameters<typeof policy.hook>[0],

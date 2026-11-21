@@ -5609,7 +5609,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [agent] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: f.execution,
+        grantExecution: f.execution,
         appConfig: {
           ...hitlAppConfig,
           endpoints: {
@@ -5671,7 +5671,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [root] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: execution,
+        grantExecution: execution,
         subagentTasks: tasks,
         appConfig: {
           ...hitlAppConfig,
@@ -5707,8 +5707,8 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [makeAgent({ id: 'root' })] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: f.execution,
-        recordScheduledMCPDenial: recorder,
+        grantExecution: f.execution,
+        recordGrantDenial: recorder,
         toolApprovalAllows: remembered ? ['write_action_api'] : undefined,
         appConfig: {
           ...hitlAppConfig,
@@ -5763,7 +5763,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
     await createRun({
       agents: agents as never,
       signal: new AbortController().signal,
-      scheduledMCPExecution: f.execution,
+      grantExecution: f.execution,
       appConfig: {
         ...hitlAppConfig,
         endpoints: { agents: { toolApproval: { enabled: false } } },

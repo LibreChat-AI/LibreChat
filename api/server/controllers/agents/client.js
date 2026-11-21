@@ -27,8 +27,9 @@ const {
   isMemoryAgentEnabled,
   recordCollectedUsage,
   resolveRunUsageContext,
-  getScheduleMCPExecution,
-  scheduleAsksEveryUse,
+  grantExecution,
+  scheduleExecution,
+  asksEveryUse,
   createScheduledMCPPolicyRecorder,
   recordFallbackTokenUsage,
   getAgentPromptTokenEstimate,
@@ -71,7 +72,7 @@ const {
   collectAttachedCodeApprovalPolicies,
   collectAttachedCodeRoutePolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
-  buildScheduledApprovalAdmissionHooks,
+  approvalHooks,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
   getCodeApprovalPreservedFields,
@@ -4442,7 +4443,7 @@ class AgentClient extends BaseClient {
                 appConfig,
               },
               pluginHookSource: getPluginHookSource(),
-              asksEveryUse: scheduleAsksEveryUse(this.options.req),
+              asksEveryUse: asksEveryUse(this.options.req),
             },
           )
         : interrupt.payload;
@@ -4590,11 +4591,11 @@ class AgentClient extends BaseClient {
         collectAttachedCodeApprovalPolicies(topLevelAgents),
         agentsEConfig?.toolApproval?.enabled !== false,
       );
-      const scheduledMCPExecution = getScheduleMCPExecution(getMCPRequestContext(this.options.req));
+      const runGrant = grantExecution(getMCPRequestContext(this.options.req));
       const effectiveToolApprovalPolicy = resolveToolApprovalPolicy({
         endpoint: agentsEConfig?.toolApproval,
         attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
-        ownerApproval: scheduledMCPExecution?.mayAsk === true,
+        ownerApproval: runGrant?.mayAsk === true,
       });
       const resolvedToolApprovalHooks = isHITLEnabled(effectiveToolApprovalPolicy)
         ? buildToolApprovalHooks({
@@ -4612,7 +4613,7 @@ class AgentClient extends BaseClient {
           codeApprovalMode,
           collectAttachedCodeRoutePolicies(topLevelAgents),
         ),
-        ...buildScheduledApprovalAdmissionHooks(scheduledMCPExecution),
+        ...approvalHooks(runGrant),
       ];
       const askUserQuestionAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
       const runCanPause = canAgentGraphPause({
@@ -5030,9 +5031,9 @@ class AgentClient extends BaseClient {
         const createRunPromise = createRun({
           sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
           sdkFiles: this.options.sdkFiles,
-          scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
-          recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
-            getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+          grantExecution: grantExecution(getMCPRequestContext(this.options.req)),
+          recordGrantDenial: createScheduledMCPPolicyRecorder(
+            scheduleExecution(getMCPRequestContext(this.options.req)),
             {
               streamId,
               jobCreatedAt: this.jobCreatedAt,
@@ -5852,9 +5853,9 @@ class AgentClient extends BaseClient {
         sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
         sdkFiles: this.options.sdkFiles,
         sdkResumeState: { content: seedContent, steps: runSteps },
-        scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
-        recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
-          getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+        grantExecution: grantExecution(getMCPRequestContext(this.options.req)),
+        recordGrantDenial: createScheduledMCPPolicyRecorder(
+          scheduleExecution(getMCPRequestContext(this.options.req)),
           {
             streamId,
             jobCreatedAt: this.jobCreatedAt,
