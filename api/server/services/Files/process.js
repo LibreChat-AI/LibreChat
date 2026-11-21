@@ -64,6 +64,7 @@ const {
   convertImage,
   resizeAndConvert,
   resizeImageBuffer,
+  describeImageBuffer,
 } = require('~/server/services/Files/images');
 const { addResourceFileId, deleteResourceFileId } = require('~/server/controllers/assistants/v2');
 const { getOpenAIClient } = require('~/server/controllers/assistants/helpers');
@@ -1685,22 +1686,45 @@ function base64ToBuffer(base64String) {
   }
 }
 
+/**
+ * Splits `fileConfig.imageGeneration` (or an explicit `resolution`) into whether generated images
+ * are stored as the image service returned them, and the resolution to resize to otherwise.
+ * An object without `percentage` or `px` resizes like the default instead of being rejected.
+ *
+ * @param {'low' | 'high' | {percentage?: number, px?: number, keepOriginal?: boolean} | undefined} setting
+ * @returns {{ keepOriginal: boolean, resolution: 'low' | 'high' | {percentage?: number, px?: number} }}
+ */
+function resolveImageGenerationOutput(setting) {
+  if (!setting || typeof setting !== 'object') {
+    return { keepOriginal: false, resolution: setting ?? 'high' };
+  }
+  const { keepOriginal = false, ...size } = setting;
+  const hasSize = typeof size.percentage === 'number' || typeof size.px === 'number';
+  return { keepOriginal: keepOriginal === true, resolution: hasSize ? size : 'high' };
+}
+
 async function saveBase64Image(
   url,
   { req, file_id: _file_id, filename: _filename, endpoint, context, resolution },
 ) {
   const retentionExpiryPromise = getRetentionExpiry(req);
   const appConfig = req.config;
-  const effectiveResolution = resolution ?? appConfig.fileConfig?.imageGeneration ?? 'high';
+  const output = resolveImageGenerationOutput(resolution ?? appConfig.fileConfig?.imageGeneration);
   const file_id = _file_id ?? v4();
   let filename = `${file_id}-${_filename}`;
   const { buffer: inputBuffer, type: declaredType } = base64ToBuffer(url);
 
-  const image = await resizeImageBuffer(inputBuffer, effectiveResolution, endpoint);
+  /** With `keepOriginal`, a PNG, JPEG, WebP or GIF is stored byte for byte, which keeps provenance
+   * metadata the image service signed into it (C2PA Content Credentials). Other formats are
+   * still converted below. */
+  const image =
+    (output.keepOriginal && (await describeImageBuffer(inputBuffer))) ||
+    (await resizeImageBuffer(inputBuffer, output.resolution, endpoint));
   /** Sharp re-encodes what it resizes, so the bytes being saved are not necessarily in the
-   * format the data URL declared — an SVG arrives here and is rasterized to PNG. The record has
-   * to describe the bytes, because `file.type` is handed to providers verbatim as `media_type`
-   * (Anthropic), `inlineData.mimeType` (Google), and the `data:` prefix (OpenAI). */
+   * format the data URL declared — an SVG arrives here and is rasterized to PNG. Kept bytes may
+   * be mislabeled by their producer too. The record has to describe the bytes, because
+   * `file.type` is handed to providers verbatim as `media_type` (Anthropic), `inlineData.mimeType`
+   * (Google), and the `data:` prefix (OpenAI). */
   const type = image.type ?? declaredType;
   if (!path.extname(_filename)) {
     const extension = mime.getExtension(type);

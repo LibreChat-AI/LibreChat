@@ -117,4 +117,27 @@ async function resizeAndConvert({ inputBuffer, desiredFormat, width = 150 }) {
   };
 }
 
-module.exports = { resizeImageBuffer, resizeAndConvert };
+/** Raster formats every browser shows as they are, so they can be stored without re-encoding. */
+const KEEPABLE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+/**
+ * Describes an image buffer without re-encoding it, so the bytes keep everything their producer
+ * embedded, such as signed C2PA Content Credentials, which any re-encode drops.
+ *
+ * @param {Buffer} inputBuffer - The image as the producer returned it.
+ * @returns {Promise<{buffer: Buffer, bytes: number, width: number, height: number, type: string} | null>}
+ *          The unchanged buffer with its dimensions and media type, or `null` when the bytes are
+ *          not a PNG, JPEG, WebP or GIF (an SVG, for example), which callers must still convert.
+ */
+async function describeImageBuffer(inputBuffer) {
+  const metadata = await sharp(inputBuffer).metadata();
+  const type = resolveImageMimeType(metadata);
+  if (!type || !KEEPABLE_IMAGE_TYPES.has(type)) {
+    return null;
+  }
+  /** The dimensions as displayed, after any EXIF rotation `resizeImageBuffer` would have applied. */
+  const { width, height } = metadata.autoOrient ?? metadata;
+  return { buffer: inputBuffer, bytes: inputBuffer.length, width, height, type };
+}
+
+module.exports = { resizeImageBuffer, resizeAndConvert, describeImageBuffer };
