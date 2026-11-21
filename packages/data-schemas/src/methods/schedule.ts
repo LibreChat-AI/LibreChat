@@ -15,8 +15,10 @@ import type {
   IScheduleRun,
   IScheduleRunDocument,
 } from '~/types/schedule';
+import type { TriggerRunRef } from '~/types/triggerRun';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { createTriggerRuns } from './triggerRun';
 import { unchangedRunGrant } from './runGrant';
 
 const DUPLICATE_KEY = 11000;
@@ -378,6 +380,13 @@ export type ScheduleMethods = {
 export function createScheduleMethods(mongoose: typeof import('mongoose')): ScheduleMethods {
   const Schedule = () => mongoose.models.Schedule as Model<IScheduleDocument>;
   const ScheduleRun = () => mongoose.models.ScheduleRun as Model<IScheduleRunDocument>;
+  const runs = createTriggerRuns(mongoose);
+
+  /** One occurrence of a schedule, as the run it started is found by. */
+  const occurrence = (scheduleId: string, scheduledFor: string | Date): TriggerRunRef => ({
+    subject: { kind: 'schedule', id: scheduleId },
+    delivery: { event: { occurredAt: new Date(scheduledFor).getTime() } },
+  });
 
   /**
    * Explicitly builds the Schedule/ScheduleRun indexes. Required because
@@ -917,10 +926,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduleId: string,
     scheduledFor: string | Date,
   ): Promise<{ recorded: boolean; chatProjectId?: string } | null> {
-    const run = await ScheduleRun()
-      .findOne({ scheduleId, scheduledFor: new Date(scheduledFor) })
-      .select('chatProjectId')
-      .lean<{ chatProjectId?: string | null } | null>();
+    const run = await runs.get(occurrence(scheduleId, scheduledFor), ['chatProjectId']);
     if (run == null) {
       return null;
     }
@@ -939,10 +945,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduleId: string,
     scheduledFor: string | Date,
   ): Promise<ScheduleMCPOutcome[]> {
-    const run = await ScheduleRun()
-      .findOne({ scheduleId, scheduledFor: new Date(scheduledFor) })
-      .select('mcp')
-      .lean<{ mcp?: ScheduleMCPOutcome[] } | null>();
+    const run = await runs.get(occurrence(scheduleId, scheduledFor), ['mcp']);
     return run?.mcp ?? [];
   }
 
@@ -957,16 +960,15 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
     conversationId: string,
   ): Promise<ScheduleMCPOutcome[]> {
-    const run = await ScheduleRun()
-      .findOne({
-        user: scope.ownerId,
+    const run = await runs.byConversation(
+      {
+        subject: { kind: 'schedule', id: scope.scheduleId },
+        owner: scope.ownerId,
         tenantId: scope.tenantId,
-        conversationId,
-        scheduleId: scope.scheduleId,
-      })
-      .sort({ firedAt: -1 })
-      .select('mcp')
-      .lean<{ mcp?: ScheduleMCPOutcome[] } | null>();
+      },
+      conversationId,
+      ['mcp'],
+    );
     return run?.mcp ?? [];
   }
 
@@ -1166,13 +1168,13 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     IScheduleRun,
     'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
   > | null> {
-    return ScheduleRun()
-      .findOne({ scheduleId, scheduledFor })
-      .select('status abortRequestedAt abortSource abortPersistedAt mcp')
-      .lean<Pick<
-        IScheduleRun,
-        'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
-      > | null>();
+    return runs.get(occurrence(scheduleId, scheduledFor), [
+      'status',
+      'abortRequestedAt',
+      'abortSource',
+      'abortPersistedAt',
+      'mcp',
+    ]);
   }
 
   /**
