@@ -247,6 +247,30 @@ export const columns: ColumnDef<TFile>[] = [
     },
   },
   {
+    accessorKey: 'embedded',
+    header: () => {
+      const localize = useLocalize();
+      return <>{localize('com_ui_embedded')}</>;
+    },
+    cell: ({ row }) => {
+      const { embedded } = row.original;
+      const localize = useLocalize();
+      return (
+        <div className="flex flex-wrap items-center gap-2">
+          {embedded === true ? (
+            <span className="rounded-full bg-[#f2f8ec] px-2 py-0.5 text-xs text-[#91c561]">
+              {localize('com_ui_embedded')}
+            </span>
+          ) : (
+            <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-xs text-text-tertiary">
+              {localize('com_ui_not_embedded')}
+            </span>
+          )}
+        </div>
+      );
+    },
+  },
+  {
     accessorKey: 'bytes',
     header: ({ column }) => {
       const localize = useLocalize();
