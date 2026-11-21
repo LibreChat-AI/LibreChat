@@ -3,6 +3,7 @@ import {
   TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
   TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
 } from 'librechat-data-provider';
+import type { AuthMethod } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { StoredTwoFactorAccount } from './twoFactor';
 import type { UserDocumentId } from '~/auth/verification';
@@ -18,18 +19,21 @@ import {
 import { clearCloudFrontCookies } from '~/cdn';
 
 type LoginUser = StoredTwoFactorAccount & { __v?: number };
-type LoginRequest = Request & { user?: LoginUser };
+/** `authMethod` is set by the credential check that ran ahead of this controller (local, LDAP,
+ *  passkey); it falls back to `'local'` when nothing set it. */
+type LoginRequest = Request & { user?: LoginUser; authMethod?: AuthMethod };
 
 export interface LoginDependencies {
   getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
   clearCloudFrontCookies: typeof clearCloudFrontCookies;
-  generate2FATempToken: (userId: UserDocumentId) => string;
+  generate2FATempToken: (userId: UserDocumentId, authMethod?: AuthMethod) => string;
   setAuthTokens: (
     userId: UserDocumentId,
     res: Response,
     unused: null,
     req: Request,
+    options?: { authMethod?: AuthMethod },
   ) => Promise<string>;
 }
 
@@ -66,7 +70,7 @@ export function createLoginController(deps: LoginDependencies) {
       }
 
       if (req.user.twoFactorEnabled) {
-        const tempToken = deps.generate2FATempToken(req.user._id);
+        const tempToken = deps.generate2FATempToken(req.user._id, req.authMethod ?? 'local');
         if (await wasPasswordRevokedDuringLogin(req.user)) {
           return refuseRevokedLogin(res, req.user);
         }
@@ -82,6 +86,7 @@ export function createLoginController(deps: LoginDependencies) {
         const tempToken = generateTwoFactorSetupToken(
           req.user._id.toString(),
           process.env.JWT_SECRET!,
+          req.authMethod ?? 'local',
         );
         if (await wasPasswordRevokedDuringLogin(req.user)) {
           return refuseRevokedLogin(res, req.user);
@@ -98,7 +103,9 @@ export function createLoginController(deps: LoginDependencies) {
       user.id = user._id.toString();
 
       const loginUser = req.user;
-      const token = await deps.setAuthTokens(loginUser._id, res, null, req);
+      const token = await deps.setAuthTokens(loginUser._id, res, null, req, {
+        authMethod: req.authMethod ?? 'local',
+      });
       const revoked = await recheckMintedCredential(
         () => wasPasswordRevokedDuringLogin(loginUser),
         () => withdrawLoginSession(res, loginUser),

@@ -3,6 +3,8 @@ const { generate2FATempToken } = require('~/server/services/twoFactorService');
 const { getUserById, deleteAllUserSessions } = require('~/models');
 const { setAuthTokens } = require('~/server/services/AuthService');
 
+/** Records `req.authMethod` on the minted session, falling back to `'local'`. Every credential
+ *  check that runs ahead of this controller (local, LDAP, passkey) sets `req.authMethod`. */
 const loginController = createLoginController({
   generate2FATempToken,
   getUserById,

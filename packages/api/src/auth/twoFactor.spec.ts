@@ -574,6 +574,114 @@ describe('two-factor setup tokens', () => {
     expect(verifyTwoFactorSetupAcknowledgementToken(token, jwtSecret)).toBeUndefined();
     expect(verifyTwoFactorSetupFinalizationToken(token, jwtSecret)).toBeUndefined();
   });
+
+  describe('authMethod claim', () => {
+    it('carries the login method through a login challenge token', () => {
+      const token = generateTwoFactorLoginChallengeToken('user-1', jwtSecret, 'ldap');
+
+      expect(verifyTwoFactorLoginChallengeToken(token, jwtSecret)).toEqual(
+        expect.objectContaining({ userId: 'user-1', authMethod: 'ldap' }),
+      );
+    });
+
+    it('carries the login method through a setup token', () => {
+      const token = generateTwoFactorSetupToken('user-2', jwtSecret, 'passkey');
+
+      expect(verifyTwoFactorSetupToken(token, jwtSecret)).toEqual(
+        expect.objectContaining({ userId: 'user-2', authMethod: 'passkey' }),
+      );
+    });
+
+    it('carries the login method through acknowledgement and finalization tokens', () => {
+      const acknowledgementToken = generateTwoFactorSetupAcknowledgementToken(
+        'user-1',
+        nonce,
+        jwtSecret,
+        'ldap',
+      );
+      const finalizationToken = generateTwoFactorSetupFinalizationToken(
+        'user-1',
+        nonce,
+        jwtSecret,
+        'saml',
+      );
+
+      expect(verifyTwoFactorSetupAcknowledgementToken(acknowledgementToken, jwtSecret)).toEqual(
+        expect.objectContaining({ userId: 'user-1', nonce, authMethod: 'ldap' }),
+      );
+      expect(verifyTwoFactorSetupFinalizationToken(finalizationToken, jwtSecret)).toEqual(
+        expect.objectContaining({ userId: 'user-1', nonce, authMethod: 'saml' }),
+      );
+    });
+
+    it('carries the login method through a login challenge token for openid and social', () => {
+      const openidToken = generateTwoFactorLoginChallengeToken('user-1', jwtSecret, 'openid');
+      const socialToken = generateTwoFactorLoginChallengeToken('user-1', jwtSecret, 'social');
+
+      expect(verifyTwoFactorLoginChallengeToken(openidToken, jwtSecret)?.authMethod).toBe('openid');
+      expect(verifyTwoFactorLoginChallengeToken(socialToken, jwtSecret)?.authMethod).toBe('social');
+    });
+
+    it('stamps every generated token with an expiry, not an eternal one', () => {
+      const token = generateTwoFactorLoginChallengeToken('user-1', jwtSecret, 'ldap');
+
+      expect((jwt.decode(token) as jwt.JwtPayload).exp).toBeDefined();
+    });
+
+    it('omits the claim when no method was given, rather than minting an empty one', () => {
+      const loginToken = generateTwoFactorLoginChallengeToken('user-1', jwtSecret);
+      const setupToken = generateTwoFactorSetupToken('user-2', jwtSecret);
+
+      expect(verifyTwoFactorLoginChallengeToken(loginToken, jwtSecret)?.authMethod).toBeUndefined();
+      expect(verifyTwoFactorSetupToken(setupToken, jwtSecret)?.authMethod).toBeUndefined();
+      expect((jwt.decode(loginToken) as jwt.JwtPayload).authMethod).toBeUndefined();
+    });
+
+    /**
+     * A forged or stale claim outside the `AuthMethod` union must never reach a session mint, so
+     * every verifier reads it back as absent rather than passing an arbitrary string through.
+     */
+    it.each([
+      [
+        'login challenge',
+        TWO_FACTOR_TOKEN_PURPOSE.LOGIN_CHALLENGE,
+        verifyTwoFactorLoginChallengeToken,
+      ],
+      ['setup', TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP, verifyTwoFactorSetupToken],
+    ] as const)('drops an invalid authMethod claim on a %s token', (_label, purpose, verify) => {
+      const forged = jwt.sign(
+        { userId: 'user-1', purpose, issuedAtMs: Date.now(), authMethod: 'not-a-real-method' },
+        jwtSecret,
+        { expiresIn: '5m' },
+      );
+
+      expect(verify(forged, jwtSecret)?.authMethod).toBeUndefined();
+    });
+
+    it.each([
+      [
+        'acknowledgement',
+        TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_ACKNOWLEDGEMENT,
+        verifyTwoFactorSetupAcknowledgementToken,
+      ],
+      [
+        'finalization',
+        TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_FINALIZATION,
+        verifyTwoFactorSetupFinalizationToken,
+      ],
+    ] as const)(
+      'drops an invalid authMethod claim on a %s credential',
+      (_label, purpose, verify) => {
+        const forged = jwt.sign(
+          { userId: 'user-1', nonce, purpose, authMethod: 'not-a-real-method' },
+          jwtSecret,
+          { expiresIn: '5m' },
+        );
+
+        expect(verify(forged, jwtSecret)?.authMethod).toBeUndefined();
+      },
+    );
+  });
 });
 
 describe('requireTwoFactorSetupAcknowledgementToken', () => {
@@ -600,6 +708,43 @@ describe('requireTwoFactorSetupAcknowledgementToken', () => {
     expect(req.user).toEqual({ id: 'user-5' });
     expect((req as TwoFactorEnrollmentRequest).twoFactorEnrollmentNonce).toBe(nonce);
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('threads the authMethod claim from the acknowledgement token onto the request', () => {
+    const req = {
+      body: {
+        acknowledgementToken: generateTwoFactorSetupAcknowledgementToken(
+          'user-5',
+          nonce,
+          jwtSecret,
+          'ldap',
+        ),
+      },
+    } as Request;
+    const res = createResponse();
+    const next = jest.fn();
+
+    requireTwoFactorSetupAcknowledgementToken(req, res, next);
+
+    expect((req as TwoFactorEnrollmentRequest).twoFactorEnrollmentAuthMethod).toBe('ldap');
+  });
+
+  it('leaves the authMethod unset when the acknowledgement token carries none', () => {
+    const req = {
+      body: {
+        acknowledgementToken: generateTwoFactorSetupAcknowledgementToken(
+          'user-5',
+          nonce,
+          jwtSecret,
+        ),
+      },
+    } as Request;
+    const res = createResponse();
+    const next = jest.fn();
+
+    requireTwoFactorSetupAcknowledgementToken(req, res, next);
+
+    expect((req as TwoFactorEnrollmentRequest).twoFactorEnrollmentAuthMethod).toBeUndefined();
   });
 
   it.each([
@@ -654,6 +799,25 @@ describe('requireTwoFactorSetupFinalizationToken', () => {
     expect(req.user).toEqual({ id: 'user-4' });
     expect((req as TwoFactorEnrollmentRequest).twoFactorEnrollmentNonce).toBe(nonce);
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('threads the authMethod claim from the finalization token onto the request', () => {
+    const req = {
+      body: {
+        finalizationToken: generateTwoFactorSetupFinalizationToken(
+          'user-4',
+          nonce,
+          jwtSecret,
+          'saml',
+        ),
+      },
+    } as Request;
+    const res = createResponse();
+    const next = jest.fn() as jest.MockedFunction<NextFunction>;
+
+    requireTwoFactorSetupFinalizationToken(req, res, next);
+
+    expect((req as TwoFactorEnrollmentRequest).twoFactorEnrollmentAuthMethod).toBe('saml');
   });
 
   it('rejects invalid and wrong-purpose tokens', () => {
@@ -728,6 +892,30 @@ describe('requireTwoFactorSetupToken', () => {
     expect(req.user).toEqual({ id: 'user-2' });
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('threads the authMethod claim from the setup token onto the request', () => {
+    const req = {
+      body: { tempToken: generateTwoFactorSetupToken('user-2', jwtSecret, 'ldap') },
+    } as Request;
+    const res = createResponse();
+    const next = jest.fn() as jest.MockedFunction<NextFunction>;
+
+    requireTwoFactorSetupToken(req, res, next);
+
+    expect((req as TwoFactorEnrollmentRequest).twoFactorEnrollmentAuthMethod).toBe('ldap');
+  });
+
+  it('leaves the authMethod unset when the setup token carries none', () => {
+    const req = {
+      body: { tempToken: generateTwoFactorSetupToken('user-2', jwtSecret) },
+    } as Request;
+    const res = createResponse();
+    const next = jest.fn() as jest.MockedFunction<NextFunction>;
+
+    requireTwoFactorSetupToken(req, res, next);
+
+    expect((req as TwoFactorEnrollmentRequest).twoFactorEnrollmentAuthMethod).toBeUndefined();
   });
 
   it('stamps the mint time, so a later account event can retire the token', () => {
