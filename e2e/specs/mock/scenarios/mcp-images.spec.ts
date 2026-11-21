@@ -8,7 +8,7 @@ import { formatToolContent } from '../../../../packages/api/src/mcp/parsers';
 test('unknown-provider MCP images remain displayable without vision input @scenario:mcp-unknown-display-images', () => {
   const [content, artifact] = formatToolContent(
     { content: [{ type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' }] },
-    'vertexai' as Provider,
+    'mistralai' as Provider,
   );
   expect(artifact).toBeDefined();
   if (!artifact) {

@@ -101,6 +101,9 @@ function assertImageDataWithinLimit(item: t.ImageContent): void {
 
 const RECOGNIZED_PROVIDERS = new Set([
   'google',
+  /** Gemini through Vertex AI (a service account or project): the agents package treats it as
+   *  Google-like and delivers image artifacts to the model the same way. */
+  'vertexai',
   'anthropic',
   'openai',
   'azureopenai',
