@@ -59,6 +59,11 @@ describe('mermaid config', () => {
       expect(files['/components/ui/MermaidDiagram.tsx']).toContain('securityLevel: "strict"');
     });
 
+    it('includes suppressErrorRendering in generated component', () => {
+      const files = getMermaidFiles(content, true);
+      expect(files['/components/ui/MermaidDiagram.tsx']).toContain('suppressErrorRendering: true');
+    });
+
     it('includes all required file keys', () => {
       const files = getMermaidFiles(content, true);
       expect(files['diagram.mmd']).toBe(content);
