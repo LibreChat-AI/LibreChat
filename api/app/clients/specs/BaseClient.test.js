@@ -383,7 +383,10 @@ describe('BaseClient', () => {
           addPreviousAttachments: async (messages) => messages,
           onHistoryLoaded: jest.fn(),
         });
-      const wholeConversationQuery = [{ conversationId, user: 'user-1' }, '+privateTextTokens'];
+      const wholeConversationQuery = [
+        { conversationId, user: 'user-1' },
+        '+privateTextTokens +providerItems',
+      ];
       const messageIds = (messages) => messages.map((message) => message.messageId);
 
       test('fetches only the active branch, and hands that branch to the history consumer', async () => {
@@ -397,7 +400,7 @@ describe('BaseClient', () => {
         const [filter, select] = getMessages.mock.calls[0];
         expect(filter).toMatchObject({ conversationId, user: 'user-1' });
         expect([...filter.messageId.$in].sort()).toEqual(['a1', 'a2b', 'u1', 'u2b']);
-        expect(select).toBe('+privateTextTokens');
+        expect(select).toBe('+privateTextTokens +providerItems');
         expect(messageIds(result)).toEqual(['u1', 'a1', 'u2b', 'a2b']);
         expect(messageIds(client.onHistoryLoaded.mock.calls[0][0])).toEqual([
           'u1',
@@ -1727,7 +1730,10 @@ describe('BaseClient', () => {
 
       const chatMessages = await TestClient.loadHistory(conversationId, '1');
 
-      expect(getMessages).toHaveBeenCalledWith({ conversationId, user }, '+privateTextTokens');
+      expect(getMessages).toHaveBeenCalledWith(
+        { conversationId, user },
+        '+privateTextTokens +providerItems',
+      );
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');
     });
