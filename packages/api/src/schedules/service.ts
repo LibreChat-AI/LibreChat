@@ -199,6 +199,7 @@ export interface SchedulesServiceDeps {
     agentId: string,
     user: ScheduleUserContext,
   ) => Promise<'ok' | 'missing' | 'forbidden'>;
+  getAgentBillingMode: (agentId: string) => Promise<'user' | 'agent' | undefined>;
   /** Loads a chat project scoped to its owner, or null when it does not exist for
    *  them. Chat projects are user-owned, so this is both the existence check and the
    *  authorization check. */
@@ -651,6 +652,7 @@ export function createSchedulesService(
     'upsertBalance',
     'initializeNullBalance',
     'resolveAgentFireAccess',
+    'getAgentBillingMode',
     'getChatProject',
     'isUserDeleting',
     'enqueueAgentTrigger',
@@ -712,7 +714,11 @@ export function createSchedulesService(
       const role = await methods.getRoleByName(user.role);
       return role?.permissions?.[PermissionTypes.SCHEDULES]?.[Permissions.USE] === true;
     },
-    isOutOfBalance: async (user) => {
+    isOutOfBalance: async (user, agentId) => {
+      if (agentId != null && (await deps.getAgentBillingMode(agentId)) === 'agent') {
+        return false;
+      }
+
       const appConfig = await deps.getAppConfig(getAppConfigOptionsFromUser(user));
       const balanceConfig = getBalanceConfig(appConfig);
       if (balanceConfig?.enabled !== true) {

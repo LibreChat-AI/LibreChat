@@ -7,7 +7,14 @@ import type {
   ToolApprovalGrantBinding,
 } from './tools';
 import type { TPromptGroupSource, NativePromptSelection, LangfusePromptSelection } from '../types';
-import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
+import type {
+  TAttachment,
+  TPlugin,
+  AgentProvider,
+  MemoryScope,
+  SkillsScope,
+  AgentBillingMode,
+} from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
