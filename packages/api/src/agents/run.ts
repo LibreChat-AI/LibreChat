@@ -62,6 +62,7 @@ import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { RunGrantExecution } from '~/agents/authority/execution';
 import type { RunGrantPolicyError } from '~/agents/authority/policy';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
+import type { ScheduledPauseGap } from '~/agents/hitl/admission';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
@@ -2343,6 +2344,7 @@ export async function createRun({
   activityPhase,
   eventActorCheckpointing = false,
   hitlCapable = false,
+  pauseGap,
   resolvedToolApprovalHooks,
   toolApprovalStorage,
   reviewedToolApprovals,
@@ -2499,6 +2501,14 @@ export async function createRun({
    * blocks `ask` decisions rather than pausing a run with no resume surface.
    */
   hitlCapable?: boolean;
+  /**
+   * What a scheduled run that could pause is missing on this deployment, from
+   * `resolveScheduledPause`. Such a run arrives with `hitlCapable` off and starts anyway:
+   * its ask-user tool is left out and a call that needs approval is refused. Only that
+   * caller sets it; every other caller without a resume path is still refused an agent
+   * whose code runs on an attached machine.
+   */
+  pauseGap?: ScheduledPauseGap;
   /**
    * Request-scoped approval hooks already resolved by the scheduled-run admission guard.
    * Reuse them here so a context-aware factory is evaluated exactly once for the run.
@@ -2895,6 +2905,7 @@ export async function createRun({
     hasAttachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
     hitlCapable,
     approvalExplicitlyDisabled: agentsEndpointConfig?.toolApproval?.enabled === false,
+    refuses: pauseGap != null,
   });
 
   // Assigned after the run-wide HITL registry is built. Lazy descriptors
@@ -3069,6 +3080,7 @@ export async function createRun({
                 attachedCodeEnvironmentAgentIds,
                 attachedCodeEnvironmentSettings,
                 codeApprovalMode,
+                hitlCapable,
               ),
             },
           ]

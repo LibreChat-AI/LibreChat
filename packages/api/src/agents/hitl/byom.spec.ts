@@ -741,6 +741,85 @@ describe('assertAttachedCodeEnvironmentApprovalSupported', () => {
   });
 });
 
+describe('a caller that refuses approval instead of waiting for it', () => {
+  test('is let through with an attached environment, and only when it says so', () => {
+    const caller = {
+      hasAttachedCodeEnvironment: true,
+      hitlCapable: false,
+      approvalExplicitlyDisabled: false,
+    };
+
+    expect(() =>
+      assertAttachedCodeEnvironmentApprovalSupported({ ...caller, refuses: true }),
+    ).not.toThrow();
+    expect(() =>
+      assertAttachedCodeEnvironmentApprovalSupported({ ...caller, refuses: false }),
+    ).toThrow('Attached code environments require a tool-approval capable client');
+  });
+
+  test.each([
+    ['ask', undefined, 'bash_tool', 'output.txt', 'deny'],
+    ['allow', undefined, 'bash_tool', 'output.txt', 'allow'],
+    ['deny', undefined, 'bash_tool', 'output.txt', 'deny'],
+    ['ask', 'fullAccess', 'bash_tool', 'output.txt', 'allow'],
+    ['ask', 'fullAccess', 'edit_file', 'skills/reviewer/SKILL.md', 'deny'],
+    ['ask', 'acceptEdits', 'edit_file', 'output.txt', 'allow'],
+    ['ask', 'acceptEdits', 'bash_tool', 'output.txt', 'deny'],
+  ] as const)(
+    'a machine set to %s under mode %s gives %s on %s: %s',
+    async (configured, requested, toolName, path, expected) => {
+      const settings = new Map([
+        [
+          'attached-agent',
+          {
+            ...fullAccessSettings,
+            settings: { permissions: { fileWrite: configured, commandExecution: configured } },
+            skillAuthoringAvailable: true,
+          },
+        ],
+      ]);
+      const mode = resolveAttachedCodeApprovalMode(requested, settings.values());
+      const input = { toolName, executingAgentId: 'attached-agent', toolInput: { path } } as never;
+      const attended = await createAttachedCodeEnvironmentPolicyHook(
+        new Set(settings.keys()),
+        settings,
+        mode,
+      )(input, signal);
+      const refusing = await createAttachedCodeEnvironmentPolicyHook(
+        new Set(settings.keys()),
+        settings,
+        mode,
+        false,
+      )(input, signal);
+
+      expect(refusing.decision).toBe(expected);
+      // Only an ask changes, and only to a deny.
+      if (attended.decision === 'ask') {
+        expect(refusing).toEqual({
+          decision: 'deny',
+          reason: `${toolName} needs approval, and this run cannot wait for one`,
+        });
+      } else {
+        expect(refusing).toEqual(attended);
+      }
+    },
+  );
+
+  test('still denies a call no attached machine can be named for', async () => {
+    const hook = createAttachedCodeEnvironmentPolicyHook(
+      new Set(['attached-agent']),
+      new Map(),
+      undefined,
+      false,
+    );
+
+    await expect(hook({ toolName: 'bash_tool' } as never, signal)).resolves.toMatchObject({
+      decision: 'deny',
+      reason: 'bash_tool could not be attributed to an attached code environment',
+    });
+  });
+});
+
 for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
   test.each(['dontAsk', 'bypass'] as const)(
     `${placement} BYOM hooks cannot predict review of statically denied tools under %s`,

@@ -5060,6 +5060,7 @@ class AgentClient extends BaseClient {
           // leave this off so an approval-gated tool can't pause where there's no resume path.
           // So does a scheduled run on a deployment that could not hold its pause.
           hitlCapable: pause.capable,
+          pauseGap: pause.missing,
           toolApprovalStorage: db,
           resolvedToolApprovalHooks,
           toolApprovalAllows: resolveRunToolApprovalAllows(

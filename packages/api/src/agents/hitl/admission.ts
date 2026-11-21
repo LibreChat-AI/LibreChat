@@ -598,6 +598,7 @@ export interface ScheduledPause {
    * still clears what an earlier attempt may have left.
    */
   prunes: boolean;
+  /** Passed to `createRun` as `pauseGap`: only a run that names its gap starts on an attached machine. */
   missing?: ScheduledPauseGap;
 }
 
