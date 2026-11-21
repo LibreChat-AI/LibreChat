@@ -31,6 +31,7 @@ const mockStartupConfig = {
     openidLoginEnabled: true,
     openidLabel: 'Test OpenID',
     openidImageUrl: 'http://test-server.com',
+    openidAutoRedirect: false,
     samlLoginEnabled: true,
     samlLabel: 'Test SAML',
     samlImageUrl: 'http://test-server.com',
@@ -244,6 +245,27 @@ describe('OAuth rejection redirects', () => {
     await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith({ message, status: 'error' }));
     await waitFor(() => expect(window.location.search).not.toContain('error='));
     expect(window.location.search).not.toContain('redirect=');
+  });
+
+  test('stays on the login page with OpenID auto-redirect to show why the session ended', async () => {
+    enterAt('?redirect_to=%2Fc%2Fnew&redirect=false&error=OPENID_SESSION_ENDED');
+
+    const { queryByText } = setup({
+      useGetStartupConfigReturnValue: {
+        ...mockStartupConfig,
+        data: { ...mockStartupConfig.data, openidAutoRedirect: true },
+      },
+    });
+
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith({
+        message: 'Your sign-in session ended or expired. Please sign in again.',
+        status: 'error',
+      }),
+    );
+    await waitFor(() => expect(window.location.search).not.toContain('redirect='));
+    expect(getByTestId(document.body, 'login-button')).toBeInTheDocument();
+    expect(queryByText(/Redirecting to Test OpenID/)).not.toBeInTheDocument();
   });
 
   test.each(['toString', 'constructor', 'unmapped_code'])(

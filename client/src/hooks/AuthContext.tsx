@@ -20,6 +20,7 @@ import {
   setTokenHeader,
   isSystemRoleName,
   buildLoginRedirectUrl,
+  withLoginError,
   clearTwoFactorSetupToken,
   persistTwoFactorSetupToken,
   TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
@@ -455,7 +456,7 @@ const AuthContextProvider = ({
           return;
         }
         if (authConfig?.optional !== true) {
-          navigate(buildLoginRedirectUrl());
+          navigate(withLoginError(buildLoginRedirectUrl(), request.getLoginErrorCode(error)));
         }
       },
     });
