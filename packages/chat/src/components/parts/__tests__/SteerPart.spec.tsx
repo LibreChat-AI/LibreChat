@@ -89,6 +89,7 @@ function createHost(user: MessagePartsUser | null): MessagePartsHost {
     useFileMap: () => mockFileMap as never,
     useToast: () => jest.fn(),
     useSandboxStarting: () => false,
+    usePtcTrace: () => ({ entries: [], dropped: 0 }),
     useToolArtifactClaim: () => [null, jest.fn()],
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,

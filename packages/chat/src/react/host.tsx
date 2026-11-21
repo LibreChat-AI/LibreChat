@@ -8,6 +8,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
+import type { PtcTrace } from '../core/ptc';
 
 /** The message a part renders in, as its host reports it. */
 export type MessagePartMessage = {
@@ -205,6 +206,8 @@ export interface MessagePartsHost {
   useToast: () => MessagePartsToast;
   /** Whether the sandbox for a code tool call is still starting. */
   useSandboxStarting: (toolCallId: string) => boolean;
+  /** Live inner-call trace of one programmatic tool call in one message. */
+  usePtcTrace: (messageId: string, toolCallId: string) => PtcTrace;
   /**
    * Which mounted card owns the row for a tool artifact, so one file renders once across tool
    * calls and messages. The key is the artifact id.

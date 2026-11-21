@@ -1,16 +1,20 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
 import {
   LoneGroupContext,
   SoleToolContext,
   ToolContentRequestContext,
-} from '@librechat/chat/react';
+} from '../../../react/parts/disclosure';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { MessagePartsHostProvider } from '../../../react/host';
 import BashCall from '../BashCall';
-import store from '~/store';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize:
     () =>
     (key: string, values?: Record<string, string>): string => {
@@ -35,15 +39,24 @@ jest.mock('~/hooks', () => ({
     },
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  CopyButton: ({ label, onClick }: { label?: string; onClick?: () => void }) => (
+jest.mock('../CopyButton', () => ({
+  __esModule: true,
+  default: ({ label, onClick }: { label?: string; onClick?: () => void }) => (
     <button type="button" onClick={onClick}>
       {label}
     </button>
   ),
-  LangIcon: () => <span data-testid="lang-icon" />,
-  useExpandCollapse: (isExpanded: boolean) => ({
+}));
+
+jest.mock('../LangIcon', () => ({
+  __esModule: true,
+  default: () => <span data-testid="lang-icon" />,
+}));
+
+jest.mock('../useExpandCollapse', () => ({
+  __esModule: true,
+  ...jest.requireActual('../useExpandCollapse'),
+  default: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
       gridTemplateRows: isExpanded ? '1fr' : '0fr',
@@ -53,12 +66,12 @@ jest.mock('@librechat/chat/components', () => ({
   }),
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useProgress: (initialProgress: number) => initialProgress,
+jest.mock('../../../react/parts/useProgress', () => ({
+  __esModule: true,
+  default: (initialProgress: number) => initialProgress,
 }));
 
-jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
+jest.mock('../ProgressText', () => ({
   __esModule: true,
   /** Mirrors the real component's contract: one `phase` drives both the
    *  label and the failure suffix. */
@@ -83,6 +96,8 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
 }));
 
 jest.mock('../Attachment', () => ({
+  __esModule: true,
+  ...jest.requireActual('../Attachment'),
   AttachmentGroup: () => <div data-testid="attachment-group" />,
 }));
 
@@ -101,21 +116,27 @@ jest.mock('../useLazyHighlight', () => {
   return { __esModule: true, default: useMockLazyHighlight };
 });
 
-/** The output pane reads the localizer from the package, so it delegates to the `~/hooks` mock. */
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
-}));
-
 jest.mock('copy-to-clipboard', () => jest.fn());
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-}));
+/** A host as the app fills it by default, and one where tools open on arrival. */
+const closed = createMessagePartsHost();
+const open = createMessagePartsHost({ useAutoExpandTools: () => true });
+
+function Host({
+  expanded = false,
+  children,
+}: {
+  expanded?: boolean;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <MessagePartsHostProvider host={expanded ? open : closed}>{children}</MessagePartsHostProvider>
+  );
+}
 
 const renderBashCall = (args?: string | Record<string, unknown>, commandField?: string) =>
   render(
-    <RecoilRoot>
+    <Host>
       <BashCall
         initialProgress={0.1}
         isSubmitting={true}
@@ -123,7 +144,7 @@ const renderBashCall = (args?: string | Record<string, unknown>, commandField?: 
         output=""
         commandField={commandField}
       />
-    </RecoilRoot>,
+    </Host>,
   );
 
 describe('BashCall status text', () => {
@@ -176,14 +197,14 @@ describe('BashCall intent label', () => {
 
   it('keeps the intent as the settled label (completion is a UI state, not a tense change)', () => {
     render(
-      <RecoilRoot>
+      <Host>
         <BashCall
           initialProgress={1}
           isSubmitting={false}
           args={'{"intent":"Waiting for the task to settle","command":"sleep 8"}'}
           output="waited"
         />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Waiting for the task to settle');
     expect(screen.queryByText('Ran command')).not.toBeInTheDocument();
@@ -250,7 +271,7 @@ describe('BashCall backgrounded calls', () => {
 
   const renderBackgrounded = (attachments?: Array<Record<string, unknown>>) =>
     render(
-      <RecoilRoot>
+      <Host>
         <BashCall
           initialProgress={1}
           isSubmitting={false}
@@ -258,7 +279,7 @@ describe('BashCall backgrounded calls', () => {
           output={HANDLE_OUTPUT}
           attachments={attachments as never}
         />
-      </RecoilRoot>,
+      </Host>,
     );
 
   it('shows a background-running state instead of rendering the handle JSON as stdout', () => {
@@ -303,7 +324,7 @@ describe('BashCall backgrounded calls', () => {
 
   it('restores a persisted background cancellation as cancellation', () => {
     render(
-      <RecoilRoot>
+      <Host>
         <BashCall
           initialProgress={1}
           isSubmitting={false}
@@ -312,7 +333,7 @@ describe('BashCall backgrounded calls', () => {
           backgrounded={true}
           backgroundCancelled={true}
         />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
     expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
@@ -320,14 +341,14 @@ describe('BashCall backgrounded calls', () => {
 
   it('renders real stdout normally after the background result patches the output', () => {
     render(
-      <RecoilRoot>
+      <Host>
         <BashCall
           initialProgress={1}
           isSubmitting={false}
           args={{ command: 'echo hi' }}
           output="hi"
         />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByText('hi')).toBeInTheDocument();
@@ -337,7 +358,7 @@ describe('BashCall backgrounded calls', () => {
 describe('BashCall sole tool disclosure', () => {
   const renderCall = (soleTool: boolean) =>
     render(
-      <RecoilRoot>
+      <Host>
         <SoleToolContext.Provider value={soleTool}>
           <BashCall
             initialProgress={1}
@@ -346,19 +367,19 @@ describe('BashCall sole tool disclosure', () => {
             output="hi"
           />
         </SoleToolContext.Provider>
-      </RecoilRoot>,
+      </Host>,
     );
   const panel = (container: HTMLElement) =>
-    container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
+    container.querySelector('.tool-call-expand') as HTMLElement;
 
   it('opens the card when it is the only call, with autoExpandTools off', () => {
     const { container } = renderCall(true);
-    expect(panel(container).style.gridTemplateRows).toBe('1fr');
+    expect(panel(container).style.getPropertyValue('--tool-expand-rows')).toBe('1fr');
   });
 
   it('keeps the card collapsed when it is one of several calls', () => {
     const { container } = renderCall(false);
-    expect(panel(container).style.gridTemplateRows).toBe('0fr');
+    expect(panel(container).style.getPropertyValue('--tool-expand-rows')).toBe('0fr');
   });
 
   it('drops its own row when it is the only call, so the output follows the group header', () => {
@@ -374,7 +395,7 @@ describe('BashCall sole tool disclosure', () => {
 
   it('keeps its row when the call carries a model-authored intent', () => {
     render(
-      <RecoilRoot>
+      <Host>
         <SoleToolContext.Provider value>
           <BashCall
             initialProgress={1}
@@ -384,14 +405,14 @@ describe('BashCall sole tool disclosure', () => {
             runStepStatus="completed"
           />
         </SoleToolContext.Provider>
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the build');
   });
 
   it('drops its row when its group holds one call inside a phase of several', () => {
     render(
-      <RecoilRoot>
+      <Host>
         <SoleToolContext.Provider value={false}>
           <LoneGroupContext.Provider value>
             <BashCall
@@ -403,7 +424,7 @@ describe('BashCall sole tool disclosure', () => {
             />
           </LoneGroupContext.Provider>
         </SoleToolContext.Provider>
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
     expect(screen.getByText('hi')).toBeInTheDocument();
@@ -412,7 +433,7 @@ describe('BashCall sole tool disclosure', () => {
   it('requests the stored part for a bare panel it did not open itself', () => {
     const renderLone = (lone: boolean, request: () => void) =>
       render(
-        <RecoilRoot>
+        <Host>
           <ToolContentRequestContext.Provider value={request}>
             <SoleToolContext.Provider value={false}>
               <LoneGroupContext.Provider value={lone}>
@@ -426,7 +447,7 @@ describe('BashCall sole tool disclosure', () => {
               </LoneGroupContext.Provider>
             </SoleToolContext.Provider>
           </ToolContentRequestContext.Provider>
-        </RecoilRoot>,
+        </Host>,
       );
     const bareRequest = jest.fn();
     renderLone(true, bareRequest);
@@ -439,18 +460,18 @@ describe('BashCall sole tool disclosure', () => {
 
   it('keeps its row while the only call is still running', () => {
     render(
-      <RecoilRoot>
+      <Host>
         <SoleToolContext.Provider value>
           <BashCall initialProgress={0.5} isSubmitting args={{ command: 'sleep 5' }} output="" />
         </SoleToolContext.Provider>
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Running command');
   });
 
   it('keeps its row when the only call failed, so the failure stays reachable', () => {
     render(
-      <RecoilRoot>
+      <Host>
         <SoleToolContext.Provider value>
           <BashCall
             initialProgress={1}
@@ -460,7 +481,7 @@ describe('BashCall sole tool disclosure', () => {
             output={'stderr:\nboom\n\n[exit code: 1]'}
           />
         </SoleToolContext.Provider>
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('exit code 1');
   });
@@ -473,7 +494,7 @@ describe('BashCall sole tool disclosure', () => {
       message: 'Use check_background_task to follow it',
     });
     render(
-      <RecoilRoot>
+      <Host>
         <SoleToolContext.Provider value>
           <BashCall
             initialProgress={1}
@@ -482,16 +503,16 @@ describe('BashCall sole tool disclosure', () => {
             output={handle}
           />
         </SoleToolContext.Provider>
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Running in background');
   });
 
   it('closes the card again when its group gains a second call', () => {
     const { container, rerender } = renderCall(true);
-    expect(panel(container).style.gridTemplateRows).toBe('1fr');
+    expect(panel(container).style.getPropertyValue('--tool-expand-rows')).toBe('1fr');
     rerender(
-      <RecoilRoot>
+      <Host>
         <SoleToolContext.Provider value={false}>
           <BashCall
             initialProgress={1}
@@ -500,9 +521,9 @@ describe('BashCall sole tool disclosure', () => {
             output="hi"
           />
         </SoleToolContext.Provider>
-      </RecoilRoot>,
+      </Host>,
     );
-    expect(panel(container).style.gridTemplateRows).toBe('0fr');
+    expect(panel(container).style.getPropertyValue('--tool-expand-rows')).toBe('0fr');
   });
 });
 
@@ -543,9 +564,9 @@ describe('BashCall streaming follow-scroll', () => {
   /** `autoExpandTools` opens the pane at mount, mirroring the user who
    *  watches args stream into an expanded card. */
   const streamingCall = (command: string) => (
-    <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+    <Host expanded>
       <BashCall initialProgress={0.1} isSubmitting={true} args={streamingArgs(command)} output="" />
-    </RecoilRoot>
+    </Host>
   );
 
   it('pins the expanded box to the args as rendered, including the async highlight commit', () => {
@@ -578,14 +599,14 @@ describe('BashCall streaming follow-scroll', () => {
 
   it('leaves a collapsed pane alone while args stream (default autoExpandTools)', () => {
     const collapsedCall = (command: string) => (
-      <RecoilRoot>
+      <Host>
         <BashCall
           initialProgress={0.1}
           isSubmitting={true}
           args={streamingArgs(command)}
           output=""
         />
-      </RecoilRoot>
+      </Host>
     );
     const { container, rerender } = render(collapsedCall('echo start'));
     const box = container.querySelector('.overflow-auto') as HTMLElement;
@@ -599,9 +620,9 @@ describe('BashCall streaming follow-scroll', () => {
 
   it('never scrolls a finished call', () => {
     const finishedCall = (command: string) => (
-      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+      <Host expanded>
         <BashCall initialProgress={1} isSubmitting={false} args={{ command }} output="done" />
-      </RecoilRoot>
+      </Host>
     );
     const { container, rerender } = render(finishedCall('echo done'));
     const box = container.querySelector('.overflow-auto') as HTMLElement;
@@ -617,9 +638,9 @@ describe('BashCall streaming follow-scroll', () => {
 describe('BashCall output pane', () => {
   const finished = (output: string, command = 'npm test') =>
     render(
-      <RecoilRoot>
+      <Host>
         <BashCall initialProgress={1} isSubmitting={false} args={{ command }} output={output} />
-      </RecoilRoot>,
+      </Host>,
     );
 
   const numbered = (count: number) =>
@@ -686,7 +707,7 @@ describe('BashCall output pane', () => {
 describe('BashCall exit status', () => {
   const renderSettled = (output: string, attached = true) =>
     render(
-      <RecoilRoot>
+      <Host>
         <BashCall
           initialProgress={1}
           isSubmitting={false}
@@ -695,7 +716,7 @@ describe('BashCall exit status', () => {
           output={output}
           executor={attached ? 'attached_workspace' : undefined}
         />
-      </RecoilRoot>,
+      </Host>,
     );
 
   it('hides timeout executor guidance until details are opened', () => {

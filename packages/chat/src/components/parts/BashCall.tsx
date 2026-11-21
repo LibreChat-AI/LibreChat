@@ -1,38 +1,27 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
-import { Button } from '@librechat/client';
-import {
-  PANE_COPY_REVEAL,
-  TOOL_ROW_CLASSES,
-  BareStatus,
-  CopyButton,
-  LangIcon,
-} from '@librechat/chat/components';
-import {
-  toolPanelSpacingClassName,
-  useToolContentPending,
-  useFollowScroll,
-  useToolCallIntent,
-} from '@librechat/chat/react';
-import {
-  parseBackgroundHandle,
-  splitBackgroundAttachments,
-  parseJsonField,
-  areToolCallArgsComplete,
-  parseCommandOutput,
-} from '@librechat/chat';
+import { cn, Button, useLocalize } from '@librechat/client';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import type { CSSProperties } from 'react';
+import { toolPanelSpacingClassName, useToolContentPending } from '../../react/parts/disclosure';
+import { parseBackgroundHandle, splitBackgroundAttachments } from '../../core/parts/handle';
+import { parseJsonField, areToolCallArgsComplete } from '../../core/parts/parseJsonField';
+import useFollowScroll from '../../react/parts/useFollowScroll';
+import { parseCommandOutput } from '../../core/parts/command';
 import CommandTime, { useCommandClock } from './CommandTime';
+import { useToolCallIntent } from '../../react/parts/intent';
+import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from './rows';
+import { useMessagePartsHost } from '../../react/host';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
-import { OutputRenderer } from '../ToolOutput';
-import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
+import { ERROR_PATTERNS } from './ExecuteCode';
+import OutputRenderer from './OutputRenderer';
+import ProgressText from './ProgressText';
 import PtcToolTrace from './PtcToolTrace';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import BareStatus from './BareStatus';
+import CopyButton from './CopyButton';
+import LangIcon from './LangIcon';
 
 /** The SDK's sandbox executors emit this line in place of empty stdout. */
 const SANDBOX_EMPTY_OUTPUT = "stdout: Empty. Ensure you're writing output explicitly.";
@@ -69,7 +58,7 @@ export default function BashCall({
   onExpand?: () => void;
   toolCallId?: string;
   stepId?: string;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   const [showTimeoutDetails, setShowTimeoutDetails] = useState(false);
   const command = useMemo(() => parseJsonField(args, commandField), [args, commandField]);
@@ -244,7 +233,16 @@ export default function BashCall({
           />
         </div>
       )}
-      <div style={expandStyle}>
+      <div
+        className="tool-call-expand"
+        style={
+          {
+            '--tool-expand-rows': expandStyle.gridTemplateRows,
+            '--tool-expand-opacity': expandStyle.opacity,
+            '--tool-expand-transition': expandStyle.transition,
+          } as CSSProperties
+        }
+      >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           <div
             className={cn(
