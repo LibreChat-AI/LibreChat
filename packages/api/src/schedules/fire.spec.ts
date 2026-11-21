@@ -5,6 +5,7 @@ import { getAgentTriggerIdempotencyKey } from '../agents/triggers/envelope';
 import { AgentTriggerDeliveryError } from '../agents/triggers/delivery';
 import { buildFireClientRequestId, fireSchedule } from './fire';
 import { PreflightError } from '~/agents/authority/preflight';
+import { toDelivery } from '../agents/authority/trigger';
 import { withCapacitySlot } from './capacity';
 
 const OWNER: ScheduleUserContext = { id: 'user-1', tenantId: 't1', role: 'USER' };
@@ -352,6 +353,34 @@ describe('fireSchedule', () => {
     // committed ambiguously.
     expect(reservation.deliveryKey).toEqual(expect.any(String));
     expect(reservation.deliveryKey).toBe(getAgentTriggerIdempotencyKey(envelope));
+  });
+
+  it.each([
+    ['a due occurrence', undefined],
+    ['a Run Now', { manual: true }],
+  ])('reserves the run of %s where its delivery finds it', async (_name, options) => {
+    const { methods } = makeMethods();
+    const enqueueTrigger = jest.fn<
+      ReturnType<ScheduleEngineDeps['enqueueTrigger']>,
+      Parameters<ScheduleEngineDeps['enqueueTrigger']>
+    >(async () => undefined);
+
+    await fireSchedule(
+      makeDeps(methods, { enqueueTrigger }),
+      makeSchedule(),
+      LIMITS,
+      dueAt(),
+      options,
+    );
+
+    const reservation = (methods.reserveStartedRun as jest.Mock).mock.calls[0][0];
+    const envelope = enqueueTrigger.mock.calls[0][0];
+    // A run's record is read back by who the run acts for and the delivery that started it:
+    // the row is found under the id of the event's source at the time the event occurred.
+    const delivery = toDelivery(getAgentTriggerIdempotencyKey(envelope), envelope.event);
+    expect(envelope.event.source).toEqual({ type: 'schedule', id: reservation.scheduleId });
+    expect(delivery?.event.occurredAt).toBe(reservation.scheduledFor.getTime());
+    expect(delivery?.key).toBe(reservation.deliveryKey);
   });
 
   it('marks a Run Now trigger as manual for downstream limiter policy', async () => {

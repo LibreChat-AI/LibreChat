@@ -34,6 +34,8 @@ export {
   createAgentKeyMCPConsentStorage,
   createScheduleMCPConsentStorage,
 } from './methods/runGrant';
+export { createTriggerRuns } from './methods/triggerRun';
+export type { TriggerRuns } from './methods/triggerRun';
 export type {
   ResponseOwner,
   ResponseStorage,
