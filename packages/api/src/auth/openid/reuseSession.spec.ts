@@ -60,7 +60,7 @@ describe('resolveBoundProviderSession', () => {
   });
 
   it('throws OPENID_SESSION_ENDED on a conflict outside mode off', () => {
-    expect(() => resolveBoundProviderSession('record', refA, refB)).toThrow(
+    expect(() => resolveBoundProviderSession('enforce', refA, refB)).toThrow(
       expect.objectContaining({ code: OPENID_SESSION_ENDED }),
     );
   });
@@ -198,7 +198,7 @@ describe('authorizeCachedReuseSession', () => {
         establish: jest.fn(),
         authorize: jest.fn().mockResolvedValue({ ok: true }),
         preCheck: jest.fn(),
-        getMode: jest.fn().mockResolvedValue('record'),
+        getMode: jest.fn().mockResolvedValue('enforce'),
       },
       deleteOpenIDSession: jest.fn().mockResolvedValue(undefined),
       logger: { warn: jest.fn() },
@@ -403,17 +403,17 @@ describe('resolveOpenIDRefreshProviderSession', () => {
 
   it('resolves the mode and skips the credential binding when there is no reusable session token', async () => {
     const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
-    const deps = makeDeps('record', dbAuthorize);
+    const deps = makeDeps('enforce', dbAuthorize);
 
     const context = await resolveOpenIDRefreshProviderSession(deps, refreshToken, false);
 
-    expect(context.mode).toBe('record');
+    expect(context.mode).toBe('enforce');
     expect(context.reuseCredential).toBeNull();
   });
 
   it('binds the reuse credential to the given refresh token when a session token is reusable', async () => {
     const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
-    const deps = makeDeps('record', dbAuthorize);
+    const deps = makeDeps('enforce', dbAuthorize);
 
     const context = await resolveOpenIDRefreshProviderSession(deps, refreshToken, true);
 

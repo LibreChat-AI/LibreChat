@@ -525,7 +525,7 @@ registration:
   #   retryDelayMs: 5000   # delay between startup and background attempts
   # OpenID back-channel logout (default mode 'off' keeps today's behavior; no receiver, no DB ops)
   # openidBackchannelLogout:
-  #   mode: 'off'   # 'off' | 'record' (associate sessions, deny revoked ones, fail open)
+  #   mode: 'off'   # 'off' | 'record' (associate sessions, fail open) | 'enforce' (deny ended/unassociated sessions)
   #   algorithms: ['RS256']
   #   clockToleranceSec: 60
   #   maxTokenAgeSec: 120

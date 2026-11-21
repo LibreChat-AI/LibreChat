@@ -18,7 +18,7 @@ describe('ProviderSession wiring', () => {
     const { getAppConfig } = require('~/server/services/Config');
     const { establishProviderSession, authorizeProviderSession } = require('~/models');
     getAppConfig.mockResolvedValue({
-      registration: { openidBackchannelLogout: { mode: 'record' } },
+      registration: { openidBackchannelLogout: { mode: 'enforce' } },
     });
     establishProviderSession.mockResolvedValue({ ok: true });
     authorizeProviderSession.mockResolvedValue({ ok: true });
@@ -27,7 +27,7 @@ describe('ProviderSession wiring', () => {
       getProviderSessionAuthorizer,
     } = require('./ProviderSession');
 
-    expect(await providerSessionAuthorizer.getMode()).toBe('record');
+    expect(await providerSessionAuthorizer.getMode()).toBe('enforce');
 
     const ref = { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'sid-1' };
     await providerSessionAuthorizer.establish({ ref, callbackIssuedAt: new Date() });

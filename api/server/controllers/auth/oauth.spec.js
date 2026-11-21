@@ -100,7 +100,7 @@ function buildRes() {
 }
 
 describe('createOAuthHandler', () => {
-  const authorizerHandle = { getMode: jest.fn().mockResolvedValue('record') };
+  const authorizerHandle = { getMode: jest.fn().mockResolvedValue('enforce') };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -122,7 +122,7 @@ describe('createOAuthHandler', () => {
     mockResolveAuthMethod.mockImplementation((provider) =>
       provider === 'openid' ? 'openid' : 'social',
     );
-    authorizerHandle.getMode.mockResolvedValue('record');
+    authorizerHandle.getMode.mockResolvedValue('enforce');
     mockGetProviderSessionAuthorizer.mockReturnValue(authorizerHandle);
     mockGetProviderSessionClient.mockReturnValue({
       issuer: 'https://issuer.example.com',

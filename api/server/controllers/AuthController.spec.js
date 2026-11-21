@@ -76,7 +76,7 @@ jest.mock('~/server/services/OpenIDSessionRefresh', () => ({
 const mockAuthorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
 const mockEstablishProviderSession = jest.fn().mockResolvedValue({ ok: true });
 const mockPreCheckProviderSession = jest.fn().mockResolvedValue({ ok: true });
-const mockGetModeProviderSession = jest.fn().mockResolvedValue('record');
+const mockGetModeProviderSession = jest.fn().mockResolvedValue('enforce');
 /** No client configured by default: `deriveProviderSessionFromClaims` short-circuits to `null`, so refresh proceeds without a provider-session check. */
 const mockGetProviderSessionClient = jest.fn(() => null);
 jest.mock('~/server/services/ProviderSession', () => ({

@@ -38,7 +38,7 @@ function makeConfig(
   overrides: Partial<ResolvedBackchannelLogoutConfig> = {},
 ): ResolvedBackchannelLogoutConfig {
   return {
-    mode: 'record',
+    mode: 'enforce',
     algorithms: ['RS256'],
     clockToleranceSec: 60,
     maxTokenAgeSec: 120,
@@ -188,7 +188,7 @@ function buildReuseDeps(
       establish: jest.fn().mockResolvedValue({ ok: true }),
       authorize: jest.fn().mockResolvedValue({ ok: true }),
       preCheck: jest.fn().mockResolvedValue({ ok: true }),
-      getMode: jest.fn().mockResolvedValue('record'),
+      getMode: jest.fn().mockResolvedValue('enforce'),
     },
     getProviderSessionClient: jest.fn((): { issuer: string; clientId: string } | null => null),
     ...overrides,
@@ -453,6 +453,28 @@ describe('back-channel logout: real receiver + real database + real authorizer',
     ).resolves.toEqual({ ok: false, code: OPENID_SESSION_ENDED });
   });
 
+  it('denies renewal for an expired record and does not recreate it', async () => {
+    const config = makeConfig();
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-expired' };
+    const soon = new Date(Date.now() + 1000);
+    const authorizer = makeAuthorizer(config);
+    await authorizer.establish({
+      ref,
+      subject: 'sub-7',
+      expiresAt: soon,
+      callbackIssuedAt: new Date(),
+    });
+
+    const laterAuthorizer = makeAuthorizer(config, () => new Date(Date.now() + 5000));
+    await expect(
+      laterAuthorizer.authorize({ ref, subject: 'sub-7', expiresAt: future(), legacy: false }),
+    ).resolves.toEqual({ ok: false, code: OPENID_SESSION_ENDED });
+
+    const stored = await mongoose.models.ProviderSession.findOne(ref).lean<IProviderSession>();
+    expect(stored?.expiresAt.getTime()).toBe(soon.getTime());
+    expect(stored?.revokedAt).toBeUndefined();
+  });
+
   it('answers 503 and revokes nothing when the receiver cannot reach the database', async () => {
     const config = makeConfig();
     const failingRevoke = jest.fn().mockRejectedValue(new Error('connection reset'));
@@ -464,6 +486,49 @@ describe('back-channel logout: real receiver + real database + real authorizer',
     }
     const stored = await mongoose.models.ProviderSession.findOne({ sid: 'sid-db-fail' }).lean();
     expect(stored).toBeNull();
+  });
+
+  it('answers 503 from local refresh and clears nothing when the provider-session check is unavailable', async () => {
+    const config = makeConfig();
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-db-fail-2' };
+    const userId = new mongoose.Types.ObjectId().toString();
+    const refreshJwt = signRefreshJwt(userId);
+    await methods.upsertSession(userId, refreshJwt, {
+      expiration: future(),
+      providerSession: ref,
+      authMethod: 'openid',
+    });
+
+    const failingAuthorizer = createProviderSessionAuthorizer({
+      methods: {
+        establish: methods.establishProviderSession,
+        authorize: jest.fn().mockRejectedValue(new Error('mongo down')),
+      },
+      getConfig: () => Promise.resolve(config),
+      logger: makeLogger(),
+    });
+
+    const deleteSessionSpy = jest.fn(methods.deleteSession);
+    const clearCloudFrontSpy = jest.fn();
+    const handler = buildLocalHandler(failingAuthorizer.authorize, {
+      deleteSession: deleteSessionSpy,
+      clearCloudFrontCookies: clearCloudFrontSpy,
+    });
+
+    const res = buildRes();
+    await handler({ query: {} } as never, res, refreshJwt);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.send).toHaveBeenCalledWith({ code: AUTH_SESSION_CHECK_UNAVAILABLE });
+    expect(deleteSessionSpy).not.toHaveBeenCalled();
+    expect(clearCloudFrontSpy).not.toHaveBeenCalled();
+    expect(res.clearCookie).not.toHaveBeenCalled();
+
+    const stillStored = await methods.findSession(
+      { userId, refreshToken: refreshJwt },
+      { lean: false },
+    );
+    expect(stillStored).not.toBeNull();
   });
 
   it('performs no ProviderSession database operation when mode is off', async () => {
@@ -659,6 +724,70 @@ describe('back-channel logout: rollback to off keeps an existing association', (
         { forceRefresh: true },
       ),
     ).rejects.toMatchObject({ code: OPENID_SESSION_ENDED });
+  });
+
+  it('carries the association through a mode-off refresh, still recognized as associated once enforce resumes', async () => {
+    const config = makeConfig({ mode: 'record' });
+    const authorizer = makeAuthorizer(config);
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-rollback-enforce' };
+    const userId = 'user-rollback-enforce';
+    const refreshToken = 'rt-rollback-enforce';
+
+    await authorizer.establish({
+      ref,
+      subject: userId,
+      expiresAt: future(),
+      callbackIssuedAt: new Date(),
+    });
+
+    const deps = buildReuseDeps({
+      openIdClient: {
+        refreshTokenGrant: jest.fn().mockResolvedValue({
+          access_token: 'new-access',
+          id_token: 'new-id',
+          refresh_token: refreshToken,
+        }),
+      },
+      providerSessionAuthorizer: {
+        establish: authorizer.establish,
+        authorize: authorizer.authorize,
+        preCheck: authorizer.preCheck,
+        getMode: authorizer.getMode,
+      },
+    });
+    const service = createOpenIDSessionRefreshService(deps);
+    const user = { _id: userId, provider: 'openid', openidId: userId };
+    const req = { session: buildRollbackSession(ref, refreshToken, userId) };
+
+    // Operator rolls back to 'off'; the ref is never revoked.
+    config.mode = 'off';
+    await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(req.session.openidTokens?.providerSession).toEqual(ref);
+
+    // Operator re-enables 'enforce' while the ref is still active: the refresh succeeds because
+    // the ref was carried forward, not because the session looked unassociated.
+    config.mode = 'enforce';
+    const enforceResult = await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(enforceResult?.access_token).toBe('new-access');
+    expect(req.session.openidTokens?.providerSession).toEqual(ref);
+
+    await expect(
+      authorizer.authorize({ ref, subject: userId, expiresAt: future(), legacy: false }),
+    ).resolves.toEqual({ ok: true });
   });
 
   it('creates no association for a session with none, while mode is off', async () => {

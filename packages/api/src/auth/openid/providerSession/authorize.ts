@@ -1,4 +1,4 @@
-import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
+import { OPENID_SESSION_ENDED, OPENID_SESSION_ID_MISSING } from 'librechat-data-provider';
 import type {
   ProviderSessionOperationData,
   ProviderSessionEstablishResult,
@@ -39,7 +39,10 @@ export type ProviderSessionEstablishOutcome =
   | { ok: true }
   | {
       ok: false;
-      code: typeof OPENID_SESSION_ENDED | typeof CALLBACK_EXPIRED;
+      code:
+        | typeof OPENID_SESSION_ENDED
+        | typeof OPENID_SESSION_ID_MISSING
+        | typeof CALLBACK_EXPIRED;
     };
 
 export interface ProviderSessionAuthorizeInput {
@@ -110,6 +113,9 @@ export function createProviderSessionAuthorizer({
     }
 
     if (input.ref == null) {
+      if (config.mode === 'enforce') {
+        return { ok: false, code: OPENID_SESSION_ID_MISSING };
+      }
       /** Logged at login only, not on each refresh: the operator must know the provider sends
        *  no `sid` before a back-channel logout can end this session. */
       logger.warn(
@@ -137,6 +143,12 @@ export function createProviderSessionAuthorizer({
       });
       return { ok: false, code: OPENID_SESSION_ENDED };
     } catch (error) {
+      if (config.mode === 'enforce') {
+        logger.error('[providerSession] establish check unavailable', refLogMeta(input.ref));
+        throw new ProviderSessionUnavailableError('Provider session check unavailable', {
+          cause: error,
+        });
+      }
       logger.warn('[providerSession] establish check unavailable; continuing in record mode', {
         ...refLogMeta(input.ref),
         error,
@@ -154,7 +166,7 @@ export function createProviderSessionAuthorizer({
     }
 
     if (input.ref == null) {
-      return { ok: true };
+      return config.mode === 'enforce' ? { ok: false, code: OPENID_SESSION_ENDED } : { ok: true };
     }
 
     try {
@@ -173,8 +185,11 @@ export function createProviderSessionAuthorizer({
         return { ok: false, code: OPENID_SESSION_ENDED };
       }
 
-      // MISSING: an unassociated or legacy credential. record fails open while the rollout
-      // observes legacy sessions.
+      // MISSING: an unassociated or legacy credential. enforce denies it; record fails open
+      // while the rollout observes legacy sessions.
+      if (config.mode === 'enforce') {
+        return { ok: false, code: OPENID_SESSION_ENDED };
+      }
       logger.warn(
         '[providerSession] provider session missing or unassociated; allowed in record mode',
         {
@@ -185,6 +200,15 @@ export function createProviderSessionAuthorizer({
       );
       return { ok: true };
     } catch (error) {
+      if (config.mode === 'enforce') {
+        logger.error('[providerSession] authorize check unavailable', {
+          ...refLogMeta(input.ref),
+          legacy: input.legacy,
+        });
+        throw new ProviderSessionUnavailableError('Provider session check unavailable', {
+          cause: error,
+        });
+      }
       logger.warn('[providerSession] authorize check unavailable; continuing in record mode', {
         ...refLogMeta(input.ref),
         legacy: input.legacy,
