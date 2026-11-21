@@ -191,7 +191,16 @@ jest.mock('../Parts', () => ({
   Reasoning: () => <div data-testid="reasoning" />,
   Summary: () => <div data-testid="summary" />,
   SteerPart: () => <div data-testid="steer" />,
-  Text: jest.fn(({ text }: { text?: string }) => <div data-testid="text">{text}</div>),
+  Text: jest.fn(function MockText({ text }: { text?: string }) {
+    const { nextType } = jest
+      .requireActual<typeof import('~/Providers/MessageContext')>('~/Providers/MessageContext')
+      .useMessageContext();
+    return (
+      <div data-testid="text" data-next-type={nextType}>
+        {text}
+      </div>
+    );
+  }),
   MemoryCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="memory-call" data-count={attachments?.length ?? 0} />
   ),
@@ -2083,6 +2092,23 @@ describe('ContentParts integration: lane groups backed by one agent', () => {
       'agent_a',
       'agent_b____1',
     ]);
+  });
+
+  it('only lets a later part in the same lane settle an artifact text part', () => {
+    const artifact = ':::artifact{identifier="report" title="Report" type="text/html"}';
+    const frame = (parts: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={parts} />
+      </RecoilRoot>
+    );
+    const primary = inLane(makeTextPart(artifact), 'agent_a');
+    const other = inLane(makeTextPart('Other model text'), 'agent_b____1');
+    const { rerender } = render(frame([primary, other]));
+    expect(screen.getByText(artifact)).not.toHaveAttribute('data-next-type');
+
+    rerender(frame([primary, other, inLane(makeTextPart('Same model text'), 'agent_a')]));
+    expect(screen.getByText(artifact)).toHaveAttribute('data-next-type', ContentTypes.TEXT);
+    expect(screen.getByText('Other model text')).not.toHaveAttribute('data-next-type');
   });
 
   it('keeps lane attribution when a phase marker leaves one agent per slice', () => {
