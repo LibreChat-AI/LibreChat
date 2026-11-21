@@ -10,6 +10,8 @@ const {
 } = require('librechat-data-provider');
 const {
   createRun,
+  toRemoteModelConversation,
+  isRemoteModelContinuationAllowed,
   applyContextToAgent,
   createRemoteExecutionContext,
   getRemoteRunKeyId,
@@ -141,6 +143,9 @@ const { resolveConversationTitle } = require('~/server/services/Endpoints/titleP
 const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
+
+/** Loaded on first use: the service pulls in the endpoint and model config stack. */
+const remoteModels = () => require('~/server/services/Agents/remoteModels');
 
 const filterFilesByRemoteAgentAccess = (params) =>
   filterFilesByAgentAccess({ ...params, resourceType: ResourceType.REMOTE_AGENT });
@@ -521,7 +526,12 @@ const executeResponse = async (envelope, { req, res }) => {
       return handleExecutionError({ error, res, appConfig });
     },
     execute: async (execution) => {
-      const agentPromise = db.getAgent({ id: agentId });
+      /** Set by checkAgentOrModelPermission when `model` names a model spec or
+       *  `endpoint/model` (remoteApi.models), not an agent: run it as the same
+       *  ephemeral agent the chat UI builds for that selection. */
+      const agentPromise = req.remoteModel
+        ? remoteModels().buildAgent(req, req.remoteModel)
+        : db.getAgent({ id: agentId });
       // Validation may return before this promise is awaited; preserve the original
       // promise for the later await while avoiding an unhandled speculative rejection.
       agentPromise.catch(() => {});
@@ -556,6 +566,18 @@ const executeResponse = async (envelope, { req, res }) => {
             project.status,
             project.message,
             project.reason === 'server_error' ? 'server_error' : 'not_found',
+          );
+        }
+        if (
+          req.remoteModel &&
+          !isRemoteModelContinuationAllowed(req.remoteModel, project.conversation, appConfig)
+        ) {
+          return sendResponsesErrorResponse(
+            res,
+            409,
+            'This conversation was not started with this model. Start a new conversation.',
+            'invalid_request',
+            'conversation_target_mismatch',
           );
         }
         req.resolvedConversation = project.conversation;
@@ -627,10 +649,13 @@ const executeResponse = async (envelope, { req, res }) => {
 
       // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
       // the MCP servers and tools its owner granted that key for this agent.
+      // A model run binds to a path-safe id no grant can match (`remoteModelGrantAgentId`).
       await require('~/server/services/ApiKeys/grants').prepare({
         req,
         res,
-        executionContext,
+        executionContext: req.remoteModel
+          ? { ...executionContext, agentId: remoteModels().grantAgentId(req.remoteModel) }
+          : executionContext,
         signal: execution.signal,
       });
 
@@ -728,6 +753,15 @@ const executeResponse = async (envelope, { req, res }) => {
         getUserById: db.getUserById,
         accessibleSkillIds,
       });
+
+      if (req.remoteModel) {
+        /** A spec's named skills resolve against the owner's skills, as in the chat. */
+        await remoteModels().applySpecSkills(agent, req.remoteModel, {
+          accessibleSkillIds,
+          getSkillByName: getSkillDbMethods().getSkillByName,
+          appConfig,
+        });
+      }
 
       const primaryScopedSkillIds = resolveAgentScopedSkillIds({
         agent,
@@ -1318,6 +1352,9 @@ const executeResponse = async (envelope, { req, res }) => {
             conversationId,
             agentId,
             agent,
+            conversationTarget: req.remoteModel
+              ? toRemoteModelConversation(req.remoteModel)
+              : undefined,
             codeEnvironmentDecision,
             messages: inputChain.messages,
             parentMessageId,
@@ -1568,6 +1605,9 @@ const executeResponse = async (envelope, { req, res }) => {
             conversationId,
             agentId,
             agent,
+            conversationTarget: req.remoteModel
+              ? toRemoteModelConversation(req.remoteModel)
+              : undefined,
             codeEnvironmentDecision,
             messages: inputChain.messages,
             parentMessageId,
@@ -1669,19 +1709,15 @@ const listModels = async (req, res) => {
       description: agent.description,
       provider: agent.provider,
     }));
+    const remoteModelEntries = await remoteModels().list(req);
 
     res.json({
       object: 'list',
-      data: models,
+      data: [...models, ...remoteModelEntries],
     });
   } catch (error) {
     logger.error('[Responses API] Error listing models:', getSafeErrorMetadata(error));
-    sendResponsesErrorResponse(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Failed to list models',
-      'server_error',
-    );
+    sendResponsesErrorResponse(res, 500, 'Failed to list models', 'server_error');
   }
 };
 

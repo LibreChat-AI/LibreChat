@@ -4,6 +4,12 @@ import '@testing-library/jest-dom/extend-expect';
 import { render, fireEvent } from 'test/layout-test-utils';
 import Reveal from '../Reveal';
 
+const mockUseGetStartupConfig = jest.fn(() => ({ data: { remoteApiModelsEnabled: true } }));
+jest.mock('~/data-provider', () => ({
+  ...jest.requireActual('~/data-provider'),
+  useGetStartupConfig: () => mockUseGetStartupConfig(),
+}));
+
 /** jsdom has no execCommand, so the real module always reports a failed write */
 jest.mock('copy-to-clipboard');
 const mockCopy = copy as jest.MockedFunction<typeof copy>;
@@ -61,5 +67,44 @@ describe('Reveal', () => {
     );
     fireEvent.click(getByRole('button', { name: 'Copy' }));
     expect(queryByRole('button', { name: /Copied/ })).not.toBeInTheDocument();
+  });
+
+  describe('API base URL', () => {
+    it('shows where OpenAI-compatible clients connect', () => {
+      const { getByLabelText } = render(<Reveal createdKey={createdKey} onDone={jest.fn()} />);
+      expect(getByLabelText('API base URL')).toHaveValue(`${window.location.origin}/api/agents/v1`);
+      expect(getByLabelText('API base URL')).toHaveAttribute('readonly');
+    });
+
+    it('copies the base URL with its own, distinctly named control', () => {
+      const { getByRole } = render(<Reveal createdKey={createdKey} onDone={jest.fn()} />);
+      fireEvent.click(getByRole('button', { name: 'Copy API base URL' }));
+      expect(mockCopy).toHaveBeenCalledWith(`${window.location.origin}/api/agents/v1`, {
+        format: 'text/plain',
+      });
+      expect(mockCopy).not.toHaveBeenCalledWith('lc-secret-full-key', expect.anything());
+    });
+
+    it('says the key reaches models when the deployment allows it', () => {
+      const { getByText } = render(<Reveal createdKey={createdKey} onDone={jest.fn()} />);
+      expect(getByText(/Pass one of your agents or models as the model/)).toBeInTheDocument();
+    });
+
+    it('says agents only when the administrator turned model access off', () => {
+      mockUseGetStartupConfig.mockReturnValueOnce({ data: { remoteApiModelsEnabled: false } });
+      const { getByText, queryByText } = render(
+        <Reveal createdKey={createdKey} onDone={jest.fn()} />,
+      );
+      expect(getByText(/Pass one of your agent IDs as the model/)).toBeInTheDocument();
+      expect(queryByText(/agents or models/)).not.toBeInTheDocument();
+    });
+
+    it('describes the base URL field with the usage note', () => {
+      const { getByLabelText } = render(<Reveal createdKey={createdKey} onDone={jest.fn()} />);
+      expect(getByLabelText('API base URL')).toHaveAttribute(
+        'aria-describedby',
+        'reveal-api-key-usage',
+      );
+    });
   });
 });

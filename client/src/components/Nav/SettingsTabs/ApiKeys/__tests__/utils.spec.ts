@@ -4,7 +4,14 @@ import {
   formatDate,
   EXPIRY_NEVER,
   DEFAULT_EXPIRY,
+  getRemoteApiBaseUrl,
 } from '../utils';
+
+let mockApiBaseUrl = '';
+jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
+  apiBaseUrl: () => mockApiBaseUrl,
+}));
 
 describe('computeExpiresAt', () => {
   it('returns null for the never option', () => {
@@ -57,5 +64,25 @@ describe('formatDate', () => {
 describe('DEFAULT_EXPIRY', () => {
   it('is 30 days', () => {
     expect(DEFAULT_EXPIRY).toBe('30');
+  });
+});
+
+describe('getRemoteApiBaseUrl', () => {
+  afterEach(() => {
+    mockApiBaseUrl = '';
+  });
+
+  it('points at the OpenAI-compatible API on this origin', () => {
+    expect(getRemoteApiBaseUrl()).toBe(`${window.location.origin}/api/agents/v1`);
+  });
+
+  it('keeps a deployment base path', () => {
+    mockApiBaseUrl = '/chat';
+    expect(getRemoteApiBaseUrl()).toBe(`${window.location.origin}/chat/api/agents/v1`);
+  });
+
+  it('accepts an absolute base href', () => {
+    mockApiBaseUrl = 'https://chat.example.com/sub';
+    expect(getRemoteApiBaseUrl()).toBe('https://chat.example.com/sub/api/agents/v1');
   });
 });
