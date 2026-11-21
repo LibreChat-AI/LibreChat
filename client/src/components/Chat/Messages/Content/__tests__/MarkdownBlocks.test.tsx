@@ -485,6 +485,28 @@ describe('MarkdownBlocks DOM equivalence', () => {
     expect(normalizeHtml(settledC.innerHTML)).toBe(normalizeHtml(oldC.innerHTML));
     expect(normalizeHtml(streamedC.innerHTML)).toBe(normalizeHtml(oldC.innerHTML));
   });
+  it('renders identical DOM to the whole-message renderer: table with <br> while streaming', () => {
+    const tableWithBr = [
+      'Summary:',
+      '',
+      '| Item | Details |',
+      '| --- | --- |',
+      '| Row 1 | line1<br>line2 |',
+      '| Row 2 | a<br />b |',
+    ].join('\n');
+
+    const { container: oldC } = render(
+      <TestProviders>
+        <OldMarkdown content={tableWithBr} />
+      </TestProviders>,
+    );
+    const streamingC = streamThrough(StreamingMarkdown, tableWithBr);
+    expect(streamingC.querySelectorAll('tbody td br')).toHaveLength(2);
+
+    const { container: streamedC } = streamAndFinish(tableWithBr);
+    expect(normalizeHtml(streamedC.innerHTML)).toBe(normalizeHtml(oldC.innerHTML));
+    expect(streamedC.querySelectorAll('tbody td br')).toHaveLength(2);
+  });
 });
 
 describe('MarkdownBlocks rendering smoke', () => {
