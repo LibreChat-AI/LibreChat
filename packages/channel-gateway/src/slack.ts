@@ -34,7 +34,7 @@ export class SlackWriteError extends Error {
   constructor(
     readonly outcome: SlackWriteOutcome,
     readonly retryAfterMs = 0,
-    readonly code: 'invalid_blocks' | 'invalid_attachments' | '' = '',
+    readonly code: 'invalid_blocks' | 'invalid_attachments' | 'msg_blocks_too_long' | '' = '',
   ) {
     super(`Slack write ${outcome}`);
     this.name = 'SlackWriteError';
@@ -65,6 +65,8 @@ const diagnosticCodes = new Set([
   'invalid_json',
   'invalid_blocks',
   'invalid_attachments',
+  'msg_too_long',
+  'msg_blocks_too_long',
   'missing_scope',
   'not_allowed',
   'channel_not_found',
@@ -89,6 +91,8 @@ const permanentRejections = new Set([
   'invalid_json',
   'invalid_blocks',
   'invalid_attachments',
+  'msg_too_long',
+  'msg_blocks_too_long',
   'missing_scope',
   'not_allowed',
   'channel_not_found',
@@ -108,6 +112,12 @@ const permanentRejections = new Set([
   'method_not_supported_for_channel_type',
 ]);
 const permanentHttpRejections = new Set([400, 401, 403, 404, 405, 406, 410, 413, 414, 415, 422]);
+/** Slack rejected the rich payload before creating a message, so plain text may be retried. */
+const rejectedRichPayloads = new Set([
+  'invalid_blocks',
+  'invalid_attachments',
+  'msg_blocks_too_long',
+]);
 const mutedLogger = {
   debug() {},
   info() {},
@@ -212,8 +222,8 @@ export class SlackClient {
             const envelope: { ok?: unknown; error?: unknown } = JSON.parse(text);
             validEnvelope = Boolean(
               envelope &&
-                (envelope.ok === true ||
-                  (envelope.ok === false && typeof envelope.error === 'string')),
+              (envelope.ok === true ||
+                (envelope.ok === false && typeof envelope.error === 'string')),
             );
           } catch {
             /* The SDK maps malformed bodies to a platform error; that is not a rejection. */
@@ -252,8 +262,8 @@ export class SlackClient {
         const code =
           validEnvelope &&
           error instanceof WebAPIPlatformError &&
-          (error.data.error === 'invalid_blocks' || error.data.error === 'invalid_attachments')
-            ? error.data.error
+          rejectedRichPayloads.has(error.data.error)
+            ? (error.data.error as SlackWriteError['code'])
             : '';
         const failure = new SlackWriteError(outcome, retryAfterMs, code);
         const operation = methods.has(method) ? method : 'unknown';
@@ -312,7 +322,7 @@ export class SlackClient {
       if (
         !message.blocks?.length ||
         !(error instanceof SlackWriteError) ||
-        (error.code !== 'invalid_blocks' && error.code !== 'invalid_attachments')
+        !rejectedRichPayloads.has(error.code)
       )
         throw error;
       return this.postMessage(token, { ...message, blocks: [] }, signal);

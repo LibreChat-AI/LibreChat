@@ -318,7 +318,7 @@ describe('SlackClient', () => {
     expect(transport).toHaveBeenCalledTimes(1);
   });
 
-  test.each(['invalid_blocks', 'invalid_attachments'])(
+  test.each(['invalid_blocks', 'invalid_attachments', 'msg_blocks_too_long'])(
     'uses text fallback only after explicit %s rejection',
     async (error) => {
       const transport = jest
@@ -337,6 +337,19 @@ describe('SlackClient', () => {
       expect(fallback.get('text')).toBe(message.text);
     },
   );
+
+  test('treats a too-long text as a permanent rejection without a block retry', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValue(success({ ok: false, error: 'msg_too_long' }));
+    await expect(
+      new SlackClient(config, undefined, transport).deliverPart(token, {
+        ...message,
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'Answer' } }],
+      }),
+    ).rejects.toMatchObject({ outcome: 'permanent' });
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
 
   test.each([
     () => Promise.reject(new Error('network failure')),
@@ -390,6 +403,7 @@ describe('SlackClient', () => {
 
   test.each([
     ['invalid_arguments', 'invalid_arguments'],
+    ['msg_blocks_too_long', 'msg_blocks_too_long'],
     ['private-untrusted-error', 'platform_error'],
   ])('retains only allowlisted diagnostic metadata for %s', async (error, reason) => {
     const transport = jest
