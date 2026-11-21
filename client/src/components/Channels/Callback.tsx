@@ -16,9 +16,22 @@ export default function Callback({
   const [copied, setCopied] = useState(false);
   const copy = useCopyToClipboard({ text: value });
   return (
-    <div className="flex items-center gap-2">
-      <Input id={id} readOnly value={value} onFocus={(event) => event.target.select()} />
-      <CopyButton isCopied={copied} onClick={() => copy(setCopied)} iconOnly label={copyLabel} />
+    /** The URL is an LTR island in either direction, and the copy button sits inside its end. */
+    <div className="relative" dir="ltr">
+      <Input
+        id={id}
+        readOnly
+        value={value}
+        onFocus={(event) => event.target.select()}
+        variant="trailing"
+      />
+      <CopyButton
+        isCopied={copied}
+        onClick={() => copy(setCopied)}
+        iconOnly
+        label={copyLabel}
+        className="absolute inset-e-1.5 top-1/2 size-8 -translate-y-1/2"
+      />
     </div>
   );
 }
