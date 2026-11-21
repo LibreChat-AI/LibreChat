@@ -7,6 +7,7 @@ type DiscoveryField = 'startupAttempts' | 'retryDelayMs';
 export type OpenIdDiscoveryEnv = {
   startupAttempts?: string;
   retryDelayMs?: string;
+  failOnStartupError?: string;
 };
 
 export type OpenIdRegistrationOptions<TConfig> = {
@@ -42,7 +43,7 @@ function resolveField(
   return fallback;
 }
 
-/** Resolves discovery retry settings: YAML first, then environment, then the schema defaults. */
+/** Resolves discovery retry settings: YAML first, then environment, then schema defaults. */
 export function resolveOpenIdDiscovery(
   discovery?: Partial<TOpenIdDiscoveryConfig>,
   env: OpenIdDiscoveryEnv = {},
@@ -55,6 +56,23 @@ export function resolveOpenIdDiscovery(
     ),
     retryDelayMs: resolveField('retryDelayMs', discovery?.retryDelayMs, env.retryDelayMs),
   };
+}
+
+function shouldFailOnStartupError(raw: string | undefined): boolean {
+  if (raw == null || raw.trim() === '') {
+    return false;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  logger.warn(
+    `[OpenID] Ignoring invalid OPENID_DISCOVERY_FAIL_ON_STARTUP_ERROR "${raw}"; using false.`,
+  );
+  return false;
 }
 
 const wait = (delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay));
@@ -103,6 +121,10 @@ export async function registerOpenIdWithRetry<TConfig>({
   }
 
   logger.error('OpenID Connect configuration failed - strategy not registered.');
+
+  if (shouldFailOnStartupError(env?.failOnStartupError)) {
+    throw new Error('OpenID Connect initialization failed - strategy not registered.');
+  }
 
   const scheduleRetry = () => {
     logger.warn(`OpenID Connect configuration is unavailable. Retrying in ${retryDelayMs}ms.`);

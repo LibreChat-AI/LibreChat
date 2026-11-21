@@ -71,6 +71,7 @@ async function configureOpenId(app, appConfig) {
     env: {
       startupAttempts: process.env.OPENID_DISCOVERY_RETRY_ATTEMPTS,
       retryDelayMs: process.env.OPENID_DISCOVERY_RETRY_DELAY_MS,
+      failOnStartupError: process.env.OPENID_DISCOVERY_FAIL_ON_STARTUP_ERROR,
     },
   });
 }
