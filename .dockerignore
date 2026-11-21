@@ -12,6 +12,23 @@ meili_data*
 librechat*
 Dockerfile*
 docs
+e2e
+helm
+examples
+search
+redis-config
+playwright-report
+**/coverage
+**/junit.xml
+**/*.spec.*
+**/*.test.*
+**/__tests__
+**/__data__
+api/test
+client/test
+packages/*/test
 
+# Keep otel/ (used by otel/langfuse-fanout/Dockerfile), scripts/ (used by channel-gateway),
+# and skill/ (deployment skills are read at runtime).
 # Ignore all hidden files
 .*
