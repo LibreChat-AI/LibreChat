@@ -1,4 +1,4 @@
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, hashQueryKey } from '@tanstack/react-query';
 import { LocalStorageKeys, QueryKeys, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import {
   format,
@@ -874,16 +874,16 @@ export function findPinnedConversation(
 function findPinnedCandidate(
   queryClient: QueryClient,
   conversationId: string,
-): ConvoCandidate | undefined {
-  const queries = queryClient
+  queries: readonly Query[] = queryClient
     .getQueryCache()
-    .findAll([QueryKeys.pinnedConversations], { exact: false });
+    .findAll([QueryKeys.pinnedConversations], { exact: false }),
+): ConvoCandidate | undefined {
   let freshest: ConvoCandidate | undefined;
   for (const query of queries) {
     if (!isAggregateQueryAuthoritative(queryClient, query)) {
       continue;
     }
-    const data = queryClient.getQueryData<PinnedConversationsData>(query.queryKey);
+    const data = query.state.data as PinnedConversationsData | undefined;
     const found = data?.conversations.find((c) => c.conversationId === conversationId);
     freshest = freshestCandidate(freshest, candidateFrom(queryClient, query, found));
   }
@@ -1478,30 +1478,47 @@ export function findConvoInAllQueries(
   queryClient: QueryClient,
   conversationId: string,
 ): TConversation | undefined {
-  const queries = findConversationListQueries(queryClient);
+  /* The message list asks for its conversation on every streamed frame, so the cache is walked
+     once here for both kinds of list, a query in hand is read from its own state, and the two
+     single-conversation queries are fetched by hash. `findAll`, `find` and `getQueryData` each
+     walk every query in the cache. */
+  const cache = queryClient.getQueryCache();
+  /** One bucket per list prefix, read in `CONVERSATION_LIST_KEYS` order as `findAll` gave them. */
+  const lists: Query[][] = CONVERSATION_LIST_KEYS.map(() => []);
+  const pinned: Query[] = [];
+  for (const query of cache.getAll()) {
+    const root = query.queryKey[0];
+    if (root === QueryKeys.pinnedConversations) {
+      pinned.push(query);
+      continue;
+    }
+    const list = CONVERSATION_LIST_KEYS.findIndex((listKey) => listKey === root);
+    if (list !== -1) {
+      lists[list].push(query);
+    }
+  }
 
   let freshest: ConvoCandidate | undefined;
-  for (const query of queries) {
+  for (const query of lists.flat()) {
     if (!isAggregateQueryAuthoritative(queryClient, query)) {
       continue;
     }
-    const data = queryClient.getQueryData<InfiniteData<ConversationCursorData>>(query.queryKey);
+    const data = query.state.data as InfiniteData<ConversationCursorData> | undefined;
     freshest = freshestCandidate(
       freshest,
       candidateFrom(queryClient, query, findConversationInInfinite(data, conversationId)),
     );
   }
-  freshest = freshestCandidate(freshest, findPinnedCandidate(queryClient, conversationId));
+  freshest = freshestCandidate(freshest, findPinnedCandidate(queryClient, conversationId, pinned));
 
-  const runningKey = [QueryKeys.runningConversation, conversationId];
-  const runningQuery = queryClient.getQueryCache().find(runningKey);
+  const runningQuery = cache.get(hashQueryKey([QueryKeys.runningConversation, conversationId]));
   if (runningQuery) {
     freshest = freshestCandidate(
       freshest,
       candidateFrom(
         queryClient,
         runningQuery,
-        queryClient.getQueryData<TConversation | null>(runningKey) ?? undefined,
+        (runningQuery.state.data as TConversation | null | undefined) ?? undefined,
       ),
     );
   }
@@ -1509,12 +1526,11 @@ export function findConvoInAllQueries(
   /* The conversation opened by URL is loaded into its own point query, and an old one need not
      appear in any loaded list page at all. Without this it would read as absent, absent reads
      as caught up, and the reply the user is looking at would never be acknowledged. */
-  const pointKey = [QueryKeys.conversation, conversationId];
-  const pointQuery = queryClient.getQueryCache().find(pointKey);
+  const pointQuery = cache.get(hashQueryKey([QueryKeys.conversation, conversationId]));
   return freshestCandidate(
     freshest,
     pointQuery
-      ? candidateFrom(queryClient, pointQuery, queryClient.getQueryData<TConversation>(pointKey))
+      ? candidateFrom(queryClient, pointQuery, pointQuery.state.data as TConversation | undefined)
       : undefined,
   )?.convo;
 }
