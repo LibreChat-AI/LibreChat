@@ -10,7 +10,7 @@ import {
 } from '@librechat/client';
 import type { DiscordApplication, DiscordGuild } from 'librechat-data-provider';
 import { useLocalize } from '~/hooks';
-import { CredentialHealth, HealthChip } from './health';
+import { HealthChip } from './health';
 import Server from './Server';
 
 type Trigger = HTMLButtonElement;
@@ -76,7 +76,7 @@ export default function Card({
                   label={localize('com_ui_discord_rotate_named', { 0: name })}
                   variant="ghost"
                   size="sm"
-                  shape="control"
+                  shape="inset"
                   disabled={disabled}
                   onClick={(event) => onEdit(app, event.currentTarget)}
                 >
@@ -91,7 +91,7 @@ export default function Card({
                   label={localize('com_ui_discord_settings_named', { 0: name })}
                   variant="ghost"
                   size="sm"
-                  shape="control"
+                  shape="inset"
                   disabled={disabled}
                   onClick={(event) => onSettings(app, event.currentTarget)}
                 >
@@ -101,14 +101,8 @@ export default function Card({
             />
           </div>
         </div>
-        <CollapsibleContent>
+        <CollapsibleContent motion="height" className="overflow-hidden">
           <div className="border-border-light space-y-3 border-t p-3">
-            <CredentialHealth app={app} />
-            {servers.length === 0 && (
-              <p className="text-text-secondary text-sm">
-                {localize('com_ui_discord_guilds_empty')}
-              </p>
-            )}
             {servers.map((guild) => (
               <Server
                 key={guild.installationId}

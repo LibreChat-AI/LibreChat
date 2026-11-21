@@ -30,6 +30,7 @@ import {
   OGDialog,
   OGDialogTemplate,
   OGDialogTrigger,
+  useToastContext,
 } from '@librechat/client';
 import type {
   ConfigureDiscordApplication,
@@ -181,6 +182,7 @@ function Setup({
   showDescription: boolean;
 }) {
   const localize = useLocalize();
+  const { showToast } = useToastContext();
   const client = useQueryClient();
   const [editor, setEditor] = useAtom(editorAtom);
   const [confirm, setConfirm] = useAtom(confirmAtom);
@@ -270,6 +272,7 @@ function Setup({
       }
       setRestore({ trigger: editorTrigger.current });
       setEditor(null);
+      showToast({ message: localize('com_ui_discord_saved'), status: 'success' });
     },
   });
   const commands = useMutation({
@@ -626,11 +629,6 @@ function Setup({
           onAction={refreshAfterError}
         />
       )}
-      {save.isSuccess && !showWizard && (
-        <Alert variant="success" role="status">
-          {localize('com_ui_discord_saved')}
-        </Alert>
-      )}
       <h3 ref={appsHeading} tabIndex={-1} className="sr-only">
         {localize('com_ui_discord_apps')}
       </h3>
@@ -658,21 +656,7 @@ function Setup({
           }}
           onRefresh={refreshAfterError}
         />
-      ) : (
-        listed && (
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={disabled}
-              onClick={(event) => edit('new', event.currentTarget)}
-            >
-              <Plus className="size-4" aria-hidden="true" />
-              {localize('com_ui_discord_app_create')}
-            </Button>
-          </div>
-        )
-      )}
+      ) : null}
       <h3 ref={guildHeading} tabIndex={-1} className="sr-only">
         {localize('com_ui_discord_guilds')}
       </h3>
@@ -742,6 +726,19 @@ function Setup({
         >
           {localize('com_ui_discord_more_guilds')}
         </Button>
+      )}
+      {listed && !showWizard && (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={disabled}
+            onClick={(event) => edit('new', event.currentTarget)}
+          >
+            <Plus className="size-4" aria-hidden="true" />
+            {localize('com_ui_discord_app_create')}
+          </Button>
+        </div>
       )}
       <Editor
         editor={editor}
