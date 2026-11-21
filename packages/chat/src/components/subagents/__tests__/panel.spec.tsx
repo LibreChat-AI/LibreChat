@@ -1328,6 +1328,47 @@ describe('SubagentThreadPanel', () => {
     );
   });
 
+  it('names the subagent a nested call was made by, which no message in the history can', () => {
+    queryClient.setQueryData<TMessage[]>([QueryKeys.messages, 'parent-conversation'], []);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, turns: completedTurns },
+    });
+    const nested = { ...selection, parentMessageId: 'parent-message:outer-call:assistant' };
+    const { rerender } = render(
+      <Root>
+        <SubagentThreadPanel selection={nested} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'com_ui_subagent_parent_agent',
+    );
+
+    rerender(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...nested, caller: { agentId: 'agent-2', name: 'A stale name' } }}
+        />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst Two',
+    );
+
+    rerender(
+      <Root>
+        <SubagentThreadPanel selection={{ ...nested, caller: { name: 'Review team' } }} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Review team',
+    );
+  });
+
   it('resolves a missing historical parent after its reply arrives and retains that author', async () => {
     queryClient.setQueryData<TMessage[]>([QueryKeys.messages, 'parent-conversation'], []);
     mockUseSubagentThreadQuery.mockReturnValue({

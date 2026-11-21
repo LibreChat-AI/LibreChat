@@ -23,6 +23,7 @@ import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host'
 import SystemEventHeader, { SystemEventIcon } from '../messages/SystemEvent';
 import { useSearchResultsByTurn } from '../messages/useSearchResultsByTurn';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
+import { SubagentCallerContext } from '../../react/subagents/author';
 import { hasTerminalOutcome } from '../../react/subagents/outcome';
 import MinimalHoverButtons from '../messages/MinimalHoverButtons';
 import { standardContent } from '../../react/subagents/adapters';
@@ -257,6 +258,11 @@ function ChildMessage({
   );
   const searchResults = useSearchResultsByTurn(activity.attachments);
   const messageAuthor = useMemo(() => ({ icon: author.icon, label: author.name }), [author]);
+  /** Any call in this turn's content is the child's own. */
+  const caller = useMemo(
+    () => ({ agentId: author.agentId, name: author.name }),
+    [author.agentId, author.name],
+  );
   const detailsLimited = activity.activityTruncated === true;
   let limitedNotice: ReactNode;
   if (detailsLimited && onLoadDetails != null && detailState !== 'unavailable') {
@@ -301,32 +307,34 @@ function ChildMessage({
     >
       {notice}
       <AuthorContext.Provider value={messageAuthor}>
-        <ErrorSourceProvider message={message}>
-          <SubagentActivityContent
-            activity={activity}
-            activityId={message.messageId}
-            content={content}
-            authorHeader={RESUME_AUTHOR_HEADER}
-            searchResults={searchResults}
-            toolContentQuery={toolContentQuery}
-            state={state}
-            showPrompt={false}
-            conversationId={conversationId}
-            underHeaderIcon
-            onCancelControl={onCancelControl}
-          />
-          {outcomeContent != null &&
-            host.renderContentParts({
-              content: outcomeContent,
-              messageId: message.messageId,
-              conversationId: conversationId ?? null,
-              isCreatedByUser: false,
-              isSubmitting: false,
-              isLast: true,
-              isLatestMessage: false,
-              showThinking: false,
-            })}
-        </ErrorSourceProvider>
+        <SubagentCallerContext.Provider value={caller}>
+          <ErrorSourceProvider message={message}>
+            <SubagentActivityContent
+              activity={activity}
+              activityId={message.messageId}
+              content={content}
+              authorHeader={RESUME_AUTHOR_HEADER}
+              searchResults={searchResults}
+              toolContentQuery={toolContentQuery}
+              state={state}
+              showPrompt={false}
+              conversationId={conversationId}
+              underHeaderIcon
+              onCancelControl={onCancelControl}
+            />
+            {outcomeContent != null &&
+              host.renderContentParts({
+                content: outcomeContent,
+                messageId: message.messageId,
+                conversationId: conversationId ?? null,
+                isCreatedByUser: false,
+                isSubmitting: false,
+                isLast: true,
+                isLatestMessage: false,
+                showThinking: false,
+              })}
+          </ErrorSourceProvider>
+        </SubagentCallerContext.Provider>
       </AuthorContext.Provider>
       {detailsLimited && detailState !== 'loading' && (
         <div className="text-text-secondary mt-2 text-xs">{limitedNotice}</div>

@@ -13,9 +13,9 @@ import {
   subagentProgressKey,
   useSubagentProgress,
 } from '../../react/subagents/state';
+import { isSelfSpawn as isSelfSpawnType, useSubagentCaller } from '../../react/subagents/author';
 import { isLiveSubagentStatus, subagentStatusLabelKey } from '../../react/subagents/status';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
-import { isSelfSpawn as isSelfSpawnType } from '../../react/subagents/author';
 import { pickTailIndex, pickTailPart } from '../../react/subagents/tail';
 import { parseSubagentBackgroundHandle } from '../../core/parts/handle';
 import { lastVisibleContentIdx } from '../../core/parts/activityLabels';
@@ -317,6 +317,7 @@ export default function SubagentCall({
     persistedContent,
   ]);
 
+  const caller = useSubagentCaller();
   const panelSelection = useMemo(
     () => ({
       host: isSharedConvo === true ? ('share' as const) : ('conversation' as const),
@@ -335,6 +336,7 @@ export default function SubagentCall({
       initialProgress,
       isSubmitting,
       ...(runStepStatus == null ? {} : { runStepStatus }),
+      ...(caller == null ? {} : { caller }),
       ...(backgroundHandle != null && canOpenDurablePanel
         ? {
             durable: {
@@ -347,6 +349,7 @@ export default function SubagentCall({
     [
       attachments,
       backgroundHandle,
+      caller,
       canOpenDurablePanel,
       contentPreview,
       initialProgress,

@@ -39,7 +39,9 @@ async function selectAgent(page: Page, name: string): Promise<void> {
   await form.getByRole('button', { name: 'Select Agent' }).click();
 }
 
-test('a subagent called from inside a subagent keeps its name after a reload', async ({ page }) => {
+test('a subagent called from inside a subagent keeps its name and its caller after a reload', async ({
+  page,
+}) => {
   test.setTimeout(150_000);
   const label = `chain-${Date.now()}`;
   const childName = uniqueAgentName('E2E Child');
@@ -90,6 +92,10 @@ test('a subagent called from inside a subagent keeps its name after a reload', a
     await nested.click();
     await expect(page.getByText(`E2E_SUBAGENT_CHILD:${label}`)).toBeVisible();
     await expect(page.getByRole('heading', { name: childName }).first()).toBeVisible();
+
+    /** The brief the child was given is the relay's turn, not an unnamed parent's. */
+    await expect(page.getByRole('heading', { name: relayName })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Parent agent' })).toHaveCount(0);
   } finally {
     for (const id of ids.reverse()) {
       await cleanupAgent(page, id);
