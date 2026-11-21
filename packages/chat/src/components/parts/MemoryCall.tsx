@@ -1,16 +1,18 @@
 import { useMemo } from 'react';
 import { Brain } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
-import { toolPanelSpacingClassName } from '@librechat/chat/react';
-import { BareStatus, MemoryInfo } from '@librechat/chat/components';
-import { parseJsonField, isMemoryFailureOutput } from '@librechat/chat';
+import { cn, useLocalize } from '@librechat/client';
 import type { PartMetadata, TAttachment, MemoryArtifact } from 'librechat-data-provider';
-import type { MemoryToolName } from '@librechat/chat';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import type { CSSProperties } from 'react';
+import type { MemoryToolName } from '../../core/parts/memory';
+import { toolPanelSpacingClassName } from '../../react/parts/disclosure';
+import { parseJsonField } from '../../core/parts/parseJsonField';
+import { isMemoryFailureOutput } from '../../core/parts/memory';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import ProgressText from './ProgressText';
+import BareStatus from './BareStatus';
+import MemoryInfo from './MemoryInfo';
 
 export default function MemoryCall({
   toolName,
@@ -34,7 +36,7 @@ export default function MemoryCall({
   attachments?: TAttachment[];
   hideAttachments?: boolean;
   onExpand?: () => void;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   const isSave = toolName === 'set_memory';
   const memoryKey = useMemo(() => parseJsonField(args, 'key'), [args]);
@@ -95,7 +97,16 @@ export default function MemoryCall({
           />
         </div>
       )}
-      <div style={expandStyle}>
+      <div
+        className="tool-call-expand"
+        style={
+          {
+            '--tool-expand-rows': expandStyle.gridTemplateRows,
+            '--tool-expand-opacity': expandStyle.opacity,
+            '--tool-expand-transition': expandStyle.transition,
+          } as CSSProperties
+        }
+      >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {(hasPanel || phase === 'failed') && (
             <div
