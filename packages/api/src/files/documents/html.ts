@@ -2,6 +2,7 @@ import yauzl from 'yauzl';
 import { excelMimeTypes, megabyte } from 'librechat-data-provider';
 import { tryLibreOfficePreview } from './libreoffice';
 import { assertSafeZipSize } from './zipSafety';
+import { trimSheetRange } from './sheet';
 
 /**
  * Maximum decompressed size we'll accept from a single PPTX entry. Mirrors the
@@ -657,6 +658,7 @@ async function renderWorkbookSheets(
   const sheets: RenderedSheet[] = [];
   for (const sheetName of workbook.SheetNames) {
     const ws = workbook.Sheets[sheetName];
+    trimSheetRange(ws, XLSX.utils);
     const ref = ws['!ref'];
     let totalRows = 0;
     let truncated = false;

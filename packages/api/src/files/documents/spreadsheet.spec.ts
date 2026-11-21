@@ -61,8 +61,9 @@ describe('spreadsheet parser regressions', () => {
     }
   });
 
-  it('rejects inflated XML dimensions before CSV traversal', async () => {
-    const archive = await JSZip.loadAsync(await readFile(path.join(__dirname, 'sample.xlsx')));
+  it('trims an inflated XML dimension to the populated cells before counting traversal', async () => {
+    const original = await readFile(path.join(__dirname, 'sample.xlsx'));
+    const archive = await JSZip.loadAsync(original);
     const entry = archive.file('xl/worksheets/sheet1.xml');
     if (!entry) throw new Error('Missing worksheet fixture');
     archive.file(
@@ -72,9 +73,11 @@ describe('spreadsheet parser regressions', () => {
         '<dimension ref="A1:XFD1048576"/><sheetData>',
       ),
     );
-    await expect(
-      parse(await archive.generateAsync({ type: 'nodebuffer' }), 'dimension.xlsx'),
-    ).rejects.toThrow('safe processing limits');
+    const inflated = await parse(
+      await archive.generateAsync({ type: 'nodebuffer' }),
+      'dimension.xlsx',
+    );
+    expect(inflated).toBe(await parse(original, 'original.xlsx'));
   });
 
   it.each(['A1048576', 'XFD104', 'XFD1048576'])(

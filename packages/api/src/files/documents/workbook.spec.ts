@@ -11,20 +11,45 @@ describe('bounded spreadsheet CSV conversion', () => {
     'rejects oversized or invalid dimensions %s before CSV generation',
     (ref) => {
       const csv = jest.spyOn(utils, 'sheet_to_csv');
-      expect(() =>
-        workbookToText(workbook({ '!ref': ref, A1: { t: 's', v: 'small' } }), utils, SSF.format),
-      ).toThrow(SpreadsheetLimitError);
+      /* Content at the far corner keeps the declared range from being trimmed. */
+      const corner = ref.split(':')[1];
+      const sheet: WorkSheet = {
+        '!ref': ref,
+        A1: { t: 's', v: 'small' },
+        [corner]: { t: 's', v: 'small' },
+      };
+      expect(() => workbookToText(workbook(sheet), utils, SSF.format)).toThrow(
+        SpreadsheetLimitError,
+      );
       expect(csv).not.toHaveBeenCalled();
     },
   );
 
   it('counts traversal across sheets, including empty rectangular space', () => {
-    const sheet: WorkSheet = { '!ref': 'A1:GR700', A1: { t: 's', v: 'small' } };
+    const sheet: WorkSheet = {
+      '!ref': 'A1:GR700',
+      A1: { t: 's', v: 'small' },
+      GR700: { t: 's', v: 'small' },
+    };
     const csv = jest.spyOn(utils, 'sheet_to_csv');
     expect(() =>
       workbookToText({ SheetNames: ['a', 'b'], Sheets: { a: sheet, b: sheet } }, utils, SSF.format),
     ).toThrow(SpreadsheetLimitError);
     expect(csv).not.toHaveBeenCalled();
+  });
+
+  it('trims a declared range that outgrows the content before counting traversal', () => {
+    const sheet: WorkSheet = {
+      '!ref': 'A1:XFD1048575',
+      A1: { t: 's', v: 'Name' },
+      B1: { t: 's', v: 'Value' },
+      A3: { t: 's', v: 'A' },
+      B3: { t: 'n', v: 1 },
+      C9: { t: 's', v: '' },
+    };
+    expect(workbookToText(workbook(sheet), utils, SSF.format)).toBe(
+      'Sheet1:\nName,Value\n,\nA,1\n',
+    );
   });
 
   it('bounds sheet count even when sheets contain no cells', () => {
