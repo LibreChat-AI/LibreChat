@@ -8,8 +8,10 @@ import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { IProviderSession } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ResolvedBackchannelLogoutConfig } from './config';
+import type { OpenIDSessionRefreshDeps } from '../session';
 import { receiveBackchannelLogout, isBackchannelLogoutEnabled } from '../logout';
 import { createLocalRefreshHandler } from '../../localRefresh';
+import { createOpenIDSessionRefreshService } from '../session';
 import { createProviderSessionAuthorizer } from './authorize';
 
 /** Cross-path coverage: a real signed logout token runs the real receiver into a real database,
@@ -125,6 +127,74 @@ function buildLocalHandler(
   } as never);
 }
 
+function buildReuseDeps(
+  overrides: Partial<OpenIDSessionRefreshDeps> = {},
+): OpenIDSessionRefreshDeps {
+  return {
+    jwt: {
+      decode: jest.fn(() => ({ sub: 'sub-1', exp: Math.floor(Date.now() / 1000) + 3600 })),
+      verify: jest.fn(),
+    },
+    cookies: { parse: jest.fn(() => ({})) },
+    crypto: {
+      createHash: jest.fn(() => ({
+        update: jest.fn(() => ({ digest: jest.fn(() => 'hashed') })),
+      })),
+    },
+    openIdClient: { refreshTokenGrant: jest.fn() },
+    logger: makeLogger(),
+    isEnabled: jest.fn(() => true),
+    createAuthIdentityContext: jest.fn(() => ({
+      appUserId: 'user-1',
+      openidSubject: 'sub-1',
+      tenantId: undefined,
+      openidIssuer: ISSUER,
+    })),
+    isOpenIDSessionIdentityMatch: jest.fn(() => true),
+    createOpenIDRefreshIdentityTuple: jest.fn(() => null),
+    createRefreshTokenBridgeIdentity: jest.fn(() => ({
+      userId: 'user-1',
+      tenantId: undefined,
+      openidIssuer: ISSUER,
+    })),
+    createRefreshTokenBridgeFlightKey: jest.fn(() => null),
+    serializeAuthIdentityTuple: jest.fn(() => 'tuple'),
+    buildOpenIDRefreshParams: jest.fn(() => ({})),
+    setRefreshTokenCookie: jest.fn(),
+    setOpenIDMarkerCookies: jest.fn(),
+    storeOpenIdSession: jest.fn().mockResolvedValue(true),
+    normalizeExpiresIn: jest.fn(() => undefined),
+    upsertSession: jest.fn(),
+    deleteSession: jest.fn(),
+    getOpenIdConfig: jest.fn(() => ({})),
+    OPENID_REFRESH_BRIDGE_GRACE_MS: 1000,
+    storeRefreshTokenBridge: jest.fn().mockResolvedValue('bridge-version'),
+    deleteRefreshTokenBridges: jest.fn().mockResolvedValue(null),
+    acquireOpenIDRefreshFlight: jest.fn(),
+    completeOpenIDRefreshFlight: jest.fn().mockResolvedValue({ status: 'completed' }),
+    createOpenIDRefreshFlightKey: jest.fn((): string | null => null),
+    failOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
+    waitForOpenIDRefreshFlight: jest.fn(),
+    assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
+    assertOpenIDRefreshSessionGenerationAvailable: jest.fn().mockResolvedValue(true),
+    withOpenIDRefreshFlightLease: jest.fn(({ operation }) =>
+      operation({
+        assertLeaseOwned: jest.fn().mockResolvedValue(true),
+        markLeaseSettled: jest.fn(),
+      }),
+    ),
+    getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
+    providerSessionAuthorizer: {
+      establish: jest.fn().mockResolvedValue({ ok: true }),
+      authorize: jest.fn().mockResolvedValue({ ok: true }),
+      preCheck: jest.fn().mockResolvedValue({ ok: true }),
+      getMode: jest.fn().mockResolvedValue('record'),
+    },
+    getProviderSessionClient: jest.fn((): { issuer: string; clientId: string } | null => null),
+    ...overrides,
+  } satisfies OpenIDSessionRefreshDeps;
+}
+
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
@@ -185,6 +255,64 @@ describe('back-channel logout: real receiver + real database + real authorizer',
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.send).toHaveBeenCalledWith({ code: OPENID_SESSION_ENDED });
     expect(res.clearCookie).not.toHaveBeenCalledWith('refreshToken');
+  });
+
+  it('denies a reuse-mode refresh before the IdP grant once logout lands first', async () => {
+    const config = makeConfig();
+    const authorizer = makeAuthorizer(config);
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-2' };
+
+    await authorizer.establish({
+      ref,
+      subject: 'sub-2',
+      expiresAt: future(),
+      callbackIssuedAt: new Date(),
+    });
+    const revoked = await revokeViaReceiver(config, { sid: 'sid-2', sub: 'sub-2' });
+    expect(revoked.status).toBe(200);
+
+    const deps = buildReuseDeps({
+      providerSessionAuthorizer: {
+        establish: authorizer.establish,
+        authorize: authorizer.authorize,
+        preCheck: authorizer.preCheck,
+        getMode: authorizer.getMode,
+      },
+    });
+    const service = createOpenIDSessionRefreshService(deps);
+    const user = { _id: 'user-2', provider: 'openid', openidId: 'sub-2' };
+    const req = {
+      session: {
+        openidTokens: {
+          accessToken: 'old-access',
+          idToken: 'old-id',
+          refreshToken: 'rt-2',
+          browserRefreshToken: 'rt-2',
+          accessTokenExpiresAt: Math.floor(Date.now() / 1000) - 120,
+          appUserId: 'user-2',
+          openidSubject: 'sub-2',
+          openidIssuer: ISSUER,
+          providerSession: ref,
+        },
+        save: (cb: (e?: Error | null) => void) => cb(null),
+        reload: (cb: (e?: Error | null) => void) => cb(null),
+      },
+    };
+
+    await expect(
+      service.refreshOpenIDSession(
+        req as never,
+        undefined,
+        user as never,
+        'access_token',
+        undefined,
+        {
+          forceRefresh: true,
+        },
+      ),
+    ).rejects.toMatchObject({ code: OPENID_SESSION_ENDED });
+
+    expect(deps.openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
   });
 
   it('denies the next renewal once logout lands after an earlier successful authorize (ordering)', async () => {
@@ -449,3 +577,141 @@ describe('back-channel logout: real receiver + real database + real authorizer',
  * the same associations in place: a refresh taken while `off` must carry the bound ref forward
  * unchanged, not erase it.
  */
+describe('back-channel logout: rollback to off keeps an existing association', () => {
+  function buildRollbackSession(ref: ProviderSessionRef, refreshToken: string, userId: string) {
+    return {
+      openidTokens: {
+        accessToken: 'old-access',
+        idToken: 'old-id',
+        refreshToken,
+        browserRefreshToken: refreshToken,
+        accessTokenExpiresAt: Math.floor(Date.now() / 1000) - 120,
+        appUserId: userId,
+        openidSubject: userId,
+        openidIssuer: ISSUER,
+        providerSession: ref,
+      },
+      save: (cb: (e?: Error | null) => void) => cb(null),
+      reload: (cb: (e?: Error | null) => void) => cb(null),
+    };
+  }
+
+  it('carries the association through a mode-off refresh, then denies it under record once revoked', async () => {
+    const config = makeConfig({ mode: 'record' });
+    const authorizer = makeAuthorizer(config);
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-rollback-record' };
+    const userId = 'user-rollback-record';
+    const refreshToken = 'rt-rollback-record';
+
+    await authorizer.establish({
+      ref,
+      subject: userId,
+      expiresAt: future(),
+      callbackIssuedAt: new Date(),
+    });
+
+    const deps = buildReuseDeps({
+      openIdClient: {
+        refreshTokenGrant: jest.fn().mockResolvedValue({
+          access_token: 'new-access',
+          id_token: 'new-id',
+          refresh_token: refreshToken,
+        }),
+      },
+      providerSessionAuthorizer: {
+        establish: authorizer.establish,
+        authorize: authorizer.authorize,
+        preCheck: authorizer.preCheck,
+        getMode: authorizer.getMode,
+      },
+    });
+    const service = createOpenIDSessionRefreshService(deps);
+    const user = { _id: userId, provider: 'openid', openidId: userId };
+    const req = { session: buildRollbackSession(ref, refreshToken, userId) };
+
+    // Operator rolls back to 'off'.
+    config.mode = 'off';
+    const offResult = await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(offResult?.providerSession).toEqual(ref);
+    expect(req.session.openidTokens?.providerSession).toEqual(ref);
+
+    // Operator re-enables 'record'. The receiver route only runs outside 'off' (production
+    // answers 404 for a logout notification delivered while the mode is 'off'), so the
+    // revocation below arrives once 'record' is active, not while the mode was still 'off'.
+    config.mode = 'record';
+    const revoked = await revokeViaReceiver(config, { sid: 'sid-rollback-record', sub: userId });
+    expect(revoked.status).toBe(200);
+
+    await expect(
+      service.refreshOpenIDSession(
+        req as never,
+        undefined,
+        user as never,
+        'access_token',
+        undefined,
+        { forceRefresh: true },
+      ),
+    ).rejects.toMatchObject({ code: OPENID_SESSION_ENDED });
+  });
+
+  it('creates no association for a session with none, while mode is off', async () => {
+    const config = makeConfig({ mode: 'off' });
+    const authorizer = makeAuthorizer(config);
+    const userId = 'user-rollback-legacy';
+    const refreshToken = 'rt-rollback-legacy';
+
+    const deps = buildReuseDeps({
+      openIdClient: {
+        refreshTokenGrant: jest.fn().mockResolvedValue({
+          access_token: 'new-access',
+          id_token: 'new-id',
+          refresh_token: refreshToken,
+        }),
+      },
+      providerSessionAuthorizer: {
+        establish: authorizer.establish,
+        authorize: authorizer.authorize,
+        preCheck: authorizer.preCheck,
+        getMode: authorizer.getMode,
+      },
+    });
+    const service = createOpenIDSessionRefreshService(deps);
+    const user = { _id: userId, provider: 'openid', openidId: userId };
+    const req = {
+      session: {
+        openidTokens: {
+          accessToken: 'old-access',
+          idToken: 'old-id',
+          refreshToken,
+          browserRefreshToken: refreshToken,
+          accessTokenExpiresAt: Math.floor(Date.now() / 1000) - 120,
+          appUserId: userId,
+          openidSubject: userId,
+          openidIssuer: ISSUER,
+          providerSession: undefined as ProviderSessionRef | undefined,
+        },
+        save: (cb: (e?: Error | null) => void) => cb(null),
+        reload: (cb: (e?: Error | null) => void) => cb(null),
+      },
+    };
+
+    const result = await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(result?.access_token).toBe('new-access');
+    expect(result?.providerSession).toBeUndefined();
+    expect(req.session.openidTokens?.providerSession).toBeUndefined();
+  });
+});

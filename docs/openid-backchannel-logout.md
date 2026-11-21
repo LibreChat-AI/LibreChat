@@ -9,10 +9,6 @@ LibreChat enforces the logout at the session's next renewal or restoration, not 
 An access token already issued stays valid until it expires (`SESSION_EXPIRY`, default 15 minutes).
 When the browser client's renewal request is denied, it signs the user out.
 
-The check covers sessions that renew through LibreChat's own refresh token. With
-`OPENID_REUSE_TOKENS` enabled, an OpenID login renews through the provider's refresh token
-instead; LibreChat does not bind or check those sessions.
-
 ## Provider setup
 
 **Auth0**: enable back-channel logout on the application and set the back-channel logout URL to
