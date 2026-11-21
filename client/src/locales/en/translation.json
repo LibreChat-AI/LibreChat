@@ -62,7 +62,7 @@
   "com_ui_discord_disabled": "Discord isn't set up. Ask your administrator to turn it on.",
   "com_ui_discord_changed": "This changed while you were working. Refresh and try again.",
   "com_ui_discord_error": "The change may not have been saved. Refresh to see the current state.",
-  "com_ui_discord_unreachable": "Can't reach LibreChat right now.",
+  "com_ui_discord_unreachable": "Can't reach the server right now.",
   "com_ui_discord_load_failed": "Couldn't load Discord settings.",
   "com_ui_discord_refused": "Discord refused the request. Check the app's credentials.",
   "com_ui_discord_code_grant": "Turn on Require OAuth2 Code Grant for this app in the Discord Developer Portal, then try again.",

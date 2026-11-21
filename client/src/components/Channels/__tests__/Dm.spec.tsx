@@ -325,7 +325,7 @@ const unreachable = () => Object.assign(new Error('x'), { code: 'unavailable' })
 test('names an unreachable server, not a failed read', async () => {
   jest.mocked(dataService.listDiscordDmSelections).mockRejectedValueOnce(unreachable());
   page();
-  await screen.findByText("Can't reach LibreChat right now.");
+  await screen.findByText("Can't reach the server right now.");
   expect(screen.queryByText("Couldn't load your Direct messages.")).not.toBeInTheDocument();
 });
 
