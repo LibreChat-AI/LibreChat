@@ -74,6 +74,14 @@ export type MessagePartsShare = {
   shareId?: string;
 };
 
+/** A skill a call loaded, as the reader's library holds it now. */
+export type LoadedSkill = {
+  /** The skill's current instructions, which may have changed since the call ran. */
+  instructions: string;
+  /** Opens the skill in the app. */
+  open: () => void;
+};
+
 /** Strings a tool call card asks the host to resolve. Values fill `{0}`-style placeholders. */
 export type ToolCallLocalize = (key: string, values?: Record<string, string | number>) => string;
 
@@ -226,6 +234,12 @@ export interface MessagePartsHost {
   useLiveAppliedSteer: (steerId: string) => [boolean, (steerId: string) => void];
   /** Whether the calling message renders under a public share link, and which. */
   useShare: () => MessagePartsShare;
+  /**
+   * The skill a call loaded by name, when the reader can open exactly that skill: names are
+   * unique only per author, so a name that matches none, several, or a skill the reader cannot
+   * see resolves to `undefined`. While `enabled` is false the lookup is skipped.
+   */
+  useLoadedSkill: (name: string, enabled: boolean) => LoadedSkill | undefined;
   /** Localization, MCP lookups, OAuth binding and the app's renderers for a generic tool call. */
   useToolCallChrome: () => ToolCallChrome;
 }

@@ -1,52 +1,22 @@
 import { useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { parseJsonField } from '@librechat/chat';
 import { ArrowUpRight, ScrollText } from 'lucide-react';
-import { Button, TooltipAnchor } from '@librechat/client';
-import { PermissionTypes, Permissions } from 'librechat-data-provider';
-import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
-import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
+import { cn, Button, useLocalize, TooltipAnchor } from '@librechat/client';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import { useGetSkillQuery, useSkillsInfiniteQuery } from '~/data-provider';
-import { useShareContext } from '~/Providers/ShareContext';
-import { useHasAccess, useLocalize } from '~/hooks';
+import type { CSSProperties } from 'react';
+import { toolPanelSpacingClassName } from '../../react/parts/disclosure';
+import { parseJsonField } from '../../core/parts/parseJsonField';
+import { useToolCallIntent } from '../../react/parts/intent';
+import { useMessagePartsHost } from '../../react/host';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import { cn } from '~/utils';
+import { TOOL_ROW_CLASSES } from './rows';
+import ProgressText from './ProgressText';
+import BareStatus from './BareStatus';
+import Stdout from './Stdout';
 
 /** The confirmation every successful load returns; anything else (a degraded
  *  file upload, a note from the host) is execution detail worth keeping. */
 const LOAD_CONFIRMATION = /^Skill "[^"]*" loaded\. Follow the instructions below\.$/;
-
-/** The loaded skill's own record, when the user can open it. The tool output
- *  only confirms the load, so the instructions come from the skill itself.
- *  The call carries a name, not an id, and names are unique only per author:
- *  the skill is shown only when exactly one accessible skill has the name, the
- *  same set the run resolved it from. Same-name duplicates, deployment skills
- *  and skills the user cannot see resolve to nothing, keeping the output. */
-function useLoadedSkill(skillName: string, enabled: boolean) {
-  const canUseSkills = useHasAccess({
-    permissionType: PermissionTypes.SKILLS,
-    permission: Permissions.USE,
-  });
-  const active = enabled && canUseSkills && !!skillName;
-  const { data: pages } = useSkillsInfiniteQuery(
-    { search: skillName, limit: 10 },
-    { enabled: active },
-  );
-  const skillId = useMemo(() => {
-    if (!pages || pages.pages.at(-1)?.has_more) {
-      return undefined;
-    }
-    const matches = pages.pages
-      .flatMap((page) => page.skills)
-      .filter((skill) => skill.name === skillName);
-    return matches.length === 1 ? matches[0]._id : undefined;
-  }, [pages, skillName]);
-  const { data: skill } = useGetSkillQuery(skillId, { enabled: active });
-  return active ? skill : undefined;
-}
 
 export default function SkillCall({
   isSubmitting,
@@ -68,13 +38,13 @@ export default function SkillCall({
   attachments?: TAttachment[];
   hideAttachments?: boolean;
   onExpand?: () => void;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   const parsedSkillName = useMemo(() => parseJsonField(args, 'skillName'), [args]);
   const skillName = parsedSkillName || localize('com_ui_skill').toLowerCase();
   const intent = useToolCallIntent(args);
-  const navigate = useNavigate();
-  const { isSharedConvo } = useShareContext();
+  const { useShare, useLoadedSkill } = useMessagePartsHost();
+  const { isSharedConvo } = useShare();
 
   const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
     useToolCallState({
@@ -89,13 +59,15 @@ export default function SkillCall({
       runStepStatus,
     });
 
-  /** A shared transcript ran in its author's library, so a skill with the same name in the
-   *  viewer's library is a different skill: the output is all the call can vouch for. */
+  /** The tool output only confirms the load, so the instructions come from the skill itself,
+   *  when the host can name it. A shared transcript ran in its author's library, so a skill
+   *  with the same name in the viewer's library is a different skill: the output is all the
+   *  call can vouch for. */
   const skill = useLoadedSkill(
     parsedSkillName,
     showCode && phase === 'completed' && isSharedConvo !== true,
   );
-  const instructions = skill?.body.trim();
+  const instructions = skill?.instructions.trim();
   /** Beside the instructions, the output only adds the bare confirmation, so it
    *  shows only when it says something more. */
   const showOutput = !instructions || !LOAD_CONFIRMATION.test(output.trim());
@@ -130,7 +102,16 @@ export default function SkillCall({
           />
         </div>
       )}
-      <div style={expandStyle}>
+      <div
+        className="tool-call-expand"
+        style={
+          {
+            '--tool-expand-rows': expandStyle.gridTemplateRows,
+            '--tool-expand-opacity': expandStyle.opacity,
+            '--tool-expand-transition': expandStyle.transition,
+          } as CSSProperties
+        }
+      >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasOutput && (
             <div
@@ -155,7 +136,7 @@ export default function SkillCall({
                           size="icon-xs"
                           className="-my-1 shrink-0"
                           aria-label={localize('com_ui_open_skill')}
-                          onClick={() => navigate(`/skills/${skill._id}`)}
+                          onClick={skill.open}
                         >
                           <ArrowUpRight className="size-3.5" aria-hidden="true" />
                         </Button>

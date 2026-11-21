@@ -341,6 +341,7 @@ export { default as CommandTime, useCommandClock } from './components/parts/Comm
 export { default as CodeWindowHeader } from './components/parts/CodeWindowHeader';
 export type { CodeWindowHeaderProps } from './components/parts/CodeWindowHeader';
 export { default as MemoryCall } from './components/parts/MemoryCall';
+export { default as SkillCall } from './components/parts/SkillCall';
 export { default as ReadFileCall, langFromPath } from './components/parts/ReadFileCall';
 export { default as FileAuthoringCall } from './components/parts/FileAuthoringCall';
 export { default as PtcToolTrace } from './components/parts/PtcToolTrace';

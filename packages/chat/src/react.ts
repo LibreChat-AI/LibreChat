@@ -17,6 +17,7 @@ export type {
   MessagePartsUser,
   MessagePartsToast,
   MessagePartsShare,
+  LoadedSkill,
   ContentPartsSlotProps,
   MessagePartMessage,
   MessagePartsMarkdownProps,
