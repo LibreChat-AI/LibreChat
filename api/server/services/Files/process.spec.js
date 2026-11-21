@@ -1562,6 +1562,50 @@ describe('processAgentFileUpload', () => {
       );
     });
 
+    it('uploads an SVG to the code environment as-is, without rasterizing it', async () => {
+      const codeEnvUpload = jest
+        .fn()
+        .mockResolvedValue({ storage_session_id: 'sess-svg', file_id: 'fid-svg' });
+      const handleImageUpload = jest.fn();
+      const handleFileUpload = jest.fn().mockResolvedValue({
+        bytes: 3,
+        filename: 'logo.svg',
+        filepath: '/uploads/logo.svg',
+      });
+      const storedStream = Readable.from(Buffer.from('<svg/>'));
+      getStrategyFunctions.mockImplementation((src) =>
+        src === FileSources.execute_code
+          ? { handleFileUpload: codeEnvUpload }
+          : {
+              handleImageUpload,
+              handleFileUpload,
+              getDownloadStream: jest.fn().mockResolvedValue(storedStream),
+            },
+      );
+      const req = makeReq({ mimetype: 'image/svg+xml', ocrConfig: null });
+      req.file.originalname = 'logo.svg';
+      req.body.endpoint = EModelEndpoint.agents;
+
+      await processAgentFileUpload({
+        req,
+        res: mockRes,
+        metadata: {
+          agent_id: 'agent-abc',
+          tool_resource: EToolResources.execute_code,
+          file_id: 'file-svg',
+        },
+      });
+
+      expect(handleImageUpload).not.toHaveBeenCalled();
+      expect(codeEnvUpload).toHaveBeenCalledWith(
+        expect.objectContaining({ filename: 'logo.svg', stream: storedStream }),
+      );
+      expect(db.createFile).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'image/svg+xml' }),
+        true,
+      );
+    });
+
     it('removes durable storage when an eager code upload fails', async () => {
       const deleteFile = jest.fn().mockResolvedValue(undefined);
       getStrategyFunctions.mockImplementation((src) =>
