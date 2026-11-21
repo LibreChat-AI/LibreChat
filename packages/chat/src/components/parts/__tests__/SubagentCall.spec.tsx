@@ -41,6 +41,7 @@ import { ParentSubagentsProvider } from '../../../react/subagents/parents';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { SubagentCallerContext } from '../../../react/subagents/author';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { useIsPartsPreview } from '../../../react/parts/preview';
 import { StreamHostProvider } from '../../../react/stream/host';
@@ -981,6 +982,52 @@ describe('SubagentCall', () => {
 
     const card = screen.getByRole('button', { name: 'Code Reviewer Agent activity' });
     expect(within(card).getByText('Agent activity')).toBeInTheDocument();
+  });
+
+  it('opens with the subagent whose thread it sits in as its caller, and with none in main chat', () => {
+    let selection: ActiveSubagentPanel | null = null;
+    const Observer = () => {
+      selection = useAtomValue(activeSubagentPanel);
+      return null;
+    };
+    const card = (
+      <SubagentCall
+        toolCallId="relayed-call"
+        initialProgress={1}
+        args={{ subagent_type: 'agent-1', description: 'Report the total.' }}
+        output="The total is 4217."
+      />
+    );
+    currentMessage = { messageId: 'parent', conversationId: 'parent-conversation' };
+    const { unmount } = render(
+      <Providers>
+        <Observer />
+        {card}
+      </Providers>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Ran agent/ }));
+    expect(selection).toEqual(expect.objectContaining({ toolCallId: 'relayed-call' }));
+    expect((selection as ActiveSubagentPanel | null)?.caller).toBeUndefined();
+    unmount();
+
+    selection = null;
+    currentMessage = {
+      messageId: 'parent:outer-call:assistant',
+      conversationId: 'parent-conversation',
+    };
+    render(
+      <Providers>
+        <Observer />
+        <SubagentCallerContext.Provider value={{ agentId: 'agent_relay', name: 'Relay' }}>
+          {card}
+        </SubagentCallerContext.Provider>
+      </Providers>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Ran agent/ }));
+    expect((selection as ActiveSubagentPanel | null)?.caller).toEqual({
+      agentId: 'agent_relay',
+      name: 'Relay',
+    });
   });
 
   it('disables an inaccessible nested detached drilldown without renderable activity', () => {
