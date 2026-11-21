@@ -4,7 +4,7 @@ import {
   resolveModelSpecEndpoint,
 } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
-import type { AppConfig } from '~/types';
+import type { AppConfig } from '@librechat/data-schemas';
 import { ConversationImportError } from '~/conversations/import';
 
 type Specs = AppConfig['modelSpecs'];
