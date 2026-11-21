@@ -1,15 +1,16 @@
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getToolDisplayLabel } from '@librechat/chat';
+import { cn, useLocalize } from '@librechat/client';
 import type {
   SubagentDigest,
   SubagentDigestNode,
   SubagentDigestStatus,
 } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
-import { ToolIcon, getToolIconType } from './ToolOutput';
-import { cn, getRunStepDurationLabels } from '~/utils';
-import { useLocalize } from '~/hooks';
+import type { TranslationKeys } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
+import { getToolDisplayLabel } from '../../core/parts/toolLabels';
+import { getRunStepDurationLabels } from '../messages/duration';
+import ToolIcon, { getToolIconType } from './ToolIcon';
 
 export type DigestTreeNode = { node: SubagentDigestNode; children: DigestTreeNode[] };
 
@@ -180,58 +181,59 @@ function DigestBranch({
   );
 }
 
+export interface SubagentProgressProps {
+  digest: SubagentDigest;
+  /** Configured MCP server names, so `tool_mcp_server` names label correctly. */
+  serverNames?: readonly string[];
+}
+
 /**
  * A background subagent's folded progress tree: turns and ranges fold, and the
  * branch holding the child's current step opens by default. The full, live
  * transcript stays in the subagent activity panel this card links to.
  */
-const SubagentProgress = memo(function SubagentProgress({
-  digest,
-  serverNames,
-}: {
-  digest: SubagentDigest;
-  /** Configured MCP server names, so `tool_mcp_server` names label correctly. */
-  serverNames?: readonly string[];
-}) {
-  const localize = useLocalize();
-  const tree = useMemo(() => buildDigestTree(digest.nodes), [digest.nodes]);
-  const active = digest.active ?? digest.nodes[digest.nodes.length - 1]?.path;
-  return (
-    <div className="border-border-inset mt-3 border-t pt-2.5" data-testid="subagent-progress">
-      <div className="text-text-secondary mb-1.5 flex items-center gap-2 text-xs font-medium">
-        <span>{localize('com_ui_subagent_progress')}</span>
-        <span className="text-text-tertiary font-normal tabular-nums">
-          {localize('com_ui_subagent_progress_counts', {
-            0: digest.turns,
-            1: digest.tools,
-            2: digest.errors,
-          })}
-        </span>
-        {digest.phase === 'thinking' && (
-          <span className="text-text-tertiary font-normal">
-            {localize('com_ui_subagent_progress_thinking')}
+const SubagentProgress: NamedExoticComponent<SubagentProgressProps> = memo(
+  function SubagentProgress({ digest, serverNames }: SubagentProgressProps) {
+    const localize = useLocalize();
+    const tree = useMemo(() => buildDigestTree(digest.nodes), [digest.nodes]);
+    const active = digest.active ?? digest.nodes[digest.nodes.length - 1]?.path;
+    return (
+      <div className="border-border-inset mt-3 border-t pt-2.5" data-testid="subagent-progress">
+        <div className="text-text-secondary mb-1.5 flex items-center gap-2 text-xs font-medium">
+          <span>{localize('com_ui_subagent_progress')}</span>
+          <span className="text-text-tertiary font-normal tabular-nums">
+            {localize('com_ui_subagent_progress_counts', {
+              0: digest.turns,
+              1: digest.tools,
+              2: digest.errors,
+            })}
           </span>
+          {digest.phase === 'thinking' && (
+            <span className="text-text-tertiary font-normal">
+              {localize('com_ui_subagent_progress_thinking')}
+            </span>
+          )}
+        </div>
+        {tree.length > 0 && (
+          <ul aria-label={localize('com_ui_subagent_progress')} className="min-w-0">
+            {tree.map((entry) => (
+              <DigestBranch
+                key={entry.node.path}
+                entry={entry}
+                active={active}
+                serverNames={serverNames}
+              />
+            ))}
+          </ul>
+        )}
+        {digest.truncated === true && (
+          <p className="text-text-tertiary mt-1 text-xs">
+            {localize('com_ui_subagent_progress_truncated')}
+          </p>
         )}
       </div>
-      {tree.length > 0 && (
-        <ul aria-label={localize('com_ui_subagent_progress')} className="min-w-0">
-          {tree.map((entry) => (
-            <DigestBranch
-              key={entry.node.path}
-              entry={entry}
-              active={active}
-              serverNames={serverNames}
-            />
-          ))}
-        </ul>
-      )}
-      {digest.truncated === true && (
-        <p className="text-text-tertiary mt-1 text-xs">
-          {localize('com_ui_subagent_progress_truncated')}
-        </p>
-      )}
-    </div>
-  );
-});
+    );
+  },
+);
 
 export default SubagentProgress;

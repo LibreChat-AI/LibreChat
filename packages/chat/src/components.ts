@@ -345,6 +345,8 @@ export { default as ReadFileCall, langFromPath } from './components/parts/ReadFi
 export { default as FileAuthoringCall } from './components/parts/FileAuthoringCall';
 export { default as PtcToolTrace } from './components/parts/PtcToolTrace';
 export { default as BashCall } from './components/parts/BashCall';
+export { default as BackgroundTaskCard } from './components/parts/BackgroundTaskCard';
+export { default as BackgroundTaskCall } from './components/parts/BackgroundTaskCall';
 export {
   default as ExecuteCode,
   useParseArgs,
