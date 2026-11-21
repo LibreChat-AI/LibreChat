@@ -4307,6 +4307,7 @@ export const webSearchSchema = z.object({
   searchProvider: z.nativeEnum(SearchProviders).optional(),
   scraperProvider: z.nativeEnum(ScraperProviders).optional(),
   rerankerType: z.nativeEnum(RerankerTypes).optional(),
+  rerankerHeaders: z.record(z.string(), z.string()).optional(),
   scraperTimeout: z.number().int().nonnegative().optional(),
   safeSearch: z.nativeEnum(SafeSearchTypes).default(SafeSearchTypes.MODERATE),
   firecrawlOptions: z
@@ -4351,6 +4352,7 @@ export const webSearchSchema = z.object({
       language: z.string().optional(),
       timeRange: z.enum(['day', 'month', 'year']).optional(),
       timeout: z.number().int().positive().max(120000).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
     })
     .optional(),
   tavilySearchOptions: z
@@ -5269,7 +5271,7 @@ export type TWebSearchConfigInput = Omit<
   NonNullable<TCustomConfig['webSearch']>,
   'searxngSearchOptions'
 > & {
-  searxngSearchOptions?: z.input<typeof webSearchSchema>['searxngSearchOptions'];
+  searxngSearchOptions?: DeepPartial<z.input<typeof webSearchSchema>['searxngSearchOptions']>;
 };
 export type TCustomEndpoints = z.infer<typeof customEndpointsSchema>;
 
