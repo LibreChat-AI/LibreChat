@@ -2900,12 +2900,23 @@ export async function createRun({
     collectAttachedCodeApprovalPolicies(agents),
     agentsEndpointConfig?.toolApproval?.enabled !== false,
   );
+  const approvalExplicitlyDisabled = agentsEndpointConfig?.toolApproval?.enabled === false;
   assertAttachedCodeEnvironmentApprovalSupported({
     hasAttachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
     hitlCapable,
-    approvalExplicitlyDisabled: agentsEndpointConfig?.toolApproval?.enabled === false,
+    approvalExplicitlyDisabled,
     refuses: pauseGap != null,
   });
+  /** Built only for a run that knows of a machine now; see `registerResolvedMCPToolAliases`. */
+  const attachedHook =
+    attachedCodeEnvironmentAgentIds.size > 0
+      ? createAttachedCodeEnvironmentPolicyHook(
+          attachedCodeEnvironmentAgentIds,
+          attachedCodeEnvironmentSettings,
+          codeApprovalMode,
+          hitlCapable,
+        )
+      : undefined;
 
   // Assigned after the run-wide HITL registry is built. Lazy descriptors
   // capture this indirection now and report their aliases when they resolve.
@@ -3072,18 +3083,7 @@ export async function createRun({
           tenantId: tenantId ?? user?.tenantId,
           appConfig,
         })),
-      ...(attachedCodeEnvironmentAgentIds.size > 0
-        ? [
-            {
-              hook: createAttachedCodeEnvironmentPolicyHook(
-                attachedCodeEnvironmentAgentIds,
-                attachedCodeEnvironmentSettings,
-                codeApprovalMode,
-                hitlCapable,
-              ),
-            },
-          ]
-        : []),
+      ...(attachedHook ? [{ hook: attachedHook }] : []),
     ],
     nativeEditFileAgentIds,
   );
@@ -3096,6 +3096,19 @@ export async function createRun({
     ? createRunPolicy(grantExecution, agents, agents[0].edges ?? [], recordGrantDenial)
     : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
+    /**
+     * The machine policy hook exists only if a machine was known when the run was built,
+     * and adding to its collections below does nothing without it. An agent that reaches a
+     * machine only now is refused there instead of running with no policy on its calls.
+     */
+    assertAttachedCodeEnvironmentApprovalSupported({
+      hasAttachedCodeEnvironment:
+        resolvedAgent.codeExecutionContext?.environmentType === 'attached',
+      hitlCapable,
+      approvalExplicitlyDisabled,
+      refuses: pauseGap != null,
+      guarded: attachedHook != null && approvalWiring != null,
+    });
     agentApprovalSession.addAgent(resolvedAgent);
     grantPolicy?.registerAgent(resolvedAgent);
     for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
