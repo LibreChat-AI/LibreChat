@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   getScheduleMCPDisabledReason,
   isScheduleMCPAuthorizationFailure,
-  scheduledMCPFailureReasonSchema,
+  runGrantFailureReasonSchema,
   projectScheduleMCPReceipt,
   mergeScheduleMCPReceipts,
 } from 'librechat-data-provider';
@@ -15,9 +15,11 @@ import type {
   IScheduleRun,
   IScheduleRunDocument,
 } from '~/types/schedule';
+import type { TriggerRunRef } from '~/types/triggerRun';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
-import { unchangedScheduleGrant } from './scheduleConsent';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { createTriggerRuns } from './triggerRun';
+import { unchangedRunGrant } from './runGrant';
 
 const DUPLICATE_KEY = 11000;
 
@@ -275,6 +277,19 @@ export type ScheduleMethods = {
     scheduleId: string,
     scheduledFor: string | Date,
   ) => Promise<{ recorded: boolean; chatProjectId?: string } | null>;
+  /** The MCP outcomes one occurrence's run holds; empty when the row is absent or holds none. */
+  getScheduleRunMCP: (
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ) => Promise<ScheduleMCPOutcome[]>;
+  /**
+   * The MCP outcomes of the occurrence that started a conversation, for the schedule and
+   * owner named; empty when no such run is on record or it holds none.
+   */
+  getScheduleConversationMCP: (
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ) => Promise<ScheduleMCPOutcome[]>;
   reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<StartedRunReservation>;
   getCapacityOccupancy: () => Promise<{ takenSlots: number[]; unslotted: number }>;
   requestRunAbort: (
@@ -365,6 +380,13 @@ export type ScheduleMethods = {
 export function createScheduleMethods(mongoose: typeof import('mongoose')): ScheduleMethods {
   const Schedule = () => mongoose.models.Schedule as Model<IScheduleDocument>;
   const ScheduleRun = () => mongoose.models.ScheduleRun as Model<IScheduleRunDocument>;
+  const runs = createTriggerRuns(mongoose);
+
+  /** One occurrence of a schedule, as the run it started is found by. */
+  const occurrence = (scheduleId: string, scheduledFor: string | Date): TriggerRunRef => ({
+    subject: { kind: 'schedule', id: scheduleId },
+    delivery: { event: { occurredAt: new Date(scheduledFor).getTime() } },
+  });
 
   /**
    * Explicitly builds the Schedule/ScheduleRun indexes. Required because
@@ -490,7 +512,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         : {}),
       ...(update.mcpConsent != null &&
         options?.replacesMCPConsent !== undefined &&
-        unchangedScheduleGrant(options.replacesMCPConsent)),
+        unchangedRunGrant(options.replacesMCPConsent)),
     };
     const mutation = {
       $set: {
@@ -904,10 +926,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduleId: string,
     scheduledFor: string | Date,
   ): Promise<{ recorded: boolean; chatProjectId?: string } | null> {
-    const run = await ScheduleRun()
-      .findOne({ scheduleId, scheduledFor: new Date(scheduledFor) })
-      .select('chatProjectId')
-      .lean<{ chatProjectId?: string | null } | null>();
+    const run = await runs.get(occurrence(scheduleId, scheduledFor), ['chatProjectId']);
     if (run == null) {
       return null;
     }
@@ -916,6 +935,41 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     return recorded && run.chatProjectId != null
       ? { recorded, chatProjectId: run.chatProjectId }
       : { recorded };
+  }
+
+  /**
+   * What an occurrence's readiness check and any receipt since left on its run row. A resumed
+   * run reads back from it the servers the occurrence was started without.
+   */
+  async function getScheduleRunMCP(
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await runs.get(occurrence(scheduleId, scheduledFor), ['mcp']);
+    return run?.mcp ?? [];
+  }
+
+  /**
+   * The same outcomes, found by the conversation the occurrence started. Each occurrence
+   * starts a conversation of its own, so a later turn there (a background task or a
+   * subagent reporting back) is tied to its occurrence by where it runs. The schedule and
+   * its owner are part of the match: a conversation alone names no run of theirs. Should a
+   * conversation ever hold more than one run, the latest stands.
+   */
+  async function getScheduleConversationMCP(
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await runs.byConversation(
+      {
+        subject: { kind: 'schedule', id: scope.scheduleId },
+        owner: scope.ownerId,
+        tenantId: scope.tenantId,
+      },
+      conversationId,
+      ['mcp'],
+    );
+    return run?.mcp ?? [];
   }
 
   async function persistResolvedProject(
@@ -1114,13 +1168,13 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     IScheduleRun,
     'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
   > | null> {
-    return ScheduleRun()
-      .findOne({ scheduleId, scheduledFor })
-      .select('status abortRequestedAt abortSource abortPersistedAt mcp')
-      .lean<Pick<
-        IScheduleRun,
-        'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
-      > | null>();
+    return runs.get(occurrence(scheduleId, scheduledFor), [
+      'status',
+      'abortRequestedAt',
+      'abortSource',
+      'abortPersistedAt',
+      'mcp',
+    ]);
   }
 
   /**
@@ -1535,7 +1589,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
             {
               mcp: {
                 $elemMatch: {
-                  reason: { $in: scheduledMCPFailureReasonSchema.options },
+                  reason: { $in: runGrantFailureReasonSchema.options },
                   status: { $ne: 'ready' },
                   automaticReplay: false,
                 },
@@ -1622,7 +1676,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       {
         mcp: {
           $elemMatch: {
-            reason: { $in: scheduledMCPFailureReasonSchema.options },
+            reason: { $in: runGrantFailureReasonSchema.options },
             status: { $ne: 'ready' },
             automaticReplay: false,
           },
@@ -2342,6 +2396,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     requestRunAbort,
     persistResolvedProject,
     getScheduleRunProject,
+    getScheduleRunMCP,
+    getScheduleConversationMCP,
     getScheduleRunAbortState,
     getScheduleMCPCompletionState,
     recordMCPToolAuthFailure,

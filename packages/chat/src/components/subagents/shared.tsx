@@ -10,6 +10,7 @@ import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ActiveSubagentPanel } from '../../react/subagents/state';
 import {
+  callerAuthor,
   messageAuthor,
   findAgentLaneId,
   resolveSubagentAuthor,
@@ -50,17 +51,22 @@ export default function SharedSubagentActivityDialog({
   const parentAuthor = useMemo(() => {
     const message =
       parentMessageId === '' ? undefined : findAgentAuthorMessage(messages, parentMessageId);
-    return messageAuthor(
-      message,
+    return callerAuthor(
+      selection?.caller,
+      messageAuthor(
+        message,
+        agentsMap,
+        parentFallback,
+        findAgentLaneId(message, selection?.toolCallId, selection?.partIndex),
+      ),
       agentsMap,
-      parentFallback,
-      findAgentLaneId(message, selection?.toolCallId, selection?.partIndex),
     );
   }, [
     agentsMap,
     messages,
     parentFallback,
     parentMessageId,
+    selection?.caller,
     selection?.toolCallId,
     selection?.partIndex,
   ]);

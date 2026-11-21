@@ -16,6 +16,7 @@ import type {
   TMessageContentParts,
   TContextUsageEvent,
   TTokenUsageEvent,
+  TMessageTrigger,
   Agents,
 } from 'librechat-data-provider';
 import type { StandardGraph } from '@librechat/agents';
@@ -3183,6 +3184,7 @@ class GenerationJobManagerClass {
         subagentParentConversationId: jobData.subagentParentConversationId,
         agentEventExpectedAction: jobData.agentEventExpectedAction,
         agentEventSuspension: jobData.agentEventSuspension,
+        trigger: jobData.trigger,
         scheduleId: jobData.scheduleId,
         scheduledFor: jobData.scheduledFor,
         scheduleConfigRevision: jobData.scheduleConfigRevision,
@@ -5124,6 +5126,7 @@ class GenerationJobManagerClass {
               quotes: jobData.userMessage.quotes,
               privacyRevision: jobData.userMessage.privacyRevision,
               isCreatedByUser: true,
+              ...(jobData.userMessage.trigger != null && { trigger: jobData.userMessage.trigger }),
             }
           : null,
         responseMessage: isEarlyAbort
@@ -8381,6 +8384,7 @@ class GenerationJobManagerClass {
       manualSkills?: string[];
       alwaysAppliedSkills?: string[];
       files?: unknown[];
+      trigger?: TMessageTrigger;
     };
     const updates: Partial<SerializableJobData> = {
       createdEventEmitted: true,
@@ -8406,6 +8410,8 @@ class GenerationJobManagerClass {
           extra.alwaysAppliedSkills.length > 0 && {
             alwaysAppliedSkills: extra.alwaysAppliedSkills,
           }),
+        // The server put it on the message it emitted; a resumed stream's row needs it too.
+        ...(extra.trigger != null && { trigger: extra.trigger }),
       },
     };
 

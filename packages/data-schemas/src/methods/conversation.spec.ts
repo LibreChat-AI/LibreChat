@@ -20,6 +20,7 @@ import type {
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
+import { MAX_EXCLUDED_FILES } from '~/types/convo';
 import { createResponseStorage } from './response';
 import { waitForPause } from './test-helpers';
 import { createModels } from '../models';
@@ -1392,6 +1393,197 @@ describe('Conversation Operations', () => {
         expect(result).toBeNull();
         const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
         expect(stored?.pinned).toBeUndefined();
+      });
+    });
+
+    describe('setConvoFileExclusion', () => {
+      const anchor = new Date('2026-03-05T22:17:14.997Z');
+
+      const seedConvo = async (user = 'user123', excludedFiles?: string[]) => {
+        const conversationId = uuidv4();
+        await Conversation.collection.insertOne({
+          conversationId,
+          user,
+          title: 'Quarterly Figures',
+          endpoint: EModelEndpoint.agents,
+          files: ['file-a', 'file-b', 'file-c'],
+          ...(excludedFiles == null ? {} : { excludedFiles }),
+          messages: [],
+          createdAt: anchor,
+          updatedAt: anchor,
+        });
+        return conversationId;
+      };
+
+      it('leaves files out and reports the whole list', async () => {
+        const conversationId = await seedConvo();
+
+        const first = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-a'],
+          true,
+        );
+        const second = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-a', 'file-b'],
+          true,
+        );
+
+        expect(first).toEqual({ ok: true, value: ['file-a'] });
+        expect(second).toEqual({ ok: true, value: ['file-a', 'file-b'] });
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual(['file-a', 'file-b']);
+      });
+
+      it('takes files back in', async () => {
+        const conversationId = await seedConvo('user123', ['file-a', 'file-b']);
+
+        const result = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-a', 'file-never-listed'],
+          false,
+        );
+
+        expect(result).toEqual({ ok: true, value: ['file-b'] });
+      });
+
+      it('changes neither the timestamps nor the conversation files', async () => {
+        const conversationId = await seedConvo();
+
+        await methods.setConvoFileExclusion('user123', conversationId, ['file-a'], true);
+
+        const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+        expect(new Date(stored?.updatedAt ?? 0).toISOString()).toBe(anchor.toISOString());
+        expect(stored?.files).toEqual(['file-a', 'file-b', 'file-c']);
+        expect(getMessages).not.toHaveBeenCalled();
+      });
+
+      it('reads the list only for its owner when a user is named', async () => {
+        const conversationId = await seedConvo('user123', ['file-a']);
+
+        expect(await methods.getConvoExcludedFiles(conversationId, 'user123')).toEqual(['file-a']);
+        expect(await methods.getConvoExcludedFiles(conversationId, 'other-user')).toEqual([]);
+      });
+
+      it('reads no list for a conversation that never left a file out', async () => {
+        const conversationId = await seedConvo();
+
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual([]);
+        expect(await methods.getConvoExcludedFiles(uuidv4())).toEqual([]);
+      });
+
+      it('does not store a list on a conversation saved without one', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(
+          { userId: 'user123' },
+          { conversationId, endpoint: EModelEndpoint.agents, title: 'New' },
+        );
+
+        const stored = await Conversation.collection.findOne({ conversationId });
+        expect(stored).not.toHaveProperty('excludedFiles');
+      });
+
+      it('answers not found for an unknown id and for another user’s conversation', async () => {
+        const theirs = await seedConvo('other-user');
+
+        const unknown = await methods.setConvoFileExclusion('user123', uuidv4(), ['file-a'], true);
+        const foreign = await methods.setConvoFileExclusion('user123', theirs, ['file-a'], true);
+        const foreignInclude = await methods.setConvoFileExclusion(
+          'user123',
+          theirs,
+          ['file-a'],
+          false,
+        );
+
+        expect(unknown).toEqual({ ok: false, error: { code: 'not_found' } });
+        expect(foreign).toEqual({ ok: false, error: { code: 'not_found' } });
+        expect(foreignInclude).toEqual({ ok: false, error: { code: 'not_found' } });
+        expect(await methods.getConvoExcludedFiles(theirs)).toEqual([]);
+      });
+
+      it('is not replaced or cleared by a generic save', async () => {
+        const conversationId = await seedConvo('user123', ['file-a']);
+
+        await saveConvo(
+          { userId: 'user123' },
+          { conversationId, title: 'Renamed', excludedFiles: ['file-b', 'file-c'] },
+          { unsetFields: { excludedFiles: 1 } },
+        );
+
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual(['file-a']);
+        expect((await getConvo('user123', conversationId))?.title).toBe('Renamed');
+      });
+
+      it('keeps the list bounded and says so', async () => {
+        const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
+        const conversationId = await seedConvo('user123', full);
+        const roomy = await seedConvo('user123', full.slice(0, MAX_EXCLUDED_FILES - 1));
+
+        const overFull = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['one-more'],
+          true,
+        );
+        const lastSlot = await methods.setConvoFileExclusion('user123', roomy, ['one-more'], true);
+        const tooMany = await methods.setConvoFileExclusion('user123', roomy, ['a', 'b'], true);
+
+        expect(overFull).toEqual({ ok: false, error: { code: 'limit_exceeded' } });
+        expect(lastSlot.ok && lastSlot.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(tooMany).toEqual({ ok: false, error: { code: 'limit_exceeded' } });
+        expect(await methods.getConvoExcludedFiles(conversationId)).toHaveLength(
+          MAX_EXCLUDED_FILES,
+        );
+      });
+
+      it('gives ids already on the list no room of their own, so a repeat still lands', async () => {
+        const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
+        const fullId = await seedConvo('user123', full);
+        const roomy = await seedConvo('user123', full.slice(0, MAX_EXCLUDED_FILES - 1));
+
+        const repeat = await methods.setConvoFileExclusion('user123', fullId, ['file-0'], true);
+        const overlap = await methods.setConvoFileExclusion(
+          'user123',
+          roomy,
+          ['file-0', 'one-more'],
+          true,
+        );
+        const wholeListAgain = await methods.setConvoFileExclusion('user123', fullId, full, true);
+
+        expect(repeat.ok && repeat.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(overlap.ok && overlap.value).toHaveLength(MAX_EXCLUDED_FILES);
+        expect(wholeListAgain.ok && wholeListAgain.value).toHaveLength(MAX_EXCLUDED_FILES);
+      });
+
+      it('refuses more ids than the list can hold whatever is stored', async () => {
+        const conversationId = await seedConvo();
+        const tooMany = Array.from({ length: MAX_EXCLUDED_FILES + 1 }, (_, index) => `f-${index}`);
+
+        const result = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          tooMany,
+          true,
+        );
+
+        expect(result).toEqual({ ok: false, error: { code: 'limit_exceeded' } });
+        expect(await methods.getConvoExcludedFiles(conversationId)).toEqual([]);
+      });
+
+      it('lets a full list shrink', async () => {
+        const full = Array.from({ length: MAX_EXCLUDED_FILES }, (_, index) => `file-${index}`);
+        const conversationId = await seedConvo('user123', full);
+
+        const result = await methods.setConvoFileExclusion(
+          'user123',
+          conversationId,
+          ['file-0'],
+          false,
+        );
+
+        expect(result.ok && result.value).toHaveLength(MAX_EXCLUDED_FILES - 1);
       });
     });
   });
@@ -2896,6 +3088,42 @@ describe('Conversation Operations', () => {
       expect(result?.convoMap[legacyTemporaryConvoId]).toBeUndefined();
       expect(result?.convoMap[expiredRetainedConvo.conversationId]).toBeUndefined();
       expect(result?.convoMap[tempConvo.conversationId]).toBeUndefined();
+    });
+
+    it('omits the embedded messages array from getConvosQueried rows and keeps the metadata', async () => {
+      const base = Date.now();
+      const ids = [uuidv4(), uuidv4(), uuidv4()];
+      for (const [index, conversationId] of ids.entries()) {
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          title: `Queried ${index}`,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-4o',
+          messages: [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()],
+        });
+        await Conversation.collection.updateOne(
+          { conversationId },
+          { $set: { updatedAt: new Date(base - index * 1000) } },
+        );
+      }
+      const wanted = ids.map((conversationId) => ({ conversationId }));
+
+      const first = await getConvosQueried('user123', wanted, null, 2);
+
+      expect(first.conversations.map((c) => c.conversationId)).toEqual([ids[0], ids[1]]);
+      expect(first.nextCursor).toBe(new Date(base - 1000).toISOString());
+      for (const convo of first.conversations) {
+        expect(convo).not.toHaveProperty('messages');
+        expect(convo.title).toMatch(/^Queried/);
+        expect(convo.model).toBe('gpt-4o');
+        expect(convo.endpoint).toBe(EModelEndpoint.openAI);
+        expect(first.convoMap[convo.conversationId]).not.toHaveProperty('messages');
+      }
+
+      const second = await getConvosQueried('user123', wanted, first.nextCursor, 2);
+      expect(second.conversations.map((c) => c.conversationId)).toEqual([ids[2]]);
+      expect(second.nextCursor).toBeNull();
     });
 
     it('hides durable subagent threads from conversation lists and search results', async () => {

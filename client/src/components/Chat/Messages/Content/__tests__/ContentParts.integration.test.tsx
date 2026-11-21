@@ -144,7 +144,8 @@ jest.mock('lucide-react', () => ({
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useMediaQuery: () => false,
-  useLocalize: () => (key: string) => key,
+  /** The tool group reads the localizer from the package, so it delegates to the `~/hooks` mock. */
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
   Button: ({
     children,
     variant: _variant,
@@ -190,7 +191,16 @@ jest.mock('../Parts', () => ({
   Reasoning: () => <div data-testid="reasoning" />,
   Summary: () => <div data-testid="summary" />,
   SteerPart: () => <div data-testid="steer" />,
-  Text: jest.fn(({ text }: { text?: string }) => <div data-testid="text">{text}</div>),
+  Text: jest.fn(function MockText({ text }: { text?: string }) {
+    const { nextType } = jest
+      .requireActual<typeof import('~/Providers/MessageContext')>('~/Providers/MessageContext')
+      .useMessageContext();
+    return (
+      <div data-testid="text" data-next-type={nextType}>
+        {text}
+      </div>
+    );
+  }),
   MemoryCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="memory-call" data-count={attachments?.length ?? 0} />
   ),
@@ -1330,7 +1340,9 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     const toggle = screen.getByRole('button', { name: /^Running 2 actions/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
-    fireEvent.click(screen.getAllByTestId('progress-text')[0]);
+    /** The first call's own row: the package's tool call card draws it. */
+    const row = document.querySelector<HTMLElement>('[data-tool-call-id]');
+    fireEvent.click(within(row as HTMLElement).getAllByRole('button')[0]);
 
     rerender(
       <RecoilRoot>
@@ -2080,6 +2092,23 @@ describe('ContentParts integration: lane groups backed by one agent', () => {
       'agent_a',
       'agent_b____1',
     ]);
+  });
+
+  it('only lets a later part in the same lane settle an artifact text part', () => {
+    const artifact = ':::artifact{identifier="report" title="Report" type="text/html"}';
+    const frame = (parts: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={parts} />
+      </RecoilRoot>
+    );
+    const primary = inLane(makeTextPart(artifact), 'agent_a');
+    const other = inLane(makeTextPart('Other model text'), 'agent_b____1');
+    const { rerender } = render(frame([primary, other]));
+    expect(screen.getByText(artifact)).not.toHaveAttribute('data-next-type');
+
+    rerender(frame([primary, other, inLane(makeTextPart('Same model text'), 'agent_a')]));
+    expect(screen.getByText(artifact)).toHaveAttribute('data-next-type', ContentTypes.TEXT);
+    expect(screen.getByText('Other model text')).not.toHaveAttribute('data-next-type');
   });
 
   it('keeps lane attribution when a phase marker leaves one agent per slice', () => {

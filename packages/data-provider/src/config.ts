@@ -37,7 +37,7 @@ import {
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
-import { scheduledMCPResourceBindingSchema } from './types/scheduleConsent';
+import { runGrantResourceBindingSchema } from './types/runGrant';
 import { partialWithoutDefaults } from './zod';
 
 export const tenantIdSchema = z
@@ -1158,7 +1158,7 @@ const remoteApiIntegrationsSchema = z.object({
   /** Longest a grant made for a key may last. */
   maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
   /** The servers a key may be granted, each with the recipient the operator vouches for. */
-  resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
+  resources: z.record(z.string(), runGrantResourceBindingSchema).optional(),
 });
 
 const remoteApiSchema = z.object({
@@ -2101,7 +2101,10 @@ export const agentsEndpointSchema = baseEndpointSchema
       /** Characters of retained tool output the save path may tokenize exactly for the
        * context gauge when a turn stops at the tool-call limit (see
        * `retainedToolTokens`). Tokenizing costs ~60 ms/MB and runs once per stopped
-       * turn; past this ceiling the figure is withdrawn rather than estimated, so the
+       * turn. The ceiling is spent in UTF-8 bytes (ASCII text costs its length), and a
+       * long unbroken run of whitespace, letters or punctuation costs the square of
+       * its byte length and is charged that way.
+       * Past the ceiling the figure is withdrawn rather than estimated, so the
        * gauge under-reports that turn instead of blocking the save. Raise it for
        * deployments whose tools legitimately return more, lower it on slow hardware. */
       maxRetainedToolCountChars: z
@@ -3115,6 +3118,8 @@ export const lookupConcurrencySchema = z.object({
   skillFileInspections: lookupConcurrency,
   /** Agent reads while building the resume snapshot of a paused run. */
   resumeAgentLoads: lookupConcurrency,
+  /** Generated code output downloads prefetched before a tool result returns to the model. */
+  codeOutputDownloads: lookupConcurrency,
 });
 
 export type TLookupConcurrency = z.infer<typeof lookupConcurrencySchema>;
@@ -3708,7 +3713,7 @@ export const interfaceSchema = z
                * MCP tools. Unset, such schedules keep running until their next edit.
                */
               requireAfter: z.string().datetime({ offset: true }).optional(),
-              resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
+              resources: z.record(z.string(), runGrantResourceBindingSchema).optional(),
             })
             .optional(),
           /** Bounded exponential receipt retry interval; equal jitter prevents outage waves. */

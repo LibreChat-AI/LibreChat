@@ -17,6 +17,7 @@ export type {
   MessagePartsUser,
   MessagePartsToast,
   MessagePartsShare,
+  LoadedSkill,
   ContentPartsSlotProps,
   MessagePartMessage,
   MessagePartsMarkdownProps,
@@ -25,9 +26,6 @@ export type {
   MessagePartsUserTextPreferences,
   ToolCallChrome,
   ToolCallLocalize,
-  ToolCallProgressProps,
-  ToolCallInfoProps,
-  ToolCallIconProps,
 } from './react/host';
 export { emptyToolCallChrome } from './react/host';
 export {
@@ -193,6 +191,7 @@ export type {
   MessageIconData,
   MessageIconProps,
   MessageAudioProps,
+  MessageUsageProps,
   MessageAudioButtonProps,
   MessageSlotProps,
   WakeupSlotProps,

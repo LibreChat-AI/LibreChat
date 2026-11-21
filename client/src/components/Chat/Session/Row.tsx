@@ -10,7 +10,7 @@ import {
   STATUS_CLASSES,
   DELIVERY_CLASSES,
 } from '../BackgroundTasks/labels';
-import ToolIcon, { getToolIconType } from '~/components/Chat/Messages/Content/ToolOutput/ToolIcon';
+import { ToolIcon, getToolIconType } from '~/components/Chat/Messages/Content/ToolOutput';
 import MessageIcon from '~/components/Share/MessageIcon';
 import Elapsed, { Duration } from './Elapsed';
 import { Collapse } from '~/components/ui';

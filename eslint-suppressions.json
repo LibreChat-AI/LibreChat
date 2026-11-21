@@ -129,16 +129,6 @@
       "count": 21
     }
   },
-  "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/EditContentParts.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -178,36 +168,6 @@
       "count": 7
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/BashCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/ExecuteCode.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/FileAuthoringCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/MemoryCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/ReadFileCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/SkillCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/WorkspaceChanges.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -226,26 +186,6 @@
       "count": 26
     }
   },
-  "client/src/components/Chat/Messages/Content/ToolCallGroup.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/ToolCallInfo.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/ToolOutput/OutputRenderer.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Messages/Content/ToolOutput/ToolIcon.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
   "client/src/components/Chat/Messages/Content/UIResourceCarousel.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -262,11 +202,6 @@
       "count": 2
     },
     "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/verticals.tsx": {
-    "shadcn/no-inline-styles": {
       "count": 1
     }
   },
@@ -1121,6 +1056,16 @@
   "client/src/utils/index.ts": {
     "design/disabled-recipe": {
       "count": 1
+    }
+  },
+  "packages/chat/src/components/parts/OutputRenderer.tsx": {
+    "shadcn/no-restyle": {
+      "count": 3
+    }
+  },
+  "packages/chat/src/components/parts/ToolIcon.tsx": {
+    "shadcn/no-restyle": {
+      "count": 3
     }
   },
   "packages/client/src/components/Badge.tsx": {

@@ -1716,3 +1716,41 @@ it('does not attach a historical schedule to an ordinary later subagent completi
   expect(prepared).not.toHaveProperty('scheduleMCPIdentity');
   expect(lookup).not.toHaveBeenCalled();
 });
+
+describe('the trigger a task kept of the run that started it', () => {
+  const trigger = {
+    subject: { kind: 'key' as const, id: 'key-1' },
+    origin: {
+      agentId: 'agent_root',
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+      },
+    },
+  };
+
+  it('is stored in the wake-up the task registers, and left out where the task kept none', async () => {
+    const enqueue = enqueueMock();
+    const notify = createSubagentCompletionWakeupHandler(enqueue);
+
+    await notify(registration({ trigger }));
+    await notify(registration({ taskId: 'task-2' }));
+
+    const payloads = enqueue.mock.calls.map(
+      ([envelope]) => parseAgentTriggerEnvelope(envelope).event.payload,
+    );
+    expect(payloads[0]).toEqual({
+      scheduleMCPIdentity: null,
+      trigger,
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      subagentType: 'researcher',
+    });
+    expect(payloads[1]).toEqual({
+      scheduleMCPIdentity: null,
+      taskId: 'task-2',
+      threadId: 'thread-1',
+      subagentType: 'researcher',
+    });
+  });
+});

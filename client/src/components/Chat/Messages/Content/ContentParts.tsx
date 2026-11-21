@@ -1,7 +1,12 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
 import { Constants, ContentTypes, Tools, imageGenTools } from 'librechat-data-provider';
-import { PendingSkillCall, Container, HiddenAttachmentsContext } from '@librechat/chat/components';
+import {
+  Container,
+  blocksLiveFold,
+  PendingSkillCall,
+  HiddenAttachmentsContext,
+} from '@librechat/chat/components';
 import {
   hasParallelLanes,
   parallelLaneGroups,
@@ -58,7 +63,6 @@ import EditContentParts from './EditContentParts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
-import { blocksLiveFold } from './live';
 import Part from './Part';
 
 /** An empty TEXT part — the placeholder some endpoints seed in
@@ -855,8 +859,15 @@ const ContentPartsBody = memo(function ContentPartsBody({
     ));
 
   const renderPart = useCallback(
-    (part: TMessageContentParts, idx: number, isLastPart: boolean) => {
+    (
+      part: TMessageContentParts,
+      idx: number,
+      isLastPart: boolean,
+      nextInLane?: TMessageContentParts['type'] | null,
+    ) => {
       const localIdx = localIndexByAbsolute?.get(idx) ?? idx - contentIndexOffset;
+      // A lane tail reports null rather than falling through to another lane's part.
+      const nextType = nextInLane === undefined ? content?.[localIdx + 1]?.type : nextInLane;
       return (
         <PartWithContext
           key={`provider-${messageId}-${getPartKeyIndex(part, idx)}`}
@@ -868,7 +879,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           conversationId={conversationId}
           isLatestMessage={isLatestMessage}
           isCreatedByUser={isCreatedByUser}
-          nextType={content?.[localIdx + 1]?.type}
+          nextType={nextType ?? undefined}
           isSubmitting={effectiveIsSubmitting}
           partAttachments={attachmentsForPart(part)}
           hideAttachments={hideAttachments}

@@ -426,6 +426,7 @@ if (allowSharedLinks) {
           shareResourceId: req.shareResourceId,
           requestUserId: req.user.id,
           userRole: req.user.role,
+          idOnTheSource: req.user.idOnTheSource,
           userTenantId: req.user.tenantId,
           targetMessageIndex: req.body?.targetMessageIndex,
           shareRevision: req.body?.shareRevision,

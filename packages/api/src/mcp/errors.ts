@@ -1,5 +1,5 @@
-import type { ScheduledMCPFailure } from '~/schedules/authorization/contract';
-import { failureFixtures } from '~/schedules/authorization/failures';
+import type { RunGrantFailure } from '~/agents/authority/contract';
+import { failureFixtures } from '~/agents/authority/failures';
 /**
  * MCP-specific error classes
  */
@@ -480,15 +480,15 @@ export function getMCPErrorResponse(error: unknown): MCPErrorResponse | null {
 }
 
 export class ScheduledMCPBearerError extends Error {
-  readonly failure: ScheduledMCPFailure;
+  readonly failure: RunGrantFailure;
   readonly outcomes: Array<
-    ScheduledMCPFailure & { server: string; detail: 'unattended_auth_required'; agentId?: string }
+    RunGrantFailure & { server: string; detail: 'unattended_auth_required'; agentId?: string }
   >;
 
-  readonly code: ScheduledMCPFailure['status'];
+  readonly code: RunGrantFailure['status'];
   readonly retryable: boolean;
 
-  constructor(reason: ScheduledMCPFailure['reason'], server: string, agentId?: string) {
+  constructor(reason: RunGrantFailure['reason'], server: string, agentId?: string) {
     const failure = failureFixtures[reason];
     super('Scheduled MCP resource credential unavailable.');
     this.name = 'ScheduledMCPBearerError';

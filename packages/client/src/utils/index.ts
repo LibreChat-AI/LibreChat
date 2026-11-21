@@ -5,3 +5,4 @@ export * from './remScale';
 export * from './cloudfront';
 export { default as logger } from './logger';
 export * from './direction';
+export * from './icon';

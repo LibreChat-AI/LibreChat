@@ -3,6 +3,7 @@ import { createContext, useContext, ReactNode, useCallback, useRef } from 'react
 type TArtifactContext = {
   getNextIndex: (skip: boolean) => number;
   resetCounter: () => void;
+  provisionalEnd: boolean;
 };
 
 export const ArtifactContext = createContext<TArtifactContext>({} as TArtifactContext);
@@ -11,6 +12,7 @@ export const useArtifactContext = () => useContext(ArtifactContext);
 export function ArtifactProvider({
   children,
   baseIndex = 0,
+  provisionalEnd = false,
 }: {
   children: ReactNode;
   /**
@@ -19,6 +21,7 @@ export function ArtifactProvider({
    * and keep document-order indices stable.
    */
   baseIndex?: number;
+  provisionalEnd?: boolean;
 }) {
   const counterRef = useRef(0);
 
@@ -39,7 +42,7 @@ export function ArtifactProvider({
   }, []);
 
   return (
-    <ArtifactContext.Provider value={{ getNextIndex, resetCounter }}>
+    <ArtifactContext.Provider value={{ getNextIndex, resetCounter, provisionalEnd }}>
       {children}
     </ArtifactContext.Provider>
   );

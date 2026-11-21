@@ -8,7 +8,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
-import type { ToolCallPhase } from '../core/parts/toolCallPhase';
+import type { PtcTrace } from '../core/ptc';
 
 /** The message a part renders in, as its host reports it. */
 export type MessagePartMessage = {
@@ -74,43 +74,20 @@ export type MessagePartsShare = {
   shareId?: string;
 };
 
+/** A skill a call loaded, as the reader's library holds it now. */
+export type LoadedSkill = {
+  /** The skill's current instructions, which may have changed since the call ran. */
+  instructions: string;
+  /** Opens the skill in the app. */
+  open: () => void;
+};
+
 /** Strings a tool call card asks the host to resolve. Values fill `{0}`-style placeholders. */
 export type ToolCallLocalize = (key: string, values?: Record<string, string | number>) => string;
 
-/** What the app's progress row draws for one tool call. */
-export type ToolCallProgressProps = {
-  phase: ToolCallPhase;
-  onClick: () => void;
-  inProgressText: string;
-  authText?: string;
-  finishedText: string;
-  subtitle?: string;
-  durationMs?: number;
-  toolPreparationDurationMs?: number;
-  toolExecutionDurationMs?: number;
-  phaseStartAt?: number;
-  phaseStepId?: string;
-  icon: ReactNode;
-  hasInput: boolean;
-  isExpanded: boolean;
-};
-
-/** What the app's parameter and output panel draws for one tool call. */
-export type ToolCallInfoProps = {
-  input: string;
-  output?: string | null;
-};
-
-/** What the app's tool icon draws for one tool call. `name` is the raw tool id. */
-export type ToolCallIconProps = {
-  name: string;
-  iconUrl?: string;
-  isAnimating: boolean;
-};
-
 /**
- * App services and renderers for a generic tool call card. The progress row, parameter panel,
- * icon and attachment stack stay in the app because other cards still share them.
+ * App services for a generic tool call card, and its one renderer: the attachment stack stays
+ * in the app because other cards still share it.
  */
 export type ToolCallChrome = {
   localize: ToolCallLocalize;
@@ -123,9 +100,6 @@ export type ToolCallChrome = {
   /** Opens a URL in a new tab. Called synchronously inside the sign-in click. */
   openUrl: (url: string) => void;
   logError: (message: string, error?: unknown) => void;
-  renderProgress: (props: ToolCallProgressProps) => ReactNode;
-  renderInfo: (props: ToolCallInfoProps) => ReactNode;
-  renderIcon: (props: ToolCallIconProps) => ReactNode;
   renderAttachments: (attachments: TAttachment[]) => ReactNode;
 };
 
@@ -137,9 +111,6 @@ const emptyChrome: ToolCallChrome = {
   bindActionOAuth: () => Promise.resolve(undefined),
   openUrl: () => undefined,
   logError: () => undefined,
-  renderProgress: () => null,
-  renderInfo: () => null,
-  renderIcon: () => null,
   renderAttachments: () => null,
 };
 
@@ -243,6 +214,8 @@ export interface MessagePartsHost {
   useToast: () => MessagePartsToast;
   /** Whether the sandbox for a code tool call is still starting. */
   useSandboxStarting: (toolCallId: string) => boolean;
+  /** Live inner-call trace of one programmatic tool call in one message. */
+  usePtcTrace: (messageId: string, toolCallId: string) => PtcTrace;
   /**
    * Which mounted card owns the row for a tool artifact, so one file renders once across tool
    * calls and messages. The key is the artifact id.
@@ -261,6 +234,12 @@ export interface MessagePartsHost {
   useLiveAppliedSteer: (steerId: string) => [boolean, (steerId: string) => void];
   /** Whether the calling message renders under a public share link, and which. */
   useShare: () => MessagePartsShare;
+  /**
+   * The skill a call loaded by name, when the reader can open exactly that skill: names are
+   * unique only per author, so a name that matches none, several, or a skill the reader cannot
+   * see resolves to `undefined`. While `enabled` is false the lookup is skipped.
+   */
+  useLoadedSkill: (name: string, enabled: boolean) => LoadedSkill | undefined;
   /** Localization, MCP lookups, OAuth binding and the app's renderers for a generic tool call. */
   useToolCallChrome: () => ToolCallChrome;
 }

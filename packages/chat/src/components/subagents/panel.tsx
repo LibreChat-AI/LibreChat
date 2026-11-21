@@ -37,6 +37,7 @@ import {
 } from '../../react/subagents/adapters';
 import {
   agentAuthor,
+  callerAuthor,
   useParentAuthor,
   resolveChildAgent,
   readableSubagentType,
@@ -183,13 +184,17 @@ export default function SubagentThreadPanel({
       selection.partIndex,
     ),
   );
-  const parentAuthor = useParentAuthor(
+  const dispatchAuthor = useParentAuthor(
     selection.parentConversationId,
     selection.parentMessageId,
     localize('com_ui_subagent_parent_agent'),
     selection.toolCallId,
     selection.partIndex,
     selection.durable?.threadId,
+  );
+  const parentAuthor = useMemo(
+    () => callerAuthor(selection.caller, dispatchAuthor, agentsMap),
+    [agentsMap, dispatchAuthor, selection.caller],
   );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';

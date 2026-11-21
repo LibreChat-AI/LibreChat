@@ -249,6 +249,9 @@ export const backgroundTasks = (conversationId: string) =>
 export const backgroundTasksCancel = (conversationId: string) =>
   `${backgroundTasks(conversationId)}/cancel`;
 
+export const fileExclusion = (conversationId: string) =>
+  `${conversationsRoot}/${encodeURIComponent(conversationId)}/files/exclusion`;
+
 export const conversationPullRequest = (conversationId: string) =>
   `${conversationsRoot}/${encodeURIComponent(conversationId)}/pull-request`;
 

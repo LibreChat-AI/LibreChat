@@ -50,18 +50,19 @@ import type {
   SummarizationConfig,
   TurnFileConsumers,
 } from 'librechat-data-provider';
+import type { ToolApprovalGrantStorage, RunGrantIdentity } from 'librechat-data-provider';
 import type { AppConfig, IAgentFadingTier, IUser } from '@librechat/data-schemas';
 import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
-import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
 import type { TerminalSteerHook, SteerPreemption } from '~/agents/steering/runtime';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
-import type { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
-import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
+import type { RunGrantExecution } from '~/agents/authority/execution';
+import type { RunGrantPolicyError } from '~/agents/authority/policy';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
+import type { ScheduledPauseGap } from '~/agents/hitl/admission';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
@@ -133,7 +134,6 @@ import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { hasModelBoundContentProtection } from '../middleware/modelBoundContent';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
-import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
@@ -150,6 +150,7 @@ import { getPluginHookSource } from '~/agents/hooks/source';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
+import { createRunPolicy } from '~/agents/authority/run';
 import { buildLangfuseConfig } from '~/langfuse/config';
 import { getCustomEndpointConfig } from '~/app/config';
 import { applyTestRunHook } from '~/agents/testHook';
@@ -2343,11 +2344,12 @@ export async function createRun({
   activityPhase,
   eventActorCheckpointing = false,
   hitlCapable = false,
+  pauseGap,
   resolvedToolApprovalHooks,
   toolApprovalStorage,
   reviewedToolApprovals,
-  scheduledMCPExecution,
-  recordScheduledMCPDenial,
+  grantExecution,
+  recordGrantDenial,
   toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
@@ -2500,14 +2502,22 @@ export async function createRun({
    */
   hitlCapable?: boolean;
   /**
+   * What a scheduled run that could pause is missing on this deployment, from
+   * `resolveScheduledPause`. Such a run arrives with `hitlCapable` off and starts anyway:
+   * its ask-user tool is left out and a call that needs approval is refused. Only that
+   * caller sets it; every other caller without a resume path is still refused an agent
+   * whose code runs on an attached machine.
+   */
+  pauseGap?: ScheduledPauseGap;
+  /**
    * Request-scoped approval hooks already resolved by the scheduled-run admission guard.
    * Reuse them here so a context-aware factory is evaluated exactly once for the run.
    */
   resolvedToolApprovalHooks?: readonly ResolvedToolApprovalHook[];
   toolApprovalStorage?: ToolApprovalGrantStorage;
   reviewedToolApprovals?: ReviewedToolApprovals;
-  scheduledMCPExecution?: ScheduleMCPExecution;
-  recordScheduledMCPDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>;
+  grantExecution?: RunGrantExecution<RunGrantIdentity>;
+  recordGrantDenial?: (error: RunGrantPolicyError) => Promise<boolean>;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -2555,8 +2565,7 @@ export async function createRun({
   // A schedule's grant does not keep them foreground: a detached child runs with this run's
   // hooks and narrowed tools, and its completion turn resolves the schedule's grant afresh.
   // A grant whose completion turn could not find it again (`detaches` false) still does.
-  const foregroundOnly =
-    scheduledMCPExecution?.enrolled === true && scheduledMCPExecution.detaches !== true;
+  const foregroundOnly = grantExecution?.enrolled === true && grantExecution.detaches !== true;
   const activeSubagentTasks = runFilesActive || foregroundOnly ? undefined : subagentTasks;
   /**
    * Only extract discovered tools if:
@@ -2895,6 +2904,7 @@ export async function createRun({
     hasAttachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
     hitlCapable,
     approvalExplicitlyDisabled: agentsEndpointConfig?.toolApproval?.enabled === false,
+    refuses: pauseGap != null,
   });
 
   // Assigned after the run-wide HITL registry is built. Lazy descriptors
@@ -3003,7 +3013,7 @@ export async function createRun({
   const toolApprovalPolicy = resolveToolApprovalPolicy({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
-    ownerApproval: scheduledMCPExecution?.mayAsk === true,
+    ownerApproval: grantExecution?.mayAsk === true,
   });
   // Every caller needs the policy hooks, including API-key ingresses. Only
   // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
@@ -3069,6 +3079,7 @@ export async function createRun({
                 attachedCodeEnvironmentAgentIds,
                 attachedCodeEnvironmentSettings,
                 codeApprovalMode,
+                hitlCapable,
               ),
             },
           ]
@@ -3081,17 +3092,12 @@ export async function createRun({
     hooks: [agentApprovalSession.settleBatchHook],
   });
   const hitl = hitlCapable ? approvalWiring : undefined;
-  const scheduledPolicy = scheduledMCPExecution
-    ? createScheduledMCPRunPolicy(
-        scheduledMCPExecution,
-        agents,
-        agents[0].edges ?? [],
-        recordScheduledMCPDenial,
-      )
+  const grantPolicy = grantExecution
+    ? createRunPolicy(grantExecution, agents, agents[0].edges ?? [], recordGrantDenial)
     : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
     agentApprovalSession.addAgent(resolvedAgent);
-    scheduledPolicy?.registerAgent(resolvedAgent);
+    grantPolicy?.registerAgent(resolvedAgent);
     for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
       nativeEditFileAgentIds.add(agentId);
     }
@@ -3156,9 +3162,9 @@ export async function createRun({
    * this guard is defense in depth).
    */
   let hooks = approvalWiring?.hooks;
-  if (scheduledPolicy) {
+  if (grantPolicy) {
     hooks ??= new HookRegistry();
-    hooks.register('PreToolUse', { hooks: [scheduledPolicy.hook, scheduledPolicy.receipt] });
+    hooks.register('PreToolUse', { hooks: [grantPolicy.hook, grantPolicy.receipt] });
   }
   if (usesSubagentCompletionWakeups(activeSubagentTasks)) {
     hooks = hooks ?? new HookRegistry();

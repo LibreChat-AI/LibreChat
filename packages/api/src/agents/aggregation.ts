@@ -1,12 +1,79 @@
 import { GraphEvents } from '@librechat/agents';
-import { ContentTypes } from 'librechat-data-provider';
-import type { Agents, TSteerAppliedEvent } from 'librechat-data-provider';
+import { Constants, ContentTypes } from 'librechat-data-provider';
+import type {
+  Agents,
+  SubagentIdentity,
+  TSteerAppliedEvent,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import type { createContentAggregator } from '@librechat/agents';
 import type { SubagentActivityUpdateEvent } from './subagentActivity';
 import type { ToolTimingAdapter } from './toolTiming';
 
 type SubagentAggregator = ReturnType<typeof createContentAggregator>;
 type AggregateInput = Parameters<SubagentAggregator['aggregateContent']>[0];
+
+/** What a run buffered for one child: its content, and who it ran as once an update said so. */
+export type SubagentBuffer = Pick<SubagentAggregator, 'contentParts'> & {
+  subagentIdentity?: SubagentIdentity;
+};
+
+type SubagentCall = {
+  id?: string;
+  name?: string;
+  subagentIdentity?: SubagentIdentity;
+  subagent_content?: TMessageContentParts[];
+};
+
+/**
+ * Moves each buffered child onto the `subagent` call that started it, as `subagentIdentity` and
+ * `subagent_content`, so a reload shows who ran and what they did. A child's own content can hold
+ * calls of its own, so each attached transcript is searched in turn: a call made from inside a
+ * subagent keeps its child the same way a call in the reply does. A buffer is attached once and
+ * the rest, whose call never appeared, is dropped.
+ */
+export function attachSubagentContent(
+  content: readonly (TMessageContentParts | undefined)[] | undefined,
+  buffers: Map<string, SubagentBuffer> | undefined,
+  onError?: (toolCallId: string, error: unknown) => void,
+): void {
+  if (buffers == null || buffers.size === 0 || !Array.isArray(content)) {
+    return;
+  }
+  const pending: (readonly (TMessageContentParts | undefined)[])[] = [content];
+  for (let index = 0; index < pending.length && buffers.size > 0; index++) {
+    for (const part of pending[index]) {
+      if (part?.type !== ContentTypes.TOOL_CALL) {
+        continue;
+      }
+      const call = part[ContentTypes.TOOL_CALL] as SubagentCall | undefined;
+      if (call?.name !== Constants.SUBAGENT || !call.id) {
+        continue;
+      }
+      const buffer = buffers.get(call.id);
+      if (buffer == null) {
+        continue;
+      }
+      buffers.delete(call.id);
+      try {
+        if (buffer.subagentIdentity != null) {
+          call.subagentIdentity = buffer.subagentIdentity;
+        }
+        /** The aggregator's array is sparse: slots that never received content are holes. */
+        const parts = Array.isArray(buffer.contentParts)
+          ? (buffer.contentParts.filter((entry) => entry != null) as TMessageContentParts[])
+          : [];
+        if (parts.length > 0) {
+          call.subagent_content = parts;
+          pending.push(parts);
+        }
+      } catch (error) {
+        onError?.(call.id, error);
+      }
+    }
+  }
+  buffers.clear();
+}
 
 function subagentPhaseToGraphEvent(event: SubagentActivityUpdateEvent): GraphEvents | null {
   switch (event?.phase) {

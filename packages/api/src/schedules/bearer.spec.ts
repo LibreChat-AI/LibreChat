@@ -7,11 +7,8 @@ import type {
   IRole,
   AppConfig,
 } from '@librechat/data-schemas';
-import type { ScheduledMCPIdentity, ScheduledMCPTarget } from 'librechat-data-provider';
-import type {
-  ScheduledMCPBearerResult,
-  ScheduledMCPResourceBearerResolver,
-} from './authorization/contract';
+import type { ScheduledMCPIdentity, RunGrantTarget } from 'librechat-data-provider';
+import type { ScheduledMCPBearerResult, ScheduledMCPResourceBearerResolver } from './bearer';
 import type { MCPOAuthTokens } from '~/mcp/oauth/types';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
@@ -29,14 +26,14 @@ import {
   cleanupMCPRequestContext,
   quiesceMCPRequestContext,
 } from '~/mcp/request';
-import { createScheduleMCPExecution, bindScheduledMCPInvocation } from './authorization/execution';
+import { createRunGrantExecution, bindRunGrantInvocation } from '~/agents/authority/execution';
 import { MockKeyv, createOAuthMCPServer } from '~/mcp/__tests__/helpers/oauthTestServer';
-import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
-import { createScheduleMCPConsentService } from './authorization/service';
+import { getRunGrantConfigurationRevision } from '~/agents/authority/configuration';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { restoreExecutionContext } from '~/agents/authority/context';
+import { createRunGrantService } from '~/agents/authority/service';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { pinStorage } from './authorization/execution.helper';
+import { pinStorage } from '~/agents/authority/execution.helper';
 import { createScheduleMCPPreflight } from './mcp';
 import { FlowStateManager } from '~/flow/manager';
 import { MCPConnection } from '~/mcp/connection';
@@ -64,7 +61,7 @@ const config: ParsedServerConfig = {
 async function bearerFixture(serverConfig = config, everything = false, tools = ['echo']) {
   let time = Date.now();
   let allowed = true;
-  const target: ScheduledMCPTarget = {
+  const target: RunGrantTarget = {
     resource: {
       serverName: 'Files',
       url: serverConfig.url!,
@@ -80,7 +77,7 @@ async function bearerFixture(serverConfig = config, everything = false, tools = 
     ],
     policyRevision: 'offered-selections',
   };
-  target.resource.configurationRevision = getScheduledMCPConfigurationRevision(
+  target.resource.configurationRevision = getRunGrantConfigurationRevision(
     serverConfig,
     target.resource,
   );
@@ -91,18 +88,18 @@ async function bearerFixture(serverConfig = config, everything = false, tools = 
     enrollment: null,
   };
   const storage: ScheduleMCPConsentStorage = {
-    readScheduleMCPConsent: async () => structuredClone(snapshot),
-    confirmScheduleMCPConsent: async (input) => {
+    readRunGrant: async () => structuredClone(snapshot),
+    confirmRunGrant: async (input) => {
       snapshot.enrollment = structuredClone(input.enrollment);
       return true;
     },
     // As the real storage does: the grant itself is marked, and each of its consents.
-    revokeScheduleMCPConsent: async () => {
+    revokeRunGrant: async () => {
       if (snapshot.enrollment) snapshot.enrollment.revokedAtMs = time;
       for (const c of snapshot.enrollment?.consents ?? []) c.revokedAtMs = time;
       return true;
     },
-    admitScheduleMCPConsent: async (input) =>
+    admitRunGrant: async (input) =>
       (input.requireEnabled === false || snapshot.enabled) &&
       snapshot.configRevision === input.expectedConfigRevision &&
       snapshot.enrollment?.revision === input.revision &&
@@ -112,7 +109,7 @@ async function bearerFixture(serverConfig = config, everything = false, tools = 
     ...pinStorage(() => snapshot.enrollment),
   };
   const resolveEnrollment = jest.fn(async () => [structuredClone(target)]);
-  const consent = createScheduleMCPConsentService({
+  const consent = createRunGrantService({
     storage,
     resolveEnrollment,
     ...(everything && { resolveTools: async () => [] }),
@@ -211,7 +208,7 @@ it('can probe activation and owner-manual use while disabled, but never automati
     resolveScheduledMCPBearerConfig({ ...f.input, context: manual }),
   ).resolves.toBeDefined();
   await expect(f.call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  const execution = createScheduleMCPExecution({
+  const execution = createRunGrantExecution({
     storage: f.storage,
     loadAuthorization: async () => ({ authority: f.consent.authority }),
   });
@@ -1010,7 +1007,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
           requestScopedConnections: f.context,
           flowManager,
         };
-        const execution = createScheduleMCPExecution({
+        const execution = createRunGrantExecution({
           storage: f.storage,
           loadAuthorization: async () => ({ authority: f.consent.authority }),
         });
@@ -1022,7 +1019,7 @@ describe('scheduled resource bearer with real MCP SDK and HTTP', () => {
             toolName: 'echo',
             toolArguments: { message: 'guarded' },
             scheduledBearerInvocation: bindScheduledMCPBearerInvocation(f.context, 'child', 'echo'),
-            scheduledMCPInvocation: bindScheduledMCPInvocation(f.context, 'child', 'echo'),
+            scheduledMCPInvocation: bindRunGrantInvocation(f.context, 'child', 'echo'),
           });
         await call();
         expect(calls).toBe(1);
@@ -1294,11 +1291,11 @@ it('cancels the occurrence-owned mint without aborting another occurrence or acc
 
 it('detaches stalled enrollment at the occurrence cutoff and withholds its late result', async () => {
   const f = await bearerFixture();
-  let entered!: () => void, release!: (value: ScheduledMCPTarget[]) => void;
+  let entered!: () => void, release!: (value: RunGrantTarget[]) => void;
   const started = new Promise<void>((resolve) => {
     entered = resolve;
   });
-  const enrollment = new Promise<ScheduledMCPTarget[]>((resolve) => {
+  const enrollment = new Promise<RunGrantTarget[]>((resolve) => {
     release = resolve;
   });
   f.resolveEnrollment.mockImplementationOnce(async () => {

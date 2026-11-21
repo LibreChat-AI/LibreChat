@@ -35,6 +35,8 @@ export type MessageScrolling = {
   debouncedHandleScroll: () => void;
   /** Reports whether the end marker is in view. */
   handleNearBottomChange: (isNearBottom: boolean) => void;
+  /** Reports content added above the reader, by its height. */
+  handleInsertAbove: (height: number) => void;
 };
 
 const resizeFollowThreshold = 120;
@@ -152,6 +154,20 @@ export default function useMessageScrolling({
       return;
     }
     lastScrollTopRef.current = scrollEl.scrollTop;
+  }, []);
+
+  /**
+   * Rows mounting above the reader move the scroll position down by their height, held in
+   * place by the browser or by the mount itself, while the reader has not moved at all. The
+   * last sample moves with them, so the scroll that follows is judged by what the reader did.
+   * Left as it was, a reader scrolling up while a long thread mounted beside a reply read as
+   * heading down towards the end, each step adding more than their wheel had taken away, and
+   * was handed straight back to the stream they had just left.
+   */
+  const handleInsertAbove = useCallback((height: number) => {
+    if (lastScrollTopRef.current >= 0) {
+      lastScrollTopRef.current += height;
+    }
   }, []);
 
   const debouncedHandleScroll = useCallback(() => {
@@ -562,5 +578,6 @@ export default function useMessageScrolling({
     handleSmoothToRef,
     debouncedHandleScroll,
     handleNearBottomChange,
+    handleInsertAbove,
   };
 }

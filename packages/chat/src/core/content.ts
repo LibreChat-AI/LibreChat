@@ -301,6 +301,9 @@ export const preserveStreamedContentIdentity = (
   return stamped ?? finalContent;
 };
 
+/** A content part with its position in the message's content array. */
+export type PartWithIndex = { part: TMessageContentParts; idx: number };
+
 /** Render-identity index for content-part keys: the streamed position stamped
  * by the final handler survives the sparse→compact swap; everything else keys
  * by the live index. Coordinate logic (edit indexes, phase bounds, cursor)

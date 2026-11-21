@@ -299,8 +299,11 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   logAgentMemorySnapshot: jest.fn(),
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),
-  createScheduleExecutionContext: (...args) =>
-    jest.requireActual('@librechat/api').createScheduleExecutionContext(...args),
+  createTriggerExecutionContext: (...args) =>
+    jest.requireActual('@librechat/api').createTriggerExecutionContext(...args),
+  toMessageTrigger: (...args) => jest.requireActual('@librechat/api').toMessageTrigger(...args),
+  stampMessageTrigger: (...args) =>
+    jest.requireActual('@librechat/api').stampMessageTrigger(...args),
   exemptFromConcurrencyLimiter: (...args) => mockExemptFromConcurrencyLimiter(...args),
   toPendingSteer: jest.fn((item) => item),
   promoteDrainedSteers: (...args) =>
@@ -1303,10 +1306,70 @@ describe('ResumableAgentController resume metadata', () => {
         ? {
             principal: { userId: 'user-123', tenantId: 'tenant-1' },
             agentId: 'agent-1',
-            source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: false },
+            source: {
+              type: 'trigger',
+              subject: { kind: 'schedule', id: 'schedule-1' },
+              manual: false,
+              resumed: false,
+            },
             unattended: false,
           }
         : undefined,
+    );
+  });
+
+  it.each([
+    ['a verified trigger an API key posted', true],
+    ['an ordinary request that copies the trigger body', false],
+  ])('saves the trigger that started the run on its job only for %s', async (_label, trusted) => {
+    const conversationId = 'key-event-conversation';
+    mockGenerationJobManager.claimGeneration.mockResolvedValue(
+      wonGenerationClaim({ streamId: conversationId, conversationId }),
+    );
+    const req = {
+      _isAgentTrigger: trusted,
+      user: { id: 'user-123', tenantId: 'tenant-1' },
+      body: {
+        text: 'Review the pull request.',
+        messageId: 'key-event-message',
+        conversationId: 'new',
+        newConversationId: conversationId,
+        agent_id: 'agent-1',
+        // Only the trigger host's request names a delivery key the route will claim.
+        ...(trusted && { clientRequestId: 'trigger_abc' }),
+        agentTrigger: {
+          version: 1,
+          event: {
+            id: 'event-1',
+            type: 'review.submitted',
+            occurredAt: 1000,
+            source: { type: 'remote_api_key', id: 'key-1' },
+          },
+        },
+        endpointOption: { endpoint: 'agents', agent_id: 'agent-1' },
+      },
+      config: {},
+    };
+    const initializeClient = jest.fn().mockRejectedValue(new Error('stop before provider'));
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+
+    const source = {
+      type: 'trigger',
+      subject: { kind: 'key', id: 'key-1' },
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1000 },
+      },
+      manual: false,
+      resumed: false,
+    };
+    // The job is given the context's own source; the job store keeps its subject and delivery.
+    expect(mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata.trigger).toEqual(
+      trusted ? source : undefined,
+    );
+    expect(initializeClient.mock.calls[0][0].executionContext?.source).toEqual(
+      trusted ? source : undefined,
     );
   });
 
@@ -5002,7 +5065,8 @@ describe('ResumableAgentController resume metadata', () => {
   );
 
   it('never copies a preparation dependency diagnostic into the stream or scheduled outcome', async () => {
-    const { initializeWithScheduleMCPExecution } = jest.requireActual('@librechat/api');
+    const { initializeWithAuthority, scheduleSubject, createMCPRequestContext } =
+      jest.requireActual('@librechat/api');
     const privateError = new Error('PRIVATE schedule database query');
     const provider = jest.fn();
     const req = {
@@ -5020,13 +5084,15 @@ describe('ResumableAgentController resume metadata', () => {
       config: {},
     };
     const initializeClient = ({ signal }) =>
-      initializeWithScheduleMCPExecution(
-        { req, signal },
-        () => ({
-          prepare: async () => {
-            throw privateError;
-          },
-        }),
+      initializeWithAuthority(
+        { req, signal, context: createMCPRequestContext() },
+        [
+          scheduleSubject(() => ({
+            resolve: async () => {
+              throw privateError;
+            },
+          })),
+        ],
         provider,
       );
     const res = createResumableResponse();
@@ -5978,6 +6044,14 @@ describe('ResumableAgentController resume metadata', () => {
       occurredAt: new Date(event.occurredAt),
       expectedActionToolName: 'submit_ move',
     });
+    /** Beside it, from the run the server verified: the form every triggered turn records. */
+    const trigger = {
+      event: { type: 'chess. turn', occurredAt: new Date(event.occurredAt).toISOString() },
+    };
+    expect(req._messageTrigger).toEqual(trigger);
+    expect(
+      mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata.userMessage.trigger,
+    ).toEqual(trigger);
     expect(client).toMatchObject({
       checkpointNamespace: 'event-actor/fork',
       eventActorCheckpointId: 'checkpoint-base',

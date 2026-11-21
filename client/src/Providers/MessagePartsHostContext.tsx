@@ -39,15 +39,13 @@ import {
   getAppContentParts,
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
-import ToolIcon, { getToolIconType } from '~/components/Chat/Messages/Content/ToolOutput/ToolIcon';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import ToolCallInfo from '~/components/Chat/Messages/Content/ToolCallInfo';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
+import useLoadedSkill from '~/hooks/Skills/useLoadedSkill';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
 import { fontSizeAtom } from '~/store/fontSize';
@@ -153,11 +151,6 @@ function useAppToolCallChrome(): ToolCallChrome {
       bindActionOAuth,
       openUrl: openInNewTab,
       logError: logToolCallError,
-      renderProgress: (props) => <ProgressText {...props} />,
-      renderInfo: (props) => <ToolCallInfo input={props.input} output={props.output} />,
-      renderIcon: ({ name, iconUrl, isAnimating }) => (
-        <ToolIcon type={getToolIconType(name)} iconUrl={iconUrl} isAnimating={isAnimating} />
-      ),
       renderAttachments: (attachments) => getToolCallAttachments()(attachments),
     }),
     [localize, mcpServerNames, mcpIconMap],
@@ -207,6 +200,7 @@ export const appMessagePartsHost: MessagePartsHost = {
     const { isSharedConvo, shareId } = useShareContext();
     return useMemo(() => ({ isSharedConvo, shareId }), [isSharedConvo, shareId]);
   },
+  useLoadedSkill,
   useToolCallChrome: useAppToolCallChrome,
 };
 

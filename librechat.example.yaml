@@ -430,8 +430,8 @@ interface:
   # Tools pinned to the prompt bar by default for all users.
   # Only seeds the initial state — once a user pins/unpins a tool, their choice is kept.
   # Valid tool keys: artifacts, execute_code, web_search, file_search, skills.
-  # Use 'mcp' (or a specific MCP server name) to pin the MCP servers dropdown.
-  # When omitted, tools start unpinned and the MCP dropdown keeps its default (pinned).
+  # Use 'mcp' (or a specific MCP server name) to pin an MCP Servers chip that opens the full server list.
+  # When omitted, tools and the MCP Servers chip start unpinned.
   # defaultPinnedTools:
   #   - 'artifacts'
   #   - 'execute_code'
@@ -628,6 +628,7 @@ registration:
 #   skillNameLookups: 8 # model spec skill name resolutions
 #   skillFileInspections: 4 # bundled skill file inspections before a skill is primed
 #   resumeAgentLoads: 4 # agent reads while building the resume snapshot of a paused run
+#   codeOutputDownloads: 4 # generated code output files downloaded at once before the tool result returns; 1 keeps them serial
 
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.

@@ -114,6 +114,39 @@ describe('Code CRUD', () => {
     expect(onUploadStart).toHaveBeenCalledTimes(1);
   });
 
+  it('reports an upload that could not connect as never dispatched', async () => {
+    const onUploadStart = jest.fn();
+    const refused = Object.assign(new Error('connect ETIMEDOUT 203.0.113.1:443'), {
+      isAxiosError: true,
+      code: 'ETIMEDOUT',
+      cause: Object.assign(
+        new AggregateError([
+          Object.assign(new Error('connect ETIMEDOUT 203.0.113.1:443'), {
+            code: 'ETIMEDOUT',
+            syscall: 'connect',
+          }),
+          Object.assign(new Error('connect ENETUNREACH 2001:db8::1:443'), {
+            code: 'ENETUNREACH',
+            syscall: 'connect',
+          }),
+        ]),
+        { code: 'ETIMEDOUT' },
+      ),
+    });
+    mockAxios.post.mockRejectedValueOnce(refused);
+    await expect(
+      uploadCodeEnvFile({
+        req: { user: { id: 'user-123' } },
+        stream: Readable.from('data'),
+        filename: 'data.csv',
+        kind: 'user',
+        id: 'user-123',
+        onUploadStart,
+      }),
+    ).rejects.toThrow('connect ETIMEDOUT');
+    expect(onUploadStart.mock.calls).toEqual([[], ['rejected']]);
+  });
+
   it('does not mark remote dispatch when upload authentication fails locally', async () => {
     const onUploadStart = jest.fn();
     getCodeApiAuthHeaders.mockRejectedValueOnce(new Error('credential lookup unavailable'));
