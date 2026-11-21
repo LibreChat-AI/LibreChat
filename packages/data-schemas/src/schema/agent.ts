@@ -196,7 +196,6 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
     },
     tenantId: {
       type: String,
-      index: true,
     },
   },
   {

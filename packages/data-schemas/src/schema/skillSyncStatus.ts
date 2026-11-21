@@ -77,7 +77,6 @@ const skillSyncStatusSchema: Schema<ISkillSyncStatusDocument> = new Schema(
       type: String,
       enum: ['github'],
       required: true,
-      index: true,
     },
     sourceId: {
       type: String,

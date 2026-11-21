@@ -35,7 +35,6 @@ const assistantSchema: Schema<IAssistant> = new Schema<IAssistant>(
     },
     tenantId: {
       type: String,
-      index: true,
     },
   },
   {

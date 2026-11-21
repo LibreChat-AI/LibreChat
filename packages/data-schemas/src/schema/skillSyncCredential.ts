@@ -7,7 +7,6 @@ const skillSyncCredentialSchema: Schema<ISkillSyncCredentialDocument> = new Sche
       type: String,
       enum: ['github'],
       required: true,
-      index: true,
     },
     credentialKey: {
       type: String,

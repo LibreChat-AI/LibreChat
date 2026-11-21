@@ -12,13 +12,11 @@ const messageSchema: Schema<IMessage> = new Schema(
     },
     conversationId: {
       type: String,
-      index: true,
       required: true,
       meiliIndex: true,
     },
     user: {
       type: String,
-      index: true,
       required: true,
       default: null,
       meiliIndex: true,
@@ -328,7 +326,6 @@ const messageSchema: Schema<IMessage> = new Schema(
     },
     tenantId: {
       type: String,
-      index: true,
     },
   },
   { timestamps: true },
