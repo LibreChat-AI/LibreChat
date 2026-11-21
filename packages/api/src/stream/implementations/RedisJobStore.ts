@@ -68,6 +68,7 @@ import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
 import { parseTerminalPersistenceOwner } from '~/stream/metadata';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
+import { parseRunTrigger } from '~/agents/authority/trigger';
 import { evalScript } from '~/cache/redisScript';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
@@ -5885,6 +5886,7 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventSuspension)
         : undefined,
       agentEventLegacyTurnToken: data.agentEventLegacyTurnToken || undefined,
+      trigger: data.trigger === undefined ? undefined : parseRunTrigger(data.trigger, true),
       scheduleMCPCompletion:
         data.scheduleMCPCompletion === undefined
           ? undefined

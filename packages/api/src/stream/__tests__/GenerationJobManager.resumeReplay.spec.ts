@@ -2,6 +2,11 @@ import { StepEvents } from 'librechat-data-provider';
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
 import type { ServerSentEvent } from '~/types';
+import {
+  getSourceKey,
+  getScheduleSource,
+  restoreExecutionContext,
+} from '~/agents/authority/context';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
@@ -677,6 +682,44 @@ it('projects private completion authority for a freshly reconstructed approval j
     expect(rebuilt?.metadata.scheduleMCPCompletion).toEqual(identity);
     expect(rebuilt?.metadata.scheduleId).toBeUndefined();
     expect(rebuilt?.createdAt).toBe(job.createdAt);
+  } finally {
+    await manager.destroy();
+  }
+});
+
+it('projects the trigger that started a run for a freshly reconstructed approval job', async () => {
+  const store = new InMemoryJobStore();
+  const manager = createManagerWithStore(store);
+  const trigger = {
+    subject: { kind: 'key' as const, id: 'key-1' },
+    delivery: {
+      key: 'trigger_abc',
+      event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+    },
+  };
+  try {
+    await manager.createJob('triggered', 'owner', 'triggered', {
+      initialMetadata: { agent_id: 'root-agent', trigger },
+    });
+    await manager.createJob('untriggered', 'owner', 'untriggered', {
+      initialMetadata: { agent_id: 'root-agent', scheduleId: 'schedule', scheduleManual: true },
+    });
+    const rebuilt = await manager.getJob('triggered');
+    expect(rebuilt?.metadata.trigger).toEqual(trigger);
+    expect(
+      getSourceKey(restoreExecutionContext({ user: { id: 'owner' } }, rebuilt?.metadata)),
+    ).toBe('key-1');
+    // A job saved with schedule fields alone restores as a scheduled run, as it always has.
+    const legacy = await manager.getJob('untriggered');
+    expect(legacy?.metadata).not.toHaveProperty('trigger', expect.anything());
+    expect(
+      getScheduleSource(restoreExecutionContext({ user: { id: 'owner' } }, legacy?.metadata)),
+    ).toEqual({ id: 'schedule', manual: true, resumed: true });
+    // The patch path carries it the same way.
+    await manager.updateMetadata('untriggered', { trigger: { delivery: trigger.delivery } });
+    expect((await manager.getJob('untriggered'))?.metadata.trigger).toEqual({
+      delivery: trigger.delivery,
+    });
   } finally {
     await manager.destroy();
   }

@@ -736,6 +736,17 @@ async function startRun(
                 ...(detachedCompletion == null ? {} : { internalCompletion: detachedCompletion }),
               },
             }),
+          /** Any other continuation names its event here, identity only as above, so the
+           * route can tell what delivery started every run the engine starts. */
+          ...(envelope.mode === 'continue' &&
+            envelope.target.bindingId == null && {
+              agentEvent: {
+                id: envelope.event.id,
+                type: envelope.event.type,
+                occurredAt: envelope.event.occurredAt,
+                source: envelope.event.source,
+              },
+            }),
           ...(envelope.mode === 'continue' &&
             envelope.event.source.type === 'internal' &&
             ['subagent-completion', 'background-tool-completion'].includes(

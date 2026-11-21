@@ -1,12 +1,13 @@
 import {
+  getSourceKey,
   getScheduleSource,
   restoreExecutionContext,
   toScheduledTokenContext,
   createRemoteExecutionContext,
   createTriggerExecutionContext,
   createScheduleExecutionContext,
-  getSourceKey,
 } from './context';
+import { parseRunTrigger } from './trigger';
 
 const user = { id: 'owner', tenantId: 'tenant' };
 
@@ -45,7 +46,12 @@ describe('createScheduleExecutionContext', () => {
     expect(context).toEqual({
       principal: { userId: 'owner', tenantId: 'tenant' },
       agentId: 'root-agent',
-      source: { type: 'schedule', id: 'schedule', manual, resumed: false },
+      source: {
+        type: 'trigger',
+        subject: { kind: 'schedule', id: 'schedule' },
+        manual,
+        resumed: false,
+      },
       unattended: false,
     });
     expect(Object.isFrozen(context)).toBe(true);
@@ -74,10 +80,94 @@ describe('restoreExecutionContext', () => {
     expect(context).toEqual({
       principal: { userId: 'owner', tenantId: 'tenant' },
       agentId: 'root-agent',
-      source: { type: 'schedule', id: 'schedule', manual: true, resumed: true },
+      source: {
+        type: 'trigger',
+        subject: { kind: 'schedule', id: 'schedule' },
+        manual: true,
+        resumed: true,
+      },
       unattended: false,
     });
     expect(Object.isFrozen(context)).toBe(true);
+  });
+
+  const delivery = {
+    key: 'trigger_abc',
+    event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+  };
+  const keyJob = {
+    userId: 'owner',
+    tenantId: 'tenant',
+    agent_id: 'root-agent',
+    trigger: { subject: { kind: 'key' as const, id: 'key-1' }, delivery },
+  };
+
+  it('rebuilds a paused run an API key started, for that key and the same delivery', () => {
+    const context = restoreExecutionContext({ user }, keyJob);
+
+    expect(context).toEqual({
+      principal: { userId: 'owner', tenantId: 'tenant' },
+      agentId: 'root-agent',
+      source: {
+        type: 'trigger',
+        subject: { kind: 'key', id: 'key-1' },
+        delivery,
+        manual: false,
+        resumed: true,
+      },
+      unattended: false,
+    });
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(getSourceKey(context)).toBe('key-1');
+  });
+
+  it('rebuilds a paused run no subject started with its delivery alone', () => {
+    const context = restoreExecutionContext({ user }, { ...keyJob, trigger: { delivery } });
+
+    expect(context?.source).toEqual({ type: 'trigger', delivery, manual: false, resumed: true });
+    expect(getSourceKey(context)).toBeUndefined();
+  });
+
+  it('gives a paused scheduled run the delivery its job saved', () => {
+    const trigger = { subject: { kind: 'schedule' as const, id: 'schedule' }, delivery };
+    const context = restoreExecutionContext({ user }, { ...savedJob, trigger });
+
+    expect(context?.source).toEqual({ type: 'trigger', ...trigger, manual: true, resumed: true });
+    expect(getScheduleSource(context)).toEqual({ id: 'schedule', manual: true, resumed: true });
+  });
+
+  it('restores a scheduled job saved before its trigger was, with no delivery', () => {
+    const context = restoreExecutionContext({ user }, savedJob);
+
+    expect(context?.source).not.toHaveProperty('delivery');
+    expect(getScheduleSource(context)).toEqual({ id: 'schedule', manual: true, resumed: true });
+    expect(toScheduledTokenContext(context)).toMatchObject({ scheduleId: 'schedule' });
+  });
+
+  it('refuses a scheduled job whose saved trigger names another subject', () => {
+    for (const subject of [
+      { kind: 'key' as const, id: 'key-1' },
+      { kind: 'schedule' as const, id: 'other' },
+    ])
+      expect(() =>
+        restoreExecutionContext({ user }, { ...savedJob, trigger: { subject, delivery } }),
+      ).toThrow('saved trigger');
+  });
+
+  it.each([{ userId: 'different' }, { tenantId: 'different' }])(
+    'refuses a triggered job owned by someone else %j',
+    (override) => {
+      expect(() => restoreExecutionContext({ user }, { ...keyJob, ...override })).toThrow(
+        'Saved job identity',
+      );
+    },
+  );
+
+  it('restores a key job that cannot prove its agent without one', () => {
+    const context = restoreExecutionContext({ user }, { ...keyJob, agent_id: undefined });
+
+    expect(getSourceKey(context)).toBe('key-1');
+    expect(context?.agentId).toBeUndefined();
   });
 
   it('returns nothing for an unscheduled job', () => {
@@ -254,6 +344,8 @@ describe('createTriggerExecutionContext', () => {
           key: 'trigger_abc',
           event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
         },
+        manual: false,
+        resumed: false,
       },
       unattended: false,
     });
@@ -269,13 +361,89 @@ describe('createTriggerExecutionContext', () => {
         key: 'trigger_def',
         event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
       },
+      manual: false,
+      resumed: false,
     });
   });
 
   it('keeps the context a schedule occurrence has always had', () => {
     const req = scheduleFire({ manual: true });
     expect(createTriggerExecutionContext(req)).toEqual(createScheduleExecutionContext(req));
-    expect(createTriggerExecutionContext(req)?.source.type).toBe('schedule');
+    expect(getScheduleSource(createTriggerExecutionContext(req))).toEqual({
+      id: 'schedule',
+      manual: true,
+      resumed: false,
+    });
+  });
+
+  it('gives a schedule occurrence the schedule as its subject and names its delivery', () => {
+    const req = scheduleFire();
+    Object.assign(req.body, { clientRequestId: 'trigger_occurrence' });
+    Object.assign(req.body.agentTrigger.event, { id: 'sched:schedule:1970' });
+
+    expect(createTriggerExecutionContext(req)?.source).toEqual({
+      type: 'trigger',
+      subject: { kind: 'schedule', id: 'schedule' },
+      delivery: {
+        key: 'trigger_occurrence',
+        event: { id: 'sched:schedule:1970', type: 'schedule.occurrence', occurredAt: 0 },
+      },
+      manual: false,
+      resumed: false,
+    });
+  });
+
+  /** A turn the trigger host continues a conversation with, bound to no event source. */
+  const unbound = (source: Record<string, unknown>, type: string) => ({
+    user,
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'root-agent',
+      conversationId: 'conversation',
+      clientRequestId: 'trigger_ghi',
+      agentEvent: { ...event(source), type },
+    },
+  });
+
+  it.each([
+    ['a task wake-up', { type: 'internal', id: 'subagent-completion' }, 'subagent.completed'],
+    ['a queued turn', { type: 'internal', id: 'agent-queued-turn' }, 'agent.queued-turn'],
+  ])('gives %s its delivery and no subject', (_label, source, type) => {
+    const context = createTriggerExecutionContext(unbound(source, type));
+
+    expect(context).toEqual({
+      principal: { userId: 'owner', tenantId: 'tenant' },
+      agentId: 'root-agent',
+      source: {
+        type: 'trigger',
+        delivery: { key: 'trigger_ghi', event: { id: 'event-1', type, occurredAt: 1_000 } },
+        manual: false,
+        resumed: false,
+      },
+      unattended: false,
+    });
+    expect(Object.isFrozen(context?.source)).toBe(true);
+    expect(getSourceKey(context)).toBeUndefined();
+    expect(getScheduleSource(context)).toBeUndefined();
+    expect(toScheduledTokenContext(context)).toBeUndefined();
+  });
+
+  it('reads the event of the request it is, not one named beside it', () => {
+    const req = fire();
+    Object.assign(req.body, {
+      agentEvent: { ...event({ type: 'remote_api_key', id: 'other' }), id: 'other-event' },
+    });
+
+    expect(getSourceKey(createTriggerExecutionContext(req))).toBe('key-1');
+    expect(createTriggerExecutionContext(req)?.source).toMatchObject({
+      delivery: { event: { id: 'event-1' } },
+    });
+  });
+
+  it('runs an unbound continuation a key is named on for that key', () => {
+    const req = unbound({ type: 'remote_api_key', id: 'key-1' }, 'review.submitted');
+
+    expect(getSourceKey(createTriggerExecutionContext(req))).toBe('key-1');
   });
 
   it('has none for a request that is not a trigger, whatever its body says', () => {
@@ -283,15 +451,35 @@ describe('createTriggerExecutionContext', () => {
     expect(createTriggerExecutionContext({ user, body: fire().body })).toBeUndefined();
   });
 
-  it('has none for a delivery no key posted', () => {
+  it('gives a delivery no key posted its delivery alone', () => {
     for (const source of [
       { type: 'internal', id: 'subagent-completion' },
       { type: 'responses', id: 'response-1' },
-    ])
-      expect(createTriggerExecutionContext(fire(source))).toBeUndefined();
+    ]) {
+      const context = createTriggerExecutionContext(fire(source));
+      expect(context?.source).toEqual({
+        type: 'trigger',
+        delivery: {
+          key: 'trigger_abc',
+          event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+        },
+        manual: false,
+        resumed: false,
+      });
+      expect(getSourceKey(context)).toBeUndefined();
+    }
+  });
+
+  it('has none for a trigger that names no event, as a host from before this sends', () => {
     expect(
-      createTriggerExecutionContext({ user, _isAgentTrigger: true, body: { agent_id: 'a' } }),
+      createTriggerExecutionContext({
+        user,
+        _isAgentTrigger: true,
+        body: { agent_id: 'a', conversationId: 'conversation', clientRequestId: 'trigger_ghi' },
+      }),
     ).toBeUndefined();
+    const nameless = unbound({ type: 'internal', id: 'subagent-completion' }, '');
+    expect(createTriggerExecutionContext(nameless)).toBeUndefined();
   });
 
   it('refuses a delivery that names a key as its source without identifying it', () => {
@@ -317,5 +505,66 @@ describe('getSourceKey', () => {
     ).toBe('key-2');
     expect(getSourceKey(createScheduleExecutionContext(scheduleFire()))).toBeUndefined();
     expect(getSourceKey(undefined)).toBeUndefined();
+  });
+});
+
+describe('parseRunTrigger', () => {
+  const trigger = {
+    subject: { kind: 'key', id: 'key-1' },
+    delivery: {
+      key: 'trigger_abc',
+      event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+    },
+  };
+
+  it('keeps the subject and delivery of a run source and nothing else', () => {
+    const source = createTriggerExecutionContext({
+      user,
+      _isAgentTrigger: true,
+      body: {
+        agent_id: 'root-agent',
+        clientRequestId: 'trigger_abc',
+        agentTrigger: {
+          version: 1,
+          event: { ...trigger.delivery.event, source: { type: 'remote_api_key', id: 'key-1' } },
+        },
+      },
+    })?.source;
+
+    expect(parseRunTrigger(source)).toEqual(trigger);
+    expect(Object.isFrozen(parseRunTrigger(source))).toBe(true);
+  });
+
+  it('reads back what a store serialized', () => {
+    expect(parseRunTrigger(JSON.stringify(trigger), true)).toEqual(trigger);
+    expect(parseRunTrigger(JSON.stringify({ delivery: trigger.delivery }), true)).toEqual({
+      delivery: trigger.delivery,
+    });
+    expect(parseRunTrigger({ subject: trigger.subject })).toEqual({ subject: trigger.subject });
+  });
+
+  it('saves nothing for a source no trigger started', () => {
+    const remote = createRemoteExecutionContext({
+      principal: { userId: 'owner' },
+      protocol: 'responses',
+      background: true,
+      keyId: 'key-1',
+    });
+
+    expect(parseRunTrigger(remote.source)).toBeUndefined();
+  });
+
+  it.each([
+    ['not an object', 'key-1'],
+    ['unreadable', '{'],
+    ['a subject of no known kind', JSON.stringify({ subject: { kind: 'user', id: 'owner' } })],
+    ['a subject with no id', JSON.stringify({ subject: { kind: 'key', id: ' ' } })],
+    ['a delivery with no event', JSON.stringify({ delivery: { key: 'trigger_abc' } })],
+    [
+      'a delivery whose event has no time',
+      JSON.stringify({ delivery: { event: { id: 'event-1', type: 'review.submitted' } } }),
+    ],
+  ])('refuses a stored trigger that is %s', (_label, stored) => {
+    expect(() => parseRunTrigger(stored, true)).toThrow('run_trigger_invalid');
   });
 });

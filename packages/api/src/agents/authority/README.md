@@ -16,7 +16,8 @@ grant is made of, and the request and view the routes exchange, are in
 
 | Module             | What it holds                                                                                                          |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `context.ts`       | The source of a run (`ExecutionContext`): a schedule, a remote API request, or a trigger delivery with its subject.    |
+| `context.ts`       | The source of a run (`ExecutionContext`): a remote API request, or a trigger delivery with its subject.                |
+| `trigger.ts`       | `Subject`, `Delivery` and the trigger a job saves (`RunTrigger`, `parseRunTrigger`). Imports nothing.                  |
 | `contract.ts`      | The questions a run asks of a grant and the answers (`RunGrantAuthority`).                                             |
 | `service.ts`       | `createRunGrantService`: read, confirm, revoke and admit a grant, and authorize each call against it.                  |
 | `handlers.ts`      | `createRunGrantHandlers`: the `GET`, `POST` and `DELETE` handlers a subject mounts on its own route.                   |
@@ -31,6 +32,41 @@ grant is made of, and the request and view the routes exchange, are in
 they read its module-private map of live executions. What a schedule's grant allows, and how a
 scheduled run is refused, is described in
 [the schedules README](../../schedules/README.md).
+
+## The context of a triggered run
+
+Every request the trigger engine makes to the chat route gets a run context, built once by
+`createTriggerExecutionContext` from the request the trigger host signed. Its source is
+
+```ts
+{ type: 'trigger', subject?: { kind, id }, delivery?: { key?, event: { id, type, occurredAt } }, manual, resumed }
+```
+
+| Delivery                                       | Subject                    | Event identity read from          |
+| ---------------------------------------------- | -------------------------- | --------------------------------- |
+| A schedule's occurrence                        | `{ kind: 'schedule', id }` | `agentTrigger.event`              |
+| An event an API key posted, starting a turn    | `{ kind: 'key', id }`      | `agentTrigger.event`              |
+| The same, continuing the conversation it bound | `{ kind: 'key', id }`      | `agentEventDelivery.event`        |
+| A task's wake-up, a queued turn, a completion  | none                       | `agentEvent`, which the host adds |
+
+The delivery's key is the request's `clientRequestId`, or `agentEventDelivery.deliveryKey` on a
+bound continuation. A reader that wants the schedule calls `getScheduleSource`, one that wants
+the key calls `getSourceKey`; neither needs to know the subject to read `source.delivery`.
+
+The chat controller hands the context's source to the generation job it creates, and the job
+store keeps its subject and delivery in one metadata field, `trigger` (`parseRunTrigger`, `trigger.ts`). When
+the run pauses for an approval and its owner resumes it, `restoreExecutionContext` rebuilds the
+context from the saved job, `resumed: true`, so the resumed run acts for the same subject. The
+schedule-named job fields are still written and still read by everything that read them.
+
+Three contexts carry less, by design:
+
+- A job saved before `trigger` existed has only its schedule fields. It restores the schedule as
+  its subject, with no delivery, as it always did. A job with neither restores no context.
+- A trigger request from a replica that does not send `agentEvent` yet names no event on a
+  continuation bound to no source, and gets no context, as before.
+- A delivery the server made for itself has no subject. The subject of the run its task
+  belongs to is not carried over to it yet.
 
 ## Grants held by an API key
 
@@ -60,21 +96,24 @@ agent before any tool is loaded. A key with no grant for the agent may not use M
 - Directly: chat completions, Responses, and a background Responses worker. The run's source is
   `remote_api`, and each controller calls the key host's `prepare`.
 - By posting an event to `/api/agents/v1/events`. The trigger engine delivers it to the chat
-  route, where the run's source is `{ type: 'trigger', subject: { kind: 'key', id }, delivery }`
+  route, where the run's source is a trigger whose subject is `{ kind: 'key', id }`
   (`createTriggerExecutionContext`, `packages/api/src/agents/authority/context.ts`). The subject
   is read from the verified trigger request, whose event source the events route stamps with the
   authenticated key; a request the trigger engine did not sign never gets one. The chat route
   reaches the same `prepare` through `initializeWithAuthority`
-  (`packages/api/src/agents/authority/host.ts`). This covers a delivery that starts a turn and
-  one that continues the conversation bound to its source.
+  (`packages/api/src/agents/authority/host.ts`). This covers a delivery that starts a turn, one
+  that continues the conversation bound to its source, and either of them resumed after it
+  paused for an approval: the job saved the key as the run's subject, and the resumed request
+  is put under the key's grant again before its tools are rebuilt.
 
 `getSourceKey` names the key for both, so the lookup, the integration-key exemption and the
 refusal of an unknown key are one code path.
 
-An event delivery is restricted on the request that carries it. Later requests of the same run
-are not yet restricted by the key's grant: a run resumed after it paused for an approval, a
-request a detached subagent makes for the run, and the turn that reports a background task's
-result. These build their context without the trigger's subject.
+An event delivery is restricted on the request that carries it and on the request that resumes
+it. Two later requests of the same run are not yet restricted by the key's grant: a request a
+detached subagent makes for the run, and the turn that reports a background task's result.
+These build their context without the trigger's subject. A run paused by a replica from before
+jobs saved their trigger also resumes unrestricted, since its job names no key.
 
 What differs from a schedule's grant:
 

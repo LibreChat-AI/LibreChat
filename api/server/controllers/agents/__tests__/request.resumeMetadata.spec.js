@@ -1303,10 +1303,70 @@ describe('ResumableAgentController resume metadata', () => {
         ? {
             principal: { userId: 'user-123', tenantId: 'tenant-1' },
             agentId: 'agent-1',
-            source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: false },
+            source: {
+              type: 'trigger',
+              subject: { kind: 'schedule', id: 'schedule-1' },
+              manual: false,
+              resumed: false,
+            },
             unattended: false,
           }
         : undefined,
+    );
+  });
+
+  it.each([
+    ['a verified trigger an API key posted', true],
+    ['an ordinary request that copies the trigger body', false],
+  ])('saves the trigger that started the run on its job only for %s', async (_label, trusted) => {
+    const conversationId = 'key-event-conversation';
+    mockGenerationJobManager.claimGeneration.mockResolvedValue(
+      wonGenerationClaim({ streamId: conversationId, conversationId }),
+    );
+    const req = {
+      _isAgentTrigger: trusted,
+      user: { id: 'user-123', tenantId: 'tenant-1' },
+      body: {
+        text: 'Review the pull request.',
+        messageId: 'key-event-message',
+        conversationId: 'new',
+        newConversationId: conversationId,
+        agent_id: 'agent-1',
+        // Only the trigger host's request names a delivery key the route will claim.
+        ...(trusted && { clientRequestId: 'trigger_abc' }),
+        agentTrigger: {
+          version: 1,
+          event: {
+            id: 'event-1',
+            type: 'review.submitted',
+            occurredAt: 1000,
+            source: { type: 'remote_api_key', id: 'key-1' },
+          },
+        },
+        endpointOption: { endpoint: 'agents', agent_id: 'agent-1' },
+      },
+      config: {},
+    };
+    const initializeClient = jest.fn().mockRejectedValue(new Error('stop before provider'));
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+
+    const source = {
+      type: 'trigger',
+      subject: { kind: 'key', id: 'key-1' },
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1000 },
+      },
+      manual: false,
+      resumed: false,
+    };
+    // The job is given the context's own source; the job store keeps its subject and delivery.
+    expect(mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata.trigger).toEqual(
+      trusted ? source : undefined,
+    );
+    expect(initializeClient.mock.calls[0][0].executionContext?.source).toEqual(
+      trusted ? source : undefined,
     );
   });
 

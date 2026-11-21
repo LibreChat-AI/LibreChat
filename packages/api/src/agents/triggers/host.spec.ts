@@ -626,6 +626,13 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
     expect(String(input)).toBe('http://127.0.0.1:3080/api/agents/chat/agents');
     expect(JSON.parse(String(init?.body))).toEqual({
       agentCompletion: { version: 1, sourceId: 'subagent-completion' },
+      /** The event's identity, so the route can name the delivery that started the turn. */
+      agentEvent: {
+        id: envelope.event.id,
+        type: envelope.event.type,
+        occurredAt: envelope.event.occurredAt,
+        source: envelope.event.source,
+      },
       text: envelope.input,
       endpoint: EModelEndpoint.agents,
       agent_id: 'agent-1',
@@ -813,6 +820,8 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
     expect(
       JSON.parse(String(fetcher.mock.calls[0][1]?.body)).agentEventDelivery.event,
     ).not.toHaveProperty('payload');
+    /** A bound continuation already names its event in the delivery it carries. */
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).not.toHaveProperty('agentEvent');
   });
 
   it('projects only the bounded internal detached-completion authority', async () => {

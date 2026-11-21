@@ -21,6 +21,7 @@ import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { AuthoredSkillBinding } from '~/agents/authored';
+import type { RunTrigger } from '~/agents/authority/trigger';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
 /**
@@ -273,6 +274,8 @@ export interface SerializableJobData {
   /** Whether sync has been sent to a client */
   syncSent: boolean;
 
+  /** The trigger that started the run. See `GenerationJobMetadata.trigger`. */
+  trigger?: RunTrigger;
   /** Trusted schedule identity copied atomically into the generation job. */
   scheduleId?: string;
   scheduledFor?: string;
@@ -535,6 +538,7 @@ export type JobMetadataPatch = Partial<
     | 'agentEventExpectedAction'
     | 'agentEventSuspension'
     | 'agentEventLegacyTurnToken'
+    | 'trigger'
     | 'scheduleId'
     | 'scheduledFor'
     | 'scheduleConfigRevision'

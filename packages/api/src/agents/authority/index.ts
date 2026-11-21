@@ -1,4 +1,5 @@
 export * from './context';
+export * from './trigger';
 export * from './host';
 export * from './service';
 export * from './handlers';

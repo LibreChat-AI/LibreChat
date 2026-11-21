@@ -1680,6 +1680,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             req._agentEventTriggerProjection,
           ),
         );
+    const executionContext = createTriggerExecutionContext(req);
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
       startupTelemetry,
       ...(recoveredSteerId && { recoveredSteerId }),
@@ -1746,6 +1747,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               ...(req._isManualScheduledFire === true && { scheduleManual: true }),
             }
           : {}),
+        trigger: executionContext?.source,
         responseMessageId: preallocatedResponseMessageId,
         mcpRequestBody,
         userMessage: preliminaryUserMessage,
@@ -2056,7 +2058,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       req,
       res,
       endpointOption,
-      executionContext: createTriggerExecutionContext(req),
+      executionContext,
       // Use the job's abort controller signal - allows abort via GenerationJobManager.abortJob()
       signal: job.abortController.signal,
       jobCreatedAt,
