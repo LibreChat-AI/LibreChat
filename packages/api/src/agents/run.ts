@@ -2274,11 +2274,16 @@ function buildSubagentConfigs(
   if (selfConfig != null && delegates.length > 0) {
     /**
      * A copy keeps the agent's explicit subagents, never the self entry, so a copy cannot spawn
-     * a copy. A copy that would sit at the depth limit could spawn nothing, so it is left
-     * without them. The description tells the model which it got: nothing else says a copy
-     * cannot reach data only a subagent holds.
+     * a copy. The description tells the model which it got: nothing else says a copy cannot
+     * reach data only a subagent holds.
+     *
+     * `depth` counts saved hops only. Each agent above may itself have been reached through its
+     * own copy, a hop the run counts and this builder cannot see, so an agent `depth` hops down
+     * can sit up to `2 * depth` hops down when it runs. A copy is given subagents only where it
+     * would still have a hop to spend on the longest such path, so the promise holds on all.
      */
-    const nests = agentsEConfig?.subagentSelfNesting !== false && depth + 1 < MAX_SUBAGENT_DEPTH;
+    const nests =
+      agentsEConfig?.subagentSelfNesting !== false && 2 * depth + 1 < MAX_SUBAGENT_DEPTH;
     if (nests) {
       selfConfig.allowNested = true;
       selfConfig.agentInputs = {

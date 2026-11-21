@@ -3925,7 +3925,7 @@ describe('subagentConfigs', () => {
     expect(selfConfig.description).not.toMatch(/delegate/);
   });
 
-  it('does not nest a copy that would sit at the depth limit', async () => {
+  it('promises a copy subagents only where every path to it leaves a hop to spend', async () => {
     const root = makeSubagentChain(MAX_SUBAGENT_DEPTH);
     const chain: TestRunAgent[] = [root];
     while (chain[chain.length - 1].subagentAgentConfigs?.[0] != null) {
@@ -3936,28 +3936,45 @@ describe('subagentConfigs', () => {
     }
     const agents = await callAndCapture({ agents: [root] });
 
-    /** `selves[n]` is the self entry of the agent `n` hops below the root. */
-    const selves: SubagentConfig[] = [];
+    /** `levels[n]` holds the self entry and the saved child of the agent `n` hops below the root. */
+    const levels: { copy: SubagentConfig; child: SubagentConfig }[] = [];
     let configs = agents[0].subagentConfigs as SubagentConfig[] | undefined;
     while (configs != null) {
-      const selfConfig = configs.find((config) => config.self === true);
-      if (selfConfig == null) {
+      const copy = configs.find((config) => config.self === true);
+      const child = configs.find((config) => config.self !== true);
+      if (copy == null || child == null) {
         break;
       }
-      selves.push(selfConfig);
-      configs = configs.find((config) => config.self !== true)?.agentInputs?.subagentConfigs as
-        | SubagentConfig[]
-        | undefined;
+      levels.push({ copy, child });
+      configs = child.agentInputs?.subagentConfigs as SubagentConfig[] | undefined;
     }
 
-    expect(selves).toHaveLength(MAX_SUBAGENT_DEPTH);
-    const last = selves[MAX_SUBAGENT_DEPTH - 1];
-    const above = selves[MAX_SUBAGENT_DEPTH - 2];
-    expect(above.allowNested).toBe(true);
-    expect(last.allowNested).toBeUndefined();
-    expect(last.description).toMatch(/The copy cannot delegate to subagents;/);
-    /** The agent above has two hops left, so its copy keeps one to spawn with. */
-    expect(buildChildInputs(above as BuildChildInput, 'agent_chain', 2).maxSubagentDepth).toBe(1);
+    expect(levels).toHaveLength(MAX_SUBAGENT_DEPTH);
+    expect(levels.map(({ copy }) => copy.allowNested === true)).toEqual(
+      levels.map((_, depth) => 2 * depth + 1 < MAX_SUBAGENT_DEPTH),
+    );
+    for (const { copy } of levels) {
+      expect(copy.description).toMatch(
+        copy.allowNested === true
+          ? /The copy can delegate to the same subagents\.$/
+          : /The copy cannot delegate to subagents;/,
+      );
+    }
+
+    /**
+     * The longest path to each agent goes through the copy of every agent above that has one to
+     * give. Counted down by the SDK itself, a promised copy still has a hop left at the end.
+     */
+    const spend = (config: SubagentConfig, hops: number): number =>
+      buildChildInputs(config as BuildChildInput, 'agent_chain', hops).maxSubagentDepth ?? 0;
+    let hops: number = MAX_SUBAGENT_DEPTH;
+    for (const { copy, child } of levels) {
+      if (copy.allowNested === true) {
+        hops = spend(copy, hops);
+        expect(hops).toBeGreaterThan(0);
+      }
+      hops = spend(child, hops);
+    }
   });
 
   it('omits self-spawn when allowSelf is false', async () => {
