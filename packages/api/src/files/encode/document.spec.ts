@@ -1336,10 +1336,26 @@ describe('dedupeDocumentNames', () => {
   });
   type Message = { content?: string | PayloadContentPart[] | null };
   const names = (parts: PayloadContentPart[] = []): string[] =>
-    parts.flatMap((part) =>
-      part.metadata?.name != null ? [part.metadata.name] : names(part.media ?? []),
-    );
+    parts.flatMap((part) => {
+      const name = part.metadata?.name ?? part.document?.name;
+      return name != null ? [name] : names(part.media ?? []);
+    });
   const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
+
+  it('renames native Converse documents from imported history alongside base64 ones', () => {
+    const native = (name: string): PayloadContentPart => ({ type: 'document', document: { name } });
+    const imported = native('notes');
+    const messages: Message[] = [
+      { content: [imported, native('Notes')] },
+      { content: [bedrock('notes')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'Notes (2)']);
+    expect(names(contentOf(messages[1]))).toEqual(['notes (3)']);
+    expect(imported.document?.name).toBe('notes');
+  });
 
   it.each(Object.values(Providers).filter((provider) => provider !== Providers.BEDROCK))(
     'does not inspect replay content for %s',

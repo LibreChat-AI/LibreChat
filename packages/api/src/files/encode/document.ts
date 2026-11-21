@@ -59,9 +59,26 @@ const BEDROCK_DOCUMENT_MIME_TYPES: Record<BedrockDocumentFormat, string> = {
 /** A content part of a formatted message, as far as document naming needs to read it. */
 export interface PayloadContentPart {
   type?: string;
+  /** A native Converse document, as imported conversations can still carry. */
+  document?: { name?: string };
+  /** A standard file block, as `encodeAndFormatDocuments` builds for Bedrock. */
   metadata?: { name?: string };
   /** A replayed steer's own content, stamped for the formatter (`stampSteerPartMedia`). */
   media?: PayloadContentPart[];
+}
+
+/** The name Bedrock sees for a part that becomes a Converse document. */
+function getDocumentName(part: PayloadContentPart | undefined): string | undefined {
+  if (part?.type === 'document') {
+    return part.document?.name;
+  }
+  return part?.type === 'file' ? part.metadata?.name : undefined;
+}
+
+function withDocumentName(part: PayloadContentPart, name: string): PayloadContentPart {
+  return part.type === 'document'
+    ? { ...part, document: { ...part.document, name } }
+    : { ...part, metadata: { ...part.metadata, name } };
 }
 
 /** Hands out each name once, sharing suffix progress between colliding truncated prefixes. */
@@ -104,10 +121,10 @@ function renameDocumentParts(
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     let next = part;
-    const original = part?.type === 'file' ? part.metadata?.name : undefined;
+    const original = getDocumentName(part);
     if (typeof original === 'string') {
       const name = nameOf(original);
-      next = name === original ? part : { ...part, metadata: { ...part.metadata, name } };
+      next = name === original ? part : withDocumentName(part, name);
     } else if (Array.isArray(part?.media)) {
       const media = renameDocumentParts(part.media, nameOf, budget, depth + 1);
       next = media === part.media ? part : { ...part, media };
