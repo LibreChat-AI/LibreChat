@@ -2103,7 +2103,7 @@ function buildSubagentConfigs(
 
   const configs: SubagentConfigEntry[] = [];
   const allowSelf = agent.subagents.allowSelf !== false;
-  let selfConfig: SubagentConfigEntry | undefined;
+  let selfConfig: SubagentConfig | undefined;
 
   if (allowSelf) {
     const selfName = agentInput.name ?? agent.name ?? 'self';
@@ -2270,15 +2270,25 @@ function buildSubagentConfigs(
     });
   }
 
-  if (selfConfig != null) {
-    const nestedConfigs = configs.filter((config) => !('self' in config && config.self));
-    if (nestedConfigs.length > 0) {
+  const delegates = configs.filter((config) => config !== selfConfig);
+  if (selfConfig != null && delegates.length > 0) {
+    /**
+     * A copy keeps the agent's explicit subagents, never the self entry, so a copy cannot spawn
+     * a copy. A copy that would sit at the depth limit could spawn nothing, so it is left
+     * without them. The description tells the model which it got: nothing else says a copy
+     * cannot reach data only a subagent holds.
+     */
+    const nests = agentsEConfig?.subagentSelfNesting !== false && depth + 1 < MAX_SUBAGENT_DEPTH;
+    if (nests) {
       selfConfig.allowNested = true;
       selfConfig.agentInputs = {
         ...(selfConfig.agentInputs ?? agentInput),
-        subagentConfigs: nestedConfigs,
+        subagentConfigs: delegates,
       };
     }
+    selfConfig.description += nests
+      ? ' The copy can delegate to the same subagents.'
+      : ' The copy cannot delegate to subagents; give a subtask that needs one to that subagent directly.';
   }
 
   return configs;

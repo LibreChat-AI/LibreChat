@@ -3878,6 +3878,88 @@ describe('subagentConfigs', () => {
     );
   });
 
+  it('hands the SDK a copy that can reach the subagents but not spawn another copy', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(selfConfig?.description).toMatch(/The copy can delegate to the same subagents\.$/);
+    const copy = buildChildInputs(selfConfig as BuildChildInput, 'agent_1', MAX_SUBAGENT_DEPTH);
+    expect(copy.subagentConfigs?.map((config) => config.type)).toEqual(['agent_child']);
+    expect(copy.maxSubagentDepth).toBe(MAX_SUBAGENT_DEPTH - 1);
+  });
+
+  it('leaves the copy without subagents when subagentSelfNesting is off, and says so', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+      appConfig: { endpoints: { agents: { subagentSelfNesting: false } } } as AppConfig,
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(configs.map((config) => config.type)).toEqual(['self', 'agent_child']);
+    expect(selfConfig?.allowNested).toBeUndefined();
+    expect(selfConfig?.agentInputs).toBeUndefined();
+    expect(selfConfig?.description).toMatch(/The copy cannot delegate to subagents;/);
+  });
+
+  it('says nothing about delegation for a copy of an agent with no subagents', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ subagents: { enabled: true } })],
+    });
+    const [selfConfig] = agents[0].subagentConfigs as SubagentConfig[];
+
+    expect(selfConfig.allowNested).toBeUndefined();
+    expect(selfConfig.description).not.toMatch(/delegate/);
+  });
+
+  it('does not nest a copy that would sit at the depth limit', async () => {
+    const root = makeSubagentChain(MAX_SUBAGENT_DEPTH);
+    const chain: TestRunAgent[] = [root];
+    while (chain[chain.length - 1].subagentAgentConfigs?.[0] != null) {
+      chain.push(chain[chain.length - 1].subagentAgentConfigs![0]);
+    }
+    for (const agent of chain.slice(0, -1)) {
+      (agent.subagents as { allowSelf: boolean }).allowSelf = true;
+    }
+    const agents = await callAndCapture({ agents: [root] });
+
+    /** `selves[n]` is the self entry of the agent `n` hops below the root. */
+    const selves: SubagentConfig[] = [];
+    let configs = agents[0].subagentConfigs as SubagentConfig[] | undefined;
+    while (configs != null) {
+      const selfConfig = configs.find((config) => config.self === true);
+      if (selfConfig == null) {
+        break;
+      }
+      selves.push(selfConfig);
+      configs = configs.find((config) => config.self !== true)?.agentInputs?.subagentConfigs as
+        | SubagentConfig[]
+        | undefined;
+    }
+
+    expect(selves).toHaveLength(MAX_SUBAGENT_DEPTH);
+    const last = selves[MAX_SUBAGENT_DEPTH - 1];
+    const above = selves[MAX_SUBAGENT_DEPTH - 2];
+    expect(above.allowNested).toBe(true);
+    expect(last.allowNested).toBeUndefined();
+    expect(last.description).toMatch(/The copy cannot delegate to subagents;/);
+    /** The agent above has two hops left, so its copy keeps one to spawn with. */
+    expect(buildChildInputs(above as BuildChildInput, 'agent_chain', 2).maxSubagentDepth).toBe(1);
+  });
+
   it('omits self-spawn when allowSelf is false', async () => {
     const agents = await callAndCapture({
       agents: [makeAgent({ subagents: { enabled: true, allowSelf: false } })],

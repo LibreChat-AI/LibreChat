@@ -941,6 +941,9 @@ endpoints:
   #   # (optional) Maximum explicit subagents per agent, for both the flat list and
   #   # graph definitions. Defaults to 10; hard cap 50.
   #   maxSubagents: 20
+  #   # (optional) A self-spawned copy of an agent keeps that agent's subagents and can
+  #   # delegate to them. Defaults to true; false leaves the copy with the agent's tools only.
+  #   subagentSelfNesting: true
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.

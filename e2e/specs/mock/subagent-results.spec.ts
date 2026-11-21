@@ -85,4 +85,55 @@ test.describe('isolated subagent results', () => {
       await cleanupAgent(page, childId);
     }
   });
+
+  test('a copy the parent spawned reaches the child and brings its answer back', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = `copy-${Date.now()}`;
+    const childName = uniqueAgentName('E2E Child');
+    const parentName = uniqueAgentName('E2E Parent');
+    let childId: string | undefined;
+    let parentId: string | undefined;
+
+    try {
+      await page.goto('/c/new');
+      const token = await getAccessToken(page);
+      const child = await createAgent(page, token, childName);
+      childId = child.id;
+      const parent = await createAgent(page, token, parentName, {
+        enabled: true,
+        agent_ids: [child.id],
+      });
+      parentId = parent.id;
+
+      await selectAgent(page, parentName);
+      const response = await sendMessageAndWaitForCompletion(
+        page,
+        `E2E_SUBAGENT_VIA_SELF:${child.id}:${label}`,
+      );
+      expect(response.ok()).toBeTruthy();
+
+      const expected = `E2E subagent streamed result ${label}`;
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+        timeout: 60_000,
+      });
+      const finalAnswer = messagesView(page)
+        .locator('.message-render')
+        .last()
+        .getByRole('paragraph')
+        .filter({ hasText: expected });
+      await expect(finalAnswer).toHaveText(expected, { timeout: 30_000 });
+      /** The copy's thread holds the call it made, and that call opens the child's thread. */
+      const calls = page.getByText('Ran agent', { exact: true });
+      await calls.first().click();
+      await expect(page.getByText(`E2E_SUBAGENT_COPY:${label}`)).toBeVisible();
+      await expect(calls).toHaveCount(2);
+      await calls.nth(1).click();
+      await expect(page.getByText(`E2E_SUBAGENT_CHILD:${label}`)).toBeVisible();
+    } finally {
+      await cleanupAgent(page, parentId);
+      await cleanupAgent(page, childId);
+    }
+  });
 });

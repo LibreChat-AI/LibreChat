@@ -2126,6 +2126,9 @@ export const agentsEndpointSchema = baseEndpointSchema
         .max(MAX_SUBAGENTS_CEILING)
         .optional()
         .default(MAX_SUBAGENTS),
+      /** Whether a self-spawned copy of an agent keeps that agent's explicit subagents, so
+       * the copy can delegate to them. Off, the copy has the agent's tools only. */
+      subagentSelfNesting: z.boolean().optional().default(true),
       /** Live replay retention, publication recovery and process-local cache budgets. */
       subagentActivity: subagentActivityConfigSchema.optional(),
       /** Run-scoped file access for explicitly opted-in subagent delegations. */
@@ -6458,10 +6461,12 @@ export function splitToolCallName(
   return splitMCPToolKey(toolCallName, knownServerNames);
 }
 
-/** Maximum explicit subagent hops allowed from any root agent at runtime. */
 /** Upper bound on WebAuthn credentials a single user may register. */
 export const MAX_PASSKEYS_PER_USER = 20;
 
+/** Maximum subagent hops allowed below any root agent at runtime. A saved tree is checked
+ * against it before a run starts; a self-spawned copy is one more hop, counted while the run
+ * goes, so an agent that many hops down is not offered the subagent tool. */
 export const MAX_SUBAGENT_DEPTH = 5;
 
 /** Maximum unique explicit subagent targets that may be loaded at runtime. */

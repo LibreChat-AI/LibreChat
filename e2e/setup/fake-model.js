@@ -150,7 +150,9 @@ const DEFERRED_HITL_MARKER = 'E2E_DEFERRED_HITL:';
 const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
+const SUBAGENT_VIA_SELF_MARKER = 'E2E_SUBAGENT_VIA_SELF:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
+const SUBAGENT_COPY_MARKER = 'E2E_SUBAGENT_COPY:';
 const SUBAGENT_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
 const SUBAGENT_ACTIVITY_CHILD_MARKER = 'E2E_SUBAGENT_ACTIVITY_CHILD:';
 const RUN_FILES_MARKER = 'E2E_RUN_FILES:';
@@ -2258,8 +2260,11 @@ function findLastToolMessageText(messages, requiredToken) {
   return '';
 }
 
+/** `E2E_SUBAGENT_VIA_SELF:` asks for the same result by way of a copy of the parent: the parent
+ *  spawns itself, and the copy is the one that calls the child. */
 function parseSubagentResultMarker(text) {
-  const value = getMarkerValue(text, SUBAGENT_RESULT_MARKER);
+  const viaSelf = text.includes(SUBAGENT_VIA_SELF_MARKER);
+  const value = getMarkerValue(text, viaSelf ? SUBAGENT_VIA_SELF_MARKER : SUBAGENT_RESULT_MARKER);
   const separator = value.indexOf(':');
   if (separator <= 0 || separator === value.length - 1) {
     return null;
@@ -2267,6 +2272,7 @@ function parseSubagentResultMarker(text) {
   return {
     childId: value.slice(0, separator),
     label: value.slice(separator + 1),
+    viaSelf,
   };
 }
 
@@ -2277,6 +2283,7 @@ function subagentResultResponses(text) {
   }
 
   const childPrompt = `${SUBAGENT_CHILD_MARKER}${marker.label}`;
+  const copyPrompt = `${SUBAGENT_COPY_MARKER}${marker.label}`;
   const expectedResult = `E2E subagent streamed result ${marker.label}`;
   return {
     responses: [''],
@@ -2287,19 +2294,21 @@ function subagentResultResponses(text) {
         return { response: toolResult };
       }
 
-      if (getLatestUserText(messages).includes(childPrompt)) {
+      const task = getLatestUserText(messages);
+      if (task.includes(childPrompt)) {
         return { response: expectedResult, textDeltaBlocks: true };
       }
 
+      const copies = marker.viaSelf && !task.includes(copyPrompt);
       return {
         response: '',
         toolCalls: [
           {
-            id: `call_e2e_subagent_${marker.label}`,
+            id: `call_e2e_subagent_${copies ? 'copy_' : ''}${marker.label}`,
             name: 'subagent',
             args: {
-              description: childPrompt,
-              subagent_type: marker.childId,
+              description: copies ? copyPrompt : childPrompt,
+              subagent_type: copies ? 'self' : marker.childId,
             },
             type: 'tool_call',
           },
