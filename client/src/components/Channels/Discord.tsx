@@ -155,13 +155,14 @@ function SettingsControl({
       <OGDialogTemplate
         title={localize('com_ui_discord_manage_title')}
         className="max-w-2xl"
-        mainClassName="max-h-[70dvh] overflow-y-auto"
+        mainClassName="-mx-1 max-h-[70dvh] overflow-x-hidden overflow-y-auto"
         showCancelButton={false}
         showCloseButton
         footerClassName="hidden"
         main={
           open ? (
-            <div className="space-y-6">
+            /* Inset by the AutoHeight bleed so focus rings fit without a sideways scrollbar. */
+            <div className="space-y-6 px-1">
               <Discord {...props} showDescription={false} />
               <Dm principalKey={JSON.stringify([props.tenantId ?? '_', props.userId])} />
             </div>
