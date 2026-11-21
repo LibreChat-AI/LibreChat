@@ -37,6 +37,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: { type: String, index: true },
+        spec: String,
         user: { type: String, index: true },
         messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
         shareId: { type: String, index: true },
@@ -117,6 +118,7 @@ describe('Share Methods', () => {
         endpointType: String,
         modelLabel: String,
         chatGptLabel: String,
+        spec: String,
       },
       { timestamps: true },
     );
@@ -158,6 +160,7 @@ describe('Share Methods', () => {
         conversationId,
         title: 'Test Conversation',
         user: userId,
+        spec: 'research',
       });
 
       // Create test messages
@@ -191,6 +194,7 @@ describe('Share Methods', () => {
       expect(savedShare).toBeDefined();
       expect(savedShare?.user).toBe(userId);
       expect(savedShare?.title).toBe('Test Conversation');
+      expect(savedShare?.spec).toBe('research');
       expect(savedShare?.messages).toHaveLength(2);
     });
 
@@ -1587,6 +1591,36 @@ describe('Share Methods', () => {
         'messages',
       );
       expect(updatedShare?.messages).toHaveLength(2);
+    });
+
+    test('should refresh the model spec when the conversation is republished', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await Conversation.create({
+        conversationId,
+        user: userId,
+        spec: 'research',
+      });
+      await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'Initial message',
+        isCreatedByUser: true,
+      });
+
+      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
+      await Conversation.updateOne({ conversationId, user: userId }, { $set: { spec: 'writing' } });
+      await shareMethods.updateSharedLink(userId, shareId);
+
+      let updatedShare = await SharedLink.findOne({ shareId }).lean();
+      expect(updatedShare?.spec).toBe('writing');
+
+      await Conversation.updateOne({ conversationId, user: userId }, { $unset: { spec: 1 } });
+      await shareMethods.updateSharedLink(userId, shareId);
+
+      updatedShare = await SharedLink.findOne({ shareId }).lean();
+      expect(updatedShare?.spec).toBeUndefined();
     });
 
     test('should preserve stale expiration when updating without an expiration decision', async () => {
