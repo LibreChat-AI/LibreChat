@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { atom, Provider, useAtom } from 'jotai';
 import { ChevronRight, Link2Off } from 'lucide-react';
 import { CopyButton } from '@librechat/chat/components';
@@ -39,6 +39,7 @@ import type {
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { TranslationKeys } from '~/hooks';
+import { discordErrorLabel, isUnreachable } from './discord/errors';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { LinkAgentName } from './Links';
 import Notice from './Notice';
@@ -62,21 +63,42 @@ const tones = {
   DiscordDmSelectionView['state'],
   'success' | 'neutral' | 'warning' | 'error'
 >;
-function errorKey(error: unknown): TranslationKeys {
-  if (error instanceof Error && 'code' in error) {
-    if (error.code === 'disabled') return 'com_ui_discord_dm_disabled';
-    if (error.code === 'capacity') return 'com_ui_discord_dm_capacity';
-    if (['changed', 'unavailable', 'forbidden'].includes(String(error.code)))
-      return 'com_ui_discord_dm_changed';
-  }
-  return 'com_ui_discord_error';
+const dmOverrides = {
+  read: 'com_ui_discord_dm_load_failed',
+  known: {
+    '403': 'com_ui_discord_dm_changed',
+    disabled: 'com_ui_discord_dm_disabled',
+    changed: 'com_ui_discord_dm_changed',
+    forbidden: 'com_ui_discord_dm_changed',
+  },
+} as const;
+
+/** Whether the management reads beside this section failed because the server is unreachable. */
+function useManagementUnreachable(principalKey: string, enabled: boolean): boolean {
+  const client = useQueryClient();
+  return useSyncExternalStore(
+    (notify) => client.getQueryCache().subscribe(notify),
+    () =>
+      enabled &&
+      [QueryKeys.discordApps, QueryKeys.discordGuilds].some((queryKey) => {
+        const state = client.getQueryState([queryKey, principalKey]);
+        return state?.status === 'error' && isUnreachable(state.error);
+      }),
+  );
 }
 
 /** The selection UI and its temporary code belong to one signed-in principal. */
-export default function Dm({ principalKey }: { principalKey: string }) {
+export default function Dm({
+  principalKey,
+  covered = false,
+}: {
+  principalKey: string;
+  /** Inside the Discord dialog, whose own notice already names an unreachable server. */
+  covered?: boolean;
+}) {
   return (
     <Provider key={principalKey}>
-      <Selections principalKey={principalKey} />
+      <Selections principalKey={principalKey} covered={covered} />
     </Provider>
   );
 }
@@ -195,7 +217,9 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
         </Collapsible>
       )}
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_code_help')}</p>
-      {issue.isError && <Alert variant="error">{localize(errorKey(issue.error))}</Alert>}
+      {issue.isError && (
+        <Notice message={localize(discordErrorLabel(issue.error, 'write', dmOverrides))} />
+      )}
       {expired && (
         <Alert variant="warning" role="status">
           {localize('com_ui_discord_dm_code_expired')}
@@ -257,7 +281,7 @@ function Code({ link, principalKey }: { link: ChannelLinkView; principalKey: str
   );
 }
 
-function Selections({ principalKey }: { principalKey: string }) {
+function Selections({ principalKey, covered }: { principalKey: string; covered: boolean }) {
   const localize = useLocalize();
   const id = useId();
   const client = useQueryClient();
@@ -287,6 +311,7 @@ function Selections({ principalKey }: { principalKey: string }) {
     () => dataService.channelIdentityClient.list(),
     { retry: false, cacheTime: 0, enabled: !busy },
   );
+  const hostNotice = useManagementUnreachable(principalKey, covered);
   const cancelReads = () => client.cancelQueries(key);
   const revoke = useMutation({
     mutationKey: [MutationKeys.discordDmSelections, principalKey, 'revoke'],
@@ -319,6 +344,10 @@ function Selections({ principalKey }: { principalKey: string }) {
   // Nothing to show or revoke while new selections are off: stay out of the way.
   // Render nothing until there is something to show, so the section never flashes in and out.
   if (selections.isLoading || links.isLoading) return null;
+  // One cause, one notice: the dialog's notice already says the server cannot be reached.
+  const selectionsError = selections.isError && !(hostNotice && isUnreachable(selections.error));
+  const linksError = enabled && links.isError && !(hostNotice && isUnreachable(links.error));
+  if (hostNotice && selections.isError && !selectionsError) return null;
   if (selections.isSuccess && !enabled && rows.length === 0) return null;
   // Without a confirmed Discord link there is nothing to choose yet; linking happens in Discord.
   if (selections.isSuccess && links.isSuccess && active.length === 0 && rows.length === 0)
@@ -329,27 +358,28 @@ function Selections({ principalKey }: { principalKey: string }) {
         {localize('com_ui_discord_dm_title')}
       </h3>
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_description')}</p>
-      {selections.isError && (
+      {(selectionsError || linksError) && (
         <Notice
-          message={localize('com_ui_discord_error')}
+          message={localize(
+            discordErrorLabel(
+              selectionsError ? selections.error : links.error,
+              'read',
+              dmOverrides,
+            ),
+          )}
           action={localize('com_ui_retry')}
-          disabled={busy || selections.isFetching}
-          onAction={() =>
-            void (failedNext.current ? selections.fetchNextPage() : selections.refetch())
-          }
+          disabled={busy || selections.isFetching || links.isFetching}
+          onAction={() => {
+            if (selections.isError)
+              void (failedNext.current ? selections.fetchNextPage() : selections.refetch());
+            if (links.isError) void links.refetch();
+          }}
         />
       )}
       {selections.data && !enabled && !selections.isError && (
         <p role="status" className="text-text-secondary text-sm">
           {localize('com_ui_discord_dm_disabled')}
         </p>
-      )}
-      {enabled && links.isError && (
-        <Notice
-          message={localize('com_ui_channel_link_error')}
-          action={localize('com_ui_retry')}
-          onAction={() => void links.refetch()}
-        />
       )}
       {enabled && links.isSuccess && active.length === 0 && (
         <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_link_first')}</p>
@@ -491,7 +521,9 @@ function Selections({ principalKey }: { principalKey: string }) {
               {localize('com_ui_discord_dm_revoke_help')}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {revoke.isError && <Alert variant="error">{localize(errorKey(revoke.error))}</Alert>}
+          {revoke.isError && (
+            <Notice message={localize(discordErrorLabel(revoke.error, 'write', dmOverrides))} />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={revoke.isLoading}>
               {localize('com_ui_cancel')}

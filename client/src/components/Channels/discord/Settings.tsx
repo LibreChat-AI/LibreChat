@@ -11,8 +11,8 @@ import {
 import type { DiscordApplication, DiscordApplicationPage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
 import type { TranslationKeys } from '~/hooks';
+import { discordErrorLabel } from './errors';
 import { useLocalize } from '~/hooks';
-import { errorLabel } from './errors';
 import Callback from '../Callback';
 import Notice from '../Notice';
 
@@ -77,7 +77,7 @@ export default function Settings({
               {Boolean(loadError) && (
                 <Notice
                   ref={loadRef}
-                  message={localize(errorLabel(loadError))}
+                  message={localize(discordErrorLabel(loadError, 'read'))}
                   action={localize('com_ui_retry')}
                   onAction={onRetry}
                 />
@@ -144,7 +144,7 @@ export default function Settings({
                 {failure && (
                   <Notice
                     ref={alertRef}
-                    message={localize(errorLabel(failure.error))}
+                    message={localize(discordErrorLabel(failure.error, 'write'))}
                     action={localize('com_ui_refresh')}
                     disabled={busy}
                     onAction={onRefresh}

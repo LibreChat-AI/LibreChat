@@ -31,7 +31,7 @@ import {
   Label,
 } from '@librechat/client';
 import type { DiscordAgentChannel, DiscordBindingTarget } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
+import { discordErrorLabel } from '~/components/Channels/discord/errors';
 import { useDebounce, useLocalize } from '~/hooks';
 import Notice from '~/components/Channels/Notice';
 
@@ -53,37 +53,15 @@ interface Props {
   /** Leaves the dialog for Settings > Account > Discord to connect a server. */
   onOpenServers?: () => void;
 }
-/** The server returns a provider failure before it writes, so one can be named; anything else stays uncertain. */
-function label(error: unknown): TranslationKeys {
-  if (!(error instanceof Error)) return 'com_ui_discord_binding_uncertain';
-  if ('status' in error && error.status === 403) return 'com_ui_discord_binding_forbidden';
-  if ('status' in error && error.status === 404) return 'com_ui_discord_disabled';
-  if (!('code' in error)) return 'com_ui_discord_binding_uncertain';
-  switch (error.code) {
-    case 'unsupported_channel':
-      return 'com_ui_discord_binding_unsupported';
-    case 'missing_permissions':
-      return 'com_ui_discord_binding_permissions';
-    case 'transactions_unavailable':
-      return 'com_ui_channels_transaction_required';
-    case 'route_changed':
-    case 'application_changed':
-    case 'installation_unavailable':
-    case 'guild_changed':
-      return 'com_ui_discord_changed';
-    case 'provider_refused':
-      return 'com_ui_discord_binding_refused';
-    case 'unsupported_installation':
-      return 'com_ui_discord_code_grant';
-    case 'rate_limited':
-      return 'com_ui_discord_rate_limited';
-    case 'provider_unavailable':
-    case 'timeout':
-      return 'com_ui_discord_provider_unavailable';
-    default:
-      return 'com_ui_discord_binding_uncertain';
-  }
-}
+const bindingOverrides = {
+  read: 'com_ui_discord_binding_load_failed',
+  write: 'com_ui_discord_binding_uncertain',
+  known: {
+    '403': 'com_ui_discord_binding_forbidden',
+    forbidden: 'com_ui_discord_binding_forbidden',
+    provider_refused: 'com_ui_discord_binding_refused',
+  },
+} as const;
 /** Account, agent and immutable channel identity each own a fresh feature store. */
 export default function DiscordBinding(props: Props) {
   return (
@@ -293,7 +271,7 @@ function Binding({
       {guilds.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
       {guilds.isError && (
         <Notice
-          message={localize(label(guilds.error))}
+          message={localize(discordErrorLabel(guilds.error, 'read', bindingOverrides))}
           action={localize('com_ui_retry')}
           disabled={busy}
           onAction={() => {
@@ -421,17 +399,17 @@ function Binding({
       )}
       {status.isError && (
         <Notice
-          message={localize(label(status.error))}
+          message={localize(discordErrorLabel(status.error, 'read', bindingOverrides))}
           action={localize('com_ui_retry')}
           disabled={busy}
           onAction={() => void check()}
         />
       )}
       {mutation.isError && (
-        <Alert variant="warning">
-          <p>{localize(label(mutation.error))}</p>
-          <p>{localize('com_ui_discord_binding_check_help')}</p>
-        </Alert>
+        <Notice
+          variant="warning"
+          message={localize(discordErrorLabel(mutation.error, 'write', bindingOverrides))}
+        />
       )}
       {(uncertain || mutation.isError) && (
         <Button
@@ -520,7 +498,7 @@ function Binding({
             </AlertDialogDescription>
           </AlertDialogHeader>
           {!confirmReady && !busy && (
-            <Alert variant="warning">{localize('com_ui_discord_changed')}</Alert>
+            <Notice variant="warning" message={localize('com_ui_discord_changed')} />
           )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{localize('com_ui_cancel')}</AlertDialogCancel>

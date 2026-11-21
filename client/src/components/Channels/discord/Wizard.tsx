@@ -6,9 +6,9 @@ import type { FormEvent } from 'react';
 import type { Fields } from './Credentials';
 import SetupProgress from '~/components/Channels/SetupProgress';
 import { AutoHeight } from '~/components/ui';
+import { discordErrorLabel } from './errors';
 import Credentials from './Credentials';
 import { useLocalize } from '~/hooks';
-import { errorLabel } from './errors';
 import Notice from '../Notice';
 
 export type WizardStep = 1 | 2 | 3;
@@ -114,7 +114,7 @@ export default function Wizard({
               {Boolean(error) && (
                 <Notice
                   ref={alertRef}
-                  message={localize(errorLabel(error))}
+                  message={localize(discordErrorLabel(error, 'write'))}
                   action={localize('com_ui_refresh')}
                   disabled={busy}
                   onAction={onRefresh}

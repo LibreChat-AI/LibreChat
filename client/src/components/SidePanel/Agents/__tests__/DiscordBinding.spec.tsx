@@ -381,7 +381,7 @@ test.each([
   ['provider_refused', 'com_ui_discord_binding_refused'],
   ['rate_limited', 'com_ui_discord_rate_limited'],
   ['provider_unavailable', 'com_ui_discord_provider_unavailable'],
-  ['timeout', 'com_ui_discord_provider_unavailable'],
+  ['timeout', 'com_ui_discord_timeout'],
   ['unsupported_installation', 'com_ui_discord_code_grant'],
 ])('explains provider code %s and still requires a status check', async (code, label) => {
   jest
@@ -394,7 +394,7 @@ test.each([
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
   expect(await screen.findByText(label)).toBeVisible();
   expect(screen.queryByText('com_ui_discord_binding_uncertain')).toBeNull();
-  expect(screen.getByText('com_ui_discord_binding_check_help')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_binding_check' })).toBeVisible();
   expect(screen.queryByText(/private-token/)).toBeNull();
   expect(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' })).toBeDisabled();
   await waitFor(() =>
@@ -403,19 +403,31 @@ test.each([
   expect(dataService.bindDiscordChannel).toHaveBeenCalledTimes(1);
 });
 
-test.each(['binding_uncertain', 'unavailable', 'unrecognized_code'])(
-  'keeps the uncertain wording for the %s code',
-  async (code) => {
-    jest
-      .mocked(dataService.bindDiscordChannel)
-      .mockRejectedValueOnce(Object.assign(new Error('safe'), { code }));
-    const { user } = await page();
-    await ready();
-    await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
-    expect(await screen.findByText('com_ui_discord_binding_uncertain')).toBeVisible();
-    expect(screen.getByText('com_ui_discord_binding_check_help')).toBeVisible();
-  },
-);
+test.each([
+  ['binding_uncertain', undefined],
+  ['unavailable', 500],
+  ['unrecognized_code', undefined],
+])('keeps the uncertain wording for the %s code', async (code, status) => {
+  jest
+    .mocked(dataService.bindDiscordChannel)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { code, status }));
+  const { user } = await page();
+  await ready();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
+  expect(await screen.findByText('com_ui_discord_binding_uncertain')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_binding_check' })).toBeVisible();
+});
+
+test('says LibreChat cannot be reached when the write has no response', async () => {
+  jest
+    .mocked(dataService.bindDiscordChannel)
+    .mockRejectedValueOnce(Object.assign(new Error('network'), { code: 'unavailable' }));
+  const { user } = await page();
+  await ready();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
+  expect(await screen.findByText('com_ui_discord_unreachable')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_binding_uncertain')).toBeNull();
+});
 
 test('keeps controls disabled when an uncertain write cannot be reconciled', async () => {
   const { user } = await page();

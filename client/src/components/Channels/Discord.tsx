@@ -16,7 +16,6 @@ import {
   QueryKeys,
 } from 'librechat-data-provider';
 import {
-  Alert,
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -46,8 +45,8 @@ import type { WizardStep } from './discord/Wizard';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { settingsTargetAtom } from '~/components/Nav/Settings';
 import { useAuthContext, useLocalize } from '~/hooks';
+import { discordErrorLabel } from './discord/errors';
 import { empty } from './discord/Credentials';
-import { errorLabel } from './discord/errors';
 import Settings from './discord/Settings';
 import Connect from './discord/Connect';
 import Editor from './discord/Editor';
@@ -165,7 +164,7 @@ function SettingsControl({
             /* Inset by the AutoHeight bleed so focus rings fit without a sideways scrollbar. */
             <div className="space-y-6 px-1">
               <Discord {...props} showDescription={false} />
-              <Dm principalKey={JSON.stringify([props.tenantId ?? '_', props.userId])} />
+              <Dm principalKey={JSON.stringify([props.tenantId ?? '_', props.userId])} covered />
             </div>
           ) : null
         }
@@ -558,6 +557,9 @@ function Setup({
         ? guilds.fetchNextPage()
         : guilds.refetch());
     }
+    // The Direct messages section sits under this one and its reads fail with the same server.
+    void client.invalidateQueries([QueryKeys.discordDmSelections, principalKey]);
+    void client.invalidateQueries([QueryKeys.channelLinks, principalKey]);
   };
   // Server management is admin-only; everyone else sees just their own Discord settings.
   const forbidden = [apps.error, guilds.error].some(
@@ -615,7 +617,7 @@ function Setup({
       {(apps.isError || guilds.isError) && !settingsOpen && (
         <Notice
           ref={loadFailure}
-          message={localize(errorLabel(apps.error || guilds.error))}
+          message={localize(discordErrorLabel(apps.error || guilds.error, 'read'))}
           action={localize('com_ui_retry')}
           onAction={() => retry()}
         />
@@ -623,7 +625,7 @@ function Setup({
       {Boolean(pageError) && (
         <Notice
           ref={reveal}
-          message={localize(errorLabel(pageError))}
+          message={localize(discordErrorLabel(pageError, 'write'))}
           action={localize('com_ui_refresh')}
           disabled={busy}
           onAction={refreshAfterError}
@@ -827,9 +829,15 @@ function Setup({
             </AlertDialogDescription>
           </AlertDialogHeader>
           {disconnect.isError && (
-            <Alert ref={reveal} tabIndex={-1} variant={stale ? 'warning' : 'error'}>
-              {localize(stale ? 'com_ui_discord_disconnect_stale' : errorLabel(disconnect.error))}
-            </Alert>
+            <Notice
+              ref={reveal}
+              variant={stale ? 'warning' : 'error'}
+              message={localize(
+                stale
+                  ? 'com_ui_discord_disconnect_stale'
+                  : discordErrorLabel(disconnect.error, 'write'),
+              )}
+            />
           )}
           {confirm !== null && (apps.isError || guilds.isError) && (
             <Notice

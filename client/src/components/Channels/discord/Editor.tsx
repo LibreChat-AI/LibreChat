@@ -5,9 +5,9 @@ import type { DiscordApplication } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { FormEvent, ReactNode } from 'react';
 import type { Fields } from './Credentials';
+import { discordErrorLabel } from './errors';
 import Credentials from './Credentials';
 import { useLocalize } from '~/hooks';
-import { errorLabel } from './errors';
 import Notice from '../Notice';
 
 /** Adds an application or rotates its credentials; secrets are write-only and never prefilled. */
@@ -73,7 +73,7 @@ export default function Editor({
         {Boolean(error) && (
           <Notice
             ref={alertRef}
-            message={localize(errorLabel(error))}
+            message={localize(discordErrorLabel(error, 'write'))}
             action={localize('com_ui_refresh')}
             disabled={busy}
             onAction={onRefresh}

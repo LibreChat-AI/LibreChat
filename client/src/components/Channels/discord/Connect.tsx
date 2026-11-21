@@ -1,8 +1,8 @@
 import { Alert, Button, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
 import type { DiscordOAuthErrorCode } from 'librechat-data-provider';
 import { discordCallbackLabels } from '~/components/OAuth/discord';
+import { discordErrorLabel } from './errors';
 import { useLocalize } from '~/hooks';
-import { errorLabel } from './errors';
 import Notice from '../Notice';
 
 type Flow = 'pending' | 'cancelling' | 'failed';
@@ -50,7 +50,7 @@ export default function Connect({
               {Boolean(error) && (
                 <Notice
                   ref={errorRef}
-                  message={localize(errorLabel(error))}
+                  message={localize(discordErrorLabel(error, 'write'))}
                   action={localize('com_ui_refresh')}
                   disabled={busy}
                   onAction={onRefresh}

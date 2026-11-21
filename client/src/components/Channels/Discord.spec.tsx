@@ -349,7 +349,7 @@ test('confirms disconnect with revision and keeps failed canonical reads disable
       guild.revision,
     ),
   );
-  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
+  expect(await screen.findByText('com_ui_discord_load_failed')).toBeVisible();
   expect(screen.getByRole('button', { name: 'com_ui_discord_connect_named' })).toBeDisabled();
 });
 
@@ -363,7 +363,7 @@ test('retries a failed next cursor without refetching the loaded prefix', async 
     });
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_more_apps' }));
-  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
+  expect(await screen.findByText('com_ui_discord_load_failed')).toBeVisible();
   expect(screen.getByText('Engineering')).toBeVisible();
   await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
   expect(await screen.findByText('Support')).toBeVisible();
@@ -387,6 +387,100 @@ test('returns keyboard focus to the settings entry after Escape', async () => {
   expect(await screen.findByRole('dialog', { name: 'com_ui_discord_manage_title' })).toBeVisible();
   await user.keyboard('{Escape}');
   await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+describe('the Manage Discord dialog when LibreChat is unreachable', () => {
+  const down = () => Object.assign(new Error('network'), { code: 'unavailable' });
+  const dmLink = {
+    linkId: 'link',
+    revision: 'link-v1',
+    state: 'active',
+    expiresAtMs: Date.now() + 3600000,
+    identity: {
+      provider: 'discord',
+      tenantId: 'org',
+      agentId: 'agent',
+      applicationId: app.applicationId,
+      guildId: guild.guildId,
+      externalUserId: '789',
+    },
+  } as never;
+  beforeEach(() => {
+    jest
+      .mocked(dataService.listDiscordDmSelections)
+      .mockReset()
+      .mockResolvedValue({ enabled: false, selections: [] });
+    jest.mocked(dataService.channelIdentityClient.list).mockReset().mockResolvedValue([]);
+  });
+  async function openDialog() {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+    });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={client}>
+        <DiscordSettings />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'com_ui_manage' }));
+    return { user, client, dialog: await screen.findByRole('dialog') };
+  }
+
+  test('shows one notice and one Retry when the management and DM reads all fail', async () => {
+    jest.mocked(dataService.getDiscordApps).mockRejectedValue(down());
+    jest.mocked(dataService.getDiscordGuilds).mockRejectedValue(down());
+    jest.mocked(dataService.listDiscordDmSelections).mockRejectedValue(down());
+    jest.mocked(dataService.channelIdentityClient.list).mockRejectedValue(down());
+    const { dialog } = await openDialog();
+    await within(dialog).findByText('com_ui_discord_unreachable');
+    await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalled());
+    await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalled());
+    expect(within(dialog).getAllByText('com_ui_discord_unreachable')).toHaveLength(1);
+    expect(within(dialog).queryByText('com_ui_discord_dm_title')).toBeNull();
+    expect(within(dialog).getAllByRole('button', { name: 'com_ui_retry' })).toHaveLength(1);
+  });
+
+  test('Retry reads the Direct messages again along with the management reads', async () => {
+    jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(down());
+    jest.mocked(dataService.listDiscordDmSelections).mockRejectedValueOnce(down());
+    jest.mocked(dataService.channelIdentityClient.list).mockRejectedValueOnce(down());
+    const { user, dialog } = await openDialog();
+    await user.click(await within(dialog).findByRole('button', { name: 'com_ui_retry' }));
+    jest.mocked(dataService.listDiscordDmSelections).mockResolvedValue({
+      enabled: true,
+      selections: [],
+    });
+    jest.mocked(dataService.channelIdentityClient.list).mockResolvedValue([dmLink]);
+    await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalledTimes(2));
+  });
+
+  test('keeps a failure that only affects the Direct messages in that section', async () => {
+    jest
+      .mocked(dataService.listDiscordDmSelections)
+      .mockRejectedValue(Object.assign(new Error('x'), { code: 'unavailable', status: 500 }));
+    const { dialog } = await openDialog();
+    await within(dialog).findByText('com_ui_discord_dm_load_failed');
+    expect(within(dialog).queryByText('com_ui_discord_unreachable')).toBeNull();
+  });
+
+  test('a non-admin cannot tell they lack access while offline, so still sees the one unreachable notice', async () => {
+    jest.mocked(dataService.getDiscordApps).mockRejectedValue(down());
+    jest.mocked(dataService.getDiscordGuilds).mockRejectedValue(down());
+    const { dialog } = await openDialog();
+    expect(await within(dialog).findByText('com_ui_discord_unreachable')).toBeVisible();
+  });
+
+  test('a 403 hides the management section and shows no error', async () => {
+    const forbidden = Object.assign(new Error('x'), { code: 'forbidden', status: 403 });
+    jest.mocked(dataService.getDiscordApps).mockRejectedValue(forbidden);
+    jest.mocked(dataService.getDiscordGuilds).mockRejectedValue(forbidden);
+    const { dialog } = await openDialog();
+    await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalled());
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+  });
 });
 
 test('refreshes an uncertain credential update before reopening a current revision', async () => {
@@ -435,7 +529,7 @@ test('moves focus to the load failure when the refresh cannot reconcile, then ba
   const { user, trigger } = await failedSave();
   jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(new Error('network'));
   await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
-  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+  const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
     '[role="alert"]',
   ) as HTMLElement;
   await waitFor(() => expect(failure).toHaveFocus());
@@ -642,7 +736,7 @@ test.each(dismissals)(
     const { origin, dismiss } = await arrange(user);
     jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(new Error('network'));
     await dismiss();
-    const failure = (await screen.findByText('com_ui_discord_error')).closest(
+    const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
       '[role="alert"]',
     ) as HTMLElement;
     await waitFor(() => expect(failure).toHaveFocus());
@@ -858,20 +952,36 @@ test.each([
   const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   expect(await screen.findByText(label)).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_error')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull();
   expect(screen.queryByText(/private provider payload/)).toBeNull();
 });
 
-test.each(['unavailable', 'unrecognized_code'])(
-  'keeps the generic unconfirmed state for the %s code',
-  async (code) => {
+test.each([
+  ['unavailable', 500],
+  ['unrecognized_code', undefined],
+])('keeps the unconfirmed write wording for the %s code', async (code, status) => {
+  jest
+    .mocked(dataService.registerDiscordCommands)
+    .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code, status }));
+  const { user } = await page({ settings: true });
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
+  expect(screen.queryByText(/private provider payload/)).toBeNull();
+});
+
+test.each([
+  ['a network failure', undefined],
+  ['a gateway timeout', 504],
+])(
+  'says LibreChat cannot be reached for %s, not that a change is unconfirmed',
+  async (_name, status) => {
     jest
       .mocked(dataService.registerDiscordCommands)
-      .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code }));
+      .mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'unavailable', status }));
     const { user } = await page({ settings: true });
     await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
-    expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
-    expect(screen.queryByText(/private provider payload/)).toBeNull();
+    expect(await screen.findByText('com_ui_discord_unreachable')).toBeVisible();
+    expect(screen.queryByText('com_ui_discord_error')).toBeNull();
   },
 );
 
@@ -904,7 +1014,7 @@ test.each([
   await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   expect(await screen.findByText(label)).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_error')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull();
   expect(screen.queryByText(/private-bot-token/)).toBeNull();
   expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveValue('');
   expect(await screen.findByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
@@ -1156,7 +1266,7 @@ test('moves focus to the load failure when the reads fail behind a failed discon
     Promise.reject(new Error('network')),
   );
   await user.click(cancel());
-  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+  const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
     '[role="alert"]',
   ) as HTMLElement;
   await waitFor(() => expect(failure).toHaveFocus());
@@ -1191,7 +1301,7 @@ test('moves focus to the load failure when the reads fail after a disconnect suc
   jest.mocked(dataService.getDiscordGuilds).mockRejectedValueOnce(new Error('network'));
   const { confirm } = await openConfirmation(user);
   await user.click(confirm());
-  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+  const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
     '[role="alert"]',
   ) as HTMLElement;
   await waitFor(() => expect(failure).toHaveFocus());
@@ -1355,7 +1465,7 @@ const silent = { log: () => {}, warn: () => {}, error: () => {} };
 const appsHeading = () => screen.getByRole('heading', { name: 'com_ui_discord_apps' });
 const retryOf = (alert: HTMLElement) => within(alert).getByRole('button', { name: 'com_ui_retry' });
 const loadFailure = async () =>
-  (await screen.findByText('com_ui_discord_error')).closest('[role="alert"]') as HTMLElement;
+  (await screen.findByText('com_ui_discord_load_failed')).closest('[role="alert"]') as HTMLElement;
 const nextAccount = (client: QueryClient) => (
   <QueryClientProvider client={client}>
     <Discord userId="next-admin" tenantId="other-org" />
@@ -1395,7 +1505,7 @@ test('returns focus to the load failure when an initial retry fails again, then 
   const again = deferred<DiscordApplicationPage>();
   jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(again.promise);
   await user.click(retryOf(failure));
-  await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
   await act(async () => again.reject(new Error('network')));
   const repeated = await loadFailure();
   await waitFor(() => expect(repeated).toHaveFocus());
@@ -1532,7 +1642,7 @@ test.each(sections)(
     const failure = await loadFailure();
     await waitFor(() => expect(failure).toHaveFocus());
     await user.click(retryOf(failure));
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     await waitFor(() => expect(screen.getByRole('heading', { name: heading })).toHaveFocus());
     expect(cursors()).toEqual([undefined, 'c2', 'c2']);
   },
@@ -1691,13 +1801,13 @@ test.each(sections)(
     await user.click(screen.getByRole('button', { name: more }));
     await loadFailure();
     await refocus();
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     await waitFor(() => expect(screen.getByRole('button', { name: more })).toHaveFocus());
     await refocus();
     const failure = await loadFailure();
     expect(failure).not.toHaveFocus();
     await user.click(retryOf(failure));
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     expect(cursors()).toEqual([undefined, 'c2', undefined, undefined, undefined]);
     expect(screen.queryByText(added)).toBeNull();
     expect(screen.getByRole('button', { name: more })).toBeVisible();
@@ -1715,7 +1825,7 @@ test.each(sections)(
     await refocus();
     await waitFor(() => expect(cursors()).toHaveLength(3));
     await user.click(retryOf(await loadFailure()));
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     expect(cursors()).toEqual([undefined, 'c2', undefined, undefined]);
     expect(screen.queryByText(added)).toBeNull();
   },

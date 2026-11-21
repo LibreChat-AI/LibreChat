@@ -173,9 +173,7 @@ test('failed code issuance exposes safe guidance and permits a fresh explicit at
     );
   const f = page();
   await openCode(f.user);
-  await screen.findByText(
-    'Too many pending selections. Wait for an unused code to expire, then try again.',
-  );
+  await screen.findByText('Too many pending codes. Wait for one to expire, then try again.');
   expect(screen.queryByText('private provider response')).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Selection code')).not.toBeInTheDocument();
   await f.user.click(screen.getByRole('button', { name: 'Generate Code' }));
@@ -282,9 +280,7 @@ test('failed revocation stays open with safe copy and refreshes server metadata'
       name: 'Revoke DM Selection',
     }),
   );
-  await screen.findByText(
-    'This link or selection is no longer available. Refresh the list and try again.',
-  );
+  await screen.findByText('This link or selection is no longer available. Refresh and try again.');
   expect(screen.getByRole('alertdialog')).toBeVisible();
   expect(screen.queryByText('private provider payload')).not.toBeInTheDocument();
   await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalledTimes(2));
@@ -297,9 +293,7 @@ test('a failed cursor page keeps the loaded prefix and retries only that page', 
   });
   const f = page();
   await f.user.click(await screen.findByRole('button', { name: 'Load more' }));
-  await screen.findByText(
-    'The operation could not be confirmed. Refresh the configuration before trying again.',
-  );
+  await screen.findByText("Couldn't load your Direct messages.");
   expect(
     screen.getByRole('button', { name: /^Revoke DM Selection: agent agent, channel 999$/ }),
   ).toBeVisible();
@@ -324,6 +318,43 @@ test('a failed cursor page keeps the loaded prefix and retries only that page', 
     ['next-page'],
     ['next-page'],
   ]);
+});
+
+const unreachable = () => Object.assign(new Error('x'), { code: 'unavailable' });
+
+test('names an unreachable server, not a failed read', async () => {
+  jest.mocked(dataService.listDiscordDmSelections).mockRejectedValueOnce(unreachable());
+  page();
+  await screen.findByText("Can't reach LibreChat right now.");
+  expect(screen.queryByText("Couldn't load your Direct messages.")).not.toBeInTheDocument();
+});
+
+test('names a failed account link read once, with one retry, when the selections load', async () => {
+  jest.mocked(dataService.channelIdentityClient.list).mockRejectedValueOnce(new Error('x'));
+  page();
+  await screen.findByText("Couldn't load your Direct messages.");
+  expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1);
+});
+
+test('worded as an unconfirmed change when revoking fails without a named cause', async () => {
+  jest
+    .mocked(dataService.listDiscordDmSelections)
+    .mockResolvedValue({ enabled: true, selections: [selection] });
+  jest
+    .mocked(dataService.revokeDiscordDmSelection)
+    .mockRejectedValue(Object.assign(new Error('x'), { code: 'unavailable', status: 500 }));
+  const f = page();
+  await f.user.click(
+    await screen.findByRole('button', { name: /^Revoke DM Selection: agent agent, channel 999$/ }),
+  );
+  await f.user.click(
+    within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Revoke DM Selection' }),
+  );
+  expect(
+    await screen.findByText(
+      'The change may not have been saved. Refresh to see the current state.',
+    ),
+  ).toBeVisible();
 });
 
 test('an initial list failure can be retried without issuing a code', async () => {
