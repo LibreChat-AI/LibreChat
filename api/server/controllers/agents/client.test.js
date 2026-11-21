@@ -10200,6 +10200,63 @@ describe('AgentClient - finalizeSubagentContent', () => {
     },
   );
 
+  it('keeps the child of a call made from inside a subagent, with who it ran as', async () => {
+    const nested = (phase, data) => ({
+      ...event(phase, data, 'call_nested'),
+      subagentRunId: 'grandchild-run',
+      subagentType: 'agent_ledger',
+      subagentKind: 'agent',
+      subagentAgentId: 'agent_ledger',
+    });
+    const buffer = await runSubagentEvents([
+      event('run_step', {
+        id: 'step_delegate',
+        index: 0,
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'call_nested', name: Constants.SUBAGENT, args: '{}' }],
+        },
+      }),
+      nested('run_step', {
+        id: 'step_answer',
+        index: 0,
+        stepDetails: { type: 'message_creation' },
+      }),
+      nested('message_delta', {
+        id: 'step_answer',
+        delta: { content: [{ type: 'text', text: 'The total is 4217.' }] },
+      }),
+      event('run_step_completed', {
+        id: 'step_delegate',
+        index: 0,
+        result: {
+          id: 'step_delegate',
+          type: 'tool_call',
+          tool_call: {
+            id: 'call_nested',
+            name: Constants.SUBAGENT,
+            output: 'The total is 4217.',
+            progress: 1,
+          },
+        },
+      }),
+    ]);
+
+    const client = makeClient(buffer);
+    client.contentParts = [
+      { type: 'tool_call', tool_call: { id: 'call_sub', name: Constants.SUBAGENT, args: '{}' } },
+    ];
+    client.finalizeSubagentContent();
+
+    const [delegated] = client.contentParts[0].tool_call.subagent_content;
+    expect(delegated.tool_call).toMatchObject({
+      id: 'call_nested',
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_ledger' },
+      subagent_content: [expect.objectContaining({ type: 'text', text: 'The total is 4217.' })],
+    });
+    expect(buffer.size).toBe(0);
+  });
+
   it('attaches aggregated subagent_content to the matching subagent tool_call part', async () => {
     const buffer = await runSubagentEvents([
       event('run_step', {
