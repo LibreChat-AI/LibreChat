@@ -43,3 +43,23 @@ export function getAppContentParts(): (props: ContentPartsSlotProps) => ReactNod
   }
   return appContentParts;
 }
+
+/** The host slots a reply's markdown elements fill with app components: the code block that can
+ *  run, and the mermaid diagram. */
+export type AppMarkdownSlots = Required<
+  Pick<MessagePartsHost, 'renderCodeBlock' | 'renderMermaid'>
+>;
+
+let appMarkdownSlots: AppMarkdownSlots | null = null;
+
+/** Registers the app's markdown slots. `../MarkdownComponents` does when it loads, and every app
+ *  surface takes its markdown elements from that module, so the host never imports the code
+ *  block, the run button or the diagram itself. */
+export function setAppMarkdownSlots(slots: AppMarkdownSlots): void {
+  appMarkdownSlots = slots;
+}
+
+/** Null until a surface that draws markdown has loaded. */
+export function getAppMarkdownSlots(): AppMarkdownSlots | null {
+  return appMarkdownSlots;
+}

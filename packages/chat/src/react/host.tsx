@@ -119,6 +119,25 @@ export function emptyToolCallChrome(): ToolCallChrome {
   return emptyChrome;
 }
 
+/** A fenced code block the markdown elements ask the host to draw. */
+export type MarkdownCodeBlockProps = {
+  lang: string;
+  codeChildren: ReactNode;
+  /** Whether the surface lets its reader run code. A reply does; a prompt or skill preview does not. */
+  executable: boolean;
+  /** The block's position among the reply's executable blocks, in document order. */
+  blockIndex?: number;
+};
+
+/** A `mermaid` fence a reply's markdown asks the host to draw. */
+export type MarkdownMermaidProps = {
+  code: string;
+  /** Stable for the fence's position in a message; absent on a preview surface. */
+  id?: string;
+  /** Whether a diagram that throws while rendering is caught and shown as its source. */
+  guarded: boolean;
+};
+
 /** What a part asks the host's image renderer to draw: an attached image, opened full size on click. */
 export type MessagePartsImageProps = {
   imagePath: string;
@@ -242,6 +261,20 @@ export interface MessagePartsHost {
   useLoadedSkill: (name: string, enabled: boolean) => LoadedSkill | undefined;
   /** Localization, MCP lookups, OAuth binding and the app's renderers for a generic tool call. */
   useToolCallChrome: () => ToolCallChrome;
+  /**
+   * Draws a fenced code block, for a host that adds to the package's `CodeBlock`: a run button,
+   * the output of its runs. Without it a fence is the package's block, which copies and downloads
+   * and runs nothing.
+   */
+  renderCodeBlock?: (props: MarkdownCodeBlockProps) => ReactNode;
+  /** Draws a `mermaid` fence. Without it the fence is an ordinary code block. */
+  renderMermaid?: (props: MarkdownMermaidProps) => ReactNode;
+  /**
+   * A hook a markdown link calls once per render with the id of the file it points at, or `''`
+   * for any other link. The function it returns resolves to a URL the browser can save, or to
+   * nothing when the file could not be fetched. Without it a file link is an ordinary link.
+   */
+  useFileDownload?: (fileId: string) => () => Promise<string | undefined>;
 }
 
 const MessagePartsHostContext = createContext<MessagePartsHost | null>(null);

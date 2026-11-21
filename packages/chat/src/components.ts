@@ -194,6 +194,7 @@ export { default as useCopyCode } from './components/parts/useCopyCode';
 export { default as useDownloadCode } from './components/parts/useDownloadCode';
 export type { CodeBlockProps } from './components/parts/CodeBlock';
 export type { CodeBarProps, RunCodeProps } from './components/parts/CodeBar';
+export { markdownElements, markdownPreviewElements } from './components/markdown/elements';
 export type { ImageProps } from './components/parts/Image';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
