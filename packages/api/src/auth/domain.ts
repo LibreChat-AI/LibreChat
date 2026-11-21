@@ -205,6 +205,7 @@ function hasRecognizedProtocol(domain: string): boolean {
  *   - `https://example.com:443` (https only, port 443)
  *   - `wss://ws.example.com` (secure WebSocket only)
  *   - `*.example.com` (wildcard subdomain)
+ *   - `https://*.example.com:8443` (wildcard subdomain, https only, port 8443)
  * @param domain - Domain specification string
  * @returns ParsedDomainSpec or null if invalid
  */
@@ -217,9 +218,6 @@ function parseDomainSpec(domain: string): ParsedDomainSpec | null {
     if (emptyProtocols.includes(normalizedDomain)) {
       return null;
     }
-
-    // Check for wildcard prefix before parsing
-    const isWildcard = normalizedDomain.startsWith('*.');
 
     // Check if it has a recognized protocol (http, https, ws, wss)
     const hasProtocol = hasRecognizedProtocol(normalizedDomain);
@@ -250,7 +248,8 @@ function parseDomainSpec(domain: string): ParsedDomainSpec | null {
       // Use the explicitly specified port, or null if no port was specified
       port: explicitPort ? explicitPortValue : null,
       explicitPort,
-      isWildcard,
+      // From the parsed hostname, so `https://*.example.com` keeps its wildcard
+      isWildcard: hostname.startsWith('*.'),
     };
   } catch {
     return null;
