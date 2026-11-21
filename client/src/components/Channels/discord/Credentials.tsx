@@ -39,6 +39,13 @@ export default function Credentials({
         const props = {
           id: `${id}-${field}`,
           autoComplete: secret ? 'new-password' : 'off',
+          inputMode: field === 'applicationId' ? ('numeric' as const) : undefined,
+          /* These are Discord app credentials, not the user's login: keep password managers and
+             email-alias extensions from offering to fill or generate them. */
+          'data-lpignore': 'true',
+          'data-1p-ignore': 'true',
+          'data-bwignore': 'true',
+          'data-protonpass-ignore': 'true',
           disabled: disabled || (field === 'applicationId' && editing),
           'aria-invalid': Boolean(errors[field]),
           'aria-describedby': errors[field] ? `${id}-${field}-error` : undefined,
