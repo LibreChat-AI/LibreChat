@@ -1,7 +1,14 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
+import type { RefObject } from 'react';
 
-export default function useCopyCode(codeRef: React.RefObject<HTMLElement | null>) {
+export interface CopyCode {
+  isCopied: boolean;
+  buttonRef: RefObject<HTMLButtonElement>;
+  handleCopy: () => void;
+}
+
+export default function useCopyCode(codeRef: RefObject<HTMLElement | null>): CopyCode {
   const [isCopied, setIsCopied] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();

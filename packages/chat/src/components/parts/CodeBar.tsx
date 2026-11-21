@@ -1,15 +1,44 @@
 import React from 'react';
 import { InfoIcon } from 'lucide-react';
-import { CopyButton, LangIcon } from '@librechat/chat/components';
-import type { CodeBarProps } from '~/common';
-import useDownloadCode from '~/components/Messages/Content/useDownloadCode';
-import DownloadButton from '~/components/Messages/Content/DownloadButton';
-import useCopyCode from '~/components/Messages/Content/useCopyCode';
-import RunCode from '~/components/Messages/Content/RunCode';
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
+import type { ReactNode, RefObject } from 'react';
+import useDownloadCode from './useDownloadCode';
+import DownloadButton from './DownloadButton';
+import useCopyCode from './useCopyCode';
+import CopyButton from './CopyButton';
+import LangIcon from './LangIcon';
 
-const CodeBar: React.FC<CodeBarProps> = React.memo(
-  ({ lang, error, codeRef, blockIndex, plugin = null, allowExecution = true }) => {
+/** What a host's run button is told about the block it runs. */
+export interface RunCodeProps {
+  lang: string;
+  /** The block's `<code>` element, read for its text when the button is pressed. */
+  codeRef: RefObject<HTMLElement>;
+  blockIndex?: number;
+  /** The floating bar's button: the glyph without its label. */
+  iconOnly?: boolean;
+}
+
+export interface CodeBarProps {
+  lang: string;
+  error?: boolean;
+  plugin?: boolean | null;
+  blockIndex?: number;
+  allowExecution?: boolean;
+  codeRef: RefObject<HTMLElement>;
+  /** Draws the run button, for a host that can execute code. Without it the bar has none. */
+  renderRun?: (props: RunCodeProps) => ReactNode;
+}
+
+const CodeBar: React.NamedExoticComponent<CodeBarProps> = React.memo(
+  ({
+    lang,
+    error,
+    codeRef,
+    blockIndex,
+    renderRun,
+    plugin = null,
+    allowExecution = true,
+  }: CodeBarProps) => {
     const localize = useLocalize();
     const { isCopied, handleCopy } = useCopyCode(codeRef);
     const { isDownloaded, handleDownload } = useDownloadCode(codeRef, lang);
@@ -24,9 +53,7 @@ const CodeBar: React.FC<CodeBarProps> = React.memo(
           <InfoIcon className="text-text-secondary ms-auto flex h-4 w-4 gap-2" />
         ) : (
           <div className="flex items-center justify-center gap-2">
-            {allowExecution === true && (
-              <RunCode lang={lang} codeRef={codeRef} blockIndex={blockIndex} />
-            )}
+            {allowExecution === true && renderRun?.({ lang, codeRef, blockIndex })}
             {error !== true && (
               <>
                 <DownloadButton

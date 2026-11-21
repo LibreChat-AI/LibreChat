@@ -40,4 +40,12 @@ export {
   attachmentRenderKey,
   buildAttachmentsByName,
 } from './media';
+export {
+  triggerDownload,
+  getDownloadFilename,
+  getCodeBlockFilename,
+  isHttpDownloadTarget,
+  registerDownloadFilename,
+  unregisterDownloadFilename,
+} from './download';
 export * from './url';
