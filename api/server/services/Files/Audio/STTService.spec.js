@@ -36,6 +36,7 @@ jest.mock('@librechat/api', () => ({
   })),
   applyAxiosProxyConfig: jest.fn(),
   resolveConfigSecret: jest.fn((value) => value),
+  transcribeWithGoogle: jest.fn(),
   applySSRFSafeAgentIfDirect: jest.fn(),
   contentFilterBlockResponse: jest.fn((finding) => ({
     error: 'content_filter_block',
@@ -56,7 +57,7 @@ jest.mock('librechat-data-provider', () => ({
   /* Real selection logic: these tests are about which provider a schema resolves to. */
   listConfiguredSpeechProviders:
     jest.requireActual('librechat-data-provider').listConfiguredSpeechProviders,
-  STTProviders: {},
+  STTProviders: jest.requireActual('librechat-data-provider').STTProviders,
 }));
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 
@@ -70,6 +71,7 @@ const {
   contentFilterBlockResponse,
   contentFilterUninspectableResponse,
   getBlockedUninspectableFileField,
+  transcribeWithGoogle,
 } = require('@librechat/api');
 const { STTService, getFileExtensionFromMime, MIME_TO_EXTENSION_MAP } = require('./STTService');
 
@@ -144,6 +146,40 @@ describe('STTService.getProviderSchema provider detection', () => {
       },
     });
     await expect(service.getProviderSchema(req)).rejects.toThrow('Multiple providers are set');
+  });
+});
+
+describe('STTService.sttRequest with the google provider', () => {
+  it('delegates the audio, MIME type and language to the Gemini transcriber', async () => {
+    const service = new STTService();
+    const audioBuffer = Buffer.from('audio');
+    const sttSchema = { model: 'gemini-3.5-transcribe', location: 'eu' };
+    transcribeWithGoogle.mockResolvedValueOnce('Hallo');
+
+    const allowedAddresses = ['aiplatform.eu.rep.googleapis.com:443'];
+    const requestOptions = { timeout: 1000, signal: AbortSignal.timeout(1000) };
+    const text = await service.sttRequest(
+      'google',
+      sttSchema,
+      {
+        audioBuffer,
+        audioFile: { originalname: 'audio.webm', mimetype: 'audio/webm', size: 5 },
+        language: 'de-DE',
+      },
+      allowedAddresses,
+      requestOptions,
+    );
+
+    expect(text).toBe('Hallo');
+    expect(transcribeWithGoogle).toHaveBeenCalledWith({
+      config: sttSchema,
+      audio: audioBuffer,
+      mimeType: 'audio/webm',
+      language: 'de-DE',
+      allowedAddresses,
+      requestOptions,
+    });
+    expect(axios.post).not.toHaveBeenCalled();
   });
 });
 

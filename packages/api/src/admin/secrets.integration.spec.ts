@@ -111,6 +111,14 @@ const SECRET_FIELD_CASES: SecretFieldCase[] = [
     siblingValue: '2024-10-21',
   },
   {
+    path: 'speech.stt.google.apiKey',
+    previewPath: 'speech.stt.google.apiKeyPreview',
+    section: 'speech',
+    object: { stt: { google: { apiKey: SECRET, model: 'gemini-3.5-transcribe' } } },
+    siblingPath: 'speech.stt.google.location',
+    siblingValue: 'eu',
+  },
+  {
     path: 'webSearch.serperApiKey',
     previewPath: 'webSearch.serperApiKeyPreview',
     section: 'webSearch',
