@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Plus } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { atom, Provider, useAtom } from 'jotai';
-import { ExternalLink, Plus } from 'lucide-react';
 import {
   useInfiniteQuery,
   useIsMutating,
@@ -40,20 +40,21 @@ import type {
   DiscordGuild,
 } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
-import type { Fields } from './discord/Editor';
+import type { Fields } from './discord/Credentials';
+import type { WizardStep } from './discord/Wizard';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { settingsTargetAtom } from '~/components/Nav/Settings';
 import { useAuthContext, useLocalize } from '~/hooks';
-import Editor, { empty } from './discord/Editor';
+import { empty } from './discord/Credentials';
 import { errorLabel } from './discord/errors';
 import Settings from './discord/Settings';
 import Connect from './discord/Connect';
+import Editor from './discord/Editor';
+import Wizard from './discord/Wizard';
 import Server from './discord/Server';
 import Notice from './discord/Notice';
 import Card from './discord/Card';
 import Loading from './Loading';
-import { cn } from '~/utils';
 import Dm from './Dm';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
@@ -187,6 +188,8 @@ function Setup({
   const [settings, setSettings] = useAtom(settingsAtom);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [restore, setRestore] = useAtom(restoreAtom);
+  /** Held from the first-run save until the person finishes, so the new application does not replace it. */
+  const [wizard, setWizard] = useState<{ step: WizardStep; applicationId?: string } | null>(null);
   const attempt = useRef<Attempt | null>(null);
   const submission = useRef<ConfigureDiscordApplication | null>(null);
   const mounted = useRef(true);
@@ -257,12 +260,15 @@ function Setup({
         input.clientSecret = undefined;
       }
     },
-    onSuccess: () => {
-      if (mounted.current) {
-        form.reset(empty);
-        setRestore({ trigger: editorTrigger.current });
-        setEditor(null);
+    onSuccess: (saved) => {
+      if (!mounted.current) return;
+      form.reset(empty);
+      if (editor === null) {
+        setWizard({ step: 3, applicationId: saved.applicationId });
+        return;
       }
+      setRestore({ trigger: editorTrigger.current });
+      setEditor(null);
     },
   });
   const commands = useMutation({
@@ -454,6 +460,7 @@ function Setup({
   const listed = apps.isSuccess && guilds.isSuccess;
   const ready = listed && !apps.isFetching && !guilds.isFetching;
   const disabled = busy || !ready || flow !== null;
+  const showWizard = listed && (wizard !== null || !applications.length);
   const setup = apps.data?.pages[0].setup;
   const settingsApp = settings
     ? applications.find((app) => app.applicationId === settings)
@@ -555,7 +562,7 @@ function Setup({
   );
   const linkError = connect.error || cancel.error;
   /** A failure is shown beside the action that caused it: inside its dialog while open, else on the page. */
-  const pageError = (editor ? null : save.error) || (flow ? null : linkError);
+  const pageError = (editor || showWizard ? null : save.error) || (flow ? null : linkError);
   const refreshAfterError = () => {
     form.reset(empty);
     setRestore({
@@ -617,7 +624,7 @@ function Setup({
           onAction={refreshAfterError}
         />
       )}
-      {save.isSuccess && (
+      {save.isSuccess && !showWizard && (
         <Alert variant="success" role="status">
           {localize('com_ui_discord_saved')}
         </Alert>
@@ -626,49 +633,29 @@ function Setup({
         {localize('com_ui_discord_apps')}
       </h3>
       {/* Loaded state, not "not fetching": a focus refetch must not swap the layout. */}
-      {listed && !applications.length ? (
-        <ol
-          aria-label={localize('com_ui_discord_setup_steps')}
-          className="border-border-light divide-border-light divide-y rounded-lg border"
-        >
-          <Step
-            index={1}
-            title={localize('com_ui_discord_step_create')}
-            hint={localize('com_ui_discord_step_create_hint')}
-          >
-            <Button asChild variant="inline-link" className="w-fit">
-              <a
-                href="https://discord.com/developers/applications"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {localize('com_ui_discord_developer_portal')}
-                <ExternalLink className="size-3.5" aria-hidden="true" />
-              </a>
-            </Button>
-          </Step>
-          <Step
-            index={2}
-            title={localize('com_ui_discord_step_credentials')}
-            hint={localize('com_ui_discord_step_credentials_hint')}
-          >
-            <Button
-              type="button"
-              size="sm"
-              disabled={disabled}
-              onClick={(event) => edit('new', event.currentTarget)}
-            >
-              <Plus className="size-4" aria-hidden="true" />
-              {localize('com_ui_discord_app_create')}
-            </Button>
-          </Step>
-          <Step
-            index={3}
-            muted
-            title={localize('com_ui_discord_step_connect')}
-            hint={localize('com_ui_discord_step_connect_hint')}
-          />
-        </ol>
+      {showWizard ? (
+        <Wizard
+          step={wizard?.step ?? 1}
+          form={form}
+          disabled={disabled}
+          busy={busy}
+          saving={save.isLoading}
+          error={save.error}
+          alertRef={reveal}
+          onStep={(step) => {
+            save.reset();
+            setWizard({ step, applicationId: wizard?.applicationId });
+          }}
+          onSubmit={(event) => void submit(event)}
+          onConnect={(trigger) => {
+            if (wizard?.applicationId) start(wizard.applicationId, undefined, trigger);
+          }}
+          onFinish={() => {
+            setWizard(null);
+            setRestore({ trigger: null });
+          }}
+          onRefresh={refreshAfterError}
+        />
       ) : (
         listed && (
           <div className="flex justify-end">
@@ -687,26 +674,27 @@ function Setup({
       <h3 ref={guildHeading} tabIndex={-1} className="sr-only">
         {localize('com_ui_discord_guilds')}
       </h3>
-      {applications.map((app) => (
-        <Card
-          key={app.applicationId}
-          app={app}
-          servers={installations.filter((guild) => guild.applicationId === app.applicationId)}
-          open={!collapsed[app.applicationId]}
-          disabled={disabled}
-          onOpenChange={(open) =>
-            setCollapsed((current) => ({ ...current, [app.applicationId]: !open }))
-          }
-          onEdit={edit}
-          onSettings={(item, trigger) => {
-            settingsTrigger.current = trigger;
-            setSettings(item.applicationId);
-          }}
-          onConnect={(item, trigger) => start(item.applicationId, undefined, trigger)}
-          onReconnect={reconnect}
-          onDisconnect={disconnectGuild}
-        />
-      ))}
+      {!showWizard &&
+        applications.map((app) => (
+          <Card
+            key={app.applicationId}
+            app={app}
+            servers={installations.filter((guild) => guild.applicationId === app.applicationId)}
+            open={!collapsed[app.applicationId]}
+            disabled={disabled}
+            onOpenChange={(open) =>
+              setCollapsed((current) => ({ ...current, [app.applicationId]: !open }))
+            }
+            onEdit={edit}
+            onSettings={(item, trigger) => {
+              settingsTrigger.current = trigger;
+              setSettings(item.applicationId);
+            }}
+            onConnect={(item, trigger) => start(item.applicationId, undefined, trigger)}
+            onReconnect={reconnect}
+            onDisconnect={disconnectGuild}
+          />
+        ))}
       {orphans.length > 0 && (
         <div className="border-border-light space-y-1 rounded-lg border p-3">
           <h4 className="text-sm font-medium">{localize('com_ui_discord_guilds_other')}</h4>
@@ -874,42 +862,5 @@ function Setup({
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  );
-}
-
-/** One row of the first-run setup path: a quiet number, what to do, and its action. */
-function Step({
-  index,
-  title,
-  hint,
-  muted = false,
-  children,
-}: {
-  index: number;
-  title: string;
-  hint: string;
-  muted?: boolean;
-  children?: ReactNode;
-}) {
-  return (
-    <li className="flex items-center gap-3 px-4 py-3">
-      <span
-        aria-hidden="true"
-        className="border-border-medium text-text-secondary flex size-6 shrink-0 items-center justify-center rounded-full border text-xs"
-      >
-        {index}
-      </span>
-      <div className="min-w-0 flex-1">
-        <p
-          className={cn('text-sm font-medium', muted ? 'text-text-tertiary' : 'text-text-primary')}
-        >
-          {title}
-        </p>
-        <p className={cn('text-xs', muted ? 'text-text-tertiary' : 'text-text-secondary')}>
-          {hint}
-        </p>
-      </div>
-      {children && <div className="shrink-0">{children}</div>}
-    </li>
   );
 }

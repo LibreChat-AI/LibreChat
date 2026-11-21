@@ -8,7 +8,8 @@ import type { ReactNode } from 'react';
  * animate its own height (for that, stack collapses instead), or the two
  * motions stack. Measures the fractional border-box height, so nothing is
  * clipped by rounding, and stays `auto` until the first measurement so mounting
- * does not animate. The clip box bleeds 4px past the content on every side, so
+ * does not animate. Observed sizes come from the layout box, so a transform on an ancestor (a dialog
+ * zooming open) cannot shrink the measurement. The clip box bleeds 4px past the content on every side, so
  * focus rings on the controls inside are not cut off.
  */
 export default function AutoHeight({
@@ -26,15 +27,17 @@ export default function AutoHeight({
     if (node == null) {
       return;
     }
-    const measure = () => {
-      const next = node.getBoundingClientRect().height;
+    const measure = (layout?: number) => {
+      const next = layout ?? node.getBoundingClientRect().height;
       setHeight((previous) => (previous === next ? previous : next));
     };
     measure();
     if (typeof ResizeObserver === 'undefined') {
       return;
     }
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver((entries) =>
+      measure(entries[entries.length - 1]?.borderBoxSize?.[0]?.blockSize),
+    );
     observer.observe(node);
     return () => observer.disconnect();
   }, []);

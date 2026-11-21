@@ -1,34 +1,14 @@
 import { useId } from 'react';
 import { ExternalLink } from 'lucide-react';
-import { channelSnowflakeSchema } from 'librechat-data-provider';
-import {
-  Alert,
-  Button,
-  Input,
-  Label,
-  OGDialog,
-  OGDialogTemplate,
-  SecretInput,
-  Spinner,
-} from '@librechat/client';
+import { Alert, Button, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
 import type { DiscordApplication } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { FormEvent, ReactNode } from 'react';
+import type { Fields } from './Credentials';
+import Credentials from './Credentials';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
 import Notice from './Notice';
-
-export const empty = { applicationId: '', name: '', botToken: '', clientSecret: '' };
-export type Fields = typeof empty;
-
-const labels = {
-  applicationId: 'com_ui_discord_application_id',
-  name: 'com_ui_name',
-  botToken: 'com_ui_discord_bot_token',
-  clientSecret: 'com_ui_discord_client_secret',
-} as const;
-const limits = { applicationId: 20, name: 100, botToken: 512, clientSecret: 512 };
-const order = ['name', 'applicationId', 'botToken', 'clientSecret'] as const;
 
 /** Adds an application or rotates its credentials; secrets are write-only and never prefilled. */
 export default function Editor({
@@ -71,62 +51,13 @@ export default function Editor({
           }}
         >
           <p className="text-text-secondary text-sm">{localize('com_ui_discord_credentials')}</p>
-          {order.map((field) => {
-            const secret = field === 'botToken' || field === 'clientSecret';
-            const props = {
-              id: `${id}-${field}`,
-              autoComplete: secret ? 'new-password' : 'off',
-              disabled: disabled || (field === 'applicationId' && editing),
-              'aria-invalid': Boolean(errors[field]),
-              'aria-describedby': errors[field] ? `${id}-${field}-error` : undefined,
-              ...form.register(field, {
-                required: field === 'applicationId' || (secret && editor === 'new'),
-                maxLength: limits[field],
-                ...(field === 'applicationId'
-                  ? { validate: (value) => channelSnowflakeSchema.safeParse(value.trim()).success }
-                  : {}),
-              }),
-            };
-            return (
-              <div key={field} className="space-y-1">
-                <Label htmlFor={`${id}-${field}`}>
-                  {localize(labels[field])}
-                  {field === 'name' && (
-                    <>
-                      {' '}
-                      <span className="text-text-secondary text-xs">
-                        {localize('com_ui_optional')}
-                      </span>
-                    </>
-                  )}
-                </Label>
-                {secret ? (
-                  <SecretInput
-                    {...props}
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    controlsOnHover
-                  />
-                ) : (
-                  <Input {...props} />
-                )}
-                {secret && editing && (
-                  <p className="text-text-secondary text-xs">
-                    {localize('com_ui_discord_rotation')}
-                  </p>
-                )}
-                {errors[field] && (
-                  <p
-                    id={`${id}-${field}-error`}
-                    role="alert"
-                    className="text-text-destructive text-sm"
-                  >
-                    {localize('com_ui_discord_invalid')}
-                  </p>
-                )}
-              </div>
-            );
-          })}
+          <Credentials
+            id={id}
+            form={form}
+            disabled={disabled}
+            editing={editing}
+            requireSecrets={editor === 'new'}
+          />
           {errors.root && <Alert variant="error">{errors.root.message}</Alert>}
           <Button asChild variant="inline-link" className="w-fit">
             <a

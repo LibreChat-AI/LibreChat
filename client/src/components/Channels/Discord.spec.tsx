@@ -147,9 +147,8 @@ test('loads independent metadata, server URLs and configuration-needed state', a
   expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
   expect(dataService.getDiscordGuilds).toHaveBeenCalled();
   await act(async () => apps.resolve({ applications: [] }));
-  const steps = await screen.findByRole('list', { name: 'com_ui_discord_setup_steps' });
-  expect(within(steps).getAllByRole('listitem')).toHaveLength(3);
-  expect(within(steps).getByText('com_ui_discord_step_connect')).toBeVisible();
+  expect(await screen.findByRole('progressbar')).toBeVisible();
+  expect(screen.getByText('com_ui_discord_wizard_create_title')).toBeVisible();
   expect(screen.queryByLabelText('com_ui_discord_callback')).toBeNull();
 });
 
@@ -2006,4 +2005,143 @@ test('retries a failed reconnection against the same installation', async () => 
       guild.installationId,
     ),
   );
+});
+
+/** Renders the first-run state: no applications yet, so the wizard is showing. */
+async function wizardPage() {
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({ applications: [] });
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue({ guilds: [] });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    logger: { log: () => {}, warn: () => {}, error: () => {} },
+  });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Discord userId="admin" tenantId="org" />
+    </QueryClientProvider>,
+  );
+  await screen.findByRole('progressbar');
+  return { ...view, client, user: userEvent.setup() };
+}
+const current = () =>
+  screen.getAllByRole('listitem').find((item) => item.getAttribute('aria-current') === 'step')
+    ?.textContent;
+async function fillCredentials(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText('com_ui_discord_application_id'), app.applicationId);
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_client_secret/), 'private-secret');
+}
+/** The wizard saved an application and sits on its last step. */
+async function savedWizard() {
+  const view = await wizardPage();
+  /** From here on the server lists the application the wizard is about to save. */
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({ applications: [app] });
+  await view.user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+  await fillCredentials(view.user);
+  await view.user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  await screen.findByText('com_ui_discord_wizard_connect_help');
+  return view;
+}
+
+describe('first-run wizard', () => {
+  test('shows the progress header for each step and moves with Continue and Back', async () => {
+    const { user } = await wizardPage();
+    const bar = screen.getByRole('progressbar', { name: 'com_ui_channels_setup_progress' });
+    expect(bar).toHaveAttribute('aria-valuenow', '0');
+    expect(current()).toBe('com_ui_discord_wizard_create');
+    expect(screen.getByRole('link', { name: /com_ui_discord_wizard_portal/ })).toHaveAttribute(
+      'href',
+      'https://discord.com/developers/applications',
+    );
+    expect(screen.queryByRole('button', { name: 'com_ui_back' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    expect(bar).toHaveAttribute('aria-valuenow', '50');
+    expect(current()).toBe('com_ui_discord_wizard_credentials');
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'com_ui_back' }));
+    expect(bar).toHaveAttribute('aria-valuenow', '0');
+    expect(screen.getByText('com_ui_discord_wizard_create_title')).toBeVisible();
+  });
+
+  test('keeps typed credentials when going back, and validates before saving', async () => {
+    const { user } = await wizardPage();
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    await user.type(screen.getByLabelText('com_ui_discord_application_id'), 'not-a-snowflake');
+    await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    expect(dataService.configureDiscordApplication).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    await user.click(screen.getByRole('button', { name: 'com_ui_back' }));
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toHaveValue('not-a-snowflake');
+  });
+
+  test('saves the application and advances to connecting a server', async () => {
+    let submitted: unknown;
+    jest.mocked(dataService.configureDiscordApplication).mockImplementation(async (input) => {
+      submitted = { ...input };
+      return app;
+    });
+    await savedWizard();
+    expect(submitted).toEqual({
+      applicationId: app.applicationId,
+      name: '',
+      botToken: 'private-bot-token',
+      clientSecret: 'private-secret',
+    });
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
+    expect(current()).toBe('com_ui_discord_connect');
+    expect(screen.queryByRole('button', { name: 'com_ui_back' })).toBeNull();
+  });
+
+  test('shows a failed save inside the wizard and stays on credentials', async () => {
+    jest
+      .mocked(dataService.configureDiscordApplication)
+      .mockRejectedValueOnce(
+        Object.assign(new Error('safe'), { code: 'unsupported_installation' }),
+      );
+    const { user } = await wizardPage();
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    await fillCredentials(user);
+    await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    expect(await screen.findByText('com_ui_discord_code_grant')).toBeVisible();
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toBeVisible();
+    expect(current()).toBe('com_ui_discord_wizard_credentials');
+  });
+
+  test('stays mounted when the applications list goes from zero to one', async () => {
+    const view = await savedWizard();
+    await act(async () => {
+      await view.client.invalidateQueries();
+    });
+    await waitFor(() => expect(screen.queryByText('Engineering')).toBeNull());
+    expect(screen.getByText('com_ui_discord_wizard_connect_help')).toBeVisible();
+    expect(screen.queryByText('Engineering')).toBeNull();
+  });
+
+  test('connect starts the existing connect flow for the saved application', async () => {
+    const { user } = await savedWizard();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'com_ui_discord_connect' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect' }));
+    await waitFor(() =>
+      expect(dataService.connectDiscordGuild).toHaveBeenCalledWith(app.applicationId, undefined),
+    );
+    expect(window.open).toHaveBeenCalled();
+  });
+
+  test('finishing shows the application cards', async () => {
+    const { user } = await savedWizard();
+    await user.click(screen.getByRole('button', { name: 'com_ui_done' }));
+    expect(await screen.findByText('Engineering')).toBeVisible();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeVisible();
+  });
 });
