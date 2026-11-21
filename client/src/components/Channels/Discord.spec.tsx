@@ -147,7 +147,9 @@ test('loads independent metadata, server URLs and configuration-needed state', a
   expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
   expect(dataService.getDiscordGuilds).toHaveBeenCalled();
   await act(async () => apps.resolve({ applications: [] }));
-  expect(await screen.findByText('com_ui_discord_empty_title')).toBeVisible();
+  const steps = await screen.findByRole('list', { name: 'com_ui_discord_setup_steps' });
+  expect(within(steps).getAllByRole('listitem')).toHaveLength(3);
+  expect(within(steps).getByText('com_ui_discord_step_connect')).toBeVisible();
   expect(screen.queryByLabelText('com_ui_discord_callback')).toBeNull();
 });
 

@@ -40,6 +40,7 @@ import type {
   DiscordGuild,
 } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import type { Fields } from './discord/Editor';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { settingsTargetAtom } from '~/components/Nav/Settings';
@@ -52,6 +53,7 @@ import Server from './discord/Server';
 import Notice from './discord/Notice';
 import Card from './discord/Card';
 import Loading from './Loading';
+import { cn } from '~/utils';
 import Dm from './Dm';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
@@ -155,6 +157,7 @@ function SettingsControl({
         mainClassName="max-h-[70dvh] overflow-y-auto"
         showCancelButton={false}
         showCloseButton
+        footerClassName="hidden"
         main={
           open ? (
             <div className="space-y-6">
@@ -624,35 +627,48 @@ function Setup({
       </h3>
       {/* Loaded state, not "not fetching": a focus refetch must not swap the layout. */}
       {listed && !applications.length ? (
-        <div className="border-border-light flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-6 text-center">
-          <span
-            className="border-border-light bg-surface-secondary flex size-10 items-center justify-center rounded-lg border"
-            aria-hidden="true"
+        <ol
+          aria-label={localize('com_ui_discord_setup_steps')}
+          className="border-border-light divide-border-light divide-y rounded-lg border"
+        >
+          <Step
+            index={1}
+            title={localize('com_ui_discord_step_create')}
+            hint={localize('com_ui_discord_step_create_hint')}
           >
-            <DiscordIcon mark className="size-5" />
-          </span>
-          <p className="text-text-primary text-sm font-medium">
-            {localize('com_ui_discord_empty_title')}
-          </p>
-          <Button
-            type="button"
-            disabled={disabled}
-            onClick={(event) => edit('new', event.currentTarget)}
+            <Button asChild variant="inline-link" className="w-fit">
+              <a
+                href="https://discord.com/developers/applications"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {localize('com_ui_discord_developer_portal')}
+                <ExternalLink className="size-3.5" aria-hidden="true" />
+              </a>
+            </Button>
+          </Step>
+          <Step
+            index={2}
+            title={localize('com_ui_discord_step_credentials')}
+            hint={localize('com_ui_discord_step_credentials_hint')}
           >
-            <Plus className="size-4" aria-hidden="true" />
-            {localize('com_ui_discord_app_create')}
-          </Button>
-          <Button asChild variant="inline-link" className="w-fit">
-            <a
-              href="https://discord.com/developers/applications"
-              target="_blank"
-              rel="noopener noreferrer"
+            <Button
+              type="button"
+              size="sm"
+              disabled={disabled}
+              onClick={(event) => edit('new', event.currentTarget)}
             >
-              {localize('com_ui_discord_developer_portal')}
-              <ExternalLink className="size-3.5" aria-hidden="true" />
-            </a>
-          </Button>
-        </div>
+              <Plus className="size-4" aria-hidden="true" />
+              {localize('com_ui_discord_app_create')}
+            </Button>
+          </Step>
+          <Step
+            index={3}
+            muted
+            title={localize('com_ui_discord_step_connect')}
+            hint={localize('com_ui_discord_step_connect_hint')}
+          />
+        </ol>
       ) : (
         listed && (
           <div className="flex justify-end">
@@ -858,5 +874,42 @@ function Setup({
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+/** One row of the first-run setup path: a quiet number, what to do, and its action. */
+function Step({
+  index,
+  title,
+  hint,
+  muted = false,
+  children,
+}: {
+  index: number;
+  title: string;
+  hint: string;
+  muted?: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <li className="flex items-center gap-3 px-4 py-3">
+      <span
+        aria-hidden="true"
+        className="border-border-medium text-text-secondary flex size-6 shrink-0 items-center justify-center rounded-full border text-xs"
+      >
+        {index}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p
+          className={cn('text-sm font-medium', muted ? 'text-text-tertiary' : 'text-text-primary')}
+        >
+          {title}
+        </p>
+        <p className={cn('text-xs', muted ? 'text-text-tertiary' : 'text-text-secondary')}>
+          {hint}
+        </p>
+      </div>
+      {children && <div className="shrink-0">{children}</div>}
+    </li>
   );
 }
