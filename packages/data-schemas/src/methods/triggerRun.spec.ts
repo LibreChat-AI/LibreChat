@@ -33,8 +33,6 @@ beforeAll(async () => {
   createModels(mongoose);
   ScheduleRun = mongoose.models.ScheduleRun as Model<IScheduleRunDocument>;
   await ScheduleRun.init();
-  schedules = createScheduleMethods(mongoose);
-  runs = createTriggerRuns(mongoose);
 }, DB_SETUP_TIMEOUT_MS);
 
 afterAll(async () => {
@@ -47,6 +45,10 @@ beforeEach(async () => {
   mongoose.set('debug', false);
   await ScheduleRun.deleteMany({});
   queries = [];
+  // Built for each test, not once for the file, so a test that reads through them is also
+  // the test that covers how they are put together.
+  schedules = createScheduleMethods(mongoose);
+  runs = createTriggerRuns(mongoose);
 });
 
 /**
