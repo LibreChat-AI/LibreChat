@@ -7,6 +7,7 @@ import {
   createRunGrantExecution,
   narrowGrantedTools,
   collectApprovedToolCalls,
+  withoutServers,
   bindRunGrantInvocation,
 } from './execution';
 import {
@@ -972,20 +973,77 @@ describe('the tools a run loads under a grant', () => {
     expect(narrowGrantedTools({}, 'root', keys)).toBe(keys);
   });
 
-  it('loads nothing on a server the occurrence was fired without, with a grant or with none', async () => {
+  it('loads nothing on a server the delivery was started without, with a grant or with none', async () => {
     const keys = ['query_mcp_warehouse', 'export_mcp_warehouse', 'search_mcp_notes', 'web_search'];
-    // No grant: only the skipped server's tools are left out.
-    expect(narrowGrantedTools({ _scheduleSkippedServers: ['warehouse'] }, 'root', keys)).toEqual([
-      'search_mcp_notes',
-      'web_search',
-    ]);
+    const without = { skip: ['warehouse'], servers: ['warehouse', 'notes'] };
+    // No grant, and no stored grant to read at all: only the skipped server's tools are left out.
+    const bare = {};
+    const none = await executionFixture();
+    (none.storage.readRunGrant as jest.Mock).mockResolvedValueOnce(null);
+    expect(
+      await none.factory.attach(getMCPRequestContext(bare)!, none.identity, 'invoke', false, {
+        without,
+      }),
+    ).toBe(false);
+    expect(narrowGrantedTools(bare, 'root', keys)).toEqual(['search_mcp_notes', 'web_search']);
     // Under a grant, what it leaves out and what was skipped are both left out.
     const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
-    const req = { _scheduleSkippedServers: ['warehouse'] };
-    await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
+    const req = {};
+    await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke', false, {
+      without,
+    });
     expect(
       narrowGrantedTools(req, 'root', ['query_mcp_warehouse', 'export_mcp_warehouse']),
     ).toEqual([]);
+    // What one request goes without says nothing about another, nor does an empty list.
+    const other = {};
+    await fixture.factory.attach(getMCPRequestContext(other)!, fixture.identity, 'invoke', false, {
+      without: { skip: [], servers: ['warehouse'] },
+    });
+    expect(narrowGrantedTools(other, 'root', ['query_mcp_warehouse'])).toEqual([
+      'query_mcp_warehouse',
+    ]);
+  });
+
+  it('drops every key on a skipped server, by its name and by its normalized name', () => {
+    const keys = [
+      'search_mcp_Notion',
+      'sys__all__sys_mcp_Notion',
+      'sys__server__sys_mcp_Notion',
+      'query_mcp_Sales_Force',
+      'list_mcp_Linear',
+      'execute_code',
+      'web_search',
+    ];
+    expect(
+      withoutServers(keys, {
+        skip: ['Notion', 'Sales Force'],
+        servers: ['Notion', 'Sales Force', 'Linear'],
+      }),
+    ).toEqual(['list_mcp_Linear', 'execute_code', 'web_search']);
+  });
+
+  it('leaves a ready server alone when its name ends with a skipped one', () => {
+    expect(
+      withoutServers(['query_mcp_bar', 'query_mcp_foo_mcp_bar', 'web_search'], {
+        skip: ['bar'],
+        servers: ['bar', 'foo_mcp_bar'],
+      }),
+    ).toEqual(['query_mcp_foo_mcp_bar', 'web_search']);
+    // And the other way round: the longer name skipped, the shorter one ready.
+    expect(
+      withoutServers(['query_mcp_bar', 'query_mcp_foo_mcp_bar'], {
+        skip: ['foo_mcp_bar'],
+        servers: ['bar', 'foo_mcp_bar'],
+      }),
+    ).toEqual(['query_mcp_bar']);
+  });
+
+  it('hands back the same list when nothing is left out', () => {
+    const keys = ['list_mcp_Linear', 'execute_code'];
+    expect(withoutServers(keys, { skip: ['Notion'], servers: [] })).toBe(keys);
+    expect(withoutServers(keys, { skip: [], servers: ['Linear'] })).toBe(keys);
+    expect(withoutServers(keys, undefined)).toBe(keys);
   });
 });
 

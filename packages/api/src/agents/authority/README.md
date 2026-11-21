@@ -37,6 +37,22 @@ authenticate with something of its own passes it as `credentials` (a schedule pa
 and its renewable upstream tokens, `packages/api/src/schedules/mcp.ts`). Only schedules call it
 today. It connects to each server once per call and keeps nothing between calls.
 
+Two things a run is narrowed by are attached to its request together (`attach`), and neither
+is read from the request itself:
+
+- **The grant.** `narrow` keeps the tool keys the grant lists for an agent. A grant either
+  covers the agents' other tools too (`coversTools`, a schedule's) or limits MCP tools only (an
+  API key's). The run policy (`createScheduledMCPRunPolicy`) is the enforcement of a covering
+  grant. Under one that limits MCP tools only it leaves every other tool alone, reads nothing,
+  and says nothing about an MCP tool, which is checked where it is called
+  (`RunGrantInvocation`). The one thing it still decides there is whether work may go to the
+  background (`detaches`). The two things a run says in its subject's words, to the model about
+  a tool left out and to the client when it stops to ask, are an input (`PolicyWording`).
+- **What the delivery runs without** (`Without`): MCP servers that were not ready when it
+  started, and every server that check covered. `narrowGrantedTools` drops the tool keys on
+  them (`withoutServers`), whether or not the subject holds a grant. The subject's host says
+  what they are; this code does not know where the list came from.
+
 `execution.ts` still holds four schedule accessors (`getScheduleMCPExecution`,
 `scheduleAsksEveryUse`, `buildScheduledApprovalAdmissionHooks`, `scheduledMCPIdentity`) because
 they read its module-private map of live executions. What a schedule's grant allows, and how a

@@ -9,8 +9,8 @@ import {
   executeHooks,
 } from '@librechat/agents';
 import type { GraphEdge } from '@librechat/agents';
+import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED, SCHEDULE_WORDING } from './run';
 import { executionFixture, readTool } from '~/agents/authority/execution.helper';
-import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
 import { createRunGrantExecution } from '~/agents/authority/execution';
 
 async function setup(edges: GraphEdge[]) {
@@ -337,5 +337,165 @@ describe('a tool the owner left out of the grant', () => {
         new AbortController().signal,
       ),
     ).toEqual({});
+  });
+});
+
+describe('a grant that limits MCP tools only', () => {
+  const mcp = (name: string) => ({
+    name: `${name}_mcp_warehouse`,
+    toolType: 'mcp',
+    serverName: 'warehouse',
+  });
+  const agent = {
+    id: 'root',
+    toolDefinitions: [mcp('query'), mcp('export')],
+    backgroundToolNames: ['web_search', 'query_mcp_warehouse'],
+  };
+  const input = (toolName: string, background = false) => ({
+    hook_event_name: 'PreToolUse' as const,
+    runId: 'run',
+    executingAgentId: 'root',
+    toolName,
+    toolInput: background ? { run_in_background: true } : {},
+    toolUseId: 'call',
+  });
+  const signal = new AbortController().signal;
+  const catalog = async () => ({
+    tools: [readTool, { ...readTool, name: 'export' }],
+    complete: true,
+  });
+  /** The agents select `query` and `export`; the owner allowed `query`. */
+  async function limited(choice: { detaches?: boolean } = {}) {
+    const fixture = await executionFixture('invoke', readTool, undefined, {
+      offered: ['export'],
+      coversTools: false,
+      ...choice,
+    });
+    const record = jest.fn(async () => true);
+    const policy = createScheduledMCPRunPolicy(fixture.execution, [agent], [], record);
+    const reads = () => jest.mocked(fixture.storage.readRunGrant).mock.calls.length;
+    return { fixture, policy, record, reads };
+  }
+
+  it('leaves every other tool alone, reading nothing and recording nothing', async () => {
+    const { fixture, policy, record, reads } = await limited();
+    expect(fixture.execution).toMatchObject({ enrolled: true, coversTools: false });
+    const before = reads();
+    // None of these is the grant's to allow: a covering grant that lists none refuses them all.
+    for (const name of ['web_search', 'execute_code', 'write_action_api', 'unknown']) {
+      expect(await policy.hook(input(name), signal)).toEqual({});
+      expect(await policy.receipt(input(name), signal)).toEqual({});
+    }
+    // An agent this policy was never told about is none of its business either.
+    expect(
+      await policy.hook({ ...input('web_search'), executingAgentId: 'stranger' }, signal),
+    ).toEqual({});
+    expect(reads()).toBe(before);
+    expect(record).not.toHaveBeenCalled();
+    const covering = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
+    const whole = createScheduledMCPRunPolicy(covering.execution, [agent]);
+    expect(await whole.hook(input('web_search'), signal)).toMatchObject({ decision: 'deny' });
+  });
+
+  it('says nothing about an MCP tool, which the check at the call still decides', async () => {
+    const { fixture, policy, record } = await limited();
+    const call = (selection: string) =>
+      fixture.invocation('root', selection).authorize({
+        user: fixture.user,
+        serverName: 'warehouse',
+        serverConfig: fixture.config,
+        toolName: selection,
+        loadTools: catalog,
+      });
+    // Granted: the hook lets it through and the call is authorized.
+    expect(await policy.hook(input('query_mcp_warehouse'), signal)).toEqual({});
+    await expect(call('query')).resolves.toBeUndefined();
+    // Left out by the owner: no early refusal in a schedule's words, and nothing recorded
+    // here. The call is refused where it is made, with the reason it always had.
+    expect(await policy.hook(input('export_mcp_warehouse'), signal)).toEqual({});
+    await policy.receipt(input('export_mcp_warehouse'), signal);
+    expect(record).not.toHaveBeenCalled();
+    await expect(call('export')).rejects.toMatchObject({
+      name: 'RunGrantPolicyError',
+      failure: expect.objectContaining({ reason: 'tool_policy_denied' }),
+    });
+  });
+
+  it('holds no tool back while there is no grant, whether or not one is required', async () => {
+    const f = await executionFixture();
+    f.snapshot.enrollment = null;
+    for (const required of [true, false]) {
+      const execution = (await createRunGrantExecution({
+        storage: f.storage,
+        loadAuthorization: f.loadAuthorization,
+        requiresGrant: async () => required,
+      }).resolve(f.identity, 'invoke'))!;
+      expect(execution).toMatchObject({ enrolled: false, coversTools: false });
+      const policy = createScheduledMCPRunPolicy(execution, [agent]);
+      const before = jest.mocked(f.storage.readRunGrant).mock.calls.length;
+      for (const name of ['web_search', 'query_mcp_warehouse', Constants.SUBAGENT])
+        for (const background of [false, true])
+          expect(await policy.hook(input(name, background), signal)).toEqual({});
+      // Not even the enrollment is read again: the MCP call asks for itself.
+      expect(jest.mocked(f.storage.readRunGrant).mock.calls.length).toBe(before);
+    }
+  });
+
+  it('still keeps work in the foreground under a grant its completion turn could not find', async () => {
+    const found = await limited();
+    for (const name of ['web_search', 'query_mcp_warehouse', Constants.SUBAGENT])
+      expect(await found.policy.hook(input(name, true), signal)).toEqual({});
+    const bound = await limited({ detaches: false });
+    for (const name of ['web_search', 'query_mcp_warehouse', Constants.SUBAGENT]) {
+      expect(await bound.policy.hook(input(name, true), signal)).toMatchObject({
+        decision: 'deny',
+      });
+      expect(await bound.policy.hook(input(name), signal)).toEqual({});
+    }
+    // A tool the agent cannot send to the background is not held either way.
+    expect(await bound.policy.hook(input('execute_code', true), signal)).toEqual({});
+  });
+});
+
+it('speaks to the model and the client in the words it is given, a schedule’s by default', async () => {
+  const tool = (name: string) => ({
+    name: `${name}_mcp_warehouse`,
+    toolType: 'mcp',
+    serverName: 'warehouse',
+  });
+  const fixture = await executionFixture('invoke', readTool, undefined, {
+    offered: ['export'],
+    ask: ['query'],
+  });
+  const agents = [{ id: 'root', toolDefinitions: [tool('query'), tool('export')] }];
+  const input = (toolName: string) =>
+    ({ toolName, toolInput: {}, executingAgentId: 'root' }) as Parameters<
+      ReturnType<typeof createScheduledMCPRunPolicy>['hook']
+    >[0];
+  const signal = new AbortController().signal;
+  const schedule = createScheduledMCPRunPolicy(fixture.execution, agents);
+  expect(await schedule.hook(input('export_mcp_warehouse'), signal)).toEqual({
+    decision: 'deny',
+    reason: SCHEDULE_WORDING.leftOut,
+  });
+  expect(await schedule.hook(input('query_mcp_warehouse'), signal)).toEqual({
+    decision: 'ask',
+    reason: SCHEDULE_WORDING.ask,
+  });
+  expect(SCHEDULE_WORDING).toEqual({
+    leftOut: SCHEDULE_TOOL_NOT_ALLOWED,
+    ask: 'schedule_owner_approval',
+  });
+  const other = createScheduledMCPRunPolicy(fixture.execution, agents, [], undefined, {
+    leftOut: 'Not allowed here.',
+    ask: 'owner_approval',
+  });
+  expect(await other.hook(input('export_mcp_warehouse'), signal)).toEqual({
+    decision: 'deny',
+    reason: 'Not allowed here.',
+  });
+  expect(await other.hook(input('query_mcp_warehouse'), signal)).toEqual({
+    decision: 'ask',
+    reason: 'owner_approval',
   });
 });

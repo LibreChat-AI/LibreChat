@@ -6,6 +6,7 @@ import {
   SCHEDULE_APPROVAL_REASON,
   Constants as ProviderConstants,
 } from 'librechat-data-provider';
+import type { RunGrantIdentity } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
 import type { RunGrantExecution } from '~/agents/authority/execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
@@ -48,15 +49,35 @@ export interface ScheduledMCPPolicyAgent {
 export const SCHEDULE_TOOL_NOT_ALLOWED =
   'The owner of this schedule has not allowed this tool. Continue without it.';
 
+/** The two things a run says in its subject's words. */
+export interface PolicyWording {
+  /** What the model is told when it calls a tool the owner left out of the grant. */
+  leftOut: string;
+  /** The reason a run gives when it stops to ask its owner, which the client has copy for. */
+  ask: string;
+}
+
+/** A schedule's wording. Both strings are read outside this code: by the model and the client. */
+export const SCHEDULE_WORDING: PolicyWording = {
+  leftOut: SCHEDULE_TOOL_NOT_ALLOWED,
+  ask: SCHEDULE_APPROVAL_REASON,
+};
+
 /**
  * An enrolled run uses what its owner allowed: the MCP tools and the other tools the grant
  * lists, the SDK's own controls, and nothing else.
+ *
+ * That is the policy of a grant that covers the run's tools (`coversTools`). A grant that
+ * limits MCP tools only leaves the agents' other tools alone, and each MCP call is checked
+ * against it where the call is made. Under such a grant this policy decides one thing:
+ * whether work may go to the background.
  */
 export function createScheduledMCPRunPolicy(
-  execution: RunGrantExecution,
+  execution: RunGrantExecution<RunGrantIdentity>,
   agents: readonly ScheduledMCPPolicyAgent[],
   edges: readonly HandoffEdge[] = [],
   recordDenial?: (error: RunGrantPolicyError) => Promise<boolean>,
+  wording: PolicyWording = SCHEDULE_WORDING,
 ): {
   hook: HookCallback<'PreToolUse'>;
   receipt: HookCallback<'PreToolUse'>;
@@ -173,19 +194,28 @@ export function createScheduledMCPRunPolicy(
       execution.grantsTool(agentId, Tools.execute_code)) ||
     (MEMORY_TOOL_NAMES.has(name) && execution.grantsTool(agentId, Tools.memory)) ||
     (SKILL_TOOL_NAMES.has(name) && execution.grantsTool(agentId, AgentCapabilities.skills));
+  // A run held without a grant starts nothing in the background: what it started would
+  // finish in a turn of its own, after this hook. Under a grant whose subject that turn can
+  // find again (`detaches`), the turn resolves the grant itself, so background work is
+  // allowed like any other use of the tool. Under any other grant it stays refused.
+  const detached = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean =>
+    !(execution.enrolled && execution.detaches) &&
+    input.toolInput.run_in_background === true &&
+    (input.toolName === Constants.SUBAGENT ||
+      (input.executingAgentId != null &&
+        backgroundTools.get(input.executingAgentId)?.has(input.toolName) === true));
+  /**
+   * Whether the call is this policy's to decide. Every call is, under a grant that covers the
+   * run's tools. Under one that limits MCP tools only, a tool that is not an MCP tool is none
+   * of the grant's business and an MCP tool is checked where it is called, so nothing is read
+   * and nothing is said here, except for work a grant its completion turn could not find
+   * again would send to the background.
+   */
+  const decides = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean =>
+    execution.coversTools || (execution.enrolled && detached(input));
   const denied = (input: Parameters<HookCallback<'PreToolUse'>>[0]): boolean => {
     const agentId = input.executingAgentId;
-    // A run held without a grant starts nothing in the background: what it started would
-    // finish in a turn of its own, after this hook. Under a grant whose subject that turn can
-    // find again (`detaches`), the turn resolves the grant itself, so background work is
-    // allowed like any other use of the tool. Under any other grant it stays refused.
-    if (
-      !(execution.enrolled && execution.detaches) &&
-      input.toolInput.run_in_background === true &&
-      (input.toolName === Constants.SUBAGENT ||
-        (agentId != null && backgroundTools.get(agentId)?.has(input.toolName)))
-    )
-      return true;
+    if (detached(input)) return true;
     return !(
       // An ordinary run is the schedule's graph, root included. A completion turn is addressed
       // to the agent that started the work, which the root may only have handed off to.
@@ -239,6 +269,7 @@ export function createScheduledMCPRunPolicy(
   return {
     registerAgent,
     hook: async (input) => {
+      if (!decides(input)) return {};
       const error = await failure(input);
       if (error) return { decision: 'deny', reason: error.message };
       if (input.executingAgentId == null) return {};
@@ -246,14 +277,15 @@ export function createScheduledMCPRunPolicy(
       // not a failure of the schedule, so nothing is recorded against the run. Should this hook
       // be skipped, the call is still refused where it is made, and that refusal is recorded.
       if (leftOut.get(input.executingAgentId)?.has(input.toolName) === true)
-        return { decision: 'deny', reason: SCHEDULE_TOOL_NOT_ALLOWED };
+        return { decision: 'deny', reason: wording.leftOut };
       // Pauses the run where it can pause. The call itself is checked again when it is made.
       return execution.asksAbout(input.executingAgentId, input.toolName)
-        ? { decision: 'ask', reason: SCHEDULE_APPROVAL_REASON }
+        ? { decision: 'ask', reason: wording.ask }
         : {};
     },
     // Separate hook: a failed or timed-out receipt must never erase the immediate deny.
     receipt: async (input) => {
+      if (!decides(input)) return {};
       const error = await failure(input);
       if (error) await recordDenial?.(error);
       return {};
