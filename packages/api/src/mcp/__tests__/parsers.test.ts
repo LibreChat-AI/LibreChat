@@ -39,7 +39,28 @@ describe('formatToolContent', () => {
       expect(artifacts).toBeUndefined();
     });
 
-    it('should preserve the image payload in the string for unrecognized providers', () => {
+    it('should keep a large screenshot out of the text while still attaching it', () => {
+      const screenshotData = 'A'.repeat(800_000);
+      const result: t.MCPToolCallResponse = {
+        content: [
+          { type: 'text', text: '### Result\n- Screenshot of viewport' },
+          { type: 'image', data: screenshotData, mimeType: 'image/png' },
+        ],
+      };
+
+      const [content, artifacts] = formatToolContent(result, 'my gateway' as t.Provider);
+
+      expect(content).toBe(
+        '### Result\n- Screenshot of viewport\n\n' +
+          'Image (image/png): 600000 bytes of image data (omitted from text)',
+      );
+      expect(artifacts?.content).toEqual([]);
+      expect(artifacts?.imageAttachments).toEqual([
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshotData}` } },
+      ]);
+    });
+
+    it('should describe the image instead of embedding its data for unrecognized providers', () => {
       const result: t.MCPToolCallResponse = {
         content: [{ type: 'image', data: 'iVBORw0KGgoAAAA...', mimeType: 'image/png' }],
       };
@@ -52,8 +73,10 @@ describe('formatToolContent', () => {
           { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAA...' } },
         ],
       });
-      expect(content).toContain('iVBORw0KGgoAAAA...');
-      expect(content).toContain('image/png');
+      expect(content).not.toContain('iVBORw0KGgoAAAA');
+      expect(content).toMatch(
+        /^Image \(image\/png\): \d+ bytes of image data \(omitted from text\)$/,
+      );
     });
   });
 
@@ -79,7 +102,9 @@ describe('formatToolContent', () => {
         };
         const [content, artifacts] = formatToolContent(result, provider as t.Provider);
         expect(content).toContain('Partial result');
-        expect(content).toContain('data:IMAGE/PNG;base64,aW1hZ2U=');
+        expect(content).not.toContain('aW1hZ2U=');
+        expect(content).toContain('Image (IMAGE/PNG): 5 bytes of image data (omitted from text)');
+        expect(content).toContain('Image (image/png): https://example.com/chart.png');
         expect(artifacts?.content).toEqual([]);
         expect(artifacts?.imageAttachments).toEqual(
           [
@@ -1385,10 +1410,11 @@ describe('formatToolContent', () => {
       expect(artifacts?.ui_resources).toBeUndefined();
       expect(artifacts?.content).toEqual([]);
       expect(artifacts?.imageAttachments).toHaveLength(1);
-      expect(content).toContain('base64data');
+      expect(content).not.toContain('base64data');
+      expect(content).toContain('Image (image/png): 7 bytes of image data (omitted from text)');
     });
 
-    it('keeps bounded standalone images in model output beside a legacy UI attachment', () => {
+    it('describes bounded standalone images in model output beside a legacy UI attachment', () => {
       const result: t.MCPToolCallResponse = {
         content: [
           { type: 'image', data: 'base64data', mimeType: 'image/png' },
@@ -1402,7 +1428,8 @@ describe('formatToolContent', () => {
       const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider);
 
       const resource = artifacts?.ui_resources?.data?.[0];
-      expect(content).toContain('base64data');
+      expect(content).not.toContain('base64data');
+      expect(content).toContain('Image (image/png): 7 bytes of image data (omitted from text)');
       expect(content).toContain(`UI Resource Marker: \\ui{${resource?.resourceId}}`);
       expect(content.split(`UI Resource Marker: \\ui{${resource?.resourceId}}`)).toHaveLength(2);
       expect(artifacts?.content).toEqual([]);
@@ -1410,7 +1437,7 @@ describe('formatToolContent', () => {
       expect(resource).toMatchObject({ uri: 'ui://legacy', mimeType: 'text/html' });
     });
 
-    it('keeps bounded embedded image blobs in model output beside a legacy UI attachment', () => {
+    it('describes bounded embedded image blobs in model output beside a legacy UI attachment', () => {
       const result: t.MCPToolCallResponse = {
         content: [
           {
@@ -1426,7 +1453,8 @@ describe('formatToolContent', () => {
 
       const [content, artifacts] = formatToolContent(result, 'vertexai' as t.Provider);
 
-      expect(content).toContain('data:image/png;base64,aW1hZ2U=');
+      expect(content).not.toContain('aW1hZ2U=');
+      expect(content).toContain('Image (image/png): 5 bytes of image data (omitted from text)');
       expect(artifacts?.content).toEqual([]);
       expect(artifacts?.imageAttachments).toHaveLength(1);
       expect(artifacts?.ui_resources?.data).toHaveLength(1);
