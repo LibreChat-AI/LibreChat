@@ -37,3 +37,4 @@ export * from './share';
 export * from './limiter';
 export * from './tempuser';
 export * from './resetRequest';
+export * from './extractor';
