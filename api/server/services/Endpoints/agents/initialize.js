@@ -228,6 +228,7 @@ const initializeClientWithProvider = async ({
   res,
   signal,
   endpointOption,
+  executionContext: runContext,
   jobCreatedAt,
   checkpointNamespace,
   foregroundRunId,
@@ -471,6 +472,7 @@ const initializeClientWithProvider = async ({
   const invokedSkillIdentities = new Map();
   const toolExecuteOptions = {
     scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(req, res)),
+    runContext,
     // Keep foreground cancellation owned by this request even when the agents
     // SDK rebuilds a graph for approval resume. The SDK event's breaker signal
     // is composed with this authoritative job signal by the handler.
@@ -1871,6 +1873,7 @@ const initializeClientWithProvider = async ({
             completionWakeups: completionWakeupsEnabled,
             requestScopedConnections: getMCPRequestContext(req, res),
             scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+            runContext,
           },
         )
       : undefined;

@@ -1029,6 +1029,7 @@ export function createBackgroundToolCompletionWakeupHandler(
         source: { id: BACKGROUND_TOOL_COMPLETION_SOURCE, type: 'internal' },
         payload: {
           scheduleMCPIdentity: registration.scheduleMCPIdentity ?? null,
+          ...(registration.trigger && { trigger: registration.trigger }),
           taskId: registration.taskId,
           toolCallId: registration.toolCallId,
           toolName: registration.toolName,

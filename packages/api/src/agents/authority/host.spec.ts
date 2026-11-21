@@ -5,10 +5,10 @@ import {
   createRemoteExecutionContext,
   createTriggerExecutionContext,
 } from './context';
+import { parseRunTrigger, captureTrigger } from './trigger';
 import { createMCPRequestContext } from '~/mcp/request';
 import { initializeWithAuthority } from './host';
 import { RunGrantPolicyError } from './policy';
-import { parseRunTrigger } from './trigger';
 
 const user = { id: 'owner', tenantId: 'tenant' };
 
@@ -131,6 +131,75 @@ it("puts a key's delivery under the key host again when its saved job resumes it
   expect(h.key.prepare).toHaveBeenCalledWith({ req, executionContext, signal: undefined });
   expect(getSourceKey(executionContext)).toBe('key-1');
   expect(executionContext?.source).toMatchObject({ resumed: true });
+});
+
+/** The turn the trigger host starts to report a task, with what the task kept of its run. */
+function completion(began: ReturnType<typeof createTriggerExecutionContext>) {
+  const trigger = captureTrigger(began);
+  return {
+    user,
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'root-agent',
+      conversationId: 'conversation',
+      clientRequestId: 'trigger_wake',
+      agentEvent: {
+        id: 'task-1',
+        type: 'background_tool.completed',
+        occurredAt: 2_000,
+        source: { type: 'internal', id: 'background-tool-completion' },
+      },
+      agentCompletion: {
+        version: 1,
+        sourceId: 'background-tool-completion',
+        ...(trigger && { trigger }),
+      },
+    },
+  };
+}
+
+it("puts the turn that reports a key run's task under the key host, after the schedule host", async () => {
+  const h = hosts();
+  const req = completion(createTriggerExecutionContext(delivery()));
+  const executionContext = createTriggerExecutionContext(req);
+  await initializeWithAuthority(
+    { req, context: createMCPRequestContext(), executionContext },
+    h.get,
+    h.initialize,
+  );
+  // The schedule host is asked about every completion turn, and finds no schedule on this one.
+  expect(h.order).toEqual(['schedule', 'key', 'initialize']);
+  expect(h.key.prepare).toHaveBeenCalledWith({ req, executionContext, signal: undefined });
+  expect(getSourceKey(executionContext)).toBe('key-1');
+});
+
+it("leaves the turn that reports a schedule's task to the schedule host", async () => {
+  const h = hosts();
+  const req = completion(createTriggerExecutionContext(scheduleFire()));
+  const executionContext = createTriggerExecutionContext(req);
+  expect(executionContext?.source).toMatchObject({ subject: { kind: 'schedule', id: 'schedule' } });
+  await initializeWithAuthority(
+    { req, context: createMCPRequestContext(), executionContext },
+    h.get,
+    h.initialize,
+  );
+  expect(h.order).toEqual(['schedule', 'initialize']);
+  expect(h.key.prepare).not.toHaveBeenCalled();
+});
+
+it("leaves the turn that reports an interactive chat's task as it was", async () => {
+  const h = hosts();
+  const req = completion(undefined);
+  const executionContext = createTriggerExecutionContext(req);
+  expect(executionContext?.source).not.toHaveProperty('subject');
+  expect(executionContext?.source).not.toHaveProperty('origin');
+  await initializeWithAuthority(
+    { req, context: createMCPRequestContext(), executionContext },
+    h.get,
+    h.initialize,
+  );
+  expect(h.order).toEqual(['schedule', 'initialize']);
+  expect(h.key.prepare).not.toHaveBeenCalled();
 });
 
 it('initializes a delivery no subject started as it is', async () => {

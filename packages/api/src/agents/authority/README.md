@@ -17,7 +17,7 @@ grant is made of, and the request and view the routes exchange, are in
 | Module             | What it holds                                                                                                          |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
 | `context.ts`       | The source of a run (`ExecutionContext`): a remote API request, or a trigger delivery with its subject.                |
-| `trigger.ts`       | `Subject`, `Delivery` and the trigger a job saves (`RunTrigger`, `parseRunTrigger`). Imports nothing.                  |
+| `trigger.ts`       | `Subject`, `Delivery`, `Origin` and the trigger a job saves and a task keeps (`RunTrigger`). Imports nothing.          |
 | `contract.ts`      | The questions a run asks of a grant and the answers (`RunGrantAuthority`).                                             |
 | `service.ts`       | `createRunGrantService`: read, confirm, revoke and admit a grant, and authorize each call against it.                  |
 | `handlers.ts`      | `createRunGrantHandlers`: the `GET`, `POST` and `DELETE` handlers a subject mounts on its own route.                   |
@@ -39,25 +39,76 @@ Every request the trigger engine makes to the chat route gets a run context, bui
 `createTriggerExecutionContext` from the request the trigger host signed. Its source is
 
 ```ts
-{ type: 'trigger', subject?: { kind, id }, delivery?: { key?, event: { id, type, occurredAt } }, manual, resumed }
+{ type: 'trigger', subject?: { kind, id }, delivery?: Delivery, origin?: { agentId?, delivery?: Delivery }, manual, resumed }
+// Delivery: { key?, event: { id, type, occurredAt } }
 ```
 
-| Delivery                                       | Subject                    | Event identity read from          |
-| ---------------------------------------------- | -------------------------- | --------------------------------- |
-| A schedule's occurrence                        | `{ kind: 'schedule', id }` | `agentTrigger.event`              |
-| An event an API key posted, starting a turn    | `{ kind: 'key', id }`      | `agentTrigger.event`              |
-| The same, continuing the conversation it bound | `{ kind: 'key', id }`      | `agentEventDelivery.event`        |
-| A task's wake-up, a queued turn, a completion  | none                       | `agentEvent`, which the host adds |
+| Delivery                                             | Subject                       | Event identity read from                                              |
+| ---------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------- |
+| A schedule's occurrence                              | `{ kind: 'schedule', id }`    | `agentTrigger.event`                                                  |
+| An event an API key posted, starting a turn          | `{ kind: 'key', id }`         | `agentTrigger.event`                                                  |
+| The same, continuing the conversation it bound       | `{ kind: 'key', id }`         | `agentEventDelivery.event`                                            |
+| The request that reports work sent to the background | that of the run that began it | `agentEvent`, or `agentEventDelivery.event` for an actor's resumption |
+| A queued turn                                        | none                          | `agentEvent`, which the host adds                                     |
 
 The delivery's key is the request's `clientRequestId`, or `agentEventDelivery.deliveryKey` on a
 bound continuation. A reader that wants the schedule calls `getScheduleSource`, one that wants
 the key calls `getSourceKey`; neither needs to know the subject to read `source.delivery`.
 
 The chat controller hands the context's source to the generation job it creates, and the job
-store keeps its subject and delivery in one metadata field, `trigger` (`parseRunTrigger`, `trigger.ts`). When
-the run pauses for an approval and its owner resumes it, `restoreExecutionContext` rebuilds the
-context from the saved job, `resumed: true`, so the resumed run acts for the same subject. The
-schedule-named job fields are still written and still read by everything that read them.
+store keeps its subject, delivery and origin in one metadata field, `trigger` (`parseRunTrigger`,
+`trigger.ts`). When the run pauses for an approval and its owner resumes it,
+`restoreExecutionContext` rebuilds the context from the saved job, `resumed: true`, so the
+resumed run acts for the same subject. The schedule-named job fields are still written and
+still read by everything that read them.
+
+### Work a run sends to the background
+
+A run can send a tool call to the background or start a detached subagent. The work runs in
+the process of the request that started it, with that request's MCP context: its tools were
+bound to the grant when they were built, and each call is still checked there. What the work
+finishes with is reported in a request of its own, which the trigger host makes:
+
+- the turn for a task's wake-up (`subagent-completion`, `background-tool-completion`);
+- the delivery that resumes an event actor suspended on a detached action
+  (`librechat-event-actor`).
+
+That request has its own delivery and acts for the subject of the run that began the work:
+
+```
+run (context: subject, delivery)
+  handlers.ts / subagentThreads.ts      captureTrigger(context) -> { subject, origin }
+    wake-up envelope                    event.payload.trigger
+  detachedAction.ts                     captureTrigger(the suspended run's saved job)
+    resumption envelope                 event.payload.trigger
+trigger host, when the work is done
+  keptTrigger(payload)                  only for those three sources, which the server wrote
+    request body                        agentCompletion.trigger / agentEventDelivery.trigger
+chat route
+  createTriggerExecutionContext         subject, origin, agentId = origin.agentId
+  initializeWithAuthority               a key subject -> the key host attaches its grant
+```
+
+- `origin` is the run a delivery from outside started: its root agent and its delivery. A turn
+  that reports work, and itself sends more to the background, passes its origin on unchanged,
+  so every turn in the chain names the same one. `source.delivery` stays the turn's own.
+- The turn's `agentId` is the origin's root agent, not the agent the turn is addressed to
+  (which the root may have handed off to): a key's grant is held per root agent.
+- The trigger is taken from the context the server built for the run, or from the job the
+  server saved for it, and stored by the server. A tool call's arguments, a task's request and
+  the runnable config cannot set it: the capture sites read only the host's context and
+  overwrite whatever a request carries. On the way back the trigger host reads it only from
+  an envelope the server made for itself, never from the payload of an event posted from
+  outside, and the route reads it only from a request the host signed. One that cannot be
+  parsed ends the delivery (`RUN_TRIGGER_INVALID`) or refuses the turn. A subject it names is
+  not trusted by itself either: the key host looks the key and its grant up for the
+  authenticated owner, so a key that is gone or is someone else's is refused.
+- A run no trigger started keeps nothing: an interactive chat's task has no `trigger`, and its
+  turn has a delivery and no subject, as before.
+- A schedule's turn names the schedule as its subject and is still not an occurrence:
+  `getScheduleSource` is undefined for a context with an origin. The schedule's run host finds
+  the schedule for that turn as it always has, by the `scheduleMCPIdentity` the task captured
+  beside the trigger.
 
 Three contexts carry less, by design:
 
@@ -65,8 +116,9 @@ Three contexts carry less, by design:
   its subject, with no delivery, as it always did. A job with neither restores no context.
 - A trigger request from a replica that does not send `agentEvent` yet names no event on a
   continuation bound to no source, and gets no context, as before.
-- A delivery the server made for itself has no subject. The subject of the run its task
-  belongs to is not carried over to it yet.
+- Work started by a replica from before work kept its trigger has none, and the request that
+  reports it has a delivery and no subject. The same holds while the wake-up is dispatched or
+  the request is served by such a replica, which ignores the field.
 
 ## Grants held by an API key
 
@@ -104,16 +156,20 @@ agent before any tool is loaded. A key with no grant for the agent may not use M
   (`packages/api/src/agents/authority/host.ts`). This covers a delivery that starts a turn, one
   that continues the conversation bound to its source, and either of them resumed after it
   paused for an approval: the job saved the key as the run's subject, and the resumed request
-  is put under the key's grant again before its tools are rebuilt.
+  is put under the key's grant again before its tools are rebuilt. It also covers the request
+  that reports work such a run sent to the background (a task's completion turn, or the
+  resumption of an actor suspended on a detached action), and that request resumed after a
+  pause: the work kept the key as its subject, as described above.
 
 `getSourceKey` names the key for both, so the lookup, the integration-key exemption and the
 refusal of an unknown key are one code path.
 
-An event delivery is restricted on the request that carries it and on the request that resumes
-it. Two later requests of the same run are not yet restricted by the key's grant: a request a
-detached subagent makes for the run, and the turn that reports a background task's result.
-These build their context without the trigger's subject. A run paused by a replica from before
-jobs saved their trigger also resumes unrestricted, since its job names no key.
+An event delivery is restricted on every request made for its run: the one that carries it,
+the one that resumes it, and the one that reports a background tool call, a detached subagent
+or a detached action it started. Two cases from a rolling upgrade are not: a run paused by a
+replica from before jobs saved their trigger resumes unrestricted, since its job names no key,
+and work started, dispatched or reported by a replica from before work kept its trigger is
+reported in an unrestricted request. Neither outlasts the upgrade.
 
 What differs from a schedule's grant:
 

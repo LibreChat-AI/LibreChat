@@ -43,6 +43,7 @@ import {
   getMCPRequestSignal,
 } from '~/mcp/request';
 import { controlFingerprint, SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
+import { createTriggerExecutionContext } from '~/agents/authority/context';
 import { snapshotActivity, snapshotActivitySummary } from './digest';
 import { resolveScheduledMCPBearerConfig } from '~/schedules/bearer';
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
@@ -1422,6 +1423,78 @@ describe('SubagentThreadTaskStore', () => {
     expect(prepared).toHaveBeenLastCalledWith(
       expect.objectContaining({ parentMessageId: 'ordinary-response', scheduleMCPIdentity: null }),
     );
+    store.destroyActivityStream();
+  });
+
+  it('keeps the trigger of the run the host built a context for, never one a request carries', async () => {
+    const userId = 'task-trigger-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const prepared = jest.fn(async (_registration: SubagentTaskWakeupRegistration) => {});
+    const store = new SubagentThreadTaskStore(methods, { onTaskPrepared: prepared });
+    const runContext = createTriggerExecutionContext({
+      user: { id: userId },
+      _isAgentTrigger: true,
+      body: {
+        agent_id: 'root-agent',
+        clientRequestId: 'trigger_abc',
+        agentTrigger: {
+          version: 1,
+          event: {
+            id: 'event-1',
+            type: 'review.submitted',
+            occurredAt: 1_000,
+            source: { type: 'remote_api_key', id: 'key-1' },
+          },
+        },
+      },
+    });
+    const forged = { subject: { kind: 'key', id: 'key-9' } };
+    const triggered = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true, runContext },
+    );
+    const first = triggered.store.start(
+      taskRequest(triggered.scopeId, {
+        parentRunId: 'triggered-response',
+        idempotencyKey: randomUUID(),
+        trigger: forged,
+      } as never),
+    );
+    await waitForSettled(store, triggered.scopeId, first);
+    expect(prepared).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        parentMessageId: 'triggered-response',
+        trigger: {
+          subject: { kind: 'key', id: 'key-1' },
+          origin: {
+            agentId: 'root-agent',
+            delivery: {
+              key: 'trigger_abc',
+              event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+            },
+          },
+        },
+      }),
+    );
+    const ordinary = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
+    const later = ordinary.store.start(
+      taskRequest(ordinary.scopeId, {
+        parentRunId: 'ordinary-response',
+        idempotencyKey: randomUUID(),
+        trigger: forged,
+      } as never),
+    );
+    await waitForSettled(store, ordinary.scopeId, later);
+    expect(prepared).toHaveBeenLastCalledWith(
+      expect.objectContaining({ parentMessageId: 'ordinary-response' }),
+    );
+    expect(prepared.mock.lastCall?.[0]).not.toHaveProperty('trigger');
     store.destroyActivityStream();
   });
 

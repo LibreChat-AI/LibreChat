@@ -1507,6 +1507,67 @@ describe('initializeClient — subagent loading', () => {
     });
   });
 
+  it('hands the context of the run to the two places its background work starts', async () => {
+    const { createTriggerExecutionContext } = require('@librechat/api');
+    const subagentThreadTaskStore = require('./subagentThreadStore');
+    const start = jest
+      .spyOn(subagentThreadTaskStore, 'start')
+      .mockReturnValue({ accepted: false, reason: 'capacity' });
+    const initialize = async (executionContext) => {
+      mockInitializeAgent.mockResolvedValue(
+        makePrimaryConfig({ subagents: { enabled: true, allowSelf: true, agent_ids: [] } }),
+      );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('run_in_background');
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+        executionContext,
+      });
+      agentClientArgs.subagentTasks.store.start({ scopeId: agentClientArgs.subagentTasks.scopeId });
+      return start.mock.lastCall[0];
+    };
+    const executionContext = createTriggerExecutionContext({
+      user: { id: testUser._id.toString() },
+      _isAgentTrigger: true,
+      body: {
+        agent_id: PRIMARY_ID,
+        clientRequestId: 'trigger_abc',
+        agentTrigger: {
+          version: 1,
+          event: {
+            id: 'event-1',
+            type: 'review.submitted',
+            occurredAt: 1000,
+            source: { type: 'remote_api_key', id: 'key-1' },
+          },
+        },
+      },
+    });
+
+    try {
+      expect((await initialize(executionContext)).trigger).toEqual({
+        subject: { kind: 'key', id: 'key-1' },
+        origin: {
+          agentId: PRIMARY_ID,
+          delivery: {
+            key: 'trigger_abc',
+            event: { id: 'event-1', type: 'review.submitted', occurredAt: 1000 },
+          },
+        },
+      });
+      expect(capturedToolExecuteOptions.runContext).toBe(executionContext);
+
+      // An interactive chat has no such context, and its tasks keep nothing.
+      expect((await initialize(undefined)).trigger).toBeUndefined();
+      expect(capturedToolExecuteOptions.runContext).toBeUndefined();
+    } finally {
+      start.mockRestore();
+    }
+  });
+
   it('uses one normalized MCP body for discovery, deferred execution, and AgentClient', async () => {
     const requestBody = Object.freeze({
       messageId: 'response-message',

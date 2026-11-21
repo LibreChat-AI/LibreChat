@@ -249,8 +249,9 @@ subagent tasks, as the same agent does in chat.
   controls. No owner selects it, so it is not something a grant lists, and it is not refused.
 - A schedule that is gone, being deleted, or now runs another agent has no completion turn.
 - A schedule held without a grant still starts nothing in the background.
-- A grant held by an API key keeps its runs in the foreground (`detaches` is false): a
-  completion turn has no way to find that grant again.
+- A run under an API key's grant sends work to the background too. Its completion turn finds
+  the key again by the trigger the work kept (`packages/api/src/agents/authority/README.md`),
+  and the key's grant, which limits MCP tools only, is attached to that turn as to the first.
 
 ### A tool the owner approves call by call
 

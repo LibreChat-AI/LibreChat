@@ -1375,3 +1375,31 @@ it.each([
     expect(lookup).not.toHaveBeenCalled();
   },
 );
+
+describe('the trigger a background task kept of the run that started it', () => {
+  const trigger = {
+    subject: { kind: 'key' as const, id: 'key-1' },
+    origin: {
+      agentId: 'agent_root',
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+      },
+    },
+  };
+  it('is stored in the wake-up the task registers, and left out where the task kept none', async () => {
+    expect((await envelope({ trigger })).event.payload).toEqual({
+      scheduleMCPIdentity: null,
+      trigger,
+      taskId: 'task-1',
+      toolCallId: 'call-1',
+      toolName: 'slow_tool',
+    });
+    expect((await envelope()).event.payload).toEqual({
+      scheduleMCPIdentity: null,
+      taskId: 'task-1',
+      toolCallId: 'call-1',
+      toolName: 'slow_tool',
+    });
+  });
+});

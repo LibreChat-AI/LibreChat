@@ -1,4 +1,5 @@
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { RunTrigger } from '~/agents/authority/trigger';
 /** Deadline after which an invocation owner requests cancellation. */
 export const BACKGROUND_TASK_TIMEOUT_MS: number = 30 * 60 * 1000;
 /** Gives a cooperative tool a short window to settle after cancellation before
@@ -19,6 +20,12 @@ export const BACKGROUND_SHUTDOWN_TEARDOWN_RESERVE_MS: number = 2_000;
 export interface BackgroundToolWakeupRegistration {
   /** Origin captured by the generation's host, null for an ordinary turn. */
   scheduleMCPIdentity?: ScheduledMCPIdentity | null;
+  /**
+   * What the task keeps of the run that started it: its subject and where it began. From
+   * the context the host built for that run, never from the tool call. Absent for a task
+   * an interactive chat started.
+   */
+  trigger?: RunTrigger;
   taskId: string;
   toolCallId: string;
   toolName: string;

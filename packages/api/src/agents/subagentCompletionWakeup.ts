@@ -855,6 +855,7 @@ export function createSubagentCompletionWakeupHandler(
         source: { id: SUBAGENT_COMPLETION_SOURCE, type: 'internal' },
         payload: {
           scheduleMCPIdentity: registration.scheduleMCPIdentity ?? null,
+          ...(registration.trigger && { trigger: registration.trigger }),
           taskId: registration.taskId,
           threadId: registration.threadId,
           subagentType: registration.subagentType,

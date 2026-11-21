@@ -58,6 +58,7 @@ import type {
   ChildGenerationHost,
 } from './subagentGeneration';
 import type { SubagentTaskControlTransport } from './subagentTaskRouting';
+import type { RunContext, RunTrigger } from '~/agents/authority/trigger';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { HostSubagentTaskConfig } from './subagentDelivery';
@@ -82,6 +83,7 @@ import { describeErrorCauses, describeStackFrames } from './failures/subagent';
 import { ActivityRecorder, activityTreeFromProjection } from './digest';
 import { runWithDetachedSubagentUsage } from './subagentTaskContext';
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
+import { captureTrigger } from '~/agents/authority/trigger';
 import { createConcurrencyLimiter } from '~/utils/promise';
 import { retainMCPRequestContext } from '~/mcp/request';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -214,6 +216,7 @@ interface PreparedThread {
 interface HostSubagentTaskStartRequest extends SubagentTaskStartRequest {
   requestScopedConnections?: RequestScopedMCPConnectionStore;
   scheduleMCPIdentity?: ScheduledMCPIdentity | null;
+  trigger?: RunTrigger;
   completionDelivery?: typeof SUBAGENT_COMPLETION_DELIVERY;
 }
 
@@ -360,6 +363,12 @@ export interface SubagentThreadTaskStoreOptions extends InMemorySubagentTaskStor
 export interface SubagentTaskWakeupRegistration {
   /** Host-captured generation origin, never inferred from conversation history. */
   scheduleMCPIdentity?: ScheduledMCPIdentity | null;
+  /**
+   * What the task keeps of the run that started it: its subject and where it began. From
+   * the context the host built for that run, never from the task's own request. Absent for
+   * a task an interactive chat started.
+   */
+  trigger?: RunTrigger;
   userId: string;
   parentConversationId: string;
   parentMessageId: string;
@@ -4033,8 +4042,10 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     ) {
       return;
     }
+    const { trigger } = request as HostSubagentTaskStartRequest;
     const admitted = await this.onTaskPrepared({
       scheduleMCPIdentity: (request as HostSubagentTaskStartRequest).scheduleMCPIdentity ?? null,
+      ...(trigger && { trigger }),
       userId: scope.userId,
       parentConversationId: scope.parentConversationId,
       parentMessageId: task.parentRunId,
@@ -4335,9 +4346,10 @@ function completionWakeupStore(
   identity?: ScheduledMCPIdentity,
   requestScopedConnections?: RequestScopedMCPConnectionStore,
   completionWakeups = true,
+  trigger?: RunTrigger,
 ): CompletionWakeupStore {
   const captured = identity && Object.freeze(structuredClone(identity));
-  const cacheable = !captured && !requestScopedConnections && completionWakeups;
+  const cacheable = !captured && !trigger && !requestScopedConnections && completionWakeups;
   const existing = cacheable ? completionWakeupStores.get(store) : undefined;
   if (existing != null) {
     return existing;
@@ -4350,6 +4362,8 @@ function completionWakeupStore(
         completionDelivery: completionWakeups ? SUBAGENT_COMPLETION_DELIVERY : undefined,
         requestScopedConnections,
         scheduleMCPIdentity: captured ?? null,
+        // Set here on every start, so nothing a task's request carries can take its place.
+        trigger,
       };
       return store.start(hostRequest);
     },
@@ -4374,6 +4388,8 @@ export function buildSubagentThreadTaskConfig(
     completionWakeups?: boolean;
     scheduleMCPIdentity?: ScheduledMCPIdentity;
     requestScopedConnections?: RequestScopedMCPConnectionStore;
+    /** The context the host built for this run. Its tasks keep the run's trigger from it. */
+    runContext?: RunContext;
   } = {},
 ): HostSubagentTaskConfig {
   const taskStore =
@@ -4383,6 +4399,7 @@ export function buildSubagentThreadTaskConfig(
           options.scheduleMCPIdentity,
           options.requestScopedConnections,
           options.completionWakeups === true,
+          captureTrigger(options.runContext),
         )
       : store;
   return {

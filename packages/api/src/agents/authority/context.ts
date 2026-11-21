@@ -2,7 +2,7 @@ import type { ScheduledTokenContext } from '~/schedules/context';
 import type { AgentRunProtocol } from '../envelope';
 import type { RunTrigger } from './trigger';
 import { readScheduleFireContext } from '~/schedules/trigger';
-import { toDelivery } from './trigger';
+import { toDelivery, readRunTrigger } from './trigger';
 
 /** The user whose authority a run exercises. */
 export interface ExecutionPrincipal {
@@ -80,6 +80,7 @@ function triggered(
       type: 'trigger',
       ...(trigger.subject && { subject: trigger.subject }),
       ...(trigger.delivery && { delivery: trigger.delivery }),
+      ...(trigger.origin && { origin: trigger.origin }),
       manual,
       resumed,
     }),
@@ -97,13 +98,21 @@ function triggered(
  * event it carried, which the host names in the body of every request it makes. The subject
  * is whoever the event's source names. A schedule's occurrence runs for the schedule. An
  * event an API key posted runs for that key, so the key's grant can be put over the run. A
- * delivery the server made for itself, such as a task's wake-up or a queued turn, has none.
+ * delivery the server made for itself, such as a queued turn, has none.
+ *
+ * A turn that reports work sent to the background is the exception: its delivery is the
+ * server's own, and it acts for whoever the run that began the work acted for. The work
+ * kept that run's trigger, and the trigger host hands it back: on the completion marker of
+ * the turn that reports a task, and on the delivery that resumes an actor suspended on a
+ * detached action. The turn takes its subject, its origin and its root agent from there, so
+ * a grant held for the first run is found again for this one.
  *
  * Nothing here is read from a field a caller sets: the public event route stamps the source
- * with the authenticated key, and only the trigger host can make a request that is a
- * trigger. A delivery that names a key as its source without saying which, or without an
- * event to identify it by, is refused, since running it with no context would run it with
- * no grant.
+ * with the authenticated key, the captured trigger is written and read back by the server,
+ * and only the trigger host can make a request that is a trigger. A delivery that names a
+ * key as its source without saying which, or without an event to identify it by, is
+ * refused, as is a turn whose captured trigger cannot be read, since running either with
+ * no context would run it with no grant.
  */
 export function createTriggerExecutionContext(req: TriggerRequest): ExecutionContext | undefined {
   if (req?._isAgentTrigger !== true) return;
@@ -127,9 +136,21 @@ export function createTriggerExecutionContext(req: TriggerRequest): ExecutionCon
   }
   const source = record(event?.source);
   if (source?.type !== 'remote_api_key') {
-    return carried
-      ? triggered(req, body?.agent_id, { delivery: carried }, false, false)
-      : undefined;
+    // Only a delivery the server made for itself reports work an earlier run began: a task's
+    // wake-up on its completion marker, a suspended actor's resumption on its delivery. One
+    // that names no source is read too, so that it is refused below, not run with no context.
+    const made = !fire && (source == null || source.type === 'internal');
+    const began = made ? readRunTrigger(bound ?? body?.agentCompletion) : undefined;
+    if (began && !carried)
+      throw new Error('Agent completion names the run that began its work without an event.');
+    if (!carried) return;
+    return triggered(
+      req,
+      began?.origin?.agentId ?? body?.agent_id,
+      { subject: began?.subject, delivery: carried, origin: began?.origin },
+      false,
+      false,
+    );
   }
   const id = typeof source.id === 'string' ? source.id.trim() : '';
   if (id.length === 0 || !carried) {
@@ -169,11 +190,11 @@ export interface SavedRun {
 
 /**
  * Rebuilds a triggered run's context from its saved job when it resumes, after the resume
- * host has checked job ownership, tenancy, agent and schedule liveness: the same subject and
- * delivery the run started with. A job saved before its trigger was recorded restores from its
- * schedule fields alone, with no delivery. Throws when the job belongs to someone other than the
- * authenticated owner, or names a schedule its saved trigger does not. Undefined for a job no
- * trigger started.
+ * host has checked job ownership, tenancy, agent and schedule liveness: the same subject,
+ * delivery and origin the run started with. A job saved before its trigger was recorded
+ * restores from its schedule fields alone, with no delivery. Throws when the job belongs to
+ * someone other than the authenticated owner, or names a schedule its saved trigger does not.
+ * Undefined for a job no trigger started.
  */
 export function restoreExecutionContext(
   req: AuthenticatedRequest,
@@ -200,8 +221,9 @@ export function restoreExecutionContext(
     {
       user: { id: metadata.userId, ...(metadata.tenantId ? { tenantId: metadata.tenantId } : {}) },
     },
-    complete ? metadata.agent_id : undefined,
-    { subject: who, delivery: saved?.delivery },
+    // A turn that reports earlier work keeps the root agent of the run that began it.
+    complete ? (saved?.origin?.agentId ?? metadata.agent_id) : undefined,
+    { subject: who, delivery: saved?.delivery, origin: saved?.origin },
     metadata.scheduleManual === true,
     true,
   );
@@ -244,10 +266,15 @@ export interface ScheduleSource {
   readonly resumed: boolean;
 }
 
-/** The schedule a run belongs to, or undefined for an unscheduled run. */
+/**
+ * The schedule whose occurrence a run is, or undefined for any other run. A turn that
+ * reports work an occurrence sent to the background acts for the schedule but is not the
+ * occurrence: the schedule's run host finds the schedule for it by the identity the work
+ * captured, and nothing that reads the occurrence here applies to it.
+ */
 export function getScheduleSource(context?: ExecutionContext): ScheduleSource | undefined {
   const source = context?.source;
-  if (source?.type !== 'trigger' || source.subject?.kind !== 'schedule') return;
+  if (source?.type !== 'trigger' || source.subject?.kind !== 'schedule' || source.origin) return;
   return { id: source.subject.id, manual: source.manual, resumed: source.resumed };
 }
 
