@@ -37,6 +37,40 @@ jest.mock('~/hooks/MCP', () => {
   };
 });
 
+/**
+ * The highlighter loads its grammars with an on-demand import, which this environment cannot run
+ * from the chat package's build. The stand-in tokenizes with the same grammars, in the render.
+ */
+type MockToken = {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: { className?: string[] };
+  children?: MockToken[];
+};
+type MockNode = React.ReactNode;
+
+jest.mock('../Parts/useLazyHighlight', () => {
+  const { createElement, useMemo } = jest.requireActual<typeof import('react')>('react');
+  const { lowlight } = jest.requireActual<typeof import('lowlight')>('lowlight');
+  const draw = (tokens: MockToken[]): MockNode[] =>
+    tokens.map((token, index) =>
+      token.type === 'text'
+        ? token.value
+        : createElement(
+            token.tagName ?? 'span',
+            { key: index, className: token.properties?.className?.join(' ') },
+            token.children ? draw(token.children) : undefined,
+          ),
+    );
+  const useHighlighted = (code: string | undefined, lang: string) =>
+    useMemo(
+      () => (code ? draw(lowlight.highlight(lang, code).children as MockToken[]) : null),
+      [code, lang],
+    );
+  return { __esModule: true, default: useHighlighted };
+});
+
 type Verdict = 'running' | 'completed' | 'failed' | 'cancelled';
 
 type Fixture = {

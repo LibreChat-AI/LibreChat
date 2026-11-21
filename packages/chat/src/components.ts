@@ -341,6 +341,14 @@ export { default as CommandTime, useCommandClock } from './components/parts/Comm
 export { default as CodeWindowHeader } from './components/parts/CodeWindowHeader';
 export type { CodeWindowHeaderProps } from './components/parts/CodeWindowHeader';
 export { default as MemoryCall } from './components/parts/MemoryCall';
+export { default as ReadFileCall, langFromPath } from './components/parts/ReadFileCall';
+export { default as FileAuthoringCall } from './components/parts/FileAuthoringCall';
+export {
+  default as useLazyHighlight,
+  HIGHLIGHT_THROTTLE_MS,
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from './components/parts/useLazyHighlight';
 export { default as useToolCallState } from './components/parts/useToolCallState';
 export type { ToolCallState, UseToolCallStateInput } from './components/parts/useToolCallState';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';

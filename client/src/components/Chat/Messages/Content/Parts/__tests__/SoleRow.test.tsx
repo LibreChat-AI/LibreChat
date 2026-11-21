@@ -2,11 +2,10 @@ import React from 'react';
 import { MemoryCall } from '..';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
+import { ReadFileCall, FileAuthoringCall } from '..';
 import { render, screen } from '@testing-library/react';
 import { SoleToolContext } from '@librechat/chat/react';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
-import FileAuthoringCall from '../FileAuthoringCall';
-import ReadFileCall from '../ReadFileCall';
 import SkillCall from '../SkillCall';
 import BashCall from '../BashCall';
 
@@ -51,6 +50,14 @@ const renderSole = (ui: React.ReactElement, sole = true) =>
     </MemoryRouter>,
   );
 
+/**
+ * A card's row. The app's cards draw the stub above; the cards that live in the chat package
+ * import the row themselves, so theirs is the real one.
+ */
+const row = () =>
+  screen.queryByTestId('progress-text') ??
+  document.querySelector<HTMLElement>('.progress-text-wrapper');
+
 describe('a sole call keeps its row when its panel would be empty', () => {
   it('ReadFileCall: an empty file still shows the file name row', () => {
     renderSole(
@@ -62,7 +69,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+    expect(row()).toBeInTheDocument();
   });
 
   it('ReadFileCall: drops the row once there is output to show', () => {
@@ -75,7 +82,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+    expect(row()).not.toBeInTheDocument();
   });
 
   it('ReadFileCall: keeps the row that carries the model-authored intent', () => {
@@ -88,7 +95,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the config');
+    expect(row()).toHaveTextContent('Check the config');
   });
 
   it('FileAuthoringCall: a create that overwrote a file keeps the row naming the update', () => {
@@ -102,7 +109,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+    expect(row()).toBeInTheDocument();
   });
 
   it('FileAuthoringCall: a fresh create drops the row once there is a preview', () => {
@@ -116,7 +123,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+    expect(row()).not.toBeInTheDocument();
   });
 
   it('MemoryCall: output with no parseable key or value keeps its row', () => {
@@ -130,8 +137,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    /** The package's card draws its own row, so this is the real one, not the stub above. */
-    expect(document.querySelector('.progress-text-wrapper')).not.toBeNull();
+    expect(row()).toBeInTheDocument();
   });
 
   it('SkillCall: a named skill keeps its row so the skill name stays visible', () => {
@@ -144,7 +150,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+    expect(row()).toBeInTheDocument();
   });
 
   it('SkillCall: a named skill with empty output keeps its row', () => {
@@ -157,7 +163,7 @@ describe('a sole call keeps its row when its panel would be empty', () => {
         runStepStatus="completed"
       />,
     );
-    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+    expect(row()).toBeInTheDocument();
   });
 });
 
@@ -184,7 +190,7 @@ describe('generated title replaces a completed descriptive row', () => {
         )}
       </GeneratedToolLabelContext.Provider>,
     );
-    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+    expect(row()).not.toBeInTheDocument();
   });
 });
 
@@ -200,7 +206,7 @@ it('keeps an empty named skill row under a generated title', () => {
       />
     </GeneratedToolLabelContext.Provider>,
   );
-  expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+  expect(row()).toBeInTheDocument();
 });
 
 it('uses a generated title for a failed file tool with an error panel', () => {
@@ -215,7 +221,7 @@ it('uses a generated title for a failed file tool with an error panel', () => {
       />
     </GeneratedToolLabelContext.Provider>,
   );
-  expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+  expect(row()).not.toBeInTheDocument();
 });
 
 it('shows a command duration in seconds even when its row is replaced by a title', () => {

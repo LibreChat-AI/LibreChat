@@ -183,16 +183,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/FileAuthoringCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/ReadFileCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/SkillCall.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1

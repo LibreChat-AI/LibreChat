@@ -1,29 +1,22 @@
 import { useMemo } from 'react';
+import { cn, useLocalize } from '@librechat/client';
 import { FilePenLine, FilePlus2 } from 'lucide-react';
-import { parseJsonField, parseJsonFieldOccurrences } from '@librechat/chat';
-import {
-  toolPanelSpacingClassName,
-  useFollowScroll,
-  useToolCallIntent,
-} from '@librechat/chat/react';
-import {
-  DiffView,
-  BareStatus,
-  diffPreviewText,
-  TOOL_ROW_CLASSES,
-  parseUnifiedDiff,
-  buildEditPreviewDiff,
-} from '@librechat/chat/components';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import type { TextEditPreview } from '@librechat/chat/components';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import type { CSSProperties } from 'react';
+import type { TextEditPreview } from './DiffView';
+import DiffView, { diffPreviewText, parseUnifiedDiff, buildEditPreviewDiff } from './DiffView';
+import { parseJsonField, parseJsonFieldOccurrences } from '../../core/parts/parseJsonField';
+import { toolPanelSpacingClassName } from '../../react/parts/disclosure';
+import useFollowScroll from '../../react/parts/useFollowScroll';
+import { useToolCallIntent } from '../../react/parts/intent';
+import CodeWindowHeader from './CodeWindowHeader';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
-import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
 import { langFromPath } from './ReadFileCall';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { TOOL_ROW_CLASSES } from './rows';
+import ProgressText from './ProgressText';
+import BareStatus from './BareStatus';
 
 type FileAuthoringToolName = 'create_file' | 'edit_file';
 
@@ -127,7 +120,7 @@ export default function FileAuthoringCall({
   attachments?: TAttachment[];
   hideAttachments?: boolean;
   onExpand?: () => void;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   const isCreate = toolName === 'create_file';
   /** `create_file` can overwrite an existing file (sandbox `overwrite: true`,
@@ -242,7 +235,16 @@ export default function FileAuthoringCall({
           />
         </div>
       )}
-      <div style={expandStyle}>
+      <div
+        className="tool-call-expand"
+        style={
+          {
+            '--tool-expand-rows': expandStyle.gridTemplateRows,
+            '--tool-expand-opacity': expandStyle.opacity,
+            '--tool-expand-transition': expandStyle.transition,
+          } as CSSProperties
+        }
+      >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {!!preview && (
             <div
