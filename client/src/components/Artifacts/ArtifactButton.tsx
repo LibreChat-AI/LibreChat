@@ -115,7 +115,7 @@ const ArtifactButton = memo(function ArtifactButton({
   const previous = artifact == null ? archiveEntry : null;
   const target = artifact ?? previous;
   const isSelected = target != null && target.id === currentArtifactId;
-  const kind = artifactRowKind({ type });
+  const kind = artifactRowKind({ type, title });
   const format = 'key' in kind.label ? localize(kind.label.key) : kind.label.text;
   const displayTitle = title ?? localize('com_ui_untitled');
   let status = localize('com_ui_artifact_ready');
@@ -135,7 +135,10 @@ const ArtifactButton = memo(function ArtifactButton({
   const action = localize(isSelected ? 'com_ui_artifact_close' : openAction);
 
   return (
-    <div className="border-border-light bg-surface-secondary text-text-primary my-2 flex min-h-16 flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border p-3">
+    <div
+      data-testid="authored-artifact-card"
+      className="border-border-light bg-surface-secondary text-text-primary my-2 flex min-h-16 flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border p-3"
+    >
       <div className="flex min-w-0 flex-1 basis-48 items-center gap-2.5">
         <div
           className="bg-surface-primary text-status-info flex size-8 shrink-0 items-center justify-center rounded-md"
