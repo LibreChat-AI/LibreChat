@@ -21,6 +21,11 @@ const resolvePromptGroup = dataService.resolvePromptGroup as jest.MockedFunction
   typeof dataService.resolvePromptGroup
 >;
 
+jest.mock('~/Providers/TrackingContext', () => ({
+  useProductTracking: () => jest.fn(),
+  useProductTrackingContext: () => () => undefined,
+}));
+
 const mockSubmitPrompt = jest.fn();
 const mockRecordUsage = jest.fn();
 // Mutable so individual tests can exercise an admin vs. a regular user.
