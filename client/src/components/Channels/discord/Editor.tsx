@@ -8,7 +8,7 @@ import type { Fields } from './Credentials';
 import Credentials from './Credentials';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
-import Notice from './Notice';
+import Notice from '../Notice';
 
 /** Adds an application or rotates its credentials; secrets are write-only and never prefilled. */
 export default function Editor({

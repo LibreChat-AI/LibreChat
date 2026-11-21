@@ -52,9 +52,9 @@ import Connect from './discord/Connect';
 import Editor from './discord/Editor';
 import Wizard from './discord/Wizard';
 import Server from './discord/Server';
-import Notice from './discord/Notice';
 import Card from './discord/Card';
 import Loading from './Loading';
+import Notice from './Notice';
 import Dm from './Dm';
 
 const editorAtom = atom<DiscordApplication | 'new' | null>(null);
@@ -834,12 +834,13 @@ function Setup({
             </Alert>
           )}
           {confirm !== null && (apps.isError || guilds.isError) && (
-            <Alert ref={readHint} tabIndex={-1} variant="warning">
-              <p>{localize('com_ui_discord_disconnect_unread')}</p>
-              <Button type="button" variant="outline" onClick={() => retry(cancelButton.current)}>
-                {localize('com_ui_retry')}
-              </Button>
-            </Alert>
+            <Notice
+              ref={readHint}
+              variant="warning"
+              message={localize('com_ui_discord_disconnect_unread')}
+              action={localize('com_ui_retry')}
+              onAction={() => retry(cancelButton.current)}
+            />
           )}
           <AlertDialogFooter>
             <AlertDialogCancel ref={cancelButton} disabled={disconnect.isLoading}>

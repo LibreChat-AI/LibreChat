@@ -6,7 +6,7 @@ import type { RefObject } from 'react';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
 import Callback from '../Callback';
-import Notice from './Notice';
+import Notice from '../Notice';
 
 /** What the administrator copies into the Discord Developer Portal, and the command registration. */
 export default function Settings({

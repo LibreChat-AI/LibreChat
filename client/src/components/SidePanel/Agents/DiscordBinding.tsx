@@ -33,6 +33,7 @@ import {
 import type { DiscordAgentChannel, DiscordBindingTarget } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import { useDebounce, useLocalize } from '~/hooks';
+import Notice from '~/components/Channels/Notice';
 
 const targetAtom = atom({ installationId: '', externalChannelId: '' });
 const uncertainAtom = atom(false);
@@ -291,23 +292,18 @@ function Binding({
       )}
       {guilds.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
       {guilds.isError && (
-        <Alert variant="error">
-          {localize(label(guilds.error))}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => {
-              if (nextPageFailed.current)
-                void guilds.fetchNextPage().then((result) => {
-                  nextPageFailed.current = result.isError;
-                });
-              else void guilds.refetch();
-            }}
-          >
-            {localize('com_ui_retry')}
-          </Button>
-        </Alert>
+        <Notice
+          message={localize(label(guilds.error))}
+          action={localize('com_ui_retry')}
+          disabled={busy}
+          onAction={() => {
+            if (nextPageFailed.current)
+              void guilds.fetchNextPage().then((result) => {
+                nextPageFailed.current = result.isError;
+              });
+            else void guilds.refetch();
+          }}
+        />
       )}
       {noActiveServers && (
         <Alert variant="warning">
@@ -424,12 +420,12 @@ function Binding({
         <p role="status">{localize('com_ui_channels_loading')}</p>
       )}
       {status.isError && (
-        <Alert variant="error">
-          {localize(label(status.error))}
-          <Button type="button" variant="outline" disabled={busy} onClick={() => void check()}>
-            {localize('com_ui_retry')}
-          </Button>
-        </Alert>
+        <Notice
+          message={localize(label(status.error))}
+          action={localize('com_ui_retry')}
+          disabled={busy}
+          onAction={() => void check()}
+        />
       )}
       {mutation.isError && (
         <Alert variant="warning">

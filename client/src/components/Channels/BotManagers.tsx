@@ -23,6 +23,7 @@ import { SearchPicker } from '~/components/Sharing/PeoplePicker/SearchPicker';
 import PrincipalAvatar from '~/components/Sharing/PrincipalAvatar';
 import { useLocalize } from '~/hooks';
 import Loading from './Loading';
+import Notice from './Notice';
 
 function ManagerSearch({
   workspaceId,
@@ -64,20 +65,15 @@ function ManagerSearch({
         minQueryLengthForNoResults={search.isError ? Infinity : 2}
       />
       {search.isError && (
-        <Alert variant="error">
-          <p>{localize('com_ui_slack_bot_managers_search_error')}</p>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={search.isFetching}
-            onClick={() => {
-              void search.refetch();
-              inputRef.current?.focus();
-            }}
-          >
-            {localize('com_ui_retry')}
-          </Button>
-        </Alert>
+        <Notice
+          message={localize('com_ui_slack_bot_managers_search_error')}
+          action={localize('com_ui_retry')}
+          disabled={search.isFetching}
+          onAction={() => {
+            void search.refetch();
+            inputRef.current?.focus();
+          }}
+        />
       )}
     </div>
   );

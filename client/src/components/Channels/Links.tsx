@@ -2,13 +2,14 @@ import { useId, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { MutationKeys, QueryKeys } from 'librechat-data-provider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Spinner, TooltipAnchor, DiscordIcon } from '@librechat/client';
+import { Button, Spinner, TooltipAnchor, DiscordIcon } from '@librechat/client';
 import type { ChannelIdentityClient, ChannelLinkView } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import DeleteChannelDialog from '~/components/SidePanel/Agents/DeleteChannelDialog';
 import { useGetAgentByIdQuery } from '~/data-provider';
 import { linkErrorKeys } from './Link';
 import { useLocalize } from '~/hooks';
+import Notice from './Notice';
 import { cn } from '~/utils';
 
 const states: Record<ChannelLinkView['state'], TranslationKeys> = {
@@ -87,12 +88,11 @@ function OwnedLinks({ api, principalKey }: { api: ChannelIdentityClient; princip
         </div>
       )}
       {links.isError && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">{localize('com_ui_channel_link_error')}</Alert>
-          <Button type="button" variant="outline" onClick={() => void links.refetch()}>
-            {localize('com_ui_retry')}
-          </Button>
-        </div>
+        <Notice
+          message={localize('com_ui_channel_link_error')}
+          action={localize('com_ui_retry')}
+          onAction={() => void links.refetch()}
+        />
       )}
       {links.data != null && links.data.length > 0 && (
         <ul className="flex flex-col gap-0.5">

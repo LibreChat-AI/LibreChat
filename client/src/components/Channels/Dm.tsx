@@ -41,8 +41,8 @@ import type { ReactNode } from 'react';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { LinkAgentName } from './Links';
-import Notice from './discord/Notice';
 import Loading from './Loading';
+import Notice from './Notice';
 
 const editorAtom = atom<ChannelLinkView | null>(null);
 const confirmAtom = atom<DiscordDmSelectionView | null>(null);

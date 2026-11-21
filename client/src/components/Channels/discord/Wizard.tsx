@@ -9,7 +9,7 @@ import { AutoHeight } from '~/components/ui';
 import Credentials from './Credentials';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
-import Notice from './Notice';
+import Notice from '../Notice';
 
 export type WizardStep = 1 | 2 | 3;
 

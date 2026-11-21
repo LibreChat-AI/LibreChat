@@ -21,6 +21,7 @@ import type { AgentChannel, SlackWorkspaceRouteTarget } from 'librechat-data-pro
 import type { TranslationKeys } from '~/hooks';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useLocalize, useDebounce } from '~/hooks';
+import Notice from '~/components/Channels/Notice';
 import ChannelStatus from './ChannelStatus';
 
 type Action =
@@ -269,12 +270,11 @@ export default function WorkspaceChannel({
 
         {workspace.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
         {workspace.isError && !unavailable && !accessDenied && (
-          <Alert variant="error">
-            <p>{localize('com_ui_channels_workspace_load_error')}</p>
-            <Button type="button" variant="outline" onClick={() => void workspace.refetch()}>
-              {localize('com_ui_retry')}
-            </Button>
-          </Alert>
+          <Notice
+            message={localize('com_ui_channels_workspace_load_error')}
+            action={localize('com_ui_retry')}
+            onAction={() => void workspace.refetch()}
+          />
         )}
         {unavailable && (
           <Alert variant="warning">{localize('com_ui_channels_workspace_unavailable')}</Alert>
@@ -308,12 +308,11 @@ export default function WorkspaceChannel({
             )}
             {routes.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
             {routes.isError && (
-              <div className="flex flex-col items-start gap-2">
-                <Alert variant="error">{localize('com_ui_channels_workspace_route_error')}</Alert>
-                <Button type="button" variant="outline" onClick={() => void routes.refetch()}>
-                  {localize('com_ui_retry')}
-                </Button>
-              </div>
+              <Notice
+                message={localize('com_ui_channels_workspace_route_error')}
+                action={localize('com_ui_retry')}
+                onAction={() => void routes.refetch()}
+              />
             )}
             {entries.map((entry) => (
               <div
@@ -444,12 +443,11 @@ export default function WorkspaceChannel({
               <p role="status">{localize('com_ui_channels_loading')}</p>
             )}
             {settledInput && target.isError && (
-              <div className="flex flex-col items-start gap-2">
-                <Alert variant="error">{localize('com_ui_channels_workspace_route_error')}</Alert>
-                <Button type="button" variant="outline" onClick={() => void target.refetch()}>
-                  {localize('com_ui_retry')}
-                </Button>
-              </div>
+              <Notice
+                message={localize('com_ui_channels_workspace_route_error')}
+                action={localize('com_ui_retry')}
+                onAction={() => void target.refetch()}
+              />
             )}
             {blocked && (
               <Alert variant="warning">{localize('com_ui_channels_bot_access_required')}</Alert>

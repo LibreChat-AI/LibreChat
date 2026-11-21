@@ -29,6 +29,7 @@ import DeleteChannelDialog from './DeleteChannelDialog';
 import { ChannelHeaderIcon } from './ChannelDetails';
 import Loading from '~/components/Channels/Loading';
 import WorkspaceChannel from './WorkspaceChannel';
+import Notice from '~/components/Channels/Notice';
 import DiscordBinding from './DiscordBinding';
 import ChannelsDialog from './ChannelsDialog';
 import ChannelUsage from './ChannelUsage';
@@ -626,20 +627,11 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
         </p>
       )}
       {channels.isError && (
-        <Alert variant="error" className="w-full">
-          <div className="flex items-center justify-between gap-2">
-            <span>{localize('com_ui_channels_list_error')}</span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="shrink-0"
-              onClick={() => void channels.refetch()}
-            >
-              {localize('com_ui_channels_retry')}
-            </Button>
-          </div>
-        </Alert>
+        <Notice
+          message={localize('com_ui_channels_list_error')}
+          action={localize('com_ui_channels_retry')}
+          onAction={() => void channels.refetch()}
+        />
       )}
       {channels.data != null && channels.data.length > 0 && (
         <ul className="flex flex-col gap-0.5">
@@ -822,16 +814,11 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 <div className="space-y-4 overflow-y-auto px-6 pb-6">
                   {workspaces.isLoading && <Loading label="com_ui_channels_loading" />}
                   {workspaces.isError && (
-                    <Alert variant="error">
-                      <p>{localize('com_ui_channels_workspace_load_error')}</p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => void workspaces.refetch()}
-                      >
-                        {localize('com_ui_retry')}
-                      </Button>
-                    </Alert>
+                    <Notice
+                      message={localize('com_ui_channels_workspace_load_error')}
+                      action={localize('com_ui_retry')}
+                      onAction={() => void workspaces.refetch()}
+                    />
                   )}
                   {workspaces.isSuccess && useWorkspace && (
                     <div className="space-y-3">

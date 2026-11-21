@@ -3,6 +3,7 @@ import type { DiscordOAuthErrorCode } from 'librechat-data-provider';
 import { discordCallbackLabels } from '~/components/OAuth/discord';
 import { useLocalize } from '~/hooks';
 import { errorLabel } from './errors';
+import Notice from '../Notice';
 
 type Flow = 'pending' | 'cancelling' | 'failed';
 
@@ -47,12 +48,13 @@ export default function Connect({
           flow === 'failed' ? (
             <div className="space-y-3">
               {Boolean(error) && (
-                <Alert ref={errorRef} tabIndex={-1} variant="error">
-                  {localize(errorLabel(error))}
-                  <Button type="button" variant="outline" disabled={busy} onClick={onRefresh}>
-                    {localize('com_ui_refresh')}
-                  </Button>
-                </Alert>
+                <Notice
+                  ref={errorRef}
+                  message={localize(errorLabel(error))}
+                  action={localize('com_ui_refresh')}
+                  disabled={busy}
+                  onAction={onRefresh}
+                />
               )}
               <Alert ref={alertRef} tabIndex={-1} variant="warning">
                 {reason && <p>{localize(discordCallbackLabels[reason])}</p>}

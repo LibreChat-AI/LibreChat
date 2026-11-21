@@ -1,18 +1,11 @@
 import { useState } from 'react';
 import { CopyButton } from '@librechat/chat/components';
 import { Info, ChevronDown, ExternalLink } from 'lucide-react';
-import {
-  Alert,
-  Button,
-  Input,
-  Label,
-  Textarea,
-  SecretInput,
-  InfoHoverCard,
-} from '@librechat/client';
+import { Button, Input, Label, Textarea, SecretInput, InfoHoverCard } from '@librechat/client';
 import type { TranslationKeys } from '~/hooks';
 import SetupProgress from '~/components/Channels/SetupProgress';
 import { AutoHeight, Collapse } from '~/components/ui';
+import Notice from '~/components/Channels/Notice';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -81,12 +74,11 @@ export function ManifestView({
     <>
       {loading && <p role="status">{localize('com_ui_channels_loading')}</p>}
       {failed && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">{localize('com_ui_channels_manifest_error')}</Alert>
-          <Button type="button" variant="outline" onClick={onRetry}>
-            {localize('com_ui_channels_retry')}
-          </Button>
-        </div>
+        <Notice
+          message={localize('com_ui_channels_manifest_error')}
+          action={localize('com_ui_channels_retry')}
+          onAction={onRetry}
+        />
       )}
       {text !== '' && (
         <div className="text-sm">
