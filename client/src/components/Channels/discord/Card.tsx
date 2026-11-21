@@ -112,7 +112,7 @@ export default function Card({
                 onDisconnect={onDisconnect}
               />
             ))}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <Button
                 variant="outline"
                 size="sm"

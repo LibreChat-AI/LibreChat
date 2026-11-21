@@ -731,7 +731,6 @@ function Setup({
         <div className="flex justify-end">
           <Button
             type="button"
-            variant="outline"
             disabled={disabled}
             onClick={(event) => edit('new', event.currentTarget)}
           >
