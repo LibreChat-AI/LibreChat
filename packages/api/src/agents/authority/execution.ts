@@ -12,7 +12,6 @@ import type { RunGrantStorage } from '@librechat/data-schemas';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig, RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
-import type { ScheduledTokenContext } from '~/schedules/context';
 import type { MCPToolsSnapshot } from '~/mcp/connection';
 import type { RunGrantAuthority } from './contract';
 import {
@@ -98,6 +97,8 @@ export interface RunGrantExecution<Identity extends RunGrantIdentity = Scheduled
    * where it is made.
    */
   readonly coversTools: boolean;
+  /** What a run under this subject says in the subject's words. Absent, in plain ones. */
+  readonly wording?: PolicyWording;
   /** Whether the grant asks the owner about any tool, so this run may pause. */
   readonly mayAsk: boolean;
   /** Whether the owner approves each use of this tool, by the name the run calls it. */
@@ -108,6 +109,14 @@ export interface RunGrantExecution<Identity extends RunGrantIdentity = Scheduled
     agentId: string | undefined,
     selectionName: string,
   ) => RunGrantInvocation<Identity>;
+}
+
+/** The two things a run says in its subject's words. */
+export interface PolicyWording {
+  /** What the model is told when it calls a tool the owner left out of the grant. */
+  leftOut: string;
+  /** The reason a run gives when it stops to ask its owner, which the client has copy for. */
+  ask: string;
 }
 
 /**
@@ -181,32 +190,23 @@ export function narrowGrantedTools(
 }
 
 /**
- * For "Always allow" on an approval card. A tool the schedule's owner approves on each use
- * is asked about again at its next use whatever the conversation remembers, so it is neither
+ * For "Always allow" on an approval card. A tool the grant's owner approves on each use is
+ * asked about again at its next use whatever the conversation remembers, so it is neither
  * offered nor stored. Reads the grant when asked: on a resume it is attached after this is
- * built. False for a request that runs no schedule.
+ * built. False for a request that runs under no grant.
  */
-export function scheduleAsksEveryUse(
-  req: object | undefined,
-): (toolNames: readonly string[]) => boolean {
+export function asksEveryUse(req: object | undefined): (toolNames: readonly string[]) => boolean {
   return (toolNames) => {
     const context = findMCPRequestContext(req);
     return (context && executions.get(context)?.asksAboutAny(toolNames)) ?? false;
   };
 }
 
-function actsForSchedule(
-  execution: RunGrantExecution<RunGrantIdentity>,
-): execution is RunGrantExecution {
-  return 'scheduleId' in execution.identity;
-}
-
-/** The run's execution when it acts for a schedule. A run that acts for an API key has none. */
-export function getScheduleMCPExecution(
+/** The grant the request's run is under, whatever kind of subject holds it. */
+export function grantExecution(
   context?: RequestScopedMCPConnectionStore,
-): RunGrantExecution | undefined {
-  const execution = context && executions.get(context);
-  return execution && actsForSchedule(execution) ? execution : undefined;
+): RunGrantExecution<RunGrantIdentity> | undefined {
+  return context && executions.get(context);
 }
 
 export interface RunGrantExecutionDeps<Identity extends RunGrantIdentity = ScheduledMCPIdentity> {
@@ -227,6 +227,8 @@ export interface RunGrantExecutionDeps<Identity extends RunGrantIdentity = Sched
    * grant again. Absent, it does not, and a run under a grant starts nothing there.
    */
   detaches?: boolean;
+  /** What a run under this subject says in the subject's words. */
+  wording?: PolicyWording;
   now?: () => number;
 }
 
@@ -247,18 +249,18 @@ export interface RunGrantExecutionOptions {
 export interface RunGrantExecutionFactory<
   Identity extends RunGrantIdentity = ScheduledMCPIdentity,
 > {
-  resolve: (
+  resolve(
     identity: Identity,
     stage: RunGrantExecution['stage'],
     options?: RunGrantExecutionOptions,
-  ) => Promise<RunGrantExecution<Identity> | undefined>;
-  attach: (
+  ): Promise<RunGrantExecution<Identity> | undefined>;
+  attach(
     context: RequestScopedMCPConnectionStore,
     identity: Identity,
     stage: RunGrantExecution['stage'],
     requireEnrollment?: boolean,
     options?: RunGrantExecutionOptions,
-  ) => Promise<boolean>;
+  ): Promise<boolean>;
 }
 
 export function createRunGrantExecution<Identity extends RunGrantIdentity = ScheduledMCPIdentity>(
@@ -439,6 +441,7 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
         enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
       grantsTool: allows,
       coversTools: deps.coversTools === true,
+      ...(deps.wording && { wording: deps.wording }),
       mayAsk: asking.size > 0 || askingAny.size > 0,
       asksAbout: (agentId: string, toolKey: string) =>
         asking.get(agentId)?.has(toolKey) === true || askingAny.has(toolKey),
@@ -599,11 +602,11 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
 }
 
 /**
- * Tells run admission that this schedule's grant can pause the run, so the requirements of
- * a paused scheduled run are checked before any provider work. Never asked for a decision.
+ * Tells run admission that the run's grant can pause it, so what a paused run needs is
+ * checked before any provider work. Never asked for a decision.
  */
-export function buildScheduledApprovalAdmissionHooks(
-  execution?: Pick<RunGrantExecution, 'mayAsk'>,
+export function approvalHooks(
+  execution?: Pick<RunGrantExecution<RunGrantIdentity>, 'mayAsk'>,
 ): ResolvedToolApprovalHook[] {
   return execution?.mayAsk === true ? [{ hook: async () => ({}) }] : [];
 }
@@ -621,15 +624,4 @@ export function collectApprovedToolCalls(resumeValue: unknown): string[] {
         (decision.type === 'approve' || decision.type === 'edit'),
     )
     .map(([toolCallId]) => toolCallId);
-}
-
-/** The trusted trigger/resume host owns the context. No body-provided schedule opt-in. */
-export function scheduledMCPIdentity(context: ScheduledTokenContext): ScheduledMCPIdentity {
-  return {
-    scheduleId: context.scheduleId,
-    ownerId: context.ownerId,
-    tenantId: context.tenantId ?? null,
-    agentId: context.agentId,
-    invocationMode: 'delegated',
-  };
 }

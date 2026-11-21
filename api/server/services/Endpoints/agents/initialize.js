@@ -54,7 +54,9 @@ const {
   initializeWithScheduledMCPBearer,
   initializeWithAuthority,
   retainScheduleMCPCompletion,
-  getScheduleMCPExecution,
+  scheduleExecution,
+  scheduleSubject,
+  keySubject,
   getMCPRequestContext,
   createSubagentCodeRouting,
   hasEntityEmbeddings,
@@ -471,7 +473,7 @@ const initializeClientWithProvider = async ({
 
   const invokedSkillIdentities = new Map();
   const toolExecuteOptions = {
-    scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(req, res)),
+    scheduledMCPExecution: scheduleExecution(getMCPRequestContext(req, res)),
     runContext,
     // Keep foreground cancellation owned by this request even when the agents
     // SDK rebuilds a graph for approval resume. The SDK event's breaker signal
@@ -1872,7 +1874,7 @@ const initializeClientWithProvider = async ({
           {
             completionWakeups: completionWakeupsEnabled,
             requestScopedConnections: getMCPRequestContext(req, res),
-            scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+            scheduleMCPIdentity: scheduleExecution(getMCPRequestContext(req, res))?.identity,
             runContext,
           },
         )
@@ -2182,10 +2184,21 @@ function createInitializeClient(dependencies = {}) {
         restoredJob: params.scheduleJobIdentity,
         approvedToolCalls: params.approvedToolCalls,
       },
-      () => ({
-        schedule: require('~/server/services/Schedules/consent'),
-        key: require('~/server/services/ApiKeys/grants'),
-      }),
+      [
+        scheduleSubject(
+          () => require('~/server/services/Schedules/consent'),
+          (identity) =>
+            retainScheduleMCPCompletion(
+              identity,
+              {
+                streamId: params.req._resumableStreamId,
+                createdAt: params.jobCreatedAt,
+              },
+              GenerationJobManager.getJobStore(),
+            ),
+        ),
+        keySubject(() => require('~/server/services/ApiKeys/grants')),
+      ],
       () =>
         initializeWithScheduledMCPBearer(
           {
@@ -2202,15 +2215,6 @@ function createInitializeClient(dependencies = {}) {
               require('~/server/services/Schedules').registerMCPSettlement(input),
           },
           () => initializeClientWithProvider({ ...params, upstreamTokenProviderResolver }),
-        ),
-      (identity) =>
-        retainScheduleMCPCompletion(
-          identity,
-          {
-            streamId: params.req._resumableStreamId,
-            createdAt: params.jobCreatedAt,
-          },
-          GenerationJobManager.getJobStore(),
         ),
     );
   };

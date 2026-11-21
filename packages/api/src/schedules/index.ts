@@ -14,5 +14,6 @@ export * from './authorization/host';
 
 export * from './bearer';
 export * from './authorization/runtime';
+export * from './authorization/subject';
 
 export * from './authorization/continuation';

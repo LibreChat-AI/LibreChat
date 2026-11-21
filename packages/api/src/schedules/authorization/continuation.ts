@@ -28,19 +28,6 @@ export async function resolveScheduleMCPCompletion(
   return identity;
 }
 
-/** Only the signed host may project a task's captured origin into completion admission. */
-export function isScheduledMCPCompletionRequest(req: {
-  _isAgentTrigger?: boolean;
-  body?: Record<string, unknown>;
-}): boolean {
-  return (
-    req._isAgentTrigger === true &&
-    typeof req.body?.conversationId === 'string' &&
-    req.body.agentTrigger == null &&
-    req.body.agentEventDelivery == null
-  );
-}
-
 /** A malformed retained identity is never an ordinary, unrestricted job. */
 export function parseScheduleMCPCompletion(
   value: unknown,

@@ -1,6 +1,7 @@
 export * from './context';
 export * from './trigger';
 export * from './host';
+export type * from './subject';
 export * from './service';
 export * from './handlers';
 export type * from './contract';

@@ -12,6 +12,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ParsedServerConfig } from '~/mcp/types';
+import { SCHEDULE_WORDING } from '~/schedules/authorization/subject';
 import { getRunGrantConfigurationRevision } from './configuration';
 import { createRunGrantExecution } from './execution';
 import { getRunGrantPolicyRevision } from './policy';
@@ -209,6 +210,7 @@ export async function executionFixture(
     loadAuthorization,
     coversTools: choice.coversTools ?? true,
     detaches: choice.detaches ?? true,
+    wording: SCHEDULE_WORDING,
     now: () => time,
   });
   const execution = (await factory.resolve(identity, stage, {

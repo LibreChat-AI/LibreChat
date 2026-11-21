@@ -3,17 +3,16 @@ import {
   Tools,
   AgentCapabilities,
   normalizeServerName,
-  SCHEDULE_APPROVAL_REASON,
   Constants as ProviderConstants,
 } from 'librechat-data-provider';
 import type { RunGrantIdentity } from 'librechat-data-provider';
 import type { HookCallback } from '@librechat/agents';
-import type { RunGrantExecution } from '~/agents/authority/execution';
+import type { RunGrantExecution, PolicyWording } from './execution';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from '~/agents/memory';
 import { isStatefulCodeEnvironmentToolName } from '~/agents/hitl/byom';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
-import { RunGrantPolicyError } from '~/agents/authority/policy';
+import { RunGrantPolicyError } from './policy';
 
 const MEMORY_TOOL_NAMES = new Set<string>([SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME]);
 /** What the skill catalog registers for an agent: the tool that runs a skill, and its file reader. */
@@ -33,34 +32,22 @@ interface PolicyTool {
   serverName?: string;
   mcpRawServerName?: string;
 }
-export interface ScheduledMCPPolicyAgent {
+export interface PolicyAgent {
   id: string;
   toolDefinitions?: readonly PolicyTool[];
   toolRegistry?: ReadonlyMap<string, PolicyTool>;
   backgroundToolNames?: readonly string[];
-  subagentAgentConfigs?: readonly ScheduledMCPPolicyAgent[];
+  subagentAgentConfigs?: readonly PolicyAgent[];
   subagentGraphConfigs?: readonly {
     definition?: { edges: readonly HandoffEdge[] };
-    memberConfigs: readonly ScheduledMCPPolicyAgent[];
+    memberConfigs: readonly PolicyAgent[];
   }[];
 }
 
-/** What the model is told when it calls a tool the schedule's owner did not allow. */
-export const SCHEDULE_TOOL_NOT_ALLOWED =
-  'The owner of this schedule has not allowed this tool. Continue without it.';
-
-/** The two things a run says in its subject's words. */
-export interface PolicyWording {
-  /** What the model is told when it calls a tool the owner left out of the grant. */
-  leftOut: string;
-  /** The reason a run gives when it stops to ask its owner, which the client has copy for. */
-  ask: string;
-}
-
-/** A schedule's wording. Both strings are read outside this code: by the model and the client. */
-export const SCHEDULE_WORDING: PolicyWording = {
-  leftOut: SCHEDULE_TOOL_NOT_ALLOWED,
-  ask: SCHEDULE_APPROVAL_REASON,
+/** What a run says under a subject that has no words of its own. */
+const PLAIN: PolicyWording = {
+  leftOut: 'The owner has not allowed this tool. Continue without it.',
+  ask: 'owner_approval',
 };
 
 /**
@@ -72,17 +59,17 @@ export const SCHEDULE_WORDING: PolicyWording = {
  * against it where the call is made. Under such a grant this policy decides one thing:
  * whether work may go to the background.
  */
-export function createScheduledMCPRunPolicy(
+export function createRunPolicy(
   execution: RunGrantExecution<RunGrantIdentity>,
-  agents: readonly ScheduledMCPPolicyAgent[],
+  agents: readonly PolicyAgent[],
   edges: readonly HandoffEdge[] = [],
   recordDenial?: (error: RunGrantPolicyError) => Promise<boolean>,
-  wording: PolicyWording = SCHEDULE_WORDING,
 ): {
   hook: HookCallback<'PreToolUse'>;
   receipt: HookCallback<'PreToolUse'>;
-  registerAgent: (agent: ScheduledMCPPolicyAgent) => void;
+  registerAgent: (agent: PolicyAgent) => void;
 } {
+  const wording = execution.wording ?? PLAIN;
   const mcpTools = new Map<string, Set<string>>();
   /**
    * MCP tools an agent has that the owner did not allow. Only a tool whose server and name
@@ -110,7 +97,7 @@ export function createScheduledMCPRunPolicy(
   const handoffs = new Map<string, Set<string>>();
   const backgroundTools = new Map<string, Set<string>>();
   const registerGraph = (
-    members: readonly ScheduledMCPPolicyAgent[],
+    members: readonly PolicyAgent[],
     admittedEdges: readonly HandoffEdge[],
   ): void => {
     const ids = new Set(members.map(({ id }) => id));
@@ -140,9 +127,9 @@ export function createScheduledMCPRunPolicy(
       }
     }
   };
-  const registerAgent = (root: ScheduledMCPPolicyAgent): void => {
+  const registerAgent = (root: PolicyAgent): void => {
     const queue = [root];
-    const visited = new Set<ScheduledMCPPolicyAgent>();
+    const visited = new Set<PolicyAgent>();
     for (const agent of queue) {
       if (visited.has(agent)) continue;
       visited.add(agent);
@@ -217,7 +204,7 @@ export function createScheduledMCPRunPolicy(
     const agentId = input.executingAgentId;
     if (detached(input)) return true;
     return !(
-      // An ordinary run is the schedule's graph, root included. A completion turn is addressed
+      // An ordinary run is its subject's graph, root included. A completion turn is addressed
       // to the agent that started the work, which the root may only have handed off to.
       (
         (execution.completion || mcpTools.has(execution.identity.agentId)) &&
@@ -274,7 +261,7 @@ export function createScheduledMCPRunPolicy(
       if (error) return { decision: 'deny', reason: error.message };
       if (input.executingAgentId == null) return {};
       // The owner left this tool out on purpose. The model is told and the run goes on: it is
-      // not a failure of the schedule, so nothing is recorded against the run. Should this hook
+      // not a failure of the run, so nothing is recorded against it. Should this hook
       // be skipped, the call is still refused where it is made, and that refusal is recorded.
       if (leftOut.get(input.executingAgentId)?.has(input.toolName) === true)
         return { decision: 'deny', reason: wording.leftOut };

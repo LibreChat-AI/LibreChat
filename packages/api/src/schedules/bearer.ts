@@ -36,8 +36,8 @@ import {
 } from '~/mcp/errors';
 import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { getRunGrantConfigurationRevision } from '~/agents/authority/configuration';
-import { getScheduleMCPExecution } from '~/agents/authority/execution';
 import { usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
+import { scheduleExecution } from './authorization/subject';
 import { RunGrantError } from '~/agents/authority/service';
 import { holdMCPRequestFailure } from '~/mcp/signal';
 import { awaitOboOperation } from '~/mcp/oauth/obo';
@@ -554,7 +554,7 @@ export function prepareScheduledMCPBearer(input: {
   registerSettlement?: (boundary: ScheduleMCPSettlementBoundary) => void;
 }): void {
   const context = input.context ?? getMCPRequestContext(input.req);
-  const execution = getScheduleMCPExecution(context);
+  const execution = scheduleExecution(context);
   if (!isScheduleFireRequest(input.req) && !execution) return;
   input.signal?.throwIfAborted();
   const schedule = getScheduleSource(input.executionContext);
