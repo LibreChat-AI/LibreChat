@@ -2,17 +2,20 @@ import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import {
+  getScheduleSource,
+  restoreExecutionContext,
+  createTriggerExecutionContext,
+  createScheduleExecutionContext,
+} from '~/agents/authority/context';
+import {
   bindRunGrantInvocation,
   getScheduleMCPExecution,
   narrowGrantedTools,
 } from '~/agents/authority/execution';
-import {
-  restoreExecutionContext,
-  createScheduleExecutionContext,
-} from '~/agents/authority/context';
 import { executionFixture, allowOffered, readTool } from '~/agents/authority/execution.helper';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { RunGrantPolicyError } from '~/agents/authority/policy';
+import { captureTrigger } from '~/agents/authority/trigger';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduleMCPPreflight } from '../mcp';
 
@@ -364,6 +367,60 @@ describe('a turn that reports on a task a scheduled run started', () => {
       'occurrence-conversation',
     );
     expect(req._scheduleSkippedServers).toEqual(['warehouse']);
+  });
+
+  it('is prepared as it always was when its context also names the schedule and where the task began', async () => {
+    const prepared = async (kept: boolean) => {
+      const f = await setup();
+      const req = completionRequest(f);
+      Object.assign(req.body, {
+        clientRequestId: 'trigger_wake',
+        agentEvent: {
+          id: 'task-1',
+          type: 'background_tool.completed',
+          occurredAt: 2_000,
+          source: { type: 'internal', id: 'background-tool-completion' },
+        },
+      });
+      // What the task kept of the occurrence that started it, handed back by the trigger host.
+      if (kept)
+        Object.assign(req.body.agentCompletion, {
+          trigger: captureTrigger(createTriggerExecutionContext(f.req)),
+        });
+      const executionContext = createTriggerExecutionContext(req);
+      await f.host.prepare({ req, context: f.context, executionContext });
+      const execution = getScheduleMCPExecution(f.context);
+      return {
+        executionContext,
+        execution: {
+          identity: execution?.identity,
+          stage: execution?.stage,
+          enrolled: execution?.enrolled,
+          completion: execution?.completion,
+          manual: execution?.manual,
+        },
+        loaded: narrowGrantedTools(req, 'root', ['query_mcp_warehouse', 'post_mcp_ledger']),
+        lookups: f.getScheduleMCPCompletionState.mock.calls,
+      };
+    };
+    const before = await prepared(false);
+    const after = await prepared(true);
+
+    expect(after.execution).toEqual(before.execution);
+    expect(after.execution).toMatchObject({
+      identity: { scheduleId: 'schedule', agentId: 'root' },
+      stage: 'invoke',
+      completion: true,
+    });
+    expect(after.loaded).toEqual(before.loaded);
+    expect(after.lookups).toEqual(before.lookups);
+    expect(before.executionContext?.source).not.toHaveProperty('subject');
+    expect(after.executionContext?.source).toMatchObject({
+      subject: { kind: 'schedule', id: 'schedule' },
+      origin: { agentId: 'root' },
+    });
+    // The turn acts for the schedule and is still not its occurrence.
+    expect(getScheduleSource(after.executionContext)).toBeUndefined();
   });
 
   it('reads no run for a turn whose task no schedule started', async () => {

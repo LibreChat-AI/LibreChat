@@ -103,7 +103,7 @@ export async function executionFixture(
    * that are not MCP tools, and `allowTools` the ones of those the owner picks (default: none).
    * `coversTools: false` is a grant that limits MCP tools only, as an API key's does.
    * `everything` is a grant of the whole agent, with nothing chosen one by one.
-   * `detaches: false` is a grant whose completion turns cannot find it again, as a key's.
+   * `detaches: false` is a grant whose completion turns cannot find it again.
    */
   choice: {
     offered?: string[];

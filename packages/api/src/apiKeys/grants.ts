@@ -69,8 +69,9 @@ export interface AgentKeyMCPGrantHost {
   prepare: (input: {
     /**
      * The authenticated request. Its MCP tools are built against this request's context. A
-     * request a key authenticated names the key; one the trigger host made for a key's
-     * delivery does not, and the run's context does.
+     * request a key authenticated names the key; one the trigger host made does not, and the
+     * run's context does: for a key's delivery, and for the turn that reports work a key's
+     * run sent to the background.
      */
     req: Pick<ApiKeyAuthRequest, 'apiKeyId'> & {
       user?: { id: string; tenantId?: string; role?: string };
@@ -191,6 +192,8 @@ export function createAgentKeyMCPGrantHost(deps: {
     },
     // Under `delegated`, a key with no grant for the agent may not use MCP tools at all.
     requiresGrant: async () => true,
+    // A background task's completion turn finds the key again by the trigger the task kept.
+    detaches: true,
   });
 
   const handlers = createRunGrantHandlers<AgentKeyMCPIdentity>({

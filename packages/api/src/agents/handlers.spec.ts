@@ -19,12 +19,14 @@ import type {
 } from '@librechat/agents';
 import type { CodeWorkspaceOperation, PtcToolCallEvent } from 'librechat-data-provider';
 import type { CodeExecutionContext } from './execution';
+import type { BackgroundToolWakeupRegistration } from './backgroundCompletion';
 import {
   createOwnedToolEndHandler,
   createToolExecuteHandler,
   getAttachmentOwnership,
   ToolExecuteOptions,
 } from './handlers';
+import { createTriggerExecutionContext } from '~/agents/authority/context';
 import { markSandboxReady } from './prewarm';
 import { captureAuthoredSkills, restoreAuthoredSkills } from './authored';
 import { ContentFilterError } from '../middleware/contentFilter';
@@ -210,6 +212,91 @@ it.each(['granted', 'unauthorized', 'chat'] as const)(
         scheduleMCPIdentity: scheduled ? identity : null,
       }),
     );
+    await new Promise((resolve) => setImmediate(resolve));
+  },
+);
+
+/**
+ * What a background task keeps of the run that started it comes from the context the host
+ * built for the run, and from nowhere the tool call or the runnable config can reach.
+ */
+it.each(['a key delivery', 'a chat'] as const)(
+  'sends background work off with the trigger of the run the host built a context for (%s)',
+  async (kind) => {
+    const runContext =
+      kind === 'a chat'
+        ? undefined
+        : createTriggerExecutionContext({
+            user: { id: 'origin-owner' },
+            _isAgentTrigger: true,
+            body: {
+              agent_id: 'original-root',
+              clientRequestId: 'trigger_abc',
+              agentTrigger: {
+                version: 1,
+                event: {
+                  id: 'event-1',
+                  type: 'review.submitted',
+                  occurredAt: 1_000,
+                  source: { type: 'remote_api_key', id: 'key-1' },
+                },
+              },
+            },
+          });
+    const forged = { subject: { kind: 'key', id: 'key-9' } };
+    const preregister = jest.fn(
+      async (_registration: BackgroundToolWakeupRegistration) => false as const,
+    );
+    const name = 'query_mcp_warehouse';
+    const handler = createToolExecuteHandler({
+      runContext,
+      loadTools: async () => ({ loadedTools: [createMockTool(name, [])] as never[] }),
+      backgroundToolCompletion: {
+        preregister,
+        persist: async () => true,
+        claim: async () => {
+          throw new Error('Unused manual claim');
+        },
+      },
+    });
+    await new Promise<ToolExecuteResult[]>((resolve, reject) => {
+      void handler.handle('on_tool_execute', {
+        resolve,
+        reject,
+        agentId: 'child',
+        toolCalls: [
+          {
+            id: `trigger-${kind}`,
+            stepId: 'trigger-step',
+            name,
+            args: { run_in_background: true, trigger: forged },
+          },
+        ],
+        configurable: {
+          user_id: 'origin-owner',
+          thread_id: 'origin-conversation',
+          backgroundToolNames: [name],
+          trigger: forged,
+          runContext: { agentId: 'forged', source: { type: 'trigger', subject: forged.subject } },
+          req: { user: { id: 'origin-owner' }, body: { conversationId: 'origin-conversation' } },
+        },
+        metadata: { run_id: `trigger-response-${kind}`, thread_id: 'origin-conversation' },
+      });
+    });
+    const registration = preregister.mock.calls[0]?.[0];
+    expect(registration).toMatchObject({ parentMessageId: `trigger-response-${kind}` });
+    if (kind === 'a chat') expect(registration).not.toHaveProperty('trigger');
+    else
+      expect(registration?.trigger).toEqual({
+        subject: { kind: 'key', id: 'key-1' },
+        origin: {
+          agentId: 'original-root',
+          delivery: {
+            key: 'trigger_abc',
+            event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+          },
+        },
+      });
     await new Promise((resolve) => setImmediate(resolve));
   },
 );

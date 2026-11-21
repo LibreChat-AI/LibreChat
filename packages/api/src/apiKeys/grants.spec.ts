@@ -27,6 +27,7 @@ import { pinStorage, untouchedSince, admitsDefinitions } from '~/agents/authorit
 import { getScheduleMCPExecution, bindRunGrantInvocation } from '~/agents/authority/execution';
 import { createAgentKeyMCPGrantHost, getRemoteRunKeyId } from './grants';
 import { initializeWithAuthority } from '~/agents/authority/host';
+import { captureTrigger } from '~/agents/authority/trigger';
 import { sanitizeJobMetadata } from '~/stream/metadata';
 import { getMCPRequestContext } from '~/mcp/request';
 
@@ -228,6 +229,61 @@ function setup(
     );
     return started(req, agentId);
   };
+  /**
+   * The turn that reports work the delivered run sent to the background, a request the
+   * trigger host makes for the task's wake-up. The task kept the run's trigger, its wake-up
+   * stored it, and the host hands it back on the completion marker. `addressed` is the agent
+   * the turn is sent to, which the root may have handed off to. `captured: false` is a task
+   * from before tasks kept a trigger. `paused` resumes the turn from its own saved job.
+   * `sourceId: 'librechat-event-actor'` is instead the delivery that resumes an actor
+   * suspended on a detached action, which carries the kept trigger itself.
+   */
+  const report = async (
+    agentId = 'agent_a',
+    keyId = 'key-1',
+    {
+      captured = true,
+      addressed = agentId,
+      paused = false,
+      sourceId = 'background-tool-completion',
+    } = {},
+  ) => {
+    const kept = captured ? captureTrigger(delivered(agentId, keyId)) : undefined;
+    const held = kept && { trigger: JSON.parse(JSON.stringify(kept)) };
+    const event = {
+      id: 'task-1',
+      type: 'task.completed',
+      occurredAt: 2_000,
+      source: { type: 'internal', id: sourceId },
+    };
+    const turn = {
+      user,
+      _isAgentTrigger: true,
+      body: {
+        agent_id: addressed,
+        conversationId: 'conversation',
+        clientRequestId: 'trigger_wakeup',
+        ...(sourceId === 'librechat-event-actor'
+          ? { agentEventDelivery: { deliveryKey: 'trigger_wakeup', event, ...held } }
+          : { agentEvent: event, agentCompletion: { version: 1, sourceId, ...held } }),
+      },
+    };
+    const first = createTriggerExecutionContext(turn);
+    const job = sanitizeJobMetadata({
+      agent_id: addressed,
+      ...(first?.source.type === 'trigger' && { trigger: first.source }),
+    });
+    const req = paused ? { user, body: {} } : turn;
+    const executionContext = paused
+      ? restoreExecutionContext(req, { userId: 'owner', tenantId: 'tenant', ...job })
+      : first;
+    await initializeWithAuthority(
+      { req, executionContext },
+      () => ({ schedule: { prepare: async () => undefined }, key: host }),
+      async () => undefined,
+    );
+    return started(req, agentId);
+  };
   const start = async (
     req: Parameters<typeof host.prepare>[0]['req'],
     executionContext: ExecutionContext | undefined,
@@ -261,6 +317,7 @@ function setup(
     run,
     deliver,
     resume,
+    report,
     findUser,
     getAppConfig,
     getEffectivePermissions,
@@ -381,6 +438,68 @@ describe('a delivery of the trigger engine that an API key posted', () => {
   it('resumes as it always has from a job saved before a job saved its trigger', async () => {
     const s = setup();
     await expect((await s.resume('agent_a', 'key-1', false)).call()).resolves.toBe('unrestricted');
+  });
+});
+
+describe("the turn that reports work a key's run sent to the background", () => {
+  it.each(['background-tool-completion', 'subagent-completion', 'librechat-event-actor'])(
+    "runs under that key's grant, for a %s",
+    async (sourceId) => {
+      const s = setup();
+      const ungranted = await s.report('agent_a', 'key-1', { sourceId });
+      await expect(ungranted.call()).rejects.toMatchObject(refused('consent_missing'));
+      await s.allow('agent_a', ['query']);
+      const { call } = await s.report('agent_a', 'key-1', { sourceId });
+      await expect(call()).resolves.toBe('authorized');
+      await expect(call('list')).rejects.toMatchObject(refused('tool_policy_denied'));
+    },
+  );
+
+  it('finds the grant by the root agent of the first run, whichever agent the turn is sent to', async () => {
+    const s = setup();
+    await s.allow('agent_a', ['query']);
+    const { call } = await s.report('agent_a', 'key-1', { addressed: 'agent_b' });
+    await expect(call()).resolves.toBe('authorized');
+    const resumed = await s.report('agent_a', 'key-1', { addressed: 'agent_b', paused: true });
+    await expect(resumed.call()).resolves.toBe('authorized');
+  });
+
+  it("is still under that key's grant when the turn itself resumes after a pause", async () => {
+    const s = setup();
+    const ungranted = await s.report('agent_a', 'key-1', { paused: true });
+    await expect(ungranted.call()).rejects.toMatchObject(refused('consent_missing'));
+    await s.allow('agent_a', ['query']);
+    const { call } = await s.report('agent_a', 'key-1', { paused: true });
+    await expect(call()).resolves.toBe('authorized');
+    await expect(call('list')).rejects.toMatchObject(refused('tool_policy_denied'));
+  });
+
+  it('is not a reason to run unrestricted that the key is gone or was issued to an integration', async () => {
+    const s = setup();
+    await expect(s.report('agent_a', 'key-deleted')).rejects.toMatchObject(
+      refused('binding_mismatch'),
+    );
+    await expect(s.report('agent_a', 'key-deleted', { paused: true })).rejects.toMatchObject(
+      refused('binding_mismatch'),
+    );
+    // One issued to an integration holds no grants, on this turn as on the first.
+    await expect((await s.report('agent_a', 'key-bound')).call()).resolves.toBe('unrestricted');
+  });
+
+  it('is left as it was for a task that kept no trigger, and where the operator asks for no grants', async () => {
+    const s = setup();
+    await expect((await s.report('agent_a', 'key-1', { captured: false })).call()).resolves.toBe(
+      'unrestricted',
+    );
+    for (const integrations of [null, {}, { mode: 'owner', resources: { warehouse: resource } }]) {
+      const open = setup(integrations);
+      await expect((await open.report()).call()).resolves.toBe('unrestricted');
+    }
+  });
+
+  it('says its completion turns find the grant again', async () => {
+    const s = setup();
+    expect((await s.host.execution.resolve(s.identity(), 'invoke'))?.detaches).toBe(true);
   });
 });
 
