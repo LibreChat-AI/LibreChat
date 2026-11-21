@@ -30,7 +30,10 @@ export type {
   SlackInstallGeneration,
 } from './models/slackWorkspace';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
-export { createAgentKeyMCPConsentStorage } from './methods/runGrant';
+export {
+  createAgentKeyMCPConsentStorage,
+  createScheduleMCPConsentStorage,
+} from './methods/runGrant';
 export type {
   ResponseOwner,
   ResponseStorage,
