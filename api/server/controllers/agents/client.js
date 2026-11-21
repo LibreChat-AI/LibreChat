@@ -2520,6 +2520,7 @@ class AgentClient extends BaseClient {
       requestAttachments,
       sharedRunAttachmentIds,
       attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
+      excluded: this.options.excludedFiles,
     });
     const scopedAttachmentMap = buildAgentScopedAttachmentMap({
       agentIds: allAgents.map(({ agentId }) => agentId),
