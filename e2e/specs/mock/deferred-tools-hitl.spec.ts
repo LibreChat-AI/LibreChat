@@ -127,8 +127,10 @@ test.describe('deferred tools across HITL resume', () => {
       const response = await sendMessage(page, `${PROMPT_MARKER}${label}`);
       expect(response.ok()).toBeTruthy();
       await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
-      const questionCard = page.getByRole('paragraph').filter({ hasText: question });
-      await expect(questionCard).toHaveText(question, { timeout: 30000 });
+      const chat = messagesView(page);
+      // The tool-call preview can show the same prompt before the answer fields are ready.
+      const fields = chat.getByRole('group', { name: question, exact: true });
+      await expect(fields).toBeVisible({ timeout: 30000 });
 
       /** Reload the public conversation route while the graph is paused. This
        * proves the browser reconstructs the real persisted pending action,
@@ -136,14 +138,14 @@ test.describe('deferred tools across HITL resume', () => {
       const conversationPath = new URL(page.url()).pathname;
       await page.reload({ waitUntil: 'domcontentloaded' });
       await expect(page).toHaveURL(conversationPath);
-      await expect(questionCard).toHaveText(question, { timeout: 30000 });
+      await expect(fields).toBeVisible({ timeout: 30000 });
 
-      const option = page.getByRole('button', {
+      const option = fields.getByRole('button', {
         name: new RegExp(`${escapeRegExp(optionLabel)}$`),
       });
       await expect(option).toBeVisible();
       await option.click();
-      const submit = page.getByRole('button', { name: 'Submit', exact: true });
+      const submit = chat.getByRole('button', { name: 'Submit', exact: true });
       await expect(submit).toBeEnabled();
       const [resumeRequest, resumeResponse] = await Promise.all([
         page.waitForRequest(isResumeRequest),
@@ -167,7 +169,7 @@ test.describe('deferred tools across HITL resume', () => {
        * unbound as a negative control. It invokes real MCP only if all pass. */
       const expectedFinal =
         `E2E deferred HITL passed ${label}: ` + `E2E slow echo: resume-${label}`;
-      const terminal = messagesView(page).getByText(
+      const terminal = chat.getByText(
         new RegExp(`^E2E deferred HITL (?:passed|failed) ${escapeRegExp(label)}:`),
       );
       await expect(terminal).toBeVisible({ timeout: 30000 });
