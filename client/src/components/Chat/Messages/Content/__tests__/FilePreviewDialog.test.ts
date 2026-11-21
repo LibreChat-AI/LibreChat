@@ -22,6 +22,21 @@ describe('FilePreviewDialog text-source behavior', () => {
     expect(getDownloadFilename('report.pdf', 'file-3', FileSources.local)).toBe('report.pdf');
   });
 
+  it('does not preview OOXML office files as text', () => {
+    const ooxml = 'application/vnd.openxmlformats-officedocument';
+    expect(getPreviewKind('deck.pptx', `${ooxml}.presentationml.presentation`)).toBe(false);
+    expect(getPreviewKind('report.docx', `${ooxml}.wordprocessingml.document`)).toBe(false);
+    expect(getPreviewKind('book.xlsx', `${ooxml}.spreadsheetml.sheet`)).toBe(false);
+  });
+
+  it('previews XML media types as text', () => {
+    expect(getPreviewKind('feed', 'application/xml')).toBe('text');
+    expect(getPreviewKind('feed', 'application/xml; charset=utf-8')).toBe('text');
+    expect(getPreviewKind('feed', 'application/atom+xml')).toBe('text');
+    expect(getPreviewKind('logo', 'image/svg+xml')).toBe('text');
+    expect(getPreviewKind('schema', 'application/xml-dtd')).toBe('text');
+  });
+
   it('uses stored extracted text when the delivery path is text', () => {
     expect(shouldUseExtractedTextPreview('text')).toBe(true);
     expect(shouldUseExtractedTextPreview('provider')).toBe(false);
