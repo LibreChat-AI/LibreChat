@@ -14,7 +14,10 @@ export type TWebSearchKeys =
   | 'keenableApiUrl'
   | 'jinaApiKey'
   | 'jinaApiUrl'
-  | 'cohereApiKey';
+  | 'cohereApiKey'
+  | 'customRerankerApiUrl'
+  | 'customRerankerApiKey'
+  | 'customRerankerModel';
 
 export type TWebSearchCategories =
   | SearchCategories.PROVIDERS
