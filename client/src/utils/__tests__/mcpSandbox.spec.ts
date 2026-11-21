@@ -172,6 +172,88 @@ function loadSandbox(
   };
 }
 
+/** What the proxy puts ahead of the App: the policy, the bootstrap, then the storage stand-ins. */
+const VIEW_INJECTION =
+  /<meta http-equiv="Content-Security-Policy"[^>]*><script>\(function\(\)\{var N=[\s\S]*?<\/script><script>[\s\S]*?<\/script>/;
+
+/** The inline scripts the proxy adds to a View document, in order: bootstrap, then stand-ins. */
+function injectedScripts(srcdoc: string): string[] {
+  const parsed = new DOMParser().parseFromString(srcdoc, 'text/html');
+  return Array.from(parsed.head.querySelectorAll('script'), (script) => script.textContent ?? '');
+}
+
+function securityError(property: string): DOMException {
+  return new DOMException(
+    `Failed to read the '${property}' property: The document is sandboxed and lacks the 'allow-same-origin' flag.`,
+    'SecurityError',
+  );
+}
+
+function errorName(read: () => unknown): string | null {
+  try {
+    read();
+    return null;
+  } catch (error) {
+    return (error as Error).name;
+  }
+}
+
+const ALL_BLOCKED = ['localStorage', 'sessionStorage', 'indexedDB', 'cookie'];
+
+/**
+ * A window and document as an opaque View sees them. Whatever is listed in `blocked` throws a
+ * SecurityError on access, as it does without `allow-same-origin`. Everything else behaves like a
+ * browser that grants it: a getter that returns the same native object, and a cookie accessor on
+ * the document prototype.
+ */
+function createView(blocked: readonly string[] = ALL_BLOCKED) {
+  const native: Record<string, object> = {
+    localStorage: { native: 'localStorage' },
+    sessionStorage: { native: 'sessionStorage' },
+    indexedDB: { native: 'indexedDB' },
+  };
+  const cookieWrites: string[] = [];
+  class FakeDocument {}
+  const win: Record<string, unknown> = {};
+  for (const name of Object.keys(native)) {
+    Object.defineProperty(win, name, {
+      configurable: true,
+      get: () => {
+        if (blocked.includes(name)) {
+          throw securityError(name);
+        }
+        return native[name];
+      },
+    });
+  }
+  Object.defineProperty(FakeDocument.prototype, 'cookie', {
+    configurable: true,
+    get: () => {
+      if (blocked.includes('cookie')) {
+        throw securityError('cookie');
+      }
+      return 'native=1';
+    },
+    set: (value: string) => {
+      if (blocked.includes('cookie')) {
+        throw securityError('cookie');
+      }
+      cookieWrites.push(value);
+    },
+  });
+  const doc = Object.create(FakeDocument.prototype) as { cookie: string };
+  return {
+    win,
+    doc,
+    native,
+    cookieWrites,
+    storage: (name: 'localStorage' | 'sessionStorage') => win[name] as Storage,
+    cookieDescriptor: () => Object.getOwnPropertyDescriptor(FakeDocument.prototype, 'cookie'),
+    run: (script: string): unknown =>
+      new Function('window', 'document', 'Document', script)(win, doc, FakeDocument),
+  };
+}
+
 const HOST_REQUEST: JsonRpcMessage = { jsonrpc: '2.0', id: 1, method: 'ui/initialize', params: {} };
 const APP_NOTIFICATION: JsonRpcMessage = {
   jsonrpc: '2.0',
@@ -325,10 +407,7 @@ describe('mcp-sandbox proxy', () => {
       const sandbox = loadSandbox();
       sandbox.deliverResource({ html });
       const blob = sandbox.blobs[0];
-      const injection =
-        blob.match(
-          /<meta http-equiv="Content-Security-Policy"[^>]*><script>\(function\(\)\{var N=[\s\S]*?<\/script>/,
-        )?.[0] ?? '';
+      const injection = blob.match(VIEW_INJECTION)?.[0] ?? '';
       expect(injection).not.toBe('');
       expect(injection).toContain("frame-src 'none'");
       expect(blob.replace(injection, '')).toBe(html);
@@ -365,10 +444,7 @@ describe('mcp-sandbox proxy', () => {
       const sandbox = loadSandbox();
       sandbox.deliverResource({ html });
       const blob = sandbox.blobs[0];
-      const injection =
-        blob.match(
-          /<meta http-equiv="Content-Security-Policy"[^>]*><script>\(function\(\)\{var N=[\s\S]*?<\/script>/,
-        )?.[0] ?? '';
+      const injection = blob.match(VIEW_INJECTION)?.[0] ?? '';
       expect(injection).not.toBe('');
       const at = marker === '' ? 0 : html.indexOf(marker) + marker.length;
       expect(blob).toBe(html.slice(0, at) + injection + html.slice(at));
@@ -392,6 +468,249 @@ describe('mcp-sandbox proxy', () => {
       second.deliverResource();
       expect(first.bootstrapNonce(0)).toMatch(/^[0-9a-f]{32}$/);
       expect(second.bootstrapNonce(1)).not.toBe(first.bootstrapNonce(0));
+    });
+  });
+
+  describe('storage stand-ins', () => {
+    const standInsFor = (html?: string): string => {
+      const sandbox = loadSandbox();
+      sandbox.deliverResource(html ? { html } : {});
+      const scripts = injectedScripts(sandbox.blobs[0]);
+      expect(scripts).toHaveLength(2);
+      return scripts[1];
+    };
+
+    it('are injected as their own script, after the bootstrap and ahead of the app', () => {
+      const html =
+        '<!doctype html><html><head><title>t</title></head><body><p>app</p></body></html>';
+      const sandbox = loadSandbox();
+      sandbox.deliverResource({ html });
+      const blob = sandbox.blobs[0];
+
+      expect(blob).toMatch(
+        /<head><meta http-equiv="Content-Security-Policy"[^>]*><script>\(function\(\)\{var N=[\s\S]*?<\/script><script>[\s\S]*?<\/script><title>t<\/title>/,
+      );
+      const [bootstrap, standIns] = injectedScripts(blob);
+      expect(bootstrap).toContain('var N=');
+      expect(standIns).not.toContain('var N=');
+      expect(standIns).toContain('localStorage');
+      expect(standIns).toContain('sessionStorage');
+      expect(standIns).toContain('cookie');
+      // The closing tag is escaped in the proxy, so no part of the script leaks into the document.
+      const parsed = new DOMParser().parseFromString(blob, 'text/html');
+      expect(parsed.querySelectorAll('script')).toHaveLength(2);
+      expect(parsed.body.textContent).toBe('app');
+      expect(blob.replace(blob.match(VIEW_INJECTION)?.[0] ?? '', '')).toBe(html);
+    });
+
+    it('keep the bootstrap attestation untouched', () => {
+      const sandbox = loadSandbox();
+      sandbox.deliverResource();
+      sandbox.attest();
+      sandbox.fromParent(HOST_REQUEST);
+      expect(sandbox.innerPosts()).toEqual([HOST_REQUEST]);
+      expect(sandbox.bootstrapNonce()).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    it('make localStorage a working in-memory store where access throws', () => {
+      const standIns = standInsFor();
+      const view = createView();
+      expect(errorName(() => view.win.localStorage)).toBe('SecurityError');
+
+      view.run(standIns);
+      const local = view.storage('localStorage');
+      expect(local.length).toBe(0);
+      expect(local.getItem('missing')).toBeNull();
+
+      local.setItem('a', '1');
+      local.setItem('b', 'two');
+      expect(local.getItem('a')).toBe('1');
+      expect(local.length).toBe(2);
+      expect(local.key(0)).toBe('a');
+      expect(local.key(1)).toBe('b');
+      expect(local.key(2)).toBeNull();
+      expect(local.key(-1)).toBeNull();
+      expect(view.storage('localStorage')).toBe(local);
+
+      local.setItem('a', '3');
+      expect(local.getItem('a')).toBe('3');
+      expect(local.length).toBe(2);
+
+      local.removeItem('a');
+      expect(local.getItem('a')).toBeNull();
+      expect(local.length).toBe(1);
+      local.removeItem('a');
+      expect(local.length).toBe(1);
+
+      local.clear();
+      expect(local.length).toBe(0);
+      expect(local.key(0)).toBeNull();
+    });
+
+    it('store values as strings, and treat prototype names as plain keys', () => {
+      const view = createView();
+      view.run(standInsFor());
+      const local = view.storage('localStorage');
+      local.setItem('count', 5 as unknown as string);
+      expect(local.getItem('count')).toBe('5');
+      local.setItem('constructor', 'x');
+      local.setItem('__proto__', 'y');
+      expect(local.getItem('constructor')).toBe('x');
+      expect(local.getItem('__proto__')).toBe('y');
+      expect(local.getItem('toString')).toBeNull();
+      expect(local.length).toBe(3);
+    });
+
+    it('keep sessionStorage separate from localStorage', () => {
+      const view = createView();
+      view.run(standInsFor());
+      const local = view.storage('localStorage');
+      const session = view.storage('sessionStorage');
+      expect(session).not.toBe(local);
+
+      local.setItem('k', 'local');
+      session.setItem('k', 'session');
+      session.setItem('only-session', '1');
+      expect(local.getItem('k')).toBe('local');
+      expect(session.getItem('k')).toBe('session');
+      expect(local.getItem('only-session')).toBeNull();
+      expect(local.length).toBe(1);
+      expect(session.length).toBe(2);
+
+      session.clear();
+      expect(local.getItem('k')).toBe('local');
+      expect(session.length).toBe(0);
+    });
+
+    it('make document.cookie an in-memory jar: set, read, overwrite and join with "; "', () => {
+      const view = createView();
+      expect(errorName(() => view.doc.cookie)).toBe('SecurityError');
+
+      view.run(standInsFor());
+      expect(view.doc.cookie).toBe('');
+      view.doc.cookie = 'a=1; path=/; SameSite=Lax';
+      expect(view.doc.cookie).toBe('a=1');
+      view.doc.cookie = 'b=two=parts';
+      expect(view.doc.cookie).toBe('a=1; b=two=parts');
+      view.doc.cookie = 'a=changed';
+      expect(view.doc.cookie).toBe('a=changed; b=two=parts');
+      view.doc.cookie = '=nameless';
+      view.doc.cookie = 'justtext';
+      expect(view.doc.cookie).toBe('a=changed; b=two=parts');
+    });
+
+    it('delete a cookie on max-age of zero or less, or an expiry in the past', () => {
+      const view = createView();
+      view.run(standInsFor());
+      view.doc.cookie = 'a=1';
+      view.doc.cookie = 'b=2';
+      view.doc.cookie = 'c=3';
+      view.doc.cookie = 'd=4; max-age=3600';
+      view.doc.cookie = 'e=5; expires=Fri, 01 Jan 2100 00:00:00 GMT';
+      expect(view.doc.cookie).toBe('a=1; b=2; c=3; d=4; e=5');
+
+      view.doc.cookie = 'a=; max-age=0';
+      view.doc.cookie = 'b=; Max-Age=-1; path=/';
+      view.doc.cookie = 'c=; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+      expect(view.doc.cookie).toBe('d=4; e=5');
+
+      view.doc.cookie = 'missing=; max-age=0';
+      expect(view.doc.cookie).toBe('d=4; e=5');
+    });
+
+    it('let an App that reads cookies and storage without a guard run to the end', () => {
+      const app = `
+        var seen = [document.cookie, window.localStorage.getItem('theme'), window.sessionStorage.length];
+        window.localStorage.setItem('theme', 'dark');
+        seen.push(window.localStorage.getItem('theme'));
+        return seen.join('|');
+      `;
+      const without = createView();
+      expect(errorName(() => without.run(app))).toBe('SecurityError');
+
+      const view = createView();
+      view.run(standInsFor());
+      expect(view.run(app)).toBe('||0|dark');
+    });
+
+    it('leave localStorage, sessionStorage and the cookie accessor alone where they work', () => {
+      const view = createView([]);
+      const before = {
+        local: Object.getOwnPropertyDescriptor(view.win, 'localStorage'),
+        session: Object.getOwnPropertyDescriptor(view.win, 'sessionStorage'),
+        cookie: view.cookieDescriptor(),
+      };
+
+      view.run(standInsFor());
+
+      expect(Object.getOwnPropertyDescriptor(view.win, 'localStorage')).toEqual(before.local);
+      expect(Object.getOwnPropertyDescriptor(view.win, 'sessionStorage')).toEqual(before.session);
+      expect(view.cookieDescriptor()).toEqual(before.cookie);
+      expect(view.cookieDescriptor()?.get).toBe(before.cookie?.get);
+      expect(view.cookieDescriptor()?.set).toBe(before.cookie?.set);
+      expect(view.win.localStorage).toBe(view.native.localStorage);
+      expect(view.win.sessionStorage).toBe(view.native.sessionStorage);
+      expect(view.doc.cookie).toBe('native=1');
+      view.doc.cookie = 'x=1';
+      expect(view.cookieWrites).toEqual(['x=1']);
+    });
+
+    it('replace only what throws', () => {
+      const view = createView(['localStorage']);
+      view.run(standInsFor());
+
+      view.storage('localStorage').setItem('k', 'v');
+      expect(view.storage('localStorage').getItem('k')).toBe('v');
+      expect(view.win.sessionStorage).toBe(view.native.sessionStorage);
+      expect(view.doc.cookie).toBe('native=1');
+
+      const cookieOnly = createView(['cookie']);
+      cookieOnly.run(standInsFor());
+      cookieOnly.doc.cookie = 'k=v';
+      expect(cookieOnly.doc.cookie).toBe('k=v');
+      expect(cookieOnly.win.localStorage).toBe(cookieOnly.native.localStorage);
+      expect(cookieOnly.win.sessionStorage).toBe(cookieOnly.native.sessionStorage);
+    });
+
+    it('leave indexedDB alone', () => {
+      const view = createView();
+      view.run(standInsFor());
+      expect(errorName(() => view.win.indexedDB)).toBe('SecurityError');
+    });
+
+    it('give every View stores of its own, and keep them when run again', () => {
+      const standIns = standInsFor();
+      const first = createView();
+      const second = createView();
+      first.run(standIns);
+      second.run(standIns);
+
+      first.storage('localStorage').setItem('k', 'v');
+      first.doc.cookie = 'c=1';
+      expect(second.storage('localStorage').getItem('k')).toBeNull();
+      expect(second.doc.cookie).toBe('');
+
+      // A second run finds working stores, so it keeps the ones already in place.
+      first.run(standIns);
+      expect(first.storage('localStorage').getItem('k')).toBe('v');
+      expect(first.doc.cookie).toBe('c=1');
+    });
+
+    it('do not throw when a property cannot be redefined', () => {
+      const view = createView();
+      Object.defineProperty(view.win, 'localStorage', {
+        configurable: false,
+        get: () => {
+          throw securityError('localStorage');
+        },
+      });
+      expect(() => view.run(standInsFor())).not.toThrow();
+
+      expect(errorName(() => view.win.localStorage)).toBe('SecurityError');
+      view.storage('sessionStorage').setItem('k', 'v');
+      expect(view.storage('sessionStorage').getItem('k')).toBe('v');
+      view.doc.cookie = 'c=1';
+      expect(view.doc.cookie).toBe('c=1');
     });
   });
 
