@@ -129,11 +129,6 @@
       "count": 21
     }
   },
-  "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/EditContentParts.tsx": {
     "design/disabled-recipe": {
       "count": 1
