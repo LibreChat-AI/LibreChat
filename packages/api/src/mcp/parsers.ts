@@ -139,6 +139,47 @@ function isImageContent(item: t.ToolContentPart): item is t.ImageContent {
   return item.type === 'image';
 }
 
+/** Lowercased MIME type without parameters (`image/PNG; q=1` -> `image/png`). */
+function normalizeMimeType(mimeType: unknown): string {
+  return typeof mimeType === 'string' ? (mimeType.split(';')[0] ?? '').trim().toLowerCase() : '';
+}
+
+/**
+ * Whether every image in a tool result, standalone or as an image resource, has a MIME type the
+ * request's endpoint accepts as image input, and the result has at least one. An endpoint the
+ * provider list doesn't recognize (e.g. an OpenAI-compatible custom endpoint) then gets the
+ * result as a recognized provider would: images as model input instead of serialized text.
+ */
+function hasOnlyAcceptedImages(
+  content: t.ToolContentPart[],
+  imageInputMimeTypes: readonly string[] | undefined,
+): boolean {
+  if (!imageInputMimeTypes?.length) {
+    return false;
+  }
+  const accepted = new Set(imageInputMimeTypes.map(normalizeMimeType));
+  let imageCount = 0;
+  for (const item of content) {
+    let mimeType: string | undefined;
+    if (isImageContent(item)) {
+      mimeType = normalizeMimeType(item.mimeType);
+    } else if (item.type === 'resource' && 'blob' in item.resource) {
+      const resourceMimeType = normalizeMimeType(item.resource.mimeType);
+      if (resourceMimeType.startsWith('image/')) {
+        mimeType = resourceMimeType;
+      }
+    }
+    if (mimeType === undefined) {
+      continue;
+    }
+    if (!accepted.has(mimeType)) {
+      return false;
+    }
+    imageCount += 1;
+  }
+  return imageCount > 0;
+}
+
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
 /**
@@ -336,10 +377,15 @@ export function formatToolContent(
     serverBinding?: string;
     toolArgs?: Record<string, unknown>;
     mcpApps?: TMCPAppsPolicy;
+    /** Image MIME types the request's endpoint explicitly accepts
+     *  (`fileConfig.endpoints.<name>.supportedMimeTypes`); see `resolveMCPImageInputMimeTypes`. */
+    imageInputMimeTypes?: readonly string[];
   },
 ): t.FormattedContentResult {
   const mcpApps = metadata?.mcpApps ?? resolveMCPAppsPolicy();
-  const isRecognizedProvider = RECOGNIZED_PROVIDERS.has(provider);
+  const isRecognizedProvider =
+    RECOGNIZED_PROVIDERS.has(provider) ||
+    hasOnlyAcceptedImages(result?.content ?? [], metadata?.imageInputMimeTypes);
   // Truthiness, not != null: an empty resourceUri/serverName/toolName cannot address an app, and a
   // single predicate keeps this gate and the synthesis below from drifting apart.
   const hasSyntheticApp = !!(

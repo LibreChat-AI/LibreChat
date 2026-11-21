@@ -848,6 +848,7 @@ async function reconnectServer({
  * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
  * @param {import('@librechat/api').AuthIdentityContext} [params.oboIdentityContext] - Non-template-visible OBO identity context built from the real request user.
  * @param {import('librechat-data-provider').TMCPAppsPolicy} [params.mcpApps] - Request-admitted MCP Apps policy.
+ * @param {readonly string[]} [params.imageInputMimeTypes] - Image MIME types the request's endpoint accepts as input.
  * @returns { Promise<Array<typeof tool | { _call: (toolInput: Object | string) => unknown}>> } An object with `_call` method to execute the tool input.
  */
 function createMCPTools(params) {
@@ -872,6 +873,7 @@ async function createMCPToolsImpl({
   upstreamTokenProviderResolver,
   oboIdentityContext,
   mcpApps,
+  imageInputMimeTypes,
   streamId = null,
   jobCreatedAt,
   unattended,
@@ -973,6 +975,7 @@ async function createMCPToolsImpl({
       upstreamTokenProviderResolver,
       oboIdentityContext,
       mcpApps,
+      imageInputMimeTypes,
       config: serverConfig,
     });
     if (toolInstance) {
@@ -1004,6 +1007,7 @@ async function createMCPToolsImpl({
  * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
  * @param {import('@librechat/api').AuthIdentityContext} [params.oboIdentityContext] - Non-template-visible OBO identity context built from the real request user.
  * @param {import('librechat-data-provider').TMCPAppsPolicy} [params.mcpApps] - Request-admitted MCP Apps policy.
+ * @param {readonly string[]} [params.imageInputMimeTypes] - Image MIME types the request's endpoint accepts as input.
  * @param {string} [params.serverName] - Resolved raw MCP server name from tool loading.
  * @param {(availableTools: LCAvailableTools) => void} [params.onAvailableTools]
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
@@ -1034,6 +1038,7 @@ async function createMCPToolImpl({
   upstreamTokenProviderResolver,
   oboIdentityContext,
   mcpApps,
+  imageInputMimeTypes,
   serverName: resolvedServerName,
   onAvailableTools,
   streamId = null,
@@ -1240,6 +1245,7 @@ async function createMCPToolImpl({
     upstreamTokenProviderResolver,
     oboIdentityContext,
     mcpApps,
+    imageInputMimeTypes,
     streamId,
     jobCreatedAt,
     unattended,
@@ -1268,6 +1274,7 @@ function createToolInstance({
   upstreamTokenProviderResolver: capturedUpstreamTokenProviderResolver = null,
   oboIdentityContext: capturedOboIdentityContext = null,
   mcpApps: capturedMCPApps,
+  imageInputMimeTypes: capturedImageInputMimeTypes,
   streamId = null,
   jobCreatedAt,
   unattended,
@@ -1421,6 +1428,7 @@ function createToolInstance({
           upstreamTokenProviderResolver: capturedUpstreamTokenProviderResolver,
           oboIdentityContext: capturedOboIdentityContext,
           mcpApps: capturedMCPApps,
+          imageInputMimeTypes: capturedImageInputMimeTypes,
         }),
       );
     } catch (error) {
