@@ -603,7 +603,8 @@ function Setup({
   };
   if (forbidden) return null;
   return (
-    <div className="space-y-4">
+    /* A gap, not space-y: the trailing sr-only headings must not leave margin under the last item. */
+    <div className="flex flex-col gap-4">
       {showDescription && (
         <p className="text-text-secondary text-sm">{localize('com_ui_discord_description')}</p>
       )}
