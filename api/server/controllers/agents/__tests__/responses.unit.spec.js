@@ -297,6 +297,10 @@ jest.mock('@librechat/api', () => ({
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
   buildRunToolSet: jest.fn().mockReturnValue(new Set()),
+  stampMcpServerIdentities: jest.fn(),
+  stampMcpServerIdentitiesOnMessages: jest.fn(),
+  createMcpServerNameResolver: jest.fn(() => jest.fn()),
+  stampLiveMcpToolCallIdentities: jest.fn(),
   /** No fixture declares a caller-executed tool, so the handoff stays inert. */
   createClientToolHandoff: jest.fn(({ agentDefinitions }) => ({
     toolDefinitions: agentDefinitions,
@@ -433,6 +437,8 @@ jest.mock('@librechat/api', () => ({
   createResponseContext: jest.fn().mockReturnValue({ responseId: 'resp_123' }),
   createResponseTracker: jest.fn().mockReturnValue({
     usage: { inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cachedTokens: 0 },
+    functionCalls: new Map(),
+    accumulatedText: '',
   }),
   setupStreamingResponse: jest.fn(),
   emitResponseInProgress: jest.fn(),
@@ -460,6 +466,8 @@ jest.mock('@librechat/api', () => ({
   createApplicationBillingQuote: jest.fn(),
   createResponseAggregator: jest.fn().mockReturnValue({
     usage: { inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cachedTokens: 0 },
+    toolCalls: new Map(),
+    getText: jest.fn().mockReturnValue(''),
   }),
   sendResponsesErrorResponse: jest.fn(),
   createResponsesEventHandlers: jest.fn().mockReturnValue({

@@ -15,6 +15,10 @@ const {
   getRemoteRunKeyId,
   buildInitialToolSessions,
   buildRunToolSet,
+  stampMcpServerIdentities,
+  stampMcpServerIdentitiesOnMessages,
+  createMcpServerNameResolver,
+  stampLiveMcpToolCallIdentities,
   AgentRunEnvelopeError,
   createAgentRunEnvelope,
   createAgentExecutionContext,
@@ -999,12 +1003,26 @@ const executeResponse = async (envelope, { req, res }) => {
       primaryConfig.toolDefinitions = clientTools.toolDefinitions;
       context.tools = clientTools.appliedTools;
 
+      const identityRoots = [primaryConfig, ...handoffAgentConfigs.values()];
+      /** Stamp MCP identities onto history before the allowlist runs so Responses
+       * turns match the chat path (no ambiguous names without identity). */
+      stampMcpServerIdentitiesOnMessages({
+        messages: allMessages,
+        roots: identityRoots,
+      });
+      const resolveMcpServerName = createMcpServerNameResolver(agentToolContexts);
+      const persistStampedMessage = (ctx, msg, opts) => {
+        if (Array.isArray(msg?.content)) {
+          stampMcpServerIdentities({ contentParts: msg.content, roots: identityRoots });
+        }
+        return db.saveMessage(ctx, msg, opts);
+      };
+
       const toolSet = buildRunToolSet(
         primaryConfig,
         handoffAgentConfigs.values(),
         undefined,
         allMessages,
-        true,
       );
       const formatted = formatAgentMessages(
         stripUnusableSummaryParts(stripActivityLabelParts(allMessages)),
@@ -1172,11 +1190,26 @@ const executeResponse = async (envelope, { req, res }) => {
           ...getSkillToolDeps(),
         };
 
+        const stampRunStepIdentities = (handler) => ({
+          handle: (event, data, metadata, ...rest) => {
+            stampLiveMcpToolCallIdentities(
+              data?.stepDetails?.tool_calls,
+              resolveMcpServerName,
+              metadata?.agent_id ?? metadata?.agentId,
+            );
+            return typeof handler?.handle === 'function'
+              ? handler.handle(event, data, metadata, ...rest)
+              : undefined;
+          },
+        });
+
         // Combine handlers
         const handlers = {
           on_message_delta: responsesHandlers.on_message_delta,
           on_reasoning_delta: responsesHandlers.on_reasoning_delta,
-          on_run_step: clientTools.wrapRunStep(responsesHandlers.on_run_step),
+          on_run_step: clientTools.wrapRunStep(
+            stampRunStepIdentities(responsesHandlers.on_run_step),
+          ),
           on_run_step_delta: responsesHandlers.on_run_step_delta,
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
@@ -1331,7 +1364,7 @@ const executeResponse = async (envelope, { req, res }) => {
           },
           {
             saveConvo: db.saveConvo,
-            saveMessage: db.saveMessage,
+            saveMessage: persistStampedMessage,
             announceReply: announceReply.bind(null, db),
             resolveTitle: resolveConversationTitle,
             traceFields: getLangfuseTraceMessageFields,
@@ -1413,10 +1446,25 @@ const executeResponse = async (envelope, { req, res }) => {
           ...getSkillToolDeps(),
         };
 
+        const stampRunStepIdentities = (handler) => ({
+          handle: (event, data, metadata, ...rest) => {
+            stampLiveMcpToolCallIdentities(
+              data?.stepDetails?.tool_calls,
+              resolveMcpServerName,
+              metadata?.agent_id ?? metadata?.agentId,
+            );
+            return typeof handler?.handle === 'function'
+              ? handler.handle(event, data, metadata, ...rest)
+              : undefined;
+          },
+        });
+
         const handlers = {
           on_message_delta: aggregatorHandlers.on_message_delta,
           on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
-          on_run_step: clientTools.wrapRunStep(aggregatorHandlers.on_run_step),
+          on_run_step: clientTools.wrapRunStep(
+            stampRunStepIdentities(aggregatorHandlers.on_run_step),
+          ),
           on_run_step_delta: aggregatorHandlers.on_run_step_delta,
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
@@ -1576,7 +1624,7 @@ const executeResponse = async (envelope, { req, res }) => {
           },
           {
             saveConvo: db.saveConvo,
-            saveMessage: db.saveMessage,
+            saveMessage: persistStampedMessage,
             announceReply: announceReply.bind(null, db),
             resolveTitle: resolveConversationTitle,
             traceFields: getLangfuseTraceMessageFields,
