@@ -112,7 +112,7 @@ export default function Settings({
                   </p>
                 )}
               </div>
-              <div className="space-y-2">
+              <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <h4 className="text-sm font-medium">{localize('com_ui_discord_commands')}</h4>
