@@ -28,6 +28,7 @@ const {
   isScheduleFireRequest,
   createTriggerExecutionContext,
   toMessageTrigger,
+  stampMessageTrigger,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -267,7 +268,6 @@ function getPreliminaryUserMessage(
   },
   conversationId,
   subagentTriggerProjection,
-  trigger,
 ) {
   if (typeof messageId !== 'string' || messageId.length === 0) {
     return null;
@@ -302,7 +302,6 @@ function getPreliminaryUserMessage(
        the live user message, and compaction is projected before reaching here. */
     ...persistedReasoningOverrideFields({ rawReasoningOverride: reasoningOverride }),
     ...(subagentTriggerProjection != null && { subagentTriggerProjection }),
-    ...(trigger != null && { trigger }),
   };
 }
 
@@ -448,11 +447,9 @@ async function saveErrorTurn(
                   alwaysAppliedSkills: req.body.alwaysAppliedSkills,
                 }),
             }
-          : getPreliminaryUserMessage(
-              req.body,
-              conversationId,
-              req._agentEventTriggerProjection,
-              req._messageTrigger,
+          : stampMessageTrigger(
+              req,
+              getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection),
             );
       if (!userMessage) {
         return;
@@ -1682,13 +1679,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req._messageTrigger = toMessageTrigger(executionContext);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
-      : stampPreliminaryPrivateTextMessage(
+      : stampMessageTrigger(
           req,
-          getPreliminaryUserMessage(
-            { ...req.body, messageId: preallocatedUserMessageId },
-            conversationId,
-            req._agentEventTriggerProjection,
-            req._messageTrigger,
+          stampPreliminaryPrivateTextMessage(
+            req,
+            getPreliminaryUserMessage(
+              { ...req.body, messageId: preallocatedUserMessageId },
+              conversationId,
+              req._agentEventTriggerProjection,
+            ),
           ),
         );
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {

@@ -216,6 +216,24 @@ export function toMessageTrigger(context?: ExecutionContext): TMessageTrigger | 
   };
 }
 
+/** The request a turn is served on, where the chat route keeps what `toMessageTrigger` returned. */
+interface TurnRequest {
+  _messageTrigger?: TMessageTrigger;
+}
+
+/**
+ * A first message of the turn a request serves, recording what started the turn. The message
+ * is returned as it is when the turn has no such record, so a caller stamps every first
+ * message it builds without asking whether a trigger started it.
+ */
+export function stampMessageTrigger<T extends object | null | undefined>(
+  req: TurnRequest | undefined,
+  message: T,
+): T {
+  const trigger = req?._messageTrigger;
+  return trigger == null || message == null ? message : { ...message, trigger };
+}
+
 /** The personal API key a run acts for, whichever way the key started it. */
 export function getSourceKey(context?: ExecutionContext): string | undefined {
   const source = context?.source;

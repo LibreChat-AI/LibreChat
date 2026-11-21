@@ -79,6 +79,7 @@ jest.mock('@librechat/api', () => ({
   isScheduleFireRequest: jest.fn(() => false),
   createTriggerExecutionContext: jest.fn(() => undefined),
   toMessageTrigger: jest.fn(() => undefined),
+  stampMessageTrigger: (_req, message) => message,
   exemptFromConcurrencyLimiter: jest.fn(() => false),
   toPendingSteer: jest.fn((item) => item),
   isSteerPreemptSupported: jest.fn(() => true),

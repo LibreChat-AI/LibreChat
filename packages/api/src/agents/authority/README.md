@@ -138,14 +138,16 @@ message stores, `trigger` (`tMessageTriggerSchema` in `librechat-data-provider`)
 chat route
   createTriggerExecutionContext(req)   the run, verified
   toMessageTrigger(context)            req._messageTrigger
+  stampMessageTrigger(req, message)    on every first message built for the turn
     BaseClient.createUserMessage       the saved first message, the created event and the final event
-    getPreliminaryUserMessage          the job's first metadata and the turn saved when the run fails early
+    the preliminary message            the job's first metadata and the turn saved when the run fails early
   GenerationJobManager                 job.userMessage.trigger: a resumed stream's row, a stopped turn's
 ```
 
 - It is written from the context and from nothing else. A request cannot set it: the route
-  that saves a client's message and the importer both drop it, and a job takes it only from the
-  message the server emitted.
+  that saves a client's message and the importer both pass what they were sent through
+  `withoutServerRecords`, which drops it, and a job takes it only from the message the server
+  emitted. The legacy `/api` files only call these functions and pass their values on.
 - It is what the owner is shown, so it names events, not deliveries. The delivery key and the
   event id stay on the job (`trigger`), and an event type an outside system named is bounded
   and stripped of control and direction characters first.

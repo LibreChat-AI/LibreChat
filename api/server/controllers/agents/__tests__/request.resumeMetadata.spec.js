@@ -302,6 +302,8 @@ jest.mock('@librechat/api', () => ({
   createTriggerExecutionContext: (...args) =>
     jest.requireActual('@librechat/api').createTriggerExecutionContext(...args),
   toMessageTrigger: (...args) => jest.requireActual('@librechat/api').toMessageTrigger(...args),
+  stampMessageTrigger: (...args) =>
+    jest.requireActual('@librechat/api').stampMessageTrigger(...args),
   exemptFromConcurrencyLimiter: (...args) => mockExemptFromConcurrencyLimiter(...args),
   toPendingSteer: jest.fn((item) => item),
   promoteDrainedSteers: (...args) =>

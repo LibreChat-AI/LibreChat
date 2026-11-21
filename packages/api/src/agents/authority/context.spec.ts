@@ -3,6 +3,7 @@ import {
   getScheduleSource,
   restoreExecutionContext,
   toScheduledTokenContext,
+  stampMessageTrigger,
   toMessageTrigger,
   createRemoteExecutionContext,
   createTriggerExecutionContext,
@@ -768,6 +769,20 @@ describe('createTriggerExecutionContext', () => {
       expect(named('x'.repeat(1_000))).toBe('x'.repeat(256));
       expect(named('review.\u202Esubmitted\u2066\n')).toBe('review. submitted');
       expect(named('\u202E\u2066')).toBeUndefined();
+    });
+
+    it('stamps a first message of the turn from what the route kept, and no other message', () => {
+      const trigger = record(fire());
+      const message = { messageId: 'first', text: 'hello', trigger: { event: { type: 'forged' } } };
+      const typed = { messageId: 'typed', text: 'hello' };
+
+      expect(stampMessageTrigger({ _messageTrigger: trigger }, message)).toEqual({
+        ...message,
+        trigger,
+      });
+      expect(stampMessageTrigger({}, typed)).toBe(typed);
+      expect(stampMessageTrigger(undefined, typed)).toBe(typed);
+      expect(stampMessageTrigger({ _messageTrigger: trigger }, null)).toBeNull();
     });
 
     it('records nothing for an event whose time is no date', () => {
