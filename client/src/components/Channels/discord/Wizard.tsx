@@ -137,7 +137,7 @@ export default function Wizard({
       </AutoHeight>
 
       {/* Pinned to the scroll area so the step action stays reachable on short windows. */}
-      <div className="bg-surface-dialog sticky bottom-0 flex gap-2 pt-3 pb-4">
+      <div className="bg-surface-dialog sticky bottom-0 flex gap-2 pt-5">
         {step === 2 && (
           <Button type="button" variant="outline" disabled={busy} onClick={() => onStep(1)}>
             {localize('com_ui_back')}
