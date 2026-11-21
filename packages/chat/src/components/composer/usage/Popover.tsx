@@ -10,11 +10,10 @@ const SHOW_DELAY_MS = 100;
 const HIDE_DELAY_MS = 150;
 
 /** `--usage-card-wide` is the wide card's width, less the popover's padding and
- *  border when the viewport caps it. A panel inside reads it to keep its
- *  settled layout while the card resizes around it. Each direction borrows the
- *  pacing of the collapsible roll it travels with. */
+ *  border when the viewport caps it: room for the context legend's two columns.
+ *  Each direction borrows the pacing of the collapsible roll it travels with. */
 const CARD =
-  '[--usage-card-wide:min(44rem,calc(100vw_-_2.5rem_-_2px))] max-w-full transition-width motion-reduce:transition-none';
+  '[--usage-card-wide:min(24rem,calc(100vw_-_2.5rem_-_2px))] max-w-full transition-width motion-reduce:transition-none';
 const CARD_WIDE = 'w-(--usage-card-wide) duration-300 ease-out';
 const CARD_NARROW = 'w-72 duration-200 ease-in';
 

@@ -94,11 +94,21 @@ test.describe('subagent context usage totals', () => {
         0,
       );
 
-      const totals = popover.getByTestId('token-usage-totals');
-      await expect(totals).toBeVisible({ timeout: 10000 });
-      await expect(totals.getByRole('heading', { name: 'Totals' })).toBeVisible();
-      await expect(totals.getByText('Input (uncached)', { exact: true })).toBeVisible();
-      await expect(totals.getByText('Output', { exact: true })).toBeVisible();
+      const branchTotals = popover.getByTestId('token-usage-totals');
+      await expect(branchTotals).toBeVisible({ timeout: 10000 });
+      await expect(branchTotals.getByText('Input (uncached)', { exact: true })).toBeVisible();
+      await expect(branchTotals.getByText('Output', { exact: true })).toBeVisible();
+      await expect(branchTotals.getByText('Subagents (all branches)', { exact: true })).toHaveCount(
+        0,
+      );
+
+      await page.keyboard.press('Escape');
+      await expect(popover).toBeHidden();
+      await page.locator('#export-menu-button:visible, #header-menu-button:visible').click();
+      await page.getByTestId('conversation-info-menu-item').click();
+      const totals = page
+        .getByRole('dialog', { name: 'Conversation info' })
+        .getByTestId('conversation-total-usage');
 
       const subagentTerm = totals
         .getByRole('term')
