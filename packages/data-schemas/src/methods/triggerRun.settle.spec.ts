@@ -660,6 +660,33 @@ describe.each(paths)('the commands sent to the run collection by %s', (_name, bu
     });
   });
 
+  it('leaves out a checkpoint namespace and a duration that are null', async () => {
+    // What a caller outside the types hands over where a value is optional.
+    const nothing = null as unknown as undefined;
+    await seed(row());
+    record();
+    await settle.pause({ checkpointNamespace: nothing });
+    await settle.finish({ status: 'success', durationMs: nothing });
+
+    expect(text(commands())).toBe(
+      text([
+        {
+          method: 'findOneAndUpdate',
+          args: [{ ...live, $nor: refusals }, pausing(), prior],
+        },
+        {
+          method: 'findOneAndUpdate',
+          args: [
+            { ...live, $nor: refusals },
+            ending({ status: 'success', bookkept: false, settledAt: now }),
+            after,
+          ],
+        },
+        mark,
+      ]),
+    );
+  });
+
   it('answers a pause again for a run that is already paused', async () => {
     await seed(without(['capacitySlot'], { status: 'requires_action', updatedAt: before }));
     await settle.pause();
