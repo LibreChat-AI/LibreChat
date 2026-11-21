@@ -4,6 +4,7 @@ import type { SharedFileSnapshot } from '~/types';
 export interface ISharedLink extends Document {
   conversationId: string;
   title?: string;
+  spec?: string;
   user?: string;
   messages?: Types.ObjectId[];
   shareId?: string;
@@ -52,6 +53,7 @@ const shareSchema: Schema<ISharedLink> = new Schema(
       type: String,
       index: true,
     },
+    spec: { type: String, select: false },
     user: {
       type: String,
       index: true,

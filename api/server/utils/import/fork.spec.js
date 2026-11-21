@@ -17,7 +17,7 @@ jest.mock('~/models', () => ({
   getMessages: jest.fn(),
   bulkSaveMessages: jest.fn(),
   bulkIncrementTagCounts: jest.fn(),
-  getSharedMessages: jest.fn(),
+  getSharedForkSnapshot: jest.fn(),
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
@@ -26,7 +26,14 @@ jest.mock('~/server/controllers/ModelController', () => ({
 
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn().mockResolvedValue({ interfaceConfig: {} }),
+  getEndpointsConfig: jest.fn().mockResolvedValue({}),
 }));
+
+jest.mock('~/server/services/Endpoints/agents', () => ({
+  buildOptions: jest.fn((_req, endpoint, options) => ({ ...options, endpoint })),
+}));
+jest.mock('~/server/services/Endpoints/assistants', () => ({ buildOptions: jest.fn() }));
+jest.mock('~/server/services/Endpoints/azureAssistants', () => ({ buildOptions: jest.fn() }));
 
 let mockIdCounter = 0;
 jest.mock('uuid', () => {
@@ -53,11 +60,16 @@ const {
   bulkSaveConvos,
   getMessages,
   bulkSaveMessages,
-  getSharedMessages,
+  getSharedForkSnapshot,
 } = require('~/models');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const BaseClient = require('~/app/clients/BaseClient');
+const buildEndpointOption = require('~/server/middleware/buildEndpointOption');
+
+const mockShareRead = (share) => getSharedForkSnapshot.mockResolvedValue(share && { share });
+const mockShareReadOnce = (share) =>
+  getSharedForkSnapshot.mockResolvedValueOnce(share && { share });
 
 /**
  *
@@ -820,7 +832,7 @@ describe('forkSharedConversation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockIdCounter = 0;
-    getSharedMessages.mockResolvedValue(mockShare);
+    mockShareRead(mockShare);
     getConvo.mockResolvedValue(mockConversation);
     getMessages.mockResolvedValue(mockSharedMessages);
     bulkSaveConvos.mockResolvedValue(null);
@@ -829,7 +841,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should reject a fork aimed at a payload the owner has since republished', async () => {
-    getSharedMessages.mockResolvedValue({
+    mockShareRead({
       ...mockShare,
       updatedAt: new Date('2026-01-02T00:00:00.000Z'),
     });
@@ -848,7 +860,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should fork when the held revision still matches the published one', async () => {
-    getSharedMessages.mockResolvedValue({
+    mockShareRead({
       ...mockShare,
       updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
@@ -871,7 +883,7 @@ describe('forkSharedConversation', () => {
       requestUserId: 'user1',
     });
 
-    expect(getSharedMessages).toHaveBeenCalledWith('share123', 'resource123', {
+    expect(getSharedForkSnapshot).toHaveBeenCalledWith('share123', 'resource123', {
       snapshotFiles: undefined,
       preflight: expect.any(Function),
     });
@@ -918,7 +930,7 @@ describe('forkSharedConversation', () => {
         },
       },
     });
-    getSharedMessages.mockResolvedValueOnce({
+    mockShareReadOnce({
       ...mockShare,
       messages: [{ ...mockSharedMessages[0], text: 'PRIVATE-SENTINEL' }],
     });
@@ -935,6 +947,47 @@ describe('forkSharedConversation', () => {
     });
     expect(bulkSaveConvos).not.toHaveBeenCalled();
     expect(bulkSaveMessages).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['a still-configured non-default spec', 'specialist', 'specialist', 'anthropic', 'claude-test'],
+    ['an old link without a spec', undefined, 'default', 'google', 'gemini-test'],
+    ['a spec absent from the viewer config', 'owner-only', 'default', 'google', 'gemini-test'],
+  ])('accepts the first message after forking %s', async (_case, spec, name, endpoint, model) => {
+    getSharedForkSnapshot.mockResolvedValueOnce({ share: mockShare, spec });
+    const config = {
+      modelSpecs: {
+        enforce: true,
+        list: [
+          { name: 'first', preset: { endpoint: 'openAI', model: 'gpt-test' } },
+          { name: 'default', default: true, preset: { endpoint: 'google', model: 'gemini-test' } },
+          {
+            name: 'specialist',
+            preset: { endpoint: 'anthropic', model: 'claude-test', promptPrefix: 'private preset' },
+          },
+        ],
+      },
+    };
+    getConvo.mockImplementationOnce(async () => bulkSaveConvos.mock.calls[0][0][0]);
+    const { conversation } = await forkSharedConversation({
+      shareId: 'share123',
+      requestUserId: 'viewer',
+      loadAppConfig: async () => config,
+    });
+
+    expect(conversation).toMatchObject({ spec: name, endpoint, model });
+    expect(conversation).not.toHaveProperty('promptPrefix');
+    expect(getModelsConfig).not.toHaveBeenCalled();
+    expect(
+      bulkSaveMessages.mock.calls[0][0].every((message) => message.endpoint === endpoint),
+    ).toBe(true);
+
+    const req = { body: { ...conversation }, baseUrl: '/api/agents/chat', config };
+    const next = jest.fn();
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    await buildEndpointOption(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.endpointOption).toMatchObject({ spec: name, endpoint, model });
   });
 
   test('should use an available endpoint when the deployment does not expose OpenAI', async () => {
@@ -954,7 +1007,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should return null when the share is not found', async () => {
-    getSharedMessages.mockResolvedValue(null);
+    mockShareRead(null);
 
     const result = await forkSharedConversation({
       shareId: 'missing',
@@ -966,7 +1019,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should return null when the share has no messages', async () => {
-    getSharedMessages.mockResolvedValue({ ...mockShare, messages: [] });
+    mockShareRead({ ...mockShare, messages: [] });
 
     const result = await forkSharedConversation({
       shareId: 'share123',
@@ -978,7 +1031,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should normalize orphaned parentMessageId references to NO_PARENT', async () => {
-    getSharedMessages.mockResolvedValue({
+    mockShareRead({
       ...mockShare,
       messages: [
         {
@@ -999,7 +1052,7 @@ describe('forkSharedConversation', () => {
     expect(savedMessages[0].parentMessageId).toBe(Constants.NO_PARENT);
   });
 
-  test('should forward snapshotFiles to getSharedMessages so the kill switch is honored', async () => {
+  test('should forward snapshotFiles to getSharedForkSnapshot so the kill switch is honored', async () => {
     await forkSharedConversation({
       shareId: 'share123',
       shareResourceId: 'resource123',
@@ -1007,7 +1060,7 @@ describe('forkSharedConversation', () => {
       snapshotFiles: false,
     });
 
-    expect(getSharedMessages).toHaveBeenCalledWith('share123', 'resource123', {
+    expect(getSharedForkSnapshot).toHaveBeenCalledWith('share123', 'resource123', {
       snapshotFiles: false,
       preflight: expect.any(Function),
     });
@@ -1023,17 +1076,17 @@ describe('forkSharedConversation', () => {
       sharedContentPreflight,
     });
 
-    const options = getSharedMessages.mock.calls[0][2];
+    const options = getSharedForkSnapshot.mock.calls[0][2];
     await options.preflight(mockShare, { canonicalMessages: [] });
     expect(sharedContentPreflight).toHaveBeenCalledWith(mockShare, { canonicalMessages: [] });
-    expect(getSharedMessages).toHaveBeenCalledWith('share123', 'resource123', {
+    expect(getSharedForkSnapshot).toHaveBeenCalledWith('share123', 'resource123', {
       snapshotFiles: undefined,
       preflight: expect.any(Function),
     });
   });
 
   test('should strip anonymized model identifiers from cloned messages', async () => {
-    getSharedMessages.mockResolvedValue({
+    mockShareRead({
       ...mockShare,
       messages: [
         {
@@ -1056,7 +1109,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should strip file_id from cloned files and attachments', async () => {
-    getSharedMessages.mockResolvedValue({
+    mockShareRead({
       ...mockShare,
       messages: [
         {
@@ -1096,6 +1149,7 @@ describe('forkSharedConversation', () => {
       shareId: 'share123',
       requestUserId: 'user1',
       userRole: 'USER',
+      idOnTheSource: 'viewer-source-id',
       userTenantId: 'tenant-viewer',
       loadAppConfig,
       builderFactory,
@@ -1104,6 +1158,7 @@ describe('forkSharedConversation', () => {
     expect(loadAppConfig).toHaveBeenCalledWith({
       role: 'USER',
       userId: 'user1',
+      idOnTheSource: 'viewer-source-id',
       tenantId: 'tenant-viewer',
     });
     expect(builderFactory).toHaveBeenCalledWith('user1', interfaceConfig, undefined);
@@ -1149,7 +1204,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should clone only the active branch path when targetMessageIndex is provided', async () => {
-    getSharedMessages.mockResolvedValue({
+    mockShareRead({
       ...mockShare,
       messages: [
         {
@@ -1187,7 +1242,7 @@ describe('forkSharedConversation', () => {
   });
 
   test('should select the correct branch even when siblings share a createdAt', async () => {
-    getSharedMessages.mockResolvedValue({
+    mockShareRead({
       ...mockShare,
       messages: [
         {
@@ -2101,9 +2156,9 @@ describe('native copy protected token admission', () => {
       conversationId: 'anonymous',
       shareId: 'shared',
     };
-    getSharedMessages.mockImplementationOnce(async (_id, _resource, options) => {
+    getSharedForkSnapshot.mockImplementationOnce(async (_id, _resource, options) => {
       await options.preflight(share, { canonicalMessages: [source] });
-      return share;
+      return { share };
     });
     getConvo.mockResolvedValue({ conversationId: 'copy', endpoint: 'agents' });
     getMessages.mockResolvedValue([]);

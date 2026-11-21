@@ -133,6 +133,7 @@ export * from './cache';
 export * from './cluster';
 /* Shared Links */
 export * from './shared-links/access';
+export * from './shared-links/fork';
 export * from './shared-links/service';
 export * from './shared-links/config';
 export * from './shared-links/http';
