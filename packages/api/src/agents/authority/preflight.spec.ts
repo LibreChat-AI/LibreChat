@@ -62,16 +62,19 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
   const grants = new Map<string, RunGrant<AgentKeyMCPIdentity>>();
   const found = (subject: AgentKeyMCPIdentity) =>
     subject.keyId === 'key-1' && subject.ownerId === 'owner' && subject.tenantId === 'tenant';
+  const state = { down: false };
   const storage: RunGrantStorage<AgentKeyMCPIdentity> = {
-    readRunGrant: async (subject) =>
-      found(subject)
+    readRunGrant: async (subject) => {
+      if (state.down) throw new Error('database unavailable');
+      return found(subject)
         ? {
             agentId: subject.agentId,
             enabled: true,
             configRevision: 0,
             enrollment: structuredClone(grants.get(subject.agentId) ?? null),
           }
-        : null,
+        : null;
+    },
     confirmRunGrant: async ({ identity: subject, expectedRevision, enrollment, basis }) => {
       const stored = grants.get(subject.agentId);
       if (
@@ -137,6 +140,8 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
     allow: { warehouse: ['query'] },
   });
   const ready = new Set(['warehouse', 'docs']);
+  /** Servers that answer, but only after asking the owner to sign in again. */
+  const expired = new Set<string>();
   const deps: PreflightDeps<AgentKeyMCPIdentity> = {
     resolveAgentGraphAccess: async () => ({}) as AgentGraphAccessContext,
     getAgentGraphNodes: nodes,
@@ -148,8 +153,9 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
     getServerConfigs: async () => ({ warehouse, docs }),
     findPluginAuthsByKeys: async () => [],
     execution: host.execution,
-    connect: jest.fn(async ({ serverName }) => {
+    connect: jest.fn(async ({ serverName, oauthStart }) => {
       if (!ready.has(serverName)) throw new Error('connection refused');
+      if (expired.has(serverName)) await oauthStart?.('https://resource.example/authorize');
       return {
         fetchToolsSnapshot: async () => ({
           tools: [
@@ -167,7 +173,7 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
   const preflight = createPreflight<AgentKeyMCPIdentity>(deps, credentials);
   const probed = () =>
     (deps.connect as jest.Mock).mock.calls.map(([options]) => options.serverName).sort();
-  return { preflight, probed, ready };
+  return { preflight, probed, ready, expired, state };
 }
 
 it("checks the servers an API key's grant allows, with no schedule to name", async () => {
@@ -199,6 +205,28 @@ it("names the server a key's run needs that is not ready", async () => {
   expect((failure as PreflightError).outcomes).toEqual([
     { server: 'warehouse', status: 'mcp_unavailable' },
   ]);
+});
+
+it('names a server that answers only after asking for a new sign-in', async () => {
+  const { preflight, expired } = await setup();
+  expired.add('warehouse');
+  await expect(preflight('agent_a', principal, { identity, concurrency: 2 })).rejects.toMatchObject(
+    {
+      code: 'mcp_reauth_required',
+      outcomes: [{ server: 'warehouse', status: 'mcp_reauth_required' }],
+    },
+  );
+});
+
+it('does not report a grant it could not read as a server that is not ready', async () => {
+  const { preflight, probed, state } = await setup();
+  state.down = true;
+  const failure = await preflight('agent_a', principal, { identity, concurrency: 2 }).catch(
+    (error: unknown) => error,
+  );
+  expect(failure).not.toBeInstanceOf(PreflightError);
+  expect(failure).toEqual(new Error('database unavailable'));
+  expect(probed()).toEqual([]);
 });
 
 it("connects each probe with the subject's credentials, and with none for a subject that has none", async () => {
