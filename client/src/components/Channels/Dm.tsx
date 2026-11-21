@@ -41,6 +41,7 @@ import type { ReactNode } from 'react';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { LinkAgentName } from './Links';
+import Notice from './discord/Notice';
 import Loading from './Loading';
 
 const editorAtom = atom<ChannelLinkView | null>(null);
@@ -332,19 +333,14 @@ function Selections({ principalKey }: { principalKey: string }) {
       <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_description')}</p>
       {selections.isLoading && <Loading />}
       {selections.isError && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">{localize('com_ui_discord_error')}</Alert>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy || selections.isFetching}
-            onClick={() =>
-              void (failedNext.current ? selections.fetchNextPage() : selections.refetch())
-            }
-          >
-            {localize('com_ui_retry')}
-          </Button>
-        </div>
+        <Notice
+          message={localize('com_ui_discord_error')}
+          action={localize('com_ui_retry')}
+          disabled={busy || selections.isFetching}
+          onAction={() =>
+            void (failedNext.current ? selections.fetchNextPage() : selections.refetch())
+          }
+        />
       )}
       {selections.data && !enabled && !selections.isError && (
         <p role="status" className="text-text-secondary text-sm">
@@ -352,12 +348,11 @@ function Selections({ principalKey }: { principalKey: string }) {
         </p>
       )}
       {enabled && links.isError && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">{localize('com_ui_channel_link_error')}</Alert>
-          <Button type="button" variant="outline" onClick={() => void links.refetch()}>
-            {localize('com_ui_retry')}
-          </Button>
-        </div>
+        <Notice
+          message={localize('com_ui_channel_link_error')}
+          action={localize('com_ui_retry')}
+          onAction={() => void links.refetch()}
+        />
       )}
       {enabled && links.isSuccess && active.length === 0 && (
         <p className="text-text-secondary text-sm">{localize('com_ui_discord_dm_link_first')}</p>
