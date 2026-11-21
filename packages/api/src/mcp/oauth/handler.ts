@@ -1,7 +1,6 @@
 import { randomBytes } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { OAuthMetadataSchema } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { TokenExchangeMethodEnum, type MCPOptions } from 'librechat-data-provider';
 import {
   checkResourceAllowed,
   resourceUrlFromServerUrl,
@@ -15,6 +14,7 @@ import {
 } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport';
 import type { TokenMethods } from '@librechat/data-schemas';
+import type { MCPOptions } from 'librechat-data-provider';
 import type {
   OAuthClientInformation,
   OAuthProtectedResourceMetadata,
@@ -710,7 +710,7 @@ export class MCPOAuthHandler {
     oauthHeaders: Record<string, string>,
     resourceMetadata?: OAuthProtectedResourceMetadata,
     redirectUri?: string,
-    tokenExchangeMethod?: TokenExchangeMethodEnum,
+    config?: MCPOptions['oauth'],
     allowedDomains?: string[] | null,
     allowedAddresses?: string[] | null,
   ): Promise<OAuthClientInformation> {
@@ -753,10 +753,13 @@ export class MCPOAuthHandler {
 
     clientMetadata.response_types = metadata.response_types_supported || ['code'];
 
-    const selectedAuthMethod = selectRegistrationAuthMethod(
-      metadata.token_endpoint_auth_methods_supported,
-      tokenExchangeMethod,
-    );
+    const registrationMethod = config?.registration_token_endpoint_auth_method;
+    const selectedAuthMethod =
+      registrationMethod ??
+      selectRegistrationAuthMethod(
+        metadata.token_endpoint_auth_methods_supported,
+        config?.token_exchange_method,
+      );
     if (selectedAuthMethod) {
       clientMetadata.token_endpoint_auth_method = selectedAuthMethod;
     }
@@ -777,8 +780,9 @@ export class MCPOAuthHandler {
       fetchFn: this.createOAuthFetch(oauthHeaders, undefined, allowedDomains, allowedAddresses),
     });
 
-    const forcedAuthMethod = getForcedTokenEndpointAuthMethod(tokenExchangeMethod);
-    if (forcedAuthMethod) {
+    /** Keep the legacy exchange override when no separate registration method was requested. */
+    const forcedAuthMethod = getForcedTokenEndpointAuthMethod(config?.token_exchange_method);
+    if (registrationMethod === undefined && forcedAuthMethod) {
       clientInfo.token_endpoint_auth_method = forcedAuthMethod;
     } else if (!clientInfo.token_endpoint_auth_method) {
       clientInfo.token_endpoint_auth_method = clientMetadata.token_endpoint_auth_method;
@@ -1131,7 +1135,7 @@ export class MCPOAuthHandler {
           oauthHeaders,
           resourceMetadata,
           redirectUri,
-          config?.token_exchange_method,
+          config,
           allowedDomains,
           allowedAddresses,
         );

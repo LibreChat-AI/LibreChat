@@ -70,6 +70,10 @@ const OAuthOptionsBaseSchema = z.object({
     .optional(),
   /** Token exchange method */
   token_exchange_method: z.nativeEnum(TokenExchangeMethodEnum).optional(),
+  /** Token endpoint auth method to request when dynamically registering a client. */
+  registration_token_endpoint_auth_method: z
+    .enum(['none', 'client_secret_basic', 'client_secret_post'])
+    .optional(),
   /** Supported grant types (defaults to ['authorization_code', 'refresh_token']) */
   grant_types_supported: z.array(z.string()).optional(),
   /** Supported token endpoint authentication methods (defaults to ['client_secret_basic', 'client_secret_post']) */
