@@ -151,6 +151,8 @@ const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
+const SUBAGENT_CHAIN_MARKER = 'E2E_SUBAGENT_CHAIN:';
+const SUBAGENT_RELAY_MARKER = 'E2E_SUBAGENT_RELAY:';
 const SUBAGENT_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
 const SUBAGENT_ACTIVITY_CHILD_MARKER = 'E2E_SUBAGENT_ACTIVITY_CHILD:';
 const RUN_FILES_MARKER = 'E2E_RUN_FILES:';
@@ -2309,6 +2311,52 @@ function subagentResultResponses(text) {
   };
 }
 
+/**
+ * `E2E_SUBAGENT_CHAIN:<relayId>:<childId>:<label>`: the parent calls the relay agent, the relay
+ * calls the child from inside its own run, and the child's streamed answer comes back through both.
+ */
+function subagentChainResponses(text) {
+  const [relayId, childId, label] = getMarkerValue(text, SUBAGENT_CHAIN_MARKER).split(':');
+  if (!relayId || !childId || !label) {
+    return null;
+  }
+
+  const relayPrompt = `${SUBAGENT_RELAY_MARKER}${label}`;
+  const childPrompt = `${SUBAGENT_CHILD_MARKER}${label}`;
+  const expectedResult = `E2E subagent streamed result ${label}`;
+  return {
+    responses: [''],
+    overrideSubagentModel: true,
+    resolveInvocation: (messages) => {
+      const toolResult = findLastToolMessageText(messages, expectedResult);
+      if (toolResult) {
+        return { response: toolResult };
+      }
+
+      const task = getLatestUserText(messages);
+      if (task.includes(childPrompt)) {
+        return { response: expectedResult, textDeltaBlocks: true };
+      }
+
+      const relays = task.includes(relayPrompt);
+      return {
+        response: '',
+        toolCalls: [
+          {
+            id: `call_e2e_${relays ? 'child' : 'relay'}_${label}`,
+            name: 'subagent',
+            args: {
+              description: relays ? childPrompt : relayPrompt,
+              subagent_type: relays ? childId : relayId,
+            },
+            type: 'tool_call',
+          },
+        ],
+      };
+    },
+  };
+}
+
 function findRunFile(value, filename) {
   if (!value || typeof value !== 'object') {
     return null;
@@ -3848,6 +3896,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const subagentActivity = subagentActivityResponses(text);
   if (subagentActivity) {
     return subagentActivity;
+  }
+
+  const subagentChain = subagentChainResponses(text);
+  if (subagentChain) {
+    return subagentChain;
   }
 
   const subagentResult = subagentResultResponses(text);
