@@ -970,7 +970,7 @@ test('clears old registration success when credentials rotate and uses the refre
   const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   expect(await screen.findByText('com_ui_discord_commands_success')).toBeVisible();
-  await user.click(screen.getByRole('button', { name: 'com_ui_close' }));
+  await user.click(screen.getByRole('button', { name: 'Close' }));
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' })).toBeEnabled(),
   );
@@ -1039,7 +1039,7 @@ test('keeps failures scoped to their application card', async () => {
   expect(
     within(dialog).getByRole('button', { name: 'com_ui_discord_commands_named' }),
   ).toBeDisabled();
-  await user.click(within(dialog).getByRole('button', { name: 'com_ui_close' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Close' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await user.click(settingsOf('Support'));
   dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_settings' });
@@ -1809,7 +1809,7 @@ test('reveals a command failure in the connection settings even when they were c
   jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
   const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
-  await user.click(screen.getByRole('button', { name: 'com_ui_close' }));
+  await user.click(screen.getByRole('button', { name: 'Close' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await act(async () => pending.reject(new Error('safe')));
   const dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_settings' });

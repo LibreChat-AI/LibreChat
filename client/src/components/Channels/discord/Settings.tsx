@@ -1,6 +1,6 @@
 import { useId } from 'react';
 import { ExternalLink } from 'lucide-react';
-import { Alert, Button, Label, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
+import { Button, Label, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
 import type { DiscordApplication, DiscordApplicationPage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
 import { useLocalize } from '~/hooks';
@@ -57,10 +57,12 @@ export default function Settings({
         title={localize('com_ui_discord_settings')}
         description={name}
         showCancelButton={false}
+        showCloseButton
+        footerClassName="hidden"
         onCloseAutoFocus={onClosed}
         main={
           app && (
-            <div className="space-y-4">
+            <div className="space-y-5">
               {Boolean(loadError) && (
                 <Notice
                   ref={loadRef}
@@ -81,9 +83,11 @@ export default function Settings({
                   />
                 </div>
               )}
-              {setup?.interactionBaseUrl ? (
-                <div className="space-y-1">
-                  <Label htmlFor={`${id}-ingress`}>{localize('com_ui_discord_interactions')}</Label>
+              <div className="space-y-1">
+                <Label htmlFor={setup?.interactionBaseUrl ? `${id}-ingress` : undefined}>
+                  {localize('com_ui_discord_interactions')}
+                </Label>
+                {setup?.interactionBaseUrl ? (
                   <Callback
                     id={`${id}-ingress`}
                     value={`${setup.interactionBaseUrl}${encodeURIComponent(app.applicationId)}/interactions`}
@@ -91,37 +95,45 @@ export default function Settings({
                       0: localize('com_ui_discord_interactions'),
                     })}
                   />
-                </div>
-              ) : (
-                <Alert variant="info">{localize('com_ui_discord_ingress_required')}</Alert>
-              )}
+                ) : (
+                  <p className="text-text-secondary text-sm">
+                    {localize('com_ui_discord_ingress_required')}
+                  </p>
+                )}
+              </div>
               <div className="space-y-2">
-                <h4 className="text-sm font-medium">{localize('com_ui_discord_commands')}</h4>
-                <p className="text-text-secondary text-xs">
-                  {localize('com_ui_discord_commands_help')}
-                </p>
-                <Button
-                  ref={commandRef}
-                  type="button"
-                  variant="submit"
-                  disabled={disabled || failure !== null}
-                  aria-label={localize('com_ui_discord_commands_named', {
-                    0: app.name || app.applicationId,
-                  })}
-                  aria-busy={registering}
-                  onClick={onRegister}
-                >
-                  {registering && <Spinner className="size-4" aria-hidden="true" />}
-                  {localize(
-                    registering
-                      ? 'com_ui_discord_commands_registering'
-                      : 'com_ui_discord_commands_register',
-                  )}
-                </Button>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-medium">{localize('com_ui_discord_commands')}</h4>
+                    <p className="text-text-secondary text-xs">
+                      {localize('com_ui_discord_commands_help')}
+                    </p>
+                  </div>
+                  <Button
+                    ref={commandRef}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    disabled={disabled || failure !== null}
+                    aria-label={localize('com_ui_discord_commands_named', {
+                      0: app.name || app.applicationId,
+                    })}
+                    aria-busy={registering}
+                    onClick={onRegister}
+                  >
+                    {registering && <Spinner className="size-4" aria-hidden="true" />}
+                    {localize(
+                      registering
+                        ? 'com_ui_discord_commands_registering'
+                        : 'com_ui_discord_commands_register',
+                    )}
+                  </Button>
+                </div>
                 {registered && (
-                  <Alert variant="success" role="status">
+                  <p role="status" className="text-status-success text-xs">
                     {localize('com_ui_discord_commands_success')}
-                  </Alert>
+                  </p>
                 )}
                 {failure && (
                   <Notice
@@ -145,11 +157,6 @@ export default function Settings({
               </Button>
             </div>
           )
-        }
-        selection={
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {localize('com_ui_close')}
-          </Button>
         }
       />
     </OGDialog>
