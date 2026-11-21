@@ -1,5 +1,5 @@
 import type { AppConfig, IUser } from '@librechat/data-schemas';
-import { buildScheduledApprovalAdmissionHooks } from './execution';
+import { buildScheduledApprovalAdmissionHooks } from '~/agents/authority/execution';
 import { createScheduledPauseCheck } from './host';
 
 describe('createScheduledPauseCheck', () => {

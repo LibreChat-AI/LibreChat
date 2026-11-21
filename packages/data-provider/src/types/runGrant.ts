@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS = 168;
+export const DEFAULT_RUN_GRANT_LIFETIME_HOURS = 168;
 
 /**
  * Sent as the description of an approval request that a schedule's owner asked for. It is a
@@ -29,7 +29,7 @@ const safeUrl = z
     }
   });
 
-export const scheduledMCPFailureReasonSchema = z.enum([
+export const runGrantFailureReasonSchema = z.enum([
   'consent_missing',
   'consent_expired',
   'consent_revoked',
@@ -45,7 +45,7 @@ export const scheduledMCPFailureReasonSchema = z.enum([
   'unsupported_mode',
   'dependency_unavailable',
 ]);
-export type ScheduledMCPFailureReason = z.infer<typeof scheduledMCPFailureReasonSchema>;
+export type RunGrantFailureReason = z.infer<typeof runGrantFailureReasonSchema>;
 
 export const scheduledMCPIdentitySchema = z
   .object({
@@ -58,7 +58,7 @@ export const scheduledMCPIdentitySchema = z
   .strict();
 export type ScheduledMCPIdentity = z.infer<typeof scheduledMCPIdentitySchema>;
 
-export const scheduledMCPResourceSchema = z
+export const runGrantResourceSchema = z
   .object({
     serverName: identifier,
     url: safeUrl,
@@ -76,13 +76,13 @@ export const scheduledMCPResourceSchema = z
     scopes: z.array(identifier).max(128),
   })
   .strict();
-export const scheduledMCPResourceBindingSchema = scheduledMCPResourceSchema.omit({
+export const runGrantResourceBindingSchema = runGrantResourceSchema.omit({
   serverName: true,
   configurationRevision: true,
 });
-export type ScheduledMCPResourceBinding = z.infer<typeof scheduledMCPResourceBindingSchema>;
-export type ScheduledMCPResource = z.infer<typeof scheduledMCPResourceSchema>;
-export type ScheduledMCPCredentialMode = ScheduledMCPResource['credentialMode'];
+export type RunGrantResourceBinding = z.infer<typeof runGrantResourceBindingSchema>;
+export type RunGrantResource = z.infer<typeof runGrantResourceSchema>;
+export type RunGrantCredentialMode = RunGrantResource['credentialMode'];
 
 const MAX_AGENT_TOOLS = 256;
 const MAX_SERVER_AGENTS = 100;
@@ -90,33 +90,33 @@ const MAX_SERVER_AGENTS = 100;
  * The most distinct tools one server can hold across the agents that select them. Lists kept
  * per server, not per agent, are sized by it, so they can always represent a valid offer.
  */
-export const MAX_SCHEDULED_MCP_SERVER_TOOLS = MAX_AGENT_TOOLS * MAX_SERVER_AGENTS;
+export const MAX_RUN_GRANT_SERVER_TOOLS = MAX_AGENT_TOOLS * MAX_SERVER_AGENTS;
 
-export const scheduledMCPToolSelectionSchema = z
+export const runGrantToolSelectionSchema = z
   .object({
     agentId: identifier,
     tools: z.array(identifier).min(1).max(MAX_AGENT_TOOLS),
   })
   .strict();
-export type ScheduledMCPToolSelection = z.infer<typeof scheduledMCPToolSelectionSchema>;
+export type RunGrantToolSelection = z.infer<typeof runGrantToolSelectionSchema>;
 
-export const scheduledMCPTargetSchema = z
+export const runGrantTargetSchema = z
   .object({
-    resource: scheduledMCPResourceSchema,
-    permittedTools: z.array(scheduledMCPToolSelectionSchema).min(1).max(MAX_SERVER_AGENTS),
+    resource: runGrantResourceSchema,
+    permittedTools: z.array(runGrantToolSelectionSchema).min(1).max(MAX_SERVER_AGENTS),
     policyRevision: identifier,
   })
   .strict();
-export type ScheduledMCPTarget = z.infer<typeof scheduledMCPTargetSchema>;
+export type RunGrantTarget = z.infer<typeof runGrantTargetSchema>;
 
 /** What an allowed tool looked like the first time an authorized run used it. */
-export const scheduledMCPToolPinSchema = z
+export const runGrantToolPinSchema = z
   .object({
     tool: identifier,
     digest: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .strict();
-export type ScheduledMCPToolPin = z.infer<typeof scheduledMCPToolPinSchema>;
+export type RunGrantToolPin = z.infer<typeof runGrantToolPinSchema>;
 
 /**
  * Who a grant made for an API key acts for. The key and the agent are both part of the
@@ -134,10 +134,10 @@ export const agentKeyMCPIdentitySchema = z
 export type AgentKeyMCPIdentity = z.infer<typeof agentKeyMCPIdentitySchema>;
 
 /** A grant's subject: the schedule, or the API key and agent, a run acts for. */
-export type MCPGrantIdentity = ScheduledMCPIdentity | AgentKeyMCPIdentity;
+export type RunGrantIdentity = ScheduledMCPIdentity | AgentKeyMCPIdentity;
 
 function consentSchema<Identity extends z.ZodTypeAny>(identity: Identity) {
-  return scheduledMCPTargetSchema
+  return runGrantTargetSchema
     .extend({
       id: identifier,
       revision: identifier,
@@ -146,14 +146,11 @@ function consentSchema<Identity extends z.ZodTypeAny>(identity: Identity) {
       absoluteExpiresAtMs: timestamp,
       revokedAtMs: timestamp.nullable(),
       /** Absent until a tool is first used. One entry per tool, never rewritten. */
-      definitions: z
-        .array(scheduledMCPToolPinSchema)
-        .max(MAX_SCHEDULED_MCP_SERVER_TOOLS)
-        .optional(),
+      definitions: z.array(runGrantToolPinSchema).max(MAX_RUN_GRANT_SERVER_TOOLS).optional(),
       /** Tools a run saw with a definition other than their pin. Refused until confirmed again. */
-      changedTools: z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS).optional(),
+      changedTools: z.array(identifier).max(MAX_RUN_GRANT_SERVER_TOOLS).optional(),
       /** Allowed tools the owner wants to approve call by call. A run pauses before each use. */
-      askTools: z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS).optional(),
+      askTools: z.array(identifier).max(MAX_RUN_GRANT_SERVER_TOOLS).optional(),
     })
     .strict()
     .refine((value) => value.absoluteExpiresAtMs > value.grantedAtMs);
@@ -172,7 +169,7 @@ function enrollmentSchema<Consent extends z.ZodTypeAny>(consent: Consent) {
        * The agents' tools that are not MCP tools (code execution, web search, an action) that
        * the owner allowed, per agent. Absent: none of them is allowed.
        */
-      tools: z.array(scheduledMCPToolSelectionSchema).max(MAX_SERVER_AGENTS).optional(),
+      tools: z.array(runGrantToolSelectionSchema).max(MAX_SERVER_AGENTS).optional(),
       /**
        * The whole agent, as it is and as it becomes: every tool, skill and MCP server its
        * agents use, including one added after the grant was made. `consents` lists the
@@ -222,16 +219,16 @@ export const agentKeyMCPEnrollmentSchema = enrollmentSchema(
 );
 
 /** One server's part of a grant, for whichever subject holds it. */
-export type MCPGrantConsent<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> = Omit<
+export type RunGrantConsent<Identity extends RunGrantIdentity = ScheduledMCPIdentity> = Omit<
   ScheduledMCPConsent,
   'identity'
 > & { identity: Identity };
 
 /** A whole grant, for whichever subject holds it. */
-export type MCPGrantEnrollment<Identity extends MCPGrantIdentity = ScheduledMCPIdentity> = Omit<
+export type RunGrant<Identity extends RunGrantIdentity = ScheduledMCPIdentity> = Omit<
   ScheduledMCPEnrollment,
   'consents'
-> & { consents: MCPGrantConsent<Identity>[] };
+> & { consents: RunGrantConsent<Identity>[] };
 
 const consentChoice = z.object({
   offerDigest: z.string().regex(/^[a-f0-9]{64}$/),
@@ -242,14 +239,14 @@ const consentChoice = z.object({
    * listed with no tools, is not allowed. Anything not listed here is refused at run time.
    */
   allow: z
-    .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
+    .record(identifier, z.array(identifier).max(MAX_RUN_GRANT_SERVER_TOOLS))
     .refine((value) => Object.keys(value).length <= 32),
   /**
    * Of the allowed tools, the ones the owner wants to approve call by call, by server.
    * Each must also be listed in `allow`.
    */
   ask: z
-    .record(identifier, z.array(identifier).max(MAX_SCHEDULED_MCP_SERVER_TOOLS))
+    .record(identifier, z.array(identifier).max(MAX_RUN_GRANT_SERVER_TOOLS))
     .refine((value) => Object.keys(value).length <= 32)
     .optional(),
   /**
@@ -277,8 +274,8 @@ const allowsSomething = (value: Choice): boolean =>
     : Object.values(value.allow).some((tools) => tools.length > 0) ||
       (value.tools?.length ?? 0) > 0;
 
-export const confirmScheduleMCPConsentSchema = consentChoice.strict().refine(allowsSomething);
-export type ConfirmScheduleMCPConsent = z.infer<typeof confirmScheduleMCPConsentSchema>;
+export const confirmRunGrantSchema = consentChoice.strict().refine(allowsSomething);
+export type ConfirmRunGrant = z.infer<typeof confirmRunGrantSchema>;
 
 /**
  * The owner's choice for a schedule that is being created, made from the offer for its agent.
@@ -305,14 +302,14 @@ export type ScheduleReauthorization = z.infer<typeof scheduleReauthorizationSche
 /** Asks what the owner could allow a schedule of this agent, before the schedule exists. */
 export const scheduleOfferRequestSchema = z.object({ agent_id: identifier }).strict();
 
-export const revokeScheduleMCPConsentSchema = z.object({ expectedRevision: identifier }).strict();
+export const revokeRunGrantSchema = z.object({ expectedRevision: identifier }).strict();
 
-export interface ScheduleMCPConsentView {
+export interface RunGrantView {
   state: 'missing' | 'active' | 'expired' | 'revoked' | 'changed' | 'unsupported';
   revision: string | null;
   expiresAtMs: number | null;
   /** With an offer, every server and tool the owner may choose from; otherwise the stored grant. */
-  targets: ScheduledMCPTarget[];
+  targets: RunGrantTarget[];
   /** The tools the stored grant allows, by server. Empty when there is none. */
   allowed: Record<string, string[]>;
   /** Allowed tools whose definition changed since first use, by server. Refused until confirmed again. */
@@ -344,3 +341,55 @@ export interface ScheduleMCPConsentView {
   /** `everything`: the grant may be made for the whole agent, not only tool by tool. */
   offer: { digest: string; maxLifetimeHours: number; everything?: true } | null;
 }
+
+/**
+ * The names these exports had before they were named for what they are: the grant a subject's
+ * runs act under, whichever subject holds it. Kept so that code outside this repository that
+ * imports them keeps compiling. Nothing in this repository uses them.
+ */
+/** @deprecated Use `RunGrantIdentity`. */
+export type MCPGrantIdentity = RunGrantIdentity;
+/** @deprecated Use `RunGrantConsent`. */
+export type MCPGrantConsent<Identity extends RunGrantIdentity = ScheduledMCPIdentity> =
+  RunGrantConsent<Identity>;
+/** @deprecated Use `RunGrant`. */
+export type MCPGrantEnrollment<Identity extends RunGrantIdentity = ScheduledMCPIdentity> =
+  RunGrant<Identity>;
+/** @deprecated Use `runGrantFailureReasonSchema`. */
+export const scheduledMCPFailureReasonSchema = runGrantFailureReasonSchema;
+/** @deprecated Use `RunGrantFailureReason`. */
+export type ScheduledMCPFailureReason = RunGrantFailureReason;
+/** @deprecated Use `runGrantResourceSchema`. */
+export const scheduledMCPResourceSchema = runGrantResourceSchema;
+/** @deprecated Use `runGrantResourceBindingSchema`. */
+export const scheduledMCPResourceBindingSchema = runGrantResourceBindingSchema;
+/** @deprecated Use `RunGrantResourceBinding`. */
+export type ScheduledMCPResourceBinding = RunGrantResourceBinding;
+/** @deprecated Use `RunGrantResource`. */
+export type ScheduledMCPResource = RunGrantResource;
+/** @deprecated Use `RunGrantCredentialMode`. */
+export type ScheduledMCPCredentialMode = RunGrantCredentialMode;
+/** @deprecated Use `MAX_RUN_GRANT_SERVER_TOOLS`. */
+export const MAX_SCHEDULED_MCP_SERVER_TOOLS = MAX_RUN_GRANT_SERVER_TOOLS;
+/** @deprecated Use `runGrantToolSelectionSchema`. */
+export const scheduledMCPToolSelectionSchema = runGrantToolSelectionSchema;
+/** @deprecated Use `RunGrantToolSelection`. */
+export type ScheduledMCPToolSelection = RunGrantToolSelection;
+/** @deprecated Use `runGrantTargetSchema`. */
+export const scheduledMCPTargetSchema = runGrantTargetSchema;
+/** @deprecated Use `RunGrantTarget`. */
+export type ScheduledMCPTarget = RunGrantTarget;
+/** @deprecated Use `runGrantToolPinSchema`. */
+export const scheduledMCPToolPinSchema = runGrantToolPinSchema;
+/** @deprecated Use `RunGrantToolPin`. */
+export type ScheduledMCPToolPin = RunGrantToolPin;
+/** @deprecated Use `RunGrantView`. */
+export type ScheduleMCPConsentView = RunGrantView;
+/** @deprecated Use `confirmRunGrantSchema`. */
+export const confirmScheduleMCPConsentSchema = confirmRunGrantSchema;
+/** @deprecated Use `ConfirmRunGrant`. */
+export type ConfirmScheduleMCPConsent = ConfirmRunGrant;
+/** @deprecated Use `revokeRunGrantSchema`. */
+export const revokeScheduleMCPConsentSchema = revokeRunGrantSchema;
+/** @deprecated Use `DEFAULT_RUN_GRANT_LIFETIME_HOURS`. */
+export const DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS = DEFAULT_RUN_GRANT_LIFETIME_HOURS;

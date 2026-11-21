@@ -37,7 +37,7 @@ import {
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
-import { scheduledMCPResourceBindingSchema } from './types/scheduleConsent';
+import { runGrantResourceBindingSchema } from './types/runGrant';
 import { partialWithoutDefaults } from './zod';
 
 export const tenantIdSchema = z
@@ -1158,7 +1158,7 @@ const remoteApiIntegrationsSchema = z.object({
   /** Longest a grant made for a key may last. */
   maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
   /** The servers a key may be granted, each with the recipient the operator vouches for. */
-  resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
+  resources: z.record(z.string(), runGrantResourceBindingSchema).optional(),
 });
 
 const remoteApiSchema = z.object({
@@ -3711,7 +3711,7 @@ export const interfaceSchema = z
                * MCP tools. Unset, such schedules keep running until their next edit.
                */
               requireAfter: z.string().datetime({ offset: true }).optional(),
-              resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
+              resources: z.record(z.string(), runGrantResourceBindingSchema).optional(),
             })
             .optional(),
           /** Bounded exponential receipt retry interval; equal jitter prevents outage waves. */

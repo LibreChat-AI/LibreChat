@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { ScheduledMCPIdentity, ScheduledMCPEnrollment } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from './scheduleConsent';
-import { createScheduleMCPConsentStorage } from './scheduleConsent';
+import type { ScheduleMCPConsentStorage } from './runGrant';
+import { createScheduleMCPConsentStorage } from './runGrant';
 import { createScheduleMethods } from './schedule';
 import { createModels } from '../models';
 
@@ -89,15 +89,15 @@ it('admits a disabled row only for activation, with the same live consent fence'
     consentId: 'consent-1',
     expectedConfigRevision: 0,
   };
-  expect(await storage.admitScheduleMCPConsent(input)).toBe(false);
-  expect(await storage.admitScheduleMCPConsent({ ...input, requireEnabled: false })).toBe(true);
-  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
-  expect(await storage.admitScheduleMCPConsent({ ...input, requireEnabled: false })).toBe(false);
+  expect(await storage.admitRunGrant(input)).toBe(false);
+  expect(await storage.admitRunGrant({ ...input, requireEnabled: false })).toBe(true);
+  await storage.revokeRunGrant(identity, 'grant-1');
+  expect(await storage.admitRunGrant({ ...input, requireEnabled: false })).toBe(false);
 });
 
 it('carries consent through activation atomically without extending its absolute expiry', async () => {
   await confirm();
-  const before = await storage.readScheduleMCPConsent(identity);
+  const before = await storage.readRunGrant(identity);
   const methods = createScheduleMethods(mongoose);
   const updated = await methods.updateScheduleById(
     identity.scheduleId,
@@ -110,12 +110,12 @@ it('carries consent through activation atomically without extending its absolute
     },
   );
   expect(updated?.mcpConsent?.scheduleRevision).toBe(1);
-  const after = await storage.readScheduleMCPConsent(identity);
+  const after = await storage.readRunGrant(identity);
   expect(after?.enrollment?.consents).toEqual(before?.enrollment?.consents);
   expect(after?.configRevision).toBe(1);
   expect(after?.enabled).toBe(false);
   expect(
-    await storage.admitScheduleMCPConsent({
+    await storage.admitRunGrant({
       identity,
       revision: 'grant-1',
       consentId: 'consent-1',
@@ -128,7 +128,7 @@ it('carries consent through activation atomically without extending its absolute
 it('replaces the grant with an edit only while it is the grant the new one was decided against', async () => {
   await confirm();
   const methods = createScheduleMethods(mongoose);
-  const basis = (await storage.readScheduleMCPConsent(identity))!.enrollment!;
+  const basis = (await storage.readRunGrant(identity))!.enrollment!;
   const next = (revision: string, scheduleRevision: number) =>
     enrollment(revision, { scheduleRevision });
   const edit = (
@@ -148,7 +148,7 @@ it('replaces the grant with an edit only while it is the grant the new one was d
     'A grant written with an edit must name the grant it replaces',
   );
   // A run pins a tool between the decision and the write: the pin is not dropped.
-  await storage.pinScheduleMCPToolDefinition({
+  await storage.pinRunGrantTool({
     identity,
     revision: 'grant-1',
     consentId: 'consent-1',
@@ -156,17 +156,17 @@ it('replaces the grant with an edit only while it is the grant the new one was d
     digest: 'a'.repeat(64),
   });
   expect(await edit(next('grant-2', 1), 0, basis)).toBeNull();
-  const pinned = (await storage.readScheduleMCPConsent(identity))!.enrollment!;
+  const pinned = (await storage.readRunGrant(identity))!.enrollment!;
   expect(pinned.consents[0].definitions).toEqual([{ tool: 'query', digest: 'a'.repeat(64) }]);
   // Decided against what is stored now, the edit goes through and carries the new grant.
   const updated = await edit(next('grant-2', 1), 0, pinned);
   expect(updated?.mcpConsent).toMatchObject({ revision: 'grant-2', scheduleRevision: 1 });
   // The owner revokes in another tab: an edit decided before that does not bring it back.
-  const stored = (await storage.readScheduleMCPConsent(identity))!.enrollment!;
-  await storage.revokeScheduleMCPConsent(identity, 'grant-2');
+  const stored = (await storage.readRunGrant(identity))!.enrollment!;
+  await storage.revokeRunGrant(identity, 'grant-2');
   expect(await edit(next('grant-3', 2), 1, stored)).toBeNull();
   expect(
-    (await storage.readScheduleMCPConsent(identity))!.enrollment!.consents[0].revokedAtMs,
+    (await storage.readRunGrant(identity))!.enrollment!.consents[0].revokedAtMs,
   ).not.toBeNull();
   // Nor does one decided when the schedule had no grant overwrite one made since.
   expect(await edit(next('grant-3', 2), 1, null)).toBeNull();
@@ -180,7 +180,7 @@ it('tells a completion turn whether its schedule is still there to act for, and 
   await confirm();
   expect(await state()).toEqual({ identity, enrolled: true });
   // Revoked is still a grant: the turn runs under it, and is refused its tools by it.
-  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  await storage.revokeRunGrant(identity, 'grant-1');
   expect(await state()).toEqual({ identity, enrolled: true });
   // Moved to another agent, being deleted, or gone: nothing left to act for.
   expect(
@@ -213,7 +213,7 @@ it('does not revive stale enrollment through a later enabled-state edit', async 
 
 it('never overwrites revocation racing an activation edit or carries consent across prompt edits', async () => {
   await confirm();
-  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  await storage.revokeRunGrant(identity, 'grant-1');
   const methods = createScheduleMethods(mongoose);
   expect(
     await methods.updateScheduleById(identity.scheduleId, owner, { enabled: false }, undefined, {
@@ -228,7 +228,7 @@ it('never overwrites revocation racing an activation edit or carries consent acr
     }),
   ).rejects.toThrow('Consent continuity is limited to activation state');
   expect(
-    (await storage.readScheduleMCPConsent(identity))?.enrollment?.consents[0].revokedAtMs,
+    (await storage.readRunGrant(identity))?.enrollment?.consents[0].revokedAtMs,
   ).not.toBeNull();
 });
 
@@ -237,7 +237,7 @@ const confirm = (
   grant = enrollment(),
   basis?: ScheduledMCPEnrollment | null,
 ) =>
-  storage.confirmScheduleMCPConsent({
+  storage.confirmRunGrant({
     identity,
     expectedConfigRevision: 0,
     expectedRevision,
@@ -245,7 +245,7 @@ const confirm = (
     basis,
   });
 const admit = (revision = 'grant-1', definitions?: Record<string, string>) =>
-  storage.admitScheduleMCPConsent({
+  storage.admitRunGrant({
     identity,
     revision,
     expectedConfigRevision: 0,
@@ -254,13 +254,13 @@ const admit = (revision = 'grant-1', definitions?: Record<string, string>) =>
   });
 
 it('leaves legacy schedules unenrolled and does not change enabled/default scheduling state', async () => {
-  expect((await storage.readScheduleMCPConsent(identity))?.enrollment).toBeNull();
+  expect((await storage.readRunGrant(identity))?.enrollment).toBeNull();
   expect(await confirm()).toBe(true);
   const freshStorage = createScheduleMCPConsentStorage(mongoose);
   expect(
-    (await freshStorage.readScheduleMCPConsent(identity))?.enrollment?.consents[0].identity.agentId,
+    (await freshStorage.readRunGrant(identity))?.enrollment?.consents[0].identity.agentId,
   ).toBe('root');
-  expect((await freshStorage.readScheduleMCPConsent(identity))?.enabled).toBe(true);
+  expect((await freshStorage.readRunGrant(identity))?.enabled).toBe(true);
 });
 it('has one winner among concurrent confirmations', async () => {
   const results = await Promise.all(
@@ -273,9 +273,9 @@ it('does not extend the deadline when an admission is recorded', async () => {
   await confirm(null, grant);
   expect(await admit()).toBe(true);
   expect(await admit()).toBe(true);
-  expect(
-    (await storage.readScheduleMCPConsent(identity))?.enrollment?.consents[0].absoluteExpiresAtMs,
-  ).toBe(grant.consents[0].absoluteExpiresAtMs);
+  expect((await storage.readRunGrant(identity))?.enrollment?.consents[0].absoluteExpiresAtMs).toBe(
+    grant.consents[0].absoluteExpiresAtMs,
+  );
 });
 it('rejects expired consent at the storage write boundary', async () => {
   const grant = enrollment();
@@ -291,16 +291,16 @@ it('rejects expired consent at the storage write boundary', async () => {
 });
 it('fences use after revocation and invalidates a confirmation prepared before revocation', async () => {
   await confirm();
-  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  await storage.revokeRunGrant(identity, 'grant-1');
   expect(await admit()).toBe(false);
   expect(await confirm('grant-1', enrollment('grant-2'))).toBe(false);
-  const row = await storage.readScheduleMCPConsent(identity);
+  const row = await storage.readRunGrant(identity);
   expect(row?.enrollment?.consents[0].revokedAtMs).not.toBeNull();
   expect(await confirm(row!.enrollment!.revision, enrollment('fresh-grant'))).toBe(true);
 });
 it('makes revoke/use races linearizable at the atomic admission boundary', async () => {
   await confirm();
-  await Promise.all([admit(), storage.revokeScheduleMCPConsent(identity, 'grant-1')]);
+  await Promise.all([admit(), storage.revokeRunGrant(identity, 'grant-1')]);
   expect(await admit()).toBe(false);
 });
 it('cannot enroll or use after a root-agent change or config edit', async () => {
@@ -311,9 +311,7 @@ it('cannot enroll or use after a root-agent change or config edit', async () => 
   );
   expect(await admit()).toBe(false);
   expect(await confirm('grant-1', enrollment('fresh'))).toBe(false);
-  expect(await storage.revokeScheduleMCPConsent({ ...identity, agentId: 'other' }, 'grant-1')).toBe(
-    true,
-  );
+  expect(await storage.revokeRunGrant({ ...identity, agentId: 'other' }, 'grant-1')).toBe(true);
 });
 it('isolates owners and tenants even for an identical schedule id', async () => {
   await confirm();
@@ -322,10 +320,10 @@ it('isolates owners and tenants even for an identical schedule id', async () => 
     { ...identity, tenantId: 'tenant-2' },
     { ...identity, tenantId: null },
   ]) {
-    expect(await storage.readScheduleMCPConsent(wrong)).toBeNull();
-    expect(await storage.revokeScheduleMCPConsent(wrong, 'grant-1')).toBe(false);
+    expect(await storage.readRunGrant(wrong)).toBeNull();
+    expect(await storage.revokeRunGrant(wrong, 'grant-1')).toBe(false);
     expect(
-      await storage.admitScheduleMCPConsent({
+      await storage.admitRunGrant({
         identity: wrong,
         revision: 'grant-1',
         expectedConfigRevision: 0,
@@ -341,14 +339,14 @@ it.each(['deleting', 'erased'])('denies grants and admission for %s schedules', 
     { $set: { [field]: true } },
   );
   expect(await admit()).toBe(false);
-  expect(await storage.readScheduleMCPConsent(identity)).toBeNull();
+  expect(await storage.readRunGrant(identity)).toBeNull();
 });
 it('fails closed on an unknown stored version without overwriting it', async () => {
   await mongoose.models.Schedule.updateOne(
     { id: identity.scheduleId },
     { $set: { mcpConsent: { version: 2, revision: 'future' } } },
   );
-  expect((await storage.readScheduleMCPConsent(identity))?.enrollment).toBeNull();
+  expect((await storage.readRunGrant(identity))?.enrollment).toBeNull();
   expect(await confirm()).toBe(false);
   expect(await admit('future')).toBe(false);
 });
@@ -364,9 +362,9 @@ it('rejects credential-bearing or mismatched records at the persistence boundary
 it('keeps the other tools the owner allowed on the grant, through revocation too', async () => {
   const tools = [{ agentId: 'root', tools: ['execute_code', 'web_search'] }];
   expect(await confirm(null, enrollment('grant-1', { tools }))).toBe(true);
-  expect((await storage.readScheduleMCPConsent(identity))?.enrollment?.tools).toEqual(tools);
-  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
-  const revoked = await storage.readScheduleMCPConsent(identity);
+  expect((await storage.readRunGrant(identity))?.enrollment?.tools).toEqual(tools);
+  await storage.revokeRunGrant(identity, 'grant-1');
+  const revoked = await storage.readRunGrant(identity);
   expect(revoked?.compatible).toBe(true);
   expect(revoked?.enrollment?.tools).toEqual(tools);
 });
@@ -385,11 +383,11 @@ it('holds a grant that allows other tools and no MCP server, with its own lifeti
     await confirm(null, grant('grant-1', { ...live, absoluteExpiresAtMs: Date.now() - 1 })),
   ).toBe(false);
   expect(await confirm(null, grant('grant-1', { ...live, revokedAtMs: null }))).toBe(true);
-  const stored = await storage.readScheduleMCPConsent(identity);
+  const stored = await storage.readRunGrant(identity);
   expect(stored).toMatchObject({ compatible: true, enrollment: { consents: [], tools } });
 
-  expect(await storage.revokeScheduleMCPConsent(identity, 'grant-1')).toBe(true);
-  const revoked = (await storage.readScheduleMCPConsent(identity))?.enrollment;
+  expect(await storage.revokeRunGrant(identity, 'grant-1')).toBe(true);
+  const revoked = (await storage.readRunGrant(identity))?.enrollment;
   expect(revoked?.revokedAtMs).toEqual(expect.any(Number));
   expect(revoked?.tools).toEqual(tools);
 });
@@ -398,7 +396,7 @@ it('uses only classic update operators for confirmation, revocation and admissio
   const update = jest.spyOn(mongoose.models.Schedule, 'updateOne');
   await confirm();
   await admit();
-  await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+  await storage.revokeRunGrant(identity, 'grant-1');
   for (const call of update.mock.calls) {
     const [filter, operation] = Array.from(call);
     expect(Array.isArray(operation)).toBe(false);
@@ -409,7 +407,7 @@ it('uses only classic update operators for confirmation, revocation and admissio
 });
 
 it('reports the edit mark of a schedule that was never authorized, and keeps it through a grant', async () => {
-  expect((await storage.readScheduleMCPConsent(identity))?.required).toBeUndefined();
+  expect((await storage.readRunGrant(identity))?.required).toBeUndefined();
   const updated = await createScheduleMethods(mongoose).updateScheduleById(
     identity.scheduleId,
     owner,
@@ -418,20 +416,20 @@ it('reports the edit mark of a schedule that was never authorized, and keeps it 
     { expectedConfigRevision: 0 },
   );
   expect(updated?.mcpConsentRequired).toBe(true);
-  expect(await storage.readScheduleMCPConsent(identity)).toMatchObject({
+  expect(await storage.readRunGrant(identity)).toMatchObject({
     required: true,
     enrollment: null,
     configRevision: 1,
   });
   expect(
-    await storage.confirmScheduleMCPConsent({
+    await storage.confirmRunGrant({
       identity,
       expectedConfigRevision: 1,
       expectedRevision: null,
       enrollment: enrollment('grant-1', { scheduleRevision: 1 }),
     }),
   ).toBe(true);
-  expect(await storage.readScheduleMCPConsent(identity)).toMatchObject({
+  expect(await storage.readRunGrant(identity)).toMatchObject({
     required: true,
     enrollment: { revision: 'grant-1' },
   });
@@ -441,7 +439,7 @@ describe('definition pins', () => {
   const first = 'a'.repeat(64);
   const second = 'b'.repeat(64);
   const pin = (digest = first, tool = 'query', revision = 'grant-1') =>
-    storage.pinScheduleMCPToolDefinition({
+    storage.pinRunGrantTool({
       identity,
       revision,
       consentId: 'consent-1',
@@ -449,8 +447,8 @@ describe('definition pins', () => {
       digest,
     });
   const flag = (tool = 'query', revision = 'grant-1') =>
-    storage.flagScheduleMCPToolChange({ identity, revision, consentId: 'consent-1', tool });
-  const stored = async () => (await storage.readScheduleMCPConsent(identity))?.enrollment;
+    storage.flagRunGrantTool({ identity, revision, consentId: 'consent-1', tool });
+  const stored = async () => (await storage.readRunGrant(identity))?.enrollment;
 
   it('keeps the first definition a tool was pinned to', async () => {
     await confirm();
@@ -483,14 +481,14 @@ describe('definition pins', () => {
       definitions: [{ tool: 'query', digest: first }],
       changedTools: ['query'],
     });
-    expect((await storage.readScheduleMCPConsent(identity))?.compatible).toBe(true);
+    expect((await storage.readRunGrant(identity))?.compatible).toBe(true);
   });
 
   it('writes nothing to a revoked or replaced grant', async () => {
     await confirm();
     expect(await pin(first, 'query', 'grant-0')).toBe(false);
     expect(await flag('query', 'grant-0')).toBe(false);
-    await storage.revokeScheduleMCPConsent(identity, 'grant-1');
+    await storage.revokeRunGrant(identity, 'grant-1');
     const revoked = (await stored())!.revision;
     expect(await pin(first, 'query', revoked)).toBe(false);
     expect((await stored())?.consents[0].definitions).toBeUndefined();
@@ -550,7 +548,7 @@ describe('definition pins', () => {
       .spyOn(model, 'updateOne')
       .mockImplementationOnce(((...args: Parameters<typeof write>) =>
         pin().then(() => write(...args))) as typeof model.updateOne);
-    expect(await storage.revokeScheduleMCPConsent(identity, 'grant-1')).toBe(true);
+    expect(await storage.revokeRunGrant(identity, 'grant-1')).toBe(true);
     update.mockRestore();
     expect((await stored())?.consents[0]).toMatchObject({
       revokedAtMs: expect.any(Number),

@@ -2,16 +2,16 @@ import { createHash } from 'node:crypto';
 import { Constants as AgentConstants } from '@librechat/agents';
 import { Constants, isActionTool, normalizeServerName } from 'librechat-data-provider';
 import type {
-  ScheduledMCPToolSelection,
-  ScheduledMCPFailureReason,
+  RunGrantToolSelection,
+  RunGrantFailureReason,
   ScheduleMCPOutcome,
 } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { ScheduledMCPFailure } from './contract';
+import type { RunGrantFailure } from './contract';
 import { failureFixtures } from './failures';
 
 /** Only MCP selections and side-effect-free SDK controls belong to this consent phase. */
-export function isScheduledMCPCandidate(name: string): boolean {
+export function isRunGrantCandidate(name: string): boolean {
   if (isActionTool(name)) return false;
   return (
     (name.includes(Constants.mcp_delimiter) &&
@@ -28,8 +28,8 @@ export function isScheduledMCPCandidate(name: string): boolean {
  * code execution, web search, file search, an action. Each is its own item for the owner to
  * allow or leave out.
  */
-export function isScheduledToolItem(name: string): boolean {
-  return !name.includes(Constants.mcp_delimiter) && !isScheduledMCPCandidate(name);
+export function isRunGrantToolItem(name: string): boolean {
+  return !name.includes(Constants.mcp_delimiter) && !isRunGrantCandidate(name);
 }
 
 /**
@@ -60,34 +60,32 @@ function canonical(value: unknown): unknown {
 }
 
 /** Covers the whole upstream definition: name, description, schemas and annotations. */
-export function getScheduledMCPToolDefinitionDigest(tool: Tool): string {
+export function getRunGrantToolDefinitionDigest(tool: Tool): string {
   return createHash('sha256')
     .update(JSON.stringify(canonical(tool)))
     .digest('hex');
 }
 
 /** Identifies one set of permitted selections; a grant and its bearer cache entries bind to it. */
-export function getScheduledMCPPolicyRevision(
-  selections: readonly ScheduledMCPToolSelection[],
-): string {
+export function getRunGrantPolicyRevision(selections: readonly RunGrantToolSelection[]): string {
   return createHash('sha256')
     .update(JSON.stringify(canonical({ selections })))
     .digest('hex');
 }
 
 /** Expected denial. Only the approved projection can reach a client or persisted run. */
-export class ScheduledMCPPolicyError extends Error {
-  readonly failure: ScheduledMCPFailure;
+export class RunGrantPolicyError extends Error {
+  readonly failure: RunGrantFailure;
   readonly outcomes: ScheduleMCPOutcome[];
-  readonly code: ScheduledMCPFailure['status'];
+  readonly code: RunGrantFailure['status'];
   readonly statusCode: number;
   readonly retryable = false;
 
-  constructor(reason: ScheduledMCPFailureReason, server: string, agentId?: string) {
+  constructor(reason: RunGrantFailureReason, server: string, agentId?: string) {
     const failure = failureFixtures[reason];
     const outcomes = [{ server, ...(agentId ? { agentId } : {}), ...failure }];
     super(`${failure.status}: ${JSON.stringify(outcomes)}`);
-    this.name = 'ScheduledMCPPolicyError';
+    this.name = 'RunGrantPolicyError';
     this.failure = failure;
     this.outcomes = outcomes;
     this.code = failure.status;

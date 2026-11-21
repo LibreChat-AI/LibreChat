@@ -1,7 +1,7 @@
-import type { ScheduledMCPResourceBinding } from 'librechat-data-provider';
+import type { RunGrantResourceBinding } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { encryptConfigSecrets, resolveRuntimeConfigSecrets } from '~/admin/secrets';
-import { getScheduledMCPConfigurationRevision } from './configuration';
+import { getRunGrantConfigurationRevision } from './configuration';
 
 /** Encryption reads `CREDS_KEY` when data-schemas loads, before any spec code runs. */
 jest.mock('@librechat/data-schemas', () => {
@@ -9,7 +9,7 @@ jest.mock('@librechat/data-schemas', () => {
   return jest.requireActual('@librechat/data-schemas');
 });
 
-const binding: ScheduledMCPResourceBinding = {
+const binding: RunGrantResourceBinding = {
   url: 'https://warehouse.example/mcp',
   credentialMode: 'resource_bearer',
   issuer: 'https://issuer.example/',
@@ -54,8 +54,8 @@ it.each<Partial<Extract<ParsedServerConfig, { type: 'http' | 'streamable-http' }
   { oauth_headers: { 'X-Authorization-Tenant': 'tenant-2' } },
   { apiKey: { ...config.apiKey!, custom_header: 'X-Other-Key' } },
 ])('changes the consent fence for changed routing or trust: %j', (change) => {
-  expect(getScheduledMCPConfigurationRevision({ ...config, ...change }, binding)).not.toBe(
-    getScheduledMCPConfigurationRevision(config, binding),
+  expect(getRunGrantConfigurationRevision({ ...config, ...change }, binding)).not.toBe(
+    getRunGrantConfigurationRevision(config, binding),
   );
 });
 
@@ -65,8 +65,8 @@ it('does not collapse catalog routing into request-header overrides', () => {
     headers: { 'X-Workspace': 'catalog-1' },
     requestHeaders: { 'X-Workspace': 'chat' },
   };
-  expect(getScheduledMCPConfigurationRevision(first, binding)).not.toBe(
-    getScheduledMCPConfigurationRevision(
+  expect(getRunGrantConfigurationRevision(first, binding)).not.toBe(
+    getRunGrantConfigurationRevision(
       { ...first, headers: { 'X-Workspace': 'catalog-2' } },
       binding,
     ),
@@ -81,13 +81,13 @@ it('canonicalizes map order and scope sets without widening a recipient', () => 
     oauth: Object.fromEntries(Object.entries(config.oauth!).reverse()),
   };
   expect(
-    getScheduledMCPConfigurationRevision(reordered, { ...binding, scopes: ['read', 'read'] }),
-  ).toBe(getScheduledMCPConfigurationRevision(config, binding));
+    getRunGrantConfigurationRevision(reordered, { ...binding, scopes: ['read', 'read'] }),
+  ).toBe(getRunGrantConfigurationRevision(config, binding));
 });
 
 it('excludes rotating client/API secrets and display/inspection bookkeeping', () => {
   expect(
-    getScheduledMCPConfigurationRevision(
+    getRunGrantConfigurationRevision(
       {
         ...config,
         oauth: { ...config.oauth, client_secret: 'rotated-fixture-secret' },
@@ -99,7 +99,7 @@ it('excludes rotating client/API secrets and display/inspection bookkeeping', ()
       },
       binding,
     ),
-  ).toBe(getScheduledMCPConfigurationRevision(config, binding));
+  ).toBe(getRunGrantConfigurationRevision(config, binding));
 });
 
 /** The server as the admin config API stores it, read back by the MCP runtime (decrypted). */
@@ -125,11 +125,11 @@ it('keeps the fence when an admin rotates a stored client/API secret in place', 
     client_secret: 'fixture-client-secret-0002',
     client_secretPreview: '...0002',
   });
-  expect(getScheduledMCPConfigurationRevision(rotated, binding)).toBe(
-    getScheduledMCPConfigurationRevision(before, binding),
+  expect(getRunGrantConfigurationRevision(rotated, binding)).toBe(
+    getRunGrantConfigurationRevision(before, binding),
   );
-  expect(getScheduledMCPConfigurationRevision(rotated, binding)).toBe(
-    getScheduledMCPConfigurationRevision(config, binding),
+  expect(getRunGrantConfigurationRevision(rotated, binding)).toBe(
+    getRunGrantConfigurationRevision(config, binding),
   );
 });
 
@@ -145,9 +145,9 @@ it('fences effective operator routing across environment changes', () => {
   };
   try {
     process.env[variable] = 'workspace-a';
-    const before = getScheduledMCPConfigurationRevision(declared, binding);
+    const before = getRunGrantConfigurationRevision(declared, binding);
     process.env[variable] = 'workspace-b';
-    expect(getScheduledMCPConfigurationRevision(declared, binding)).not.toBe(before);
+    expect(getRunGrantConfigurationRevision(declared, binding)).not.toBe(before);
     expect(declared.headers).toEqual({ 'X-Workspace': `\${${variable}}` });
     expect(declared.requestHeaders).toEqual({ 'X-Workspace': `\${${variable}}` });
   } finally {
@@ -169,9 +169,9 @@ it('preserves literal templates for DB/plugin sources rather than reading host e
         headers: { 'X-Workspace': `\${${variable}}` },
       };
       process.env[variable] = 'workspace-a';
-      const before = getScheduledMCPConfigurationRevision(declared, binding);
+      const before = getRunGrantConfigurationRevision(declared, binding);
       process.env[variable] = 'workspace-b';
-      expect(getScheduledMCPConfigurationRevision(declared, binding)).toBe(before);
+      expect(getRunGrantConfigurationRevision(declared, binding)).toBe(before);
     }
   } finally {
     if (previous === undefined) delete process.env[variable];
@@ -183,7 +183,7 @@ it.each(['headers', 'requestHeaders', 'oauth_headers'] as const)(
   'refuses unresolved custom routing in %s rather than hashing an unbound template',
   (field) => {
     expect(() =>
-      getScheduledMCPConfigurationRevision(
+      getRunGrantConfigurationRevision(
         {
           ...config,
           [field]: { 'X-Workspace': '{{WORKSPACE}}' },
@@ -203,13 +203,13 @@ it('refuses dynamic user/body routing and custom placeholders in authorization h
     '{{WORKSPACE}}',
   ]) {
     expect(() =>
-      getScheduledMCPConfigurationRevision(
+      getRunGrantConfigurationRevision(
         { ...config, headers: { 'X-Workspace': template } },
         binding,
       ),
     ).toThrow('consent_unavailable');
     expect(() =>
-      getScheduledMCPConfigurationRevision(
+      getRunGrantConfigurationRevision(
         { ...config, headers: { Authorization: `Bearer ${template}` } },
         binding,
       ),
@@ -222,7 +222,7 @@ it('refuses routing templates introduced by operator environment resolution', ()
   try {
     process.env[variable] = '{{WORKSPACE}}';
     expect(() =>
-      getScheduledMCPConfigurationRevision(
+      getRunGrantConfigurationRevision(
         {
           ...config,
           dbId: undefined,
@@ -254,14 +254,14 @@ it('preserves literal-source resource and OAuth URLs across replica environment 
         },
       };
       process.env[variable] = 'one';
-      const before = getScheduledMCPConfigurationRevision(declared, {
+      const before = getRunGrantConfigurationRevision(declared, {
         ...binding,
         url: declared.url!,
       });
       process.env[variable] = 'two';
-      expect(
-        getScheduledMCPConfigurationRevision(declared, { ...binding, url: declared.url! }),
-      ).toBe(before);
+      expect(getRunGrantConfigurationRevision(declared, { ...binding, url: declared.url! })).toBe(
+        before,
+      );
       expect(declared.url).toContain(`\${${variable}}`);
     }
   } finally {
@@ -275,5 +275,5 @@ it('keeps plugin custom templates literal because their runtime never substitute
     source: 'plugin' as const,
     headers: { 'X-Workspace': '{{WORKSPACE}}' },
   };
-  expect(getScheduledMCPConfigurationRevision(literal, binding)).toMatch(/^[a-f0-9]{64}$/);
+  expect(getRunGrantConfigurationRevision(literal, binding)).toMatch(/^[a-f0-9]{64}$/);
 });

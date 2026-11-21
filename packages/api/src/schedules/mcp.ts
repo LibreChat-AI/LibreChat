@@ -23,7 +23,7 @@ import type {
   UpstreamTokenProviderResolver,
   UpstreamTokenTarget,
 } from '../mcp/oauth/obo';
-import type { ScheduleMCPExecution, ScheduleMCPExecutionFactory } from './authorization/execution';
+import type { RunGrantExecution, RunGrantExecutionFactory } from '~/agents/authority/execution';
 import type { ParsedServerConfig, UserMCPConnectionOptions } from '../mcp/types';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { CheckAccessParams } from '../middleware/access';
@@ -45,7 +45,7 @@ import {
 } from '../mcp/utils';
 import { MCPConfigInitializationCanceledError } from '../mcp/registry/MCPServersRegistry';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '../mcp/request';
-import { ScheduledMCPPolicyError, listedMCPKeys } from './authorization/policy';
+import { RunGrantPolicyError, listedMCPKeys } from '~/agents/authority/policy';
 import { attachScheduledMCPBearer, ScheduledMCPBearerError } from './bearer';
 import { toScheduledTokenContext } from '~/agents/authority/context';
 import { resolveScheduledMCPRequirements } from './requirements';
@@ -183,7 +183,7 @@ interface ScheduleMCPDeps {
   ) => Promise<Record<string, ParsedServerConfig>>;
   findPluginAuthsByKeys: PluginAuthMethods['findPluginAuthsByKeys'];
   resolveUpstreamTokenProvider?: HostUpstreamTokenProviderResolver;
-  execution?: ScheduleMCPExecutionFactory;
+  execution?: RunGrantExecutionFactory;
   connect: (options: UserMCPConnectionOptions) => Promise<{
     fetchToolsSnapshot: (deadlineMs?: number, signal?: AbortSignal) => Promise<MCPToolsSnapshot>;
   }>;
@@ -194,7 +194,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
   const sharedProbeLimit = createConcurrencyLimiter(MAX_SHARED_MCP_PREFLIGHT_CONCURRENCY);
   const runPreflight: ScheduleMCPPreflight = async (agentId, principal, options) => {
     const signal = options.signal;
-    let execution: ScheduleMCPExecution | undefined;
+    let execution: RunGrantExecution | undefined;
     try {
       // A grant handed over is the one the schedule is being created or edited with: it
       // stands in for whatever is stored, which this write replaces.
@@ -213,7 +213,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
             )
           : undefined;
     } catch (error) {
-      if (error instanceof ScheduledMCPPolicyError) throw new ScheduleMCPError(error.outcomes);
+      if (error instanceof RunGrantPolicyError) throw new ScheduleMCPError(error.outcomes);
       throw error;
     }
     const throwIfAborted = () => {
@@ -347,7 +347,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
     const listed = new Map(
       (options.grant?.tools ?? []).map(({ agentId: owner, tools }) => [owner, new Set(tools)]),
     );
-    const grants: ScheduleMCPExecution['grants'] | undefined = execution?.enrolled
+    const grants: RunGrantExecution['grants'] | undefined = execution?.enrolled
       ? execution.grants
       : pending &&
         ((owner, server, tool) =>
@@ -578,7 +578,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                 } catch (error) {
                   if (
                     error instanceof ScheduledMCPBearerError ||
-                    error instanceof ScheduledMCPPolicyError
+                    error instanceof RunGrantPolicyError
                   )
                     return error.outcomes;
                   if (

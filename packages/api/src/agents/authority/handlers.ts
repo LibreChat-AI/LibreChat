@@ -1,14 +1,11 @@
-import {
-  confirmScheduleMCPConsentSchema,
-  revokeScheduleMCPConsentSchema,
-} from 'librechat-data-provider';
-import type { MCPGrantIdentity, ScheduledMCPIdentity } from 'librechat-data-provider';
+import { confirmRunGrantSchema, revokeRunGrantSchema } from 'librechat-data-provider';
+import type { RunGrantIdentity, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Response } from 'express';
-import type { ScheduleMCPConsentService } from './service';
+import type { RunGrantService } from './service';
 import type { ServerRequest } from '~/types';
-import { ScheduleMCPConsentError } from './service';
+import { RunGrantError } from './service';
 
-export interface ScheduleMCPConsentHandlers {
+export interface RunGrantHandlers {
   /** The offer for a subject that is not stored yet. Absent where there is no such thing. */
   draft?: (req: ServerRequest, res: Response) => Promise<void>;
   get: (req: ServerRequest, res: Response) => Promise<void>;
@@ -16,14 +13,14 @@ export interface ScheduleMCPConsentHandlers {
   revoke: (req: ServerRequest, res: Response) => Promise<void>;
 }
 
-export function createScheduleMCPConsentHandlers<
-  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
+export function createRunGrantHandlers<
+  Identity extends RunGrantIdentity = ScheduledMCPIdentity,
 >(deps: {
-  service: ScheduleMCPConsentService<Identity>;
+  service: RunGrantService<Identity>;
   resolveIdentity: (req: ServerRequest) => Promise<Identity | null>;
   /** Who a subject being created would act for, from the request that asks about it. */
   resolveDraft?: (req: ServerRequest) => Promise<Identity | null>;
-}): ScheduleMCPConsentHandlers {
+}): RunGrantHandlers {
   const handler =
     (
       operation: (req: ServerRequest, res: Response, identity: Identity) => Promise<void>,
@@ -38,7 +35,7 @@ export function createScheduleMCPConsentHandlers<
         }
         await operation(req, res, identity);
       } catch (error) {
-        const code = error instanceof ScheduleMCPConsentError ? error.code : 'consent_unavailable';
+        const code = error instanceof RunGrantError ? error.code : 'consent_unavailable';
         const statuses = {
           consent_not_found: 404,
           consent_forbidden: 403,
@@ -61,7 +58,7 @@ export function createScheduleMCPConsentHandlers<
       res.json(await deps.service.view(identity));
     }),
     confirm: handler(async (req, res, identity) => {
-      const parsed = confirmScheduleMCPConsentSchema.safeParse(req.body);
+      const parsed = confirmRunGrantSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ code: 'consent_invalid' });
         return;
@@ -69,7 +66,7 @@ export function createScheduleMCPConsentHandlers<
       res.json(await deps.service.confirm(identity, parsed.data));
     }),
     revoke: handler(async (req, res, identity) => {
-      const parsed = revokeScheduleMCPConsentSchema.safeParse(req.body);
+      const parsed = revokeRunGrantSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ code: 'consent_invalid' });
         return;

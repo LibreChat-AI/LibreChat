@@ -4,16 +4,19 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { HookCallback } from '@librechat/agents';
 import {
   scheduleAsksEveryUse,
-  createScheduleMCPExecution,
-  narrowScheduledMCPTools,
+  createRunGrantExecution,
+  narrowGrantedTools,
   collectApprovedToolCalls,
-  bindScheduledMCPInvocation,
+  bindRunGrantInvocation,
 } from './execution';
-import { createScheduledMCPRunPolicy, SCHEDULE_TOOL_NOT_ALLOWED } from './run';
+import {
+  createScheduledMCPRunPolicy,
+  SCHEDULE_TOOL_NOT_ALLOWED,
+} from '~/schedules/authorization/run';
 import { createMCPRequestContext, getMCPRequestContext } from '~/mcp/request';
 import { executionFixture, readTool } from './execution.helper';
 import { ScheduledMCPBearerError } from '~/mcp/errors';
-import { ScheduledMCPPolicyError } from './policy';
+import { RunGrantPolicyError } from './policy';
 
 const catalog = (tools: Tool[] = [readTool]) => ({ tools, complete: true });
 
@@ -28,7 +31,7 @@ it.each(['root', 'child'])(
       toolName: 'query',
       loadTools: async () => catalog(),
     });
-    expect(fixture.storage.admitScheduleMCPConsent).toHaveBeenCalledWith(
+    expect(fixture.storage.admitRunGrant).toHaveBeenCalledWith(
       expect.objectContaining({ identity: fixture.identity, requireEnabled: true }),
     );
   },
@@ -174,7 +177,7 @@ it('refuses an incomplete snapshot and ambiguous duplicate definitions', async (
       }),
     ).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
   }
-  expect(f.storage.admitScheduleMCPConsent).not.toHaveBeenCalled();
+  expect(f.storage.admitRunGrant).not.toHaveBeenCalled();
 });
 
 it('refuses a cross-tenant caller, unselected child, and changed transport binding', async () => {
@@ -228,7 +231,7 @@ it('keeps a captured guard after enrollment disappears and never falls back to l
   const f = await executionFixture();
   const context = createMCPRequestContext();
   await f.factory.attach(context, f.identity, 'invoke');
-  const bound = bindScheduledMCPInvocation(context, 'root', 'query')!;
+  const bound = bindRunGrantInvocation(context, 'root', 'query')!;
   f.snapshot.enrollment = null;
   await expect(
     bound.authorize({
@@ -239,7 +242,7 @@ it('keeps a captured guard after enrollment disappears and never falls back to l
       loadTools: async () => catalog(),
     }),
   ).rejects.toMatchObject({ failure: { reason: 'consent_missing' } });
-  expect(bindScheduledMCPInvocation(createMCPRequestContext(), 'root', 'query')).toBeUndefined();
+  expect(bindRunGrantInvocation(createMCPRequestContext(), 'root', 'query')).toBeUndefined();
 });
 
 it('retains legacy schedules with no enrollment but never grandfathers revoked enrollment', async () => {
@@ -392,7 +395,7 @@ it('lets a run use the other tools its owner allowed, and code tools only with c
 
 it('refuses a consent deadline crossed while the final database admission is in flight', async () => {
   const f = await executionFixture();
-  jest.mocked(f.storage.admitScheduleMCPConsent).mockImplementationOnce(async () => {
+  jest.mocked(f.storage.admitRunGrant).mockImplementationOnce(async () => {
     f.expire();
     return true;
   });
@@ -415,10 +418,8 @@ it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
       const f = await executionFixture(stage);
       const internal = new Error('PRIVATE authorization storage query with credentials');
       if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
-      if (phase === 'consent')
-        jest.mocked(f.storage.readScheduleMCPConsent).mockRejectedValue(internal);
-      if (phase === 'admission')
-        jest.mocked(f.storage.admitScheduleMCPConsent).mockRejectedValue(internal);
+      if (phase === 'consent') jest.mocked(f.storage.readRunGrant).mockRejectedValue(internal);
+      if (phase === 'admission') jest.mocked(f.storage.admitRunGrant).mockRejectedValue(internal);
       const provider = jest.fn();
       for (const agentId of ['root', 'child']) {
         const call = async () => {
@@ -440,7 +441,7 @@ it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
         } catch (error) {
           failure = error;
         }
-        expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
+        expect(failure).toBeInstanceOf(RunGrantPolicyError);
         expect(failure).toMatchObject({
           failure: {
             reason: 'dependency_unavailable',
@@ -462,7 +463,7 @@ it.each(['snapshot', 'authorize'] as const)(
   async (phase) => {
     const f = await executionFixture();
     const controller = new AbortController();
-    const typed = new ScheduledMCPPolicyError('rbac_denied', 'warehouse', 'child');
+    const typed = new RunGrantPolicyError('rbac_denied', 'warehouse', 'child');
     const authorize = jest.spyOn(f.service.authority, 'authorize');
     const fail = (error: Error, cancel = false) => {
       const reject = async () => {
@@ -627,12 +628,12 @@ describe('the tools a run loads under a grant', () => {
         toolName: 'lookup',
         loadTools: async () => ({ tools: [{ ...readTool, name: 'lookup' }], complete: true }),
       });
-    jest.mocked(fixture.storage.readScheduleMCPConsent).mockClear();
+    jest.mocked(fixture.storage.readRunGrant).mockClear();
     await expect(call()).resolves.toBeUndefined();
     // Checked again at the call, by the same authority a server with a consent is: the grant
     // this run started under is still the stored one, and its owner may still use it.
     expect(fixture.loadAuthorization).toHaveBeenCalledTimes(1);
-    expect(fixture.storage.readScheduleMCPConsent).toHaveBeenCalledTimes(1);
+    expect(fixture.storage.readRunGrant).toHaveBeenCalledTimes(1);
 
     // The owner edited the schedule: the grant was made for what it was before.
     fixture.snapshot.configRevision = 1;
@@ -644,7 +645,7 @@ describe('the tools a run loads under a grant', () => {
     fixture.snapshot.enrollment = stored;
     await fixture.revoke();
     await expect(call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
-    jest.mocked(fixture.storage.readScheduleMCPConsent).mockRejectedValueOnce(new Error('PRIVATE'));
+    jest.mocked(fixture.storage.readRunGrant).mockRejectedValueOnce(new Error('PRIVATE'));
     await expect(call()).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
 
     // The owner lost the permission the schedule runs on.
@@ -815,7 +816,7 @@ describe('the tools a run loads under a grant', () => {
     let required = true;
     const requiresGrant = jest.fn(async () => required);
     const build = (coversTools?: boolean) =>
-      createScheduleMCPExecution({
+      createRunGrantExecution({
         storage: fixture.storage,
         loadAuthorization: fixture.loadAuthorization,
         requiresGrant,
@@ -834,7 +835,7 @@ describe('the tools a run loads under a grant', () => {
     expect(legacy.narrow('root', keys)).toEqual(keys);
     expect(await decide(legacy, 'web_search')).toEqual({
       decision: 'deny',
-      reason: new ScheduledMCPPolicyError('consent_missing', '', 'root').message,
+      reason: new RunGrantPolicyError('consent_missing', '', 'root').message,
     });
     // An MCP call is refused where it is made, and the SDK's own controls are not tools to grant.
     expect(await decide(legacy, 'query_mcp_warehouse')).toEqual({});
@@ -857,10 +858,10 @@ describe('the tools a run loads under a grant', () => {
     const fixture = await executionFixture();
     fixture.snapshot.enrollment = null;
     const limit = DEFAULT_HOOK_TIMEOUT_MS / 2;
-    const read = fixture.storage.readScheduleMCPConsent;
+    const read = fixture.storage.readRunGrant;
     // The lookup never answers.
     const build = () =>
-      createScheduleMCPExecution({
+      createRunGrantExecution({
         storage: fixture.storage,
         loadAuthorization: fixture.loadAuthorization,
         requiresGrant: () => new Promise<boolean>(() => undefined),
@@ -875,7 +876,7 @@ describe('the tools a run loads under a grant', () => {
       );
     const refusal = {
       decision: 'deny',
-      reason: new ScheduledMCPPolicyError('dependency_unavailable', '', 'root').message,
+      reason: new RunGrantPolicyError('dependency_unavailable', '', 'root').message,
     };
     const [one, two] = [await build(), await build()];
     jest.useFakeTimers();
@@ -964,25 +965,26 @@ describe('the tools a run loads under a grant', () => {
     const req = {};
     const keys = ['query_mcp_warehouse', 'export_mcp_warehouse'];
     // No context was ever opened for this request: nothing is narrowed and none is opened.
-    expect(narrowScheduledMCPTools(req, 'root', keys)).toBe(keys);
-    expect(narrowScheduledMCPTools(undefined, 'root', keys)).toBe(keys);
+    expect(narrowGrantedTools(req, 'root', keys)).toBe(keys);
+    expect(narrowGrantedTools(undefined, 'root', keys)).toBe(keys);
     await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
-    expect(narrowScheduledMCPTools(req, 'root', keys)).toEqual(['query_mcp_warehouse']);
-    expect(narrowScheduledMCPTools({}, 'root', keys)).toBe(keys);
+    expect(narrowGrantedTools(req, 'root', keys)).toEqual(['query_mcp_warehouse']);
+    expect(narrowGrantedTools({}, 'root', keys)).toBe(keys);
   });
 
   it('loads nothing on a server the occurrence was fired without, with a grant or with none', async () => {
     const keys = ['query_mcp_warehouse', 'export_mcp_warehouse', 'search_mcp_notes', 'web_search'];
     // No grant: only the skipped server's tools are left out.
-    expect(
-      narrowScheduledMCPTools({ _scheduleSkippedServers: ['warehouse'] }, 'root', keys),
-    ).toEqual(['search_mcp_notes', 'web_search']);
+    expect(narrowGrantedTools({ _scheduleSkippedServers: ['warehouse'] }, 'root', keys)).toEqual([
+      'search_mcp_notes',
+      'web_search',
+    ]);
     // Under a grant, what it leaves out and what was skipped are both left out.
     const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
     const req = { _scheduleSkippedServers: ['warehouse'] };
     await fixture.factory.attach(getMCPRequestContext(req)!, fixture.identity, 'invoke');
     expect(
-      narrowScheduledMCPTools(req, 'root', ['query_mcp_warehouse', 'export_mcp_warehouse']),
+      narrowGrantedTools(req, 'root', ['query_mcp_warehouse', 'export_mcp_warehouse']),
     ).toEqual([]);
   });
 });

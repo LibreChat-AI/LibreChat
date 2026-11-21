@@ -4,8 +4,8 @@ import {
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
-import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import { MCPErrorCodes, isMCPInitializationError } from '~/mcp/errors';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED } from './options';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 
@@ -62,7 +62,7 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
-    error instanceof ScheduledMCPPolicyError ||
+    error instanceof RunGrantPolicyError ||
     isMCPInitializationError(error, options.signal) ||
     FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)

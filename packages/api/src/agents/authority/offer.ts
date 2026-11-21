@@ -2,15 +2,15 @@ import {
   Constants,
   buildServerNameAliases,
   splitMCPToolKey,
-  scheduledMCPResourceBindingSchema,
+  runGrantResourceBindingSchema,
 } from 'librechat-data-provider';
 import type {
   TModelsConfig,
-  MCPGrantIdentity,
-  ScheduledMCPTarget,
+  RunGrantIdentity,
+  RunGrantTarget,
   ScheduledMCPIdentity,
-  ScheduledMCPToolSelection,
-  ScheduledMCPResourceBinding,
+  RunGrantToolSelection,
+  RunGrantResourceBinding,
 } from 'librechat-data-provider';
 import type {
   AgentGraphAccessContext,
@@ -19,19 +19,19 @@ import type {
   AppConfig,
 } from '@librechat/data-schemas';
 import type {
-  ScheduleToolsResolver,
-  ScheduleServersResolver,
-  ScheduleMCPEnrollmentResolver,
+  RunGrantToolsResolver,
+  RunGrantServersResolver,
+  RunGrantTargetResolver,
 } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { getScheduledMCPPolicyRevision, isScheduledToolItem } from './policy';
-import { getScheduledMCPConfigurationRevision } from './configuration';
-import { resolveScheduledMCPRequirements } from '../requirements';
+import { resolveScheduledMCPRequirements } from '~/schedules/requirements';
+import { getRunGrantPolicyRevision, isRunGrantToolItem } from './policy';
+import { getRunGrantConfigurationRevision } from './configuration';
 import { getAppConfigOptionsFromUser } from '~/app/service';
-import { ScheduleMCPConsentError } from './service';
+import { RunGrantError } from './service';
 
-export interface ScheduleMCPEnrollmentDeps {
+export interface RunGrantOfferDeps {
   findUser: (id: string) => Promise<IUser | null>;
   canUseRoot: (agentId: string, user: IUser) => Promise<boolean>;
   /** Whether the owner may use MCP servers. Absent, they may. Their other tools are offered either way. */
@@ -58,7 +58,7 @@ interface OfferOptions {
   /** Where the operator declared the servers this kind of grant may cover. */
   resources?: (
     appConfig: AppConfig | undefined,
-  ) => Record<string, ScheduledMCPResourceBinding> | undefined;
+  ) => Record<string, RunGrantResourceBinding> | undefined;
   /**
    * A schedule's grant covers the whole run, so the agents' other tools are offered too, each
    * to be allowed or left out. A grant that only limits MCP use leaves them alone.
@@ -67,8 +67,8 @@ interface OfferOptions {
 }
 
 interface Offer {
-  targets: ScheduledMCPTarget[];
-  tools: ScheduledMCPToolSelection[];
+  targets: RunGrantTarget[];
+  tools: RunGrantToolSelection[];
   /** Every MCP server the agents select a tool on, offered or not. */
   servers: string[];
 }
@@ -83,16 +83,13 @@ interface Offer {
  * the whole agent does, as the owner's own use would.
  *
  * A server the operator declared nothing for is not a target either: there is no recipient
- * to bind. Its tools are offered among the agents' other tools (see `createScheduleMCPOffer`),
+ * to bind. Its tools are offered among the agents' other tools (see `createRunGrantOffer`),
  * where the grant covers those.
  */
-export function createScheduleMCPEnrollmentResolver<
-  Identity extends MCPGrantIdentity = ScheduledMCPIdentity,
->(
-  deps: ScheduleMCPEnrollmentDeps,
-  options: OfferOptions = {},
-): ScheduleMCPEnrollmentResolver<Identity> {
-  return createScheduleMCPOffer<Identity>(deps, options).targets;
+export function createRunGrantTargetResolver<
+  Identity extends RunGrantIdentity = ScheduledMCPIdentity,
+>(deps: RunGrantOfferDeps, options: OfferOptions = {}): RunGrantTargetResolver<Identity> {
+  return createRunGrantOffer<Identity>(deps, options).targets;
 }
 
 /**
@@ -115,7 +112,7 @@ const selectsTool = (key: string): boolean =>
  * is bound to them and only their names are read.
  */
 async function configured(
-  deps: Pick<ScheduleMCPEnrollmentDeps, 'ensureConfigServers'>,
+  deps: Pick<RunGrantOfferDeps, 'ensureConfigServers'>,
   raw: NonNullable<AppConfig['mcpConfig']>,
   declared: ReadonlySet<string>,
   tools: ReadonlyArray<{ name: string }>,
@@ -143,13 +140,13 @@ async function configured(
  * other tools. Asked for together, as the consent view does, they share one walk of the
  * agent graph.
  */
-export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = ScheduledMCPIdentity>(
-  deps: ScheduleMCPEnrollmentDeps,
+export function createRunGrantOffer<Identity extends RunGrantIdentity = ScheduledMCPIdentity>(
+  deps: RunGrantOfferDeps,
   options: OfferOptions = {},
 ): {
-  targets: ScheduleMCPEnrollmentResolver<Identity>;
-  tools: ScheduleToolsResolver<Identity>;
-  servers: ScheduleServersResolver<Identity>;
+  targets: RunGrantTargetResolver<Identity>;
+  tools: RunGrantToolsResolver<Identity>;
+  servers: RunGrantServersResolver<Identity>;
 } {
   const pending = new Map<string, { signal?: AbortSignal; offer: Promise<Offer> }>();
   const resolve = (identity: Identity, signal?: AbortSignal): Promise<Offer> => {
@@ -172,10 +169,10 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
     signal?.throwIfAborted();
     const user = await deps.findUser(identity.ownerId);
     if (!user || (user.tenantId ?? null) !== identity.tenantId)
-      throw new ScheduleMCPConsentError('consent_forbidden');
+      throw new RunGrantError('consent_forbidden');
     user.id = identity.ownerId;
     if (!(await deps.canUseRoot(identity.agentId, user)))
-      throw new ScheduleMCPConsentError('consent_forbidden');
+      throw new RunGrantError('consent_forbidden');
     const [appConfig, mcp] = await Promise.all([
       deps.getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true }),
       deps.canUseMCP?.(user) ?? true,
@@ -215,7 +212,7 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
     const others = new Map<string, Set<string>>();
     if (options.otherTools !== 'ignore') {
       for (const { name, agentId } of candidateTools) {
-        if (!isScheduledToolItem(name)) continue;
+        if (!isRunGrantToolItem(name)) continue;
         const names_ = others.get(agentId) ?? new Set<string>();
         names_.add(name);
         others.set(agentId, names_);
@@ -256,10 +253,10 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
       agents.set(agentId, names_);
       selected.set(name, agents);
     }
-    const targets = new Map<string, ScheduledMCPTarget>();
+    const targets = new Map<string, RunGrantTarget>();
     for (const [name, agents] of selected) {
       const config = servers[name];
-      const binding = scheduledMCPResourceBindingSchema.safeParse(bindings[name]);
+      const binding = runGrantResourceBindingSchema.safeParse(bindings[name]);
       if (
         !binding.success ||
         !config ||
@@ -276,9 +273,9 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
         continue;
       let configurationRevision: string;
       try {
-        configurationRevision = getScheduledMCPConfigurationRevision(config, metadata);
+        configurationRevision = getRunGrantConfigurationRevision(config, metadata);
       } catch (error) {
-        if (error instanceof ScheduleMCPConsentError) continue;
+        if (error instanceof RunGrantError) continue;
         throw error;
       }
       targets.set(name, {
@@ -293,7 +290,7 @@ export function createScheduleMCPOffer<Identity extends MCPGrantIdentity = Sched
     signal?.throwIfAborted();
     for (const target of targets.values()) {
       target.permittedTools.sort((a, b) => a.agentId.localeCompare(b.agentId));
-      target.policyRevision = getScheduledMCPPolicyRevision(target.permittedTools);
+      target.policyRevision = getRunGrantPolicyRevision(target.permittedTools);
     }
     return {
       targets: [...targets.values()],

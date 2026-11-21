@@ -1,12 +1,12 @@
 import {
   grantLifetime,
-  MAX_SCHEDULED_MCP_SERVER_TOOLS,
+  MAX_RUN_GRANT_SERVER_TOOLS,
   agentKeyMCPIdentitySchema,
-  confirmScheduleMCPConsentSchema,
-  scheduledMCPResourceSchema,
+  confirmRunGrantSchema,
+  runGrantResourceSchema,
   scheduledMCPIdentitySchema,
   scheduledMCPEnrollmentSchema,
-} from './scheduleConsent';
+} from './runGrant';
 import {
   scheduleMCPOutcomeSchema,
   readScheduleMCPOutcomes,
@@ -45,7 +45,7 @@ it('takes the deadline for never-authorized schedules as an instant with an offs
 
 it('takes the tools to ask about as an optional choice beside the allowed ones', () => {
   const parse = (ask?: unknown) =>
-    confirmScheduleMCPConsentSchema.safeParse({
+    confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
@@ -123,7 +123,7 @@ it.each([
   'https://example.com/mcp#secret',
 ])('rejects unsafe resource binding %s', (url) => {
   expect(
-    scheduledMCPResourceSchema.safeParse({
+    runGrantResourceSchema.safeParse({
       serverName: 'server',
       url,
       configurationRevision: 'v1',
@@ -141,13 +141,11 @@ it('accepts only a reviewed offer reference and bounded duration from the owner'
     lifetimeHours: 1,
     allow: { warehouse: ['query'] },
   };
-  expect(confirmScheduleMCPConsentSchema.safeParse(valid).success).toBe(true);
-  expect(
-    confirmScheduleMCPConsentSchema.safeParse({ ...valid, accessToken: 'secret' }).success,
-  ).toBe(false);
-  expect(
-    confirmScheduleMCPConsentSchema.safeParse({ ...valid, lifetimeHours: Infinity }).success,
-  ).toBe(false);
+  expect(confirmRunGrantSchema.safeParse(valid).success).toBe(true);
+  expect(confirmRunGrantSchema.safeParse({ ...valid, accessToken: 'secret' }).success).toBe(false);
+  expect(confirmRunGrantSchema.safeParse({ ...valid, lifetimeHours: Infinity }).success).toBe(
+    false,
+  );
 });
 it('does not accept an unknown persisted consent version', () => {
   expect(
@@ -210,7 +208,7 @@ it.each([
   ],
 ])('requires the owner to allow at least one tool: %s', (_label, allow) => {
   expect(
-    confirmScheduleMCPConsentSchema.safeParse({
+    confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
@@ -221,7 +219,7 @@ it.each([
 
 it('lets the owner allow every tool a server can be offered with, across its agents', () => {
   const parse = (count: number) =>
-    confirmScheduleMCPConsentSchema.safeParse({
+    confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
@@ -229,14 +227,14 @@ it('lets the owner allow every tool a server can be offered with, across its age
     }).success;
   // Two agents with 150 tools each: valid as an offer, so it must be confirmable whole.
   expect(parse(300)).toBe(true);
-  expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS)).toBe(true);
-  expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
+  expect(parse(MAX_RUN_GRANT_SERVER_TOOLS)).toBe(true);
+  expect(parse(MAX_RUN_GRANT_SERVER_TOOLS + 1)).toBe(false);
 });
 
 it('lets the owner ask first about as many tools as they can allow', () => {
   const parse = (count: number) => {
     const tools = Array.from({ length: count }, (_, index) => `tool-${index}`);
-    return confirmScheduleMCPConsentSchema.safeParse({
+    return confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
@@ -245,12 +243,12 @@ it('lets the owner ask first about as many tools as they can allow', () => {
     }).success;
   };
   expect(parse(300)).toBe(true);
-  expect(parse(MAX_SCHEDULED_MCP_SERVER_TOOLS + 1)).toBe(false);
+  expect(parse(MAX_RUN_GRANT_SERVER_TOOLS + 1)).toBe(false);
 });
 
 it("takes the owner's choice of tools that are not MCP tools, and stores it per agent", () => {
   const confirm = (tools?: unknown) =>
-    confirmScheduleMCPConsentSchema.safeParse({
+    confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
@@ -306,7 +304,7 @@ it("takes the owner's choice of tools that are not MCP tools, and stores it per 
 
 it('takes a grant for other tools only, with a lifetime of its own', () => {
   const confirm = (allow: Record<string, string[]>, tools?: string[]) =>
-    confirmScheduleMCPConsentSchema.safeParse({
+    confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
@@ -349,7 +347,7 @@ it('takes a grant for other tools only, with a lifetime of its own', () => {
 
 it('takes a grant for the whole agent, with nothing chosen one by one', () => {
   const confirm = (fields: Record<string, unknown>) =>
-    confirmScheduleMCPConsentSchema.safeParse({
+    confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,
@@ -398,7 +396,7 @@ it('takes the choice with an edit, naming the stored grant or not, and never as 
 
 it('accepts a server the owner left with no tools beside one with a choice', () => {
   expect(
-    confirmScheduleMCPConsentSchema.safeParse({
+    confirmRunGrantSchema.safeParse({
       offerDigest: 'a'.repeat(64),
       expectedRevision: null,
       lifetimeHours: 1,

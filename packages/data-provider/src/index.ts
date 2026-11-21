@@ -110,7 +110,7 @@ export * from './code/worker';
 export * from './code/approval';
 export * from './code/workspace';
 
-export * from './types/scheduleConsent';
+export * from './types/runGrant';
 
 export * from './approval';
 export * from './types/channels';

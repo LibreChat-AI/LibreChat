@@ -1,11 +1,11 @@
 import { scheduleMCPOutcomeSchema } from 'librechat-data-provider';
-import type { ScheduledMCPAuthorizationResult } from './contract';
+import type { RunGrantAuthorizationResult } from './contract';
 import type { AuthorizationFixture } from './fixtures.helper';
 import { authorizationFixtures, failureFixtures } from './fixtures.helper';
 import { verifyAuthorizationFixture } from './conformance.helper';
 
 /** Exercises the harness, not a production authorization implementation. */
-function scriptedResults(fixture: AuthorizationFixture): ScheduledMCPAuthorizationResult[] {
+function scriptedResults(fixture: AuthorizationFixture): RunGrantAuthorizationResult[] {
   return fixture.steps.map((step) => {
     if (step.expected === 'cancelled') return { state: 'cancelled' };
     if (step.expected !== 'authorized') {
@@ -36,7 +36,7 @@ it.each(
   ),
 )('rejects an implementation that reuses an allow decision: $id', async (fixture) => {
   const evaluate = jest.fn(
-    async (): Promise<ScheduledMCPAuthorizationResult> => ({
+    async (): Promise<RunGrantAuthorizationResult> => ({
       state: 'authorized',
       consentId: 'consent-1',
       consentRevision: 'consent-revision-1',

@@ -1,11 +1,7 @@
 import { useId, useState } from 'react';
 import { Label, Button, Checkbox } from '@librechat/client';
 import { Tools, Constants, AgentCapabilities, normalizeServerName } from 'librechat-data-provider';
-import type {
-  ScheduledMCPTarget,
-  ScheduleMCPConsentView,
-  ConfirmScheduleMCPConsent,
-} from 'librechat-data-provider';
+import type { RunGrantTarget, RunGrantView, ConfirmRunGrant } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize } from '~/hooks';
 
@@ -48,7 +44,7 @@ export function splitToolKey(
 }
 
 /** Every tool on offer for a server, whichever agents selected it. */
-function offeredTools(target: ScheduledMCPTarget): string[] {
+function offeredTools(target: RunGrantTarget): string[] {
   return [...new Set(target.permittedTools.flatMap((selection) => selection.tools))].sort();
 }
 
@@ -80,12 +76,12 @@ function spread(offered: readonly string[], ticked: string[]): string[] {
  * consent for each declared server and lists none of the other tools, which would otherwise
  * show the first ticked and the second not.
  */
-function startsWhole(data: ScheduleMCPConsentView): boolean {
+function startsWhole(data: RunGrantView): boolean {
   return data.offer?.everything === true && (data.revision == null || data.everything);
 }
 
 /** The other tools ticked where the offer starts, kept to the ones still on offer. */
-function initialOther(data: ScheduleMCPConsentView): string[] {
+function initialOther(data: RunGrantView): string[] {
   return startsWhole(data)
     ? data.tools.offered
     : data.tools.allowed.filter((tool) => data.tools.offered.includes(tool));
@@ -99,7 +95,7 @@ function initialOther(data: ScheduleMCPConsentView): string[] {
  * grant never named, those start ticked too: they are authorized now, and confirming as shown
  * must not take them away.
  */
-function initialChoice(data: ScheduleMCPConsentView): Record<string, string[]> {
+function initialChoice(data: RunGrantView): Record<string, string[]> {
   const whole = startsWhole(data);
   return Object.fromEntries(
     data.targets.map((target) => {
@@ -138,10 +134,7 @@ interface Edited {
  * as changed since the owner last ticked anything, or marked under another grant, loses its
  * tick, so allowing the new definition is something the owner does with the warning in view.
  */
-function currentChoice(
-  data: ScheduleMCPConsentView,
-  edited: Edited | null,
-): Record<string, string[]> {
+function currentChoice(data: RunGrantView, edited: Edited | null): Record<string, string[]> {
   const initial = initialChoice(data);
   if (!edited) return initial;
   return Object.fromEntries(
@@ -203,7 +196,7 @@ export interface GrantChoice {
    */
   pristine: boolean;
   /** What a confirmation sends for this choice. */
-  request: Pick<ConfirmScheduleMCPConsent, 'allow' | 'ask' | 'tools' | 'everything'>;
+  request: Pick<ConfirmRunGrant, 'allow' | 'ask' | 'tools' | 'everything'>;
   setEverything: (everything: boolean) => void;
   setKeepsAsking: (keeps: boolean) => void;
   setTools: (serverName: string, tools: string[]) => void;
@@ -215,7 +208,7 @@ export interface GrantChoice {
 }
 
 /** The owner's choice from an offer: what is ticked now, starting from what the offer says. */
-export function useGrantChoice(data: ScheduleMCPConsentView | undefined): GrantChoice {
+export function useGrantChoice(data: RunGrantView | undefined): GrantChoice {
   /** Null until the owner changes a box, so a refetch cannot overwrite a choice in progress. */
   const [edited, setEdited] = useState<Edited | null>(null);
   const choice = data ? currentChoice(data, edited) : {};
@@ -361,7 +354,7 @@ export default function GrantTools({
   state,
   busy,
 }: {
-  data: ScheduleMCPConsentView;
+  data: RunGrantView;
   choosing: boolean;
   state: GrantChoice;
   busy: boolean;

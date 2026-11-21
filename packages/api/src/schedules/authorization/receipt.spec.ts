@@ -13,23 +13,23 @@ import {
   recordScheduledMCPToolAuthFailure,
 } from '../service';
 import {
-  createScheduleMCPExecution,
+  createRunGrantExecution,
   getScheduleMCPExecution,
-  bindScheduledMCPInvocation,
-} from './execution';
+  bindRunGrantInvocation,
+} from '~/agents/authority/execution';
+import { executionFixture, allowOffered, readTool } from '~/agents/authority/execution.helper';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
-import { executionFixture, allowOffered, readTool } from './execution.helper';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createScheduleExecutionContext } from '~/agents/authority/context';
 import { createAgentTriggerExecutionHost } from '~/agents/triggers/host';
 import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { createRunGrantService } from '~/agents/authority/service';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { resolveScheduleMCPCompletion } from './continuation';
 import { retainScheduleMCPCompletion } from './continuation';
-import { createScheduleMCPConsentService } from './service';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduledMCPRunPolicy } from './run';
-import { ScheduledMCPPolicyError } from './policy';
 
 let mongo: MongoMemoryServer;
 let store: InMemoryJobStore;
@@ -81,7 +81,7 @@ async function setup(legacy = false, detaches = true) {
     timezone: 'UTC',
     cadence: { frequency: 'hourly', minute: 0, hour: 1 },
   });
-  const consent = createScheduleMCPConsentService({
+  const consent = createRunGrantService({
     storage: methods,
     resolveEnrollment: async () => [fixture.target],
     getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
@@ -98,7 +98,7 @@ async function setup(legacy = false, detaches = true) {
   };
   if (!legacy) await enroll();
   const loadAuthorization = jest.fn(async () => ({ authority: consent.authority }));
-  const factory = createScheduleMCPExecution({ storage: methods, loadAuthorization, detaches });
+  const factory = createRunGrantExecution({ storage: methods, loadAuthorization, detaches });
   const execution = (await factory.resolve(identity, 'invoke'))!;
   const scheduledFor = new Date('2026-10-02T12:00:00Z');
   await methods.insertScheduleRun({
@@ -243,7 +243,7 @@ it.each([
   const f = await setup();
   await store.updateJob('stream', change, f.job.createdAt);
   await expect(
-    f.record(new ScheduledMCPPolicyError('tool_policy_denied', '', 'child')),
+    f.record(new RunGrantPolicyError('tool_policy_denied', '', 'child')),
   ).rejects.toMatchObject({ name: 'AbortError' });
   expect(
     (await f.methods.getScheduleRunAbortState(f.schedule.id, f.scheduledFor))?.mcp,
@@ -254,7 +254,7 @@ it('captures recorder scope and does not initialize it for legacy runs', async (
   const f = await setup();
   f.scope.streamId = 'spoofed';
   f.scope.jobCreatedAt = -1;
-  expect(await f.record(new ScheduledMCPPolicyError('tool_policy_denied', '', 'child'))).toBe(true);
+  expect(await f.record(new RunGrantPolicyError('tool_policy_denied', '', 'child'))).toBe(true);
   expect(createScheduledMCPPolicyRecorder(undefined, f.scope, jest.fn())).toBeUndefined();
 });
 
@@ -337,7 +337,7 @@ it('retains a failed Mongo receipt in the job store and replays it after service
   jest
     .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
     .mockRejectedValueOnce(new Error('Storage outage PRIVATE'));
-  const failure = new ScheduledMCPPolicyError('tool_policy_denied', '', 'child');
+  const failure = new RunGrantPolicyError('tool_policy_denied', '', 'child');
   expect(await f.attempt(failure)).toBe(false);
   expect((await store.getJob('stream'))?.scheduleMCPFailure).toEqual(failure.outcomes[0]);
   expect(
@@ -365,7 +365,7 @@ it('defers success while both receipt channels are unavailable, then settles the
     .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
     .mockRejectedValue(new Error('Mongo outage'));
   const jobWrite = jest.spyOn(store, 'updateJob').mockRejectedValue(new Error('Job store outage'));
-  const failure = new ScheduledMCPPolicyError('tool_policy_denied', '', 'root');
+  const failure = new RunGrantPolicyError('tool_policy_denied', '', 'root');
   expect(await f.attempt(failure)).toBe(false);
   const settle = () =>
     f.service.recordScheduleOutcome({
@@ -397,7 +397,7 @@ it('retains a denial before a failed first job lookup and does not stamp a repla
   const recorder = jest.spyOn(f.service, 'recordMCPToolAuthFailure');
   const read = jest.spyOn(store, 'getJob').mockRejectedValueOnce(new Error('Lookup outage'));
   await expect(
-    f.attempt(new ScheduledMCPPolicyError('tool_policy_denied', '', 'child')),
+    f.attempt(new RunGrantPolicyError('tool_policy_denied', '', 'child')),
   ).rejects.toThrow('Lookup outage');
   read.mockRestore();
   expect(recorder).toHaveBeenCalledWith(
@@ -437,10 +437,8 @@ it('retains a denial before a failed first job lookup and does not stamp a repla
 
 it('upgrades a transient receipt to a later permanent policy denial', async () => {
   const f = await setup();
-  expect(await f.record(new ScheduledMCPPolicyError('dependency_unavailable', '', 'root'))).toBe(
-    true,
-  );
-  const permanent = new ScheduledMCPPolicyError('tool_policy_denied', '', 'child');
+  expect(await f.record(new RunGrantPolicyError('dependency_unavailable', '', 'root'))).toBe(true);
+  const permanent = new RunGrantPolicyError('tool_policy_denied', '', 'child');
   expect(await f.record(permanent)).toBe(true);
   expect((await store.getJob('stream'))?.scheduleMCPFailure).toEqual(permanent.outcomes[0]);
   await f.service.recordScheduleOutcome({
@@ -463,7 +461,7 @@ it('keeps a failed receipt through approval pause and a rebuilt settlement servi
     .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
     .mockRejectedValue(new Error('Mongo outage'));
   const jobWrite = jest.spyOn(store, 'updateJob').mockRejectedValue(new Error('Job outage'));
-  const failure = new ScheduledMCPPolicyError('tool_policy_denied', '', 'child');
+  const failure = new RunGrantPolicyError('tool_policy_denied', '', 'child');
   expect(await f.attempt(failure)).toBe(false);
   const pause = () =>
     f.service.recordScheduleOutcome({
@@ -498,7 +496,7 @@ it('keeps a failed receipt through approval pause and a rebuilt settlement servi
 it('retains a transport consent denial before a transient first job lookup', async () => {
   const f = await setup();
   const invocation = f.execution.bind('child', 'query');
-  const failure = new ScheduledMCPPolicyError('consent_revoked', 'warehouse', 'child');
+  const failure = new RunGrantPolicyError('consent_revoked', 'warehouse', 'child');
   const read = jest
     .spyOn(store, 'getJob')
     .mockRejectedValueOnce(new Error('Transient lookup outage'));
@@ -536,10 +534,10 @@ it.each(['success', 'error', 'skipped_balance'] as const)(
   'merges an earlier Mongo receipt with a job-only permanent denial during %s settlement',
   async (status) => {
     const f = await setup(true);
-    const transient = new ScheduledMCPPolicyError('dependency_unavailable', '', 'root');
+    const transient = new RunGrantPolicyError('dependency_unavailable', '', 'root');
     expect(await f.attempt(transient)).toBe(true);
     await f.enroll();
-    const permanent = new ScheduledMCPPolicyError('binding_mismatch', '', 'child');
+    const permanent = new RunGrantPolicyError('binding_mismatch', '', 'child');
     const write = jest
       .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
       .mockRejectedValueOnce(new Error('Transient Mongo receipt outage'));
@@ -765,9 +763,9 @@ it('atomically keeps a permanent denial when an older delayed transient job writ
     }
     await original(id, patch, epoch);
   });
-  const earlier = f.attempt(new ScheduledMCPPolicyError('dependency_unavailable', '', 'root'));
+  const earlier = f.attempt(new RunGrantPolicyError('dependency_unavailable', '', 'root'));
   await entered;
-  const permanent = new ScheduledMCPPolicyError('binding_mismatch', '', 'child');
+  const permanent = new RunGrantPolicyError('binding_mismatch', '', 'child');
   // Volatile retention preserves evidence but does not acknowledge Mongo outage.
   expect(await f.attempt(permanent)).toBe(false);
   release();
@@ -791,7 +789,7 @@ it('atomically keeps a permanent denial when an older delayed transient job writ
       status: 'error',
       mcp: expect.arrayContaining([
         ...permanent.outcomes,
-        ...new ScheduledMCPPolicyError('dependency_unavailable', '', 'root').outcomes,
+        ...new RunGrantPolicyError('dependency_unavailable', '', 'root').outcomes,
       ]),
     },
   });
@@ -977,8 +975,8 @@ it('gives a resumed completion turn nothing to act with once the schedule was au
     },
   });
   await f.enroll();
-  const snapshot = await f.methods.readScheduleMCPConsent(identity);
-  await f.methods.revokeScheduleMCPConsent(identity, snapshot!.enrollment!.revision);
+  const snapshot = await f.methods.readRunGrant(identity);
+  await f.methods.revokeRunGrant(identity, snapshot!.enrollment!.revision);
   const context = createMCPRequestContext();
   const provider = jest.fn(async () => getScheduleMCPExecution(context));
   const req = {
@@ -1006,14 +1004,14 @@ it('gives a resumed completion turn nothing to act with once the schedule was au
   expect(attached!.narrow('child', ['web_search', 'execute_code'])).toEqual([]);
   expect(attached!.grantsTool('child', 'web_search')).toBe(false);
   await expect(
-    bindScheduledMCPInvocation(context, 'child', 'query')!.authorize({
+    bindRunGrantInvocation(context, 'child', 'query')!.authorize({
       user: { id: identity.ownerId, tenantId: 'tenant' } as never,
       serverName: 'warehouse',
       serverConfig: { type: 'streamable-http', url: 'https://warehouse.example/mcp' } as never,
       toolName: 'query',
       loadTools: async () => ({ tools: [], complete: true }),
     }),
-  ).rejects.toBeInstanceOf(ScheduledMCPPolicyError);
+  ).rejects.toBeInstanceOf(RunGrantPolicyError);
 });
 
 it('persists completion identity before tool construction and restores its monitor across repeated approvals', async () => {
@@ -1127,8 +1125,7 @@ it.each(['snapshot', 'consent', 'admission', 'catalog'] as const)(
     if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
     if (phase === 'consent')
       jest.spyOn(f.consent.authority, 'authorize').mockRejectedValue(internal);
-    if (phase === 'admission')
-      jest.spyOn(f.methods, 'admitScheduleMCPConsent').mockRejectedValue(internal);
+    if (phase === 'admission') jest.spyOn(f.methods, 'admitRunGrant').mockRejectedValue(internal);
     const provider = jest.fn(async () => 'read executed');
     const tool = new DynamicStructuredTool({
       name: 'query_mcp_warehouse',
@@ -1257,8 +1254,8 @@ it('stores only a safe preparation outage when initial authorization fails after
   } catch (error) {
     failure = error;
   }
-  expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
-  if (!(failure instanceof ScheduledMCPPolicyError)) throw new Error('Expected safe denial');
+  expect(failure).toBeInstanceOf(RunGrantPolicyError);
+  if (!(failure instanceof RunGrantPolicyError)) throw new Error('Expected safe denial');
   await f.service.recordScheduleOutcome({
     scheduleId: f.schedule.id,
     scheduledFor: f.scheduledFor,
@@ -1345,7 +1342,7 @@ it('fences an unadmitted A3 denial when its generation is replaced during receip
   jest
     .spyOn(f.service.engineDeps.methods, 'recordMCPToolAuthFailure')
     .mockRejectedValue(new Error('Receipt unavailable'));
-  const failure = new ScheduledMCPPolicyError('tool_policy_denied', 'warehouse', 'child');
+  const failure = new RunGrantPolicyError('tool_policy_denied', 'warehouse', 'child');
   let settled = false;
   const outcome = f.record(failure).then(
     (value) => {

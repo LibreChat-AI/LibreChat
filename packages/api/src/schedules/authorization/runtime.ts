@@ -1,19 +1,19 @@
 import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { RunGrantExecutionFactory } from '~/agents/authority/execution';
 import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { ScheduleMCPCompletionLookup } from './continuation';
-import type { ScheduleMCPExecutionFactory } from './execution';
-import type { ScheduleMCPEnrollmentDeps } from './enrollment';
+import type { RunGrantOfferDeps } from '~/agents/authority/offer';
 import {
   isScheduledMCPCompletionRequest,
   resolveScheduleMCPCompletion,
   parseScheduleMCPCompletion,
 } from './continuation';
 import {
-  createScheduleMCPExecution,
+  createRunGrantExecution,
   scheduledMCPIdentity,
   getScheduleMCPExecution,
-} from './execution';
+} from '~/agents/authority/execution';
 import {
   readScheduleFireContext,
   isScheduleFireRequest,
@@ -21,11 +21,11 @@ import {
 } from '../trigger';
 import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
 import { createScheduleMCPConsentHost, createMCPUseCheck } from './host';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
+import { createRunGrantOffer } from '~/agents/authority/offer';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createScheduleLimitsResolver } from '../service';
-import { createScheduleMCPOffer } from './enrollment';
 import { isOwnedAbortError } from '~/utils/errors';
-import { ScheduledMCPPolicyError } from './policy';
 
 type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
   user: { id: string; tenantId?: string };
@@ -36,7 +36,7 @@ export function createScheduleMCPRuntimeHost(
     Parameters<typeof createScheduleMCPConsentHost>[0],
     'resolveEnrollment' | 'resolveTools' | 'resolveServers' | 'getLimits'
   > & {
-    enrollment: ScheduleMCPEnrollmentDeps;
+    enrollment: RunGrantOfferDeps;
     getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
     methods: {
       /** The MCP outcomes an occurrence's run row holds. */
@@ -53,7 +53,7 @@ export function createScheduleMCPRuntimeHost(
   },
 ): {
   consent: ReturnType<typeof createScheduleMCPConsentHost>;
-  execution: ScheduleMCPExecutionFactory;
+  execution: RunGrantExecutionFactory;
   prepare: (input: {
     req: RuntimeRequest;
     signal?: AbortSignal;
@@ -72,8 +72,8 @@ export function createScheduleMCPRuntimeHost(
     approvedToolCalls?: readonly string[];
   }) => Promise<void>;
 } {
-  function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
-    const offer = createScheduleMCPOffer({
+  function createEvaluation(enrollment: RunGrantOfferDeps) {
+    const offer = createRunGrantOffer({
       ...enrollment,
       canUseMCP: createMCPUseCheck(deps.getRoleByName),
     });
@@ -98,7 +98,7 @@ export function createScheduleMCPRuntimeHost(
     ...deps.enrollment,
     getAppConfig: (options) => deps.enrollment.getAppConfig({ ...options, failClosed: true }),
   }).consent.service.requiresGrant;
-  const execution = createScheduleMCPExecution({
+  const execution = createRunGrantExecution({
     storage: deps.methods,
     requiresGrant: required,
     // A schedule's grant covers the whole run: the agents' other tools load only if listed.
@@ -136,7 +136,7 @@ export function createScheduleMCPRuntimeHost(
         const { req, context, executionContext, restoredJob } = input;
         const completion = restoredJob?.scheduleMCPCompletion;
         if (completion !== undefined || isScheduledMCPCompletionRequest(req)) {
-          if (!context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          if (!context) throw new RunGrantPolicyError('binding_mismatch', '');
           const marker = req.body?.agentCompletion;
           if (
             marker != null &&
@@ -148,7 +148,7 @@ export function createScheduleMCPRuntimeHost(
                 String(marker.sourceId),
               ))
           )
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+            throw new RunGrantPolicyError('binding_mismatch', '');
           const origin =
             marker && typeof marker === 'object' && 'scheduleMCPIdentity' in marker
               ? marker.scheduleMCPIdentity
@@ -166,7 +166,7 @@ export function createScheduleMCPRuntimeHost(
                 );
           if (!identity) return;
           if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+            throw new RunGrantPolicyError('binding_mismatch', '');
           // The turn reports on a task one occurrence started, in the conversation that
           // occurrence started, and is a request of its own: neither that occurrence's
           // trigger nor its saved job. The servers the occurrence went without are read from
@@ -193,7 +193,7 @@ export function createScheduleMCPRuntimeHost(
             },
           );
           if (!getScheduleMCPExecution(context))
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
+            throw new RunGrantPolicyError('binding_mismatch', '');
           return;
         }
         if (!isScheduleFireRequest(req)) return;
@@ -204,17 +204,17 @@ export function createScheduleMCPRuntimeHost(
           : undefined;
         const fresh = schedule?.resumed === false ? schedule : undefined;
         const scheduleId = restoredContext?.scheduleId ?? fresh?.id ?? restoredJob?.scheduleId;
-        if (!scheduleId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
+        if (!scheduleId || !context) throw new RunGrantPolicyError('binding_mismatch', '');
         const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
         if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          throw new RunGrantPolicyError('binding_mismatch', '');
         const enrolled = row.mcpConsent !== undefined;
         const rootId =
           restoredContext?.agentId ??
           (fresh ? executionContext?.agentId : undefined) ??
           (!enrolled ? row.agent_id : undefined);
         if (typeof rootId !== 'string' || rootId !== row.agent_id)
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          throw new RunGrantPolicyError('binding_mismatch', '');
         const identity = scheduledMCPIdentity({
           scheduleId,
           ownerId: req.user.id,
@@ -227,7 +227,7 @@ export function createScheduleMCPRuntimeHost(
           (restoredContext.ownerId !== req.user.id ||
             (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
         )
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
+          throw new RunGrantPolicyError('binding_mismatch', '');
         // A resumed run rebuilds its tools on a request that is not a trigger. The servers its
         // occurrence was started without are read back from the occurrence's own run row, so
         // the resumed run goes without the same ones.
@@ -280,7 +280,7 @@ async function prepareSafely(operation: () => Promise<void>, signal?: AbortSigna
     await operation();
     signal?.throwIfAborted();
   } catch (error) {
-    if (error instanceof ScheduledMCPPolicyError || isOwnedAbortError(error, signal)) throw error;
-    throw new ScheduledMCPPolicyError('dependency_unavailable', '');
+    if (error instanceof RunGrantPolicyError || isOwnedAbortError(error, signal)) throw error;
+    throw new RunGrantPolicyError('dependency_unavailable', '');
   }
 }

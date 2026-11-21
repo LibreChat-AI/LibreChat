@@ -2,19 +2,19 @@ import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import {
-  bindScheduledMCPInvocation,
+  bindRunGrantInvocation,
   getScheduleMCPExecution,
-  narrowScheduledMCPTools,
-} from './execution';
+  narrowGrantedTools,
+} from '~/agents/authority/execution';
 import {
   restoreExecutionContext,
   createScheduleExecutionContext,
 } from '~/agents/authority/context';
+import { executionFixture, allowOffered, readTool } from '~/agents/authority/execution.helper';
 import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
-import { executionFixture, allowOffered, readTool } from './execution.helper';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { createMCPRequestContext } from '~/mcp/request';
 import { createScheduleMCPPreflight } from '../mcp';
-import { ScheduledMCPPolicyError } from './policy';
 
 async function setup() {
   const fixture = await executionFixture();
@@ -212,7 +212,7 @@ it('uses the same real enrollment policy at readiness, root, and child invocatio
   expect(getScheduleMCPExecution(f.context)?.identity).toEqual(f.identity);
   for (const agentId of ['root', 'child']) {
     await expect(
-      bindScheduledMCPInvocation(f.context, agentId, 'query')!.authorize({
+      bindRunGrantInvocation(f.context, agentId, 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -278,9 +278,9 @@ it('puts back on a resumed run the servers its occurrence went without, read fro
   expect(req._scheduleSkippedServers).toEqual(['notes']);
   expect(req._scheduleCheckedServers).toEqual(['notes', 'warehouse']);
   // The resumed run then loads nothing on that server.
-  expect(narrowScheduledMCPTools(req, 'root', ['search_mcp_notes', 'query_mcp_warehouse'])).toEqual(
-    ['query_mcp_warehouse'],
-  );
+  expect(narrowGrantedTools(req, 'root', ['search_mcp_notes', 'query_mcp_warehouse'])).toEqual([
+    'query_mcp_warehouse',
+  ]);
 });
 
 it('reads no run row for a fresh occurrence, whose trigger already says what it goes without', async () => {
@@ -333,7 +333,7 @@ describe('a turn that reports on a task a scheduled run started', () => {
     );
     expect(req._scheduleSkippedServers).toEqual(['warehouse']);
     expect(req._scheduleCheckedServers).toEqual(['warehouse', 'ledger']);
-    expect(narrowScheduledMCPTools(req, 'root', keys)).not.toContain('query_mcp_warehouse');
+    expect(narrowGrantedTools(req, 'root', keys)).not.toContain('query_mcp_warehouse');
   });
 
   it('loads what it would have without that record: the grant alone decides', async () => {
@@ -341,7 +341,7 @@ describe('a turn that reports on a task a scheduled run started', () => {
     const req: ReturnType<typeof completionRequest> & Marked = completionRequest(f);
     await f.host.prepare({ req, context: f.context });
     expect(req._scheduleSkippedServers).toBeUndefined();
-    expect(narrowScheduledMCPTools(req, 'root', ['query_mcp_warehouse'])).toEqual([
+    expect(narrowGrantedTools(req, 'root', ['query_mcp_warehouse'])).toEqual([
       'query_mcp_warehouse',
     ]);
   });
@@ -389,7 +389,7 @@ it('rebuilds the protected root on resume and refuses revoked consent even after
   expect(getScheduleMCPExecution(f.context)?.stage).toBe('resume');
   await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
   await expect(
-    bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'child', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: { type: 'streamable-http', url: 'https://resource.example/mcp' },
@@ -478,7 +478,7 @@ it('loads one fresh principal and configuration pair per authorization, not per 
   const f = await setup();
   await f.host.prepare({ req: f.req, context: f.context });
   const call = () =>
-    bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -504,7 +504,7 @@ it('reuses the captured configuration and preserves the global stop on later cal
   const f = await setup();
   await f.host.prepare({ req: f.req, context: f.context });
   const call = () =>
-    bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'child', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -526,7 +526,7 @@ it('does not share an authority snapshot across concurrent attempts', async () =
   f.findUser.mockClear();
   f.getAppConfig.mockClear();
   const call = (agentId: string) =>
-    bindScheduledMCPInvocation(f.context, agentId, 'query')!.authorize({
+    bindRunGrantInvocation(f.context, agentId, 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -574,7 +574,7 @@ it.each([false, true])(
         : { req: manualReq, context: f.context },
     );
     const call = () =>
-      bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'child', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -582,7 +582,7 @@ it.each([false, true])(
         loadTools: async () => ({ tools: [readTool], complete: true }),
       });
     await expect(call()).resolves.toBeUndefined();
-    expect(f.storage.admitScheduleMCPConsent).toHaveBeenLastCalledWith(
+    expect(f.storage.admitRunGrant).toHaveBeenLastCalledWith(
       expect.objectContaining({ requireEnabled: false }),
     );
     await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
@@ -602,7 +602,7 @@ it('does not elevate automatic paused runs from body or mutable request flags', 
   };
   await f.host.prepare({ req, context: f.context });
   await expect(
-    bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -637,7 +637,7 @@ it('attaches a legacy monitor without minting a grant and fences its next tool a
   await f.host.prepare({ req: f.req, context: f.context });
   const execution = getScheduleMCPExecution(f.context)!;
   expect(execution.enrolled).toBe(false);
-  const guard = bindScheduledMCPInvocation(f.context, 'root', 'write')!;
+  const guard = bindRunGrantInvocation(f.context, 'root', 'write')!;
   const call = () =>
     guard.authorize({
       user: f.user,
@@ -663,8 +663,7 @@ it.each(['schedule', 'consent', 'completion'] as const)(
     const f = await setup();
     const privateError = new Error('PRIVATE database authorization query');
     if (phase === 'schedule') f.getScheduleById.mockRejectedValue(privateError);
-    if (phase === 'consent')
-      jest.mocked(f.storage.readScheduleMCPConsent).mockRejectedValue(privateError);
+    if (phase === 'consent') jest.mocked(f.storage.readRunGrant).mockRejectedValue(privateError);
     if (phase === 'completion') f.getScheduleMCPCompletionState.mockRejectedValue(privateError);
     const req =
       phase === 'completion'
@@ -694,7 +693,7 @@ it.each(['schedule', 'consent', 'completion'] as const)(
       } catch (error) {
         failure = error;
       }
-      expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
+      expect(failure).toBeInstanceOf(RunGrantPolicyError);
       expect(failure).toMatchObject({
         failure: {
           reason: 'dependency_unavailable',
@@ -711,9 +710,7 @@ it.each(['schedule', 'consent', 'completion'] as const)(
 
 it('sanitizes consent attachment failures on authenticated completion approval resumes', async () => {
   const f = await setup();
-  jest
-    .mocked(f.storage.readScheduleMCPConsent)
-    .mockRejectedValue(new Error('PRIVATE consent query'));
+  jest.mocked(f.storage.readRunGrant).mockRejectedValue(new Error('PRIVATE consent query'));
   const initialize = jest.fn();
   await expect(
     initializeWithScheduleMCPExecution(
@@ -780,7 +777,7 @@ it('sanitizes host construction and lineage-retention failures without masking p
 it('preserves typed denials and owned cancellation at the preparation boundary', async () => {
   const f = await setup();
   const controller = new AbortController();
-  const typed = new ScheduledMCPPolicyError('rbac_denied', 'warehouse', 'root');
+  const typed = new RunGrantPolicyError('rbac_denied', 'warehouse', 'root');
   f.getScheduleById.mockRejectedValue(typed);
   await expect(f.host.prepare({ req: f.req, context: f.context })).rejects.toBe(typed);
   const stop = new Error('Owner stopped');
@@ -831,7 +828,7 @@ describe('a grant for only some of what the agents select', () => {
     await expect(f.check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
     await f.host.prepare({ req: f.req, context: f.context });
     const call = (tool: string) =>
-      bindScheduledMCPInvocation(f.context, 'root', tool)!.authorize({
+      bindRunGrantInvocation(f.context, 'root', tool)!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -888,7 +885,7 @@ describe('a grant for only some of what the agents select', () => {
     // The tool left out is still refused where it is called.
     await f.host.prepare({ req: f.req, context: f.context });
     await expect(
-      bindScheduledMCPInvocation(f.context, 'root', 'export')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'export')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -958,7 +955,7 @@ describe('an owner whose role may not use MCP servers', () => {
     const f = await setup();
     await f.host.prepare({ req: f.req, context: f.context });
     const call = () =>
-      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -1019,7 +1016,7 @@ describe('a schedule authorized for the whole agent', () => {
   it('is ready on both while it is being created, with nothing stored yet', async () => {
     const f = await whole();
     const grant = f.snapshot.enrollment!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     await expect(
       f.preflight('root', f.user, {
         scheduleId: 'sched_new',
@@ -1077,7 +1074,7 @@ describe('a schedule authorized for the whole agent', () => {
     const keys = ['query_mcp_warehouse', 'query_mcp_archive', 'web_search', 'execute_code'];
     expect(getScheduleMCPExecution(f.context)!.narrow('root', keys)).toEqual(keys);
     const call = (serverName: string, tool: string, serverConfig: object) =>
-      bindScheduledMCPInvocation(f.context, 'root', tool)!.authorize({
+      bindRunGrantInvocation(f.context, 'root', tool)!.authorize({
         user: f.user,
         serverName,
         serverConfig: serverConfig as typeof f.serverConfig,
@@ -1163,7 +1160,7 @@ describe('a grant that lists a tool on a server the operator did not declare', (
       ]),
     ).toEqual(['query_mcp_archive']);
     const call = (serverName: string, serverConfig: object) =>
-      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
         user: f.user,
         serverName,
         serverConfig: serverConfig as typeof f.serverConfig,
@@ -1177,8 +1174,8 @@ describe('a grant that lists a tool on a server the operator did not declare', (
     // A schedule being created with such a grant has nothing stored yet: readiness is
     // handed the grant, and still reaches the listed server, so one that is down is reported.
     const grant = f.snapshot.enrollment!;
-    const stored = jest.mocked(f.storage.readScheduleMCPConsent).getMockImplementation()!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    const stored = jest.mocked(f.storage.readRunGrant).getMockImplementation()!;
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     const creating = () =>
       f.preflight('root', f.user, {
         scheduleId: 'sched_new',
@@ -1196,7 +1193,7 @@ describe('a grant that lists a tool on a server the operator did not declare', (
     );
     f.connect.mockRejectedValueOnce(new Error('down'));
     await expect(creating()).rejects.toMatchObject({ code: 'mcp_unavailable' });
-    jest.mocked(f.storage.readScheduleMCPConsent).mockImplementation(stored);
+    jest.mocked(f.storage.readRunGrant).mockImplementation(stored);
     // The owner loses the right to use MCP servers: the listed tool goes with it.
     f.getRoleByName.mockResolvedValue({
       permissions: {
@@ -1239,7 +1236,7 @@ describe('a grant that lists the whole of a declared server', () => {
       'sys__all__sys_mcp_warehouse',
     ]);
     await expect(
-      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -1267,7 +1264,7 @@ describe('a schedule being created with its grant', () => {
       ...choice,
     });
     const grant = f.snapshot.enrollment!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     f.connect.mockClear();
     const check = (withGrant = true) =>
       f.preflight('root', f.user, {
@@ -1305,7 +1302,7 @@ describe('a schedule being created with its grant', () => {
       allow: { warehouse: ['query'] },
     });
     const grant = f.snapshot.enrollment!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     f.connect.mockClear();
     const options = { scheduleId: 'sched_new', stage: 'activation' as const, concurrency: 3 };
     await expect(f.preflight('root', f.user, { ...options, grant })).resolves.toEqual([
@@ -1344,7 +1341,7 @@ describe('a schedule its owner never authorized', () => {
     const call = async () => {
       const context = createMCPRequestContext();
       await f.host.prepare({ req: f.req, context });
-      return bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+      return bindRunGrantInvocation(context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -1451,7 +1448,7 @@ describe('a schedule its owner never authorized', () => {
     await f.host.prepare({ req: f.req, context });
     expect(f.getAppConfig).not.toHaveBeenCalled();
     expect(f.findUser).not.toHaveBeenCalled();
-    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const guard = bindRunGrantInvocation(context, 'root', 'query')!;
     const use = () =>
       guard.authorize({
         user: f.user,
@@ -1473,7 +1470,7 @@ describe('a schedule its owner never authorized', () => {
     const context = createMCPRequestContext();
     await f.host.prepare({ req: f.req, context });
     f.getAppConfig.mockRejectedValueOnce(new Error('PRIVATE config store'));
-    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const guard = bindRunGrantInvocation(context, 'root', 'query')!;
     const use = () =>
       guard.authorize({
         user: f.user,
@@ -1505,7 +1502,7 @@ describe('a tool the owner approves call by call', () => {
     });
     f.row.mcpConsent = f.snapshot.enrollment!;
     const use = (context: ReturnType<typeof createMCPRequestContext>, toolCallId?: string) =>
-      bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,

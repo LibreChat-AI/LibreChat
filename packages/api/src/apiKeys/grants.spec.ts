@@ -7,30 +7,23 @@ import {
 } from 'librechat-data-provider';
 import type {
   AgentGraphAccessContext,
-  MCPConsentStorage,
+  RunGrantStorage,
   AppConfig,
   IRole,
   IUser,
 } from '@librechat/data-schemas';
-import type { AgentKeyMCPIdentity, MCPGrantEnrollment } from 'librechat-data-provider';
+import type { AgentKeyMCPIdentity, RunGrant } from 'librechat-data-provider';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { Response } from 'express';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { ApiKeyAuthRequest } from './middleware';
 import type { ServerRequest } from '~/types';
 import {
-  pinStorage,
-  untouchedSince,
-  admitsDefinitions,
-} from '~/schedules/authorization/execution.helper';
-import {
-  getScheduleMCPExecution,
-  bindScheduledMCPInvocation,
-} from '~/schedules/authorization/execution';
-import {
   createRemoteExecutionContext,
   createTriggerExecutionContext,
 } from '~/agents/authority/context';
+import { pinStorage, untouchedSince, admitsDefinitions } from '~/agents/authority/execution.helper';
+import { getScheduleMCPExecution, bindRunGrantInvocation } from '~/agents/authority/execution';
 import { createAgentKeyMCPGrantHost, getRemoteRunKeyId } from './grants';
 import { getMCPRequestContext } from '~/mcp/request';
 
@@ -67,12 +60,12 @@ function setup(
     mcpConfig: { warehouse: serverConfig },
   } as unknown as AppConfig;
   /** One key, `key-1`, with a grant per agent. Any other key is not found. */
-  const grants = new Map<string, MCPGrantEnrollment<AgentKeyMCPIdentity>>();
+  const grants = new Map<string, RunGrant<AgentKeyMCPIdentity>>();
   const found = (identity: AgentKeyMCPIdentity) =>
     identity.keyId === 'key-1' && identity.ownerId === 'owner' && identity.tenantId === 'tenant';
   let time = 1000;
-  const storage: MCPConsentStorage<AgentKeyMCPIdentity> = {
-    readScheduleMCPConsent: async (identity) =>
+  const storage: RunGrantStorage<AgentKeyMCPIdentity> = {
+    readRunGrant: async (identity) =>
       found(identity)
         ? {
             agentId: identity.agentId,
@@ -81,7 +74,7 @@ function setup(
             enrollment: structuredClone(grants.get(identity.agentId) ?? null),
           }
         : null,
-    confirmScheduleMCPConsent: async ({ identity, expectedRevision, enrollment, basis }) => {
+    confirmRunGrant: async ({ identity, expectedRevision, enrollment, basis }) => {
       const stored = grants.get(identity.agentId);
       if (
         !found(identity) ||
@@ -92,12 +85,12 @@ function setup(
       grants.set(identity.agentId, structuredClone(enrollment));
       return true;
     },
-    revokeScheduleMCPConsent: async (identity) => {
+    revokeRunGrant: async (identity) => {
       for (const consent of grants.get(identity.agentId)?.consents ?? [])
         consent.revokedAtMs = time;
       return true;
     },
-    admitScheduleMCPConsent: async ({ identity, revision, consentId, definitions }) => {
+    admitRunGrant: async ({ identity, revision, consentId, definitions }) => {
       const grant = grants.get(identity.agentId);
       return (
         found(identity) &&
@@ -106,10 +99,10 @@ function setup(
         admitsDefinitions(grant, consentId, definitions)
       );
     },
-    pinScheduleMCPToolDefinition: (input) =>
-      pinStorage(() => grants.get(input.identity.agentId)).pinScheduleMCPToolDefinition(input),
-    flagScheduleMCPToolChange: (input) =>
-      pinStorage(() => grants.get(input.identity.agentId)).flagScheduleMCPToolChange(input),
+    pinRunGrantTool: (input) =>
+      pinStorage(() => grants.get(input.identity.agentId)).pinRunGrantTool(input),
+    flagRunGrantTool: (input) =>
+      pinStorage(() => grants.get(input.identity.agentId)).flagRunGrantTool(input),
   };
   let tools = ['query_mcp_warehouse', 'list_mcp_warehouse'];
   const getRoleByName = jest.fn(
@@ -218,7 +211,7 @@ function setup(
     await host.prepare({ req, executionContext });
     const context = getMCPRequestContext(req)!;
     const call = async (tool = 'query'): Promise<'unrestricted' | 'authorized'> => {
-      const invocation = bindScheduledMCPInvocation(context, agentId, tool);
+      const invocation = bindRunGrantInvocation(context, agentId, tool);
       if (!invocation) return 'unrestricted';
       await invocation.authorize({
         user,
@@ -365,7 +358,7 @@ it('does not restrict a run that no personal key started', async () => {
   await expect((await s.run('agent_a', null)).call()).resolves.toBe('unrestricted');
   const req = { user: s.user } as ApiKeyAuthRequest;
   await s.host.prepare({ req });
-  expect(bindScheduledMCPInvocation(getMCPRequestContext(req), 'agent_a', 'query')).toBeUndefined();
+  expect(bindRunGrantInvocation(getMCPRequestContext(req), 'agent_a', 'query')).toBeUndefined();
 });
 
 it('keeps the exemption of a key issued to an integration when its run is a background one', async () => {

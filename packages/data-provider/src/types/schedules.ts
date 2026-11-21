@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import {
   scheduleAuthorizationSchema,
-  scheduledMCPFailureReasonSchema,
+  runGrantFailureReasonSchema,
   scheduleReauthorizationSchema,
-} from './scheduleConsent';
+} from './runGrant';
 import { partialWithoutDefaults } from '../zod';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
@@ -250,7 +250,7 @@ export const scheduleMCPOutcomeSchema = z.object({
   agentId: z.string().optional(),
   /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
   detail: z.enum(['unattended_auth_required']).optional(),
-  reason: scheduledMCPFailureReasonSchema.optional(),
+  reason: runGrantFailureReasonSchema.optional(),
   recovery: z.enum(['authorize', 'configure', 'restore_permission', 'retry_later']).optional(),
   automaticReplay: z.literal(false).optional(),
   /**

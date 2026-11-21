@@ -1795,9 +1795,9 @@ describe('User parameter passing tests', () => {
 
     it('carries captured schedule identity into the transport failure receipt', async () => {
       const {
-        createScheduleMCPExecution,
+        createRunGrantExecution,
         createMCPRequestContext,
-        ScheduledMCPPolicyError,
+        RunGrantPolicyError,
       } = require('@librechat/api');
       const user = { id: 'scheduled-owner', tenantId: 'tenant', role: 'USER' };
       const identity = {
@@ -1808,9 +1808,9 @@ describe('User parameter passing tests', () => {
         invocationMode: 'delegated',
       };
       const context = createMCPRequestContext();
-      const execution = createScheduleMCPExecution({
+      const execution = createRunGrantExecution({
         storage: {
-          readScheduleMCPConsent: async () => ({
+          readRunGrant: async () => ({
             agentId: 'root',
             enabled: true,
             configRevision: 0,
@@ -1823,7 +1823,7 @@ describe('User parameter passing tests', () => {
         },
       });
       await execution.attach(context, identity, 'invoke');
-      const error = new ScheduledMCPPolicyError('consent_revoked', 'test-server', 'child');
+      const error = new RunGrantPolicyError('consent_revoked', 'test-server', 'child');
       const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
       let durable = false;
       let completed = false;
