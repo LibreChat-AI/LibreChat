@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Plugin, PluggableList } from 'unified';
 import { importWithRecovery } from '~/lib/assets/lazy';
+import { rehypeSafeBreaks } from '~/utils/breaks';
 import { langSubset } from '~/utils/languages';
 
 export type RehypeModules = {
@@ -106,7 +107,7 @@ export function toRehypePlugins(
   highlight: Record<string, unknown> = MESSAGE_HIGHLIGHT,
 ): PluggableList {
   if (modules == null) {
-    return [];
+    return [rehypeSafeBreaks];
   }
-  return [[modules.rehypeKatex], [modules.rehypeHighlight, highlight]];
+  return [[modules.rehypeKatex], [modules.rehypeHighlight, highlight], rehypeSafeBreaks];
 }
