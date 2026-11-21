@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EModelEndpoint, QueryKeys, dataService } from 'librechat-data-provider';
 import { activateCatalog, resetCatalogWarmup } from '~/hooks/useCatalogWarmup';
+import { withAgentAccess } from 'test/agentAccess';
 import useAgentsMap from '../useAgentsMap';
 
 /** `dataService` methods are non-configurable, so the HTTP boundary is mocked
@@ -41,9 +42,9 @@ describe('useAgentsMap', () => {
       has_more: false,
       after: null,
     });
-    const wrapper = ({ children }: { children: React.ReactNode }) => (
+    const wrapper = withAgentAccess(({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
+    ));
     return renderHook(() => useAgentsMap({ isAuthenticated: true }), { wrapper });
   };
 

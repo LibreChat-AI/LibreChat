@@ -12,6 +12,7 @@ import {
   setAgentListQueryData,
 } from '../queries';
 import { useGetFavoritesQuery, useUpdateFavoritesMutation } from '../../Favorites';
+import { withAgentAccess } from 'test/agentAccess';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -55,12 +56,16 @@ const page = (ids: string[], after: string | null): AgentListResponse => ({
   last_id: ids[ids.length - 1] ?? '',
 });
 
-const createWrapper = (queryClient: QueryClient) =>
-  function Wrapper({ children }: { children: ReactNode }) {
+/** The agent list is gated on AGENTS.USE, so every wrapper carries a role granting it. */
+const createWrapper = (queryClient: QueryClient, canUseAgents = true) =>
+  withAgentAccess(function Wrapper({ children }: { children: ReactNode }) {
     return createElement(QueryClientProvider, { client: queryClient }, children);
-  };
+  }, canUseAgents);
 
-const renderListAgents = (params: Parameters<typeof useListAgentsQuery>[0]) => {
+const renderListAgents = (
+  params: Parameters<typeof useListAgentsQuery>[0],
+  { canUseAgents = true }: { canUseAgents?: boolean } = {},
+) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
     logger: { log: console.log, warn: console.warn, error: () => {} },
@@ -68,13 +73,26 @@ const renderListAgents = (params: Parameters<typeof useListAgentsQuery>[0]) => {
   /** The hook is gated on the agents endpoint being configured. */
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.agents]: {} });
   return renderHook(() => useListAgentsQuery(params, { retry: false }), {
-    wrapper: createWrapper(queryClient),
+    wrapper: createWrapper(queryClient, canUseAgents),
   });
 };
 
 describe('useListAgentsQuery', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('does not request the list when the role lacks AGENTS.USE', async () => {
+    listAgents.mockResolvedValue(page(['a'], null));
+
+    const { result } = renderListAgents(
+      { requiredPermission: PermissionBits.VIEW },
+      { canUseAgents: false },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(listAgents).not.toHaveBeenCalled();
+    expect(result.current.fetchStatus).toBe('idle');
   });
 
   it('bounds the first catalog response without waiting for a whole-list walk', async () => {
