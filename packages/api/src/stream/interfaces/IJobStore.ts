@@ -1,13 +1,14 @@
 import type {
-  IAgentEventActorContextMeta,
-  ICompactionSemanticIndexProjection,
-} from '@librechat/data-schemas';
-import type {
   Agents,
   TFile,
   TPendingSteer,
+  TMessageTrigger,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
+import type {
+  IAgentEventActorContextMeta,
+  ICompactionSemanticIndexProjection,
+} from '@librechat/data-schemas';
 import type {
   CodeApprovalMode,
   ScheduleMCPOutcome,
@@ -172,6 +173,9 @@ export interface SerializableJobData {
     /** Uploaded files for the turn, carried so a HITL resume sources them from the job
      *  rather than a user DB row whose save can still be racing the approval prompt. */
     files?: unknown[];
+    /** What started the turn, when no person sent it: the row a resumed stream rebuilds
+     *  is recognized by it, as the stored row is. */
+    trigger?: TMessageTrigger;
   };
 
   /** Response message ID for reconnection */

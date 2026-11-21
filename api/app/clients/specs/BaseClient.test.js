@@ -144,6 +144,26 @@ describe('BaseClient', () => {
     ).toEqual(expect.objectContaining({ subagentTriggerProjection: projection }));
   });
 
+  test('puts what the server recorded of a triggered turn on its first message, and nothing else', () => {
+    const trigger = {
+      event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+    };
+    const turn = {
+      messageId: 'wake:user',
+      parentMessageId: 'parent',
+      conversationId: 'thread',
+      text: 'A task has settled.',
+      trigger: { event: { type: 'forged' } },
+    };
+    TestClient.options.req = { _messageTrigger: trigger, body: { trigger: turn.trigger } };
+
+    expect(TestClient.createUserMessage(turn).trigger).toBe(trigger);
+
+    TestClient.options.req = { body: { trigger: turn.trigger } };
+
+    expect(TestClient.createUserMessage(turn)).not.toHaveProperty('trigger');
+  });
+
   test('returns the input messages without instructions when addInstructions() is called with empty instructions', () => {
     const messages = [{ content: 'Hello' }, { content: 'How are you?' }, { content: 'Goodbye' }];
     const instructions = '';

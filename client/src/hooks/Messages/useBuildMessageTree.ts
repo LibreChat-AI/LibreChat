@@ -3,6 +3,12 @@ import { useStore } from 'jotai';
 import type { TMessage } from 'librechat-data-provider';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 
+/** What started a turn is shown to its owner in the app. It is not part of what they export. */
+function exportable(message: Partial<TMessage>): Partial<TMessage> {
+  const { trigger: _trigger, ...rest } = message;
+  return rest;
+}
+
 export default function useBuildMessageTree() {
   const jotaiStore = useStore();
   const getSiblingIdx = useCallback(
@@ -60,11 +66,11 @@ export default function useBuildMessageTree() {
     }
 
     if (recursive && message) {
-      return { ...(message as TMessage), children: children as TMessage[] };
+      return { ...(exportable(message) as TMessage), children: children as TMessage[] };
     } else {
       let ret: TMessage[] = [];
       if (message) {
-        const _message = { ...message };
+        const _message = exportable(message);
         delete _message.children;
         ret = [_message as TMessage];
       }

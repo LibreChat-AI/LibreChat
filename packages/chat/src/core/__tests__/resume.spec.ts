@@ -86,6 +86,22 @@ describe('buildMinimalResumeSubmission', () => {
 });
 
 describe('buildSubmissionFromResumeState', () => {
+  it('gives the row it rebuilds what the server recorded of what started the turn', () => {
+    const trigger = {
+      event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+    };
+    const started = resumeState({
+      userMessage: { messageId: 'wake', text: 'A task has settled.', trigger },
+    });
+
+    expect(buildSubmissionFromResumeState(started, 'c-1', [], 'c-1').userMessage.trigger).toEqual(
+      trigger,
+    );
+    expect(
+      buildSubmissionFromResumeState(resumeState(), 'c-1', [], 'c-1').userMessage,
+    ).not.toHaveProperty('trigger');
+  });
+
   it.each([undefined, 'in_progress', 'completed', 'failed', 'cancelled'] as const)(
     'restores a metadata-only summary from a %s run step',
     (status) => {
