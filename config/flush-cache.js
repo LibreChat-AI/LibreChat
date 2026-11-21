@@ -109,6 +109,8 @@ async function flushRedisCache(dryRun = false, verbose = false) {
       username: username,
       password: password,
       tls: ca ? { ca } : undefined,
+      // Accept IPv4 or IPv6 (same as redisClients.ts); IPv6-only hosts have no A record
+      family: 0,
       connectTimeout: 10000,
       maxRetriesPerRequest: 3,
       enableOfflineQueue: true,
