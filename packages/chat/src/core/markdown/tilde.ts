@@ -72,6 +72,6 @@ function normalizeTextNodes(node: Node, parent?: Node): void {
  * destinations are structurally excluded — none of them are `text` nodes. Autolink labels
  * (which display the URL itself) are skipped so the visible URL is preserved verbatim.
  */
-export function remarkApproxTilde() {
+export function remarkApproxTilde(): (tree: Node) => void {
   return (tree: Node) => normalizeTextNodes(tree);
 }

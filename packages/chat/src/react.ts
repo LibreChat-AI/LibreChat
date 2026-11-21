@@ -269,6 +269,19 @@ export type {
 } from './react/parts/disclosure';
 export { boundIntentLabel, getToolCallIntent, useToolCallIntent } from './react/parts/intent';
 export { default as useFollowScroll } from './react/parts/useFollowScroll';
+export {
+  needsRehype,
+  toRehypePlugins,
+  PROMPT_HIGHLIGHT,
+  DETECT_HIGHLIGHT,
+  useRehypeModules,
+  MESSAGE_HIGHLIGHT,
+  loadRehypeModules,
+  getLoadedRehypeModules,
+} from './react/parts/rehype';
+export type { RehypeModules, RehypePlugins, HighlightOptions } from './react/parts/rehype';
+export { LazyImportProvider, useLazyImport } from './react/lazy';
+export type { LazyImport } from './react/lazy';
 export { default as useRowHandoff } from './react/parts/handoff';
 export {
   askAnswerTextAtom,

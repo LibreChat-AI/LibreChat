@@ -1,5 +1,5 @@
 import type { Node } from 'unist';
-import { normalizeApproxTildes, remarkApproxTilde } from './tilde';
+import { normalizeApproxTildes, remarkApproxTilde } from '../tilde';
 
 const T = '∼'; // U+223C TILDE OPERATOR
 
