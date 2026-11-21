@@ -14,6 +14,20 @@ import {
   accountingPriceDescription,
 } from './render';
 
+function textCharacters(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce((sum, item) => sum + textCharacters(item), 0);
+  if (typeof value !== 'object' || value === null) return 0;
+  let total = 0;
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child !== 'string') {
+      total += textCharacters(child);
+    } else if (key === 'text') {
+      total += [...child].length;
+    }
+  }
+  return total;
+}
+
 function run(): ChannelRunView {
   return {
     runId: 'run-12345678',
@@ -258,18 +272,15 @@ describe('Slack answer rendering', () => {
     }
   });
 
-  it('reflows reduced-budget output as bounded plain text without splitting formatted block syntax', () => {
+  it('reflows reduced-budget output as bounded plain text beyond the block budget', () => {
     const view = run();
     view.snapshot!.text =
       'x'.repeat(38990) + ' [docs](https://example.com/a_(b)) ' + 'tail '.repeat(500);
     const plan = makeSlackPlan(view, false, 1);
     expect(plan.parts).toHaveLength(1);
     const message = durableSlackMessage(plan.parts[0], rendererVersion);
-    expect(
-      message.blocks?.every(
-        (block) => block.type === 'section' && block.text.type === 'plain_text',
-      ),
-    ).toBe(true);
+    // A shortened reply that cannot fit the block budget is posted as plain text.
+    expect(message.blocks).toBeUndefined();
     expect(message.text).toContain('Reply shortened');
     expect(Buffer.byteLength(message.text)).toBeLessThan(40000);
     expect(supportedRenderer(rendererVersion)).toBe(true);
@@ -484,6 +495,21 @@ describe('Slack answer rendering', () => {
       for (const part of makeSlackPlan(view).parts) {
         expect(() => durableSlackMessage(part, rendererVersion)).not.toThrow();
       }
+    }
+  });
+
+  it('keeps every message below the undocumented block-text ceiling', () => {
+    const source = ('lorem ipsum '.repeat(200) + '\n\n').repeat(10);
+    const messages = renderSlackDocument(source);
+    expect(messages.length).toBeGreaterThan(1);
+    for (const message of messages) {
+      expect(textCharacters(message.blocks ?? [])).toBeLessThanOrEqual(12_000);
+    }
+    const view = run();
+    view.snapshot!.text = source;
+    for (const part of makeSlackPlan(view).parts) {
+      if (!part.presentation) continue;
+      expect(textCharacters(JSON.parse(part.presentation.payload))).toBeLessThanOrEqual(12_000);
     }
   });
 });

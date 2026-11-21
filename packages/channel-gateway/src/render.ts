@@ -28,6 +28,12 @@ export const artifactFailureNotice =
   'One or more attachments could not be confirmed. The answer is preserved; uncertain uploads will not be duplicated automatically.';
 const chunkLimit = 39_000;
 const presentationLimit = 64_000;
+/**
+ * Slack rejects a message whose blocks carry about 13_000 characters in total with
+ * `msg_blocks_too_long`, even when every documented per-block limit holds. Keep each
+ * message below that undocumented ceiling.
+ */
+const blocksLimit = 12_000;
 function withinCharacters(value: string, limit: number): boolean {
   let count = 0;
   for (let index = 0; index < value.length; index++) {
@@ -127,10 +133,32 @@ interface RenderedMessage extends SlackMessage {
   plain: string;
 }
 
-/** Every presentation path uses the same block and serialized-payload boundary. */
+/** Characters Slack counts across every text field of a message's blocks. */
+function blockCharacters(blocks: SlackBlock[]): number {
+  let total = 0;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== 'object' || value === null) return;
+    for (const [key, child] of Object.entries(value)) {
+      if (typeof child === 'string') {
+        if (key === 'text') total += [...child].length;
+      } else {
+        visit(child);
+      }
+    }
+  };
+  visit(blocks);
+  return total;
+}
+
+/** Every presentation path uses the same block, text and serialized-payload boundary. */
 function presentationFor(message: SlackMessage): ChannelDeliveryPart['presentation'] {
   const blocks = blocksSchema.safeParse(message.blocks);
   if (!blocks.success) return undefined;
+  if (blockCharacters(blocks.data) > blocksLimit) return undefined;
   const payload = JSON.stringify(blocks.data);
   if (Buffer.byteLength(payload) > presentationLimit) return undefined;
   return { format: presentationFormat, payload };
@@ -416,7 +444,7 @@ function mrkdwnChunks(document: InlineDocument, limit: number): string[] | null 
       bytes += size;
     }
   };
-  for (let index = 0; index < value.length; ) {
+  for (let index = 0; index < value.length;) {
     let end = protectedEnds.get(index);
     if (end === undefined && value[index] === '&') {
       if (value.startsWith('&amp;', index)) end = index + 5;
@@ -470,15 +498,19 @@ export function renderSlackDocument(markdown: string): RenderedMessage[] {
   const document = parseMarkdown(markdown);
   const parts: RenderedMessage[] = [];
   let current: RenderedMessage = { text: '', plain: '', blocks: [] };
+  let characters = 0;
   const flush = () => {
     if (current.text || current.blocks?.length) {
       parts.push(current);
       current = { text: '', plain: '', blocks: [] };
     }
+    characters = 0;
   };
   const add = (fallback: string, block: SlackBlock, plain: string) => {
+    const blockSize = blockCharacters([block]);
     if (
       (current.blocks?.length ?? 0) >= 40 ||
+      characters + blockSize > blocksLimit ||
       Buffer.byteLength(current.text + fallback) + 2 > chunkLimit
     )
       flush();
@@ -486,6 +518,7 @@ export function renderSlackDocument(markdown: string): RenderedMessage[] {
     current.text += separator + fallback;
     current.plain += separator + plain;
     current.blocks?.push(block);
+    characters += blockSize;
   };
   const prose = (node: Nodes) => {
     const inline = inlineDocument(document, node);
@@ -832,10 +865,15 @@ function appendFooter(parts: RenderedMessage[], run: ChannelRunView): void {
   const fallback = safeMrkdwn(
     `\n\n_This run · ID ${id}${elapsed ? ' · ' + elapsed : ''}${usage}_\n_This run: ${accountingDescription(snapshot.accounting)}_\n_${details.join(' · ')}_`,
   );
+  const footerBlock: SlackBlock = {
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: line }],
+  };
   let last = parts[parts.length - 1];
   if (
     !last ||
     (last.blocks?.length ?? 0) >= 40 ||
+    blockCharacters(last.blocks ?? []) + blockCharacters([footerBlock]) > blocksLimit ||
     Buffer.byteLength(last.text + fallback) > chunkLimit
   ) {
     last = { text: '', plain: '', blocks: [] };
@@ -845,16 +883,11 @@ function appendFooter(parts: RenderedMessage[], run: ChannelRunView): void {
   last.plain =
     (last.plain ?? decodeSlackText(last.text)) + inlineDocument(footer, footer.root).plain;
   last.text += fallback;
-  (last.blocks ??= []).push({ type: 'context', elements: [{ type: 'mrkdwn', text: line }] });
+  (last.blocks ??= []).push(footerBlock);
 }
 
 function appendFeedback(parts: RenderedMessage[]): void {
-  let last = parts[parts.length - 1];
-  if (!last || (last.blocks?.length ?? 0) >= 40) {
-    last = { text: 'Answer feedback', plain: 'Answer feedback', blocks: [] };
-    parts.push(last);
-  }
-  (last.blocks ??= []).push({
+  const feedbackBlock: SlackBlock = {
     type: 'context_actions',
     elements: [
       {
@@ -872,7 +905,17 @@ function appendFeedback(parts: RenderedMessage[]): void {
         },
       },
     ],
-  });
+  };
+  let last = parts[parts.length - 1];
+  if (
+    !last ||
+    (last.blocks?.length ?? 0) >= 40 ||
+    blockCharacters(last.blocks ?? []) + blockCharacters([feedbackBlock]) > blocksLimit
+  ) {
+    last = { text: 'Answer feedback', plain: 'Answer feedback', blocks: [] };
+    parts.push(last);
+  }
+  (last.blocks ??= []).push(feedbackBlock);
 }
 
 export function validArtifact(artifact: ChannelArtifact): boolean {
