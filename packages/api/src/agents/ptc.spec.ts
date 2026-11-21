@@ -1,6 +1,8 @@
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { PtcToolCallEvent } from 'librechat-data-provider';
 import { instrumentPtcToolMap, summarizePtcArgs } from './ptc';
+import { getProductToolIdentity } from '~/tracking/tools';
+import { createProductToolObserver } from './product';
 
 /**
  * Minimal stand-in for a loaded tool: `executeTools` in `@librechat/agents`
@@ -244,4 +246,38 @@ describe('instrumentPtcToolMap', () => {
 
     await expect(instrumented.get('read_file')?.invoke({ path: 'a.ts' })).resolves.toBe('ok');
   });
+});
+
+test('classifies each PTC target without changing the operational stream', async () => {
+  const name = 'lookup_mcp_private@example.test';
+  const productTracker = jest.fn();
+  const emit = jest.fn();
+  const toolMap = new Map([[name, createTool(name, async () => 'private result', { mcp: true })]]);
+  const instrumented = instrumentPtcToolMap({
+    toolMap,
+    toolCallId: 'parent-call',
+    runId: 'run',
+    telemetry: {
+      toolName: 'run_tools_with_code',
+      toolCallId: 'parent-call',
+      mode: 'programmatic',
+      runId: 'run',
+    },
+    observe: createProductToolObserver(
+      { productTracking: { enabled: true }, productTracker },
+      (toolName) => getProductToolIdentity(toolMap.get(toolName)),
+    ),
+    emit,
+  });
+  expect(await instrumented.get(name)?.invoke({ query: 'private input' })).toBe('private result');
+  expect(emit.mock.calls[0][0]).toMatchObject({ name, args: 'query=private input' });
+  expect(productTracker).toHaveBeenCalledTimes(2);
+  expect(productTracker.mock.calls[0][0]).toMatchObject({
+    toolCategory: 'mcp',
+    toolCallId: 'parent-call:0',
+    parentToolCallId: 'parent-call',
+    mode: 'programmatic',
+    runId: 'run',
+  });
+  expect(JSON.stringify(productTracker.mock.calls)).not.toContain('private');
 });

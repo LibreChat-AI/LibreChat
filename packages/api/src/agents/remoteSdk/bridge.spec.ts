@@ -1482,6 +1482,9 @@ describe('saved-agent builder host model', () => {
             }),
           ],
         );
+        expect(facts.filter((fact) => fact.name === 'librechat.chat.agent.invoked')).toHaveLength(
+          1,
+        );
       } finally {
         await runtime.close();
       }
