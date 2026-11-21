@@ -177,6 +177,7 @@ import {
 import { getConfigPartition, getActivePartition, runInPartition } from './partition';
 import { buildAdminConfigMeta, getCatalogModelsTtlMs } from './meta';
 import { createAdminAuditEmitter, configTarget } from './audit';
+import { trackLangfuseTransition } from '~/langfuse/tracking';
 import { DEFAULT_OVERRIDE_CACHE_TTL } from '~/app/service';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { mergeOverrideLayers } from '~/app/overrides';
@@ -886,6 +887,8 @@ interface ConfigLifecycleOptions extends ConfigWriteOptions {
 }
 
 export interface AdminConfigDeps {
+  /** Whether prompt sync is available when a Base change is tracked. Defaults to false. */
+  isLangfusePromptSyncAvailable?: () => boolean;
   listAllConfigs: (filter?: { isActive?: boolean }, session?: NoSession) => Promise<ConfigRecord[]>;
   findConfigByPrincipal: (
     principalType: PrincipalType,
@@ -2608,6 +2611,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
     overrideCacheTtlMs = DEFAULT_OVERRIDE_CACHE_TTL,
     overrideEnvAllowlist,
     rederiveEndpoints = false,
+    isLangfusePromptSyncAvailable = () => false,
   } = deps;
 
   const envAllowlist = parseEnvAllowlist(overrideEnvAllowlist);
@@ -4847,6 +4851,10 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         return configNotFoundResponse(res);
       }
 
+      /** Recorded before the audit, which can fail closed after the delete has committed. */
+      if (isBaseConfigPrincipal({ principalType, principalId })) {
+        trackLangfuseTransition(req, config, null, isLangfusePromptSyncAvailable());
+      }
       await invalidateCaches(user.tenantId, 'config delete');
       await emitAudit(req, {
         action: 'config.deleted',
@@ -5072,6 +5080,15 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       await invalidateCaches(user.tenantId, 'toggle');
       /** A retry that finds the requested state already set changed nothing and is not recorded. */
       if (changed) {
+        /** Recorded before the audit, which can fail closed after the toggle has committed. */
+        if (isBaseConfigPrincipal({ principalType, principalId })) {
+          trackLangfuseTransition(
+            req,
+            { ...config, isActive: !isActive },
+            config,
+            isLangfusePromptSyncAvailable(),
+          );
+        }
         await emitAudit(req, {
           action: 'config.toggled',
           severity: 'warning',
