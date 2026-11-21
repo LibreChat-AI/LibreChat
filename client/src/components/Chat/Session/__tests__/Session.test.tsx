@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { useAtomValue, useSetAtom } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
@@ -9,6 +10,9 @@ import type { ParentSubagentSummary, BackgroundTaskIndex, TMessage } from 'libre
 import type { JotaiStore } from 'test/harness';
 import {
   sessionRailOpen,
+  sessionRailSlot,
+  sessionRailDocked,
+  sessionRailSheetSlot,
   sessionRailAutoOpen,
   sessionRailDismissed,
   SESSION_RAIL_DISMISSED_LIMIT,
@@ -16,7 +20,6 @@ import {
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { SubagentIndexHostProvider } from 'test/streamHost';
 import { ChatSurfaceHarness } from 'test/harness';
-import SessionRailSlot from '../Slot';
 import Session from '../Session';
 
 const mockSheet = { current: false };
@@ -123,6 +126,24 @@ const messages: TMessage[] = [
 
 const agentsMap = { 'agent-1': { id: 'agent-1', name: 'Code Reviewer' } };
 
+/**
+ * The two places the layout gives the rail, without the layout: the column a docked rail is
+ * drawn in, which exists only while one is showing, and the slot for the small-screen sheet.
+ * The real layout sizes its column with the resize library, which reads pointer positions
+ * jsdom does not have; `Layout.test.tsx` and the browser scenario cover that.
+ */
+function Slots() {
+  const docked = useAtomValue(sessionRailDocked);
+  const setSlot = useSetAtom(sessionRailSlot);
+  const setSheetSlot = useSetAtom(sessionRailSheetSlot);
+  return (
+    <>
+      {docked && <div ref={setSlot} data-testid="session-rail-slot" />}
+      <div ref={setSheetSlot} data-testid="session-rail-sheet-slot" />
+    </>
+  );
+}
+
 const renderSession = ({
   children = [],
   remembered,
@@ -179,7 +200,7 @@ const renderSession = ({
                     files={files}
                   />
                 </header>
-                <SessionRailSlot />
+                <Slots />
               </ParentSubagentsProvider>
             </SubagentIndexHostProvider>
           </AgentsMapContext.Provider>

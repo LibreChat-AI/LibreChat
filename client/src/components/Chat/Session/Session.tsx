@@ -1,12 +1,14 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { ListTodo } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { useAtom, useAtomValue } from 'jotai';
 import { TooltipAnchor } from '@librechat/client';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   SESSION_RAIL_ID,
   sessionRailOpen,
   sessionRailSlot,
+  sessionRailDocked,
+  sessionRailSheetSlot,
   SESSION_TOGGLE_ID,
   sessionRailAutoOpen,
   sessionRailDismissed,
@@ -65,6 +67,19 @@ function Session({
   const [dismissedIds, setDismissedIds] = useAtom(sessionRailDismissed);
   const dismissed = dismissedIds.includes(conversationId);
   const open = sheet ? sheetOpen : docked || summoned;
+  /**
+   * The layout makes the rail's column while a docked rail is open, and the rail is drawn once
+   * the column is there. Told before paint, so the column and the rail arrive together, and
+   * taken back when this control goes, as it does on a chat with no messages.
+   */
+  const sheetSlot = useAtomValue(sessionRailSheetSlot);
+  const setColumn = useSetAtom(sessionRailDocked);
+  const column = open && !sheet;
+  useLayoutEffect(() => {
+    setColumn(column);
+  }, [column, setColumn]);
+  useLayoutEffect(() => () => setColumn(false), [setColumn]);
+  const target = sheet ? sheetSlot : slot;
   const [now, setNow] = useState(() => Date.now());
   const view = useBackgroundTasks({ conversationId, isSubmitting, now, details: open });
   const { activeCount, awaitingCount, failedCount, incomplete } = view;
@@ -149,7 +164,7 @@ function Session({
         }
       />
       {open &&
-        slot != null &&
+        target != null &&
         createPortal(
           <SessionRail
             view={view}
@@ -159,7 +174,7 @@ function Session({
             sheet={sheet}
             onClose={close}
           />,
-          slot,
+          target,
         )}
     </>
   );
