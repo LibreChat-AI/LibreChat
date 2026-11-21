@@ -18,6 +18,11 @@ jest.mock('~/models', () => ({
   bulkSaveMessages: jest.fn(),
   bulkIncrementTagCounts: jest.fn(),
   getSharedForkSnapshot: jest.fn(),
+  getAgents: jest.fn(),
+  getRoleByName: jest.fn(),
+  getUserPrincipals: jest.fn(),
+  hasCapabilityForPrincipals: jest.fn(),
+  findAccessibleResources: jest.fn(),
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
@@ -61,6 +66,11 @@ const {
   getMessages,
   bulkSaveMessages,
   getSharedForkSnapshot,
+  getAgents,
+  getRoleByName,
+  getUserPrincipals,
+  hasCapabilityForPrincipals,
+  findAccessibleResources,
 } = require('~/models');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
@@ -953,13 +963,22 @@ describe('forkSharedConversation', () => {
     ['a still-configured non-default spec', 'specialist', 'specialist', 'anthropic', 'claude-test'],
     ['an old link without a spec', undefined, 'default', 'google', 'gemini-test'],
     ['a spec absent from the viewer config', 'owner-only', 'default', 'google', 'gemini-test'],
+    ['a spec backed by a private agent', 'by-agent', 'default', 'google', 'gemini-test'],
   ])('accepts the first message after forking %s', async (_case, spec, name, endpoint, model) => {
     getSharedForkSnapshot.mockResolvedValueOnce({ share: mockShare, spec });
+    if (spec === 'by-agent') {
+      getAgents.mockResolvedValueOnce([{ _id: 'private', id: 'agent_private' }]);
+      getRoleByName.mockResolvedValueOnce({ permissions: { AGENTS: { USE: true } } });
+      getUserPrincipals.mockResolvedValueOnce([{ principalType: 'user', principalId: 'viewer' }]);
+      hasCapabilityForPrincipals.mockResolvedValueOnce(false);
+      findAccessibleResources.mockResolvedValueOnce([]);
+    }
     const config = {
       modelSpecs: {
         enforce: true,
         list: [
           { name: 'first', preset: { endpoint: 'openAI', model: 'gpt-test' } },
+          { name: 'by-agent', preset: { agent_id: 'agent_private' } },
           { name: 'default', default: true, preset: { endpoint: 'google', model: 'gemini-test' } },
           {
             name: 'specialist',
@@ -972,10 +991,14 @@ describe('forkSharedConversation', () => {
     const { conversation } = await forkSharedConversation({
       shareId: 'share123',
       requestUserId: 'viewer',
+      userRole: 'USER',
+      userTenantId: 'viewer-tenant',
       loadAppConfig: async () => config,
     });
 
     expect(conversation).toMatchObject({ spec: name, endpoint, model });
+    expect(conversation).not.toHaveProperty('agent_id');
+    expect(getAgents).toHaveBeenCalledTimes(spec === 'by-agent' ? 1 : 0);
     expect(conversation).not.toHaveProperty('promptPrefix');
     expect(getModelsConfig).not.toHaveBeenCalled();
     expect(

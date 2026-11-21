@@ -13,6 +13,7 @@ function defaults() {
   return {
     getDefaultEndpoint: jest.fn(async () => ({ endpoint: 'openAI', model: 'gpt-test' })),
     getDefaultModel: jest.fn(async () => 'runtime-default'),
+    getAllowedAgents: jest.fn(async (ids: string[]) => new Set(ids)),
   };
 }
 
@@ -67,6 +68,37 @@ it('uses the first usable canonical spec and resolves a missing model on its end
 it('keeps the ordinary endpoint fallback when no spec matches and enforcement is off', async () => {
   await expect(
     resolveSharedForkSelection({ ...defaults(), modelSpecs: { list: [provider] }, spec: 'gone' }),
+  ).resolves.toEqual({ endpoint: 'openAI', model: 'gpt-test', preset: {} });
+});
+
+it('skips denied named and hard-default agents in favor of an allowed fallback', async () => {
+  const deps = defaults();
+  const missing = { name: 'missing', default: true, preset: { agent_id: 'agent_missing' } };
+  const fallback = { name: 'fallback', softDefault: true, preset: { agent_id: 'agent_allowed' } };
+  deps.getAllowedAgents.mockResolvedValue(new Set(['agent_allowed']));
+  await expect(
+    resolveSharedForkSelection({
+      ...deps,
+      spec: agent.name,
+      modelSpecs: { enforce: true, list: [agent, missing, fallback, provider] },
+    }),
+  ).resolves.toMatchObject({
+    endpoint: 'agents',
+    preset: { spec: 'fallback', agent_id: 'agent_allowed' },
+  });
+  expect(deps.getAllowedAgents).toHaveBeenCalledTimes(1);
+  expect(deps.getAllowedAgents).toHaveBeenCalledWith([
+    'agent_viewer',
+    'agent_missing',
+    'agent_allowed',
+  ]);
+});
+
+it('keeps the ordinary endpoint fallback for a denied agent when enforcement is off', async () => {
+  const deps = defaults();
+  deps.getAllowedAgents.mockResolvedValue(new Set());
+  await expect(
+    resolveSharedForkSelection({ ...deps, modelSpecs: { list: [agent] }, spec: agent.name }),
   ).resolves.toEqual({ endpoint: 'openAI', model: 'gpt-test', preset: {} });
 });
 

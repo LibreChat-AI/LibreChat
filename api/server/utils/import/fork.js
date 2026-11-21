@@ -6,17 +6,35 @@ const {
   withoutTraceRefs,
   isTemporaryRecord,
   resolveSharedForkSelection,
+  createSharedForkAgentAccess,
   forkFileScope,
   getAllMessagesUpToParent,
   transferNativeCopyProvenance,
 } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
 const { EModelEndpoint, Constants, ForkOptions } = require('librechat-data-provider');
-const { getConvo, getMessages, getSharedForkSnapshot } = require('~/models');
+const {
+  getConvo,
+  getAgents,
+  getMessages,
+  getRoleByName,
+  getUserPrincipals,
+  getSharedForkSnapshot,
+  findAccessibleResources,
+  hasCapabilityForPrincipals,
+} = require('~/models');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const { getAppConfig } = require('~/server/services/Config');
 const { resolveImportDefaultEndpoint, resolveImportDefaultModel } = require('./defaults');
 const BaseClient = require('~/app/clients/BaseClient');
+
+const getAllowedForkAgents = createSharedForkAgentAccess({
+  getAgents,
+  getRoleByName,
+  getUserPrincipals,
+  findAccessibleResources,
+  hasCapabilityForPrincipals,
+});
 
 /**
  * Helper function to clone messages with proper parent-child relationships and timestamps
@@ -478,6 +496,11 @@ async function forkSharedConversation({
       getDefaultEndpoint: () => resolveImportDefaultEndpoint({ requestUserId, userRole }),
       getDefaultModel: (endpoint) =>
         resolveImportDefaultModel({ endpoint, requestUserId, userRole }),
+      getAllowedAgents: (ids) =>
+        getAllowedForkAgents(
+          { userId: requestUserId, role: userRole, idOnTheSource, tenantId: userTenantId },
+          ids,
+        ),
     });
     const importBatchBuilder =
       appConfig?.messageFilter?.pii == null
