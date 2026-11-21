@@ -51,6 +51,7 @@ const settledFields = [
   'chatProjectId',
   'isTemporary',
   'expiredAt',
+  'codeApprovalMode',
   'codeEnvironmentMode',
   'codeWorkspaces',
   'subagentThread',
@@ -72,13 +73,12 @@ function mergePaneConversation(
 
   // Keep the whole next-turn preset, including options absent on the new provider.
   const update = { ...local };
-  function settle<K extends (typeof settledFields)[number]>(key: K) {
+  for (const key of settledFields) {
     const value = finalized[key];
     if (value !== undefined) {
-      update[key] = value;
+      Object.assign(update, { [key]: value });
     }
   }
-  settledFields.forEach(settle);
   return update;
 }
 
@@ -350,11 +350,12 @@ export default function useFinalHandler(ctx: EventHandlerContext): FinalHandler 
               );
             }
             const previousId = prevState?.conversationId;
-            const adoptsDraft =
-              previousId === Constants.NEW_CONVO &&
-              pathname === `/c/${Constants.NEW_CONVO}` &&
-              !hasConcreteConversationId(submissionConvo.conversationId);
-            if (previousId != null && previousId !== conversation.conversationId && !adoptsDraft) {
+            const adoptsRun = hasConcreteConversationId(previousId)
+              ? previousId === submissionConvo.conversationId
+              : previousId === Constants.NEW_CONVO &&
+                pathname === `/c/${Constants.NEW_CONVO}` &&
+                !hasConcreteConversationId(submissionConvo.conversationId);
+            if (previousId != null && previousId !== conversation.conversationId && !adoptsRun) {
               return prevState;
             }
             return Object.assign(

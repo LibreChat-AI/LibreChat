@@ -70,7 +70,7 @@ export function useEventHandlers({
 }: EventHandlerParams): EventHandlers {
   const queryClient = useQueryClient();
   const reasoningStore = useStore();
-  const services = useStreamHost().useEventServices({ setConversation });
+  const services = useStreamHost().useEventServices({ runIndex, setConversation });
   const { announce: announcePolite } = services.focus;
   const reconcileFailedCode = services.templates.reconcileFailedCode;
   /** Cleared on every terminal path below: the elapsed anchor must not outlive

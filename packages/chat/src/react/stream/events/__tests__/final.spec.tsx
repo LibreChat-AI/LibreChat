@@ -141,7 +141,7 @@ it.each(['original submission', 'reattached stream'])(
       text: 'Next question',
       params: { text: 'Next question' },
       options: {},
-      endpointsConfig: { [selection.endpoint]: { type: EModelEndpoint.custom } },
+      endpointsConfig: { [selection.endpoint]: { type: EModelEndpoint.custom, order: 0 } },
       canClearFiles: false,
       routeProjectId: null,
       isTemporary: false,
@@ -188,13 +188,17 @@ it('accepts the server target when the local selection has not changed', () => {
 });
 
 it('keeps the selection when finalizing the first turn assigns its conversation id', () => {
-  const draft = { ...original, conversationId: Constants.NEW_CONVO };
+  const draft = { ...original, conversationId: String(Constants.NEW_CONVO) };
   const { result } = setup({ ...draft, ...selection });
   act(() =>
     result.current.finish(finalFrame, {
       ...submission,
       conversation: { ...draft, conversationId: null },
-      userMessage: { ...request, parentMessageId: Constants.NO_PARENT, conversationId: null },
+      userMessage: {
+        ...request,
+        parentMessageId: String(Constants.NO_PARENT),
+        conversationId: null,
+      },
     }),
   );
   expect(result.current.conversation).toMatchObject({

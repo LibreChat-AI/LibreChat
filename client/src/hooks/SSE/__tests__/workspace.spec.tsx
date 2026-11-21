@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Provider } from 'jotai';
-import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
+import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import { useEventHandlers } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -23,6 +23,7 @@ import { setFileSearchChoice, getFileSearchChoice, clearFileSearchChoices } from
 import { beginFileSearchUpload, completeFileSearchUpload } from '~/hooks/Files/search';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import { StreamHostTestProvider } from 'test/streamHost';
+import store from '~/store';
 
 const mockStatus = jest.fn();
 const mockStartupConfig = jest.fn();
@@ -95,6 +96,7 @@ function setup(
   const hook = renderHook(
     () => {
       const [conversation, setConversation] = useState<TConversation | null>(current);
+      const setActiveConversation = useSetRecoilState(store.conversationByIndex(0));
       const handlers = useEventHandlers({
         isAddedRequest,
         setConversation,
@@ -107,6 +109,7 @@ function setup(
       return {
         conversation,
         setConversation,
+        setActiveConversation,
         workspace: useCodeWorkspace(conversation),
         ...handlers,
       };
@@ -335,6 +338,42 @@ describe('created composer identity', () => {
         queryClient.clear();
         window.history.replaceState({}, '', '/');
       }
+    },
+  );
+
+  it.each(['created', 'final'] as const)(
+    'does not apply the old spec’s tool settings on %s after the pane retargets',
+    (event) => {
+      const currentMessages: TMessage[] = [];
+      const original = { ...initialConversation, conversationId: 'saved-chat', spec: 'spec-a' };
+      const { result, submission, createdData, queryClient } = setup(
+        original,
+        false,
+        currentMessages,
+      );
+      currentMessages.push(submission.userMessage, submission.initialResponse);
+      const current = { ...original, spec: 'spec-b' };
+      act(() => {
+        result.current.setActiveConversation(current);
+        result.current.setConversation(current);
+      });
+      const stale = { ...submission, ephemeralAgent: { web_search: true } };
+      act(() => {
+        if (event === 'created') {
+          result.current.createdHandler(createdData, stale);
+        } else {
+          result.current.finalHandler(
+            {
+              conversation: original,
+              requestMessage: stale.userMessage,
+              responseMessage: { ...stale.initialResponse, text: 'Finished reply' },
+            },
+            stale,
+          );
+        }
+      });
+      expect(mockApplyAgentTemplate).not.toHaveBeenCalled();
+      queryClient.clear();
     },
   );
 
