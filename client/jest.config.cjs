@@ -49,6 +49,9 @@ module.exports = {
   resolver: '<rootDir>/jest.resolver.cjs',
   transform: {
     '\\.[jt]sx?$': 'babel-jest',
+    /** The chat package's build loads its highlighter and markdown plugins with `import()`, which
+     *  jest cannot run natively in a CommonJS file; babel turns it into a `require`. */
+    '/packages/chat/dist/.+\\.cjs$': 'babel-jest',
     '\\.(jpg|jpeg|png|gif|eot|otf|webp|svg|ttf|woff|woff2|mp4|webm|wav|mp3|m4a|aac|oga)$':
       'jest-file-loader',
   },
