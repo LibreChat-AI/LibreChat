@@ -1,5 +1,8 @@
 import jwt from 'jsonwebtoken';
-import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
+import {
+  AUTH_SESSION_CHECK_UNAVAILABLE,
+  TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
+} from 'librechat-data-provider';
 import type { ISession, OIDCTokens } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TokenIssuance, TwoFactorAccount } from './twoFactor';
@@ -122,15 +125,17 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
     }
 
     try {
-      const payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET ?? '');
+      const secret = process.env.JWT_REFRESH_SECRET;
+      if (!secret) throw new Error('JWT refresh secret is not configured');
+      const payload = jwt.verify(refreshToken, secret);
       if (typeof payload === 'string' || typeof payload.id !== 'string') {
-        throw new Error('Invalid refresh token payload');
+        throw new jwt.JsonWebTokenError('Invalid refresh token payload');
       }
       const userId = payload.id;
       const user = await deps.getUserById(userId, deps.userProjection);
       if (!user) {
         clearSessionHintCookie(res);
-        return res.status(401).redirect('/login');
+        return res.status(401).send({ message: EXPIRED_REFRESH_MESSAGE });
       }
 
       const credential: TokenIssuance = {
@@ -198,13 +203,17 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
         return res.status(403).send('No session found');
       }
       if (typeof payload.exp === 'number' && payload.exp < Date.now() / 1000) {
-        return res.status(403).redirect('/login');
+        return res.status(403).send({ message: EXPIRED_REFRESH_MESSAGE });
       }
       return res.status(401).send(EXPIRED_REFRESH_MESSAGE);
     } catch (error) {
-      deps.error('[refreshController] Invalid refresh token:', error);
-      clearSessionHintCookie(res);
-      return res.status(403).send('Invalid refresh token');
+      if (error instanceof jwt.JsonWebTokenError || error instanceof jwt.NotBeforeError) {
+        deps.error('[refreshController] Invalid refresh token:', error);
+        clearSessionHintCookie(res);
+        return res.status(403).send('Invalid refresh token');
+      }
+      deps.error('[refreshController] Session check unavailable:', error);
+      return res.status(503).send({ code: AUTH_SESSION_CHECK_UNAVAILABLE });
     }
   };
 }
