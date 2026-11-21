@@ -1,37 +1,35 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import type { ChatSurface } from '@librechat/chat/react';
-import { MessageContext } from '~/Providers/MessageContext';
+import type { ChatSurface } from '../../../react/subagents/context';
+import { MessagePartsHostProvider, emptyToolCallChrome } from '../../../react/host';
+import { MessageContext, useMessageContext } from '../../../react/message';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import BackgroundTaskCall from '../BackgroundTaskCall';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize:
+    () =>
+    (key: string): string =>
+      key,
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useProgress: (progress: number) => progress,
+jest.mock('../../../react/parts/useProgress', () => ({
+  __esModule: true,
+  default: (progress: number) => progress,
 }));
 
-jest.mock('~/hooks/MCP', () => ({
-  useMCPIconMap: () => new Map(),
-  useMCPServerNames: () => [],
-}));
-
-jest.mock('@librechat/chat', () => ({
-  ...jest.requireActual('@librechat/chat'),
+jest.mock('../../../core/parts/toolLabels', () => ({
+  ...jest.requireActual('../../../core/parts/toolLabels'),
   getToolDisplayLabel: (name: string) =>
     (({ bash_tool: 'Code', web_search: 'Web Search' }) as Record<string, string>)[name] ?? name,
 }));
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-  getRunStepDurationLabels: jest.requireActual('~/utils/runStepDuration').getRunStepDurationLabels,
-}));
-
-jest.mock('../../ProgressText', () => ({
+jest.mock('../ProgressText', () => ({
   __esModule: true,
   default: ({
     phase,
@@ -61,34 +59,46 @@ jest.mock('../../ProgressText', () => ({
   ),
 }));
 
-jest.mock('../../ToolOutput', () => ({
-  ToolIcon: ({ type }: { type: string }) => <span data-testid="tool-icon">{type}</span>,
+jest.mock('../ToolIcon', () => ({
+  __esModule: true,
+  default: ({ type }: { type: string }) => <span data-testid="tool-icon">{type}</span>,
   getToolIconType: (name: string) => name,
   getMCPServerName: () => '',
-  OutputRenderer: ({ text, copyText }: { text: string; copyText?: string }) => (
+}));
+
+jest.mock('../OutputRenderer', () => ({
+  __esModule: true,
+  default: ({ text, copyText }: { text: string; copyText?: string }) => (
     <pre data-testid="task-output" data-copy-text={copyText}>
       {text}
     </pre>
   ),
-  isError: () => false,
 }));
 
-jest.mock('../../ToolCallInfo', () => ({
+jest.mock('../ToolCallInfo', () => ({
   __esModule: true,
   default: ({ input, output }: { input: string; output?: string }) => (
     <div data-testid="tool-call-info" data-input={input} data-output={output} />
   ),
 }));
 
-jest.mock('../Attachment', () => ({
-  AttachmentGroup: () => <div data-testid="task-attachments" />,
-}));
+/** A host whose attachment slot draws what the app's does: the files, then the embedded app views. */
+const host = createMessagePartsHost({
+  useMessage: () => useMessageContext(),
+  useToolCallChrome: () => ({
+    ...emptyToolCallChrome(),
+    renderAttachments: (attachments) => (
+      <>
+        <div data-testid="task-attachments" />
+        <div data-testid="task-app-views" data-count={attachments.length} />
+      </>
+    ),
+  }),
+});
 
-jest.mock('~/components/MCPUIResource', () => ({
-  MCPAppViews: ({ attachments }: { attachments?: unknown[] }) => (
-    <div data-testid="task-app-views" data-count={attachments?.length ?? 0} />
-  ),
-}));
+function Host({ children }: { children: React.ReactNode }): React.ReactElement {
+  return <MessagePartsHostProvider host={host}>{children}</MessagePartsHostProvider>;
+}
 
 const completed = {
   background_task_id: 'bg-1',
@@ -102,7 +112,7 @@ function renderCall(
   props: Partial<React.ComponentProps<typeof BackgroundTaskCall>> = {},
 ) {
   return render(
-    <RecoilRoot>
+    <Host>
       <BackgroundTaskCall
         args={'{"background_task_id":"bg-1"}'}
         output={output}
@@ -110,7 +120,7 @@ function renderCall(
         initialProgress={1}
         {...props}
       />
-    </RecoilRoot>,
+    </Host>,
   );
 }
 
@@ -123,7 +133,7 @@ describe('BackgroundTaskCall', () => {
     expect(screen.getByTestId('task-app-views')).toHaveAttribute('data-count', '1');
 
     rerender(
-      <RecoilRoot>
+      <Host>
         <BackgroundTaskCall
           args={'{"background_task_id":"bg-1"}'}
           output={JSON.stringify(completed)}
@@ -131,7 +141,7 @@ describe('BackgroundTaskCall', () => {
           attachments={attachments}
           hideAttachments
         />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.queryByTestId('task-app-views')).not.toBeInTheDocument();
   });
@@ -344,9 +354,9 @@ describe('BackgroundTaskCall', () => {
 
     const raw = '{"status":"unexpected","result":"preserve this"}';
     rerender(
-      <RecoilRoot>
+      <Host>
         <BackgroundTaskCall args="{}" output={raw} isSubmitting={false} initialProgress={1} />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('tool-call-info')).toHaveAttribute('data-output', raw);
   });
@@ -385,13 +395,13 @@ describe('BackgroundTaskCall', () => {
     expect(announcement).toHaveAttribute('aria-atomic', 'true');
     expect(announcement).toHaveTextContent('com_ui_background_tasks_checking');
     rerender(
-      <RecoilRoot>
+      <Host>
         <BackgroundTaskCall args={finalArgs} output="" isSubmitting={true} initialProgress={0.1} />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(announcement).toHaveTextContent('com_ui_background_tasks_checking');
     rerender(
-      <RecoilRoot>
+      <Host>
         <BackgroundTaskCall
           args={finalArgs}
           output={JSON.stringify(completed)}
@@ -399,7 +409,7 @@ describe('BackgroundTaskCall', () => {
           initialProgress={1}
           runStepStatus="completed"
         />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(announcement).toHaveTextContent('Checking the background task');
   });
@@ -450,7 +460,7 @@ describe('BackgroundTaskCall', () => {
     expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'running');
     fireEvent.click(screen.getByTestId('task-header'));
     rerender(
-      <RecoilRoot>
+      <Host>
         <BackgroundTaskCall
           args={'{"background_task_id":"bg-1"}'}
           output={JSON.stringify(completed)}
@@ -458,7 +468,7 @@ describe('BackgroundTaskCall', () => {
           initialProgress={1}
           runStepStatus="completed"
         />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(screen.getByTestId('task-header')).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByTestId('task-header').parentElement?.nextElementSibling).toHaveAttribute(
@@ -544,7 +554,7 @@ describe('BackgroundTaskCall', () => {
     const claimForeground = jest.fn();
     const surface = { claimForeground } as unknown as ChatSurface;
     render(
-      <RecoilRoot>
+      <Host>
         <ChatSurfaceProvider value={surface}>
           <MessageContext.Provider
             value={{ messageId: 'parent-message', conversationId: 'convo-1', isExpanded: true }}
@@ -557,7 +567,7 @@ describe('BackgroundTaskCall', () => {
             />
           </MessageContext.Provider>
         </ChatSurfaceProvider>
-      </RecoilRoot>,
+      </Host>,
     );
     fireEvent.click(screen.getByTestId('task-header'));
     const open = screen.getByRole('button', { name: 'com_ui_wakeup_view_activity' });
