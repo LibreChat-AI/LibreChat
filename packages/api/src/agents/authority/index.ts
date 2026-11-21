@@ -7,3 +7,4 @@ export type * from './contract';
 export * from './offer';
 export * from './execution';
 export * from './policy';
+export * from './preflight';

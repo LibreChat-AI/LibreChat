@@ -25,10 +25,10 @@ import type {
 } from './service';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { resolveScheduledMCPRequirements } from '~/schedules/requirements';
 import { getRunGrantPolicyRevision, isRunGrantToolItem } from './policy';
 import { getRunGrantConfigurationRevision } from './configuration';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+import { resolveRequirements } from './requirements';
 import { RunGrantError } from './service';
 
 export interface RunGrantOfferDeps {
@@ -185,7 +185,7 @@ export function createRunGrantOffer<Identity extends RunGrantIdentity = Schedule
     const undeclared = !mcp || Object.keys(bindings).length === 0;
     if (undeclared && options.otherTools === 'ignore')
       return { targets: [], tools: [], servers: [] };
-    const { tools, candidates: candidateTools } = await resolveScheduledMCPRequirements(
+    const { tools, candidates: candidateTools } = await resolveRequirements(
       identity.agentId,
       user,
       {
