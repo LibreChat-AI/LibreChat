@@ -753,6 +753,7 @@ export type TConfig = {
     reasoningCatalogFailureTtlMs?: number;
     reasoningCatalogTtlMs?: number;
   };
+  visible?: boolean;
 };
 
 export type TEndpointsConfig =
