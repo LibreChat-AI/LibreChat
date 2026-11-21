@@ -1,26 +1,30 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { render } from '@testing-library/react';
-import { createStore, Provider as JotaiProvider } from 'jotai';
-import type { PtcTraceEntry } from '~/common';
-import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
-import { MessageContext } from '~/Providers/MessageContext';
+import { createStore, useAtomValue, Provider as JotaiProvider } from 'jotai';
+import type { PtcTraceEntry } from '../../../core/ptc';
+import { ptcTraceByToolCallId, ptcTraceKey } from '../../../react/stream/ptc';
+import { MessageContext, useMessageContext } from '../../../react/message';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { MessagePartsHostProvider } from '../../../react/host';
 import ExecuteCode from '../ExecuteCode';
-import store from '~/store';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize:
     () =>
     (key: string): string =>
       key,
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useProgress: (initialProgress: number) => initialProgress,
+jest.mock('../../../react/parts/useProgress', () => ({
+  __esModule: true,
+  default: (initialProgress: number) => initialProgress,
 }));
 
-jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
+jest.mock('../ProgressText', () => ({
   __esModule: true,
   default: () => <div data-testid="progress-text" />,
 }));
@@ -31,12 +35,15 @@ jest.mock('../CodeWindowHeader', () => ({
 }));
 
 jest.mock('../Attachment', () => ({
+  __esModule: true,
+  ...jest.requireActual('../Attachment'),
   AttachmentGroup: () => <div data-testid="attachment-group" />,
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  useExpandCollapse: (isExpanded: boolean) => ({
+jest.mock('../useExpandCollapse', () => ({
+  __esModule: true,
+  ...jest.requireActual('../useExpandCollapse'),
+  default: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
       gridTemplateRows: isExpanded ? '1fr' : '0fr',
@@ -44,7 +51,11 @@ jest.mock('@librechat/chat/components', () => ({
     },
     ref: { current: null },
   }),
-  Stdout: () => <div data-testid="stdout" />,
+}));
+
+jest.mock('../Stdout', () => ({
+  __esModule: true,
+  default: () => <div data-testid="stdout" />,
 }));
 
 jest.mock('../useLazyHighlight', () => {
@@ -62,13 +73,24 @@ jest.mock('../useLazyHighlight', () => {
   return { __esModule: true, default: useMockLazyHighlight };
 });
 
-jest.mock('~/utils', () => ({
-  ...jest.requireActual<typeof import('~/utils/runStepDuration')>('~/utils/runStepDuration'),
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-}));
-
 jest.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
-jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => [] }));
+
+/**
+ * The host these cases run under: tools open on arrival, mirroring the user who watches the code
+ * pane while the call runs, and the trace is live state scoped to the card's message.
+ */
+const host = createMessagePartsHost({
+  useAutoExpandTools: () => true,
+  useMessage: () => useMessageContext(),
+  usePtcTrace: (messageId, toolCallId) =>
+    useAtomValue(
+      ptcTraceByToolCallId(toolCallId && messageId ? ptcTraceKey(messageId, toolCallId) : ''),
+    ),
+});
+
+function Host({ children }: { children: React.ReactNode }): React.ReactElement {
+  return <MessagePartsHostProvider host={host}>{children}</MessagePartsHostProvider>;
+}
 
 /**
  * jsdom has no layout, so the capped pane's scroll geometry is stubbed:
@@ -104,14 +126,14 @@ describe('ExecuteCode streaming follow-scroll', () => {
   /** `autoExpandTools` opens the pane at mount, mirroring the user who
    *  watches the code pane while the call runs. */
   const runningCall = (code: string) => (
-    <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+    <Host>
       <ExecuteCode
         initialProgress={0.5}
         isSubmitting={true}
         args={{ lang: 'py', code }}
         output=""
       />
-    </RecoilRoot>
+    </Host>
   );
 
   it('pins the code pane to the code as rendered, including the async highlight commit', () => {
@@ -127,14 +149,14 @@ describe('ExecuteCode streaming follow-scroll', () => {
 
   it('never scrolls a finished call', () => {
     const finishedCall = (code: string) => (
-      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+      <Host>
         <ExecuteCode
           initialProgress={1}
           isSubmitting={false}
           args={{ lang: 'py', code }}
           output="done"
         />
-      </RecoilRoot>
+      </Host>
     );
     const { container, rerender } = render(finishedCall('print(1)'));
     const pane = container.querySelector('.overflow-auto') as HTMLElement;
@@ -158,7 +180,7 @@ describe('ExecuteCode programmatic tool trace', () => {
       dropped: 0,
     });
     return render(
-      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+      <Host>
         <JotaiProvider store={traceStore}>
           <MessageContext.Provider value={{ messageId: MESSAGE_ID, isExpanded: true }}>
             <ExecuteCode
@@ -170,7 +192,7 @@ describe('ExecuteCode programmatic tool trace', () => {
             />
           </MessageContext.Provider>
         </JotaiProvider>
-      </RecoilRoot>,
+      </Host>,
     );
   };
 

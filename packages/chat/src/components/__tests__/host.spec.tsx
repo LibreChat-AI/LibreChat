@@ -44,6 +44,7 @@ function createHost(enableUserMsgMarkdown = false): MessagePartsHost {
     useFileMap: () => undefined,
     useToast: () => jest.fn(),
     useSandboxStarting: () => false,
+    usePtcTrace: () => ({ entries: [], dropped: 0 }),
     useToolArtifactClaim: () => [null, jest.fn()],
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,

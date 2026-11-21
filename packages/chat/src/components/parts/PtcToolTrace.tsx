@@ -1,13 +1,13 @@
 import { useTranslation } from 'react-i18next';
-import { parseToolName } from '@librechat/chat';
-import { useFollowScroll } from '@librechat/chat/react';
+import { cn, useLocalize } from '@librechat/client';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
-import type { PtcTraceEntry } from '~/common';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { cn, getRunStepDurationLabels } from '~/utils';
-import { useMCPServerNames } from '~/hooks/MCP';
-import { useLocalize } from '~/hooks';
+import type { TranslationKeys } from '@librechat/client';
+import type { PtcTraceEntry } from '../../core/ptc';
+import { getRunStepDurationLabels } from '../messages/duration';
+import useFollowScroll from '../../react/parts/useFollowScroll';
+import { parseToolName } from '../../core/parts/toolLabels';
+import { useMessagePartsHost } from '../../react/host';
+import useServerIcons from '../../react/parts/icons';
 
 /** Terminal-style status column: one glyph wide for every state, so the
  *  tool names stay aligned as calls settle. */
@@ -33,10 +33,10 @@ const STATUS_LABEL_KEYS: Record<PtcTraceEntry['status'], TranslationKeys> = {
  * being called, its arguments, and how long it took — with the failure message
  * printed underneath the call that produced it, the way a CLI reports errors.
  */
-function PtcTraceLine({ entry }: { entry: PtcTraceEntry }) {
+function PtcTraceLine({ entry }: { entry: PtcTraceEntry }): React.JSX.Element {
   const localize = useLocalize();
   const { i18n } = useTranslation();
-  const mcpServerNames = useMCPServerNames();
+  const { names: mcpServerNames } = useServerIcons();
   const parsed = parseToolName(entry.name, mcpServerNames);
   const running = entry.status === 'running';
   const failed = entry.status === 'error';
@@ -115,7 +115,7 @@ export default function PtcToolTrace({
    *  invisibly, or it opens at the tail instead of the first call. */
   expanded?: boolean;
   className?: string;
-}) {
+}): React.JSX.Element | null {
   const localize = useLocalize();
   /** Scope to this card's own message: providers reuse `tool_call_id` across
    *  turns, so the raw id alone would show a later program's calls here. */

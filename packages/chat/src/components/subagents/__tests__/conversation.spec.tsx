@@ -118,6 +118,7 @@ const parentHost: AskPartsHost = {
   useFileMap: () => undefined,
   useToast: () => jest.fn(),
   useSandboxStarting: () => false,
+  usePtcTrace: () => ({ entries: [], dropped: 0 }),
   useToolArtifactClaim: () => [null, jest.fn()],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,

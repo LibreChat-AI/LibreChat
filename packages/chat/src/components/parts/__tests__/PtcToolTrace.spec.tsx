@@ -1,13 +1,18 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
-import { useSetAtom, Provider as JotaiProvider } from 'jotai';
-import type { PtcTraceEntry } from '~/common';
-import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
-import { MessageContext } from '~/Providers/MessageContext';
+import { useAtomValue, useSetAtom, Provider as JotaiProvider } from 'jotai';
+import type { PtcTraceEntry } from '../../../core/ptc';
+import { MessagePartsHostProvider, emptyToolCallChrome } from '../../../react/host';
+import { ptcTraceByToolCallId, ptcTraceKey } from '../../../react/stream/ptc';
+import { MessageContext, useMessageContext } from '../../../react/message';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import PtcToolTrace from '../PtcToolTrace';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize:
     () =>
     (key: string, values?: Record<string, unknown>): string => {
@@ -28,11 +33,16 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
-jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => ['github'] }));
-jest.mock('~/utils', () => ({
-  ...jest.requireActual('~/utils/runStepDuration'),
-  cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
-}));
+
+/** The app's host for this card: the trace is live state, scoped to the message the card is in. */
+const host = createMessagePartsHost({
+  useMessage: () => useMessageContext(),
+  usePtcTrace: (messageId, toolCallId) =>
+    useAtomValue(
+      ptcTraceByToolCallId(toolCallId && messageId ? ptcTraceKey(messageId, toolCallId) : ''),
+    ),
+  useToolCallChrome: () => ({ ...emptyToolCallChrome(), mcpServerNames: ['github'] }),
+});
 
 const TOOL_CALL_ID = 'call_ptc_1';
 const MESSAGE_ID = 'response-msg-1';
@@ -49,14 +59,14 @@ function renderTrace(entries: PtcTraceEntry[], messageId = MESSAGE_ID, dropped =
   };
 
   return render(
-    <RecoilRoot>
+    <MessagePartsHostProvider host={host}>
       <JotaiProvider>
         <Seed />
         <MessageContext.Provider value={{ messageId, isExpanded: false }}>
           <PtcToolTrace toolCallId={TOOL_CALL_ID} />
         </MessageContext.Provider>
       </JotaiProvider>
-    </RecoilRoot>,
+    </MessagePartsHostProvider>,
   );
 }
 

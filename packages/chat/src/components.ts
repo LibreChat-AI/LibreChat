@@ -343,6 +343,13 @@ export type { CodeWindowHeaderProps } from './components/parts/CodeWindowHeader'
 export { default as MemoryCall } from './components/parts/MemoryCall';
 export { default as ReadFileCall, langFromPath } from './components/parts/ReadFileCall';
 export { default as FileAuthoringCall } from './components/parts/FileAuthoringCall';
+export { default as PtcToolTrace } from './components/parts/PtcToolTrace';
+export { default as BashCall } from './components/parts/BashCall';
+export {
+  default as ExecuteCode,
+  useParseArgs,
+  ERROR_PATTERNS,
+} from './components/parts/ExecuteCode';
 export {
   default as useLazyHighlight,
   HIGHLIGHT_THROTTLE_MS,

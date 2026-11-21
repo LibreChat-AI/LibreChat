@@ -2,12 +2,11 @@ import React from 'react';
 import { MemoryCall } from '..';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
-import { ReadFileCall, FileAuthoringCall } from '..';
 import { render, screen } from '@testing-library/react';
 import { SoleToolContext } from '@librechat/chat/react';
+import { BashCall, ReadFileCall, FileAuthoringCall } from '..';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import SkillCall from '../SkillCall';
-import BashCall from '../BashCall';
 
 /** No skills access, so `SkillCall` keeps the tool output it always showed. */
 jest.mock('~/data-provider', () => ({

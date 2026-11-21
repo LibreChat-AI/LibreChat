@@ -1,25 +1,25 @@
 import { useMemo } from 'react';
 import { SquareTerminal } from 'lucide-react';
-import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
-import { parseBackgroundHandle, splitBackgroundAttachments } from '@librechat/chat';
-import {
-  toolPanelSpacingClassName,
-  useFollowScroll,
-  useToolCallIntent,
-} from '@librechat/chat/react';
+import { cn, useLocalize } from '@librechat/client';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import type { CSSProperties } from 'react';
+import { parseBackgroundHandle, splitBackgroundAttachments } from '../../core/parts/handle';
+import { toolPanelSpacingClassName } from '../../react/parts/disclosure';
+import useFollowScroll from '../../react/parts/useFollowScroll';
 import CommandTime, { useCommandClock } from './CommandTime';
+import { useToolCallIntent } from '../../react/parts/intent';
+import { useMessagePartsHost } from '../../react/host';
+import CodeWindowHeader from './CodeWindowHeader';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
-import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
+import { TOOL_ROW_CLASSES } from './rows';
+import ProgressText from './ProgressText';
 import PtcToolTrace from './PtcToolTrace';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import BareStatus from './BareStatus';
+import Stdout from './Stdout';
 
-interface ParsedArgs {
+export interface ParsedArgs {
   lang?: string;
   code?: string;
 }
@@ -57,7 +57,7 @@ export function useParseArgs(args?: string | Record<string, unknown>): ParsedArg
   }, [args]);
 }
 
-export const ERROR_PATTERNS = /^(Traceback|Error:|Exception:|.*Error:)/m;
+export const ERROR_PATTERNS: RegExp = /^(Traceback|Error:|Exception:|.*Error:)/m;
 
 export default function ExecuteCode({
   isSubmitting,
@@ -87,7 +87,7 @@ export default function ExecuteCode({
   onExpand?: () => void;
   toolCallId?: string;
   stepId?: string;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   const { lang = 'py', code } = useParseArgs(args) ?? ({} as ParsedArgs);
   /** Model-authored live label, streamed as the first args key; persists as
@@ -192,7 +192,16 @@ export default function ExecuteCode({
           />
         </div>
       )}
-      <div style={expandStyle}>
+      <div
+        className="tool-call-expand"
+        style={
+          {
+            '--tool-expand-rows': expandStyle.gridTemplateRows,
+            '--tool-expand-opacity': expandStyle.opacity,
+            '--tool-expand-transition': expandStyle.transition,
+          } as CSSProperties
+        }
+      >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           <div
             className={cn(

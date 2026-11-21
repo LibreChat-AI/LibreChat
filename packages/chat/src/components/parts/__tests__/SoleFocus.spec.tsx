@@ -1,27 +1,36 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { SoleToolContext } from '@librechat/chat/react';
 import { act, render, screen } from '@testing-library/react';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { SoleToolContext } from '../../../react/parts/disclosure';
+import { MessagePartsHostProvider } from '../../../react/host';
 import BashCall from '../BashCall';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize:
+    () =>
+    (key: string): string =>
+      key,
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  useExpandCollapse: (isExpanded: boolean) => ({
+jest.mock('../useExpandCollapse', () => ({
+  __esModule: true,
+  ...jest.requireActual('../useExpandCollapse'),
+  default: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
     ref: { current: null },
   }),
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useProgress: (initialProgress: number) => initialProgress,
+jest.mock('../../../react/parts/useProgress', () => ({
+  __esModule: true,
+  default: (initialProgress: number) => initialProgress,
 }));
 
-jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
+jest.mock('../ProgressText', () => ({
   __esModule: true,
   default: ({ onClick, finishedText }: { onClick?: () => void; finishedText: string }) => (
     <button type="button" data-testid="progress-text" onClick={onClick}>
@@ -30,8 +39,10 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
   ),
 }));
 
+const host = createMessagePartsHost();
+
 const tree = (settled: boolean, announcer = false) => (
-  <RecoilRoot>
+  <MessagePartsHostProvider host={host}>
     <input data-testid="outside" />
     <div data-fold-root="">
       {announcer && <span role="status" data-testid="announcer" />}
@@ -50,7 +61,7 @@ const tree = (settled: boolean, announcer = false) => (
         />
       </SoleToolContext.Provider>
     </div>
-  </RecoilRoot>
+  </MessagePartsHostProvider>
 );
 
 describe('a sole call that drops its row on completion', () => {
