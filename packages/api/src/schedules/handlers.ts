@@ -32,7 +32,7 @@ import {
   computeNextRunAt,
   isValidTimezone,
 } from './cadence';
-import { ScheduleMCPError, getScheduleMCPFailureCode } from './mcp';
+import { PreflightError, preflightCode } from '~/agents/authority/preflight';
 import { RunGrantError } from '~/agents/authority/service';
 import { resolveScheduleProjectId } from './types';
 
@@ -456,8 +456,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     } catch (error) {
       if (signal.aborted) return false;
       // With no outcome there is no server to leave out: the owner could not be resolved.
-      if (error instanceof ScheduleMCPError && !strict && error.outcomes.length > 0) return true;
-      if (error instanceof ScheduleMCPError) {
+      if (error instanceof PreflightError && !strict && error.outcomes.length > 0) return true;
+      if (error instanceof PreflightError) {
         res.status(error.code === 'mcp_unavailable' ? 503 : 400).json({
           code: error.code,
           error: error.message,
@@ -1351,7 +1351,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       // A limiter refusal is the caller's own quota, not a conflicting schedule state,
       // so answer 429 rather than burying it in the generic 409.
       const failedMCP = result.mcp?.filter((outcome) => outcome.status !== 'ready') ?? [];
-      const mcpStatus = failedMCP.length > 0 ? getScheduleMCPFailureCode(failedMCP) : undefined;
+      const mcpStatus = failedMCP.length > 0 ? preflightCode(failedMCP) : undefined;
       let status = 409;
       if (result.skipped === 'rate_limited') status = 429;
       else if (mcpStatus === 'mcp_unavailable' || result.mcpPreflightUnavailable === true)

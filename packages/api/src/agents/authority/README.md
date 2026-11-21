@@ -26,6 +26,14 @@ grant is made of, and the request and view the routes exchange, are in
 | `policy.ts`        | Which tools a grant can cover, the digest of a tool definition, and `RunGrantPolicyError`.                             |
 | `configuration.ts` | The revision of the operator configuration a grant was made under.                                                     |
 | `host.ts`          | `initializeWithAuthority`: puts a run under its subject's grant before any tool is loaded.                             |
+| `requirements.ts`  | `resolveRequirements`: the tools and MCP servers an agent and the agents it can reach select.                          |
+| `preflight.ts`     | `createPreflight`: the readiness check. Is each MCP server a run needs ready, and if not, why (`PreflightError`).      |
+
+The readiness check takes a subject's identity, not a schedule. It reads the stored grant
+through `deps.execution` and checks only what that grant allows; a subject whose probes
+authenticate with something of its own passes it as `credentials` (a schedule passes its bearer
+and its renewable upstream tokens, `packages/api/src/schedules/mcp.ts`). Only schedules call it
+today. It connects to each server once per call and keeps nothing between calls.
 
 `execution.ts` still holds four schedule accessors (`getScheduleMCPExecution`,
 `scheduleAsksEveryUse`, `buildScheduledApprovalAdmissionHooks`, `scheduledMCPIdentity`) because

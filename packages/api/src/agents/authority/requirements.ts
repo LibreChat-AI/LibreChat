@@ -17,28 +17,28 @@ import type {
   AgentGraphAccessContext,
 } from '@librechat/data-schemas';
 import type { TModelsConfig } from 'librechat-data-provider';
-import { resolveReachableGraph } from '../agents/edges';
+import { resolveReachableGraph } from '~/agents/edges';
 
-export type ScheduleMCPGraphDeps = Pick<
+export type RequirementDeps = Pick<
   AgentMethods,
   'getAgentGraphNodes' | 'resolveAgentGraphAccess'
 > & {
   getModelsConfig: (user: IUser) => Promise<TModelsConfig>;
 };
-export interface ScheduledMCPRequirements {
+export interface Requirements {
   tools: Array<{ name: string; agentId: string }>;
   serverHints: Set<string>;
   candidates: Array<{ name: string; agentId: string }>;
 }
 
 /** The runtime's bounded graph expansion, shared by readiness and enrollment metadata. */
-export async function resolveScheduledMCPRequirements(
+export async function resolveRequirements(
   agentId: string,
   user: IUser,
-  deps: ScheduleMCPGraphDeps,
+  deps: RequirementDeps,
   loadAppConfig: () => Promise<AppConfig | undefined>,
   signal?: AbortSignal,
-): Promise<ScheduledMCPRequirements> {
+): Promise<Requirements> {
   const throwIfAborted = (): void => {
     if (signal?.aborted) throw signal.reason ?? new Error('MCP requirements aborted');
   };

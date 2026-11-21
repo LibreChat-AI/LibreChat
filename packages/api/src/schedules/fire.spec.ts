@@ -4,8 +4,8 @@ import { AgentTriggerServiceUnavailableError } from '../agents/triggers/service'
 import { getAgentTriggerIdempotencyKey } from '../agents/triggers/envelope';
 import { AgentTriggerDeliveryError } from '../agents/triggers/delivery';
 import { buildFireClientRequestId, fireSchedule } from './fire';
+import { PreflightError } from '~/agents/authority/preflight';
 import { withCapacitySlot } from './capacity';
-import { ScheduleMCPError } from './mcp';
 
 const OWNER: ScheduleUserContext = { id: 'user-1', tenantId: 't1', role: 'USER' };
 const LIMITS: ScheduleLimits = {
@@ -966,7 +966,7 @@ describe('fireSchedule', () => {
 
 it('fires without a server that is not ready, and says which the run goes without', async () => {
   const { methods } = makeMethods();
-  const failure = new ScheduleMCPError([
+  const failure = new PreflightError([
     {
       server: 'Notion',
       status: 'mcp_reauth_required',
@@ -1044,7 +1044,7 @@ it('fires without a server that is not ready, and says which the run goes withou
 });
 
 it('does not fire without a check: one that names no server, or could not be made', async () => {
-  for (const failure of [new ScheduleMCPError([]), new Error('registry down')]) {
+  for (const failure of [new PreflightError([]), new Error('registry down')]) {
     const { methods } = makeMethods();
     const deps = makeDeps(methods, {
       preflightMCP: async () => {
@@ -1064,7 +1064,7 @@ it('does not fire without a check: one that names no server, or could not be mad
 
 it('settles an unavailable MCP occurrence of a strict schedule without dispatching a generation', async () => {
   const { methods } = makeMethods();
-  const failure = new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+  const failure = new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
   const deps = makeDeps(methods, {
     preflightMCP: async () => {
       throw failure;
@@ -1102,7 +1102,7 @@ it('does not settle or disable from a failed MCP preflight after losing its clai
   (methods.revalidateClaim as jest.Mock).mockResolvedValueOnce(true).mockResolvedValue(false);
   const deps = makeDeps(methods, {
     preflightMCP: async () => {
-      throw new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+      throw new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
     },
   });
   const result = await fireSchedule(deps, makeSchedule(), LIMITS, new Date('2026-09-09T12:00:00Z'));
@@ -1133,7 +1133,7 @@ it('does not invent a server outcome for infrastructure preflight failures', asy
 it('bounds MCP preflight by the claim lease and the stricter concurrency config', async () => {
   const { methods } = makeMethods();
   const leaseUntil = new Date(Date.now() + 10_000);
-  const failure = new ScheduleMCPError([{ server: 'Notion', status: 'mcp_unavailable' }]);
+  const failure = new PreflightError([{ server: 'Notion', status: 'mcp_unavailable' }]);
   const preflightMCP = jest.fn(async () => {
     throw failure;
   });

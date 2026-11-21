@@ -2,12 +2,9 @@ import { AgentCapabilities, Permissions, PermissionTypes } from 'librechat-data-
 import type { IUser, IRole, AppConfig, AgentGraphNode } from '@librechat/data-schemas';
 import type { UpstreamTokenProvider } from '../mcp/oauth/obo';
 import type { ParsedServerConfig } from '../mcp/types';
-import {
-  bindUpstreamTokenProviderResolver,
-  createScheduleMCPPreflight,
-  ScheduleMCPError,
-} from './mcp';
 import { OboTokenResolutionError, createLazyOboUpstreamTokenProvider } from '../mcp/oauth/obo';
+import { bindUpstreamTokenProviderResolver, createScheduleMCPPreflight } from './mcp';
+import { PreflightError } from '~/agents/authority/preflight';
 
 const principal = { id: 'owner', role: 'USER' };
 const server: ParsedServerConfig = { type: 'streamable-http', url: 'https://mcp.example.test/mcp' };
@@ -225,7 +222,7 @@ it('passes admission identity to the host and rejects a changed tenant before co
   jest.mocked(deps.connect).mockClear();
   await expect(
     check('agent', { ...user, tenantId: 'different' }, { scheduleId: 'schedule' }),
-  ).rejects.toBeInstanceOf(ScheduleMCPError);
+  ).rejects.toBeInstanceOf(PreflightError);
   expect(deps.connect).not.toHaveBeenCalled();
 });
 
@@ -293,7 +290,7 @@ it('does not classify a credential-store outage as missing configuration', async
   deps.findPluginAuthsByKeys = async () => {
     throw new Error('database unavailable');
   };
-  await expect(check('agent', principal)).rejects.not.toBeInstanceOf(ScheduleMCPError);
+  await expect(check('agent', principal)).rejects.not.toBeInstanceOf(PreflightError);
   expect(deps.connect).not.toHaveBeenCalled();
 });
 
@@ -1025,7 +1022,7 @@ it('propagates principal-config outages instead of reporting missing configurati
     expect(options).toMatchObject({ failClosed: true });
     throw new Error('principal config unavailable');
   });
-  await expect(check('agent', principal)).rejects.not.toBeInstanceOf(ScheduleMCPError);
+  await expect(check('agent', principal)).rejects.not.toBeInstanceOf(PreflightError);
 });
 
 it('reuses the loaded external identity for principal configuration', async () => {
@@ -1299,7 +1296,7 @@ it('keeps a role-store outage retryable instead of disabling the schedule', asyn
   deps.getRoleByName = async () => {
     throw new Error('role store unavailable');
   };
-  await expect(check('agent', principal)).rejects.not.toBeInstanceOf(ScheduleMCPError);
+  await expect(check('agent', principal)).rejects.not.toBeInstanceOf(PreflightError);
   expect(deps.connect).not.toHaveBeenCalled();
 });
 
