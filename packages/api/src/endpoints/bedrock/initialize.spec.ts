@@ -569,6 +569,89 @@ describe('initializeBedrock', () => {
         'Bedrock credentials not provided. Please provide them again.',
       );
     });
+
+    it('should use a user-provided region over the environment default', async () => {
+      process.env.BEDROCK_AWS_ACCESS_KEY_ID = AuthType.USER_PROVIDED;
+      process.env.BEDROCK_AWS_SECRET_ACCESS_KEY = AuthType.USER_PROVIDED;
+      process.env.BEDROCK_AWS_DEFAULT_REGION = AuthType.USER_PROVIDED;
+      const params = createMockParams();
+      (params.db.getUserKey as jest.Mock).mockResolvedValue(
+        JSON.stringify({
+          accessKeyId: 'user-access-key',
+          secretAccessKey: 'user-secret-key',
+          region: 'eu-central-1',
+        }),
+      );
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig).toHaveProperty('region', 'eu-central-1');
+    });
+
+    it('should not leak the user_provided sentinel as the region when the key has none', async () => {
+      process.env.BEDROCK_AWS_DEFAULT_REGION = AuthType.USER_PROVIDED;
+      const params = createMockParams();
+      (params.db.getUserKey as jest.Mock).mockResolvedValue(
+        JSON.stringify({
+          accessKeyId: 'user-access-key',
+          secretAccessKey: 'user-secret-key',
+        }),
+      );
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig.region).toBeUndefined();
+    });
+
+    it('should read a user-provided region while credentials stay static', async () => {
+      process.env.BEDROCK_AWS_DEFAULT_REGION = AuthType.USER_PROVIDED;
+      const params = createMockParams();
+      (params.db.getUserKey as jest.Mock).mockResolvedValue(
+        JSON.stringify({ region: 'ap-south-1' }),
+      );
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig).toHaveProperty('region', 'ap-south-1');
+      expect(result.llmConfig.credentials).toEqual({
+        accessKeyId: 'test-access-key',
+        secretAccessKey: 'test-secret-key',
+      });
+    });
+
+    it('should not require a stored key when only the region is user-provided', async () => {
+      process.env.BEDROCK_AWS_DEFAULT_REGION = AuthType.USER_PROVIDED;
+      const params = createMockParams();
+      (params.db.getUserKey as jest.Mock).mockResolvedValue(null);
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig.credentials).toEqual({
+        accessKeyId: 'test-access-key',
+        secretAccessKey: 'test-secret-key',
+      });
+      expect(result.llmConfig).not.toHaveProperty('client');
+    });
+
+    it('should send the user-provided region to the proxy-routed client', async () => {
+      process.env.PROXY = 'http://localhost:8080';
+      process.env.BEDROCK_AWS_ACCESS_KEY_ID = AuthType.USER_PROVIDED;
+      process.env.BEDROCK_AWS_SECRET_ACCESS_KEY = AuthType.USER_PROVIDED;
+      process.env.BEDROCK_AWS_DEFAULT_REGION = AuthType.USER_PROVIDED;
+      const params = createMockParams();
+      (params.db.getUserKey as jest.Mock).mockResolvedValue(
+        JSON.stringify({
+          accessKeyId: 'user-access-key',
+          secretAccessKey: 'user-secret-key',
+          region: 'eu-west-1',
+        }),
+      );
+
+      const result = (await initializeBedrock(params)) as BedrockLLMConfigResult;
+
+      expect(result.llmConfig).toHaveProperty('client');
+      expect(result.llmConfig.client).toHaveProperty('region', 'eu-west-1');
+    });
   });
 
   describe('Credentials Edge Cases', () => {
