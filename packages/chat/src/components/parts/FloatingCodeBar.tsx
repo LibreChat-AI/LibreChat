@@ -1,19 +1,27 @@
 import React from 'react';
+import { cn } from '@librechat/client';
 import { InfoIcon } from 'lucide-react';
-import { CopyButton } from '@librechat/chat/components';
-import type { CodeBarProps } from '~/common';
-import useDownloadCode from '~/components/Messages/Content/useDownloadCode';
-import DownloadButton from '~/components/Messages/Content/DownloadButton';
-import useCopyCode from '~/components/Messages/Content/useCopyCode';
-import RunCode from '~/components/Messages/Content/RunCode';
-import cn from '~/utils/cn';
+import type { CodeBarProps } from './CodeBar';
+import useDownloadCode from './useDownloadCode';
+import DownloadButton from './DownloadButton';
+import useCopyCode from './useCopyCode';
+import CopyButton from './CopyButton';
 
 interface FloatingCodeBarProps extends CodeBarProps {
   isVisible: boolean;
 }
 
-const FloatingCodeBar: React.FC<FloatingCodeBarProps> = React.memo(
-  ({ lang, error, codeRef, blockIndex, plugin = null, allowExecution = true, isVisible }) => {
+const FloatingCodeBar: React.NamedExoticComponent<FloatingCodeBarProps> = React.memo(
+  ({
+    lang,
+    error,
+    codeRef,
+    blockIndex,
+    renderRun,
+    isVisible,
+    plugin = null,
+    allowExecution = true,
+  }: FloatingCodeBarProps) => {
     const { isCopied, buttonRef, handleCopy } = useCopyCode(codeRef);
     const {
       isDownloaded,
@@ -32,9 +40,7 @@ const FloatingCodeBar: React.FC<FloatingCodeBarProps> = React.memo(
           <InfoIcon className="text-text-secondary flex h-4 w-4 gap-2" />
         ) : (
           <>
-            {allowExecution === true && (
-              <RunCode lang={lang} codeRef={codeRef} blockIndex={blockIndex} iconOnly />
-            )}
+            {allowExecution === true && renderRun?.({ lang, codeRef, blockIndex, iconOnly: true })}
             {error !== true && (
               <DownloadButton
                 ref={downloadButtonRef}

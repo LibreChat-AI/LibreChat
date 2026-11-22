@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { FileSources } from 'librechat-data-provider';
 import {
   getCodeBlockFilename,
@@ -6,7 +9,7 @@ import {
   registerDownloadFilename,
   triggerDownload,
   unregisterDownloadFilename,
-} from '../downloadFile';
+} from '../download';
 
 describe('downloadFile utilities', () => {
   let clickSpy: jest.SpyInstance;

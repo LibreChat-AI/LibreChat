@@ -1,7 +1,7 @@
 import React from 'react';
 import { Download } from 'lucide';
-import { ActionButton } from '@librechat/chat/components';
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
+import ActionButton from './ActionButton';
 
 interface DownloadButtonProps {
   isDownloaded: boolean;
@@ -13,7 +13,9 @@ interface DownloadButtonProps {
   downloadedLabel?: string;
 }
 
-const DownloadButton = React.forwardRef<HTMLButtonElement, DownloadButtonProps>(
+const DownloadButton: React.ForwardRefExoticComponent<
+  DownloadButtonProps & React.RefAttributes<HTMLButtonElement>
+> = React.forwardRef<HTMLButtonElement, DownloadButtonProps>(
   (
     { isDownloaded, iconOnly = false, onClick, tabIndex, className, label, downloadedLabel },
     ref,

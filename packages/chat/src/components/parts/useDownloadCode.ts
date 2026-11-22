@@ -1,10 +1,17 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { getCodeBlockFilename, triggerDownload } from '~/utils';
+import type { RefObject } from 'react';
+import { getCodeBlockFilename, triggerDownload } from '../../core/download';
+
+export interface DownloadCode {
+  isDownloaded: boolean;
+  buttonRef: RefObject<HTMLButtonElement>;
+  handleDownload: () => void;
+}
 
 export default function useDownloadCode(
-  codeRef: React.RefObject<HTMLElement | null>,
+  codeRef: RefObject<HTMLElement | null>,
   lang?: string,
-) {
+): DownloadCode {
   const [isDownloaded, setIsDownloaded] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
