@@ -5,8 +5,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { resolveAskUserQuestionPart } from '@librechat/chat';
 import { getLiveActivity } from '@librechat/chat/components';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   TAttachment,
   TMessage,
@@ -1547,7 +1547,7 @@ describe('tool pane identity at finalization', () => {
       const { container, rerender } = render(frame({ content: [undefined, call()] }));
       fireEvent.click(toggles(container)[0]);
       expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
-      expect(container.querySelector('code.hljs')).toHaveTextContent('printf hello');
+      await waitFor(() => expect(container.querySelector('code.hljs span')).not.toBeNull());
       rerender(
         frame({
           messageId: 'server-response',
@@ -1562,10 +1562,7 @@ describe('tool pane identity at finalization', () => {
       );
       expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
       expect(container.querySelector('code.hljs')).toHaveTextContent('printf hello');
-      /** The highlighter's on-demand import settles after the render; let it land inside the test. */
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+      await waitFor(() => expect(container.querySelector('code.hljs span')).not.toBeNull());
     },
   );
 
