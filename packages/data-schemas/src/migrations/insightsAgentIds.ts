@@ -45,7 +45,7 @@ export async function backfillInsightsAttribution(
   const operations: AnyBulkWriteOperation<IndexedRecord>[] = [];
   for (const record of records) {
     const hint = attributions.get(insightsIdentityKey(record));
-    if (hint === record.insightsAgentId) continue;
+    if (hint === undefined || hint === record.insightsAgentId) continue;
     operations.push({
       updateOne: {
         filter: {
@@ -54,10 +54,7 @@ export async function backfillInsightsAttribution(
           user: record.user ?? { $exists: false },
           tenantId: record.tenantId ?? { $exists: false },
         },
-        update:
-          hint === undefined
-            ? { $unset: { insightsAgentId: '' } }
-            : { $set: { insightsAgentId: hint } },
+        update: { $set: { insightsAgentId: hint } },
       },
     });
   }

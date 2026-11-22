@@ -4,7 +4,6 @@ import { backfillInsightsAttribution } from './insightsAgentIds';
 import { createTransactionModel } from '~/models/transaction';
 import { createInsightsMethods } from '~/methods/insights';
 import { createConversationModel } from '~/models/convo';
-import { createMessageMethods } from '~/methods/message';
 import { createMessageModel } from '~/models/message';
 import { createAgentModel } from '~/models/agent';
 import { createUserModel } from '~/models/user';
@@ -30,45 +29,6 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await Promise.all(Object.values(mongoose.models).map((model) => model.deleteMany({})));
-});
-
-it('fixes a legacy conversation root at migration time', async () => {
-  await mongoose.models.Conversation.collection.insertOne({
-    conversationId,
-    user: owner.toString(),
-    agent_id: 'agent-a',
-  });
-  await createMessageMethods(mongoose).saveMessage(
-    { userId: owner.toString() },
-    {
-      conversationId,
-      messageId: 'legacy-reply',
-      isCreatedByUser: false,
-      insightsAgentId: 'forged-agent',
-    },
-  );
-  expect(
-    await mongoose.models.Message.collection.findOne({ messageId: 'legacy-reply' }),
-  ).not.toHaveProperty('insightsAgentId');
-  const methods = createInsightsMethods(mongoose);
-  const responses = async (agentId: string) =>
-    (await methods.getInsights({ agentIds: [agentId], showDetails: false })).summary.totalResponses;
-  expect(await responses('agent-a')).toBe(0);
-
-  for (const collection of ['conversations', 'messages'] as const) {
-    await backfillInsightsAttribution(mongoose, { collection, batchSize: 10, apply: true });
-  }
-  expect(
-    (await mongoose.models.Conversation.collection.findOne({ conversationId }))?.initial_agent_id,
-  ).toBe('agent-a');
-  expect(await responses('agent-a')).toBe(1);
-
-  await mongoose.models.Conversation.updateOne(
-    { conversationId },
-    { $set: { agent_id: 'agent-b' } },
-  );
-  expect(await responses('agent-a')).toBe(1);
-  expect(await responses('agent-b')).toBe(0);
 });
 
 it('backfills in resumable batches, fixes legacy roots and is idempotent', async () => {
@@ -154,4 +114,35 @@ it('backfills in resumable batches, fixes legacy roots and is idempotent', async
   expect(
     (await mongoose.models.Message.collection.findOne({ messageId: 'c' }))?.insightsAgentId,
   ).toBe('agent-a');
+
+  await mongoose.models.Conversation.updateOne(
+    { conversationId: 'legacy' },
+    { $set: { agent_id: 'agent-b' } },
+  );
+  for (const collection of ['conversations', 'messages'] as const) {
+    await backfillInsightsAttribution(mongoose, { collection, batchSize: 10, apply: true });
+  }
+  expect((await methods.getInsights(options)).summary.totalMessages).toBe(3);
+});
+
+it('keeps the spend of a deleted conversation when the backfill runs again', async () => {
+  await mongoose.models.Transaction.collection.insertOne({
+    user: owner,
+    conversationId,
+    messageId: 'reply',
+    tokenType: 'completion',
+    tokenValue: -8,
+    createdAt: new Date(),
+    insightsAgentId: 'agent-a',
+  });
+  await backfillInsightsAttribution(mongoose, {
+    collection: 'transactions',
+    batchSize: 10,
+    apply: true,
+  });
+  const { summary } = await createInsightsMethods(mongoose).getInsights({
+    agentIds: ['agent-a'],
+    showDetails: false,
+  });
+  expect(summary.spendUSD).toBeGreaterThan(0);
 });
