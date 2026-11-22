@@ -37,6 +37,7 @@ import {
 } from '~/Providers';
 import {
   getAppContentParts,
+  getAppMarkdownSlots,
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
@@ -44,6 +45,7 @@ import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
+import { useFileDownload } from '~/data-provider/Files/queries';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import useLoadedSkill from '~/hooks/Skills/useLoadedSkill';
 import { chatDirectionAtom } from '~/store/chatDirection';
@@ -157,6 +159,13 @@ function useAppToolCallChrome(): ToolCallChrome {
   );
 }
 
+/** Fetches a file the signed-in user owns that a reply links to, as a URL the browser can save. */
+function useAppFileDownload(fileId: string): () => Promise<string | undefined> {
+  const user = useRecoilValue(store.user);
+  const { refetch } = useFileDownload(user?.id ?? '', fileId, { direct: false });
+  return useCallback(async () => (await refetch()).data, [refetch]);
+}
+
 /**
  * The host the app's own views supply: the Recoil and Jotai stores and the app providers. It is
  * registered as the default, so parts rendered outside a provider read the app's stores.
@@ -202,6 +211,9 @@ export const appMessagePartsHost: MessagePartsHost = {
   },
   useLoadedSkill,
   useToolCallChrome: useAppToolCallChrome,
+  renderCodeBlock: (props) => getAppMarkdownSlots()?.renderCodeBlock(props) ?? null,
+  renderMermaid: (props) => getAppMarkdownSlots()?.renderMermaid(props) ?? null,
+  useFileDownload: useAppFileDownload,
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

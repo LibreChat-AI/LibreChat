@@ -48,4 +48,5 @@ export {
   registerDownloadFilename,
   unregisterDownloadFilename,
 } from './download';
+export { selectContents } from './selection';
 export * from './url';

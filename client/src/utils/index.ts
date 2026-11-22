@@ -132,16 +132,7 @@ export const defaultTextProps =
 export const optionText =
   'p-0 shadow-none text-right pr-1 h-8 border-transparent hover:bg-surface-hover transition-colors';
 
-export const handleDoubleClick: React.MouseEventHandler<HTMLElement> = (event) => {
-  const range = document.createRange();
-  range.selectNodeContents(event.target as Node);
-  const selection = window.getSelection();
-  if (!selection) {
-    return;
-  }
-  selection.removeAllRanges();
-  selection.addRange(range);
-};
+export { selectContents as handleDoubleClick } from '@librechat/chat';
 
 export const extractContent = (
   children: React.ReactNode | { props: { children: React.ReactNode } } | string,

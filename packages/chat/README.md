@@ -174,6 +174,43 @@ Without the provider the load runs as written; the highlighter's grammars always
 The remark plugins LibreChat's markdown uses are in the core entry: `remarkApproxTilde`,
 `remarkSingleDollarMath` and the `langSubset` of languages a message highlights.
 
+## Markdown elements
+
+`markdownElements` is the set of elements LibreChat draws a reply's markdown with, in the shape
+`react-markdown` takes: fenced code as a `CodeBlock` with copy and download, links, images,
+tables, and lists, quotes and headings that find their own text direction.
+`markdownPreviewElements` is the same for a preview that runs nothing.
+
+```tsx
+import ReactMarkdown from 'react-markdown';
+import { markdownElements } from '@librechat/chat/components';
+import { CodeBlockProvider, toRehypePlugins, useRehypeModules } from '@librechat/chat/react';
+
+function Reply({ text }: { text: string }) {
+  const modules = useRehypeModules(text);
+  return (
+    <CodeBlockProvider>
+      <ReactMarkdown components={markdownElements} rehypePlugins={toRehypePlugins(modules)}>
+        {text}
+      </ReactMarkdown>
+    </CodeBlockProvider>
+  );
+}
+```
+
+The elements read the message parts host. Three of its members are optional and change what a
+reply can do:
+
+| Host member       | With it                                                     | Without it                          |
+| ----------------- | ----------------------------------------------------------- | ----------------------------------- |
+| `renderCodeBlock` | The host draws each fence, say with a run button and output | The package's `CodeBlock`           |
+| `renderMermaid`   | The host draws a `mermaid` fence as a diagram               | The fence is an ordinary code block |
+| `useFileDownload` | A link to the user's own file downloads it                  | The link is an ordinary link        |
+
+A host that runs code composes the package's block: `CodeBlock` takes the run button as
+`renderRun` and what the runs printed as `output`. Wrap the tree in `MediaContext.Provider` to
+let an image a reply names by filename resolve to the attachment its run produced.
+
 ## What the app supplies
 
 - **How content is drawn.** Markdown, code blocks, math, images, files and audio are rendered by

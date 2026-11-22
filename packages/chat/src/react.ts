@@ -23,6 +23,8 @@ export type {
   MessagePartsMarkdownProps,
   MessagePartsImageProps,
   MessagePartsFilePreviewProps,
+  MarkdownCodeBlockProps,
+  MarkdownMermaidProps,
   MessagePartsUserTextPreferences,
   ToolCallChrome,
   ToolCallLocalize,
@@ -281,6 +283,10 @@ export {
 } from './react/parts/rehype';
 export type { RehypeModules, RehypePlugins, HighlightOptions } from './react/parts/rehype';
 export { LazyImportProvider, useLazyImport } from './react/lazy';
+export { CodeBlockContext, CodeBlockProvider, useCodeBlockContext } from './react/parts/codeIndex';
+export type { CodeBlockIndex } from './react/parts/codeIndex';
+export { MediaContext, useMediaContext } from './react/parts/media';
+export type { MediaSources } from './react/parts/media';
 export type { LazyImport } from './react/lazy';
 export { default as useRowHandoff } from './react/parts/handoff';
 export {
