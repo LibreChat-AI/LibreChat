@@ -15,6 +15,7 @@ import {
   renderAttachmentKey,
 } from './attachmentTypes';
 import { ARTIFACT_ROW_NAV_SPACING, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import { renderImage as defaultRenderImage } from '../renderers';
 import FileContainer from '../composer/files/FileContainer';
 import { useMessagePartsHost } from '../../react/host';
 import useExpandCollapse from './useExpandCollapse';
@@ -384,7 +385,7 @@ const TextAttachment = memo(
 );
 
 const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
-  const renderImage = useMessagePartsHost().renderImage;
+  const { renderImage = defaultRenderImage } = useMessagePartsHost();
   const { width, height, filepath = null } = attachment as TFile & TAttachmentMetadata;
 
   return (

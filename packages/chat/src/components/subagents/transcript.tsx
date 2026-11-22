@@ -15,6 +15,7 @@ import {
   subagentStatusIcon,
   subagentStatusLabelKey,
 } from '../../react/subagents/status';
+import { renderMarkdown as defaultRenderMarkdown } from '../renderers';
 import { ToolContentQueryContext } from '../../react/parts/disclosure';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
 import { useChatSurface } from '../../react/subagents/surface';
@@ -383,7 +384,7 @@ export const getActivityContent = (activity: ChildActivity): TMessageContentPart
 
 function SubagentPrompt({ prompt }: { prompt: string }) {
   const localize = useLocalize();
-  const { renderMarkdown } = useMessagePartsHost();
+  const { renderMarkdown = defaultRenderMarkdown } = useMessagePartsHost();
   const [expanded, setExpanded] = useState(false);
   const headingId = useId();
   const contentId = useId();

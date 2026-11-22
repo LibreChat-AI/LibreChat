@@ -189,7 +189,11 @@ import { Markdown, MarkdownLite } from '@librechat/chat/components';
 <MarkdownLite content={toolOutput} codeExecution={false} />
 ```
 
-Both read the message parts host. These members are optional and change what a reply can do:
+A part draws its text with these two unless the host names a `renderMarkdown` of its own, and an
+attached image with the package's `Image` unless the host names a `renderImage`.
+
+Both renderers read the message parts host. These members are optional and change what a reply
+can do:
 
 | Host member          | With it                                                     | Without it                          |
 | -------------------- | ----------------------------------------------------------- | ----------------------------------- |
@@ -225,11 +229,11 @@ by a bundler alias. Add the same alias to parse `\(...\)` and `\[...\]` exactly 
 
 ## What the app supplies
 
-- **Which renderers a part uses.** A part asks the host providers in `@librechat/chat/react`
-  (`MessagePartsHostProvider`, `MessagesHostProvider`) to draw markdown, images, files and audio.
-  For markdown and images, pass the package's own (`Markdown`, `MarkdownLite`, `Image`) or the
-  app's; LibreChat's file and audio renderers are still in its app. A code highlighting theme
-  comes from the app; KaTeX's stylesheet is loaded by `useRehypeModules`.
+- **The renderers the package does not have.** A part asks the host providers in
+  `@librechat/chat/react` (`MessagePartsHostProvider`, `MessagesHostProvider`) to draw file
+  previews and audio; LibreChat's are still in its app. Markdown and images are the package's
+  unless the host names its own. A code highlighting theme comes from the app; KaTeX's
+  stylesheet is loaded by `useRehypeModules`.
 - **The backend.** The transport speaks LibreChat's routes and payloads; the app supplies the
   request functions and the session.
 - **The font files.** The client package's stylesheet names its fonts by package path

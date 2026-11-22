@@ -204,15 +204,17 @@ export type MessagePartsMarkdownProps = {
 export interface MessagePartsHost {
   /** The message the calling part renders in. */
   useMessage: () => MessagePartMessage;
-  /** Renders markdown with the app's renderer. */
-  renderMarkdown: (props: MessagePartsMarkdownProps) => ReactNode;
+  /** Renders markdown, for a host with a renderer of its own. Without it a part draws the
+   *  package's `Markdown`, or `MarkdownLite` for the `lite` variant. */
+  renderMarkdown?: (props: MessagePartsMarkdownProps) => ReactNode;
   /**
    * Renders plain text while it is still streaming, so a reasoning stream can fade its words in.
    * Absent, the part shows the text as it is.
    */
   renderStreamingText?: (text: string) => ReactNode;
-  /** Renders an attached image with the app's image viewer. */
-  renderImage: (props: MessagePartsImageProps) => ReactNode;
+  /** Renders an attached image, for a host with a viewer of its own. Without it a part draws the
+   *  package's `Image`. */
+  renderImage?: (props: MessagePartsImageProps) => ReactNode;
   /** Renders the app's preview dialog for an attached file. */
   renderFilePreview: (props: MessagePartsFilePreviewProps) => ReactNode;
   /** Whether streamed text fades in word by word: the viewer's setting, unless motion is reduced. */
