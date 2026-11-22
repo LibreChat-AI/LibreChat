@@ -34,6 +34,9 @@ module.exports = {
     '^test/(.*)$': '<rootDir>/test/$1',
     '^~/(.*)$': '<rootDir>/src/$1',
     '^@librechat/client$': '<rootDir>/../packages/client/dist/index.cjs',
+    /** One built module of the chat package, for a spec that stands in for a card the package
+     *  draws: `jest.mock('@librechat/chat/dist/components/Text.cjs', …)`. */
+    '^@librechat/chat/dist/(.*)$': '<rootDir>/../packages/chat/dist/$1',
     '^@librechat/chat$': '<rootDir>/../packages/chat/dist/index.cjs',
     '^librechat-data-provider/react-query$':
       '<rootDir>/../node_modules/librechat-data-provider/src/react-query',

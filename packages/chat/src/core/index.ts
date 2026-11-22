@@ -50,4 +50,5 @@ export {
 } from './download';
 export { selectContents } from './selection';
 export { scaleImage } from './scaleImage';
+export { cachePreview, deletePreview, getCachedPreview, removePreviewEntry } from './previewCache';
 export * from './url';

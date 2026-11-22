@@ -1,5 +1,6 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export { partRenderers, extendPartRenderers } from './components/partRenderers';
 export { default as Text } from './components/Text';
 export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';
@@ -14,7 +15,7 @@ export type {
   PartRenderers,
   PartRenderProps,
   ToolRenderProps,
-} from './components/Part';
+} from './components/partTypes';
 
 export {
   AnimatedText,
