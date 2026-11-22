@@ -39,6 +39,7 @@ import type { ActivityPhaseSegment } from '@librechat/chat';
 import type { ReactNode, ReactElement } from 'react';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
+import type { PartWithIndex } from './ParallelContent';
 import {
   mapAttachments,
   getPartKeyIndex,
@@ -50,7 +51,7 @@ import {
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
 import { useStoredSubagentHints } from '~/components/Chat/Subagents/attachments';
-import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
+import { ParallelContentRenderer, renderSiblingHeader } from './ParallelContent';
 import { isPreviewedToolCallPart, PreviewedToolCallPart } from './hydration';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
@@ -1424,6 +1425,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           searchResults={searchResults}
           isSubmitting={effectiveIsSubmitting}
           renderPart={renderPart}
+          renderColumnHeader={renderSiblingHeader}
           renderResumeAttribution={renderResumeAttribution}
           showDecorations={!nestedActivityPhase && !continuation}
           contentIndexOffset={contentIndexOffset}
