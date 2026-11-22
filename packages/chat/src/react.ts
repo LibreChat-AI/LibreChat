@@ -285,6 +285,8 @@ export type { RehypeModules, RehypePlugins, HighlightOptions } from './react/par
 export { LazyImportProvider, useLazyImport } from './react/lazy';
 export { CodeBlockContext, CodeBlockProvider, useCodeBlockContext } from './react/parts/codeIndex';
 export type { CodeBlockIndex } from './react/parts/codeIndex';
+export { ArtifactContext, ArtifactProvider, useArtifactContext } from './react/parts/artifactIndex';
+export type { ArtifactIndex } from './react/parts/artifactIndex';
 export { MediaContext, useMediaContext } from './react/parts/media';
 export type { MediaSources } from './react/parts/media';
 export type { LazyImport } from './react/lazy';

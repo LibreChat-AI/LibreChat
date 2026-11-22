@@ -1,8 +1,8 @@
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import supersub from 'remark-supersub';
 import remarkDirective from 'remark-directive';
-import type { PluggableList } from 'unified';
+import { rehypeList, remarkSupersub } from '@librechat/chat/components';
+import type { MarkdownBlocksProps } from '@librechat/chat/components';
 import type { ElementType } from 'react';
 import type { RehypeModules } from './rehype';
 import {
@@ -30,7 +30,6 @@ import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/C
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
 import { remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { unicodeCitation } from '~/components/Web';
-import { toRehypePlugins } from './rehype';
 
 /**
  * Single source of truth for the markdown rendering pipeline, shared by the
@@ -50,12 +49,18 @@ import { toRehypePlugins } from './rehype';
  * unambiguous `$$`, `\(...\)`, and `\[...\]` delimiters always parse via `remark-math`
  * (aliased to `micromark-extension-llm-math` in vite and jest config).
  */
-export const getRemarkPlugins = (latexParsing = true): PluggableList => [
+type Plugins = MarkdownBlocksProps['remarkPlugins'];
+
+/** The artifact plugin is typed against the `unified` this app resolves, which is older than the
+ *  one `react-markdown` runs it on, so the cast is on its type alone. */
+const artifacts = artifactPlugin as unknown as Plugins[number];
+
+export const getRemarkPlugins = (latexParsing = true): Plugins => [
   remarkApproxTilde,
-  supersub,
+  remarkSupersub,
   remarkGfm,
   remarkDirective,
-  artifactPlugin,
+  artifacts,
   [remarkMath, { singleDollarTextMath: false }],
   ...(latexParsing ? [remarkSingleDollarMath] : []),
   unicodeCitation,
@@ -63,8 +68,7 @@ export const getRemarkPlugins = (latexParsing = true): PluggableList => [
 ];
 
 /** Empty until `useRehypeModules` has loaded KaTeX and highlight.js; see `./rehype`. */
-export const getRehypePlugins = (modules: RehypeModules | null): PluggableList =>
-  toRehypePlugins(modules);
+export const getRehypePlugins = (modules: RehypeModules | null): Plugins => rehypeList(modules);
 
 export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => ({
   code,

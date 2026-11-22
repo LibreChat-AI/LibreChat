@@ -275,6 +275,11 @@ export interface MessagePartsHost {
    * nothing when the file could not be fetched. Without it a file link is an ordinary link.
    */
   useFileDownload?: (fileId: string) => () => Promise<string | undefined>;
+  /**
+   * Told when an error boundary of the package's caught a render that threw, with the boundary's
+   * name (`'markdown'`). For a host's error reporting; the boundary has already drawn its fallback.
+   */
+  onBoundaryError?: (boundary: string, error: Error) => void;
 }
 
 const MessagePartsHostContext = createContext<MessagePartsHost | null>(null);

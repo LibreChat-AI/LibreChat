@@ -50,6 +50,7 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import useLoadedSkill from '~/hooks/Skills/useLoadedSkill';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
+import { reportBoundaryError } from '~/lib/rum/logs';
 import { fontSizeAtom } from '~/store/fontSize';
 import { logger, openInNewTab } from '~/utils';
 import { renderAgentAvatar } from '~/utils';
@@ -214,6 +215,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   renderCodeBlock: (props) => getAppMarkdownSlots()?.renderCodeBlock(props) ?? null,
   renderMermaid: (props) => getAppMarkdownSlots()?.renderMermaid(props) ?? null,
   useFileDownload: useAppFileDownload,
+  onBoundaryError: (boundary, error) => reportBoundaryError(boundary, error),
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

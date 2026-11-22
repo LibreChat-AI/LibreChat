@@ -195,6 +195,18 @@ export { default as useDownloadCode } from './components/parts/useDownloadCode';
 export type { CodeBlockProps } from './components/parts/CodeBlock';
 export type { CodeBarProps, RunCodeProps } from './components/parts/CodeBar';
 export { markdownElements, markdownPreviewElements } from './components/markdown/elements';
+export { default as MarkdownBlocks } from './components/markdown/Blocks';
+export { default as MarkdownLite } from './components/markdown/Lite';
+export { default as MarkdownErrorBoundary } from './components/markdown/Boundary';
+export {
+  BASE_REMARK,
+  MATH_REMARK,
+  rehypeList,
+  remarkSupersub,
+} from './components/markdown/plugins';
+export type { MarkdownBlocksProps } from './components/markdown/Blocks';
+export type { MarkdownLiteProps } from './components/markdown/Lite';
+export type { MarkdownErrorBoundaryProps } from './components/markdown/Boundary';
 export type { ImageProps } from './components/parts/Image';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
