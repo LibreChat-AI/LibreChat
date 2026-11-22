@@ -4,8 +4,11 @@ import type {
   TFile,
   TAttachment,
   SearchResultData,
+  ToolCallPartParams,
+  ToolCallPartResponse,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query';
 import type { Dispatch, ElementType, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
 import type { PluggableList } from 'unified';
@@ -138,6 +141,13 @@ export type MarkdownMermaidProps = {
   /** Whether a diagram that throws while rendering is caught and shown as its source. */
   guarded: boolean;
 };
+
+/** Loads a stored tool call part; the app's query, or a nested transcript's own. */
+export type ToolContentQuery = (
+  params: ToolCallPartParams,
+  config?: UseQueryOptions<ToolCallPartResponse>,
+  revision?: string,
+) => QueryObserverResult<ToolCallPartResponse>;
 
 /**
  * What a host adds to the markdown of a reply: syntax of its own and the elements that draw it,
@@ -289,6 +299,12 @@ export interface MessagePartsHost {
    * nothing when the file could not be fetched. Without it a file link is an ordinary link.
    */
   useFileDownload?: (fileId: string) => () => Promise<string | undefined>;
+  /**
+   * A hook that loads the stored content of one tool call, for a call the server sent as a
+   * preview: its arguments or output shortened, or a subagent's activity left out. It runs once
+   * the reader opens the card. Without it a previewed call says its content could not be loaded.
+   */
+  useToolCallPart?: ToolContentQuery;
   /**
    * The host's additions to a reply's markdown, or nothing. Called while rendering, so it must
    * return the same object until the additions change. The lighter renderer for cards and the
