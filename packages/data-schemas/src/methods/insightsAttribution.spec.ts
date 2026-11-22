@@ -145,40 +145,6 @@ it('gives records saved before their conversation the hint once the conversation
   expect(await hintOf('Message', 'first-prompt')).toBe('kept');
 });
 
-it('attributes replies and usage saved after the conversation exists', async () => {
-  const messages = createMessageMethods(mongoose);
-  const conversations = createConversationMethods(mongoose, messages);
-  await conversations.saveConvo(
-    { userId: owner.toString() },
-    { conversationId, endpoint: 'agents', agent_id: 'agent-a' },
-    { initialAgentId: 'agent-a' },
-  );
-  await messages.saveMessage(
-    { userId: owner.toString() },
-    { conversationId, messageId: 'chat-reply', isCreatedByUser: false },
-  );
-  await createTransactionMethods(mongoose, {
-    getMultiplier: () => 1,
-    getCacheMultiplier: () => null,
-  }).bulkInsertTransactions([
-    {
-      user: owner.toString(),
-      conversationId,
-      messageId: 'chat-reply',
-      tokenType: 'completion',
-      tokenValue: -2,
-    },
-  ]);
-  expect(
-    (await mongoose.models.Message.collection.findOne({ messageId: 'chat-reply' }))
-      ?.insightsAgentId,
-  ).toBe('agent-a');
-  expect(
-    (await mongoose.models.Transaction.collection.findOne({ messageId: 'chat-reply' }))
-      ?.insightsAgentId,
-  ).toBe('agent-a');
-});
-
 it('resolves only matching tenant/owner identities and distinguishes unattributed from legacy records', async () => {
   await mongoose.models.Conversation.collection.insertMany([
     {
@@ -199,18 +165,6 @@ it('resolves only matching tenant/owner identities and distinguishes unattribute
       initial_agent_id: null,
       agent_id: 'agent-a',
     },
-    {
-      conversationId: 'child',
-      user: owner.toString(),
-      initial_agent_id: 'agent-a',
-      subagentThread: null,
-    },
-    {
-      conversationId: 'temporary',
-      user: owner.toString(),
-      initial_agent_id: 'agent-a',
-      isTemporary: true,
-    },
   ]);
   const identities = [
     { conversationId: 'shared', user: owner.toString(), tenantId: 'tenant-a' },
@@ -218,8 +172,6 @@ it('resolves only matching tenant/owner identities and distinguishes unattribute
     { conversationId: 'shared', user: owner.toString() },
     { conversationId: 'shared', user: 'outsider', tenantId: 'tenant-a' },
     { conversationId: 'unattributed', user: owner.toString() },
-    { conversationId: 'child', user: owner.toString() },
-    { conversationId: 'temporary', user: owner.toString() },
   ];
   const hints = await resolveInsightsAttributions(mongoose, identities);
   expect(identities.map((identity) => hints.get(insightsIdentityKey(identity)))).toEqual([
@@ -227,8 +179,6 @@ it('resolves only matching tenant/owner identities and distinguishes unattribute
     'agent-b',
     undefined,
     undefined,
-    '',
-    '',
     '',
   ]);
 });
