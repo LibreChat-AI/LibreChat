@@ -57,26 +57,25 @@ export function createInsightsAccessResolver(
     const tenantFilter = user.tenantId
       ? { tenantId: user.tenantId }
       : { tenantId: { $exists: false } };
+    const agentsPromise = deps.getAgents(tenantFilter, '_id id name tenantId');
+
     if (user.role === SystemRoles.ADMIN) {
-      const agents = sortChoices(await deps.getAgents(tenantFilter, '_id id name tenantId'));
+      const agents = sortChoices(await agentsPromise);
       return { agents, detailAgentIds: agents.map((agent) => agent.id), tenantWide: true };
     }
 
-    const principalsPromise = deps.getUserPrincipals({
+    const principals = await deps.getUserPrincipals({
       userId: user.id,
       role: user.role,
       idOnTheSource: user.idOnTheSource,
     });
-    const [agents, principals, hasGlobalAccess] = await Promise.all([
-      deps.getAgents(tenantFilter, '_id id name tenantId'),
-      principalsPromise,
-      principalsPromise.then((principals) =>
-        deps.hasCapabilityForPrincipals({
-          principals,
-          capability: SystemCapabilities.READ_INSIGHTS,
-          tenantId: user.tenantId,
-        }),
-      ),
+    const [agents, hasGlobalAccess] = await Promise.all([
+      agentsPromise,
+      deps.hasCapabilityForPrincipals({
+        principals,
+        capability: SystemCapabilities.READ_INSIGHTS,
+        tenantId: user.tenantId,
+      }),
     ]);
 
     if (hasGlobalAccess) {
