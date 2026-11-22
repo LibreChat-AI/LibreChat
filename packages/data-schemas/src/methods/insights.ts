@@ -84,7 +84,6 @@ const churnedUserWindowDays = 28;
 const churnedUserLimit = 8;
 const dayMs = 24 * 60 * 60 * 1000;
 const replyUsageWindowMs = dayMs;
-/** Contexts of the reply's own run; title, summary and sub-agent usage only count as spend. */
 const replyUsageContexts = ['message', 'abort', 'incomplete', 'reasoning', null];
 
 const responseRating = { $cond: [{ $eq: ['$isCreatedByUser', false] }, '$feedback.rating', null] };
@@ -94,7 +93,6 @@ const responseOutcome = {
     {
       $cond: [
         {
-          // Provider failures mid-answer are saved as an error content block with error: false.
           $or: [{ $eq: ['$error', true] }, { $in: ['error', { $ifNull: ['$content.type', []] }] }],
         },
         'failed',
@@ -275,18 +273,6 @@ function transactionScope(
         ...match,
       },
     },
-    {
-      $addFields: {
-        insightsUsageEligible: {
-          $and: [
-            { $or: [{ $eq: ['$tokenType', 'prompt'] }, { $eq: ['$tokenType', 'completion'] }] },
-            { $gte: ['$tokenValue', -Number.MAX_VALUE] },
-            { $lte: ['$tokenValue', 0] },
-          ],
-        },
-      },
-    },
-    { $match: { insightsUsageEligible: true } },
   ];
 }
 
@@ -319,7 +305,6 @@ type VersionSettings = {
 
 const sorted = (list?: unknown[]) => list && [...list].sort();
 
-/** Same rule as the agent builder's version panel (`isActiveVersion`). */
 const matchesCurrentSettings = (version: VersionSettings, current: VersionSettings) =>
   version.name === current.name &&
   version.description === current.description &&
@@ -332,7 +317,6 @@ const matchesCurrentSettings = (version: VersionSettings, current: VersionSettin
 
 const versionProjection = {
   _id: 0,
-  id: 1,
   name: 1,
   description: 1,
   instructions: 1,
@@ -354,30 +338,27 @@ const versionProjection = {
 
 async function getSavedVersions(
   mongoose: typeof import('mongoose'),
-  agentIds: string[],
+  agentId: string,
   tenantId?: string,
 ): Promise<TInsightsAgentVersion[]> {
   const Agent = mongoose.models.Agent as Model<IAgent>;
-  const agents = await Agent.find(
-    { id: { $in: agentIds }, ...tenantMatch(tenantId) },
+  const agent = await Agent.findOne(
+    { id: agentId, ...tenantMatch(tenantId) },
     versionProjection,
-  )
-    .sort({ id: 1 })
-    .lean<Array<VersionSettings & { id: string; versions?: VersionSettings[] }>>();
-  return agents.flatMap((agent) => {
-    const versions = agent.versions ?? [];
-    const activeIndex = _.findLastIndex(versions, (version) =>
-      matchesCurrentSettings(version, agent),
-    );
-    return versions.map((snapshot, index) => {
-      const date = snapshot?.updatedAt == null ? null : new Date(snapshot.updatedAt);
-      return {
-        agentId: agent.id,
-        version: index + 1,
-        savedAt: date != null && !Number.isNaN(date.getTime()) ? date.toISOString() : null,
-        active: index === activeIndex,
-      };
-    });
+  ).lean<VersionSettings & { versions?: VersionSettings[] }>();
+  if (!agent) return [];
+  const versions = agent.versions ?? [];
+  const activeIndex = _.findLastIndex(versions, (version) =>
+    matchesCurrentSettings(version, agent),
+  );
+  return versions.map((snapshot, index) => {
+    const date = snapshot?.updatedAt == null ? null : new Date(snapshot.updatedAt);
+    return {
+      agentId,
+      version: index + 1,
+      savedAt: date != null && !Number.isNaN(date.getTime()) ? date.toISOString() : null,
+      active: index === activeIndex,
+    };
   });
 }
 
@@ -433,6 +414,9 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const agentIds = [...new Set(options.agentIds ?? [])].sort((a, b) => a.localeCompare(b));
     const { from, to } = resolveRange(options);
     const timeZone = validTimeZone(options.timeZone);
+    const createdDay = {
+      $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone },
+    };
     const churnedCutoff = new Date(to.getTime() - churnedUserWindowDays * dayMs);
     const churnedActivityFrom = new Date(from.getTime() - churnedUserWindowDays * dayMs);
     const tenant = tenantMatch(options.tenantId);
@@ -511,7 +495,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         ...conversationPipeline,
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone } },
+            _id: createdDay,
             conversations: { $sum: 1 },
           },
         },
@@ -552,7 +536,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone } },
+            _id: createdDay,
             messages: { $sum: 1 },
             totalTokens: { $sum: { $ifNull: ['$tokenCount', 0] } },
             responses: { $sum: { $cond: [{ $ne: ['$insightsOutcome', null] }, 1, 0] } },
@@ -613,9 +597,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         {
           $group: {
             _id: {
-              date: {
-                $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone },
-              },
+              date: createdDay,
               user: '$user',
             },
           },
@@ -655,13 +637,10 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         {
           $group: {
             _id: {
-              date: {
-                $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone },
-              },
+              date: createdDay,
               model: { $ifNull: ['$model', null] },
             },
             credits: { $sum: { $multiply: ['$tokenValue', -1] } },
-            // Structured prompt rows already store input + cache write + cache read here.
             usageTokens: { $sum: { $abs: { $ifNull: ['$rawAmount', 0] } } },
           },
         },
@@ -714,11 +693,10 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             rating: responseRating,
           },
         },
-        // Filtering replies in the first stage makes MongoDB pick the model index instead.
         { $match: { outcome: { $ne: null } } },
       ]),
       agentIds.length === 1
-        ? getSavedVersions(mongoose, agentIds, options.tenantId)
+        ? getSavedVersions(mongoose, agentIds[0], options.tenantId)
         : Promise.resolve(undefined),
     ]);
 
@@ -781,9 +759,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       model.usageTokens += row.usageTokens;
       creditsByModel.set(model.model, (creditsByModel.get(model.model) ?? 0) + row.credits);
     }
-    for (const [date, credits] of [...creditsByDay].sort(([left], [right]) =>
-      left.localeCompare(right),
-    )) {
+    for (const [date, credits] of creditsByDay) {
       const spendUSD = credits / CREDITS_PER_USD;
       addDay(days, date).spendUSD = spendUSD;
       summary.spendUSD = (summary.spendUSD ?? 0) + spendUSD;
@@ -805,7 +781,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       if (reply.rating === 'thumbsDown') target.thumbsDown += 1;
     }
     for (const row of dailyUsers) addDay(days, row.date).users = row.users;
-    const totalConversations = summary.totalConversations;
     const aggregate: TInsightsAggregateResponse = {
       agents: options.agents ?? [],
       summary,
@@ -941,7 +916,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     );
     const matchingConversations = searchRegex
       ? (searchedConversationCount[0]?.total ?? 0)
-      : totalConversations;
+      : summary.totalConversations;
     const topConversationCountsByUser = new Map(
       topConversationCounts.map((summary) => [summary._id, summary.conversations]),
     );

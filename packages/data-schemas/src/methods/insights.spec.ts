@@ -139,7 +139,7 @@ describe('Insights methods', () => {
         versions: [{ updatedAt: new Date('2026-10-05T12:00:00Z') }],
       },
     ]);
-    const findAgent = jest.spyOn(mongoose.models.Agent, 'find');
+    const findAgent = jest.spyOn(mongoose.models.Agent, 'findOne');
     const methods = createInsightsMethods(mongoose);
     const options = {
       tenantId: 'tenant-a',
@@ -157,8 +157,8 @@ describe('Insights methods', () => {
       { agentId: 'agent-a', version: 4, savedAt: '2026-10-03T12:00:00.000Z', active: true },
     ]);
     expect(findAgent).toHaveBeenCalledWith(
-      { id: { $in: ['agent-a'] }, tenantId: 'tenant-a' },
-      expect.objectContaining({ id: 1, _id: 0, 'versions.updatedAt': 1, instructions: 1 }),
+      { id: 'agent-a', tenantId: 'tenant-a' },
+      expect.objectContaining({ _id: 0, 'versions.updatedAt': 1, instructions: 1 }),
     );
     expect(JSON.stringify(result)).not.toContain(privateValue);
     expect(
