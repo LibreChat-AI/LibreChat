@@ -11,13 +11,15 @@ import {
   countElements,
   countListeners,
 } from '../counts';
+import { clearUserConversations } from '../db';
+import { getE2EUser } from '../../../setup/user';
 import { sendMessage } from '../helpers';
 import { removeThread, seedThread } from '../thread';
 
 /**
  * What a long agent conversation costs the page, held to budgets that do not depend on the
- * machine: how much of it is in the document, how it mounts, how much renders while a reply
- * streams beside it, and what it leaves listening on the document.
+ * machine: how many elements it holds, how it mounts, how much renders while a reply streams
+ * beside it, and what it leaves listening on the document.
  *
  * Each budget is a ceiling a little above what the app measures today, so a change that makes
  * every row heavier, or makes rows the reader is not looking at do work, fails here before it
@@ -29,10 +31,10 @@ import { removeThread, seedThread } from '../thread';
 const ROWS = 250;
 
 const BUDGETS = {
-  /** Elements in the document once the thread has mounted, before the reader moves: 24,014. */
-  opened: 25_200,
-  /** Elements once the reader has scrolled back through every row: 29,630. */
-  read: 31_100,
+  /** Elements in the thread once it has mounted, before the reader moves: 23,015. */
+  opened: 24_150,
+  /** Elements in it once the reader has scrolled back through every row: 28,631. */
+  read: 30_050,
   /** Rows the thread adds in one frame as it mounts. */
   step: 32,
   /** Listeners on `document` and `window` once every row has been read: 263. */
@@ -85,6 +87,8 @@ test.describe('a long agent conversation, by count', () => {
   let thread: Thread;
 
   test.beforeEach(async () => {
+    /** Each conversation in the sidebar listens on the window: leave only this one there. */
+    await clearUserConversations(getE2EUser().email);
     thread = await seedThread(ROWS);
   });
 
@@ -92,7 +96,7 @@ test.describe('a long agent conversation, by count', () => {
     await removeThread(thread);
   });
 
-  test('mounts in steps, and what it puts in the document stays within budget @scenario:long-thread-document-stays-within-budget', async ({
+  test('mounts in steps, and what it holds stays within budget @scenario:long-thread-document-stays-within-budget', async ({
     page,
   }, info) => {
     await open(page, thread);

@@ -166,7 +166,7 @@ it is the same on a busy runner as on a quiet one, where a duration is not:
 
 | Budget      | What it counts                                                  | What going over means                            |
 | ----------- | --------------------------------------------------------------- | ------------------------------------------------ |
-| `opened`    | Elements in the document once the thread has mounted            | Rows far from the reader hold more than they did |
+| `opened`    | Elements in the thread once it has mounted                      | Rows far from the reader hold more than they did |
 | `read`      | Elements after scrolling back through every row                 | Every row is heavier                             |
 | `step`      | Rows added in one frame while the thread mounts                 | The thread arrives in fewer, longer commits      |
 | `listeners` | Listeners on `document` and `window` after reading every row    | Something listens once per row                   |
@@ -178,7 +178,10 @@ The thread comes from `buildThread(rows)` in `e2e/specs/mock/thread.ts`: the sam
 same order on every machine, in the mix of a real working session (mostly tool calls under
 activity labels and phases, reasoning between them, user turns long enough to collapse).
 `seedThread(rows)` stores it as a conversation on the mock provider. The counting helpers are in
-`e2e/specs/mock/counts.ts`; `installCounts(page)` has to run before the page loads.
+`e2e/specs/mock/counts.ts`; `installCounts(page)` has to run before the page loads. Elements are
+counted inside the thread only, and the scenarios clear the user's other conversations first:
+what the sidebar holds depends on the tests that ran before, and each conversation listed there
+listens on the window.
 
 A run prints `thread budgets (measured/budget): ...` and records each figure as an annotation on
 the test. Each budget sits a little above today's figure. When a change goes over one, find out

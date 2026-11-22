@@ -126,23 +126,37 @@ export async function countRenders(page: Page): Promise<() => Promise<Renders>> 
           earlier += renders;
         }
       }
-      const shared = new Map<number, number>();
+      /** The pair, not the total alone: an unrelated commit can render as many components. */
+      const shared = new Map<string, number>();
       let frame = 0;
-      for (const renders of probe.commits) {
-        const commits = (shared.get(renders) ?? 0) + 1;
-        shared.set(renders, commits);
-        if (commits > (shared.get(frame) ?? 0)) {
+      let around = 0;
+      let most = 0;
+      probe.commits.forEach((renders, commit) => {
+        const key = `${renders}:${probe.around[commit]}`;
+        const commits = (shared.get(key) ?? 0) + 1;
+        shared.set(key, commits);
+        if (commits > most) {
+          most = commits;
           frame = renders;
+          around = probe.around[commit];
         }
-      }
-      const around = probe.around[probe.commits.indexOf(frame)] ?? 0;
+      });
       return { commits: probe.commits.length, frame, around, earlier };
     });
 }
 
-/** Every element in the document. */
+/**
+ * Every element of the thread: its scroller and all that is inside. The rest of the page is left
+ * out, since what the sidebar holds depends on what the tests before this one left behind.
+ */
 export const countElements = (page: Page): Promise<number> =>
-  page.evaluate(() => document.getElementsByTagName('*').length);
+  page.evaluate(() => {
+    const scroller = document.getElementById('messages-end')?.parentElement?.parentElement;
+    if (!scroller) {
+      throw new Error('thread not mounted');
+    }
+    return scroller.getElementsByTagName('*').length;
+  });
 
 /**
  * Event listeners attached to `document` and `window`, by event type: a listener per row there
