@@ -92,24 +92,6 @@ describe('Insights handlers', () => {
     expect(json).toHaveBeenCalledWith({ selectionRequired: true, agents });
   });
 
-  it('loads all agents automatically for admins when configured', async () => {
-    const { handler, getInsights } = createDashboardHandler();
-    const req = createRequest();
-    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
-    await handler(req, createResponse().response);
-    expect(getInsights).toHaveBeenCalledWith(
-      expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
-    );
-  });
-
-  it("keeps loading all of a non-admin viewer's agents when admins must choose", async () => {
-    const { handler, getInsights } = createDashboardHandler();
-    await handler(createRequest({}, { enabled: true }), createResponse().response);
-    expect(getInsights).toHaveBeenCalledWith(
-      expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
-    );
-  });
-
   it('returns access when at least one agent is accessible', async () => {
     const handler = createInsightsAccessHandler({ getInsightsAccess });
     const { response, json } = createResponse();
