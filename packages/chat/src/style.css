@@ -305,3 +305,15 @@
     calc(var(--chat-image-ratio, 1) * 512px)
   );
 }
+
+/* The code and logs of a code-interpreter card follow the reader's message font size, with code a
+   step smaller, as a reply's code blocks do. */
+.code-analyze-block pre code,
+.code-analyze-block .overflow-y-auto code {
+  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
+}
+
+.code-analyze-block pre,
+.code-analyze-block .overflow-y-auto {
+  font-size: var(--markdown-font-size, var(--font-size-base, 1rem));
+}

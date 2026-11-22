@@ -714,16 +714,6 @@ html {
   font-size: var(--markdown-font-size, var(--font-size-base));
 }
 
-.code-analyze-block pre code,
-.code-analyze-block .overflow-y-auto code {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.code-analyze-block pre,
-.code-analyze-block .overflow-y-auto {
-  font-size: var(--markdown-font-size, var(--font-size-base));
-}
-
 .tooltip {
   z-index: 150;
   cursor: pointer;

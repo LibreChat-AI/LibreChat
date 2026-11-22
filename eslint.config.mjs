@@ -407,6 +407,8 @@ export default [
             'animate-composer-palette-row-out',
             // The box a chat image of known dimensions reserves before it loads.
             'chat-image-sized',
+            // Sizes the code and logs of a code-interpreter card; an e2e spec queries it too.
+            'code-analyze-block',
           ],
         },
       ],
