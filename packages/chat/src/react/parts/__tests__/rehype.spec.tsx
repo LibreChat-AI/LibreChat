@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import remarkMath from 'remark-math';
 import ReactMarkdown from 'react-markdown';

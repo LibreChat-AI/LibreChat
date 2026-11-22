@@ -131,13 +131,56 @@ Wrap the chat in `ThemeProvider` from `@librechat/client`. It applies the stock 
 dark styles follow. The client package's [theme guide](../client/src/theme/README.md) covers the
 roles a theme can set.
 
+## Code loaded on demand
+
+The package loads some code on first need instead of with the page: the code highlighter's
+grammars, and the math and code plugins a markdown renderer runs.
+
+```tsx
+import ReactMarkdown from 'react-markdown';
+import { toRehypePlugins, useRehypeModules } from '@librechat/chat/react';
+
+function Reply({ text }: { text: string }) {
+  /* Null until KaTeX and the highlighter have loaded, and never loaded for text with no math or
+     fenced code. The text renders at once and gains its formatting when they arrive. */
+  const modules = useRehypeModules(text);
+  return <ReactMarkdown rehypePlugins={toRehypePlugins(modules)}>{text}</ReactMarkdown>;
+}
+```
+
+The loader imports KaTeX's stylesheet (`katex/dist/katex.min.css`) with the plugins, so the app's
+bundler has to accept a stylesheet import, as Vite and webpack do. `rehype-katex` and
+`rehype-highlight` are typed against the `unified` they were published with; cast the list where
+your `react-markdown` is on another major.
+
+To decide what a failed plugin load means, wrap the chat in `LazyImportProvider`. It receives the
+load as a function and returns its promise. LibreChat uses it to reload a page whose files a newer
+deploy has replaced:
+
+```tsx
+import { LazyImportProvider } from '@librechat/chat/react';
+
+const load = <M,>(run: () => Promise<M>) =>
+  run().catch((error) => {
+    reportFailedLoad(error);
+    throw error;
+  });
+
+<LazyImportProvider value={load}>{/* the chat */}</LazyImportProvider>;
+```
+
+Without the provider the load runs as written; the highlighter's grammars always do.
+
+The remark plugins LibreChat's markdown uses are in the core entry: `remarkApproxTilde`,
+`remarkSingleDollarMath` and the `langSubset` of languages a message highlights.
+
 ## What the app supplies
 
 - **How content is drawn.** Markdown, code blocks, math, images, files and audio are rendered by
   functions the app passes in through the host providers in `@librechat/chat/react`
   (`MessagePartsHostProvider`, `MessagesHostProvider`). LibreChat's own are still in its app.
-  Whatever stylesheets those renderers need, such as KaTeX's or a code highlighting theme, come
-  with them.
+  Whatever stylesheets those renderers need, such as a code highlighting theme, come with them;
+  KaTeX's is loaded by `useRehypeModules`.
 - **The backend.** The transport speaks LibreChat's routes and payloads; the app supplies the
   request functions and the session.
 - **The font files.** The client package's stylesheet names its fonts by package path

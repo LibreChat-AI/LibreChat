@@ -15,8 +15,12 @@ export * from './share';
 export * from './files';
 export * from './media';
 export * from './greeting';
-export * from './latex';
-export * from './tilde';
+export {
+  singleDollarMath,
+  remarkApproxTilde,
+  normalizeApproxTildes,
+  remarkSingleDollarMath,
+} from '@librechat/chat';
 export * from './morph';
 export * from './forms';
 export * from './roles';

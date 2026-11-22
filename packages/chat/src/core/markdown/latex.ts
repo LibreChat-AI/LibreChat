@@ -8,11 +8,14 @@ import type {
   State,
   TokenizeContext,
 } from 'micromark-util-types';
-import type { Plugin } from 'unified';
-import type { Root } from 'mdast';
 
 interface ParserData {
   micromarkExtensions?: Extension[];
+}
+
+/** All the plugin reads off the processor it is attached to, so it fits any `unified` major. */
+interface Attached {
+  data(): unknown;
 }
 
 /**
@@ -133,16 +136,16 @@ const mathSpan: Construct = {
  * order relative to `remark-math` is immaterial: this construct rejects `$$` openers and
  * `remark-math` (with `singleDollarTextMath: false`) rejects single `$` openers.
  */
-export const singleDollarMath: Extension = {
-  text: { [codes.dollarSign]: mathSpan },
-};
+export function singleDollarMath(): Extension {
+  return { text: { [codes.dollarSign]: mathSpan } };
+}
 
 /**
  * remark plugin enabling {@link singleDollarMath}. Must run alongside `remark-math`, which
  * registers the mdast handlers for the tokens this extension emits.
  */
-export const remarkSingleDollarMath: Plugin<[], Root> = function remarkSingleDollarMath() {
+export function remarkSingleDollarMath(this: Attached): void {
   const data = this.data() as ParserData;
   const extensions = (data.micromarkExtensions ??= []);
-  extensions.push(singleDollarMath);
-};
+  extensions.push(singleDollarMath());
+}
