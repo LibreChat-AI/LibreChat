@@ -193,7 +193,7 @@ export default function SessionRail({
       data-testid="session-rail"
       className={cn(
         'bg-surface-sidebar text-text-primary flex h-full shrink-0 flex-col',
-        sheet ? 'fixed inset-0 z-[100]' : 'border-border-light w-80 border-s',
+        sheet ? 'fixed inset-0 z-[100]' : 'w-full',
       )}
     >
       <div className="flex h-[3.25rem] shrink-0 items-center gap-1 ps-4 pe-2">

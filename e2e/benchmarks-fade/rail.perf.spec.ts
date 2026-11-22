@@ -64,6 +64,43 @@ test.describe('session rail toggle beside a long thread', () => {
         }
       }
 
+      /**
+       * Dragging the rail's handle changes the thread's width on every frame of the drag, as
+       * the sidebar's slide does, so it is traced the same way: a hundred pixels each way over
+       * twenty pointer moves a frame apart.
+       */
+      const drag = (distance: number) => async () => {
+        const handle = page.getByRole('separator', { name: 'Resize the session panel' });
+        const box = await handle.boundingBox();
+        if (box == null) {
+          return;
+        }
+        const x = box.x + box.width / 2;
+        const y = box.y + box.height / 2;
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        for (let step = 1; step <= 20; step += 1) {
+          await page.mouse.move(x + (distance * step) / 20, y);
+          await page.waitForTimeout(16);
+        }
+        await page.mouse.up();
+        await page.waitForTimeout(SETTLE_MS);
+      };
+      if (!(await railOpen())) {
+        await click(RAIL_TOGGLE)();
+      }
+      const resizable = (await page.getByRole('separator').count()) > 0;
+      for (let round = 1; resizable && round <= 3; round += 1) {
+        for (const [name, distance] of [
+          ['wider', -100],
+          ['narrower', 100],
+        ] as const) {
+          const cost = await traceFrames(browser, page, drag(distance));
+          console.log(formatFrameCost(`rail drag ${name} (round ${round}) cpu x${CPU_RATE}`, cost));
+        }
+      }
+      await click(RAIL_TOGGLE)();
+
       if (probe) {
         const SHOWN = Number(process.env.FADE_PERF_WHY_LIMIT) || 14;
         const count = async (name: string, act: () => Promise<void>) => {
@@ -79,6 +116,10 @@ test.describe('session rail toggle beside a long thread', () => {
         /** A second with nothing done, for what the page renders by itself. */
         await count('idle', () => page.waitForTimeout(SETTLE_MS));
         await count(`rail open`, click(RAIL_TOGGLE));
+        if (resizable) {
+          await count('rail drag wider', drag(-100));
+          await count('rail drag narrower', drag(100));
+        }
         await count(`rail close (rail open before: ${await railOpen()})`, click(RAIL_TOGGLE));
         for (const testId of sidebar) {
           await count(

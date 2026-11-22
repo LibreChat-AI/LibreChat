@@ -21,7 +21,7 @@ import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { appSideChatHost } from '~/Providers/SideChatHostContext';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
-import { SessionRailSlot } from '~/components/Chat/Session';
+import { SessionRailLayout } from '~/components/Chat/Session';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
 import { useGetStartupConfig } from '~/data-provider';
@@ -260,19 +260,21 @@ export default function Presentation({
             enabled={conversationEndpoint === EModelEndpoint.agents && conversationAgentId != null}
             isSubmitting={isSubmitting}
           >
-            <SidePanelGroup panel={panelElement}>
-              {/* A size container: the composer caps its width against this column
-                  (`cqw`), so it keeps clear of the edges when the sidebar or a side panel
-                  narrows the column, which a viewport unit cannot see. */}
-              <main className="@container flex h-full flex-col overflow-y-auto" role="main">
-                <MessageSurfaceContext.Provider value="bg-surface-canvas">
-                  {children}
-                </MessageSurfaceContext.Provider>
-              </main>
-            </SidePanelGroup>
-            {/* The session rail's own column, past the side panel: the header's control draws
-                the rail here, so the list of what is running stays put while a panel opens. */}
-            <SessionRailSlot />
+            {/* The session rail's own column sits past the side panel: the header's control
+                draws the rail there, so the list of what is running stays put while a panel
+                opens. */}
+            <SessionRailLayout>
+              <SidePanelGroup panel={panelElement}>
+                {/* A size container: the composer caps its width against this column
+                    (`cqw`), so it keeps clear of the edges when the sidebar or a side panel
+                    narrows the column, which a viewport unit cannot see. */}
+                <main className="@container flex h-full flex-col overflow-y-auto" role="main">
+                  <MessageSurfaceContext.Provider value="bg-surface-canvas">
+                    {children}
+                  </MessageSurfaceContext.Provider>
+                </main>
+              </SidePanelGroup>
+            </SessionRailLayout>
           </ParentSubagentsProvider>
           {isUndocked && artifactsElement != null && (
             <UndockedArtifacts hidden={routePending}>{artifactsElement}</UndockedArtifacts>
