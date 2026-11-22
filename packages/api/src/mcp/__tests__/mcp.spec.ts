@@ -34,18 +34,30 @@ function createTestUser(
 }
 
 describe('Environment Variable Extraction (MCP)', () => {
-  const originalEnv = process.env;
+  const testEnv: Record<string, string> = {
+    TEST_API_KEY: 'test-api-key-value',
+    ANOTHER_SECRET: 'another-secret-value',
+    MCP_TEST_PATH: '/opt/mcp-test/bin',
+  };
+  const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
-    process.env = {
-      ...originalEnv,
-      TEST_API_KEY: 'test-api-key-value',
-      ANOTHER_SECRET: 'another-secret-value',
-    };
+    // Mutate the real process.env: a spread copy is a plain object and loses the
+    // case-insensitive lookup the native object provides on Windows.
+    for (const [key, value] of Object.entries(testEnv)) {
+      savedEnv[key] = process.env[key];
+      process.env[key] = value;
+    }
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    for (const key of Object.keys(testEnv)) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key]!;
+      }
+    }
   });
 
   describe('StdioOptionsSchema', () => {
@@ -820,7 +832,7 @@ describe('Environment Variable Extraction (MCP)', () => {
         env: {
           PROCESS_MODE: '{{PROCESS_MODE_CUSTOM}}', // Another custom var
           USER_HOME_DIR: '/home/{{LIBRECHAT_USER_USERNAME}}',
-          SYSTEM_PATH: '${PATH}', // Example of a system env var
+          SYSTEM_PATH: '${MCP_TEST_PATH}', // Example of a system env var
         },
       };
 
@@ -849,7 +861,7 @@ describe('Environment Variable Extraction (MCP)', () => {
       expect('env' in result && result.env).toEqual({
         PROCESS_MODE: 'production',
         USER_HOME_DIR: '/home/john.doe',
-        SYSTEM_PATH: process.env.PATH, // Actual value of PATH from the test environment
+        SYSTEM_PATH: '/opt/mcp-test/bin', // Set by beforeEach, independent of the host
       });
     });
 
