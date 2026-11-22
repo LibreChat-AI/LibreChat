@@ -6,8 +6,9 @@ import type {
   SearchResultData,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { Dispatch, ElementType, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
+import type { PluggableList } from 'unified';
 import type { PtcTrace } from '../core/ptc';
 
 /** The message a part renders in, as its host reports it. */
@@ -136,6 +137,17 @@ export type MarkdownMermaidProps = {
   id?: string;
   /** Whether a diagram that throws while rendering is caught and shown as its source. */
   guarded: boolean;
+};
+
+/**
+ * What a host adds to the markdown of a reply: syntax of its own and the elements that draw it,
+ * such as citations or embedded resources.
+ */
+export type MarkdownExtensions = {
+  /** remark plugins, run after the package's own in the order given. */
+  remarkPlugins?: PluggableList;
+  /** Elements by node name, for what those plugins produce. One can also replace a package element. */
+  elements?: { [nodeType: string]: ElementType };
 };
 
 /** What a part asks the host's image renderer to draw: an attached image, opened full size on click. */
@@ -275,6 +287,12 @@ export interface MessagePartsHost {
    * nothing when the file could not be fetched. Without it a file link is an ordinary link.
    */
   useFileDownload?: (fileId: string) => () => Promise<string | undefined>;
+  /**
+   * The host's additions to a reply's markdown, or nothing. Called while rendering, so it must
+   * return the same object until the additions change. The lighter renderer for cards and the
+   * error boundary's fallback do not use them.
+   */
+  markdownExtensions?: () => MarkdownExtensions | null | undefined;
   /**
    * Told when an error boundary of the package's caught a render that threw, with the boundary's
    * name (`'markdown'`). For a host's error reporting; the boundary has already drawn its fallback.

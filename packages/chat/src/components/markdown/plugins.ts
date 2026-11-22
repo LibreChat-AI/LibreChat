@@ -3,6 +3,7 @@ import remarkMath from 'remark-math';
 import supersub from 'remark-supersub';
 import type { Pluggable, PluggableList } from 'unified';
 import type { HighlightOptions, RehypeModules } from '../../react/parts/rehype';
+import { remarkSingleDollarMath } from '../../core/markdown/latex';
 import { remarkApproxTilde } from '../../core/markdown/tilde';
 import { toRehypePlugins } from '../../react/parts/rehype';
 
@@ -30,4 +31,13 @@ export function rehypeList(
   highlight?: HighlightOptions,
 ): PluggableList {
   return toRehypePlugins(modules, highlight) as unknown as PluggableList;
+}
+
+/**
+ * What a reply parses with: the math list, single-dollar math where the reader has LaTeX parsing
+ * on, then the host's own plugins in the order it gives them. `latexParsing` gates only the
+ * ambiguous `$...$`; the other delimiters always parse.
+ */
+export function replyRemark(latexParsing = true, extra: PluggableList = []): PluggableList {
+  return [...MATH_REMARK, ...(latexParsing ? [remarkSingleDollarMath] : []), ...extra];
 }

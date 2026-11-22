@@ -38,6 +38,7 @@ import {
 import {
   getAppContentParts,
   getAppMarkdownSlots,
+  getAppMarkdownExtensions,
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
@@ -216,6 +217,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   renderMermaid: (props) => getAppMarkdownSlots()?.renderMermaid(props) ?? null,
   useFileDownload: useAppFileDownload,
   onBoundaryError: (boundary, error) => reportBoundaryError(boundary, error),
+  markdownExtensions: getAppMarkdownExtensions,
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

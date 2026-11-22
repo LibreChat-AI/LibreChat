@@ -198,12 +198,15 @@ export { markdownElements, markdownPreviewElements } from './components/markdown
 export { default as MarkdownBlocks } from './components/markdown/Blocks';
 export { default as MarkdownLite } from './components/markdown/Lite';
 export { default as MarkdownErrorBoundary } from './components/markdown/Boundary';
+export { default as Markdown } from './components/markdown/Markdown';
 export {
   BASE_REMARK,
   MATH_REMARK,
   rehypeList,
+  replyRemark,
   remarkSupersub,
 } from './components/markdown/plugins';
+export type { MarkdownProps } from './components/markdown/Markdown';
 export type { MarkdownBlocksProps } from './components/markdown/Blocks';
 export type { MarkdownLiteProps } from './components/markdown/Lite';
 export type { MarkdownErrorBoundaryProps } from './components/markdown/Boundary';

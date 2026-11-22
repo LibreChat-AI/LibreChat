@@ -174,50 +174,62 @@ Without the provider the load runs as written; the highlighter's grammars always
 The remark plugins LibreChat's markdown uses are in the core entry: `remarkApproxTilde`,
 `remarkSingleDollarMath` and the `langSubset` of languages a message highlights.
 
-## Markdown elements
+## Markdown
 
-`markdownElements` is the set of elements LibreChat draws a reply's markdown with, in the shape
-`react-markdown` takes: fenced code as a `CodeBlock` with copy and download, links, images,
-tables, and lists, quotes and headings that find their own text direction.
-`markdownPreviewElements` is the same for a preview that runs nothing.
+`Markdown` draws a reply the way LibreChat does: block by block while it streams, so only the
+last block re-parses; newly arrived words fading in where the reader has smooth streaming on;
+math and highlighted code once their plugins have loaded; and an error boundary that redraws the
+text with fewer plugins if the tree throws. `MarkdownLite` is the lighter renderer a card uses
+for text it shows whole.
 
 ```tsx
-import ReactMarkdown from 'react-markdown';
-import { markdownElements } from '@librechat/chat/components';
-import { CodeBlockProvider, toRehypePlugins, useRehypeModules } from '@librechat/chat/react';
+import { Markdown, MarkdownLite } from '@librechat/chat/components';
 
-function Reply({ text }: { text: string }) {
-  const modules = useRehypeModules(text);
-  return (
-    <CodeBlockProvider>
-      <ReactMarkdown components={markdownElements} rehypePlugins={toRehypePlugins(modules)}>
-        {text}
-      </ReactMarkdown>
-    </CodeBlockProvider>
-  );
-}
+<Markdown content={reply} isLatestMessage={true} />
+<MarkdownLite content={toolOutput} codeExecution={false} />
 ```
 
-The elements read the message parts host. Three of its members are optional and change what a
-reply can do:
+Both read the message parts host. These members are optional and change what a reply can do:
 
-| Host member       | With it                                                     | Without it                          |
-| ----------------- | ----------------------------------------------------------- | ----------------------------------- |
-| `renderCodeBlock` | The host draws each fence, say with a run button and output | The package's `CodeBlock`           |
-| `renderMermaid`   | The host draws a `mermaid` fence as a diagram               | The fence is an ordinary code block |
-| `useFileDownload` | A link to the user's own file downloads it                  | The link is an ordinary link        |
+| Host member          | With it                                                     | Without it                          |
+| -------------------- | ----------------------------------------------------------- | ----------------------------------- |
+| `markdownExtensions` | A reply parses the host's own syntax and draws its elements | The package's markdown alone        |
+| `renderCodeBlock`    | The host draws each fence, say with a run button and output | The package's `CodeBlock`           |
+| `renderMermaid`      | The host draws a `mermaid` fence as a diagram               | The fence is an ordinary code block |
+| `useFileDownload`    | A link to the user's own file downloads it                  | The link is an ordinary link        |
+| `onBoundaryError`    | The host hears when a reply's tree threw                    | The fallback is drawn silently      |
 
-A host that runs code composes the package's block: `CodeBlock` takes the run button as
-`renderRun` and what the runs printed as `output`. Wrap the tree in `MediaContext.Provider` to
-let an image a reply names by filename resolve to the attachment its run produced.
+`markdownExtensions` returns remark plugins, run after the package's own, and elements by node
+name. LibreChat adds its artifacts, citations and embedded MCP resources this way:
+
+```tsx
+const extensions = {
+  remarkPlugins: [mentions],
+  elements: { mention: ({ name }) => <Mention name={name} /> },
+};
+
+const host = { ...rest, markdownExtensions: () => extensions };
+```
+
+Return the same object until the additions change. A host that runs code composes the package's
+block: `CodeBlock` takes the run button as `renderRun` and what the runs printed as `output`.
+
+To build a renderer of your own, the pieces are exported: `markdownElements` and
+`markdownPreviewElements` (the elements, in the shape `react-markdown` takes), `MarkdownBlocks`,
+`MarkdownErrorBoundary`, the plugin lists `BASE_REMARK`, `MATH_REMARK` and `replyRemark`, and
+`CodeBlockProvider`, which numbers a tree's code blocks. Wrap a tree in `MediaContext.Provider`
+to let an image a reply names by filename resolve to the attachment its run produced.
+
+LibreChat parses math with `micromark-extension-llm-math` in place of `micromark-extension-math`,
+by a bundler alias. Add the same alias to parse `\(...\)` and `\[...\]` exactly as it does.
 
 ## What the app supplies
 
-- **How content is drawn.** Markdown, code blocks, math, images, files and audio are rendered by
-  functions the app passes in through the host providers in `@librechat/chat/react`
-  (`MessagePartsHostProvider`, `MessagesHostProvider`). LibreChat's own are still in its app.
-  Whatever stylesheets those renderers need, such as a code highlighting theme, come with them;
-  KaTeX's is loaded by `useRehypeModules`.
+- **Which renderers a part uses.** A part asks the host providers in `@librechat/chat/react`
+  (`MessagePartsHostProvider`, `MessagesHostProvider`) to draw markdown, images, files and audio.
+  For markdown and images, pass the package's own (`Markdown`, `MarkdownLite`, `Image`) or the
+  app's; LibreChat's file and audio renderers are still in its app. A code highlighting theme
+  comes from the app; KaTeX's stylesheet is loaded by `useRehypeModules`.
 - **The backend.** The transport speaks LibreChat's routes and payloads; the app supplies the
   request functions and the session.
 - **The font files.** The client package's stylesheet names its fonts by package path

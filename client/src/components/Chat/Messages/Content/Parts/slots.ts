@@ -1,4 +1,4 @@
-import type { ContentPartsSlotProps } from '@librechat/chat/react';
+import type { ContentPartsSlotProps, MarkdownExtensions } from '@librechat/chat/react';
 import type { ReactNode } from 'react';
 import type { MessagePartsHost } from '~/hooks/Chat/contract';
 
@@ -62,4 +62,19 @@ export function setAppMarkdownSlots(slots: AppMarkdownSlots): void {
 /** Null until a surface that draws markdown has loaded. */
 export function getAppMarkdownSlots(): AppMarkdownSlots | null {
   return appMarkdownSlots;
+}
+
+let appMarkdownExtensions: (() => MarkdownExtensions) | null = null;
+
+/** Registers what this app adds to a reply's markdown. `../markdownConfig` does when it loads, and
+ *  `../Markdown` loads it, so the host never imports the artifact, citation or resource
+ *  components itself. It is a function because those modules import one another in a cycle and
+ *  cannot be read while they load. */
+export function setAppMarkdownExtensions(read: () => MarkdownExtensions): void {
+  appMarkdownExtensions = read;
+}
+
+/** Nothing until a surface that draws a reply has loaded. */
+export function getAppMarkdownExtensions(): MarkdownExtensions | null {
+  return appMarkdownExtensions?.() ?? null;
 }
