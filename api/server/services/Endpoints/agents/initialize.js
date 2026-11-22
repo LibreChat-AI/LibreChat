@@ -25,6 +25,7 @@ const {
   buildAgentContextAttachmentsByAgentId,
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
+  createGraphMemberInitializer,
   createRoutedGraphMemberLoader,
   createViewableSubagentLoader,
   resolveAgentCodeFlags,
@@ -1652,6 +1653,7 @@ const initializeClientWithProvider = async ({
                   subagentCodeRouting.routesChildren(context.executionId)
                     ? context.executionId
                     : undefined,
+                  true,
                 );
                 return config;
               },
@@ -1709,7 +1711,14 @@ const initializeClientWithProvider = async ({
   };
   const graphMemberLoadsById = new Map();
   const initializeGraphMember = createConcurrencyLimiter(SUBAGENT_GRAPH_LOAD_CONCURRENCY);
-  const loadGraphMemberOnce = async (memberId) => {
+  /** Members a lazy parent resolves are held to the metadata the run's build recorded. */
+  const initializeMember = createGraphMemberInitializer({
+    getPin: (memberId) => lazyMetadataByAgentId.get(memberId),
+    getFlags: getSubagentCodeFlags,
+    initialize: (inputs) =>
+      initializeLoadedSubagent({ ...inputs, lazyChildren: [], viewAccessChecked: true }),
+  });
+  const loadGraphMemberOnce = async (memberId, pinned) => {
     throwIfAborted(signal);
     const cached = graphMemberConfigsById.get(memberId);
     if (cached) return cached;
@@ -1722,15 +1731,7 @@ const initializeClientWithProvider = async ({
       return null;
     }
     try {
-      const config = await initializeLoadedSubagent({
-        agent,
-        agentId: memberId,
-        configId: getLazySubagentConfigId(agent),
-        context: { signal },
-        lazyChildren: [],
-        codeFlags: getSubagentCodeFlags(agent),
-        viewAccessChecked: true,
-      });
+      const config = await initializeMember({ agent, memberId, context: { signal }, pinned });
       graphMemberConfigsById.set(memberId, config);
       return config;
     } catch (error) {
@@ -1742,13 +1743,13 @@ const initializeClientWithProvider = async ({
       return null;
     }
   };
-  const loadGraphMember = async (memberId, graphSignal = signal) => {
+  const loadGraphMember = async (memberId, graphSignal = signal, pinned) => {
     throwIfAborted(graphSignal);
     const cached = graphMemberConfigsById.get(memberId);
     if (cached) return cached;
     let pending = graphMemberLoadsById.get(memberId);
     if (!pending) {
-      pending = loadGraphMemberOnce(memberId);
+      pending = loadGraphMemberOnce(memberId, pinned);
       graphMemberLoadsById.set(memberId, pending);
       pending.then(
         () => {
@@ -1773,21 +1774,17 @@ const initializeClientWithProvider = async ({
     getAgent: (memberId, graphSignal) =>
       waitForAbort(db.getAgentWithVersionCount({ id: memberId }), graphSignal),
     canView: (agent, memberId, graphSignal) => hasSubagentViewAccess(agent, memberId, graphSignal),
-    initialize: ({ agent, memberId, context }) =>
-      initializeLoadedSubagent({
-        agent,
-        agentId: memberId,
-        configId: getLazySubagentConfigId(agent),
-        context,
-        lazyChildren: [],
-        codeFlags: getSubagentCodeFlags(agent),
-        viewAccessChecked: true,
-      }),
+    initialize: (input) => initializeMember({ ...input, pinned: true }),
     isFatal: (error, graphSignal) =>
       isFatalAgentInitializationError(error, { signal: graphSignal }),
   });
 
-  async function resolveGraphSubagentsFor(config, graphSignal = signal, routedParentRunId) {
+  async function resolveGraphSubagentsFor(
+    config,
+    graphSignal = signal,
+    routedParentRunId,
+    pinned = false,
+  ) {
     throwIfAborted(graphSignal);
     const definitions =
       subagentsAvailableForRun && config.subagents?.enabled === true
@@ -1819,7 +1816,7 @@ const initializeClientWithProvider = async ({
             ? config
             : initializeGraphMember(() =>
                 routedParentRunId == null
-                  ? loadGraphMember(memberId, graphSignal)
+                  ? loadGraphMember(memberId, graphSignal, pinned)
                   : loadRoutedGraphMember(memberId, routedParentRunId, graphSignal),
               ),
         ),
