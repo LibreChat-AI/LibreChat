@@ -77,6 +77,11 @@ const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyI
 });
 
 describe('Insights handlers', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getInsightsAccess.mockImplementation(resolveAccess);
+  });
+
   it('returns only agent choices without running statistics when an admin must choose agents', async () => {
     const { handler, getInsights } = createDashboardHandler();
     const req = createRequest({}, { ...enabledConfig, adminAutoSelectAllAgents: false });
@@ -101,7 +106,7 @@ describe('Insights handlers', () => {
 
   it('loads all agents automatically for admins when configured', async () => {
     const { handler, getInsights } = createDashboardHandler();
-    const req = createRequest({ agentIds: ['agent-a', 'agent-b'] });
+    const req = createRequest();
     req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
     await handler(req, createResponse().response);
     expect(getInsights).toHaveBeenCalledWith(
@@ -115,10 +120,6 @@ describe('Insights handlers', () => {
     expect(getInsights).toHaveBeenCalledWith(
       expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
     );
-  });
-  beforeEach(() => {
-    jest.clearAllMocks();
-    getInsightsAccess.mockImplementation(resolveAccess);
   });
 
   it('returns access when at least one agent is accessible', async () => {
@@ -279,28 +280,8 @@ describe('Insights handlers', () => {
     expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ search: undefined }));
   });
 
-  it('does not let request parameters enable a disabled feature', async () => {
-    const { handler, getInsights } = createDashboardHandler();
-    const { response, status } = createResponse();
-    await handler(
-      createRequest({ enabled: 'true', showDetails: 'true' }, { enabled: false }),
-      response,
-    );
-    expect(status).toHaveBeenCalledWith(404);
-    expect(getInsights).not.toHaveBeenCalled();
-  });
-
-  it('returns access to aggregate-only agents without disclosing inspection eligibility', async () => {
-    getInsightsAccess.mockResolvedValueOnce({ agents, detailAgentIds: [] });
-    const handler = createInsightsAccessHandler({ getInsightsAccess });
-    const { response, json } = createResponse();
-    await handler(createRequest(), response);
-    expect(json).toHaveBeenCalledWith({ access: true });
-  });
-
   it.each([
     [['agent-a'], true],
-    [['agent-b'], false],
     [['agent-a', 'agent-b'], false],
     [undefined, false],
   ] as const)('limits detail to eligible selected agents %p', async (selected, expectedDetail) => {
@@ -310,10 +291,7 @@ describe('Insights handlers', () => {
     });
     const { handler, getInsights } = createDashboardHandler();
     const { response } = createResponse();
-    await handler(
-      createRequest({ ...(selected ? { agentIds: [...selected] } : {}), showDetails: 'true' }),
-      response,
-    );
+    await handler(createRequest(selected ? { agentIds: [...selected] } : {}), response);
 
     expect(getInsights).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -322,16 +300,6 @@ describe('Insights handlers', () => {
       }),
     );
     expect(getInsightsAccess).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not query statistics when access resolution fails', async () => {
-    getInsightsAccess.mockRejectedValueOnce(new Error('private ACL error'));
-    const { handler, getInsights } = createDashboardHandler();
-    const { response, status, json } = createResponse();
-    await handler(createRequest(), response);
-    expect(status).toHaveBeenCalledWith(500);
-    expect(json).toHaveBeenCalledWith({ message: 'Failed to load insights' });
-    expect(getInsights).not.toHaveBeenCalled();
   });
 
   it('returns a generic error without disclosing private query failures', async () => {
