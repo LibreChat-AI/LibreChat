@@ -25,6 +25,7 @@ export type {
   MessagePartsFilePreviewProps,
   MarkdownCodeBlockProps,
   MarkdownMermaidProps,
+  MarkdownExtensions,
   MessagePartsUserTextPreferences,
   ToolCallChrome,
   ToolCallLocalize,
