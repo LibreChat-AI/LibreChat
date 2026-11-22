@@ -1,13 +1,14 @@
 import {
-  REDIS_ABORT_TERMINAL_GRACE_MS,
-  REDIS_EVENT_REORDER_TIMEOUT_MS,
-  REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS,
-} from '~/stream/internal/timing';
-import {
+  PROVIDER_DRAIN_TIMEOUT_MS,
   JobCreationSupersededError,
   type CreatedJobData,
   type IEventTransport,
 } from '~/stream/interfaces/IJobStore';
+import {
+  REDIS_ABORT_TERMINAL_GRACE_MS,
+  REDIS_EVENT_REORDER_TIMEOUT_MS,
+  REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS,
+} from '~/stream/internal/timing';
 import {
   GenerationJobManagerClass,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
@@ -881,6 +882,156 @@ describe('GenerationJobManager start-generation claim', () => {
     ]);
     expect(acknowledgeSpy).not.toHaveBeenCalled();
   });
+
+  it('lets a retry start again after a crashed owner left its provider undrained', async () => {
+    await manager.destroy();
+    store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const transport = new InMemoryEventTransport();
+    manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+    manager.initialize();
+    const survivor = new GenerationJobManagerClass();
+    survivor.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+    survivor.initialize();
+
+    const streamId = 'stream-crashed-undrained-owner';
+    const clientRequestId = 'req-crashed-undrained-owner';
+    jest.useFakeTimers();
+    try {
+      const predecessor = await manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      const providerExecutionId = (await store.getJob(streamId))!.providerExecutionId!;
+      expect(
+        await manager.beginProviderExecution(streamId, predecessor.createdAt, providerExecutionId),
+      ).toBe(true);
+      expect(
+        await store.transitionStatus(streamId, {
+          from: 'running',
+          to: 'complete',
+          expectCreatedAt: predecessor.createdAt,
+          patch: { completedAt: Date.now() },
+        }),
+      ).toBe(true);
+      // The owner stops here: its reply is saved, and nothing will record its provider drain.
+      await jest.advanceTimersByTimeAsync(5);
+
+      const claim = await survivor.claimGeneration(
+        'user-1',
+        clientRequestId,
+        streamId,
+        streamId,
+        2,
+      );
+      const create = survivor.createJob(streamId, 'user-1', streamId, {
+        idempotencyClientRequestId: clientRequestId,
+        idempotencyClaimToken: claim.existing!.claimToken,
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      const failure = create.then(
+        () => undefined,
+        (error: Error) => error.message,
+      );
+      await jest.advanceTimersByTimeAsync(PROVIDER_DRAIN_TIMEOUT_MS + 1_000);
+      await expect(failure).resolves.toBe('Generation predecessor handoff could not be confirmed');
+
+      expect(await store.getJob(streamId)).toMatchObject({
+        status: 'error',
+        error: 'Generation predecessor handoff could not be confirmed',
+      });
+      await expect(
+        survivor.getGenerationAdmissionEvidence('user-1', clientRequestId, streamId),
+      ).resolves.toBeNull();
+      const retry = await survivor.claimGeneration(
+        'user-1',
+        clientRequestId,
+        streamId,
+        streamId,
+        2,
+      );
+      expect(retry.claimed).toBe(true);
+      expect(retry.existing?.startedAt).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+      await survivor.destroy();
+    }
+  });
+
+  it.each([
+    { name: 'its create reply arrived', lostReply: false },
+    { name: 'its create reply was lost', lostReply: true },
+  ])(
+    'starts a real generation on the retry of one retired before exposure ($name)',
+    async ({ lostReply }) => {
+      await manager.destroy();
+      store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+      const transport = new InMemoryEventTransport() as InMemoryEventTransport & IEventTransport;
+      let failHandoff = true;
+      transport.emitReplacedDoneConfirmed = jest.fn(async () => {
+        if (failHandoff) {
+          throw new Error('simulated Redis terminal publication failure');
+        }
+      });
+      manager = new GenerationJobManagerClass();
+      manager.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+      manager.initialize();
+
+      const streamId = `stream-unexposed-retry-${lostReply}`;
+      const clientRequestId = `req-unexposed-retry-${lostReply}`;
+      await manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      const claim = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      const createSpy = jest.spyOn(store, 'createJob');
+      if (lostReply) {
+        const actualCreate = store.createJob.bind(store);
+        createSpy.mockImplementationOnce(async (...args) => {
+          await actualCreate(...args);
+          throw new Error('simulated lost atomic create reply');
+        });
+      }
+
+      await expect(
+        manager.createJob(streamId, 'user-1', streamId, {
+          idempotencyClientRequestId: clientRequestId,
+          idempotencyClaimToken: claim.existing!.claimToken,
+          initialMetadata: { generationProtocolVersion: 2 },
+        }),
+      ).rejects.toThrow(
+        lostReply
+          ? 'simulated lost atomic create reply'
+          : 'predecessor handoff could not be confirmed',
+      );
+      const unexposed = await store.getJob(streamId);
+      expect(unexposed).toMatchObject({
+        status: 'error',
+        error: 'Generation predecessor handoff could not be confirmed',
+        idempotencyClientRequestId: clientRequestId,
+      });
+      await expect(
+        manager.getGenerationAdmissionEvidence('user-1', clientRequestId, streamId),
+      ).resolves.toBeNull();
+
+      failHandoff = false;
+      const retry = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      expect(retry.claimed).toBe(true);
+      expect(retry.existing?.claimToken).not.toBe(claim.existing!.claimToken);
+      const started = await manager.createJob(streamId, 'user-1', streamId, {
+        idempotencyClientRequestId: clientRequestId,
+        idempotencyClaimToken: retry.existing!.claimToken,
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+
+      expect(started.createdAt).toBeGreaterThan(unexposed!.createdAt);
+      expect(await store.getJob(streamId)).toMatchObject({
+        createdAt: started.createdAt,
+        status: 'running',
+      });
+      await expect(
+        manager.getGenerationAdmissionEvidence('user-1', clientRequestId, streamId),
+      ).resolves.toEqual({ generationId: streamId, generationCreatedAt: started.createdAt });
+    },
+  );
 
   it('self-fences a provider when a missed replacement abort makes its Redis append stale', async () => {
     await manager.destroy();
