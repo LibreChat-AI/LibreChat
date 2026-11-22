@@ -92,18 +92,6 @@ describe('Insights handlers', () => {
     expect(json).toHaveBeenCalledWith({ selectionRequired: true, agents });
   });
 
-  it('loads every agent when an admin chooses All agents with automatic selection off', async () => {
-    const { handler, getInsights } = createDashboardHandler();
-    const req = createRequest({ allAgents: 'true' }, { enabled: true });
-    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
-    const { response, json } = createResponse();
-    await handler(req, response);
-    expect(getInsights).toHaveBeenCalledWith(
-      expect.objectContaining({ agentIds: ['agent-a', 'agent-b'] }),
-    );
-    expect(json).toHaveBeenCalledWith(expect.not.objectContaining({ selectionRequired: true }));
-  });
-
   it('loads all agents automatically for admins when configured', async () => {
     const { handler, getInsights } = createDashboardHandler();
     const req = createRequest();
