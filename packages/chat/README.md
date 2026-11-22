@@ -227,6 +227,48 @@ to let an image a reply names by filename resolve to the attachment its run prod
 LibreChat parses math with `micromark-extension-llm-math` in place of `micromark-extension-math`,
 by a bundler alias. Add the same alias to parse `\(...\)` and `\[...\]` exactly as it does.
 
+## Message parts
+
+A message is a list of parts: text, reasoning, tool calls, files. `Part` draws one of them with
+the package's own cards:
+
+```tsx
+import { Part } from '@librechat/chat/components';
+
+<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />;
+```
+
+Which card draws which part is a table, `partRenderers()`: parts by content type, agent tool
+calls by tool name, and a generic card for any other tool. A host lays its own entries over it
+with `extendPartRenderers`, the way an AI SDK app switches on `tool-<name>` parts:
+
+```tsx
+import { Part, partRenderers, extendPartRenderers } from '@librechat/chat/components';
+
+const renderers = extendPartRenderers({
+  tools: { get_weather: ({ toolCall }) => <Weather args={toolCall.args} /> },
+  parts: { error: ({ part }) => <MyError text={part.error} /> },
+  wrapTool: (card, props) => (
+    <>
+      {partRenderers().wrapTool?.(card, props)}
+      <Approval call={props.toolCall} />
+    </>
+  ),
+});
+
+<Part
+  part={part}
+  renderers={renderers}
+  isSubmitting={false}
+  showCursor={false}
+  isCreatedByUser={false}
+/>;
+```
+
+Four things have no card in the package yet, because LibreChat's read its own state: an error
+part, a paused question (`claim`), and the subagent and web search tools, which draw as generic
+tool cards until a host supplies them.
+
 ## What the app supplies
 
 - **The renderers the package does not have.** A part asks the host providers in

@@ -223,6 +223,71 @@ jest.mock('../Parts', () => ({
   },
 }));
 
+/**
+ * The chat package routes parts to its own cards, which it imports by module and not through
+ * `../Parts`. These stand the same stubs in for those modules, so a part draws the stub whichever
+ * side routes it.
+ */
+function mockCards() {
+  return jest.requireMock<Record<string, React.ComponentType>>('../Parts');
+}
+jest.mock('@librechat/chat/dist/components/Text.cjs', () => ({
+  __esModule: true,
+  default: mockCards().Text,
+}));
+jest.mock('@librechat/chat/dist/components/Summary.cjs', () => ({
+  __esModule: true,
+  default: mockCards().Summary,
+}));
+jest.mock('@librechat/chat/dist/components/EmptyText.cjs', () => ({
+  __esModule: true,
+  default: mockCards().EmptyText,
+}));
+jest.mock('@librechat/chat/dist/components/AgentUpdate.cjs', () => ({
+  __esModule: true,
+  default: mockCards().AgentUpdate,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Reasoning.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/Reasoning.cjs'),
+  default: mockCards().Reasoning,
+}));
+jest.mock('@librechat/chat/dist/components/parts/SteerPart.cjs', () => ({
+  __esModule: true,
+  default: mockCards().SteerPart,
+}));
+jest.mock('@librechat/chat/dist/components/parts/ExecuteCode.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/ExecuteCode.cjs'),
+  default: mockCards().ExecuteCode,
+}));
+jest.mock('@librechat/chat/dist/components/parts/ImageGen.cjs', () => ({
+  __esModule: true,
+  default: mockCards().ImageGen,
+}));
+jest.mock('@librechat/chat/dist/components/parts/MemoryCall.cjs', () => ({
+  __esModule: true,
+  default: mockCards().MemoryCall,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Retrieval.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="retrieval-call" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/AgentHandoff.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="agent-handoff" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/CodeAnalyze.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="code-analyze" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Image.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="image" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Container.cjs', () => ({
+  __esModule: true,
+  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+}));
+
 jest.mock('~/components/Web/Sources', () => ({
   __esModule: true,
   default: ({ messageId, conversationId }: { messageId?: string; conversationId?: string }) => {
@@ -250,21 +315,6 @@ jest.mock('../WebSearch', () => ({
   default: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="web-search" data-count={attachments?.length ?? 0} />
   ),
-}));
-
-jest.mock('../RetrievalCall', () => ({
-  __esModule: true,
-  default: () => <div data-testid="retrieval-call" />,
-}));
-
-jest.mock('../AgentHandoff', () => ({
-  __esModule: true,
-  default: () => <div data-testid="agent-handoff" />,
-}));
-
-jest.mock('../CodeAnalyze', () => ({
-  __esModule: true,
-  default: () => <div data-testid="code-analyze" />,
 }));
 
 jest.mock('../Image', () => ({
