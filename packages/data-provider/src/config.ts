@@ -2892,10 +2892,24 @@ export const googleEndpointSchema = modelListEndpointSchema.extend({
 export type TGoogleEndpoint = z.infer<typeof googleEndpointSchema>;
 export type TGoogleTokenConfig = NonNullable<TGoogleEndpoint['tokenConfig']>;
 
+/** Versions of Anthropic's built-in web search tool; the first is the default. */
+export const ANTHROPIC_WEB_SEARCH_TOOL_VERSIONS = [
+  'web_search_20250305',
+  'web_search_20260209',
+  'web_search_20260318',
+] as const;
+
+export type TAnthropicWebSearchToolVersion = (typeof ANTHROPIC_WEB_SEARCH_TOOL_VERSIONS)[number];
+
 export const anthropicEndpointSchema = baseEndpointSchema.merge(
   z.object({
     /** Vertex AI configuration for running Anthropic models on Google Cloud */
     vertex: vertexAISchema.optional(),
+    /**
+     * Type of the built-in web search tool sent to Anthropic. `web_search_20260209` and
+     * later filter results with code execution before they enter the context.
+     */
+    webSearchToolVersion: z.enum(ANTHROPIC_WEB_SEARCH_TOOL_VERSIONS).optional(),
     /** Optional: List of available models */
     models: z.array(z.string()).optional(),
   }),

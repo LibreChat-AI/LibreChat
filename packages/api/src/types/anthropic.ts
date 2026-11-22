@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { Dispatcher } from 'undici';
 import { AuthKeys, anthropicSchema, TVertexAISchema } from 'librechat-data-provider';
-import type { ThinkingDisplayWireValue } from 'librechat-data-provider';
+import type {
+  TAnthropicWebSearchToolVersion,
+  ThinkingDisplayWireValue,
+} from 'librechat-data-provider';
 import type { AnthropicClientOptions } from '@librechat/agents';
 import type { GoogleServiceKey } from '../utils/key';
 import type { LLMConfigResult } from './openai';
@@ -81,6 +84,8 @@ export interface AnthropicConfigOptions {
   vertexOptions?: VertexAIClientOptions;
   /** Full Vertex AI configuration including model mappings from YAML config */
   vertexConfig?: TVertexAISchema;
+  /** Type of the built-in web search tool; defaults to `web_search_20250305` */
+  webSearchToolVersion?: TAnthropicWebSearchToolVersion;
 }
 
 /**

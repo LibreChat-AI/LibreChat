@@ -1236,6 +1236,13 @@ endpoints:
   #   # Agents SDK-backed providers smooth at 25ms by default; set 0 to disable
   #   # smoothing. (Legacy Assistants/Ollama paths sleep this long per chunk instead.)
   #   streamRate: 20
+  #   # (optional) Built-in web search tool version: web_search_20250305 (default),
+  #   # web_search_20260209 or web_search_20260318. The two newer ones filter results with
+  #   # code execution before they enter the context (far fewer input tokens); they need an
+  #   # Agents SDK that keeps code_execution_tool_result and caller blocks and sends the
+  #   # code execution container id with the next request of the turn; otherwise a turn
+  #   # that mixes a search with a client tool call fails with HTTP 400.
+  #   webSearchToolVersion: web_search_20260318
   #   # (optional) Title model for conversation titles
   #   titleModel: claude-3.5-haiku  # Use the visible model name (key from models config)
   #   # (optional) Custom request headers, same placeholder resolution as above.
