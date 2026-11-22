@@ -201,7 +201,7 @@ projects:
 
 # Custom interface configuration
 interface:
-  # Agent statistics in Insights (default: disabled). Without this block, ENABLE_INSIGHTS decides.
+  # Agent statistics in Insights (default: disabled).
   # showDetails also shows user names, emails and message content (default: false).
   # insights:
   #   enabled: false

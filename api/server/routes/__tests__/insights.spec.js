@@ -27,8 +27,6 @@ jest.mock('@librechat/api', () => ({
     [mockDashboardHandlerDeps] = args;
     return mockCreateInsightsHandler(...args);
   },
-  createInsightsConfigResolver: () => (req) => req.config.interfaceConfig.insights,
-  isEnabled: (value) => value === 'true',
 }));
 
 jest.mock('~/server/middleware', () => ({

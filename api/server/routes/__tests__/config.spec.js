@@ -108,7 +108,6 @@ afterEach(() => {
   delete process.env.ALLOW_EMAIL_CHANGE;
   delete process.env.RAG_API_URL;
   delete process.env.ADMIN_PANEL_URL;
-  delete process.env.ENABLE_INSIGHTS;
   delete process.env.ANALYTICS_GTM_ID;
   delete process.env.CUSTOM_FOOTER;
   delete process.env.HELP_AND_FAQ_URL;
@@ -758,23 +757,19 @@ describe('GET /api/config', () => {
       expect(response.body.conversationImportMaxFileSize).toBe(5000000);
     });
 
-    it('uses ENABLE_INSIGHTS only when YAML does not configure Insights', async () => {
+    it('advertises Insights only when YAML enables it', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       const app = createApp(mockUser);
 
       let response = await request(app).get('/api/config');
       expect(response.body.insightsEnabled).toBe(false);
 
-      process.env.ENABLE_INSIGHTS = 'true';
-      response = await request(app).get('/api/config');
-      expect(response.body.insightsEnabled).toBe(true);
-
       mockGetAppConfig.mockResolvedValue({
         ...baseAppConfig,
-        interfaceConfig: { ...baseAppConfig.interfaceConfig, insights: { enabled: false } },
+        interfaceConfig: { ...baseAppConfig.interfaceConfig, insights: { enabled: true } },
       });
       response = await request(app).get('/api/config');
-      expect(response.body.insightsEnabled).toBe(false);
+      expect(response.body.insightsEnabled).toBe(true);
     });
 
     it('reads Insights from the viewer’s scoped config without another lookup', async () => {

@@ -3,25 +3,21 @@ import {
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
   INSIGHTS_AGENT_ID_MAX_LENGTH,
+  resolveInsightsConfig,
 } from 'librechat-data-provider';
 import type { TInsightsSelectionResponse, TInsightsParams } from 'librechat-data-provider';
 import type { InsightsMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
-import type { InsightsConfigResolver } from './config';
 import type { InsightsAccess } from './access';
 import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 type InsightsHandlerDeps = {
-  resolveInsightsConfig: InsightsConfigResolver;
   getInsights: InsightsMethods['getInsights'];
   getInsightsAccess: (user: NonNullable<ServerRequest['user']>) => Promise<InsightsAccess>;
 };
 
-type InsightsAccessHandlerDeps = Pick<
-  InsightsHandlerDeps,
-  'resolveInsightsConfig' | 'getInsightsAccess'
->;
+type InsightsAccessHandlerDeps = Pick<InsightsHandlerDeps, 'getInsightsAccess'>;
 
 const firstQueryValue = (value: unknown): string | undefined => {
   if (Array.isArray(value)) {
@@ -67,13 +63,10 @@ const timeZoneValue = (value: unknown): string | undefined => {
   }
 };
 
-export function createInsightsAccessHandler({
-  resolveInsightsConfig,
-  getInsightsAccess,
-}: InsightsAccessHandlerDeps) {
+export function createInsightsAccessHandler({ getInsightsAccess }: InsightsAccessHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
-      if (!resolveInsightsConfig(req).enabled) {
+      if (!resolveInsightsConfig(req.config?.interfaceConfig?.insights).enabled) {
         res.status(404).json({ message: 'Not found' });
         return;
       }
@@ -96,18 +89,14 @@ export function createInsightsAccessHandler({
   };
 }
 
-export function createInsightsHandler({
-  resolveInsightsConfig,
-  getInsights,
-  getInsightsAccess,
-}: InsightsHandlerDeps) {
+export function createInsightsHandler({ getInsights, getInsightsAccess }: InsightsHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
       const {
         enabled,
         showDetails: configuredShowDetails,
         adminAutoSelectAllAgents,
-      } = resolveInsightsConfig(req);
+      } = resolveInsightsConfig(req.config?.interfaceConfig?.insights);
       if (!enabled) {
         res.status(404).json({ message: 'Not found' });
         return;

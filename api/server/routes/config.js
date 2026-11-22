@@ -28,13 +28,13 @@ const {
   resolvePullRequestCapabilities,
   resolvePreLoginAppConfig,
   withSafePolicyLinks,
-  createInsightsConfigResolver,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
   EModelEndpoint,
   defaultSocialLogins,
   resolveMCPAppsPolicy,
+  resolveInsightsConfig,
 } = require('librechat-data-provider');
 const { logger, SystemCapabilities, configCapability } = require('@librechat/data-schemas');
 const { hasCapability, getHeldCapabilities } = require('~/server/middleware/roles/capabilities');
@@ -55,9 +55,6 @@ const publicSharedLinksEnabled =
 
 const sharePointFilePickerEnabled = isEnabled(process.env.ENABLE_SHAREPOINT_FILEPICKER);
 const openidReuseTokens = isEnabled(process.env.OPENID_REUSE_TOKENS);
-const resolveInsightsConfig = createInsightsConfigResolver(() =>
-  isEnabled(process.env.ENABLE_INSIGHTS),
-);
 
 /**
  * Resolve build metadata eagerly at module load so the first `/api/config`
@@ -345,7 +342,7 @@ router.get('/', async function (req, res) {
       langfuseFanoutEnabled,
       ...getLangfuseSettingsAccess(canManageLangfuse),
       langfusePromptManageAccess,
-      insightsEnabled: resolveInsightsConfig({ config: appConfig }).enabled,
+      insightsEnabled: resolveInsightsConfig(appConfig?.interfaceConfig?.insights).enabled,
       /** Lets the client skip the pull request lookup entirely when the feature is off. */
       ...resolvePullRequestCapabilities(appConfig, process.env),
       compactionEnabled: appConfig?.summarization?.enabled !== false,
