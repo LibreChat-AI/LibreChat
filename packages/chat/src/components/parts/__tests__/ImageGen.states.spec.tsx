@@ -1,26 +1,20 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import OpenAIImageGen from '../Parts/OpenAIImageGen/OpenAIImageGen';
+import OpenAIImageGen from '../ImageGen';
 
-jest.mock('~/utils', () => ({
+jest.mock('../../../core/scaleImage', () => ({
   scaleImage: () => ({ width: '512px', height: '512px' }),
-  cn: (...classes: (string | boolean | undefined | null)[]) =>
-    classes
-      .flat(Infinity)
-      .filter((c): c is string => typeof c === 'string' && c.length > 0)
-      .join(' '),
 }));
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+jest.mock('../../../react/parts/useProgress', () => ({
+  __esModule: true,
+  default: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Image', () => ({
+jest.mock('../Image', () => ({
   __esModule: true,
   default: ({ altText, imagePath }: { altText: string; imagePath: string }) => (
     <div data-testid="image-component" data-alt={altText} data-src={imagePath} />
@@ -28,19 +22,26 @@ jest.mock('~/components/Chat/Messages/Content/Image', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
   PixelCard: ({ progress }: { progress: number }) => (
     <div data-testid="pixel-card" data-progress={progress} />
   ),
 }));
 
-jest.mock('../ToolOutput', () => ({
-  ToolIcon: ({ type, isAnimating }: { type: string; isAnimating?: boolean }) => (
+jest.mock('../ToolIcon', () => ({
+  __esModule: true,
+  default: ({ type, isAnimating }: { type: string; isAnimating?: boolean }) => (
     <span data-testid="tool-icon" data-type={type} data-animating={isAnimating} />
   ),
+}));
+
+jest.mock('../../../core/parts/output', () => ({
+  ...jest.requireActual('../../../core/parts/output'),
   isError: (output: string) => typeof output === 'string' && output.toLowerCase().includes('error'),
 }));
 
-jest.mock('../Parts/OpenAIImageGen/ProgressText', () => ({
+jest.mock('../ImageGenText', () => ({
   __esModule: true,
   default: ({
     progress,
