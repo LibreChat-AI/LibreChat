@@ -49,4 +49,5 @@ export {
   unregisterDownloadFilename,
 } from './download';
 export { selectContents } from './selection';
+export { scaleImage } from './scaleImage';
 export * from './url';

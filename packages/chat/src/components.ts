@@ -188,6 +188,8 @@ export { default as MemoryInfo } from './components/parts/MemoryInfo';
 export { default as DialogImage } from './components/parts/DialogImage';
 export { default as Image } from './components/parts/Image';
 export { default as CodeAnalyze } from './components/parts/CodeAnalyze';
+export { default as ImageGen } from './components/parts/ImageGen';
+export type { ImageGenProps } from './components/parts/ImageGen';
 export type { CodeAnalyzeProps } from './components/parts/CodeAnalyze';
 export { default as CodeBlock } from './components/parts/CodeBlock';
 export { default as CodeBar } from './components/parts/CodeBar';

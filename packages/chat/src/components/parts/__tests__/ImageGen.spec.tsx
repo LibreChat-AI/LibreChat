@@ -1,9 +1,12 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
-import ImageGen from '../Parts/OpenAIImageGen/OpenAIImageGen';
+import ImageGen from '../ImageGen';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => {
     const translations: Record<string, string> = {
       com_ui_generating_image: 'Generating image...',
@@ -17,17 +20,20 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
+  PixelCard: (props: Record<string, unknown>) => (
+    <div data-testid="pixel-card" data-progress={props.progress} />
+  ),
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
+jest.mock('../../../react/parts/useProgress', () => ({
+  __esModule: true,
+  default: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
 const getProgressLabel = (progress: number) =>
   progress >= 1 ? 'Image created' : 'Generating image...';
 
-jest.mock('../Parts/OpenAIImageGen/ProgressText', () => ({
+jest.mock('../ImageGenText', () => ({
   __esModule: true,
   default: ({
     toolName,
@@ -59,28 +65,25 @@ jest.mock('../Parts/OpenAIImageGen/ProgressText', () => ({
   ),
 }));
 
-jest.mock('@librechat/client', () => ({
-  PixelCard: (props: Record<string, unknown>) => (
-    <div data-testid="pixel-card" data-progress={props.progress} />
-  ),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Image', () => ({
+jest.mock('../Image', () => ({
   __esModule: true,
   default: () => <div data-testid="image" />,
 }));
 
-jest.mock('../ToolOutput', () => ({
-  ToolIcon: ({ type, isAnimating }: { type: string; isAnimating?: boolean }) => (
+jest.mock('../ToolIcon', () => ({
+  __esModule: true,
+  default: ({ type, isAnimating }: { type: string; isAnimating?: boolean }) => (
     <span data-testid="tool-icon" data-type={type} data-animating={isAnimating} />
   ),
+}));
+
+jest.mock('../../../core/parts/output', () => ({
+  ...jest.requireActual('../../../core/parts/output'),
   isError: (output: string) => typeof output === 'string' && output.toLowerCase().includes('error'),
 }));
 
-jest.mock('~/utils', () => ({
+jest.mock('../../../core/scaleImage', () => ({
   scaleImage: () => ({ width: '512px', height: '512px' }),
-  logger: { error: jest.fn(), debug: jest.fn() },
-  cn: (...classes: (string | boolean | undefined)[]) => classes.filter(Boolean).join(' '),
 }));
 
 const defaultProps = {
@@ -93,9 +96,9 @@ const defaultProps = {
 
 const renderImageGen = (props: Partial<typeof defaultProps> = {}) =>
   render(
-    <RecoilRoot>
+    <>
       <ImageGen {...defaultProps} {...props} />
-    </RecoilRoot>,
+    </>,
   );
 
 describe('ImageGen - LGCY-01: Modern visual patterns', () => {
@@ -145,7 +148,7 @@ describe('ImageGen - LGCY-01: Modern visual patterns', () => {
 describe('ImageGen - LGCY-01: Legacy and agent-style unification', () => {
   it('accepts legacy props (initialProgress + args only)', () => {
     const { container } = render(
-      <RecoilRoot>
+      <>
         <ImageGen
           initialProgress={1}
           isSubmitting={false}
@@ -153,7 +156,7 @@ describe('ImageGen - LGCY-01: Legacy and agent-style unification', () => {
           args='{"prompt":"a cat"}'
           output=""
         />
-      </RecoilRoot>,
+      </>,
     );
 
     expect(container).toBeTruthy();

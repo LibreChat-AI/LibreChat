@@ -1,5 +1,8 @@
-import { scaleImage } from '~/utils/scaleImage';
+/**
+ * @jest-environment jsdom
+ */
 import type { RefObject } from 'react';
+import { scaleImage } from '../scaleImage';
 
 function makeContainerRef(clientWidth: number): RefObject<HTMLDivElement> {
   return {

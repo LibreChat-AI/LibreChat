@@ -1,19 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { AGENT_STYLE_TOOLS } from '.';
-import { PixelCard } from '@librechat/client';
-import { useToolCallIntent, useProgress } from '@librechat/chat/react';
-import { ROW_GLYPH_SLOT, useToolPreparation } from '@librechat/chat/components';
+import { PixelCard, useLocalize } from '@librechat/client';
 import type {
   TAttachment,
   TFile,
   TAttachmentMetadata,
   PartMetadata,
 } from 'librechat-data-provider';
-import { ToolIcon, isError } from '~/components/Chat/Messages/Content/ToolOutput';
-import Image from '~/components/Chat/Messages/Content/Image';
-import ProgressText from './ProgressText';
-import { useLocalize } from '~/hooks';
-import { scaleImage } from '~/utils';
+import type { JSX } from 'react';
+import { AGENT_STYLE_TOOLS } from '../../core/parts/routing';
+import { useToolCallIntent } from '../../react/parts/intent';
+import useProgress from '../../react/parts/useProgress';
+import { scaleImage } from '../../core/scaleImage';
+import { useToolPreparation } from './preparation';
+import { isError } from '../../core/parts/output';
+import ImageGenText from './ImageGenText';
+import { ROW_GLYPH_SLOT } from './rows';
+import ToolIcon from './ToolIcon';
+import Image from './Image';
 
 function computeCancelled(
   isSubmitting: boolean,
@@ -33,16 +36,39 @@ function computeCancelled(
   return (!isSubmitting && initialProgress < 1) || hasError;
 }
 
-export default function OpenAIImageGen({
-  initialProgress = 0.1,
-  isSubmitting,
-  toolName,
-  args: _args = '',
-  output,
-  attachments,
-  hideAttachments = false,
-  runStepStatus,
-}: {
+type Quality = 'low' | 'medium' | 'high';
+
+/** How long a preview takes to fill, by the quality the call asked for; a third is added at random. */
+const FILL_MS: Record<Quality, number> = { low: 10000, medium: 20000, high: 50000 };
+
+/** The call's arguments as an object, or none when they are not one yet (still streaming). */
+function parseArgs(args: string | Record<string, unknown>): Record<string, unknown> {
+  if (typeof args !== 'string') {
+    return args ?? {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(args);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The `size` argument's `<width>x<height>`, when it is one. */
+function parseSize(size: unknown): { width: number; height: number } | undefined {
+  if (typeof size !== 'string') {
+    return undefined;
+  }
+  const [width, height] = size.split('x').map((value) => parseInt(value, 10));
+  return isNaN(width) || isNaN(height) ? undefined : { width, height };
+}
+
+function parseQuality(quality: unknown): Quality {
+  const value = typeof quality === 'string' ? quality.toLowerCase() : '';
+  return value === 'low' || value === 'medium' ? value : 'high';
+}
+
+export interface ImageGenProps {
   initialProgress: number;
   isSubmitting: boolean;
   toolName?: string;
@@ -51,7 +77,23 @@ export default function OpenAIImageGen({
   attachments?: TAttachment[];
   hideAttachments?: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
-}) {
+}
+
+/**
+ * The card for an image-generation call. A tool in `AGENT_STYLE_TOOLS` previews the picture: a
+ * placeholder the size the call asked for fills in while the run goes, and the image takes its
+ * place. Any other image tool shows its status line alone.
+ */
+export default function ImageGen({
+  initialProgress = 0.1,
+  isSubmitting,
+  toolName,
+  args: _args = '',
+  output,
+  attachments,
+  hideAttachments = false,
+  runStepStatus,
+}: ImageGenProps): JSX.Element {
   const localize = useLocalize();
   const preparationText = useToolPreparation();
   /** Model-authored live label (injected when the tool is opted into
@@ -83,41 +125,9 @@ export default function OpenAIImageGen({
    */
   const reportsError = hasError && runStepStatus !== 'cancelled';
 
-  let width: number | undefined;
-  let height: number | undefined;
-  let quality: 'low' | 'medium' | 'high' = 'high';
-
-  let parsedArgs: Record<string, unknown> = {};
-  try {
-    parsedArgs = typeof _args === 'string' ? JSON.parse(_args) : _args;
-  } catch {
-    parsedArgs = {};
-  }
-
-  try {
-    const argsObj = parsedArgs;
-
-    if (argsObj && typeof argsObj.size === 'string') {
-      const [w, h] = argsObj.size.split('x').map((v: string) => parseInt(v, 10));
-      if (!isNaN(w) && !isNaN(h)) {
-        width = w;
-        height = h;
-      }
-    } else if (argsObj && (typeof argsObj.size !== 'string' || !argsObj.size)) {
-      width = undefined;
-      height = undefined;
-    }
-
-    if (argsObj && typeof argsObj.quality === 'string') {
-      const q = argsObj.quality.toLowerCase();
-      if (q === 'low' || q === 'medium' || q === 'high') {
-        quality = q;
-      }
-    }
-  } catch {
-    width = undefined;
-    height = undefined;
-  }
+  const parsedArgs = parseArgs(_args);
+  const size = parseSize(parsedArgs.size);
+  const quality = parseQuality(parsedArgs.quality);
 
   const attachment = attachments?.[0];
   const {
@@ -127,13 +137,12 @@ export default function OpenAIImageGen({
     filename = '',
   } = (attachment as TFile & TAttachmentMetadata) || {};
 
-  let origWidth = width ?? imageWidth;
-  let origHeight = height ?? imageHeight;
-
-  if (origWidth === undefined || origHeight === undefined) {
-    origWidth = 1024;
-    origHeight = 1024;
-  }
+  /** The size the call asked for, else the attachment's, else a square until both are known. */
+  const width = size?.width ?? imageWidth;
+  const height = size?.height ?? imageHeight;
+  const sized = width !== undefined && height !== undefined;
+  const origWidth = sized ? width : 1024;
+  const origHeight = sized ? height : 1024;
 
   const [dimensions, setDimensions] = useState({ width: 'auto', height: 'auto' });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -161,12 +170,7 @@ export default function OpenAIImageGen({
         clearInterval(intervalRef.current);
       }
 
-      let baseDuration = 20000;
-      if (quality === 'low') {
-        baseDuration = 10000;
-      } else if (quality === 'high') {
-        baseDuration = 50000;
-      }
+      const baseDuration = FILL_MS[quality];
       const jitter = Math.floor(baseDuration * 0.3);
       const totalDuration = Math.floor(Math.random() * jitter) + baseDuration;
       const updateInterval = 200;
@@ -253,7 +257,7 @@ export default function OpenAIImageGen({
         <span className={ROW_GLYPH_SLOT} aria-hidden="true">
           <ToolIcon type="image_gen" isAnimating={isInProgress} />
         </span>
-        <ProgressText
+        <ImageGenText
           progress={progress}
           error={reportsError}
           cancelled={cancelled}
