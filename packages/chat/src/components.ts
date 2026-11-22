@@ -371,6 +371,7 @@ export { default as CommandTime, useCommandClock } from './components/parts/Comm
 export { default as CodeWindowHeader } from './components/parts/CodeWindowHeader';
 export type { CodeWindowHeaderProps } from './components/parts/CodeWindowHeader';
 export { default as MemoryCall } from './components/parts/MemoryCall';
+export { default as MemoryArtifacts, hasMemoryArtifacts } from './components/parts/MemoryArtifacts';
 export { default as SkillCall } from './components/parts/SkillCall';
 export { default as AgentHandoff } from './components/parts/AgentHandoff';
 export { default as ReadFileCall, langFromPath } from './components/parts/ReadFileCall';
