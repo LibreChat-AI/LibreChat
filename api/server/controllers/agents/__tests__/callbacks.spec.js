@@ -49,6 +49,7 @@ jest.mock('@librechat/api', () => ({
   feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
   stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
+  getRemoteAgentFileUrl: (fileId) => `/api/agents/v1/files/${encodeURIComponent(fileId)}/content`,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -797,6 +798,69 @@ describe('createToolEndCallback', () => {
       expect(artifact.content).toBe(content);
     },
   );
+
+  it('emits authenticated Remote Agent URLs for every generated image', async () => {
+    const { saveBase64Image } = require('~/server/services/Files/process');
+    const { writeAttachmentEvent } = require('@librechat/api');
+    saveBase64Image
+      .mockResolvedValueOnce({
+        file_id: 'image-1',
+        filename: 'first.png',
+        filepath: '/images/user/first.png',
+        type: 'image/png',
+      })
+      .mockResolvedValueOnce({
+        file_id: 'image-2',
+        filename: 'second.webp',
+        filepath: '/images/user/second.webp',
+        type: 'image/webp',
+      });
+    res.headersSent = true;
+    res.writableEnded = false;
+    const tracker = { nextSequence: jest.fn().mockReturnValueOnce(1).mockReturnValueOnce(2) };
+    const callback = require('../callbacks').createResponsesToolEndCallback({
+      req,
+      res,
+      tracker,
+      artifactPromises,
+    });
+
+    await callback(
+      {
+        output: {
+          name: 'stable-diffusion',
+          tool_call_id: 'image-call',
+          artifact: {
+            content: [
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,first' } },
+              { type: 'image_url', image_url: { url: 'data:image/webp;base64,second' } },
+            ],
+          },
+        },
+      },
+      { run_id: 'run-image', thread_id: 'thread-image', provider: 'anthropic' },
+    );
+    const results = await Promise.all(artifactPromises);
+
+    expect(saveBase64Image).toHaveBeenCalledTimes(2);
+    expect(res).toMatchObject({ headersSent: true, writableEnded: false });
+    expect(results).toEqual([
+      expect.objectContaining({ file_id: 'image-1' }),
+      expect.objectContaining({ file_id: 'image-2' }),
+    ]);
+    expect(tracker.nextSequence).toHaveBeenCalledTimes(2);
+    expect(writeAttachmentEvent.mock.calls.map((call) => call[2])).toEqual([
+      expect.objectContaining({
+        file_id: 'image-1',
+        url: '/api/agents/v1/files/image-1/content',
+      }),
+      expect.objectContaining({
+        file_id: 'image-2',
+        type: 'image/webp',
+        url: '/api/agents/v1/files/image-2/content',
+      }),
+    ]);
+  });
 
   it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
     '%s preserves memory payloads and their execution owner',

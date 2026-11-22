@@ -12,6 +12,7 @@ const PATH_NORMALIZATIONS: [RegExp, string][] = [
   [/^(\/api\/insights(?:\/access)?)\/?$/, '$1'],
   [/^\/api\/agents\/chat\/stream\/[^/]+(?=\/|$)/, '/api/agents/chat/stream/#id'],
   [/^\/api\/agents\/chat\/status\/[^/]+(?=\/|$)/, '/api/agents/chat/status/#id'],
+  [/^\/api\/agents\/v1\/files\/[^/]+\/content(?=\/|$)/, '/api/agents/v1/files/#id/content'],
   [/^\/api\/files\/code\/download\/[^/]+\/[^/]+(?=\/|$)/, '/api/files/code/download/#id/#id'],
   [/^\/api\/files\/download-url\/[^/]+\/[^/]+(?=\/|$)/, '/api/files/download-url/#id/#id'],
   [/^\/api\/files\/download\/[^/]+\/[^/]+(?=\/|$)/, '/api/files/download/#id/#id'],
@@ -66,6 +67,7 @@ const UPLOAD_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 const LOW_CARDINALITY_PATHS: RegExp[] = [
   /^\/api\/agents\/chat\/stream\/#id$/,
   /^\/api\/agents\/chat\/status\/#id$/,
+  /^\/api\/agents\/v1\/files\/#id\/content$/,
   /^\/api\/files\/#id\/preview$/,
   /^\/api\/files\/(code\/download|download-url|download)\/#id\/#id$/,
   /^\/api\/skills\/#id\/files$/,
