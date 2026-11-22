@@ -758,7 +758,7 @@ describe('GET /api/config', () => {
       expect(response.body.conversationImportMaxFileSize).toBe(5000000);
     });
 
-    it('uses ENABLE_INSIGHTS as a fallback when YAML does not configure Insights', async () => {
+    it('uses ENABLE_INSIGHTS only when YAML does not configure Insights', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       const app = createApp(mockUser);
 
@@ -768,6 +768,13 @@ describe('GET /api/config', () => {
       process.env.ENABLE_INSIGHTS = 'true';
       response = await request(app).get('/api/config');
       expect(response.body.insightsEnabled).toBe(true);
+
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: { ...baseAppConfig.interfaceConfig, insights: { enabled: false } },
+      });
+      response = await request(app).get('/api/config');
+      expect(response.body.insightsEnabled).toBe(false);
     });
 
     it('reads Insights from the viewer’s scoped config without another lookup', async () => {
