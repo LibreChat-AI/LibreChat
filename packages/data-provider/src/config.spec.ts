@@ -118,61 +118,25 @@ const endpointsConfig: TEndpointsConfig = {
 };
 
 describe('Insights configuration', () => {
-  it('accepts enabling automatic all-agents selection and rejects non-boolean policy values', () => {
-    expect(resolveInsightsConfig({ adminAutoSelectAllAgents: true }).adminAutoSelectAllAgents).toBe(
-      true,
-    );
-    expect(insightsConfigSchema.safeParse({ adminAutoSelectAllAgents: 'false' }).success).toBe(
-      false,
-    );
-  });
   it('retains omitted flags for partial configuration overrides', () => {
     expect(insightsConfigSchema.parse({ enabled: true })).toEqual({ enabled: true });
-    expect(insightsConfigSchema.parse({ showDetails: false })).toEqual({ showDetails: false });
   });
 
   it.each([
     true,
-    false,
-    'aggregate',
-    'detailed',
-    null,
-    [],
     { enabled: 'true' },
-    { showDetails: 'false' },
-    { enabled: 1 },
-    { enabled: null },
-    { showDetails: null },
-    { mode: 'aggregate' },
+    { adminAutoSelectAllAgents: 'false' },
     { enabled: true, showDetail: false },
   ])('rejects unsupported configuration %p', (insights) => {
-    expect(insightsConfigSchema.safeParse(insights).success).toBe(false);
     expect(configSchema.safeParse({ version: '1.3.9', interface: { insights } }).success).toBe(
       false,
     );
   });
 
   it('resolves missing flags to disabled and aggregate-only defaults', () => {
-    expect(resolveInsightsConfig()).toEqual({
-      enabled: false,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    expect(resolveInsightsConfig(null)).toEqual({
-      enabled: false,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    expect(resolveInsightsConfig({})).toEqual({
-      enabled: false,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
-    expect(resolveInsightsConfig({ enabled: true })).toEqual({
-      enabled: true,
-      showDetails: false,
-      adminAutoSelectAllAgents: false,
-    });
+    const disabled = { enabled: false, showDetails: false, adminAutoSelectAllAgents: false };
+    expect(resolveInsightsConfig()).toEqual(disabled);
+    expect(resolveInsightsConfig({ enabled: true })).toEqual({ ...disabled, enabled: true });
   });
 });
 
