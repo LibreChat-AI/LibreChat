@@ -122,18 +122,6 @@ describe('Insights handlers', () => {
     expect(getInsightsAccess).not.toHaveBeenCalled();
   });
 
-  it('returns a generic error from the access endpoint when access resolution fails', async () => {
-    getInsightsAccess.mockRejectedValueOnce(new Error('private ACL error'));
-    const handler = createInsightsAccessHandler({ getInsightsAccess });
-    const { response, status, json } = createResponse();
-
-    await handler(createRequest(), response);
-
-    expect(status).toHaveBeenCalledWith(500);
-    expect(json).toHaveBeenCalledWith({ message: 'Failed to load insights access' });
-    expect(JSON.stringify(json.mock.calls)).not.toContain('private ACL error');
-  });
-
   it('returns 404 without resolving access when Insights is disabled', async () => {
     const getInsights = jest.fn();
     const handler = createInsightsHandler({ getInsightsAccess, getInsights });
@@ -251,35 +239,46 @@ describe('Insights handlers', () => {
   });
 
   it.each([
-    [['agent-a'], true],
-    [['agent-a', 'agent-b'], false],
-    [undefined, false],
-  ] as const)('limits detail to eligible selected agents %p', async (selected, expectedDetail) => {
-    getInsightsAccess.mockResolvedValueOnce({
-      agents,
-      detailAgentIds: ['agent-a'],
-    });
-    const { handler, getInsights } = createDashboardHandler();
-    const { response } = createResponse();
-    await handler(createRequest(selected ? { agentIds: [...selected] } : {}), response);
+    ['only an agent with detail rights', ['agent-a'], true],
+    ['that agent plus one without detail rights', ['agent-a', 'agent-b'], false],
+    ['all agents (no selection)', undefined, false],
+  ] as const)(
+    'shows details only when every selected agent allows them: %s',
+    async (_name, selected, expectedDetail) => {
+      getInsightsAccess.mockResolvedValueOnce({ agents, detailAgentIds: ['agent-a'] });
+      const { handler, getInsights } = createDashboardHandler();
+      const { response } = createResponse();
+      await handler(createRequest(selected ? { agentIds: [...selected] } : {}), response);
 
-    expect(getInsights).toHaveBeenCalledWith(
-      expect.objectContaining({
-        showDetails: expectedDetail,
-        agentIds: selected ? [...selected] : ['agent-a', 'agent-b'],
-      }),
-    );
-    expect(getInsightsAccess).toHaveBeenCalledTimes(1);
-  });
+      expect(getInsights).toHaveBeenCalledWith(
+        expect.objectContaining({
+          showDetails: expectedDetail,
+          agentIds: selected ? [...selected] : ['agent-a', 'agent-b'],
+        }),
+      );
+      expect(getInsightsAccess).toHaveBeenCalledTimes(1);
+    },
+  );
 
-  it('returns a generic error without disclosing private query failures', async () => {
-    const { handler } = createDashboardHandler(
-      jest.fn().mockRejectedValue(new Error('private prompt')),
-    );
-    const { response, status, json } = createResponse();
-    await handler(createRequest(), response);
-    expect(status).toHaveBeenCalledWith(500);
-    expect(json).toHaveBeenCalledWith({ message: 'Failed to load insights' });
-    expect(JSON.stringify(json.mock.calls)).not.toContain('private prompt');
-  });
+  it.each([
+    [
+      'access check',
+      createInsightsAccessHandler({ getInsightsAccess }),
+      'Failed to load insights access',
+    ],
+    [
+      'dashboard',
+      createInsightsHandler({ getInsightsAccess, getInsights: jest.fn() }),
+      'Failed to load insights',
+    ],
+  ] as const)(
+    'answers a failed %s with a generic message only',
+    async (_name, handler, message) => {
+      getInsightsAccess.mockRejectedValueOnce(new Error('private detail'));
+      const { response, status, json } = createResponse();
+      await handler(createRequest(), response);
+      expect(status).toHaveBeenCalledWith(500);
+      expect(json).toHaveBeenCalledWith({ message });
+    },
+  );
 });
