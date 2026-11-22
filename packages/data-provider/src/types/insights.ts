@@ -13,7 +13,6 @@ export type TInsightsParams = {
   timeZone?: string;
   search?: string;
   agentIds?: string[];
-  /** All agents the viewer may see: a flag, since thousands of IDs exceed the URL length. */
   allAgents?: boolean;
   page?: number;
   pageSize?: number;
@@ -24,19 +23,16 @@ export type TInsightsAgent = {
   name: string;
 };
 
-/** Existing saved version metadata, without configuration snapshots or editor identities. */
 export type TInsightsAgentVersion = {
   agentId: string;
   version: number;
   savedAt: string | null;
-  /** The version whose settings match the agent's current ones, as the version panel marks it. */
   active: boolean;
 };
 
 export type TInsightsResponseOutcomes = {
   completedResponses: number;
   failedResponses: number;
-  /** Responses marked unfinished, including cancellations and partial responses. */
   interruptedResponses: number;
 };
 
@@ -54,7 +50,6 @@ export type TInsightsDailyPoint = TInsightsResponseOutcomes & {
   totalTokens: number;
   responses: number;
   feedback: TInsightsFeedback;
-  /** Recorded usage spend; null when no eligible usage transactions exist. */
   spendUSD: number | null;
 };
 
@@ -90,28 +85,20 @@ export type TInsightsSummary = TInsightsResponseOutcomes & {
   totalMessages: number;
   totalTokens: number;
   totalResponses: number;
-  /** Latest eligible message creation timestamp in the selected reporting period. */
   lastUsed: string | null;
   feedback: TInsightsFeedback;
-  /** Recorded usage spend; null when no eligible usage transactions exist. */
   spendUSD: number | null;
 };
 
-/** Activity of the selected agents by the LLM model recorded on usage transactions. */
 export type TInsightsModel = TInsightsResponseOutcomes & {
-  /** Model name from usage transactions; null for replies or usage without a known model. */
   model: string | null;
-  /** Replies counted once, under the model of their last completion usage row. */
   responses: number;
   thumbsUp: number;
   thumbsDown: number;
-  /** Prompt (including cached prompt) and completion tokens recorded on usage transactions. */
   usageTokens: number;
-  /** Recorded usage spend; null when no eligible usage transactions exist for the model. */
   spendUSD: number | null;
 };
 
-/** Sent instead of statistics while an admin still has to choose agents. */
 export type TInsightsSelectionResponse = {
   selectionRequired: true;
   agents: TInsightsAgent[];
@@ -125,7 +112,7 @@ export type TInsightsAggregateResponse = {
   agentVersions?: TInsightsAgentVersion[];
 };
 
-export type TInsightsDetailSections = {
+type TInsightsDetailSections = {
   topUsers: TInsightsUser[];
   churnedUsers: TInsightsChurnedUser[];
   latest: {
