@@ -1,5 +1,5 @@
 import type { TInsightsAgentVersion } from 'librechat-data-provider';
-import { dayKey, getVersionDays } from '../versions';
+import { getVersionDays } from '../versions';
 
 const days = ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04'].map((date) => ({ date }));
 const version = (
@@ -61,7 +61,14 @@ describe('getVersionDays', () => {
   });
 
   it('places a save on the calendar day of the selected time zone', () => {
-    expect(dayKey(new Date('2026-10-03T23:30:00.000Z'), 'Europe/Lisbon')).toBe('2026-10-04');
-    expect(dayKey(new Date('2026-10-03T23:30:00.000Z'), 'UTC')).toBe('2026-10-03');
+    const marked = (timeZone: string) =>
+      getVersionDays(
+        days,
+        [version(1, '2026-10-03T23:30:00.000Z')],
+        timeZone,
+        new Date('2026-12-01T00:00:00.000Z'),
+      ).map(({ marked }) => marked);
+    expect(marked('Europe/Lisbon')).toEqual([false, false, false, true]);
+    expect(marked('UTC')).toEqual([false, false, true, false]);
   });
 });

@@ -3208,7 +3208,7 @@ const mcpServersSchema = z
   })
   .optional();
 
-export const insightsConfigSchema = z
+const insightsConfigSchema = z
   .object({
     /** Enables Insights when configured; defaults to false when resolved. */
     enabled: z.boolean().optional(),

@@ -17,7 +17,6 @@ import {
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
   interfaceSchema,
-  insightsConfigSchema,
   resolveInsightsConfig,
   supportsConversationTitleOwnership,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
@@ -119,7 +118,9 @@ const endpointsConfig: TEndpointsConfig = {
 
 describe('Insights configuration', () => {
   it('retains omitted flags for partial configuration overrides', () => {
-    expect(insightsConfigSchema.parse({ enabled: true })).toEqual({ enabled: true });
+    expect(interfaceSchema.parse({ insights: { enabled: true } }).insights).toEqual({
+      enabled: true,
+    });
   });
 
   it.each([

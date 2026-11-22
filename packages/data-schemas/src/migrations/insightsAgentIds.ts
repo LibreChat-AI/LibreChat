@@ -7,7 +7,7 @@ import { runAsSystem } from '~/config/tenantContext';
 type IndexedRecord = InsightsRecordIdentity & { _id: Types.ObjectId; insightsAgentId?: string };
 type BatchResult = { processed: number; updated: number; nextAfter?: string };
 
-export type InsightsBackfillOptions = {
+type InsightsBackfillOptions = {
   /** Run `conversations` first: it gives legacy agent conversations a fixed root agent, which
    *  the message and transaction passes then copy onto their records. */
   collection: 'conversations' | 'messages' | 'transactions';

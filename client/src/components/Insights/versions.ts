@@ -13,7 +13,7 @@ type VersionDay = {
 
 export type VersionMark = { label: string | null; marked: boolean; tag?: string };
 
-export function dayKey(instant: Date, timeZone: string): string {
+function dayKey(instant: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
