@@ -1328,6 +1328,18 @@ endpoints:
       titleModel: 'grok-4.7'
       modelDisplayLabel: 'xAI'
 
+    # CrowLLM: OpenAI-compatible gateway with one key for models from several labs.
+    # Set CROWLLM_API_KEY in your environment.
+    - name: 'CrowLLM'
+      apiKey: '${CROWLLM_API_KEY}'
+      baseURL: 'https://crowllm.com/v1'
+      models:
+        default: ['glm-5.3', 'deepseek-v4-flash', 'kimi-k3']
+        fetch: true
+      titleConvo: true
+      titleModel: 'glm-5.3'
+      modelDisplayLabel: 'CrowLLM'
+
     # Anthropic-compatible Example (native `/v1/messages` API)
     # Set `provider: anthropic` to use the native Anthropic client instead of the
     # default OpenAI-compatible one — for Anthropic itself or Anthropic-compatible
