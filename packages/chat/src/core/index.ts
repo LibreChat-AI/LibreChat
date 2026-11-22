@@ -34,4 +34,10 @@ export * from './lanes';
 export * from './activity';
 export * from './code';
 export * from './markdown';
+export {
+  resolveInlineMedia,
+  toAbsoluteFilePath,
+  attachmentRenderKey,
+  buildAttachmentsByName,
+} from './media';
 export * from './url';

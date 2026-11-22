@@ -145,11 +145,6 @@
       "count": 9
     }
   },
-  "client/src/components/Chat/Messages/Content/Image.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/MemoryArtifacts.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
