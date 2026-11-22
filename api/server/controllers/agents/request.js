@@ -15,6 +15,7 @@ const {
   buildMessageFiles,
   getReferencedQuotes,
   resolveTitleTiming,
+  completedOutcome,
   GenerationJobManager,
   getTrustedNewConversationId,
   buildGenerationStartedResponse,
@@ -3249,18 +3250,16 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           await titleEventPromise;
         }
 
-        let scheduleCompletionError;
-        if (terminalWasAborted) {
-          scheduleCompletionError = 'Scheduled run was stopped';
-        } else if (preemptIncomplete) {
-          scheduleCompletionError = 'Scheduled run was interrupted before completion';
-        } else if (stepLimitReached) {
-          scheduleCompletionError = 'Scheduled run reached its tool call limit before completion';
+        if (scheduleId) {
+          await settleScheduledRun(
+            completedOutcome({
+              stopped: terminalWasAborted,
+              preempted: preemptIncomplete,
+              stepLimit: stepLimitReached,
+              content: response.content,
+            }),
+          );
         }
-        await settleScheduledRun({
-          status: responseIsUnfinished ? 'interrupted' : 'success',
-          ...(scheduleCompletionError != null && { error: scheduleCompletionError }),
-        });
 
         let terminalPublicationStarted = false;
         try {

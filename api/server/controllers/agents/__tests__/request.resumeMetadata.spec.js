@@ -260,6 +260,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  completedOutcome: (...args) => jest.requireActual('@librechat/api').completedOutcome(...args),
   getTrustedNewConversationId: (...args) =>
     jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   buildGenerationStartedResponse: (...args) =>
@@ -5332,6 +5333,104 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockDecrementPendingRequest).toHaveBeenCalledWith('user-123');
     expect(mockDisposeClient).toHaveBeenCalledWith(client);
   });
+
+  it.each([
+    ['a reply', [{ type: 'text', text: 'Done.' }], { status: 'success' }],
+    [
+      'a model failure shown as an error part',
+      [{ type: 'error', error: '{"type":"model_rate_limit","info":"PRIVATE gateway wording"}' }],
+      { status: 'error', error: 'Scheduled run ended with an error response' },
+    ],
+  ])(
+    'settles a scheduled run that ended in %s by its response',
+    async (_label, content, outcome) => {
+      const userMessage = {
+        messageId: 'user-msg',
+        parentMessageId: 'parent-msg',
+        conversationId: 'conversation-123',
+        text: 'Run the scheduled digest.',
+      };
+      const terminalClaim = {
+        streamId: 'conversation-123',
+        createdAt: 1000,
+        status: 'complete',
+        persistencePending: true,
+        drainedSteers: [],
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue({ createdAt: 1000, status: 'running' });
+      mockGenerationJobManager.claimTerminalJob.mockResolvedValue(terminalClaim);
+      let signalFinished;
+      const finished = new Promise((resolve) => {
+        signalFinished = resolve;
+      });
+      mockGenerationJobManager.finishTerminalJob.mockImplementation(async () => signalFinished());
+      const client = {
+        options: {},
+        savedMessageIds: new Set(),
+        skipSaveUserMessage: false,
+        sendMessage: jest.fn(async (_text, options) => {
+          options.onStart(userMessage, 'response-msg');
+          return {
+            messageId: 'response-msg',
+            parentMessageId: userMessage.messageId,
+            conversationId: 'conversation-123',
+            content,
+            databasePromise: Promise.resolve({
+              conversation: { conversationId: 'conversation-123', title: 'Existing' },
+            }),
+          };
+        }),
+      };
+      const req = {
+        _isScheduledFire: true,
+        _isAgentTrigger: true,
+        user: { id: 'user-123' },
+        body: {
+          text: userMessage.text,
+          messageId: userMessage.messageId,
+          parentMessageId: userMessage.parentMessageId,
+          conversationId: 'conversation-123',
+          scheduleId: 'schedule-1',
+          scheduledFor: '2026-08-17T12:00:00.000Z',
+          endpointOption: { endpoint: 'agents', agent_id: 'agent-1' },
+        },
+        config: {},
+      };
+
+      await AgentController(
+        req,
+        createResumableResponse(),
+        jest.fn(),
+        jest.fn().mockResolvedValue({ client }),
+        null,
+      );
+      await finished;
+      await nextTick();
+
+      expect(mockRecordScheduleOutcome).toHaveBeenCalledTimes(1);
+      expect(mockRecordScheduleOutcome).toHaveBeenCalledWith({
+        scheduleId: 'schedule-1',
+        scheduledFor: '2026-08-17T12:00:00.000Z',
+        streamId: 'conversation-123',
+        jobCreatedAt: 1000,
+        conversationId: 'conversation-123',
+        clearConversationId: false,
+        ...outcome,
+      });
+      expect(JSON.stringify(mockRecordScheduleOutcome.mock.calls)).not.toContain('PRIVATE');
+      // The failed turn still completes its job: the error part is how it reports the failure.
+      expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledWith(
+        'conversation-123',
+        'complete',
+        undefined,
+        1000,
+        { persistencePending: true },
+      );
+      expect(mockRecordScheduleOutcome.mock.invocationCallOrder[0]).toBeLessThan(
+        mockGenerationJobManager.publishTerminalClaim.mock.invocationCallOrder[0],
+      );
+    },
+  );
 
   it('claims terminal ownership before FINAL and always finishes the winning claim', async () => {
     const userMessage = {

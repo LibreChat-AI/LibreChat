@@ -10,6 +10,7 @@ const {
 } = require('librechat-data-provider');
 const {
   checkAccess,
+  completedOutcome,
   GenerationJobManager,
   GENERATION_RECOVERY_FAILED_ERROR,
   isPendingActionStale,
@@ -687,15 +688,12 @@ async function finalizeResumedTurn({
         scheduledFor: meta.scheduledFor,
         streamId,
         jobCreatedAt: job.createdAt,
-        status: preemptIncomplete || stepLimitReached ? 'interrupted' : 'success',
         conversationId,
-        ...(preemptIncomplete && {
-          error: 'Scheduled run was interrupted before completion',
+        ...completedOutcome({
+          preempted: preemptIncomplete,
+          stepLimit: stepLimitReached,
+          content,
         }),
-        ...(stepLimitReached &&
-          !preemptIncomplete && {
-            error: 'Scheduled run reached its tool call limit before completion',
-          }),
       });
     }
 
