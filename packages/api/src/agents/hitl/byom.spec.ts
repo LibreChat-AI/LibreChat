@@ -739,6 +739,38 @@ describe('assertAttachedCodeEnvironmentApprovalSupported', () => {
       }),
     ).not.toThrow();
   });
+
+  test('rejects an attached environment in a run that carries no machine policy', () => {
+    const unguarded = {
+      hasAttachedCodeEnvironment: true,
+      approvalExplicitlyDisabled: false,
+      guarded: false,
+    };
+
+    for (const caller of [
+      { hitlCapable: true },
+      { hitlCapable: false },
+      { hitlCapable: false, refuses: true },
+    ]) {
+      expect(() =>
+        assertAttachedCodeEnvironmentApprovalSupported({ ...unguarded, ...caller }),
+      ).toThrow('built without its approval policy');
+    }
+    expect(() =>
+      assertAttachedCodeEnvironmentApprovalSupported({
+        ...unguarded,
+        hitlCapable: true,
+        approvalExplicitlyDisabled: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAttachedCodeEnvironmentApprovalSupported({
+        ...unguarded,
+        hitlCapable: true,
+        hasAttachedCodeEnvironment: false,
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe('a caller that refuses approval instead of waiting for it', () => {
