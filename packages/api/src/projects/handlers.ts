@@ -12,6 +12,7 @@ import {
 } from '@librechat/data-schemas';
 import type {
   AppConfig,
+  AvailableProjectFileRecord,
   AvailableProjectFilesOptions,
   AvailableProjectFilesResult,
   ChatProjectMethods,
@@ -20,6 +21,7 @@ import type {
   CreateChatProjectInput,
   UpdateChatProjectInput,
 } from '@librechat/data-schemas';
+import type { TFile } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { GetProjectFiles } from './resources';
 import { toRuntimeFile, listChatProjectFileViews } from './resources';
@@ -33,6 +35,15 @@ const PROJECT_FILE_UNAVAILABLE = 'Project file unavailable';
 const PROJECT_FILE_LIMIT_REACHED = 'Project file limit reached';
 
 const PROJECT_SORT_FIELDS = new Set<ChatProjectSortBy>(['name', 'createdAt', 'lastConversationAt']);
+
+/** A picker candidate: the runtime file plus the timestamps the shared file card dates itself by. */
+function toAvailableFile(file: AvailableProjectFileRecord): TFile {
+  return {
+    ...toRuntimeFile(file),
+    ...(file.createdAt !== undefined ? { createdAt: file.createdAt } : {}),
+    ...(file.updatedAt !== undefined ? { updatedAt: file.updatedAt } : {}),
+  };
+}
 
 interface ProjectUser {
   id: string;
@@ -352,7 +363,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
         search: queryString(req.query.search),
       });
       return res.status(200).json({
-        files: result.files.map(toRuntimeFile),
+        files: result.files.map(toAvailableFile),
         nextCursor: result.nextCursor,
       });
     } catch (error) {
