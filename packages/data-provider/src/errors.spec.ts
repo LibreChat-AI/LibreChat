@@ -1,4 +1,4 @@
-import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from './errors';
+import { isFailedToolOutput, hasToolCallErrorPrefix, stripToolCallErrorPrefix } from './errors';
 
 describe('tool call errors', () => {
   test.each([
@@ -27,4 +27,22 @@ describe('tool call errors', () => {
       'unavailable',
     );
   });
+});
+
+describe('isFailedToolOutput', () => {
+  test.each([
+    'Error: tool call failed: unavailable',
+    'Error processing tool',
+    'Error processing tool: boom',
+    'Error: Received tool input did not match expected schema\n Please fix your mistakes.',
+  ])('treats %j as a failed call', (output) => {
+    expect(isFailedToolOutput(output)).toBe(true);
+  });
+
+  test.each(['PASS 12 tests', 'Error processing tools completed', 'Error: something\nPlease fix'])(
+    'treats %j as a completed call',
+    (output) => {
+      expect(isFailedToolOutput(output)).toBe(false);
+    },
+  );
 });

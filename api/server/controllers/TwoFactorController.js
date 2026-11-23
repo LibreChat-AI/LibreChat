@@ -1,5 +1,10 @@
 const { encryptV3, logger } = require('@librechat/data-schemas');
 const {
+  clearCloudFrontCookies,
+  clearEnrollmentNonces,
+  createOptInTwoFactorConfirmation,
+} = require('@librechat/api');
+const {
   verifyOTPOrBackupCode,
   generateBackupCodes,
   generateTOTPSecret,
@@ -7,7 +12,14 @@ const {
   getTOTPSecret,
   verifyTOTP,
 } = require('~/server/services/twoFactorService');
-const { getUserById, updateUser } = require('~/models');
+const { setAuthTokens } = require('~/server/services/AuthService');
+const {
+  getUserById,
+  updateUser,
+  findSession,
+  deleteAllUserSessions,
+  awaitAuthUserDocEviction,
+} = require('~/models');
 
 const safeAppTitle = (process.env.APP_TITLE || 'LibreChat').replace(/\s+/g, '');
 
@@ -43,10 +55,13 @@ const enable2FA = async (req, res) => {
     const { plainCodes, codeObjects } = await generateBackupCodes();
     const encryptedSecret = encryptV3(secret);
 
-    const user = await updateUser(userId, {
-      pendingTotpSecret: encryptedSecret,
-      pendingBackupCodes: codeObjects,
-    });
+    const user = await updateUser(
+      userId,
+      clearEnrollmentNonces({
+        pendingTotpSecret: encryptedSecret,
+        pendingBackupCodes: codeObjects,
+      }),
+    );
 
     const email = user.email || (existingUser && existingUser.email) || '';
     const otpauthUrl = `otpauth://totp/${safeAppTitle}:${email}?secret=${secret}&issuer=${safeAppTitle}`;
@@ -94,40 +109,17 @@ const verify2FA = async (req, res) => {
 /**
  * Confirm and enable 2FA after a successful verification.
  */
-const confirm2FA = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { token } = req.body;
-    const user = await getUserById(
-      userId,
-      '+totpSecret +pendingTotpSecret +pendingBackupCodes _id',
-    );
-    const secretSource = user?.pendingTotpSecret ?? user?.totpSecret;
-
-    if (!user || !secretSource) {
-      return res.status(400).json({ message: '2FA not initiated' });
-    }
-
-    const secret = await getTOTPSecret(secretSource);
-    if (await verifyTOTP(secret, token)) {
-      const update = {
-        totpSecret: user.pendingTotpSecret ?? user.totpSecret,
-        twoFactorEnabled: true,
-        pendingTotpSecret: null,
-        pendingBackupCodes: [],
-      };
-      if (user.pendingBackupCodes?.length) {
-        update.backupCodes = user.pendingBackupCodes;
-      }
-      await updateUser(userId, update);
-      return res.status(200).json();
-    }
-    return res.status(400).json({ message: 'Invalid token.' });
-  } catch (err) {
-    logger.error('[confirm2FA]', err);
-    return res.status(500).json({ message: err.message });
-  }
-};
+const confirm2FA = createOptInTwoFactorConfirmation({
+  getUserById,
+  getTOTPSecret,
+  verifyTOTP,
+  updateUser,
+  findSession,
+  deleteAllUserSessions,
+  awaitAuthUserDocEviction,
+  clearCloudFrontCookies,
+  setAuthTokens,
+});
 
 /**
  * Disable 2FA by clearing the stored secret and backup codes.
@@ -151,13 +143,16 @@ const disable2FA = async (req, res) => {
         return res.status(result.status ?? 400).json({ message: msg });
       }
     }
-    await updateUser(userId, {
-      totpSecret: null,
-      backupCodes: [],
-      twoFactorEnabled: false,
-      pendingTotpSecret: null,
-      pendingBackupCodes: [],
-    });
+    await updateUser(
+      userId,
+      clearEnrollmentNonces({
+        totpSecret: null,
+        backupCodes: [],
+        twoFactorEnabled: false,
+        pendingTotpSecret: null,
+        pendingBackupCodes: [],
+      }),
+    );
     return res.status(200).json();
   } catch (err) {
     logger.error('[disable2FA]', err);

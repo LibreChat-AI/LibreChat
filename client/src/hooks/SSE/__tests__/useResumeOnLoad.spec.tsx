@@ -1,23 +1,49 @@
-import { renderHook, act } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
+import { RecoilRoot } from 'recoil';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
-import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
+import { useResumeOnLoad, pendingApprovalActionFamily } from '@librechat/chat/react';
+import { Constants, ContentTypes, QueryKeys, RetentionMode } from 'librechat-data-provider';
+import { isSubmittingFamily, resetSubmitting, submissionByIndex } from '@librechat/chat/react';
+import {
+  Provider as JotaiProvider,
+  createStore,
+  useAtomValue,
+  useSetAtom,
+  getDefaultStore,
+} from 'jotai';
+import {
+  revealedQueuedTurnFamily,
+  pendingSteersByConvoId,
+  activeGenerationCreatedAtByConvoId,
+  submissionStartFamily,
+} from '@librechat/chat/react';
+import {
+  settledQueuedTurnReceiptsByConvoId,
+  queuedMessagesByConvoId,
+  stopRequestedByConvoId,
+  pendingRunEndByConvoId,
+  detachedRunByConvoId,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
 import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-data-provider';
+import type { QueuedMessage, PendingSteer, DetachedRun } from '@librechat/chat';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
-import type { PendingSteer, QueuedMessage } from '~/store/families';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
-import { revealedQueuedTurnFamily } from '~/store/steer';
-import useResumeOnLoad from '../useResumeOnLoad';
+import { usePaneConversation } from '~/routes/ChatSettings';
+import { StreamHostTestProvider } from 'test/streamHost';
+import { SteerHostTestProvider } from 'test/steerHost';
+import { ChatHostTestProvider } from 'test/chatHost';
 import store from '~/store';
 
 const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();
 const mockUseAgentQueuedTurns = jest.fn();
 const mockExtendActiveJobsGrace = jest.fn();
+let mockStartupConfig: { interface?: { retentionMode?: RetentionMode } } | undefined;
+let mockStartupConfigSettled = true;
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
 jest.mock('~/Providers', () => ({
@@ -102,6 +128,9 @@ function renderUseResumeOnLoad({
   onQueuedMessages,
   submissionStart,
   onSubmissionStart,
+  detachedRun,
+  seedJotai,
+  seedQueryClient,
 }: {
   messages?: TMessage[];
   getMessages?: () => TMessage[] | undefined;
@@ -118,53 +147,56 @@ function renderUseResumeOnLoad({
   onQueuedMessages?: (queued: QueuedMessage[]) => void;
   submissionStart?: number;
   onSubmissionStart?: (submissionStart: number | null) => void;
+  detachedRun?: DetachedRun;
+  seedJotai?: (store: ReturnType<typeof createStore>) => void;
+  seedQueryClient?: (client: QueryClient) => void;
 }) {
   const getMessages = jest.fn(getMessagesOverride ?? (() => messages));
   const jotaiStore = createStore();
+  if (submissionStart != null) {
+    jotaiStore.set(submissionStartFamily(0), submissionStart);
+  }
+  if (detachedRun != null) {
+    jotaiStore.set(detachedRunByConvoId(conversationId), detachedRun);
+  }
+  jotaiStore.set(activeGenerationCreatedAtByConvoId(conversationId), attachedGenerationCreatedAt);
+  if (pendingSteers) {
+    jotaiStore.set(pendingSteersByConvoId(conversationId), pendingSteers);
+  }
+  seedJotai?.(jotaiStore);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  seedQueryClient?.(queryClient);
   let setSubmissionState: ((submission: TSubmission | null) => void) | undefined;
   let setIsSubmittingState: ((value: boolean) => void) | undefined;
   let setAttachedEpochState: ((value: number | null) => void) | undefined;
   const initializeState = (snapshot: MutableSnapshot) => {
     snapshot.set(store.conversationByIndex(0), buildConversation(conversationId));
-    snapshot.set(store.submissionByIndex(0), submission);
-    snapshot.set(store.isSubmittingFamily(0), isSubmitting);
-    snapshot.set(
-      store.activeGenerationCreatedAtByConvoId(conversationId),
-      attachedGenerationCreatedAt,
-    );
-    if (submissionStart != null) {
-      snapshot.set(store.submissionStartFamily(0), submissionStart);
-    }
-    if (pendingSteers) {
-      snapshot.set(store.pendingSteersByConvoId(conversationId), pendingSteers);
-    }
+    jotaiStore.set(submissionByIndex(0), submission);
+    jotaiStore.set(isSubmittingFamily(0), isSubmitting);
   };
 
   const SubmissionProbe = () => {
-    const currentSubmission = useRecoilValue(store.submissionByIndex(0));
-    setSubmissionState = useSetRecoilState(store.submissionByIndex(0));
-    setIsSubmittingState = useSetRecoilState(store.isSubmittingFamily(0));
-    setAttachedEpochState = useSetRecoilState(
-      store.activeGenerationCreatedAtByConvoId(conversationId),
-    );
+    const currentSubmission = useAtomValue(submissionByIndex(0));
+    setSubmissionState = useSetAtom(submissionByIndex(0));
+    setIsSubmittingState = useSetAtom(isSubmittingFamily(0));
+    setAttachedEpochState = useSetAtom(activeGenerationCreatedAtByConvoId(conversationId));
     onSubmission?.(currentSubmission);
     return null;
   };
   const SubmissionStartProbe = () => {
-    const currentStart = useRecoilValue(store.submissionStartFamily(0));
+    const currentStart = useAtomValue(submissionStartFamily(0));
     onSubmissionStart?.(currentStart);
     return null;
   };
   const PendingSteersProbe = () => {
-    const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
+    const steers = useAtomValue(pendingSteersByConvoId(conversationId));
     onPendingSteers?.(steers);
     return null;
   };
   const QueuedMessagesProbe = () => {
-    const queued = useRecoilValue(store.queuedMessagesByConvoId(conversationId));
+    const queued = useAtomValue(queuedMessagesByConvoId(conversationId));
     onQueuedMessages?.(queued);
     return null;
   };
@@ -180,12 +212,30 @@ function renderUseResumeOnLoad({
     <QueryClientProvider client={queryClient}>
       <JotaiProvider store={jotaiStore}>
         <RecoilRoot initializeState={initializeState}>
-          <SubmissionProbe />
-          <SubmissionStartProbe />
-          <SiblingIndexProbe />
-          <PendingSteersProbe />
-          <QueuedMessagesProbe />
-          {children}
+          <SteerHostTestProvider>
+            <ChatHostTestProvider>
+              <StreamHostTestProvider>
+                <SubmissionProbe />
+                <SubmissionStartProbe />
+                <SiblingIndexProbe />
+                <PendingSteersProbe />
+                <QueuedMessagesProbe />
+                <ChatSettingsContext.Provider
+                  value={{
+                    ...defaultChatSettings,
+                    usePaneConversation,
+                    config: {
+                      ...defaultChatSettings.config,
+                      retentionMode: mockStartupConfig?.interface?.retentionMode,
+                      loaded: mockStartupConfigSettled,
+                    },
+                  }}
+                >
+                  {children}
+                </ChatSettingsContext.Provider>
+              </StreamHostTestProvider>
+            </ChatHostTestProvider>
+          </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>
     </QueryClientProvider>
@@ -205,6 +255,12 @@ function renderUseResumeOnLoad({
     ),
   };
 }
+
+beforeEach(() => resetQueueFamilies());
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('useResumeOnLoad', () => {
   beforeEach(() => {
@@ -398,6 +454,91 @@ describe('useResumeOnLoad', () => {
       });
 
       expect(jotaiStore.get(pendingApprovalActionFamily(CONVERSATION_ID))).toEqual(pendingAction);
+    });
+
+    /** A reloaded forced-temporary run has no conversation row to read yet, so only the
+     *  status snapshot knows the run is hidden; a hard-coded `false` would send it into
+     *  history caches and request a title the server never creates. */
+    it.each([true, false])(
+      'rebuilds the submission with the server-recorded temporary state %s',
+      async (isTemporary) => {
+        const observedSubmissions: Array<TSubmission | null> = [];
+        mockUseStreamStatus.mockReturnValue({
+          ...ACTIVE_STATUS,
+          data: { ...ACTIVE_STATUS.data, isTemporary },
+        });
+
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(isTemporary);
+      },
+    );
+
+    /** A run admitted before the administrator forced ephemeral retention recorded
+     *  `isTemporary: false`, but the resume converts it; the rebuilt submission must
+     *  already treat it as hidden so it never bumps the chat in the history caches. */
+    it('treats a pre-policy run as temporary once retention is forced', async () => {
+      mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+      }
+    });
+
+    /** A status snapshot that lands before the startup config would otherwise be
+     *  rebuilt without knowing the retention mode, and the conversation would then
+     *  be marked processed so the arriving config could never correct it. */
+    it('waits for the startup config before rebuilding the submission', async () => {
+      mockStartupConfigSettled = false;
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        const { rerender } = renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(observedSubmissions.filter(Boolean)).toHaveLength(0);
+
+        mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
+        mockStartupConfigSettled = true;
+        rerender();
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+        mockStartupConfigSettled = true;
+      }
     });
 
     /** The elapsed indicator's baseline must be the generation's real start:
@@ -2637,6 +2778,277 @@ describe('useResumeOnLoad', () => {
       });
 
       expect(observedSteers[observedSteers.length - 1]).toEqual([failedChip]);
+    });
+
+    it('parks the end of a run that finished after the user left, so its queue drains', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const completedResponse = {
+        messageId: 'response-detached',
+        parentMessageId: USER_MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+        isCreatedByUser: false,
+        text: 'finished while away',
+        updatedAt: new Date(42).toISOString(),
+      } as TMessage;
+
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [buildUserMessage(CONVERSATION_ID), completedResponse],
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+        expect.objectContaining({
+          conversationId: CONVERSATION_ID,
+          outcome: 'completed',
+          responseMessageId: 'response-detached',
+        }),
+      );
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('keeps the detached run until a history refetch shows its response', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      let history: TMessage[] = [buildUserMessage(CONVERSATION_ID)];
+      const { jotaiStore } = renderUseResumeOnLoad({
+        getMessages: () => history,
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+      });
+      /** The first read found no response; it is saved before the history refetch settles. */
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).not.toBeNull();
+      history = [
+        ...history,
+        {
+          messageId: 'response-late',
+          parentMessageId: USER_MESSAGE_ID,
+          conversationId: CONVERSATION_ID,
+          isCreatedByUser: false,
+          text: 'saved after the first read',
+          updatedAt: new Date(42).toISOString(),
+        } as TMessage,
+      ];
+
+      await waitFor(() =>
+        expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+          expect.objectContaining({ outcome: 'completed', responseMessageId: 'response-late' }),
+        ),
+      );
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('resolves a detached run from refetched history, not the response it left cached', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const historyKey = [QueryKeys.messages, CONVERSATION_ID];
+      const leftResponse = {
+        messageId: 'response-detached',
+        parentMessageId: USER_MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+        isCreatedByUser: false,
+        text: 'streamed before leaving',
+        updatedAt: new Date(42).toISOString(),
+      } as TMessage;
+      let client: QueryClient | undefined;
+      const { jotaiStore } = renderUseResumeOnLoad({
+        getMessages: () => client?.getQueryData<TMessage[]>(historyKey),
+        detachedRun: {
+          userMessageId: USER_MESSAGE_ID,
+          responseMessageId: 'response-detached',
+          generationCreatedAt: 41,
+        },
+        seedQueryClient: (queryClient) => {
+          client = queryClient;
+          queryClient.setQueryDefaults(historyKey, {
+            queryFn: async () => [
+              buildUserMessage(CONVERSATION_ID),
+              { ...leftResponse, unfinished: true },
+            ],
+          });
+          queryClient.setQueryData(historyKey, [buildUserMessage(CONVERSATION_ID), leftResponse]);
+        },
+      });
+
+      await waitFor(() =>
+        expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+          expect.objectContaining({ outcome: 'aborted' }),
+        ),
+      );
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('keeps the detached run for the next visit when the history refetch fails', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const historyKey = [QueryKeys.messages, CONVERSATION_ID];
+      const queryFn = jest.fn(async (): Promise<TMessage[]> => {
+        throw new Error('history unavailable');
+      });
+      let client: QueryClient | undefined;
+      const { jotaiStore } = renderUseResumeOnLoad({
+        getMessages: () => client?.getQueryData<TMessage[]>(historyKey),
+        detachedRun: {
+          userMessageId: USER_MESSAGE_ID,
+          responseMessageId: 'response-detached',
+          generationCreatedAt: 41,
+        },
+        seedQueryClient: (queryClient) => {
+          client = queryClient;
+          queryClient.setQueryDefaults(historyKey, { queryFn });
+          queryClient.setQueryData(historyKey, [
+            buildUserMessage(CONVERSATION_ID),
+            {
+              messageId: 'response-detached',
+              parentMessageId: USER_MESSAGE_ID,
+              conversationId: CONVERSATION_ID,
+              isCreatedByUser: false,
+              text: 'streamed before leaving',
+              updatedAt: new Date(42).toISOString(),
+            } as TMessage,
+          ]);
+        },
+      });
+
+      await waitFor(() => expect(queryFn).toHaveBeenCalled());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).not.toBeNull();
+    });
+
+    it('retires a retained marker for a run the user stopped on a later visit', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [
+          buildUserMessage(CONVERSATION_ID),
+          {
+            messageId: 'response-detached',
+            parentMessageId: USER_MESSAGE_ID,
+            conversationId: CONVERSATION_ID,
+            isCreatedByUser: false,
+            text: 'stopped compaction settles as finished',
+            unfinished: false,
+            updatedAt: new Date(42).toISOString(),
+          } as TMessage,
+        ],
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+        seedJotai: (store) =>
+          store.set(stopRequestedByConvoId(CONVERSATION_ID), { generationCreatedAt: 41 }),
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('parks a shared-queue run end with its epoch, so its admission receipt is matched', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [
+          buildUserMessage(CONVERSATION_ID),
+          {
+            messageId: 'response-detached',
+            parentMessageId: USER_MESSAGE_ID,
+            conversationId: CONVERSATION_ID,
+            isCreatedByUser: false,
+            text: 'finished while away',
+            updatedAt: new Date(42).toISOString(),
+          } as TMessage,
+        ],
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+        seedJotai: (store) =>
+          store.set(settledQueuedTurnReceiptsByConvoId(CONVERSATION_ID), [
+            { clientRequestId: 'queued-1', status: 'admitted', effectivePredecessorCreatedAt: 41 },
+          ]),
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+        expect.objectContaining({ outcome: 'completed', generationCreatedAt: 41 }),
+      );
+    });
+
+    it('parks nothing for a conversation this pane never left mid-run', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [
+          buildUserMessage(CONVERSATION_ID),
+          {
+            messageId: 'response-old',
+            parentMessageId: USER_MESSAGE_ID,
+            conversationId: CONVERSATION_ID,
+            isCreatedByUser: false,
+            text: 'history',
+          } as TMessage,
+        ],
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('keeps the detached run while its job is active, so a job gone before the attach still resolves', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: {
+          active: true,
+          status: 'running',
+          createdAt: 4242,
+          streamId: CONVERSATION_ID,
+          resumeState: {
+            aggregatedContent: [{ type: ContentTypes.TEXT, text: 'partial' }],
+            responseMessageId: RESPONSE_MESSAGE_ID,
+            userMessage: { messageId: USER_MESSAGE_ID, conversationId: CONVERSATION_ID },
+          },
+        },
+      });
+      const detachedRun = { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 4242 };
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [buildUserMessage(CONVERSATION_ID)],
+        detachedRun,
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toEqual(detachedRun);
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
     });
 
     it('converts resumeState.pendingSteers to queued when inactive (expired action, unparked queue)', async () => {

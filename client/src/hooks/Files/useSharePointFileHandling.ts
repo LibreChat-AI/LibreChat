@@ -24,13 +24,9 @@ interface UseSharePointFileHandlingReturn {
 export default function useSharePointFileHandling(
   props?: UseSharePointFileHandlingProps,
 ): UseSharePointFileHandlingReturn {
-  const { handleFiles } = useFileHandling(props);
+  const { handleFiles, captureUploadLifecycle } = useFileHandling(props);
   const { downloadSharePointFiles, isDownloading, downloadProgress, error } = useSharePointDownload(
     {
-      onFilesDownloaded: async (downloadedFiles: File[]) => {
-        const fileArray = Array.from(downloadedFiles);
-        await handleFiles(fileArray, props?.toolResource);
-      },
       onError: (error) => {
         console.error('SharePoint download failed:', error);
       },
@@ -39,14 +35,17 @@ export default function useSharePointFileHandling(
 
   const handleSharePointFiles = useCallback(
     async (sharePointFiles: SharePointFile[]) => {
+      const toolResource = props?.toolResource;
+      const lifecycle = captureUploadLifecycle(toolResource);
       try {
-        await downloadSharePointFiles(sharePointFiles);
+        const downloadedFiles = await downloadSharePointFiles(sharePointFiles);
+        await handleFiles(downloadedFiles, toolResource, lifecycle);
       } catch (error) {
         console.error('SharePoint file handling error:', error);
         throw error;
       }
     },
-    [downloadSharePointFiles],
+    [downloadSharePointFiles, handleFiles, captureUploadLifecycle, props?.toolResource],
   );
 
   return {
@@ -61,14 +60,10 @@ export function useSharePointFileHandlingNoChatContext(
   props: UseSharePointFileHandlingProps | undefined,
   fileState: FileHandlingState,
 ): UseSharePointFileHandlingReturn {
-  const { handleFiles } = useFileHandlingNoChatContext(props, fileState);
+  const { handleFiles, captureUploadLifecycle } = useFileHandlingNoChatContext(props, fileState);
 
   const { downloadSharePointFiles, isDownloading, downloadProgress, error } = useSharePointDownload(
     {
-      onFilesDownloaded: async (downloadedFiles: File[]) => {
-        const fileArray = Array.from(downloadedFiles);
-        await handleFiles(fileArray, props?.toolResource);
-      },
       onError: (error) => {
         console.error('SharePoint download failed:', error);
       },
@@ -77,14 +72,17 @@ export function useSharePointFileHandlingNoChatContext(
 
   const handleSharePointFiles = useCallback(
     async (sharePointFiles: SharePointFile[]) => {
+      const toolResource = props?.toolResource;
+      const lifecycle = captureUploadLifecycle(toolResource);
       try {
-        await downloadSharePointFiles(sharePointFiles);
+        const downloadedFiles = await downloadSharePointFiles(sharePointFiles);
+        await handleFiles(downloadedFiles, toolResource, lifecycle);
       } catch (error) {
         console.error('SharePoint file handling error:', error);
         throw error;
       }
     },
-    [downloadSharePointFiles],
+    [downloadSharePointFiles, handleFiles, captureUploadLifecycle, props?.toolResource],
   );
 
   return {

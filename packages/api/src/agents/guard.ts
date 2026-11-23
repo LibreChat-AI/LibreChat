@@ -2,11 +2,99 @@ import { Constants } from 'librechat-data-provider';
 import type { ConversationMethods, IConversation } from '@librechat/data-schemas';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { SubagentThreadTaskStore } from './subagentThreads';
+import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { isReservedSubagentThreadId } from './subagentThreadIds';
 import { isAgentEventRetentionActive } from './eventRetention';
 
 export const CHILD_THREAD_READ_ONLY_ERROR =
   'This subagent thread is view-only. Continue it from its parent agent or create a separate chat.';
+
+export const CHILD_THREAD_READ_ONLY_CODE = 'CHILD_THREAD_READ_ONLY';
+
+export type BackgroundChildJobRefusal = {
+  status: 409;
+  body: { code: typeof CHILD_THREAD_READ_ONLY_CODE; error: string };
+};
+
+/**
+ * The answer for a chat route asked to end or steer a background child's job. The subagent
+ * task store owns that run: it stops and steers the child through its own control endpoint
+ * and writes the child's rows itself, so a chat route acting on the job would write a second,
+ * chat-shaped history into a view-only thread. Null for every other job.
+ */
+type AbortGuardJob = {
+  metadata?: { userId?: string; tenantId?: string; subagentTaskId?: string };
+};
+
+const MAX_ABORT_TARGET_LENGTH = 512;
+
+/** The concrete stream id an abort request names, in the route's own order. The `new`
+ *  placeholder names none: its fallback reads the active chat list, which holds no child. */
+function abortTargetId(body: unknown): string | null {
+  if (body == null || typeof body !== 'object') return null;
+  const { streamId, conversationId, abortKey } = body as Record<string, unknown>;
+  const prefix = typeof abortKey === 'string' ? abortKey.split(':')[0] : undefined;
+  for (const value of [streamId, conversationId, prefix]) {
+    if (
+      typeof value === 'string' &&
+      value !== '' &&
+      value !== 'new' &&
+      value.length <= MAX_ABORT_TARGET_LENGTH
+    ) {
+      return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * Runs ahead of the chat abort route and answers for a background child's job, so the
+ * route's chat-shaped abort never reaches it. Every other request falls through untouched,
+ * including one for a job the caller does not own, which the route refuses itself. A job
+ * lookup that fails ends the request at the error boundary.
+ */
+export function createBackgroundChildAbortGuard(deps: {
+  getJob: (streamId: string) => Promise<AbortGuardJob | null | undefined>;
+}): RequestHandler {
+  return async (req, res, next) => {
+    const streamId = abortTargetId(req.body);
+    const user = (req as Request & { user?: { id?: string; tenantId?: string } }).user;
+    if (streamId == null || user?.id == null) {
+      next();
+      return;
+    }
+    let job: AbortGuardJob | null | undefined;
+    try {
+      job = await deps.getJob(streamId);
+    } catch (error) {
+      /** Fail closed: the route reads the job again, and a read that then succeeds would
+       *  run its chat-shaped abort on a child this guard never got to see. */
+      next(error);
+      return;
+    }
+    const metadata = job?.metadata;
+    const owned =
+      metadata?.userId === user.id &&
+      (metadata.tenantId == null || metadata.tenantId === user.tenantId);
+    const refusal = owned ? backgroundChildJobRefusal(job) : null;
+    if (refusal == null) {
+      next();
+      return;
+    }
+    res.status(refusal.status).json(refusal.body);
+  };
+}
+
+export function backgroundChildJobRefusal(
+  job: { metadata?: { subagentTaskId?: string } } | null | undefined,
+): BackgroundChildJobRefusal | null {
+  const taskId = job?.metadata?.subagentTaskId;
+  if (taskId == null || taskId === '') return null;
+  return {
+    status: 409,
+    body: { code: CHILD_THREAD_READ_ONLY_CODE, error: CHILD_THREAD_READ_ONLY_ERROR },
+  };
+}
 
 interface SubagentTurnBody {
   conversationId?: unknown;
@@ -51,15 +139,6 @@ interface ResolvedConversationRequest extends Request {
   _agentEventBindingParentAgentId?: string;
   _agentEventBindingTenantId?: string;
 }
-
-/**
- * Brands the lineage-only conversation `isBoundEventContinuation` synthesizes: it stands in
- * for binding checks but carries none of the stored document's optional fields, so readers
- * of `req.resolvedConversation` must not treat its absent fields as authoritative.
- */
-export const PARTIAL_RESOLVED_CONVERSATION: unique symbol = Symbol.for(
-  'librechat.resolvedConversation.partial',
-);
 
 function applyEventBindingContext(
   request: ResolvedConversationRequest,
@@ -114,6 +193,7 @@ async function isBoundEventContinuation(
   }
   return {
     [PARTIAL_RESOLVED_CONVERSATION]: true,
+    user: target.userId,
     conversationId: binding.conversationId,
     agent_id: binding.agentId,
     ...(binding.tenantId == null ? {} : { tenantId: binding.tenantId }),
@@ -232,6 +312,9 @@ export function createSubagentThreadTurnGuard(deps: SubagentThreadWriteGuardDeps
         },
       );
       if (boundConversation != null) {
+        if (resolvedConversation?.conversationId === boundConversation.conversationId) {
+          boundConversation.spec = resolvedConversation.spec;
+        }
         applyEventBindingContext(resolvedRequest, boundConversation);
         next();
         return;

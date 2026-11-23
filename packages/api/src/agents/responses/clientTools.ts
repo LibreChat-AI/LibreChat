@@ -27,9 +27,9 @@
  * require.
  *
  * Replay is the only continuation this endpoint supports for a tool exchange.
- * `previous_response_id` does not carry one: the server persists a turn as
- * text (`saveResponseOutput` keeps `output_text`, `saveInputMessages` keeps
- * `role: 'user'`), so neither item survives, and the id is rejected outright
+ * `previous_response_id` does not carry an unanswered client exchange: stored
+ * assistant turns retain completed server tool pairs, not unexecuted client calls,
+ * and `saveInputMessages` keeps only `role: 'user'`. The id is rejected outright
  * with 404 unless the first request also asked for `store: true`. Sending
  * `previous_response_id` with a bare `function_call_output` therefore produces
  * a tool result whose call is missing.

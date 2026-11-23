@@ -1,18 +1,21 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { logger } from '@librechat/data-schemas';
 import { getCodeBaseURL } from '@librechat/agents';
+import { createHash, randomUUID } from 'node:crypto';
 import {
+  FileContext,
   FileSources,
   getCodeEnvRefs,
   mergeCodeEnvRef,
   resolveSandboxFilename,
 } from 'librechat-data-provider';
-import type { CodeEnvRef, CodeEnvRefMap, TFile } from 'librechat-data-provider';
+import type { CodeEnvRef, CodeEnvRefContent, CodeEnvRefMap, TFile } from 'librechat-data-provider';
 import type { Readable } from 'node:stream';
+import type { FileStorageUploadObserver } from '../operations';
+import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeEnvIdentity } from '~/files/code/identity';
 import type { CodeApiRateLimitBudget } from '~/utils';
 import type { ServerRequest } from '~/types';
@@ -25,10 +28,19 @@ import {
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
 } from '~/utils';
+import {
+  digestCodeUpload,
+  getSnapshotReceipt,
+  provesStoredContent,
+  checkCodeFileActive,
+} from '~/files/code/receipt';
+import { buildCodeEnvIdentityParams, getCodeEnvSessionObjects } from '~/files/code/identity';
+import { CODE_UPLOAD_BATCH_MAX_BYTES, uploadCodeEnvBatch } from '~/files/code/batch';
 import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from '../code/form';
-import { buildCodeEnvIdentityParams } from '~/files/code/identity';
+import { codeExecutionHeaders } from '~/agents/execution';
 import { getCodeApiAuthHeaders } from '~/auth/codeapi';
 import { resolveDownloadPath } from '~/storage/path';
+import { dispatchCodeApiUpload } from '../dispatch';
 
 /** Storage strategy lookup, injected so this module stays free of the api workspace. */
 export interface ProvisionDeps {
@@ -50,6 +62,7 @@ export interface ProvisionDeps {
     file_id: string;
     entity_id?: string;
     signal?: AbortSignal;
+    onUploadStart?: FileStorageUploadObserver;
   }) => Promise<{ embedded?: boolean } | undefined>;
   loadAuthValues: (params: {
     userId: string;
@@ -86,6 +99,45 @@ export interface CodeEnvReferenceSetResult {
   codeEnvRefs?: CodeEnvRefMap;
 }
 
+export interface StoredFileDigest {
+  sha256: string;
+  bytes: number;
+}
+
+/** A code-environment upload's pointers, ready to persist for its file. */
+export interface ProvisionedCodeFile {
+  referenceSet: CodeEnvReferenceSetResult;
+  refUpdate: CodeEnvRefUpdate;
+  /** The name the sandbox stored it under, which a converted image renames. */
+  sandboxFilename: string;
+}
+
+/** One file of a batched code-environment upload. */
+export interface CodeBatchProvisionFile {
+  file: TFile;
+  sandboxFilename?: string;
+  onUploadStart?: FileStorageUploadObserver;
+}
+
+/** A batched file whose stored bytes would take its batch past what it may hold in memory. */
+class CodeBatchOverflowError extends Error {
+  constructor() {
+    super('Stored file exceeds the batched upload size');
+    this.name = 'CodeBatchOverflowError';
+  }
+}
+
+/** Storage reads a batch may have open at once. */
+const CODE_BATCH_READ_CONCURRENCY = 4;
+
+interface PreparedCodeUpload {
+  /** Position in the caller's batch. */
+  index: number;
+  filename: string;
+  buffer: Buffer;
+  content: CodeEnvRefContent;
+}
+
 export interface ProvisionService {
   loadCodeApiKey: (userId: string) => Promise<string | undefined>;
   provisionToCodeEnv: (params: {
@@ -96,24 +148,36 @@ export interface ProvisionService {
     sandboxFilename?: string;
     signal?: AbortSignal;
     rateLimitBudget?: CodeApiRateLimitBudget;
-  }) => Promise<{
-    referenceSet: CodeEnvReferenceSetResult;
-    refUpdate: CodeEnvRefUpdate;
-    /** The name the sandbox stored it under, which a converted image renames. */
-    sandboxFilename: string;
-  }>;
+    onUploadStart?: FileStorageUploadObserver;
+  }) => Promise<ProvisionedCodeFile>;
+  /**
+   * Provisions several files of one scope with a single Code API request, which its upload
+   * limiter counts once, and records what each stored so a later turn can prove it unchanged.
+   * Settles per file, in the order given.
+   */
+  provisionBatchToCodeEnv: (params: {
+    req: ServerRequest;
+    files: readonly CodeBatchProvisionFile[];
+    entity_id?: string;
+    route?: CodeExecutionRoute;
+    signal?: AbortSignal;
+    rateLimitBudget?: CodeApiRateLimitBudget;
+  }) => Promise<Array<PromiseSettledResult<ProvisionedCodeFile>>>;
   provisionToVectorDB: (params: {
     req: ServerRequest;
     file: TFile;
     entity_id?: string;
     existingStream?: Readable;
     signal?: AbortSignal;
+    onUploadStart?: FileStorageUploadObserver;
   }) => Promise<{ embedded: boolean; fileUpdate: ProvisionFileUpdate | null }>;
-  checkCodeEnvFileAlive: (params: {
+  /** SHA-256 and length of the stored bytes, the same bytes a code-environment upload sends;
+   *  null when the file's storage cannot be streamed. */
+  digestFile: (params: {
+    req: ServerRequest;
     file: TFile;
-    apiKey?: string;
-    req?: ServerRequest;
-  }) => Promise<boolean>;
+    signal?: AbortSignal;
+  }) => Promise<StoredFileDigest | null>;
   checkSessionsAlive: (params: {
     files: TFile[];
     apiKey?: string;
@@ -123,6 +187,10 @@ export interface ProvisionService {
      *  against the Code API that issued it, not against the default one. */
     baseURL?: string;
     routeKey?: string;
+    /** Wire profile and worker of that deployment. A worker-bound route authorizes
+     *  only a bearer minted for its worker, exactly as its uploads and reads do. */
+    executionProfile?: CodeExecutionContext['executionProfile'];
+    bridgeWorkerId?: string;
   }) => Promise<Set<string>>;
 }
 
@@ -187,19 +255,38 @@ export function createProvisionService({
     return stream;
   }
 
-  /** Uses managed bearer auth when available, otherwise the configured legacy API key. */
-  async function buildCodeApiHeaders({
+  /**
+   * Auth for a liveness probe against the route that issued the refs, matching what that
+   * route's uploads, reads and executions send. The legacy key belongs to the default
+   * Code API alone: an attached or stateful route never receives it, and a worker-bound
+   * route gets a bearer minted for its worker plus the route headers. Returns null when
+   * there is nothing to authenticate with, neither a request to mint from nor a key this
+   * route accepts, since the probe could only be rejected.
+   */
+  async function buildSessionProbeHeaders({
     apiKey,
     req,
+    routeKey,
+    executionProfile,
+    bridgeWorkerId,
   }: {
     apiKey?: string;
     req?: ServerRequest;
-  }): Promise<Record<string, string>> {
-    const authHeaders = await getCodeApiAuthHeaders(req);
+    routeKey?: string;
+    executionProfile?: CodeExecutionContext['executionProfile'];
+    bridgeWorkerId?: string;
+  }): Promise<Record<string, string> | null> {
+    const isDefaultRoute = (routeKey ?? 'default') === 'default';
+    const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
+    const legacyKey = isDefaultRoute && authHeaders.Authorization == null ? apiKey : undefined;
+    if (req == null && authHeaders.Authorization == null && !legacyKey) {
+      return null;
+    }
     return {
       'User-Agent': 'LibreChat/1.0',
-      ...(authHeaders.Authorization == null && apiKey ? { 'X-API-Key': apiKey } : {}),
+      ...(legacyKey ? { 'X-API-Key': legacyKey } : {}),
       ...authHeaders,
+      ...(executionProfile ? codeExecutionHeaders({ executionProfile, bridgeWorkerId }) : {}),
     };
   }
 
@@ -245,6 +332,7 @@ export function createProvisionService({
     sandboxFilename: requestedSandboxFilename,
     signal,
     rateLimitBudget,
+    onUploadStart,
   }: {
     req: ServerRequest;
     file: TFile;
@@ -253,6 +341,7 @@ export function createProvisionService({
     sandboxFilename?: string;
     signal?: AbortSignal;
     rateLimitBudget?: CodeApiRateLimitBudget;
+    onUploadStart?: FileStorageUploadObserver;
   }) {
     signal?.throwIfAborted();
     const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(FileSources.execute_code);
@@ -305,10 +394,11 @@ export function createProvisionService({
           ...(route?.baseUrl ? { codeApiBaseUrl: route.baseUrl } : {}),
           executionProfile,
           signal,
+          onUploadStart,
         }),
     });
-    signal?.throwIfAborted();
 
+    /* A successful upload must reach pointer persistence even if cancellation just arrived. */
     /* Merge rather than overwrite: the eager upload path persists the same shape via
      * mergeCodeEnvRef, so both the legacy pointer and the route-keyed map stay in sync
      * and pointers for other Code API routes survive re-provisioning. */
@@ -343,6 +433,244 @@ export function createProvisionService({
   }
 
   /**
+   * Reads a stored file into memory against the allowance its batch shares. Sizes come from
+   * the bytes actually read, not the record, so however many files understate theirs the
+   * batch never holds more than one request may carry.
+   */
+  async function readStoredFile(
+    file: TFile,
+    req: ServerRequest,
+    held: { bytes: number },
+    signal?: AbortSignal,
+  ): Promise<Buffer> {
+    const stream = await getStorageStream(file, req, signal);
+    if (!stream) {
+      throw new Error(
+        `Cannot provision file "${file.filename}" to code env: storage source "${file.source}" does not support download streams`,
+      );
+    }
+    const abort = () => stream.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+    signal?.addEventListener('abort', abort, { once: true });
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    try {
+      for await (const chunk of stream) {
+        const buffer: Buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        bytes += buffer.byteLength;
+        held.bytes += buffer.byteLength;
+        if (held.bytes > CODE_UPLOAD_BATCH_MAX_BYTES) {
+          stream.destroy();
+          throw new CodeBatchOverflowError();
+        }
+        chunks.push(buffer);
+      }
+      signal?.throwIfAborted();
+    } catch (error) {
+      held.bytes -= bytes;
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
+    return Buffer.concat(chunks, bytes);
+  }
+
+  async function provisionBatchToCodeEnv({
+    req,
+    files,
+    entity_id,
+    route,
+    signal,
+    rateLimitBudget,
+  }: {
+    req: ServerRequest;
+    files: readonly CodeBatchProvisionFile[];
+    entity_id?: string;
+    route?: CodeExecutionRoute;
+    signal?: AbortSignal;
+    rateLimitBudget?: CodeApiRateLimitBudget;
+  }): Promise<Array<PromiseSettledResult<ProvisionedCodeFile>>> {
+    signal?.throwIfAborted();
+    const kind: 'agent' | 'user' = entity_id ? 'agent' : 'user';
+    const id = entity_id ?? (req.user?.id as string);
+    const executionProfile = route?.executionProfile ?? 'default';
+    const routeKey = route?.executionRouteKey ?? executionProfile;
+    const settled = new Array<PromiseSettledResult<ProvisionedCodeFile> | undefined>(files.length);
+    /** Files whose record understated their size; a stream keeps their bytes out of memory. */
+    const overflowed: number[] = [];
+    const held = { bytes: 0 };
+    let prepared: PreparedCodeUpload[] | undefined;
+
+    /* Runs inside the upload slot, so only as many batches as may upload at once are ever
+     * held in memory, and is kept across rate-limit retries of the same request. */
+    const prepare = async (): Promise<PreparedCodeUpload[]> => {
+      if (prepared) {
+        return prepared;
+      }
+      const read: PreparedCodeUpload[] = [];
+      let next = 0;
+      const readNext = async (): Promise<void> => {
+        while (next < files.length) {
+          const index = next++;
+          const { file, sandboxFilename } = files[index];
+          try {
+            const buffer = await readStoredFile(file, req, held, signal);
+            read.push({
+              index,
+              buffer,
+              content: digestCodeUpload(buffer),
+              filename: getCodeEnvUploadFilename(
+                resolveSandboxFilename(sandboxFilename ?? file.filename, file.type),
+              ),
+            });
+          } catch (error) {
+            if (error instanceof CodeBatchOverflowError) {
+              overflowed.push(index);
+            } else {
+              settled[index] = { status: 'rejected', reason: error };
+            }
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CODE_BATCH_READ_CONCURRENCY, files.length) }, readNext),
+      );
+      signal?.throwIfAborted();
+      prepared = read.sort((a, b) => a.index - b.index);
+      return prepared;
+    };
+
+    const uploadOptions = getCodeApiUploadOptions(
+      req,
+      route?.executionRouteKey ?? route?.baseUrl ?? executionProfile,
+    );
+    try {
+      const uploaded = await withCodeApiUploadRecovery({
+        registry: req.app.locals.codeApiUploadRegistry,
+        scope: uploadOptions.scope,
+        concurrency: uploadOptions.concurrency,
+        label: `uploading ${files.length} file(s) to the code environment`,
+        budget: rateLimitBudget ?? createCodeApiRateLimitBudget(uploadOptions.retryWaitMs),
+        signal,
+        onWait: (waitMs) =>
+          logger.warn(
+            `[provisionBatchToCodeEnv] Rate-limited uploading ${files.length} file(s); retrying in ${waitMs}ms`,
+          ),
+        openSource: prepare,
+        upload: async (batch) => {
+          if (batch.length === 0) {
+            return null;
+          }
+          const authHeaders = await getCodeApiAuthHeaders(req);
+          signal?.throwIfAborted();
+          const response = await dispatchCodeApiUpload(
+            batch.map(({ index }) => files[index].onUploadStart),
+            () =>
+              uploadCodeEnvBatch({
+                request: getAxios(),
+                baseUrl: route?.baseUrl ?? getCodeBaseURL(),
+                headers: {
+                  'User-Agent': 'LibreChat/1.0',
+                  'User-Id': req.user?.id as string,
+                  ...authHeaders,
+                  ...codeExecutionHeaders({ executionProfile }),
+                },
+                identity: { kind, id },
+                files: batch,
+                signal,
+              }),
+          );
+          return { batch, response };
+        },
+      });
+      const provisionedAt = Date.now();
+      const batch = uploaded?.batch ?? [];
+      const outcomes = uploaded?.response.files ?? [];
+      const storage_session_id = uploaded?.response.storage_session_id ?? '';
+      for (let i = 0; i < batch.length; i++) {
+        const { index, filename, content } = batch[i];
+        const { file, onUploadStart } = files[index];
+        const outcome = outcomes[i];
+        if (outcome.status !== 'success') {
+          /* Only the service's own refusal of this file establishes that nothing was stored.
+           * A file it did not answer for keeps its claim, like any upload with a lost reply. */
+          if (outcome.status === 'error') {
+            onUploadStart?.('rejected');
+          }
+          settled[index] = {
+            status: 'rejected',
+            reason: new Error(
+              `Code API did not confirm "${file.filename}" (${file.file_id}): ${outcome.error}`,
+            ),
+          };
+          continue;
+        }
+        const storedSandboxFilename = getUploadedCodeEnvFilename(outcome, filename);
+        const ref: CodeEnvRef = {
+          kind,
+          id,
+          storage_session_id,
+          file_id: outcome.fileId,
+          executionProfile,
+          ...(route?.executionRouteKey ? { executionRouteKey: route.executionRouteKey } : {}),
+          provisionedAt,
+          sandboxFilename: storedSandboxFilename,
+          content,
+        };
+        const referenceSet = mergeCodeEnvRef(file.metadata, ref);
+        settled[index] = {
+          status: 'fulfilled',
+          value: {
+            referenceSet,
+            sandboxFilename: storedSandboxFilename,
+            refUpdate: {
+              file_id: file.file_id,
+              routeKey,
+              ref,
+              ...(referenceSet.codeEnvRef ? { legacyRef: referenceSet.codeEnvRef } : {}),
+            },
+          },
+        };
+      }
+      if (batch.length > 0) {
+        logger.debug(
+          `[provisionBatchToCodeEnv] Provisioned ${batch.length} file(s) to code env in one request`,
+        );
+      }
+    } catch (error) {
+      for (let index = 0; index < files.length; index++) {
+        if (settled[index] === undefined && !overflowed.includes(index)) {
+          settled[index] = { status: 'rejected', reason: error };
+        }
+      }
+    }
+
+    /* Streamed after the batch released its upload slot, since each takes one of its own. */
+    for (const index of overflowed) {
+      const { file, sandboxFilename, onUploadStart } = files[index];
+      settled[index] = await provisionToCodeEnv({
+        req,
+        file,
+        entity_id,
+        route,
+        sandboxFilename,
+        signal,
+        rateLimitBudget,
+        onUploadStart,
+      }).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason: unknown) => ({ status: 'rejected' as const, reason }),
+      );
+    }
+    return settled.map(
+      (result) =>
+        result ?? {
+          status: 'rejected',
+          reason: new Error('Code upload batch left a file unsettled'),
+        },
+    );
+  }
+
+  /**
    * Provisions a file to the vector DB for file_search/RAG.
    * Gets the file from our storage and uploads vectors/embeddings.
    *
@@ -358,6 +686,7 @@ export function createProvisionService({
     file,
     entity_id,
     existingStream,
+    onUploadStart,
     signal,
   }: {
     req: ServerRequest;
@@ -365,6 +694,7 @@ export function createProvisionService({
     entity_id?: string;
     existingStream?: Readable;
     signal?: AbortSignal;
+    onUploadStart?: FileStorageUploadObserver;
   }): Promise<{ embedded: boolean; fileUpdate: { file_id: string; embedded?: boolean } | null }> {
     /* Unique per attempt: two concurrent requests provisioning the same file_id would
      * otherwise share one path, and the first to finish unlinks it while the second is
@@ -403,8 +733,8 @@ export function createProvisionService({
         file_id: file.file_id,
         entity_id,
         signal,
+        onUploadStart,
       });
-      signal?.throwIfAborted();
 
       const embedded = embeddingResult?.embedded ?? false;
 
@@ -422,54 +752,6 @@ export function createProvisionService({
       } catch {
         // Ignore cleanup errors
       }
-    }
-  }
-
-  /**
-   * Check if a single code env file is still alive by querying its session.
-   *
-   * @param {object} params
-   * @param {import('librechat-data-provider').TFile} params.file - File with metadata.codeEnvRef
-   * @param {string} [params.apiKey] - Legacy CODE_API_KEY, when configured
-   * @param {object} [params.req] - Request used to mint JWT code auth, when enabled
-   * @returns {Promise<boolean>} true if the file is still accessible in the code env
-   */
-  async function checkCodeEnvFileAlive({
-    file,
-    apiKey,
-    req,
-  }: {
-    file: TFile;
-    apiKey?: string;
-    req?: ServerRequest;
-  }): Promise<boolean> {
-    const ref = file.metadata?.codeEnvRef;
-    if (!ref?.storage_session_id || !ref?.file_id) {
-      return false;
-    }
-
-    try {
-      const baseURL = getCodeBaseURL();
-      const response = await getAxios()({
-        method: 'get',
-        url: `${baseURL}/files/${ref.storage_session_id}`,
-        params: { detail: 'summary' },
-        headers: await buildCodeApiHeaders({ apiKey, req }),
-        httpAgent: codeServerHttpAgent,
-        httpsAgent: codeServerHttpsAgent,
-        timeout: 5000,
-      });
-
-      const found = (response.data as Array<{ fileId?: string }> | undefined)?.some(
-        (f) => f.fileId === ref.file_id,
-      );
-      return !!found;
-    } catch (error) {
-      logAxiosError({
-        message: `[checkCodeEnvFileAlive] Error checking file "${file.filename}": ${(error as Error).message}`,
-        error,
-      });
-      return false;
     }
   }
 
@@ -501,6 +783,8 @@ export function createProvisionService({
     staleSafeWindowMs = 6 * 60 * 60 * 1000,
     baseURL: routeBaseURL,
     routeKey,
+    executionProfile,
+    bridgeWorkerId,
   }: {
     files: TFile[];
     apiKey?: string;
@@ -508,6 +792,8 @@ export function createProvisionService({
     staleSafeWindowMs?: number;
     baseURL?: string;
     routeKey?: string;
+    executionProfile?: CodeExecutionContext['executionProfile'];
+    bridgeWorkerId?: string;
   }): Promise<Set<string>> {
     const aliveFileIds = new Set<string>();
     const now = Date.now();
@@ -521,12 +807,20 @@ export function createProvisionService({
       {
         session_id: string;
         identity: CodeEnvIdentity;
-        entries: Array<{ file_id: string; remoteFileId: string }>;
+        entries: Array<{ file_id: string; remoteFileId: string; content?: CodeEnvRefContent }>;
       }
     >();
+    /** Snapshots whose stored bytes must be proven; an unanswered probe proves nothing. */
+    const proofRequired = new Set<string>();
 
     for (const file of files) {
-      const ref = routeKey != null ? codeEnvRefForRoute(file, routeKey) : file.metadata?.codeEnvRef;
+      const snapshot = file.context === FileContext.execute_code_snapshot;
+      const pointer =
+        routeKey != null ? codeEnvRefForRoute(file, routeKey) : file.metadata?.codeEnvRef;
+      const ref = snapshot ? getSnapshotReceipt(file, routeKey ?? 'default') : pointer;
+      if (snapshot) {
+        proofRequired.add(file.file_id);
+      }
       if (!ref?.storage_session_id || !ref?.file_id) {
         continue;
       }
@@ -553,29 +847,55 @@ export function createProvisionService({
         group = { session_id: ref.storage_session_id, identity, entries: [] };
         sessionGroups.set(groupKey, group);
       }
-      group.entries.push({ file_id: file.file_id, remoteFileId: ref.file_id });
+      group.entries.push({
+        file_id: file.file_id,
+        remoteFileId: ref.file_id,
+        ...(snapshot ? { content: ref.content } : {}),
+      });
     }
 
-    // One API call per session (in parallel)
-    const baseURL = routeBaseURL ?? getCodeBaseURL();
-    /* Minting can fail on its own, for example when the request carries no tenant
-     * context. That is an unverifiable probe, not an expired file, so it is handled
-     * like any other probe failure: every ref stays alive rather than the rejection
-     * propagating out and aborting initialization for the whole turn. */
-    let headers;
-    try {
-      headers = await buildCodeApiHeaders({ apiKey, req });
-    } catch (error) {
-      logger.warn(
-        `[checkSessionsAlive] Could not build Code API auth headers; treating ${files.length} reference(s) as unverified: ${(error as Error).message}`,
-      );
+    if (sessionGroups.size === 0) {
+      return aliveFileIds;
+    }
+    const keepUnverified = () => {
       for (const file of files) {
-        if (file?.file_id) {
+        if (file?.file_id && !proofRequired.has(file.file_id)) {
           aliveFileIds.add(file.file_id);
         }
       }
       return aliveFileIds;
+    };
+
+    /* Minting can fail on its own, for example when the request carries no tenant
+     * context. That is an unverifiable probe, not an expired file, so it is handled
+     * like any other probe failure: every ref stays alive rather than the rejection
+     * propagating out and aborting initialization for the whole turn. */
+    let headers: Record<string, string> | null;
+    try {
+      headers = await buildSessionProbeHeaders({
+        apiKey,
+        req,
+        routeKey,
+        executionProfile,
+        bridgeWorkerId,
+      });
+    } catch (error) {
+      logger.warn(
+        `[checkSessionsAlive] Could not build Code API auth headers; treating ${files.length} reference(s) as unverified: ${(error as Error).message}`,
+      );
+      return keepUnverified();
     }
+    /* Sending a credential the route does not accept only earns a 401, so a route with
+     * no usable credential this turn is left unverified without a request. */
+    if (headers == null) {
+      logger.debug(
+        `[checkSessionsAlive] No credential this route accepts is available; treating ${files.length} reference(s) as unverified`,
+      );
+      return keepUnverified();
+    }
+
+    // One API call per session (in parallel)
+    const baseURL = routeBaseURL ?? getCodeBaseURL();
     const sessionChecks = Array.from(sessionGroups.values()).map(
       async ({ session_id, identity, entries: fileEntries }) => {
         try {
@@ -589,10 +909,17 @@ export function createProvisionService({
             timeout: 5000,
           });
 
-          const remoteFiles = response.data ?? [];
-          for (const { file_id, remoteFileId } of fileEntries) {
+          const remoteFiles: unknown = response.data;
+          if (!Array.isArray(remoteFiles)) {
+            throw new Error('Invalid Code API session summary');
+          }
+          const remoteObjects = getCodeEnvSessionObjects(remoteFiles, session_id);
+          for (const { file_id, remoteFileId, content } of fileEntries) {
+            const remote = remoteObjects.get(remoteFileId);
             if (
-              (remoteFiles as Array<{ fileId?: string }>).some((f) => f.fileId === remoteFileId)
+              remote != null &&
+              (content == null ||
+                (provesStoredContent(content, remote) && checkCodeFileActive(remote.lastModified)))
             ) {
               aliveFileIds.add(file_id);
             }
@@ -610,7 +937,9 @@ export function createProvisionService({
             return;
           }
           for (const { file_id } of fileEntries) {
-            aliveFileIds.add(file_id);
+            if (!proofRequired.has(file_id)) {
+              aliveFileIds.add(file_id);
+            }
           }
         }
       },
@@ -619,11 +948,42 @@ export function createProvisionService({
     await Promise.allSettled(sessionChecks);
     return aliveFileIds;
   }
+  async function digestFile({
+    req,
+    file,
+    signal,
+  }: {
+    req: ServerRequest;
+    file: TFile;
+    signal?: AbortSignal;
+  }): Promise<StoredFileDigest | null> {
+    const stream = await getStorageStream(file, req, signal);
+    if (stream == null) {
+      return null;
+    }
+    const hash = createHash('sha256');
+    let bytes = 0;
+    const abort = () => stream.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      for await (const chunk of stream) {
+        const buffer: Buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        hash.update(buffer);
+        bytes += buffer.byteLength;
+      }
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
+    signal?.throwIfAborted();
+    return { sha256: hash.digest('hex'), bytes };
+  }
+
   return {
     loadCodeApiKey,
     provisionToCodeEnv,
+    provisionBatchToCodeEnv,
     provisionToVectorDB,
-    checkCodeEnvFileAlive,
+    digestFile,
     checkSessionsAlive,
   };
 }

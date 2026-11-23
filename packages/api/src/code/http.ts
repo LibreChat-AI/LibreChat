@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
-import { EModelEndpoint } from 'librechat-data-provider';
 import { logger, type AppConfig } from '@librechat/data-schemas';
+import { EModelEndpoint, isCodeWorkspaceCheckoutAvailable } from 'librechat-data-provider';
 import type { CodeEnvironmentMode, CodeWorkspaceSelection } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type {
@@ -363,8 +363,22 @@ export function createCodeEnvironmentHttpHandlers(deps: CodeEnvironmentHttpDeps)
     if (!current.workspaces || !current.operations) {
       throw new CodeWorkspaceSelectionError('unsupported');
     }
-    if (!current.workspaces.some(({ id }) => id === selection.workspaceId)) {
+    const workspace = current.workspaces.find(({ id }) => id === selection.workspaceId);
+    if (workspace == null) {
       throw new CodeWorkspaceSelectionError('missing');
+    }
+    const configuration = policy.configurations.find(({ id }) => id === selection.environmentId);
+    const effectiveEnvironment = configuration
+      ? configuredAttachedControlPlane(policy.effectiveConfig, configuration.controlPlaneId ?? '')
+      : configuredControlPlane(policy.effectiveConfig, selection.environmentId);
+    if (
+      !isCodeWorkspaceCheckoutAvailable(
+        selection,
+        workspace,
+        effectiveEnvironment?.configSchema?.workspaces?.allowCheckoutSelection === true,
+      )
+    ) {
+      throw new CodeWorkspaceSelectionError('unsupported');
     }
     if (
       previousWorkspaceId != null &&

@@ -1,9 +1,16 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { TooltipAnchor } from '@librechat/client';
+import { Button, IconButton, TooltipAnchor } from '@librechat/client';
 import { ListTodo, Maximize2, Minimize2, Square, X } from 'lucide-react';
-import { RECENT_SUBAGENT_WINDOW_MS } from './rows';
+import {
+  useOpenSubagentPanel,
+  durableSubagentSelection,
+  useParentSubagents,
+} from '@librechat/chat/react';
+import type { TaskRow } from './rows';
 import useBackgroundTasks from './useTasks';
+import { visitTaskTarget } from './jump';
+import { useTaskExpiry } from './clock';
 import { useLocalize } from '~/hooks';
 import Section from './Section';
 import TaskCard from './Card';
@@ -12,7 +19,7 @@ import { cn } from '~/utils';
 const TICK_MS = 1_000;
 
 const iconButtonClass =
-  'flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary disabled:pointer-events-none disabled:opacity-50';
+  'flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-control disabled:pointer-events-none disabled:opacity-50';
 
 /** Header control listing the conversation's background tools and subagents. */
 function BackgroundTasksButton({
@@ -23,9 +30,12 @@ function BackgroundTasksButton({
   isSubmitting: boolean;
 }) {
   const localize = useLocalize();
+  const openSubagentPanel = useOpenSubagentPanel();
+  const parent = useParentSubagents();
   const popover = Ariakit.usePopoverStore({ placement: 'bottom-end' });
   const open = Ariakit.useStoreState(popover, 'open');
   const disclosureRef = useRef<HTMLButtonElement>(null);
+  const finalFocusRef = useRef<HTMLElement | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [wide, setWide] = useState(false);
   const [popoverElement, setPopoverElement] = useState<HTMLDivElement | null>(null);
@@ -34,26 +44,13 @@ function BackgroundTasksButton({
 
   useEffect(() => {
     setNow(Date.now());
+    if (open) finalFocusRef.current = disclosureRef.current;
     if (!open || activeCount === 0) return;
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(timer);
   }, [open, activeCount]);
 
-  const nextExpiry = rows.reduce(
-    (next, row) =>
-      row.settledAt != null &&
-      row.delivery == null &&
-      row.status !== 'running' &&
-      row.status !== 'stopping'
-        ? Math.min(next, row.settledAt + RECENT_SUBAGENT_WINDOW_MS + 1)
-        : next,
-    Infinity,
-  );
-  useEffect(() => {
-    if (!Number.isFinite(nextExpiry)) return;
-    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, nextExpiry - Date.now()));
-    return () => clearTimeout(timer);
-  }, [nextExpiry]);
+  useTaskExpiry(rows, setNow);
 
   if (rows.length === 0 && !view.loadFailed && !incomplete) {
     return null;
@@ -81,6 +78,31 @@ function BackgroundTasksButton({
   } else if (partiallyStoppable) {
     stopAllLabel = localize('com_ui_background_tasks_stop_available');
   }
+  const jumpToTool = (row: TaskRow): boolean => {
+    if (row.kind === 'subagent') {
+      if (
+        openSubagentPanel == null ||
+        parent.conversationId !== conversationId ||
+        row.threadId == null ||
+        row.taskId == null
+      ) {
+        return false;
+      }
+      const child = parent.byThreadId.get(row.threadId);
+      if (child == null) return false;
+      const selection = durableSubagentSelection(conversationId, child, row.taskId);
+      if (selection == null) return false;
+      finalFocusRef.current = null;
+      disclosureRef.current?.focus({ preventScroll: true });
+      popover.hide();
+      openSubagentPanel({ ...selection, isSubmitting: false });
+      return true;
+    }
+    return visitTaskTarget(row, () => {
+      finalFocusRef.current = null;
+      popover.hide();
+    });
+  };
   const card = (row: (typeof rows)[number]) => (
     <TaskCard
       key={row.id}
@@ -90,6 +112,7 @@ function BackgroundTasksButton({
       isStopping={view.isStopping}
       onStop={view.stop}
       portalElement={popoverElement}
+      onJump={jumpToTool}
     />
   );
 
@@ -103,7 +126,7 @@ function BackgroundTasksButton({
             store={popover}
             aria-label={triggerLabel}
             data-testid="header-background-tasks-button"
-            className="relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border border-border-light bg-presentation text-text-primary transition-all ease-in-out hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary"
+            className="border-border-light bg-presentation text-text-primary hover:bg-surface-active-alt aria-expanded:bg-surface-active-alt rounded-theme-control relative inline-flex size-9 flex-shrink-0 items-center justify-center border transition-all ease-in-out"
           >
             <ListTodo className="icon-md" aria-hidden="true" />
             {(activeCount > 0 || awaitingCount > 0 || failedCount > 0 || incomplete) && (
@@ -111,7 +134,7 @@ function BackgroundTasksButton({
                 aria-hidden="true"
                 data-testid="background-tasks-indicator"
                 className={cn(
-                  'absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-presentation',
+                  'ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2',
                   failedCount > 0 || incomplete ? 'bg-status-warning' : 'bg-status-info',
                   activeCount > 0 && 'animate-pulse motion-reduce:animate-none',
                 )}
@@ -126,46 +149,51 @@ function BackgroundTasksButton({
         gutter={8}
         portal
         unmountOnHide
-        finalFocus={disclosureRef}
+        finalFocus={finalFocusRef}
+        autoFocusOnHide={() => finalFocusRef.current != null}
         aria-label={title}
         className={cn(
-          'z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-border-medium bg-surface-secondary text-text-primary shadow-lg focus:outline-none',
-          wide ? 'w-[36rem]' : 'w-80',
+          'animate-composer-popover border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel animate-composer-popover-resize z-[200] flex max-w-[calc(100vw-2rem)] flex-col border shadow-lg focus:outline-none motion-reduce:transition-none',
+          wide
+            ? 'max-h-[calc(100dvh-5rem)] w-[min(56rem,calc(100vw-2rem))]'
+            : 'max-h-[min(36rem,calc(100dvh-5rem))] w-80',
         )}
       >
-        <div className="flex items-center gap-1 px-3 pb-2 pt-3">
+        <div className="flex items-center gap-1 px-3 pt-3 pb-2">
           <Ariakit.PopoverHeading className="flex-1 text-sm font-semibold">
             {title}
           </Ariakit.PopoverHeading>
-          <button
+          <Button
+            variant="quiet"
+            size="icon-xs"
             type="button"
             aria-label={localize(wide ? 'com_ui_collapse' : 'com_ui_expand')}
             aria-pressed={wide}
             onClick={() => setWide((value) => !value)}
-            className={cn(iconButtonClass, 'max-sm:hidden')}
+            className="max-sm:hidden"
           >
             {wide ? (
               <Minimize2 className="size-4" aria-hidden="true" />
             ) : (
               <Maximize2 className="size-4" aria-hidden="true" />
             )}
-          </button>
+          </Button>
           <Ariakit.PopoverDismiss aria-label={localize('com_ui_close')} className={iconButtonClass}>
             <X className="size-4" aria-hidden="true" />
           </Ariakit.PopoverDismiss>
         </div>
         <div className="space-y-4 overflow-y-auto px-3 pb-3">
           {incomplete && (
-            <p role="status" className="text-sm text-status-warning">
+            <p role="status" className="text-status-warning text-sm">
               {localize('com_ui_background_tasks_incomplete')}
             </p>
           )}
           {view.loadFailed && (
-            <div role="alert" className="text-sm text-status-error">
+            <div role="alert" className="text-status-error text-sm">
               <p>{localize('com_ui_background_tasks_load_failed')}</p>
               <button
                 type="button"
-                className="rounded px-2 py-1 text-text-primary underline focus-visible:ring-2 focus-visible:ring-ring-primary"
+                className="text-text-primary focus-visible:ring-focus-control rounded px-2 py-1 underline focus-visible:ring-2"
                 onClick={() => void view.retry()}
               >
                 {localize('com_ui_retry')}
@@ -187,16 +215,18 @@ function BackgroundTasksButton({
                       tabIndex={!anyStoppable ? 0 : undefined}
                       className="inline-flex"
                     >
-                      <button
+                      <IconButton
                         type="button"
-                        aria-label={stopAllLabel}
+                        variant="primary"
+                        size="sm"
+                        shape="inset"
+                        label={stopAllLabel}
                         disabled={!anyStoppable || view.isStopping}
                         onClick={() => void view.stopAll()}
                         data-testid="background-tasks-stop-all"
-                        className={cn(iconButtonClass, 'border border-border-medium')}
                       >
                         <Square className="size-3 fill-current" aria-hidden="true" />
-                      </button>
+                      </IconButton>
                     </span>
                   }
                 />
@@ -211,7 +241,7 @@ function BackgroundTasksButton({
             </Section>
           )}
           {view.stopFailed && (
-            <p role="alert" className="px-3 pb-3 text-sm text-status-error">
+            <p role="alert" className="text-status-error px-3 pb-3 text-sm">
               {localize('com_ui_background_tasks_stop_failed')}
             </p>
           )}

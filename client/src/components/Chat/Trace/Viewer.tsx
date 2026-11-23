@@ -2,7 +2,7 @@ import { useId, useRef, useMemo, useState, useEffect, useCallback, useDeferredVa
 import axios from 'axios';
 import { useAtom } from 'jotai';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, dataService, resolveTraceViewerConfig } from 'librechat-data-provider';
+import { QueryKeys, resolveTraceViewerConfig } from 'librechat-data-provider';
 import { Button, Spinner, EmptyState, FilterInput, buttonVariants } from '@librechat/client';
 import {
   X,
@@ -29,6 +29,7 @@ import type { TranslationKeys } from '~/hooks';
 import {
   keepNewestTracePage,
   useGetStartupConfig,
+  fetchConversationMessages,
   useGetLangfuseSessionLinkQuery,
   useConversationTraceRecordsQuery,
 } from '~/data-provider';
@@ -88,9 +89,13 @@ function errorMessageKey(error: unknown): TranslationKeys {
 export default function Viewer({
   conversationId,
   onClose,
+  returnFocusTo,
 }: {
   conversationId: string;
   onClose: () => void;
+  /** Where focus goes on close. The surface passes the opener it saw, since a loading
+   *  fallback may have held focus before the viewer mounted. */
+  returnFocusTo?: HTMLElement | null;
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
@@ -98,6 +103,8 @@ export default function Viewer({
   const headingId = useId();
   const searchId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
+  /** Read once, on open: focus is taken and returned for the open the viewer mounted with. */
+  const returnFocusRef = useRef(returnFocusTo);
   const treeRef = useRef<HTMLDivElement>(null);
   const { data: startupConfig } = useGetStartupConfig();
   const settings = resolveTraceViewerConfig(startupConfig?.interface?.traceViewer);
@@ -112,7 +119,7 @@ export default function Viewer({
   /** The chat's own messages, already loaded underneath the trace; they are only read, never fetched here. */
   const { data: messages } = useQuery<TMessage[]>(
     [QueryKeys.messages, conversationId],
-    () => dataService.getMessagesByConvoId(conversationId),
+    () => fetchConversationMessages(conversationId),
     { enabled: false },
   );
 
@@ -287,7 +294,8 @@ export default function Viewer({
     model.start;
 
   useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const opener = returnFocusRef.current !== undefined ? returnFocusRef.current : focused;
     closeRef.current?.focus();
     return () => {
       /** Only reclaim focus the trace took with it; a close caused by navigating
@@ -369,7 +377,7 @@ export default function Viewer({
     if (recordsQuery.isLoading) {
       return (
         <div role="status" className="flex flex-1 items-center justify-center gap-2">
-          <Spinner className="size-5 text-text-secondary" />
+          <Spinner tone="secondary" className="size-5" />
           <span className="sr-only">{localize('com_ui_trace_loading')}</span>
         </div>
       );
@@ -413,7 +421,7 @@ export default function Viewer({
     const cachedReadFailed = recordsQuery.isError && recordsQuery.data != null;
     return (
       <>
-        <div className="flex flex-col gap-3 border-b border-border-light px-3 py-3 md:px-4">
+        <div className="border-border-light flex flex-col gap-3 border-b px-3 py-3 md:px-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Summary
               summary={model.summary}
@@ -422,7 +430,7 @@ export default function Viewer({
               currency={currency}
             />
             {recordsQuery.hasNextPage === true && (
-              <p className="text-xs text-text-secondary">
+              <p className="text-text-secondary text-xs">
                 {localize('com_ui_trace_partial', { 0: String(records.length) })}
               </p>
             )}
@@ -485,9 +493,9 @@ export default function Viewer({
               <Layers className="size-4" aria-hidden="true" />
               <span className="hidden sm:inline">{localize('com_ui_trace_all_spans')}</span>
             </Button>
-            <div className="ml-auto flex items-center gap-1">
+            <div className="ms-auto flex items-center gap-1">
               {view != null && (
-                <span className="text-xs tabular-nums text-text-secondary" aria-live="polite">
+                <span className="text-text-secondary text-xs tabular-nums" aria-live="polite">
                   {selectionText()}
                 </span>
               )}
@@ -519,7 +527,7 @@ export default function Viewer({
         <div className="relative flex min-h-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {rows.length === 0 ? (
-              <p role="status" className="p-4 text-sm text-text-secondary">
+              <p role="status" className="text-text-secondary p-4 text-sm">
                 {localize('com_ui_trace_no_matches')}
               </p>
             ) : (
@@ -544,10 +552,10 @@ export default function Viewer({
               />
             )}
             {(recordsQuery.hasNextPage === true || cachedReadFailed) && (
-              <div className="flex flex-wrap items-center justify-center gap-2 border-t border-border-light p-2">
+              <div className="border-border-light flex flex-wrap items-center justify-center gap-2 border-t p-2">
                 {cachedReadFailed && (
                   <>
-                    <span role="alert" className="text-xs text-status-error">
+                    <span role="alert" className="text-status-error text-xs">
                       {localize(errorMessageKey(recordsQuery.error))}
                     </span>
                     <Button
@@ -605,13 +613,13 @@ export default function Viewer({
       aria-labelledby={headingId}
       data-testid="trace-viewer"
       onKeyDown={handleKeyDown}
-      className="absolute inset-0 z-20 flex flex-col bg-presentation text-text-primary"
+      className="bg-surface-primary-alt text-text-primary absolute inset-0 z-20 flex flex-col"
     >
-      <div className="flex h-[52px] shrink-0 items-center gap-2 border-b border-border-light px-2 md:px-4">
+      <div className="border-border-light flex h-[52px] shrink-0 items-center gap-2 border-b px-2 md:px-4">
         <h2 id={headingId} className="text-base font-semibold">
           {localize('com_ui_trace_title')}
         </h2>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ms-auto flex items-center gap-2">
           {langfuseUrl != null && (
             <a
               href={langfuseUrl}

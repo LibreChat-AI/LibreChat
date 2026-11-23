@@ -1,16 +1,23 @@
 import {
   AuthType,
   CODE_APPROVAL_MODES,
+  DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
   EModelEndpoint,
   isAgentsEndpoint,
   orderEndpointsConfig,
   defaultAgentCapabilities,
 } from 'librechat-data-provider';
-import type { AgentCapabilities, TEndpointsConfig, TConfig } from 'librechat-data-provider';
+import type {
+  TConfig,
+  TAzureGroupMap,
+  TEndpointsConfig,
+  AgentCapabilities,
+} from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, TCustomEndpointsConfig } from '~/types';
 import type { GetAppConfigOptions } from '~/app/service';
 import { loadCustomEndpointsConfig as defaultLoadCustomEndpoints } from '~/endpoints/custom';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { getResponsesApiRouting } from './responses';
 
@@ -22,6 +29,20 @@ export interface EndpointsConfigDeps {
   getAppConfig: (params: GetAppConfigOptions) => Promise<AppConfig>;
   loadDefaultEndpointsConfig: (appConfig: AppConfig) => Promise<DefaultEndpointsResult>;
   loadCustomEndpointsConfig?: (custom: unknown) => TCustomEndpointsConfig | undefined;
+}
+
+/** Only the model names and efforts reach the client; deployment details stay server-side. */
+function getAzureModelReasoningEfforts(
+  groupMap: TAzureGroupMap = {},
+): Pick<TConfig, 'modelReasoningEfforts'> {
+  const declared = Object.values(groupMap).flatMap((group) =>
+    Object.entries(group?.models ?? {}).flatMap(([model, config]) =>
+      typeof config === 'object' && config.reasoningEfforts != null
+        ? [[model, config.reasoningEfforts] as const]
+        : [],
+    ),
+  );
+  return declared.length > 0 ? { modelReasoningEfforts: Object.fromEntries(declared) } : {};
 }
 
 export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
@@ -45,7 +66,10 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
     };
 
     if (appConfig.endpoints?.[EModelEndpoint.azureOpenAI]) {
-      mergedConfig[EModelEndpoint.azureOpenAI] = { userProvide: false };
+      mergedConfig[EModelEndpoint.azureOpenAI] = {
+        userProvide: false,
+        ...getAzureModelReasoningEfforts(appConfig.endpoints[EModelEndpoint.azureOpenAI].groupMap),
+      };
     }
 
     for (const endpoint of [EModelEndpoint.openAI, EModelEndpoint.azureOpenAI] as const) {
@@ -82,12 +106,14 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
 
     if (mergedConfig[EModelEndpoint.agents] && appConfig?.endpoints?.[EModelEndpoint.agents]) {
       const {
+        channels,
         disableBuilder,
         capabilities,
         allowedProviders,
         statefulCodeSessions,
         maxSubagents,
         fileSharing,
+        linkedInstructions,
       } = appConfig.endpoints[EModelEndpoint.agents];
       const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
       /** Only advertise Accept edits when the endpoint fallback cannot force every
@@ -102,6 +128,14 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       const clientStatefulCodeSessions = statefulCodeSessions
         ? {
             allowedEnvironments: statefulCodeSessions.allowedEnvironments,
+            ...(isCodeEnvironmentSelectionEnabled(statefulCodeSessions.allowEnvironmentSelection)
+              ? {
+                  allowEnvironmentSelection: true,
+                  maxEnvironmentChoices:
+                    statefulCodeSessions.maxEnvironmentChoices ??
+                    DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
+                }
+              : {}),
             approvalsEnabled: toolApproval?.enabled !== false,
             approvalModes,
             environments: statefulCodeSessions.environments
@@ -125,12 +159,25 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         : undefined;
       mergedConfig[EModelEndpoint.agents] = {
         ...mergedConfig[EModelEndpoint.agents],
+        channels: { enabled: channels?.enabled === true },
         allowedProviders,
         disableBuilder,
         capabilities,
         statefulCodeSessions: clientStatefulCodeSessions,
         maxSubagents,
         fileSharing,
+        /** Only the switch reaches the client; the budget/cache fields stay server-side. */
+        linkedInstructions: {
+          langfuse: { enabled: linkedInstructions?.langfuse?.enabled === true },
+        },
+        toolApproval: {
+          enabled: toolApproval?.enabled === true,
+          agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,
+          mode: toolApproval?.mode,
+          allow: toolApproval?.allow,
+          deny: toolApproval?.deny,
+          ask: toolApproval?.ask,
+        },
       };
     }
 

@@ -57,11 +57,13 @@ const SettingsButton = ({
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       className={cn(
-        'group/button flex items-center gap-1.5 rounded-md px-1.5',
+        'group/button -my-0.5 flex min-h-6 items-center justify-center gap-1.5 rounded-md px-1.5',
+        /* Both targets (24px, 32px on touch) spill into the row's padding instead of growing it. */
+        'any-pointer-coarse:-my-1.5 any-pointer-coarse:min-h-8 any-pointer-coarse:min-w-8',
         'text-text-secondary transition-colors duration-150',
         'hover:bg-surface-tertiary hover:text-text-primary',
         'focus-visible:bg-surface-tertiary focus-visible:text-text-primary',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-1',
+        'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden',
         className,
       )}
       aria-label={`${text} ${endpoint.label}`}
@@ -70,13 +72,13 @@ const SettingsButton = ({
       <span
         aria-hidden="true"
         className={cn(
-          'grid overflow-hidden transition-[grid-template-columns,opacity] duration-150 ease-out',
+          'grid overflow-hidden transition-all duration-150 ease-out',
           'grid-cols-[0fr] opacity-0',
           'group-hover/button:grid-cols-[1fr] group-hover/button:opacity-100',
           'group-focus-visible/button:grid-cols-[1fr] group-focus-visible/button:opacity-100',
         )}
       >
-        <span className="min-w-0 truncate pr-0.5">{text}</span>
+        <span className="min-w-0 truncate pe-0.5">{text}</span>
       </span>
     </button>
   );
@@ -108,7 +110,7 @@ function EndpointMenuContent({
     return modelSpecs.filter((spec: TModelSpec) => spec.group === endpoint.value);
   }, [modelSpecs, endpoint.value]);
 
-  if (isAssistantsEndpoint(endpoint.value) && endpoint.models === undefined) {
+  if (endpoint.isLoading && !endpoint.models?.length) {
     return (
       <div
         className="flex items-center justify-center p-2"
@@ -163,6 +165,18 @@ function EndpointMenuContent({
           setSize={listboxSetSize}
         />
       ))}
+      {endpoint.isUnavailable && (
+        <MenuItem onClick={endpoint.onRetry}>{localize('com_ui_retry')}</MenuItem>
+      )}
+      {endpoint.isLoading && endpoint.models != null && (
+        <div
+          role="status"
+          aria-label={localize('com_ui_loading')}
+          className="flex justify-center p-2"
+        >
+          <Spinner aria-hidden="true" />
+        </div>
+      )}
       <EndpointModels
         endpoint={endpoint}
         renderedModels={renderedModels}
@@ -279,7 +293,7 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
           {endpoint.icon}
         </div>
       )}
-      <span className="truncate text-left">{endpoint.label}</span>
+      <span className="truncate text-start">{endpoint.label}</span>
     </div>
   );
 
@@ -312,7 +326,7 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
               )}
               {isEndpointSelected && (
                 <>
-                  <CheckCircle2 className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+                  <CheckCircle2 className="text-text-primary size-4 shrink-0" aria-hidden="true" />
                   <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>
                 </>
               )}
@@ -343,14 +357,14 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
               side="top"
               render={
                 <span className="flex items-center">
-                  <MousePointerClick className="size-4 text-text-secondary" aria-hidden="true" />
+                  <MousePointerClick className="text-text-secondary size-4" aria-hidden="true" />
                 </span>
               }
             />
           )}
           {isEndpointSelected && !isAssistantsNotLoaded && (
             <>
-              <CheckCircle2 className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+              <CheckCircle2 className="text-text-primary size-4 shrink-0" aria-hidden="true" />
               <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>
             </>
           )}

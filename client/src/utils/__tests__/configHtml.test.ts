@@ -6,12 +6,11 @@ import {
   CONFIG_HTML_MEDIA_TAGS,
   createConfigHtmlSanitizer,
   createConfigHtmlTextSanitizer,
-  sanitizeConfigHtml,
 } from '../configHtml';
 
 describe('configHtml', () => {
   it('removes active attributes and unsupported elements', () => {
-    const sanitized = sanitizeConfigHtml(
+    const sanitized = createConfigHtmlSanitizer()(
       '<img src=x onerror="alert(1)"><a href="javascript:alert(1)" onclick="alert(1)"><strong>Learn</strong></a><script>alert(1)</script><svg onload="alert(1)"></svg>',
     );
 

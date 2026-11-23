@@ -75,27 +75,29 @@ export default function SkillTextEditor({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      <Textarea
-        value={content}
-        onChange={(event) => setContent(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-            event.preventDefault();
-            save();
-          }
-        }}
-        disabled={upload.isLoading}
-        spellCheck={false}
-        aria-label={`${localize('com_ui_edit')} ${file.filename}`}
-        className="min-h-0 flex-1 resize-none font-mono text-sm text-text-primary"
-      />
+      <div className="flex min-h-0 flex-1 font-mono">
+        <Textarea
+          value={content}
+          onChange={(event) => setContent(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+              event.preventDefault();
+              save();
+            }
+          }}
+          disabled={upload.isLoading}
+          spellCheck={false}
+          aria-label={`${localize('com_ui_edit')} ${file.filename}`}
+          className="min-h-0 flex-1"
+        />
+      </div>
       {upload.isError && (
-        <p role="alert" className="text-sm text-text-destructive">
+        <p role="alert" className="text-text-destructive text-sm">
           {localize(conflict ? 'com_ui_skill_file_conflict' : 'com_ui_skill_file_save_error')}
         </p>
       )}
       {!canEdit && (
-        <p role="note" className="text-sm text-text-secondary">
+        <p role="note" className="text-text-secondary text-sm">
           {localize('com_ui_skill_no_edit_permission')}
         </p>
       )}

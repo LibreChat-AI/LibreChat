@@ -2,6 +2,8 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Calculator, createSearchTool, createCodeExecutionTool } = require('@librechat/agents');
 const {
   checkAccess,
+  createGitHubCompareTool,
+  getProxyDispatcher,
   toolkitParent,
   toolRolePermissions,
   checkToolRolePermission,
@@ -27,7 +29,10 @@ const {
   buildWebSearchDynamicContext,
   codeExecutionAuthHeaders,
   getCodeFileLocation,
-  resolveCodeExecutionContext,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
+  resolveMCPClientCapabilityProfile,
+  setMissingCodeFilesContext,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -37,14 +42,13 @@ const {
   EToolResources,
   PermissionTypes,
   AgentCapabilities,
+  resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
-  availableTools,
   manifestToolMap,
   // Basic Tools
   GoogleSearchAPI,
   // Structured Tools
-  DALLE3,
   FluxAPI,
   OpenWeather,
   StructuredSD,
@@ -66,74 +70,10 @@ const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSearch');
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
-const { getUserPluginAuthValue } = require('~/server/services/PluginService');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
 const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
-
-/**
- * Validates the availability and authentication of tools for a user based on environment variables or user-specific plugin authentication values.
- * Tools without required authentication or with valid authentication are considered valid.
- *
- * @param {Object} user The user object for whom to validate tool access.
- * @param {Array<string>} tools An array of tool identifiers to validate. Defaults to an empty array.
- * @returns {Promise<Array<string>>} A promise that resolves to an array of valid tool identifiers.
- */
-const validateTools = async (user, tools = []) => {
-  try {
-    const validToolsSet = new Set(tools);
-    const availableToolsToValidate = availableTools.filter((tool) =>
-      validToolsSet.has(tool.pluginKey),
-    );
-
-    /**
-     * Validates the credentials for a given auth field or set of alternate auth fields for a tool.
-     * If valid admin or user authentication is found, the function returns early. Otherwise, it removes the tool from the set of valid tools.
-     *
-     * @param {string} authField The authentication field or fields (separated by "||" for alternates) to validate.
-     * @param {string} toolName The identifier of the tool being validated.
-     */
-    const validateCredentials = async (authField, toolName) => {
-      const fields = authField.split('||');
-      for (const field of fields) {
-        const adminAuth = process.env[field];
-        if (adminAuth && adminAuth.length > 0) {
-          return;
-        }
-
-        let userAuth = null;
-        try {
-          userAuth = await getUserPluginAuthValue(user, field);
-        } catch (err) {
-          if (field === fields[fields.length - 1] && !userAuth) {
-            throw err;
-          }
-        }
-        if (userAuth && userAuth.length > 0) {
-          return;
-        }
-      }
-
-      validToolsSet.delete(toolName);
-    };
-
-    for (const tool of availableToolsToValidate) {
-      if (!tool.authConfig || tool.authConfig.length === 0) {
-        continue;
-      }
-
-      for (const auth of tool.authConfig) {
-        await validateCredentials(auth.authField, tool.pluginKey);
-      }
-    }
-
-    return Array.from(validToolsSet.values());
-  } catch (err) {
-    logger.error('[validateTools] There was a problem validating tools', err);
-    throw new Error(err);
-  }
-};
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
 /** @typedef {import('@librechat/agents/langchain/tools').Tool} Tool */
@@ -188,7 +128,6 @@ const getAuthFields = (toolKey) => {
  * @param {LoadToolOptions} [params.options]
  * @param {boolean} [params.useSpecs]
  * @param {Array<string>} params.tools
- * @param {boolean} [params.functions]
  * @param {boolean} [params.returnMap]
  * @param {AppConfig['webSearch']} [params.webSearch]
  * @param {AppConfig['fileStrategy']} [params.fileStrategy]
@@ -204,7 +143,6 @@ const loadTools = async ({
   userMCPAuthMap,
   tools = [],
   options = {},
-  functions = true,
   returnMap = false,
   webSearch,
   fileStrategy,
@@ -223,6 +161,13 @@ const loadTools = async ({
   };
 
   const customConstructors = {
+    github_compare: () =>
+      createGitHubCompareTool({
+        config: options.req?.config?.githubCompare,
+        toolRegistry: options.toolRegistry,
+        fetch,
+        getDispatcher: getProxyDispatcher,
+      }),
     image_gen_oai: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });
@@ -276,10 +221,6 @@ const loadTools = async ({
     : true;
   let loggedMCPDenied = false;
 
-  if (functions === true) {
-    toolConstructors.dalle = DALLE3;
-  }
-
   /** @type {ImageGenOptions} */
   const imageGenOptions = {
     isAgent: !!agent,
@@ -290,9 +231,15 @@ const loadTools = async ({
     uploadImageBuffer: options.uploadImageBuffer,
   };
 
+  const timeoutOptions = { timeouts: options.req?.config?.timeouts };
+
   const toolOptions = {
+    google: timeoutOptions,
+    wolfram: timeoutOptions,
+    open_weather: timeoutOptions,
+    traversaal_search: timeoutOptions,
+    tavily_search_results_json: timeoutOptions,
     flux: imageGenOptions,
-    dalle: imageGenOptions,
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,
   };
@@ -374,22 +321,21 @@ const loadTools = async ({
 
     if (tool === Tools.execute_code) {
       requestedTools[tool] = async () => {
-        const statefulSessions =
-          agent?.stateful_code_sessions === true &&
-          (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions));
         const codeExecutionContext =
           options.codeExecutionContext ??
-          resolveCodeExecutionContext({
-            statefulSessions,
-            environment: agent?.stateful_code_environment,
-            environmentId: agent?.code_environment_id,
-            environments:
-              options.req?.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-            userId: user,
-            agentId: agent?.id,
-            conversationId: options.req?.body?.conversationId,
-          });
-        const { files, toolContext } = await primeCodeFiles({
+          resolveAgentCodeExecution(
+            withRequestCodeInputs({
+              req: options.req ?? {},
+              agent,
+              codeExecutionAvailable: true,
+              statefulSessionsAvailable:
+                agent?.stateful_code_sessions === true &&
+                (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions)),
+              userId: user,
+              conversationId: options.req?.body?.conversationId,
+            }),
+          ).context;
+        const { files, toolContext, missingFilesContext } = await primeCodeFiles({
           ...options,
           signal,
           agentId: agent?.id,
@@ -402,6 +348,7 @@ const loadTools = async ({
         if (toolContext) {
           dynamicToolContextMap[tool] = toolContext;
         }
+        setMissingCodeFilesContext(dynamicToolContextMap, missingFilesContext);
         if (files?.length) {
           primedCodeFiles = files;
         }
@@ -520,9 +467,17 @@ const loadTools = async ({
        *  (a user-DB server may be named exactly like an operator server's
        *  normalized form); only when nothing resolves is the parsed name
        *  treated as a normalized spelling of a raw config name. */
+      const requestUser = options.req?.user;
+      const lookup = { idOnTheSource: requestUser?.idOnTheSource };
       let serverName = parsedServerName;
       let serverConfig = serverName
-        ? await getMCPServersRegistry().getServerConfig(serverName, user, configServers)
+        ? await getMCPServersRegistry().getServerConfig(
+            serverName,
+            user,
+            configServers,
+            requestUser?.role,
+            lookup,
+          )
         : null;
       if (!serverConfig && serverName != null) {
         const aliasedName = serverNameAliases.get(serverName);
@@ -531,6 +486,8 @@ const loadTools = async ({
             aliasedName,
             user,
             configServers,
+            requestUser?.role,
+            lookup,
           );
           if (serverConfig) {
             serverName = aliasedName;
@@ -625,6 +582,18 @@ const loadTools = async ({
 
   const loadedTools = (await Promise.all(toolPromises)).flatMap((plugin) => plugin || []);
   const safeUser = createSafeUser(options.req?.user);
+  const admittedAppConfig = options.req?.config;
+  const admittedMCPAppsPolicy = resolveMCPAppsPolicy(
+    admittedAppConfig?.mcpSettings?.apps,
+    admittedAppConfig?.mcpAppSandbox,
+    admittedAppConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+    admittedAppConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+    admittedAppConfig?.mcpAppSandbox?.url,
+    admittedAppConfig?.mcpAppSandbox?.maxActiveViews,
+    admittedAppConfig?.mcpAppSandbox?.maxActionPreviewChars,
+    admittedAppConfig?.mcpAppSandbox?.operationLimits,
+  );
+  const capabilityProfile = resolveMCPClientCapabilityProfile(admittedMCPAppsPolicy);
   const requestScopedConnections =
     options.requestScopedConnections ?? getMCPRequestContext(options.req, options.res);
   /**
@@ -659,12 +628,15 @@ const loadTools = async ({
       availableTools: options.mcpAvailableTools,
       createTools: createMCPTools,
       createTool: createMCPTool,
-      getAvailableTools: getMCPServerTools,
+      getAvailableTools: (userId, serverName, config) =>
+        getMCPServerTools(userId, serverName, config, capabilityProfile),
       context: {
+        agentId: agent?.id,
         mcpPermissionContext,
         signal,
         user: safeUser,
         userMCPAuthMap,
+        mcpApps: admittedMCPAppsPolicy,
         configServers,
         requestBody: options.requestBody ?? options.req?.body,
         requestScopedConnections,
@@ -674,6 +646,7 @@ const loadTools = async ({
         oboIdentityContext,
         streamId: options.req?._resumableStreamId || null,
         jobCreatedAt: options.jobCreatedAt,
+        unattended: options.unattended,
         model: agent?.model ?? model,
         provider: agent?.provider ?? endpoint,
       },
@@ -684,6 +657,5 @@ const loadTools = async ({
 
 module.exports = {
   loadToolWithAuth,
-  validateTools,
   loadTools,
 };

@@ -34,6 +34,8 @@ const SOURCE_ROOTS = [
   'packages/data-provider/src',
   'packages/data-schemas/src',
   'packages/client/src',
+  'packages/chat/src',
+  'packages/channel-gateway/src',
 ];
 
 const SOURCE_DIRS = SOURCE_ROOTS.map((rel) => resolve(ROOT, rel));

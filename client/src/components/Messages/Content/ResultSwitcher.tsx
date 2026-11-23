@@ -26,28 +26,30 @@ export default function ResultSwitcher({
   return (
     <nav
       aria-label={localize('com_ui_navigate_results')}
-      className="flex items-center justify-center gap-1.5 border-t border-border-light px-3 py-1.5 text-xs [.user-turn_&]:bg-surface-code"
+      className="border-border-inset bg-surface-code flex items-center justify-center gap-1.5 border-t px-3 py-1.5 text-xs"
     >
       <button
         type="button"
         onClick={onPrevious}
         disabled={atFirst}
         aria-label={localize('com_ui_prev_result')}
-        className="rounded p-0.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary focus:outline focus:outline-2 focus:outline-border-heavy disabled:pointer-events-none disabled:opacity-30"
+        className="text-text-tertiary hover:bg-surface-hover hover:text-text-primary focus:outline-focus-subtle rounded p-0.5 transition-colors focus:outline focus:outline-2 disabled:pointer-events-none disabled:opacity-30"
       >
-        <ChevronLeft className="size-3.5" aria-hidden="true" />
+        <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
       </button>
-      <span className="min-w-[3ch] select-none text-center tabular-nums text-text-secondary">
-        {currentIndex + 1}/{totalCount}
+      <span className="text-text-secondary min-w-[3ch] text-center tabular-nums select-none">
+        <bdi>
+          {currentIndex + 1}/{totalCount}
+        </bdi>
       </span>
       <button
         type="button"
         onClick={onNext}
         disabled={atLast}
         aria-label={localize('com_ui_next_result')}
-        className="rounded p-0.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary focus:outline focus:outline-2 focus:outline-border-heavy disabled:pointer-events-none disabled:opacity-30"
+        className="text-text-tertiary hover:bg-surface-hover hover:text-text-primary focus:outline-focus-subtle rounded p-0.5 transition-colors focus:outline focus:outline-2 disabled:pointer-events-none disabled:opacity-30"
       >
-        <ChevronRight className="size-3.5" aria-hidden="true" />
+        <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
       </button>
     </nav>
   );

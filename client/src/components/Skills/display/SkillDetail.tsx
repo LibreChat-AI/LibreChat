@@ -47,7 +47,7 @@ export default function SkillDetail({ skill, onEdit, onDelete }: SkillDetailProp
       <div className="flex flex-col gap-3 pb-1 sm:flex-row sm:items-start sm:gap-4">
         <div className="min-w-0 flex-1 overflow-hidden sm:pt-3">
           <div className="flex min-w-0 items-center gap-2">
-            <h2 className="truncate text-xl font-bold text-text-primary" title={skill.name}>
+            <h2 className="text-text-primary truncate text-xl font-bold" title={skill.name}>
               {skill.name}
             </h2>
             {isPublic && (
@@ -56,14 +56,14 @@ export default function SkillDetail({ skill, onEdit, onDelete }: SkillDetailProp
                 side="top"
                 render={
                   <EarthIcon
-                    className="size-5 shrink-0 text-accent-primary"
+                    className="text-accent-primary size-5 shrink-0"
                     aria-label={localize('com_ui_skill_sr_public')}
                   />
                 }
               />
             )}
           </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
+          <div className="text-text-secondary mt-0.5 flex flex-wrap items-center gap-3 text-xs">
             <span className="flex items-center gap-1">
               <User className="size-3" aria-hidden="true" />
               {addedBy}
@@ -89,7 +89,7 @@ export default function SkillDetail({ skill, onEdit, onDelete }: SkillDetailProp
                 <Button
                   variant="outline"
                   size="icon"
-                  className="size-9 border-border-medium"
+                  className="border-border-medium size-9"
                   aria-label={localize('com_ui_edit')}
                   onClick={onEdit}
                 >
@@ -106,13 +106,13 @@ export default function SkillDetail({ skill, onEdit, onDelete }: SkillDetailProp
 
       {/* Description */}
       <div className="flex flex-col gap-1">
-        <h3 className="text-xs leading-4 text-text-secondary">{localize('com_ui_description')}</h3>
-        <p className="whitespace-pre-wrap text-sm text-text-secondary">{skill.description}</p>
+        <h3 className="text-text-secondary text-xs leading-4">{localize('com_ui_description')}</h3>
+        <p className="text-text-secondary text-sm whitespace-pre-wrap">{skill.description}</p>
       </div>
 
       {/* Divider with view toggle */}
       <div className="flex items-center gap-3 py-1">
-        <hr className="flex-1 border-border-medium" />
+        <hr className="border-border-medium flex-1" />
         <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
       </div>
 
@@ -121,8 +121,8 @@ export default function SkillDetail({ skill, onEdit, onDelete }: SkillDetailProp
         <div className="grid grid-cols-[max-content_1fr] items-baseline gap-x-8 gap-y-2 pb-2">
           {frontmatterFields.map(({ key, value }) => (
             <React.Fragment key={key}>
-              <span className="text-xs text-text-secondary">{key}</span>
-              <span className="text-sm text-text-primary">{value}</span>
+              <span className="text-text-secondary text-xs">{key}</span>
+              <span className="text-text-primary text-sm">{value}</span>
             </React.Fragment>
           ))}
         </div>
@@ -137,7 +137,7 @@ export default function SkillDetail({ skill, onEdit, onDelete }: SkillDetailProp
             currentFilePath="SKILL.md"
           />
         ) : (
-          <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-text-primary">
+          <pre className="text-text-primary font-mono text-sm leading-relaxed whitespace-pre-wrap">
             {skill.body ?? ''}
           </pre>
         )}

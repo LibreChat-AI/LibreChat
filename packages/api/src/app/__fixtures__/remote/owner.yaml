@@ -1,0 +1,10 @@
+version: 1.3.8
+cache: true
+interface:
+  remoteAgents:
+    use: true
+endpoints:
+  agents:
+    remoteApi:
+      integrations:
+        mode: owner

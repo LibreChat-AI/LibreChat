@@ -39,10 +39,7 @@ export default function Scrim({
       tabIndex={expanded ? 0 : -1}
       aria-hidden={!expanded || undefined}
       className={cn(
-        'absolute inset-0 rounded-none bg-surface-overlay/50',
-        /** Inset: the shell is overflow-hidden, and the shared ring's offset
-         *  puts it 2px outside the box, which the shell would clip. */
-        'focus-visible:ring-inset focus-visible:ring-offset-0',
+        'group absolute inset-0 rounded-none',
         !expanded && !isSliding && 'pointer-events-none',
       )}
       style={{
@@ -53,6 +50,19 @@ export default function Scrim({
         opacity: expanded ? 1 : 0,
         transition: prefersReducedMotion ? undefined : `opacity ${TRANSITION_MS}ms ${EASING}`,
       }}
-    />
+    >
+      {/* The dialogs' theme-owned scrim role, painted on its own layer so the
+          button itself carries no color of its own. */}
+      <span aria-hidden="true" className="bg-scrim absolute inset-0" />
+      {/* The focus indicator, on a layer above the fill: the button's own ring
+          paints with its background, under the fill. Inset, because the shell
+          is overflow-hidden and would clip a ring drawn outside the box. Two
+          tones, because the fill is mid-gray in a light palette and black in a
+          dark one: the surface band carries it in light, the ring in dark. */}
+      <span
+        aria-hidden="true"
+        className="group-focus-visible:ring-focus-control group-focus-visible:ring-offset-surface-primary absolute inset-0 group-focus-visible:ring-2 group-focus-visible:ring-offset-2 group-focus-visible:ring-inset"
+      />
+    </Button>
   );
 }

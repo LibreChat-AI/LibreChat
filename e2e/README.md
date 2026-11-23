@@ -2,6 +2,31 @@
 
 The mock e2e profile is the safest default for generated tests. It starts LibreChat with `e2e/config/librechat.e2e.yaml`, injects an in-process fake LLM (via `LIBRECHAT_TEST_RUN_HOOK`), creates an authenticated e2e user, and avoids real provider credentials.
 
+## RUM privacy export regressions
+
+Run the real HyperDX/OpenTelemetry SDK export checks without a running LibreChat,
+database, collector, or model provider:
+
+```sh
+npx playwright test --config=e2e/playwright.config.rum.ts
+```
+
+The fixture bundles the production RUM adapter, records a synthetic DOM in Chromium,
+and inspects the actual OTLP requests (including gzip/protobuf replay batches). It
+checks proxy and direct-token modes, metadata/DOM URL redaction, and fresh and
+already-recording transitions to a two-factor URL containing a fake login token.
+Playwright traces are disabled so authentication-shaped test data is not retained in
+HAR/trace artifacts.
+
+## Automatic title regressions
+
+The standard mock profile disables automatic titles. CI runs the title-enabled cases once on the first memory shard. To run them locally after building the app:
+
+```sh
+E2E_TITLE_CONVO=true npx playwright test --config=e2e/playwright.config.mock.ts \
+  conversation-management.spec.ts --grep 'first-turn|final-title polling'
+```
+
 ## Deployed-instance smoke test
 
 The deployed profile exercises an existing LibreChat deployment without starting another app or
@@ -36,6 +61,23 @@ authenticated shell, sends one real prompt, reloads the resulting conversation, 
 the conversation created by that run through LibreChat's authenticated API. Keep deterministic
 provider behavior and destructive database fixtures in the mock profile instead.
 
+## Email Delivery
+
+The registered-email flow has a dedicated profile because enabling SMTP changes registration into a verification-required workflow. It starts a disposable local SMTP mailbox, verifies the setup account from the delivered message, and then tests the Settings → Account email change, verification link, notifications to both addresses, and login with the new address:
+
+```sh
+npm run e2e:email-change
+```
+
+The disabled-mode profile verifies that `ALLOW_EMAIL_CHANGE=false` hides the Account control,
+rejects both request and confirmation endpoints, and sends no email:
+
+```sh
+npm run e2e:email-change:disabled
+```
+
+Override `E2E_SMTP_PORT` or `E2E_MAILBOX_PORT` if ports 1025 or 8025 are already in use. The mailbox binds only to `127.0.0.1` and is discarded with the test process.
+
 ## Stream Stores and Shards
 
 The mock profile uses the in-memory generation stream store by default. To exercise the same browser scenarios through a real Redis job store and pub/sub transport, start Redis on port 6379 and run:
@@ -46,18 +88,75 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-Pull request CI runs the complete mock suite in memory mode across three shards, plus a
-focused Redis transport suite. The Redis suite covers streaming fidelity, steering,
+Pull request CI runs the complete mock suite in memory mode across fifteen shards, plus a
+focused Redis transport suite across two. The Redis suite covers streaming fidelity, steering,
 interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/3
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/15
 npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes across two shards per mode. Every shard keeps one worker so tests do not contend for its
+modes, across fifteen memory shards and ten Redis shards. Every shard keeps one worker so tests do not contend for its
 authenticated user and database.
+
+CI retries a failed test, twice on the memory shards and three times on the Redis transport
+suite, so the report carries a trace of each failed attempt and shows whether the failure
+repeats. A test that passes only on a retry still fails the run (`failOnFlakyTests`), and the
+job log and the job summary name it (`e2e/reporters/retried.mjs`). Local runs do not retry.
+
+CI splits the complete suite by recorded duration rather than test count: each shard lists the
+suite, and `.github/scripts/playwright-shards.mjs plan` hands out whole spec files longest-first
+to the least-loaded shard by recorded seconds. A spec with no recorded time is estimated from its
+test count, so new specs need nothing.
+
+The timings keep themselves current. On each push to `dev`, `.github/workflows/playwright-timings.yml`
+rebuilds them from the three most recent green runs on `dev` and saves the result to the Actions
+cache. The `Shard timings` job of a later run restores the newest entry once and hands the same
+copy to every shard, because shards that planned from different timings would run a spec twice
+or not at all. `e2e/timings.mock.json` is the fallback whenever no entry can be read, such as
+the nightly on the default branch or an evicted cache, so it only needs rebuilding if those runs
+drift apart. Rebuilding it is the command the workflow runs: each shard's report artifact
+carries a `results.json`, so download the `playwright-report-memory-*` artifacts of a few recent
+runs and rebuild the file from them. A spec measured by several runs is recorded at their mean,
+which keeps one slow runner from skewing it:
+
+```sh
+for run in <run-id> <run-id> <run-id>; do
+  gh run download "$run" --pattern 'playwright-report-memory-*' --dir "/tmp/e2e-reports/$run"
+done
+node .github/scripts/playwright-shards.mjs record --out e2e/timings.mock.json /tmp/e2e-reports/*
+```
+
+## Route handlers that fetch
+
+A mock spec whose route handler calls `route.fetch()` takes `test` and `expect` from
+`e2e/specs/mock/fixtures.ts` instead of `@playwright/test`. Closing a browser context disposes the
+responses its handlers fetched, so a handler the app triggered just before the test returned
+throws `Response has been disposed` and fails a test that had already passed, which
+`failOnFlakyTests` turns into a failed shard. The fixture's `context` detaches the routes on the
+context and its pages before Playwright closes it, and what a detached handler throws afterwards
+is ignored. A context the spec opens itself with `browser.newContext()` closes through
+`closeContext(context)` from the same module.
+
+A spec that removes a route before its test ends calls `unroute(page, url, handler)` from that
+module in place of `page.unroute()`. When `page.unroute()` removes a page's last route, Playwright
+stops intercepting there and continues the requests its handlers were still working on, so a
+handler in the middle of one throws `Route is already handled!` and fails the test. `unroute`
+first adds a route that matches nothing, which keeps the page intercepting: handlers already
+running answer their requests, and later requests reach the server.
+
+## Harness servers and idle connections
+
+Playwright sends `route.fetch()`, the `request` fixture and `page.request` through one keep-alive
+agent per worker that never closes an idle socket and ignores a server's `Keep-Alive: timeout=N`
+hint. A Node server closes an idle socket after `keepAliveTimeout` plus `keepAliveTimeoutBuffer`
+(6 s by default), so a request that reuses the socket at that moment fails with `read ECONNRESET`
+or `socket hang up`. The harness therefore runs LibreChat with `HTTP_KEEP_ALIVE_TIMEOUT_MS=0`, and
+every fixture server the mock profiles start as a `webServer` passes its server through `keepIdleConnections()` from
+`e2e/setup/keepalive.js`. A new fixture server that specs reach from Node does the same.
+`fixtures.spec.ts` checks that each harness server answers without an idle deadline.
 
 ## Property-based browser testing
 
@@ -188,3 +287,14 @@ For a historical revision without this lane, copy the two `e2e/screenshots/*.ts`
 Each PNG has a JSON sidecar containing the revision, browser version, viewport, theme, scenario hash, lockfile hash, built HTML hash, and image hash. Visible images must decode, fonts must finish loading, greeting springs must settle, and consecutive captures must match. A passing run and human inspection are both required before treating the pair as reviewed evidence; sidecars from a failed run are not complete evidence. Compare matching filenames between revisions. Pin the browser and font environment as well as the app revisions.
 
 Keep storage state, traces, logs, and session data private. Check that the PNGs contain only intended synthetic test data before uploading with the attachment-capable `gh` described in the PR template, then read back the PR body to verify real asset URLs. Mark any pending visual review explicitly. Do not commit the images. A new surface has no before state; label it accordingly rather than substituting another screen.
+
+## Running-chat rename rollout
+
+`interface.runningChatRename` defaults to `true`. Set it to `false` during rolling upgrades
+from a version without title ownership. After **every API replica** supports title ownership,
+drain all title-generation tasks started on older replicas, then remove the override. The client
+also requires the server's title-ownership capability; an old replica cannot advertise it.
+
+With the fence off, running rows and unowned placeholder titles cannot be renamed.
+Other menu actions remain available. Settled non-placeholder chats retain Rename.
+The isolated mock profile enables the option because it contains no older replicas.

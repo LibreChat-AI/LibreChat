@@ -9,6 +9,7 @@ import {
   inspectContentWithTraversal,
 } from './runtime';
 import { ContentTraversalLimitError } from './adapters/nested';
+import { extractChatContent } from './adapters/chat';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() },
@@ -48,6 +49,55 @@ describe('configured content inspection', () => {
     expect(createConfiguredContentInspector({})).toBeNull();
     expect(inspectContent([fragment('message', 'text')], {})).toBeNull();
   });
+
+  it('selects schema traversal from compiled rules rather than legacy source overlap', () => {
+    const schema = { ...fragment('tool_argument', 'arguments'), id: 'function-tool.parameters.0' };
+    const decision = { ...schema, id: 'chat.decision.0.arguments' };
+    const legacyPii = { starterPatterns: [], customPatterns: [BLOCK_PATTERN] };
+    const legacy = createConfiguredContentInspector({ legacyPii });
+    expect(legacy?.shouldInspect(schema)).toBe(false);
+    expect(legacy?.shouldInspect(decision)).toBe(true);
+    expect(
+      createConfiguredContentInspector({
+        legacyPii,
+        filters: { toolArguments: { pii: { ...legacyPii, fields: ['name'] } } },
+      })?.shouldInspect(schema),
+    ).toBe(false);
+    expect(
+      createConfiguredContentInspector({
+        legacyPii,
+        filters: {
+          toolArguments: { pii: { ...legacyPii, fields: ['arguments'], action: 'audit' } },
+        },
+      })?.shouldInspect(schema),
+    ).toBe(true);
+    expect(
+      createConfiguredContentInspector({
+        legacyPii,
+        filters: { toolArguments: { pii: { starterPatterns: [] } } },
+      })?.shouldInspect(schema),
+    ).toBe(false);
+  });
+
+  it.each([
+    { arguments: { value: 'ORG-SECRET' }, finding: true },
+    { arguments: Array.from({ length: 4_200 }, () => 'safe'), finding: false },
+  ])(
+    'preserves legacy user-edited argument inspection and traversal limits %#',
+    ({ arguments: editedArguments, finding }) => {
+      const result = inspectContentWithTraversal(
+        () => extractChatContent({ decisions: [{ editedArguments }] }),
+        { legacyPii: { starterPatterns: [], customPatterns: [BLOCK_PATTERN] } },
+      );
+      if (finding) {
+        expect(result.finding).toMatchObject({ source: 'tool_argument', field: 'arguments' });
+        expect(result.traversalError).toBeNull();
+      } else {
+        expect(result.finding).toBeNull();
+        expect(result.traversalError).toBeInstanceOf(ContentTraversalLimitError);
+      }
+    },
+  );
 
   it('blocks a partial fragment before returning its traversal failure', () => {
     const filters: FiltersConfig = {
@@ -343,6 +393,29 @@ describe('configured content inspection', () => {
     expect(inspectContent([fragment('message', 'text', text)], { filters })).toMatchObject({
       ruleId,
     });
+  });
+
+  it('does not interpret the api-key detector label as an API key header', () => {
+    const filters: FiltersConfig = {
+      messages: {
+        pii: {
+          starterPatterns: ['api_key_header'],
+        },
+      },
+    };
+
+    expect(
+      inspectContent(
+        [
+          fragment(
+            'message',
+            'text',
+            'Submitted content contains an api-key header. Remove it and try again.',
+          ),
+        ],
+        { filters },
+      ),
+    ).toBeNull();
   });
 
   it('keeps the runtime starter catalog aligned with the public schema', () => {

@@ -8,8 +8,9 @@ import {
   EModelEndpoint,
   defaultModels,
 } from 'librechat-data-provider';
+import type { AxiosRequestConfig, AxiosResponse } from 'axios';
+import type { TEndpoint } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
-import type { AxiosRequestConfig } from 'axios';
 import {
   processModelData,
   extractBaseURL,
@@ -17,6 +18,7 @@ import {
   resolveHeaders,
   deriveBaseURL,
   logAxiosError,
+  getSafeErrorMetadata,
   inputSchema,
   applyAxiosProxyConfig,
 } from '~/utils';
@@ -25,6 +27,36 @@ import { createSSRFSafeAgents, validateEndpointURL } from '~/auth';
 import { standardCache, tokenConfigCache } from '~/cache';
 
 type SSRFSafeAgents = ReturnType<typeof createSSRFSafeAgents>;
+
+/** Provider requests in flight by cache key, so concurrent cache misses for one key share one. */
+const ollamaRequests = new Map<string, Promise<string[]>>();
+const modelsRequests = new Map<string, Promise<AxiosResponse>>();
+
+/**
+ * Runs `start` unless a request is already in flight under `key`, which is then joined. A request
+ * leaves the map as soon as it settles, so neither a result nor a failure outlives it. An empty
+ * key is never shared.
+ */
+function shareInFlight<T>(
+  requests: Map<string, Promise<T>>,
+  key: string,
+  start: () => Promise<T>,
+): Promise<T> {
+  if (!key) {
+    return start();
+  }
+  const active = requests.get(key);
+  if (active != null) {
+    return active;
+  }
+  const request: Promise<T> = start().finally(() => {
+    if (requests.get(key) === request) {
+      requests.delete(key);
+    }
+  });
+  requests.set(key, request);
+  return request;
+}
 
 export interface FetchModelsParams {
   /** User ID for API requests */
@@ -39,6 +71,8 @@ export interface FetchModelsParams {
   allowedAddresses?: string[] | null;
   /** Endpoint name (defaults to 'openAI') */
   name?: string;
+  /** Native provider configured on a custom endpoint. */
+  provider?: TEndpoint['provider'];
   /** Whether directEndpoint was configured */
   direct?: boolean;
   /** Whether to fetch from Azure */
@@ -117,6 +151,21 @@ async function fetchOllamaModels(
   return response.data.models.map((tag) => tag.name);
 }
 
+async function cacheModelList(
+  cache: ReturnType<typeof standardCache> | null,
+  cacheKey: string,
+  models: string[],
+): Promise<void> {
+  if (!cache || !cacheKey || models.length === 0) {
+    return;
+  }
+  try {
+    await cache.set(cacheKey, models, Time.TWO_MINUTES);
+  } catch (error) {
+    logger.warn('[fetchModels] Failed to cache models:', getSafeErrorMetadata(error));
+  }
+}
+
 async function backfillTokenConfigFromModelCache(
   cacheKey: string,
   tokenKey: string,
@@ -158,6 +207,7 @@ export async function fetchModels({
   baseURLIsUserProvided = false,
   allowedAddresses,
   name = EModelEndpoint.openAI,
+  provider,
   direct = false,
   azure = false,
   userIdQuery = false,
@@ -168,7 +218,15 @@ export async function fetchModels({
   skipCache = false,
 }: FetchModelsParams): Promise<string[]> {
   let models: string[] = [];
-  const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
+  const isCustomAnthropic = provider === EModelEndpoint.anthropic;
+  // The native client appends /v1/messages to the configured base URL.
+  // Built-in Anthropic discovery already supplies a base URL ending in /v1.
+  let baseURL = _baseURL;
+  if (isCustomAnthropic && baseURL) {
+    baseURL = `${baseURL.replace(/\/+$/, '')}/v1`;
+  } else if (direct) {
+    baseURL = extractBaseURL(baseURL ?? '') ?? undefined;
+  }
 
   if (!baseURL && !azure) {
     return models;
@@ -183,7 +241,7 @@ export async function fetchModels({
     await validateEndpointURL(baseURL, name, allowedAddresses);
   }
 
-  // The MODEL_QUERIES cache is keyed by baseURL+apiKey only. That's safe
+  // The MODEL_QUERIES cache is keyed by baseURL, apiKey, and native provider. That's safe
   // when the response is identical for every caller, but fails when callers
   // forward header templates that resolve to a user-bound value (e.g.
   // `Authorization: Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}`): one user's
@@ -193,32 +251,38 @@ export async function fetchModels({
   // resolving headers against a specific user's identity.
   const hasUserScopedHeaders = !!headers && Object.keys(headers).length > 0 && !!userObject;
   const shouldCache = !skipCache && !(userIdQuery && user) && !hasUserScopedHeaders;
-  const cacheKey = shouldCache ? modelsCacheKey(baseURL ?? '', apiKey) : '';
+  const cacheKey = shouldCache ? modelsCacheKey(baseURL ?? '', apiKey, provider) : '';
   const modelsCache = shouldCache ? standardCache(CacheKeys.MODEL_QUERIES) : null;
   if (modelsCache && cacheKey) {
-    const cachedModels = await modelsCache.get(cacheKey);
-    if (cachedModels) {
-      if (createTokenConfig && tokenKey) {
-        const tokenConfigBackfilled = await backfillTokenConfigFromModelCache(cacheKey, tokenKey);
-        if (!tokenConfigBackfilled && isScopedTokenConfigKey(tokenKey)) {
-          models = cachedModels as string[];
+    try {
+      const cachedModels = await modelsCache.get(cacheKey);
+      if (cachedModels) {
+        if (createTokenConfig && tokenKey) {
+          const tokenConfigBackfilled = await backfillTokenConfigFromModelCache(cacheKey, tokenKey);
+          if (!tokenConfigBackfilled && isScopedTokenConfigKey(tokenKey)) {
+            models = cachedModels as string[];
+          } else {
+            return cachedModels as string[];
+          }
         } else {
           return cachedModels as string[];
         }
-      } else {
-        return cachedModels as string[];
       }
+    } catch (error) {
+      logger.warn('[fetchModels] Failed to read cached models:', getSafeErrorMetadata(error));
     }
   }
 
-  if (name && name.toLowerCase().startsWith(KnownEndpoints.ollama)) {
+  if (!isCustomAnthropic && name && name.toLowerCase().startsWith(KnownEndpoints.ollama)) {
     let ollamaModels: string[] | null = null;
     try {
-      ollamaModels = await fetchOllamaModels(baseURL ?? '', {
-        headers,
-        ssrfAgents,
-        user: userObject,
-      });
+      ollamaModels = await shareInFlight(ollamaRequests, cacheKey, () =>
+        fetchOllamaModels(baseURL ?? '', {
+          headers,
+          ssrfAgents,
+          user: userObject,
+        }),
+      );
     } catch (ollamaError) {
       logAxiosError({
         message:
@@ -227,9 +291,7 @@ export async function fetchModels({
       });
     }
     if (ollamaModels !== null) {
-      if (modelsCache && cacheKey && ollamaModels.length > 0) {
-        await modelsCache.set(cacheKey, ollamaModels, Time.TWO_MINUTES);
-      }
+      await cacheModelList(modelsCache, cacheKey, ollamaModels);
       return ollamaModels;
     }
   }
@@ -254,7 +316,7 @@ export async function fetchModels({
       timeout: 5000,
     };
 
-    if (name === EModelEndpoint.anthropic) {
+    if (isCustomAnthropic || name === EModelEndpoint.anthropic) {
       // Keep configured custom headers (e.g. gateway metadata) while the
       // provider-managed auth/version headers stay authoritative.
       options.headers = {
@@ -285,17 +347,24 @@ export async function fetchModels({
     }
     applyAxiosProxyConfig(options, url);
     applyUserProvidedBaseURLProtection(options, ssrfAgents);
-    const res = await axios.get(url.toString(), options);
+    /** Only the request is shared: each caller still derives and stores its own token config. */
+    const res = await shareInFlight(modelsRequests, cacheKey, async () =>
+      axios.get(url.toString(), options),
+    );
 
     const input = res.data;
 
     const validationResult = inputSchema.safeParse(input);
     if (validationResult.success && createTokenConfig) {
       const endpointTokenConfig = processModelData(input);
-      const cache = tokenConfigCache();
-      await cache.set(tokenKey ?? name, endpointTokenConfig);
-      if (modelsCache && cacheKey) {
-        await cache.set(getModelCacheTokenConfigKey(cacheKey), endpointTokenConfig);
+      try {
+        const cache = tokenConfigCache();
+        await cache.set(tokenKey ?? name, endpointTokenConfig);
+        if (modelsCache && cacheKey) {
+          await cache.set(getModelCacheTokenConfigKey(cacheKey), endpointTokenConfig);
+        }
+      } catch (error) {
+        logger.warn('[fetchModels] Failed to cache token config:', getSafeErrorMetadata(error));
       }
     }
     models = input.data.map((item: { id: string }) => item.id);
@@ -304,15 +373,14 @@ export async function fetchModels({
     logAxiosError({ message: logMessage, error: error as Error });
   }
 
-  if (modelsCache && cacheKey && models.length > 0) {
-    await modelsCache.set(cacheKey, models, Time.TWO_MINUTES);
-  }
+  await cacheModelList(modelsCache, cacheKey, models);
 
   return models;
 }
 
-function modelsCacheKey(baseURL: string, apiKey: string): string {
-  return crypto.createHash('sha256').update(`${baseURL}:${apiKey}`).digest('hex').slice(0, 32);
+function modelsCacheKey(baseURL: string, apiKey: string, provider?: TEndpoint['provider']): string {
+  const key = JSON.stringify([baseURL, apiKey, provider ?? null]);
+  return crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
 }
 
 /** Options for fetching OpenAI models */
@@ -331,6 +399,8 @@ export interface GetOpenAIModelsOptions {
   headers?: Record<string, string> | null;
   /** User object for resolving header placeholders */
   userObject?: Partial<IUser>;
+  /** A model list configured for the endpoint; when set, it is returned without discovery. */
+  configuredModels?: string[];
 }
 
 function resolveOpenAIApiKey(opts: GetOpenAIModelsOptions): string | undefined {
@@ -382,7 +452,7 @@ export async function fetchOpenAIModels(
 
   if (baseURL === openaiBaseURL) {
     const regex = /(text-davinci-003|gpt-|o\d+|chat-latest)/;
-    const excludeRegex = /audio|realtime/;
+    const excludeRegex = /audio|realtime|^gpt-image-|^chatgpt-image-latest$/;
     models = models.filter((model) => regex.test(model) && !excludeRegex.test(model));
     const instructModels = models.filter((model) => model.includes('instruct'));
     const otherModels = models.filter((model) => !model.includes('instruct'));
@@ -398,6 +468,9 @@ export async function fetchOpenAIModels(
  * @returns Promise resolving to array of model IDs
  */
 export async function getOpenAIModels(opts: GetOpenAIModelsOptions = {}): Promise<string[]> {
+  if (opts.configuredModels) {
+    return opts.configuredModels;
+  }
   let models = defaultModels[EModelEndpoint.openAI];
 
   if (opts.assistants) {
@@ -486,8 +559,13 @@ export async function getAnthropicModels(
     vertexModels?: string[];
     headers?: Record<string, string> | null;
     userObject?: Partial<IUser>;
+    /** A model list configured for the endpoint; when set, it is returned without discovery. */
+    configuredModels?: string[];
   } = {},
 ): Promise<string[]> {
+  if (opts.configuredModels) {
+    return opts.configuredModels;
+  }
   const models = defaultModels[EModelEndpoint.anthropic];
 
   // Vertex AI models from YAML config take priority

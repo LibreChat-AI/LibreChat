@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
-import { useRecoilCallback, useSetRecoilState } from 'recoil';
+import { useSetAtom } from 'jotai';
+import { useRecoilCallback } from 'recoil';
 import type { TAttachment, TFile, TFilePreview } from 'librechat-data-provider';
 import { useMessageContext } from '~/Providers/MessageContext';
+import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 import { useFilePreview } from '~/data-provider';
 import { useShareContext } from '~/Providers';
 import store from '~/store';
@@ -61,7 +63,7 @@ interface UseAttachmentPreviewSyncResult {
 export default function useAttachmentPreviewSync(
   attachment: TAttachment | undefined,
 ): UseAttachmentPreviewSyncResult {
-  const setAttachmentsMap = useSetRecoilState(store.messageAttachmentsMap);
+  const setAttachmentsMap = useSetAtom(messageAttachmentsMapAtom);
   const { isSubmitting, messageId: contextMessageId } = useMessageContext();
   /* `useRecoilCallback` writes without subscribing this hook to
    * another message or file's pending→ready flag. */

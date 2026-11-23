@@ -1,7 +1,13 @@
-import { loadDefaultInterface } from '@librechat/data-schemas';
-import { SystemRoles, Permissions, PermissionTypes, roleDefaults } from 'librechat-data-provider';
+import { logger, loadDefaultInterface } from '@librechat/data-schemas';
+import {
+  SystemRoles,
+  Permissions,
+  roleDefaults,
+  RetentionMode,
+  PermissionTypes,
+} from 'librechat-data-provider';
 import type { TConfigDefaults, TCustomConfig } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
+import type { AppConfig, IRole } from '@librechat/data-schemas';
 import { updateInterfacePermissions } from './permissions';
 
 const mockUpdateAccessPermissions = jest.fn();
@@ -202,6 +208,36 @@ describe('updateInterfacePermissions - permissions', () => {
       expectedPermissionsForAdmin,
       null,
     );
+  });
+
+  it('does not rewrite a stored TEMPORARY_CHAT permission when retentionMode is ephemeral', async () => {
+    const config = {
+      interface: {
+        retentionMode: RetentionMode.EPHEMERAL,
+        temporaryChat: false,
+      },
+    };
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig } as unknown as AppConfig;
+
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: mockGetRoleByName,
+      updateAccessPermissions: mockUpdateAccessPermissions,
+    });
+
+    /** The forced mode is overlaid where the control is rendered; persisting it here would
+     *  survive a later return to `temporary` and silently grant access the operator removed. */
+    for (const role of [SystemRoles.USER, SystemRoles.ADMIN]) {
+      expect(mockUpdateAccessPermissions).toHaveBeenCalledWith(
+        role,
+        expect.objectContaining({
+          [PermissionTypes.TEMPORARY_CHAT]: { [Permissions.USE]: false },
+        }),
+        null,
+      );
+    }
   });
 
   it('should call updateAccessPermissions with false when permission types are false', async () => {
@@ -2967,5 +3003,306 @@ describe('updateInterfacePermissions - permissions', () => {
     for (const call of mockUpdateAccessPermissions.mock.calls) {
       expect(call[1][PermissionTypes.SCHEDULES]).toBeUndefined();
     }
+  });
+});
+
+describe('updateInterfacePermissions - web search recovery', () => {
+  it('preserves a stored denial on omission and restores it only with an explicit grant', async () => {
+    const roles = new Map(
+      [SystemRoles.USER, SystemRoles.ADMIN].map((name) => [
+        name,
+        { name, permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: true } } },
+      ]),
+    );
+    const getRoleByName = jest.fn(async (name: string) => roles.get(name as SystemRoles) as IRole);
+    const updateAccessPermissions = jest.fn<
+      ReturnType<Parameters<typeof updateInterfacePermissions>[0]['updateAccessPermissions']>,
+      Parameters<Parameters<typeof updateInterfacePermissions>[0]['updateAccessPermissions']>
+    >(async (name, updates) => {
+      const role = roles.get(name as SystemRoles);
+      const grant = updates[PermissionTypes.WEB_SEARCH]?.[Permissions.USE];
+      if (role && grant !== undefined) {
+        role.permissions[PermissionTypes.WEB_SEARCH][Permissions.USE] = grant;
+      }
+    });
+    const sync = async (webSearch?: boolean) => {
+      updateAccessPermissions.mockClear();
+      const config = { interface: webSearch === undefined ? {} : { webSearch } };
+      const interfaceConfig = await loadDefaultInterface({
+        config,
+        configDefaults: { interface: {} } as TConfigDefaults,
+      });
+      await updateInterfacePermissions({
+        appConfig: { config, interfaceConfig } as unknown as AppConfig,
+        getRoleByName,
+        updateAccessPermissions,
+      });
+    };
+    const grants = () =>
+      [...roles.values()].map(
+        (role) => role.permissions[PermissionTypes.WEB_SEARCH][Permissions.USE],
+      );
+    const expectPreserved = () => {
+      for (const [, updates] of updateAccessPermissions.mock.calls) {
+        expect(updates).not.toHaveProperty(PermissionTypes.WEB_SEARCH);
+      }
+    };
+
+    await sync(false);
+    expect(grants()).toEqual([false, false]);
+    await sync();
+    expect(grants()).toEqual([false, false]);
+    expectPreserved();
+    await sync(true);
+    expect(grants()).toEqual([true, true]);
+    await sync();
+    expect(grants()).toEqual([true, true]);
+    expectPreserved();
+    await sync(false);
+    expect(grants()).toEqual([false, false]);
+  });
+});
+
+describe('updateInterfacePermissions - native web search warning', () => {
+  const nativeSpec = { name: 'gpt-native', label: 'GPT', preset: { web_search: true } };
+
+  const run = async (webSearch: boolean | undefined, list: unknown[] = [nativeSpec]) => {
+    const config = { interface: webSearch === undefined ? {} : { webSearch } };
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig, modelSpecs: { list } } as unknown as AppConfig;
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: mockGetRoleByName,
+      updateAccessPermissions: mockUpdateAccessPermissions,
+    });
+  };
+
+  const nativeWarnings = () =>
+    warnSpy.mock.calls.filter(([message]) =>
+      String(message).includes('provider-native web search'),
+    );
+
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetRoleByName.mockResolvedValue(null);
+    warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('warns when interface.webSearch: false blocks model specs that request native search', async () => {
+    await run(false);
+    const warnings = nativeWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain('`interface.webSearch: false` denies');
+    expect(warnings[0][0]).toContain('gpt-native');
+    expect(warnings[0][0]).toContain('endpoints.agents.capabilities');
+  });
+
+  it('warns when the key is unset but a stored role still denies WEB_SEARCH', async () => {
+    mockGetRoleByName.mockImplementation(async (roleName: string) => ({
+      name: roleName,
+      permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } },
+    }));
+    await run(undefined);
+    const warnings = nativeWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain('stored role permission keeps denying');
+    expect(warnings[0][0]).toContain(SystemRoles.USER);
+  });
+
+  it('does not warn when web search is allowed or no spec requests native search', async () => {
+    await run(true);
+    await run(undefined);
+    await run(false, [{ name: 'plain', label: 'Plain', preset: {} }]);
+    mockGetRoleByName.mockImplementation(async (roleName: string) => ({
+      name: roleName,
+      permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } },
+    }));
+    await run(true);
+    expect(nativeWarnings()).toHaveLength(0);
+  });
+});
+
+describe('updateInterfacePermissions - role.synced audit', () => {
+  type StoredPermissions = Record<string, Record<string, boolean>>;
+
+  /** Role store whose writes mirror `updateAccessPermissions`' merge. */
+  function createRoleStore(initial: Record<string, StoredPermissions>) {
+    const roles = new Map(
+      Object.entries(initial).map(([name, permissions]) => [name, { name, permissions }]),
+    );
+    const getRoleByName = jest.fn(async (name: string) => {
+      const role = roles.get(name);
+      return role ? (structuredClone(role) as unknown as IRole) : null;
+    });
+    const updateAccessPermissions = jest.fn(
+      async (name: string, update: Record<string, Record<string, boolean | undefined>>) => {
+        const role = roles.get(name);
+        if (!role) {
+          return;
+        }
+        for (const [permType, fields] of Object.entries(update)) {
+          const next = { ...(role.permissions[permType] ?? {}) };
+          for (const [field, value] of Object.entries(fields)) {
+            if (value !== undefined) {
+              next[field] = value;
+            }
+          }
+          role.permissions[permType] = next;
+        }
+      },
+    );
+    return { getRoleByName, updateAccessPermissions };
+  }
+
+  async function run(
+    config: Partial<TCustomConfig>,
+    store: ReturnType<typeof createRoleStore>,
+    recordAuditEntry: jest.Mock,
+  ) {
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig } as unknown as AppConfig;
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: store.getRoleByName,
+      updateAccessPermissions: store.updateAccessPermissions,
+      recordAuditEntry,
+    });
+  }
+
+  /** Every permission type a role needs so the sync only touches explicit config. */
+  function fullPermissions(role: SystemRoles): StoredPermissions {
+    return structuredClone(roleDefaults[role].permissions) as unknown as StoredPermissions;
+  }
+
+  it('records role.synced with the persisted changes as a system actor', async () => {
+    const user = fullPermissions(SystemRoles.USER);
+    user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: true };
+    const store = createRoleStore({
+      [SystemRoles.USER]: user,
+      [SystemRoles.ADMIN]: fullPermissions(SystemRoles.ADMIN),
+    });
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await run({ interface: { bookmarks: false } }, store, recordAuditEntry);
+
+    const userEntry = recordAuditEntry.mock.calls.find(
+      ([input]) => input.target.id === SystemRoles.USER,
+    )?.[0];
+    expect(userEntry).toEqual(
+      expect.objectContaining({
+        action: 'role.synced',
+        actor: { type: 'system', name: 'librechat.yaml interface sync' },
+        target: { type: 'role', id: SystemRoles.USER, name: SystemRoles.USER },
+        metadata: expect.objectContaining({
+          changes: expect.stringContaining('BOOKMARKS.USE=false'),
+        }),
+      }),
+    );
+  });
+
+  it('records nothing when the stored permissions already match the config', async () => {
+    const user = fullPermissions(SystemRoles.USER);
+    const admin = fullPermissions(SystemRoles.ADMIN);
+    user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: false };
+    admin[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: false };
+    const store = createRoleStore({ [SystemRoles.USER]: user, [SystemRoles.ADMIN]: admin });
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await run({ interface: { bookmarks: false } }, store, recordAuditEntry);
+
+    expect(store.updateAccessPermissions).toHaveBeenCalled();
+    expect(recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('records a change the updater persisted even when the requested values already matched', async () => {
+    const user = fullPermissions(SystemRoles.USER);
+    const admin = fullPermissions(SystemRoles.ADMIN);
+    user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: false };
+    admin[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: false };
+    const store = createRoleStore({ [SystemRoles.USER]: user, [SystemRoles.ADMIN]: admin });
+    const write = store.updateAccessPermissions.getMockImplementation()!;
+    /** A legacy-document migration changes a flag the config never requested. */
+    store.updateAccessPermissions.mockImplementation(async (name, update) => {
+      await write(name, update);
+      if (name === SystemRoles.USER) {
+        await write(name, { [PermissionTypes.PROMPTS]: { [Permissions.USE]: false } });
+      }
+    });
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await run({ interface: { bookmarks: false } }, store, recordAuditEntry);
+
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'role.synced',
+        target: { type: 'role', id: SystemRoles.USER, name: SystemRoles.USER },
+      }),
+    );
+  });
+
+  it('records nothing when the write did not persist', async () => {
+    const user = fullPermissions(SystemRoles.USER);
+    user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: true };
+    const store = createRoleStore({
+      [SystemRoles.USER]: user,
+      [SystemRoles.ADMIN]: fullPermissions(SystemRoles.ADMIN),
+    });
+    store.updateAccessPermissions.mockResolvedValue(undefined);
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await run({ interface: { bookmarks: false } }, store, recordAuditEntry);
+
+    expect(recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('does not fail startup when the verification read fails', async () => {
+    const user = fullPermissions(SystemRoles.USER);
+    user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: true };
+    const store = createRoleStore({
+      [SystemRoles.USER]: user,
+      [SystemRoles.ADMIN]: fullPermissions(SystemRoles.ADMIN),
+    });
+    const read = store.getRoleByName.getMockImplementation()!;
+    let calls = 0;
+    store.getRoleByName.mockImplementation(async (name: string) => {
+      calls += 1;
+      /** The first read per role loads it; the second is the post-sync verification. */
+      if (calls === 2) {
+        throw new Error('mongo unavailable');
+      }
+      return read(name);
+    });
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await expect(
+      run({ interface: { bookmarks: false } }, store, recordAuditEntry),
+    ).resolves.toBeUndefined();
+    expect(store.updateAccessPermissions).toHaveBeenCalledTimes(2);
+    expect(recordAuditEntry).not.toHaveBeenCalledWith(
+      expect.objectContaining({ target: expect.objectContaining({ id: SystemRoles.USER }) }),
+    );
+  });
+
+  it('does not fail startup when the audit write fails', async () => {
+    const user = fullPermissions(SystemRoles.USER);
+    user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: true };
+    const store = createRoleStore({
+      [SystemRoles.USER]: user,
+      [SystemRoles.ADMIN]: fullPermissions(SystemRoles.ADMIN),
+    });
+    const recordAuditEntry = jest.fn().mockRejectedValue(new Error('audit down'));
+
+    await expect(
+      run({ interface: { bookmarks: false } }, store, recordAuditEntry),
+    ).resolves.toBeUndefined();
+    expect(recordAuditEntry).toHaveBeenCalled();
   });
 });

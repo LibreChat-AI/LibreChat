@@ -10,6 +10,14 @@ jest.mock('librechat-data-provider/react-query', () => ({
   useDeleteAgentApiKeyMutation: jest.fn(),
 }));
 
+/** The dialog is covered by its own spec; here only how a key row opens it. */
+jest.mock('../KeyGrant', () => ({
+  __esModule: true,
+  default: ({ id, name }: { id: string; name: string }) => (
+    <div data-testid="key-grant">{`${id}:${name}`}</div>
+  ),
+}));
+
 const mockDelete = useDeleteAgentApiKeyMutation as jest.Mock;
 
 const baseKey: TAgentApiKeyListItem = {
@@ -19,10 +27,10 @@ const baseKey: TAgentApiKeyListItem = {
   createdAt: '2026-06-01T00:00:00Z',
 };
 
-function renderItem(apiKey = baseKey) {
+function renderItem(apiKey = baseKey, grants?: boolean) {
   return render(
     <ul>
-      <Item apiKey={apiKey} />
+      <Item apiKey={apiKey} grants={grants} />
     </ul>,
   );
 }
@@ -64,5 +72,25 @@ describe('Item', () => {
 
     fireEvent.click(deleteButton);
     expect(await findByText(/This action cannot be undone/)).toBeInTheDocument();
+  });
+
+  it('offers no MCP access button where key runs are not limited by grants', () => {
+    const { queryByRole, queryByTestId } = renderItem();
+    expect(queryByRole('button', { name: /MCP access/ })).not.toBeInTheDocument();
+    expect(queryByTestId('key-grant')).not.toBeInTheDocument();
+  });
+
+  it('offers no MCP access button for a key issued to an integration, which holds no grants', () => {
+    const { queryByRole } = renderItem({ ...baseKey, bound: true }, true);
+    expect(queryByRole('button', { name: /MCP access/ })).not.toBeInTheDocument();
+  });
+
+  it('opens the MCP access dialog for this key where grants are in use', () => {
+    const { getByRole, getByTestId, queryByTestId } = renderItem(baseKey, true);
+    const button = getByRole('button', { name: 'MCP access for API key CI Pipeline' });
+    expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(queryByTestId('key-grant')).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(getByTestId('key-grant')).toHaveTextContent('key-1:CI Pipeline');
   });
 });

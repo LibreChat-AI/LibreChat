@@ -630,12 +630,16 @@ describe('applyAdminRefresh', () => {
   });
 
   describe('logging', () => {
-    it('logs the refreshed user email at debug', async () => {
-      const deps = makeDeps(makeUser());
+    it('logs the refreshed user id at debug, never the email', async () => {
+      const user = makeUser();
+      const deps = makeDeps(user);
 
       await applyAdminRefresh(makeTokenset(), deps);
 
-      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('admin@example.com'));
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining(String(user._id)));
+      expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(
+        'admin@example.com',
+      );
     });
   });
 });

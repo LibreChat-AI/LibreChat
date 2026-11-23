@@ -1,10 +1,10 @@
-import { useMemo, useState, useCallback, useEffect } from 'react';
-import { Plus, Search } from 'lucide-react';
+import { useId, useMemo, useState, useCallback, useEffect } from 'react';
+import { Plus } from 'lucide-react';
 import { useFormContext, useWatch } from 'react-hook-form';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import {
   Radio,
-  Input,
+  FilterInput,
   Label,
   Button,
   OGDialog,
@@ -91,6 +91,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
   );
 
   const [view, setView] = useState<SkillView>('marketplace');
+  const searchId = useId();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<string | 'all'>('all');
   const [createOpen, setCreateOpen] = useState(false);
@@ -208,7 +209,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
       size="sm"
       onClick={() => setCreateOpen(true)}
       aria-label={localize('com_ui_create_skill')}
-      className={cn('h-[42px] w-[42px] shrink-0 p-0', !isDesktop && 'ml-auto')}
+      className={cn('h-[2.625rem] w-[2.625rem] shrink-0 p-0', !isDesktop && 'ms-auto')}
     >
       <Plus className="size-4" aria-hidden="true" />
     </Button>
@@ -217,18 +218,15 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
     <div
       className={cn('flex items-center gap-2', isDesktop ? 'min-w-0 grow basis-0' : 'basis-full')}
     >
-      <div className="relative min-w-0 flex-1">
-        <Search
-          className="pointer-events-none absolute left-3 top-1/2 z-[1] size-4 -translate-y-1/2 text-text-tertiary"
-          aria-hidden="true"
-        />
-        <Input
+      <div className="min-w-0 flex-1">
+        <FilterInput
           type="text"
+          surface="dialog"
+          inputId={`${searchId}-search`}
+          label={localize('com_ui_search_skills')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={localize('com_ui_search_skills')}
-          aria-label={localize('com_ui_search_skills')}
-          className="h-[42px] bg-transparent pl-9"
+          className="h-[2.625rem]"
         />
       </div>
       <CategoryFilter options={categoryOptions} value={category} onChange={setCategory} />
@@ -237,14 +235,14 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
 
   return (
     <OGDialog open={open} onOpenChange={onOpenChange}>
-      <OGDialogContent className="w-11/12 max-w-[900px] overflow-hidden rounded-2xl border-border-medium p-0 shadow-xl md:max-h-[92vh]">
+      <OGDialogContent className="border-border-medium w-11/12 max-w-[56.25rem] overflow-hidden p-0 shadow-xl md:max-h-[92vh]">
         <OGDialogDescription className="sr-only">
           {localize('com_ui_skills_dialog_description')}
         </OGDialogDescription>
-        <div className="flex h-[80dvh] max-h-[760px] flex-col">
-          <div className="flex flex-col gap-3 border-b border-border-light px-4 pb-3 pt-4 md:px-6 md:pb-4 md:pt-5">
-            <div className="flex items-center gap-2 pr-10">
-              <OGDialogTitle className="text-base font-semibold text-text-primary">
+        <div className="flex h-[80dvh] max-h-[47.5rem] flex-col">
+          <div className="border-border-light flex flex-col gap-3 border-b px-4 pt-4 pb-3 md:px-6 md:pt-5 md:pb-4">
+            <div className="flex items-center gap-2 pe-10">
+              <OGDialogTitle className="text-base font-semibold">
                 {localize('com_ui_skills')}
               </OGDialogTitle>
             </div>
@@ -278,7 +276,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
             {isSkillsError && (
               <div
                 role="alert"
-                className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-border-medium px-3 py-2 text-sm text-text-secondary"
+                className="border-border-medium text-text-secondary mb-3 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm"
               >
                 <span>{localize('com_ui_skills_load_error')}</span>
                 <Button type="button" variant="outline" onClick={handleRetrySkills}>

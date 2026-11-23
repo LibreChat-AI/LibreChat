@@ -23,6 +23,21 @@ export interface SharedRunArtifact {
   source: RunArtifactDescriptor;
 }
 
+/** Whether a root agent's run shares files with its subagents under the deployment policy. */
+export function isRunFileSharingRequested({
+  policy,
+  agent,
+}: {
+  policy?: TAgentsEndpoint['fileSharing'];
+  agent: Pick<Agent, 'subagents'>;
+}): boolean {
+  return (
+    policy?.enabled === true &&
+    agent.subagents?.enabled === true &&
+    agent.subagents.shareFiles === true
+  );
+}
+
 export function getAuthorizedRunFileSnapshot({
   policy,
   agent,
@@ -32,11 +47,7 @@ export function getAuthorizedRunFileSnapshot({
   agent: Pick<Agent, 'subagents'>;
   files: readonly TFile[];
 }): readonly TFile[] | undefined {
-  return policy?.enabled === true &&
-    agent.subagents?.enabled === true &&
-    agent.subagents.shareFiles === true
-    ? files
-    : undefined;
+  return isRunFileSharingRequested({ policy, agent }) ? files : undefined;
 }
 
 export interface RunFilePreparation {

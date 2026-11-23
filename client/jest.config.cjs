@@ -1,4 +1,4 @@
-/** v0.8.8 */
+/** v0.8.9 */
 const { maxWorkers } = require('../config/jest.workers.cjs');
 
 module.exports = {
@@ -7,7 +7,7 @@ module.exports = {
   testEnvironmentOptions: {
     url: 'http://localhost:3080',
   },
-  collectCoverage: true,
+  collectCoverage: process.env.COVERAGE === 'true',
   collectCoverageFrom: [
     'src/**/*.{js,jsx,ts,tsx}',
     '!<rootDir>/node_modules/',
@@ -33,6 +33,11 @@ module.exports = {
       'jest-file-loader',
     '^test/(.*)$': '<rootDir>/test/$1',
     '^~/(.*)$': '<rootDir>/src/$1',
+    '^@librechat/client$': '<rootDir>/../packages/client/dist/index.cjs',
+    /** One built module of the chat package, for a spec that stands in for a card the package
+     *  draws: `jest.mock('@librechat/chat/dist/components/Text.cjs', …)`. */
+    '^@librechat/chat/dist/(.*)$': '<rootDir>/../packages/chat/dist/$1',
+    '^@librechat/chat$': '<rootDir>/../packages/chat/dist/index.cjs',
     '^librechat-data-provider/react-query$':
       '<rootDir>/../node_modules/librechat-data-provider/src/react-query',
   },
@@ -47,6 +52,9 @@ module.exports = {
   resolver: '<rootDir>/jest.resolver.cjs',
   transform: {
     '\\.[jt]sx?$': 'babel-jest',
+    /** The chat package's build loads its highlighter and markdown plugins with `import()`, which
+     *  jest cannot run natively in a CommonJS file; babel turns it into a `require`. */
+    '/packages/chat/dist/.+\\.cjs$': 'babel-jest',
     '\\.(jpg|jpeg|png|gif|eot|otf|webp|svg|ttf|woff|woff2|mp4|webm|wav|mp3|m4a|aac|oga)$':
       'jest-file-loader',
   },

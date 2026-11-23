@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { useRemScale } from '@librechat/client';
 import { AutoSizer, List } from 'react-virtualized';
 import type { ListRowProps } from 'react-virtualized';
 import type { Endpoint } from '~/common';
@@ -50,6 +51,7 @@ export default function VirtualizedModelList({
   const listRef = useRef<List>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const combobox = Ariakit.useComboboxContext();
+  const remScale = useRemScale();
   const indexSuffix = endpointIndex != null ? `-${endpointIndex}` : '';
   const rowCount = modelIds.length;
 
@@ -119,9 +121,10 @@ export default function VirtualizedModelList({
     return () => document.removeEventListener('keydown', handleBoundaryNavigation, true);
   }, [combobox, precedingOptionCount, rowCount, rowAt]);
 
+  const rowHeight = ROW_HEIGHT * remScale;
   const height = useMemo(
-    () => Math.min(MAX_LIST_HEIGHT, Math.max(ROW_HEIGHT, rowCount * ROW_HEIGHT)),
-    [rowCount],
+    () => Math.min(MAX_LIST_HEIGHT * remScale, Math.max(rowHeight, rowCount * rowHeight)),
+    [rowCount, rowHeight, remScale],
   );
 
   const rowRenderer = useCallback(
@@ -166,10 +169,10 @@ export default function VirtualizedModelList({
             width={width}
             height={height}
             rowCount={rowCount}
-            rowHeight={ROW_HEIGHT}
+            rowHeight={rowHeight}
             overscanRowCount={OVERSCAN}
             rowRenderer={rowRenderer}
-            className="outline-none!"
+            className="outline-hidden!"
             /**
              * `List` spreads its props onto the underlying `Grid`, whose defaults are
              * `role="grid"`, `containerRole="row"` and `tabIndex={0}`. Left alone, that puts a

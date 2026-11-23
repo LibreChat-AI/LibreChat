@@ -575,6 +575,21 @@ describe('getGoogleConfig', () => {
       });
     });
 
+    /** The SDK builds the request URL from `apiVersion`; only server config may choose it. */
+    it('should ignore a model option apiVersion override', () => {
+      const credentials = { [AuthKeys.GOOGLE_API_KEY]: 'server-api-key' };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-2.5-flash',
+          apiVersion: 'v1alpha',
+        } as t.GoogleParameters,
+      });
+
+      expect(result.llmConfig).not.toHaveProperty('apiVersion');
+      expect(result.llmConfig).toHaveProperty('model', 'gemini-2.5-flash');
+    });
+
     it('should ignore non-Google Vertex AI endpoint overrides from additional params', () => {
       process.env.GOOGLE_LOC = 'us';
 
@@ -1171,6 +1186,313 @@ describe('getGoogleConfig', () => {
       expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
         includeThoughts: true,
         thinkingLevel: 'MEDIUM',
+      });
+    });
+
+    it('should default Gemini 4 Argon to medium thinkingLevel', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-4-argon',
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toEqual({
+        includeThoughts: true,
+        thinkingLevel: 'MEDIUM',
+      });
+      expect(result.llmConfig).toMatchObject({ maxOutputTokens: 65535 });
+    });
+
+    it('should remove ignored sampling and rejected legacy params for Gemini 4 Argon', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const modelOptions = {
+        model: 'gemini-4-argon',
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+        top_p: 0.9,
+        top_k: 40,
+        presencePenalty: 0.5,
+        frequencyPenalty: 0.5,
+        thinkingBudget: 5000,
+        thinking_budget: 5000,
+      } as unknown as t.GoogleParameters;
+
+      const result = getGoogleConfig(credentials, { modelOptions });
+
+      expect(result.llmConfig).not.toHaveProperty('temperature');
+      expect(result.llmConfig).not.toHaveProperty('topP');
+      expect(result.llmConfig).not.toHaveProperty('topK');
+      expect(result.llmConfig).not.toHaveProperty('top_p');
+      expect(result.llmConfig).not.toHaveProperty('top_k');
+      expect(result.llmConfig).not.toHaveProperty('presencePenalty');
+      expect(result.llmConfig).not.toHaveProperty('frequencyPenalty');
+      expect(result.llmConfig).not.toHaveProperty('thinkingBudget');
+      expect(result.llmConfig).not.toHaveProperty('thinking_budget');
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).not.toHaveProperty(
+        'thinkingBudget',
+      );
+    });
+
+    it.each([
+      [ThinkingLevel.low, 'LOW'],
+      [ThinkingLevel.medium, 'MEDIUM'],
+      [ThinkingLevel.high, 'HIGH'],
+    ])('should preserve explicit Gemini 4 Argon thinkingLevel "%s"', (level, expected) => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-4-argon',
+          thinkingLevel: level,
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: expected,
+      });
+    });
+
+    it('should substitute minimal thinkingLevel with low for Gemini 4 Argon', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-4-argon',
+          thinkingLevel: ThinkingLevel.minimal,
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'LOW',
+      });
+    });
+
+    it('should default the Gemini 4 Argon cyber-permissive variant to high thinkingLevel', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-4-argon-cyber-permissive',
+          temperature: 0.7,
+        },
+      });
+
+      expect(result.llmConfig).not.toHaveProperty('temperature');
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'HIGH',
+      });
+    });
+
+    it.each([
+      ['gemini-4-argon', 'global', 'aiplatform.googleapis.com'],
+      ['gemini-4-argon-cyber-permissive', 'global', 'aiplatform.googleapis.com'],
+      ['gemini-3.8-flash', 'us-central1', undefined],
+    ])(
+      'should default the Vertex AI location for %s when GOOGLE_LOC is unset',
+      (model, location, endpoint) => {
+        const credentials = {
+          [AuthKeys.GOOGLE_SERVICE_KEY]: {
+            project_id: 'test-project',
+          },
+        };
+
+        const result = getGoogleConfig(credentials, { modelOptions: { model } });
+
+        expect((result.llmConfig as Record<string, unknown>).location).toBe(location);
+        expect((result.llmConfig as Record<string, unknown>).endpoint).toBe(endpoint);
+      },
+    );
+
+    it.each([
+      ['europe-west1', 'eu', 'aiplatform.eu.rep.googleapis.com'],
+      ['us-central1', 'us', 'aiplatform.us.rep.googleapis.com'],
+      ['eu', 'eu', 'aiplatform.eu.rep.googleapis.com'],
+      ['asia-northeast1', 'asia-northeast1', undefined],
+    ])(
+      'should resolve a configured %s Vertex AI location for Gemini 4 Argon to %s',
+      (configured, location, endpoint) => {
+        process.env.GOOGLE_LOC = configured;
+        const credentials = {
+          [AuthKeys.GOOGLE_SERVICE_KEY]: {
+            project_id: 'test-project',
+          },
+        };
+
+        const result = getGoogleConfig(credentials, { modelOptions: { model: 'gemini-4-argon' } });
+
+        expect((result.llmConfig as Record<string, unknown>).location).toBe(location);
+        expect((result.llmConfig as Record<string, unknown>).endpoint).toBe(endpoint);
+      },
+    );
+
+    it('should resolve an addParams regional location for Gemini 4 Argon', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_SERVICE_KEY]: {
+          project_id: 'test-project',
+        },
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-4-argon' },
+        addParams: { location: 'europe-west4' },
+      });
+
+      expect(result.llmConfig).toMatchObject({
+        location: 'eu',
+        endpoint: 'aiplatform.eu.rep.googleapis.com',
+      });
+    });
+
+    it.each([
+      [
+        'us-central1',
+        'us-central1-aiplatform.googleapis.com',
+        'us',
+        'aiplatform.us.rep.googleapis.com',
+      ],
+      [
+        'europe-west4',
+        'aiplatform.europe-west4.rep.googleapis.com',
+        'eu',
+        'aiplatform.eu.rep.googleapis.com',
+      ],
+    ])(
+      'should replace a regional %s endpoint override for Gemini 4 Argon',
+      (location, endpoint, expectedLocation, expectedEndpoint) => {
+        process.env.GOOGLE_LOC = location;
+        const credentials = {
+          [AuthKeys.GOOGLE_SERVICE_KEY]: {
+            project_id: 'test-project',
+          },
+        };
+
+        const result = getGoogleConfig(credentials, {
+          modelOptions: { model: 'gemini-4-argon' },
+          addParams: { endpoint },
+        });
+
+        expect(result.llmConfig).toMatchObject({
+          location: expectedLocation,
+          endpoint: expectedEndpoint,
+        });
+      },
+    );
+
+    it.each([
+      ['a Private Service Connect', 'gemini-4-argon', 'aiplatform-genai1.p.googleapis.com'],
+      ['a regional', 'gemini-3.8-flash', 'us-central1-aiplatform.googleapis.com'],
+    ])('should keep %s endpoint override for %s', (_kind, model, endpoint) => {
+      process.env.GOOGLE_LOC = 'us-central1';
+      const credentials = {
+        [AuthKeys.GOOGLE_SERVICE_KEY]: {
+          project_id: 'test-project',
+        },
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model },
+        addParams: { endpoint },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).endpoint).toBe(endpoint);
+    });
+
+    it.each([
+      ['a multi-region', 'aiplatform.us.rep.googleapis.com'],
+      ['a Private Service Connect', 'aiplatform-genai1.p.googleapis.com'],
+    ])(
+      'should resolve the Gemini 4 Argon location when %s endpoint override is kept',
+      (_kind, endpoint) => {
+        process.env.GOOGLE_LOC = 'us-central1';
+        const credentials = {
+          [AuthKeys.GOOGLE_SERVICE_KEY]: {
+            project_id: 'test-project',
+          },
+        };
+
+        const result = getGoogleConfig(credentials, {
+          modelOptions: { model: 'gemini-4-argon' },
+          addParams: { endpoint },
+        });
+
+        expect(result.llmConfig).toMatchObject({ location: 'us', endpoint });
+      },
+    );
+
+    it('should keep a configured regional Vertex AI location for older Gemini models', () => {
+      process.env.GOOGLE_LOC = 'europe-west1';
+      const credentials = {
+        [AuthKeys.GOOGLE_SERVICE_KEY]: {
+          project_id: 'test-project',
+        },
+      };
+
+      const result = getGoogleConfig(credentials, { modelOptions: { model: 'gemini-3.8-flash' } });
+
+      expect((result.llmConfig as Record<string, unknown>).location).toBe('europe-west1');
+    });
+
+    it('should remove candidate-count params a stored preset carries for Gemini 4 Argon', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const modelOptions = {
+        model: 'gemini-4-argon',
+        candidateCount: 2,
+        candidate_count: 2,
+        n: 2,
+      } as unknown as t.GoogleParameters;
+
+      const result = getGoogleConfig(credentials, { modelOptions });
+
+      expect(result.llmConfig).not.toHaveProperty('candidateCount');
+      expect(result.llmConfig).not.toHaveProperty('candidate_count');
+      expect(result.llmConfig).not.toHaveProperty('n');
+    });
+
+    it('should keep the eu multi-region and apply Argon handling on Vertex AI', () => {
+      process.env.GOOGLE_LOC = 'eu';
+      const credentials = {
+        [AuthKeys.GOOGLE_SERVICE_KEY]: {
+          project_id: 'test-project',
+        },
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-4-argon',
+          temperature: 0.7,
+          thinkingLevel: ThinkingLevel.minimal,
+        },
+      });
+
+      expect(result.provider).toBe(Providers.VERTEXAI);
+      expect(result.llmConfig).toMatchObject({
+        location: 'eu',
+        endpoint: 'aiplatform.eu.rep.googleapis.com',
+      });
+      expect(result.llmConfig).not.toHaveProperty('temperature');
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'LOW',
       });
     });
 

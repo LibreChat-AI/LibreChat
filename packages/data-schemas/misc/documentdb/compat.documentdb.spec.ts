@@ -21,6 +21,7 @@ import { decrementTagCounts } from '~/methods/conversationTag';
 import { tenantStorage } from '~/config/tenantContext';
 import { supportsTransactions } from '~/utils/transactions';
 import { createScheduleMethods } from '~/methods/schedule';
+import { createConfigMethods } from '~/methods/config';
 import { createUserMethods } from '~/methods/user';
 import { createFileMethods } from '~/methods/file';
 import { createModels } from '~/models';
@@ -365,6 +366,82 @@ describeLive('Amazon DocumentDB live compatibility', () => {
         ? 'present'
         : 'MISSING — DocumentDB rejects retryable writes';
       expect(typeof disabled).toBe('boolean');
+    });
+  });
+
+  /**
+   * Admin config overrides are Mixed subdocuments whose record keys can hold dots (Bedrock
+   * inference profiles, model names such as `gpt-4.1`, MIME types, header names). The admin
+   * config API stores them verbatim, so the engine must accept dotted field names inside
+   * embedded documents through both write shapes the config methods use: a `$set` of a dotted
+   * `overrides.<path>` whose value carries dotted keys, and a whole-object `$set` of `overrides`.
+   */
+  describe('admin config overrides with dotted record keys', () => {
+    const principalId = (label: string) => `compat_${label}_${runId}`;
+    const profiles = {
+      'us.anthropic.claude-sonnet-4-6': 'arn:aws:bedrock:us-east-1:1:inference-profile/x',
+      'eu.amazon.nova-pro-v1:0': 'arn:aws:bedrock:eu-west-1:1:inference-profile/y',
+    };
+    const models = { 'gpt-4.1': true, 'gpt-4.1-mini': { deploymentName: 'mini' } };
+    const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    afterAll(async () => {
+      await mongoose.models.Config.deleteMany({ principalId: { $regex: runId } });
+    });
+
+    it('stores dotted keys under a dotted $set path and reads them back', async () => {
+      const methods = createConfigMethods(mongoose);
+      const id = principalId('patch');
+      await methods.patchConfigFields(
+        PrincipalType.ROLE,
+        id,
+        PrincipalModel.ROLE,
+        {
+          'endpoints.bedrock.inferenceProfiles': profiles,
+          'fileConfig.defaultLLMDeliveryPath.overrides': { [mime]: 'text' },
+        },
+        10,
+      );
+      const stored = await methods.findConfigByPrincipal(PrincipalType.ROLE, id);
+      const overrides = stored?.overrides as Record<string, Record<string, unknown>>;
+      expect(overrides.endpoints.bedrock).toEqual({ inferenceProfiles: profiles });
+      expect(overrides.fileConfig).toEqual({
+        defaultLLMDeliveryPath: { overrides: { [mime]: 'text' } },
+      });
+      capabilities['dotted keys via $set path'] = 'supported';
+    });
+
+    it('stores dotted keys inside a whole-object $set, arrays included', async () => {
+      const methods = createConfigMethods(mongoose);
+      const id = principalId('upsert');
+      const overrides = {
+        endpoints: {
+          azureOpenAI: { groups: [{ group: 'eastus', apiKey: '${KEY}', models }] },
+          custom: [{ name: 'gw', headers: { 'x-portkey.config': 'cfg' } }],
+        },
+      };
+      await methods.upsertConfig(
+        PrincipalType.ROLE,
+        id,
+        PrincipalModel.ROLE,
+        overrides as never,
+        10,
+      );
+      const [stored] = await methods.getApplicableConfigs([
+        { principalType: PrincipalType.ROLE, principalId: id },
+      ]);
+      expect(stored.overrides).toEqual(overrides);
+      capabilities['dotted keys via whole $set'] = 'supported';
+    });
+
+    it('records whether the engine stores a `$`-prefixed key inside a value', async () => {
+      const probe = getDb().collection(`dollar_key_probe_${runId}`);
+      capabilities['$-prefixed key in $set value'] = await probe
+        .updateOne({ probe: 1 }, { $set: { value: { $where: 'x' } } }, { upsert: true })
+        .then(() => 'stored (the admin API guard is the only $ check)')
+        .catch((error: Error) => `rejected (${error.message})`);
+      await probe.drop().catch(() => undefined);
+      expect(capabilities['$-prefixed key in $set value']).toBeDefined();
     });
   });
 

@@ -63,6 +63,16 @@ interface CodeEnvRefBase {
   provisionedAt?: number;
   /** Actual destination used when uploading this storage object. */
   sandboxFilename?: string;
+  /** Digest of the bytes the upload behind this pointer sent. Recorded only by an uploader
+   *  that held those bytes, so it can later be compared with what the object store reports. */
+  content?: CodeEnvRefContent;
+}
+
+/** What one code-environment upload stored. `md5` is absent where the runtime forbids it. */
+export interface CodeEnvRefContent {
+  sha256: string;
+  bytes: number;
+  md5?: string;
 }
 
 export type CodeExecutionProfile = 'default' | 'stateful';

@@ -1,0 +1,16 @@
+/** jsdom has no layout and ships no IntersectionObserver; the message rail and scroll control
+ *  need one to mount. A spec about what they report installs its own. */
+class InertIntersectionObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+
+Object.defineProperty(window, 'IntersectionObserver', {
+  writable: true,
+  configurable: true,
+  value: InertIntersectionObserver,
+});

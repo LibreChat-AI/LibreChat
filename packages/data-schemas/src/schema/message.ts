@@ -59,6 +59,9 @@ const messageSchema: Schema<IMessage> = new Schema(
     summary: {
       type: String,
     },
+    privateText: { type: String, select: false },
+    privacyRevision: { type: String },
+    privateTextTokens: { type: [String], select: false, default: undefined },
     isCreatedByUser: {
       type: Boolean,
       required: true,
@@ -119,6 +122,7 @@ const messageSchema: Schema<IMessage> = new Schema(
       default: undefined,
       required: false,
     },
+    langfuseCentralTraceExportEnabled: { type: Boolean },
     langfuseSampled: {
       type: Boolean,
     },
@@ -149,6 +153,16 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: String,
     },
     metadata: { type: mongoose.Schema.Types.Mixed },
+    subagentContent: {
+      type: {
+        version: { type: Number, enum: [1], required: true },
+        throughSequence: Number,
+        deleted: { type: Boolean, default: undefined },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
     subagentTranscript: {
       type: {
         taskId: { type: String, required: true },
@@ -162,9 +176,40 @@ const messageSchema: Schema<IMessage> = new Schema(
     subagentActivityProjection: {
       type: {
         taskId: { type: String, required: true },
-        version: { type: Number, enum: [1], required: true },
+        version: { type: Number, enum: [1, 2], required: true },
         activityJson: { type: String, required: true },
         truncated: { type: Boolean, required: true },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
+    /**
+     * What started a turn no person sent: the event its delivery carried, who the run acts
+     * for and, on a turn that reports background work, the event that began that run. The
+     * server writes it from the run it verified. Read only where the owner's client reads.
+     */
+    trigger: {
+      type: {
+        event: {
+          type: { type: String, required: true },
+          occurredAt: { type: Date, required: true },
+        },
+        subject: {
+          type: { kind: { type: String, required: true }, id: { type: String, required: true } },
+          _id: false,
+          default: undefined,
+        },
+        origin: {
+          type: {
+            event: {
+              type: { type: String, required: true },
+              occurredAt: { type: Date, required: true },
+            },
+          },
+          _id: false,
+          default: undefined,
+        },
       },
       _id: false,
       select: false,
@@ -270,6 +315,19 @@ const messageSchema: Schema<IMessage> = new Schema(
      * count), so they are not duplicated into the stored `text`.
      */
     quotes: { type: [String], default: undefined },
+    /** Request-scoped reasoning selection used for this user turn. */
+    reasoningOverride: {
+      type: {
+        key: {
+          type: String,
+          enum: ['reasoning_effort', 'effort', 'thinkingLevel', 'thinkingBudget'],
+          required: true,
+        },
+        value: { type: mongoose.Schema.Types.Mixed, required: true },
+      },
+      _id: false,
+      default: undefined,
+    },
     /*
     attachments: {
       type: [
@@ -338,6 +396,12 @@ messageSchema.index({
  * the sort back into memory for them.
  */
 messageSchema.index({ conversationId: 1, user: 1, createdAt: 1, _id: 1 });
+
+/**
+ * Serves the cursor-paginated message read when sorted by `updatedAt`, the
+ * default of `GET /api/messages`; the `createdAt` sort uses the index above.
+ */
+messageSchema.index({ conversationId: 1, user: 1, updatedAt: 1, _id: 1 });
 
 /**
  * Serves the batched newest-task read for child threads. `user` is an equality

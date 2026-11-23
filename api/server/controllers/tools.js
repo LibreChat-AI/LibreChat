@@ -161,7 +161,6 @@ const callTool = async (req, res) => {
     const { loadedTools } = await loadTools({
       user: req.user.id,
       tools: [toolId],
-      functions: true,
       options: {
         req,
         returnMetadata: true,

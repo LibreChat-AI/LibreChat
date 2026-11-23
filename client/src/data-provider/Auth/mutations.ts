@@ -129,6 +129,29 @@ export const useUpdateUserPreferencesMutation = (
   );
 };
 
+export const useRequestEmailChangeMutation = (
+  options?: t.MutationOptions<t.TEmailChangeResponse, t.TRequestEmailChange>,
+): UseMutationResult<t.TEmailChangeResponse, unknown, t.TRequestEmailChange, unknown> => {
+  return useMutation({
+    mutationFn: (payload: t.TRequestEmailChange) => dataService.requestEmailChange(payload),
+    ...(options ?? {}),
+  });
+};
+
+export const useConfirmEmailChangeMutation = (
+  options?: t.MutationOptions<t.TEmailChangeResponse, t.TConfirmEmailChange>,
+): UseMutationResult<t.TEmailChangeResponse, unknown, t.TConfirmEmailChange, unknown> => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: t.TConfirmEmailChange) => dataService.confirmEmailChange(payload),
+    ...(options ?? {}),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries([QueryKeys.user]);
+      options?.onSuccess?.(...args);
+    },
+  });
+};
+
 export const useEnableTwoFactorMutation = (): UseMutationResult<
   t.TEnable2FAResponse,
   unknown,
@@ -158,7 +181,7 @@ export const useVerifyTwoFactorMutation = (): UseMutationResult<
 };
 
 export const useConfirmTwoFactorMutation = (): UseMutationResult<
-  t.TVerify2FAResponse,
+  t.TConfirm2FAResponse,
   unknown,
   t.TVerify2FARequest,
   unknown
@@ -167,6 +190,10 @@ export const useConfirmTwoFactorMutation = (): UseMutationResult<
   return useMutation((payload: t.TVerify2FARequest) => dataService.confirmTwoFactor(payload), {
     onSuccess: (data) => {
       queryClient.setQueryData([QueryKeys.user, '2fa'], data);
+      /** Enrollment retired the bearer this tab held; adopt the session minted in its place. */
+      if (data?.token) {
+        request.dispatchTokenUpdatedEvent(data.token);
+      }
     },
   });
 };
@@ -217,3 +244,101 @@ export const useVerifyTwoFactorTempMutation = (
     },
   );
 };
+
+/* passkeys */
+export const useRegisterPasskeyMutation = (): UseMutationResult<
+  t.TPasskeyResponse,
+  unknown,
+  t.TVerifyPasskeyRegistrationRequest,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.registerPasskey],
+    (payload: t.TVerifyPasskeyRegistrationRequest) =>
+      dataService.verifyPasskeyRegistration(payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries([QueryKeys.passkeys]);
+      },
+    },
+  );
+};
+
+export const useRenamePasskeyMutation = (): UseMutationResult<
+  t.TPasskeyResponse,
+  unknown,
+  t.TRenamePasskeyRequest,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.renamePasskey],
+    (payload: t.TRenamePasskeyRequest) => dataService.renamePasskey(payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries([QueryKeys.passkeys]);
+      },
+    },
+  );
+};
+
+export const useDeletePasskeyMutation = (): UseMutationResult<
+  { message: string },
+  unknown,
+  t.TDeletePasskeyRequest,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.deletePasskey],
+    (payload: t.TDeletePasskeyRequest) => dataService.deletePasskey(payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries([QueryKeys.passkeys]);
+      },
+    },
+  );
+};
+export const useEnableTwoFactorSetupMutation = (): UseMutationResult<
+  t.TEnable2FAResponse,
+  unknown,
+  t.TEnable2FASetupRequest,
+  unknown
+> => useMutation((payload: t.TEnable2FASetupRequest) => dataService.enableTwoFactorSetup(payload));
+
+export const useConfirmTwoFactorSetupMutation = (): UseMutationResult<
+  t.TConfirm2FASetupResponse,
+  unknown,
+  t.TConfirm2FASetupRequest,
+  unknown
+> =>
+  useMutation((payload: t.TConfirm2FASetupRequest) => dataService.confirmTwoFactorSetup(payload));
+
+export const useAcknowledgeTwoFactorSetupMutation = (): UseMutationResult<
+  t.TAcknowledge2FASetupResponse,
+  unknown,
+  t.TAcknowledge2FASetupRequest,
+  unknown
+> =>
+  useMutation((payload: t.TAcknowledge2FASetupRequest) =>
+    dataService.acknowledgeTwoFactorSetup(payload),
+  );
+
+export const useFinalizeTwoFactorSetupMutation = (): UseMutationResult<
+  t.TFinalize2FASetupResponse,
+  unknown,
+  t.TFinalize2FASetupRequest,
+  unknown
+> =>
+  useMutation((payload: t.TFinalize2FASetupRequest) => dataService.finalizeTwoFactorSetup(payload));
+
+export const useCancelTwoFactorSetupMutation = (): UseMutationResult<
+  t.TCancel2FASetupResponse,
+  unknown,
+  t.TCancel2FASetupRequest,
+  unknown
+> =>
+  useMutation([MutationKeys.cancelTwoFactorSetup], (payload: t.TCancel2FASetupRequest) =>
+    dataService.cancelTwoFactorSetup(payload),
+  );

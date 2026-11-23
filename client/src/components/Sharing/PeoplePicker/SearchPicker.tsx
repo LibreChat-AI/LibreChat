@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Search } from 'lucide-react';
 import debounce from 'lodash/debounce';
 import * as Ariakit from '@ariakit/react';
-import { Input, Spinner, Skeleton } from '@librechat/client';
+import { Input, Spinner, Skeleton, useNestedPopoverStyle } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -14,6 +14,7 @@ type SearchPickerProps<TOption extends { key: string }> = {
   onPick: (pickedOption: TOption) => void;
   placeholder?: string;
   inputClassName?: string;
+  inputRef?: React.RefObject<HTMLInputElement>;
   label?: string;
   labelClassName?: string;
   resetValueOnHide?: boolean;
@@ -33,15 +34,23 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
   isSmallScreen = false,
   placeholder,
   inputClassName,
+  inputRef: providedInputRef,
   resetValueOnHide = false,
   isLoading = false,
   minQueryLengthForNoResults = 2,
 }: SearchPickerProps<TOption>) {
   const localize = useLocalize();
-  const [_open, setOpen] = React.useState(false);
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  const [open, setOpen] = React.useState(false);
+  const fallbackInputRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = providedInputRef ?? fallbackInputRef;
   const [localQuery, setLocalQuery] = React.useState(query);
+  const popoverStyle = useNestedPopoverStyle();
+  const hasContent =
+    isLoading || options.length > 0 || localQuery.trim().length >= minQueryLengthForNoResults;
   const combobox = Ariakit.useComboboxStore({
+    open: open && hasContent,
+    setOpen,
+    virtualFocus: true,
     resetValueOnHide,
   });
 
@@ -64,37 +73,37 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
   }, [debouncedOnQueryChange]);
 
   const onPickHandler = (option: TOption) => {
+    debouncedOnQueryChange.cancel();
     setLocalQuery('');
     onQueryChange('');
     onPick(option);
-    setOpen(false);
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
+    inputRef.current?.focus();
+    combobox.hide();
   };
 
   return (
     <Ariakit.ComboboxProvider store={combobox}>
       <Ariakit.ComboboxLabel
-        className={cn('mb-2 block font-medium text-text-primary', labelClassName)}
+        className={cn('text-text-primary mb-2 block font-medium', labelClassName)}
       >
         {label}
       </Ariakit.ComboboxLabel>
       <>
         <div
           className={cn(
-            'relative flex h-10 items-center gap-2 text-text-primary',
+            'text-text-primary relative flex h-10 items-center gap-2',
             isSmallScreen === true ? 'mb-2 h-14 rounded-2xl' : '',
           )}
         >
           {isLoading ? (
-            <Spinner className="absolute left-3 h-4 w-4" />
+            <Spinner className="absolute inset-s-3 h-4 w-4" />
           ) : (
-            <Search className="absolute left-3 h-4 w-4 text-text-secondary" aria-hidden="true" />
+            <Search className="text-text-secondary absolute inset-s-3 h-4 w-4" aria-hidden="true" />
           )}
           <Ariakit.Combobox
             render={<Input />}
             ref={inputRef}
+            onFocus={() => setOpen(true)}
             onKeyDown={(e) => {
               if (e.key === 'Escape' && combobox.getState().open) {
                 e.preventDefault();
@@ -102,7 +111,7 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
                 setLocalQuery('');
                 onQueryChange('');
                 debouncedOnQueryChange.cancel();
-                setOpen(false);
+                combobox.hide();
               }
             }}
             store={combobox}
@@ -111,32 +120,29 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
             onChange={(e) => {
               const value = e.target.value;
               setLocalQuery(value);
+              setOpen(true);
               debouncedOnQueryChange(value);
             }}
             value={localQuery}
-            // autoSelect
             placeholder={placeholder || localize('com_ui_select_options')}
-            className={cn('h-10 w-full pl-10 text-sm leading-tight', inputClassName)}
+            className={cn('h-10 w-full ps-10 text-sm leading-tight', inputClassName)}
           />
         </div>
       </>
       <Ariakit.ComboboxPopover
-        portal={false} //todo fix focus when set to true
+        portal
+        fixed
         gutter={8}
         sameWidth
-        open={
-          isLoading ||
-          options.length > 0 ||
-          (localQuery.trim().length >= minQueryLengthForNoResults && !isLoading)
-        }
         store={combobox}
         unmountOnHide
         autoFocusOnShow={false}
         modal={false}
-        className={cn(
-          'animate-popover z-[9999] min-w-64 overflow-hidden rounded-2xl border border-border-light bg-surface-secondary shadow-lg',
-          '[pointer-events:auto]', // Override body's pointer-events:none when in modal
-        )}
+        autoFocusOnHide={false}
+        // Shared modal depth determines portal stacking and pointer interaction.
+        style={popoverStyle}
+        data-variant="field"
+        className="popover-ui pointer-events-auto z-50"
       >
         {(() => {
           if (isLoading) {
@@ -160,7 +166,6 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
               <Ariakit.ComboboxItem
                 key={o.key}
                 focusOnHover
-                // hideOnClick
                 value={o.value}
                 selectValueOnClick={false}
                 onClick={() => onPickHandler(o)}
@@ -179,13 +184,13 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
               <div
                 className={cn(
                   'flex items-center justify-center px-4 py-8 text-center',
-                  'text-sm text-text-secondary',
+                  'text-text-secondary text-sm',
                 )}
               >
                 <div className="flex flex-col items-center gap-2">
-                  <Search className="h-8 w-8 text-text-tertiary opacity-50" />
+                  <Search className="text-text-tertiary h-8 w-8 opacity-50" />
                   <div className="font-medium">{localize('com_ui_no_results_found')}</div>
-                  <div className="text-xs text-text-tertiary">
+                  <div className="text-text-tertiary text-xs">
                     {localize('com_ui_try_adjusting_search')}
                   </div>
                 </div>

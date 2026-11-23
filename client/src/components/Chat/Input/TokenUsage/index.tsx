@@ -1,17 +1,22 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import * as Ariakit from '@ariakit/react';
+import { memo } from 'react';
+import { useAtom } from 'jotai';
 import { Spinner } from '@librechat/client';
 import { Constants } from 'librechat-data-provider';
+import {
+  CompactAction,
+  ContextBreakdown as Breakdown,
+  ContextGauge as Gauge,
+  ContextUsagePopover as UsagePopover,
+} from '@librechat/chat/components';
 import type { TConversation } from 'librechat-data-provider';
+import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
 import type { CurrencyConfig } from '~/utils';
 import useCompactConversation, { supportsCompaction } from '~/hooks/Chat/useCompactConversation';
 import { useGetLangfuseSessionLinkQuery, useGetStartupConfig } from '~/data-provider';
 import useTokenUsage from '~/hooks/Chat/useTokenUsage';
-import CompactAction from './CompactAction';
-import { formatTokens, cn } from '~/utils';
+import { contextBreakdownExpandedAtom } from './store';
+import { formatTokens } from '~/utils';
 import { useLocalize } from '~/hooks';
-import Breakdown from './Breakdown';
-import Gauge from './Gauge';
 
 interface TokenUsageProps {
   index: number;
@@ -19,10 +24,65 @@ interface TokenUsageProps {
   isSubmitting: boolean;
 }
 
-/** Hover pacing: a brief intent delay so sweeping past the gauge doesn't pop
- *  the card open, and a grace period for the pointer to travel into it. */
-const SHOW_DELAY_MS = 100;
-const HIDE_DELAY_MS = 150;
+interface ContextCardProps {
+  view: TokenUsageView;
+  conversationId: string;
+  isSubmitting: boolean;
+  showCost: boolean;
+  currency?: CurrencyConfig;
+  langfuseConnectionAccess: boolean;
+  compaction: ReturnType<typeof useCompactConversation>;
+  compactionAvailable: boolean;
+}
+
+/** The context half of the card. Mounted only while the card is open, so the
+ *  Langfuse session link resolves on demand rather than per conversation. */
+function ContextCard({
+  view,
+  conversationId,
+  isSubmitting,
+  showCost,
+  currency,
+  langfuseConnectionAccess,
+  compaction,
+  compactionAvailable,
+}: ContextCardProps) {
+  const [breakdownExpanded, setBreakdownExpanded] = useAtom(contextBreakdownExpandedAtom);
+  const canResolveLangfuseSession =
+    langfuseConnectionAccess &&
+    !isSubmitting &&
+    conversationId !== '' &&
+    conversationId !== Constants.NEW_CONVO &&
+    conversationId !== Constants.PENDING_CONVO;
+  const { data: langfuseSession } = useGetLangfuseSessionLinkQuery(
+    conversationId,
+    canResolveLangfuseSession,
+  );
+
+  return (
+    <>
+      <Breakdown
+        view={view}
+        showCost={showCost}
+        currency={currency}
+        langfuseSessionUrl={langfuseSession?.url ?? undefined}
+        expanded={breakdownExpanded}
+        onExpandedChange={setBreakdownExpanded}
+      />
+      {compactionAvailable && (
+        <>
+          <div className="border-border-light border-t" role="separator" />
+          <CompactAction
+            reclaimableTokens={view.compactionReclaim}
+            compact={compaction.compact}
+            canCompact={compaction.canCompact}
+            isCompacting={compaction.isCompacting}
+          />
+        </>
+      )}
+    </>
+  );
+}
 
 function TokenUsageIndicator({
   index,
@@ -44,91 +104,10 @@ function TokenUsageIndicator({
    *  in-flight state the moment the pointer leaves. */
   const compaction = useCompactConversation();
   const compactionAvailable = compactionEnabled && supportsCompaction(conversation?.endpoint);
-  const popover = Ariakit.usePopoverStore({ placement: 'top' });
-  const popoverOpen = Ariakit.useStoreState(popover, 'open');
-  const disclosureRef = useRef<HTMLButtonElement>(null);
   const conversationId = conversation?.conversationId ?? '';
-  const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /**
-   * Ariakit only restores focus to the trigger on hide when it took focus on
-   * show, so keep `autoFocusOnShow` on for click/keyboard opens (Escape returns
-   * focus to the gauge) and off for hover so it never pulls focus off the
-   * composer mid-typing.
-   */
-  const [focusOnShow, setFocusOnShow] = useState(true);
-  /** A click pins an open popover: hover no longer holds it, so the pointer can
-   *  leave without it closing. Cleared when the popover closes by any path
-   *  (Escape, outside click, a second click). */
-  const pinnedRef = useRef(false);
-  /** The pin state as of the pointerdown that precedes a mouse click. The
-   *  pointerdown may hide the popover (hideOnInteractOutside does not exempt
-   *  the disclosure's inner elements), which clears `pinnedRef` via the close
-   *  effect before the click handler runs; the click must decide from this
-   *  snapshot instead. */
-  const pinAtPointerDownRef = useRef(false);
+  const hasContext = view.usedTokens > 0;
 
-  const cancelTimers = useCallback(() => {
-    if (showTimerRef.current != null) {
-      clearTimeout(showTimerRef.current);
-      showTimerRef.current = null;
-    }
-    if (hideTimerRef.current != null) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-  }, []);
-  const openByPointer = useCallback(() => {
-    if (pinnedRef.current) {
-      return;
-    }
-    cancelTimers();
-    if (popover.getState().open) {
-      return;
-    }
-    showTimerRef.current = setTimeout(() => {
-      showTimerRef.current = null;
-      setFocusOnShow(false);
-      popover.show();
-    }, SHOW_DELAY_MS);
-  }, [cancelTimers, popover]);
-  const scheduleHide = useCallback(() => {
-    if (pinnedRef.current) {
-      return;
-    }
-    cancelTimers();
-    hideTimerRef.current = setTimeout(() => {
-      hideTimerRef.current = null;
-      popover.hide();
-    }, HIDE_DELAY_MS);
-  }, [cancelTimers, popover]);
-
-  useEffect(() => {
-    if (!popoverOpen) {
-      pinnedRef.current = false;
-    }
-  }, [popoverOpen]);
-
-  /** Pending hover work must not outlive its target: cancel it on unmount and
-   *  when the branch changes under the pointer, so a delayed show cannot open
-   *  the popover for a conversation the user has navigated away from. */
-  useEffect(() => cancelTimers, [cancelTimers, conversationId]);
-
-  const canResolveLangfuseSession =
-    langfuseConnectionAccess &&
-    popoverOpen &&
-    !isSubmitting &&
-    conversationId !== '' &&
-    conversationId !== Constants.NEW_CONVO &&
-    conversationId !== Constants.PENDING_CONVO;
-  const { data: langfuseSession } = useGetLangfuseSessionLinkQuery(
-    conversationId,
-    canResolveLangfuseSession,
-  );
-
-  /** Hide until the branch has data — keeps a fresh, message-less chat clean and
-   *  lets the indicator animate into view once the first tokens land. */
-  if (view.usedTokens <= 0) {
+  if (!hasContext) {
     return null;
   }
 
@@ -143,62 +122,17 @@ function TokenUsageIndicator({
   const ariaLabel = compaction.isCompacting
     ? localize('com_ui_context_compacting')
     : usageAriaLabel;
-  const showCompactingIndicator = compaction.isCompacting && !popoverOpen;
 
   return (
-    <>
-      {/* Hover shows the breakdown; the disclosure keeps click / Enter / Space
-          working for touch and keyboard users. Taps also emit pointer
-          enter/leave, so the hover timers are gated to hover-capable pointers
-          or a tap would hide the popover it just opened. */}
-      <Ariakit.PopoverDisclosure
-        ref={disclosureRef}
-        store={popover}
-        type="button"
-        data-testid="token-usage"
-        aria-label={ariaLabel}
-        aria-busy={compaction.isCompacting}
-        aria-haspopup="dialog"
-        onPointerDown={() => {
-          pinAtPointerDownRef.current = pinnedRef.current;
-        }}
-        onPointerEnter={(e) => {
-          if (e.pointerType !== 'touch') {
-            openByPointer();
-          }
-        }}
-        onPointerLeave={(e) => {
-          if (e.pointerType !== 'touch') {
-            scheduleHide();
-          }
-        }}
-        onClick={(e) => {
-          cancelTimers();
-          e.preventDefault();
-          /** Mouse clicks (detail > 0) decide from the pointerdown snapshot:
-           *  the pointerdown may have hidden the popover and cleared the live
-           *  pin before this handler ran. Keyboard clicks carry no pointerdown,
-           *  so the live pin state is the truth there. */
-          const wasPinned = e.detail > 0 ? pinAtPointerDownRef.current : pinnedRef.current;
-          if (wasPinned) {
-            pinnedRef.current = false;
-            popover.hide();
-            return;
-          }
-          if (!popover.getState().open) {
-            setFocusOnShow(true);
-          }
-          pinnedRef.current = true;
-          popover.show();
-        }}
-        className={cn(
-          'flex size-theme-control items-center justify-center rounded-theme-control-round transition-colors',
-          'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
-          'duration-300 animate-in fade-in zoom-in-95',
-        )}
-      >
-        {showCompactingIndicator ? (
-          <Spinner className="size-5 text-text-secondary" />
+    <UsagePopover
+      resetKey={conversationId}
+      label={ariaLabel}
+      cardLabel={localize('com_ui_context_usage')}
+      busy={compaction.isCompacting}
+      wide
+      trigger={(open) =>
+        compaction.isCompacting && !open ? (
+          <Spinner tone="secondary" className="size-5" />
         ) : (
           <span
             role="meter"
@@ -208,59 +142,24 @@ function TokenUsageIndicator({
             aria-label={localize('com_ui_context_usage')}
             className="flex items-center justify-center"
           >
-            <Gauge percent={view.percent} indeterminate={!hasMax} />
+            <Gauge percent={view.percent} indeterminate={hasContext && !hasMax} />
           </span>
-        )}
-      </Ariakit.PopoverDisclosure>
-      {/* Focus the labelled dialog on keyboard/click open so screen readers
-          enter and announce the breakdown, and so focus stays contained instead
-          of falling back to the body (which the composer's global focus logic
-          would steal). The visible ring is suppressed via focus:outline-none,
-          and finalFocus returns focus to the gauge trigger on close. */}
-      <Ariakit.Popover
-        store={popover}
-        gutter={8}
-        portal
-        unmountOnHide
-        autoFocusOnShow={focusOnShow}
-        finalFocus={disclosureRef}
-        aria-label={localize('com_ui_context_usage')}
-        onPointerEnter={cancelTimers}
-        onPointerLeave={(e) => {
-          if (e.pointerType !== 'touch') {
-            scheduleHide();
-          }
-        }}
-        className={cn(
-          'z-[200] rounded-xl border border-border-medium bg-surface-secondary p-3 text-text-primary shadow-lg focus:outline-none',
-          'origin-bottom translate-y-1 scale-95 opacity-0 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
-          'data-[enter]:translate-y-0 data-[enter]:scale-100 data-[enter]:opacity-100',
-          'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
-        )}
-      >
-        {/* The popover owns its width, which the breakdown held only while it
-            was the sole child of a shrink-to-fit box. */}
-        <div className="w-72 space-y-3">
-          <Breakdown
-            view={view}
-            showCost={showCost}
-            compactionAvailable={compactionAvailable}
-            currency={currency}
-            langfuseSessionUrl={langfuseSession?.url ?? undefined}
-          />
-          {compactionAvailable && (
-            <>
-              <div className="border-t border-border-light" role="separator" />
-              <CompactAction
-                compact={compaction.compact}
-                canCompact={compaction.canCompact}
-                isCompacting={compaction.isCompacting}
-              />
-            </>
-          )}
-        </div>
-      </Ariakit.Popover>
-    </>
+        )
+      }
+    >
+      <div className="flex flex-col gap-3" data-testid="token-usage-card">
+        <ContextCard
+          view={view}
+          conversationId={conversationId}
+          isSubmitting={isSubmitting}
+          showCost={showCost}
+          currency={currency}
+          langfuseConnectionAccess={langfuseConnectionAccess}
+          compaction={compaction}
+          compactionAvailable={compactionAvailable}
+        />
+      </div>
+    </UsagePopover>
   );
 }
 
@@ -270,7 +169,10 @@ const TokenUsage = memo(function TokenUsage(props: TokenUsageProps) {
   /** Wait for config before mounting: until it loads `contextUsage === false`
    *  reads as undefined, so a disabled deployment would briefly mount the
    *  indicator and fire the token-config query on first load */
-  if (startupConfig == null || startupConfig.interface?.contextUsage === false) {
+  if (startupConfig == null) {
+    return null;
+  }
+  if (startupConfig.interface?.contextUsage === false) {
     return null;
   }
   return (

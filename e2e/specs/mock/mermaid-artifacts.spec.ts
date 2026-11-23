@@ -6,6 +6,7 @@ import {
   messagesView,
   selectMockEndpoint,
   sendMessage,
+  sendMessageAndWaitForCompletion,
 } from './helpers';
 
 const isStartupConfigRequest = (request: Request) =>
@@ -90,7 +91,7 @@ test.describe('Mermaid Artifact resource boundary', () => {
     expect(response.ok()).toBeTruthy();
 
     const artifactButton = messagesView(page).getByRole('button', {
-      name: 'E2E HTML Artifact HTML Opens as a rendered preview Click to open',
+      name: 'Open artifact: E2E HTML Artifact. Opens as a rendered preview',
       exact: true,
     });
     await expect(artifactButton).toBeVisible();
@@ -157,8 +158,14 @@ test.describe('Mermaid Artifact resource boundary', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    const response = await sendMessage(page, 'E2E_LARGE_MERMAID_ARTIFACT_REPLY');
+    // This test exercises completed-diagram exports. Mid-stream artifacts use
+    // the Code tab while their source is being generated, not a settled preview.
+    const response = await sendMessageAndWaitForCompletion(
+      page,
+      'E2E_LARGE_MERMAID_ARTIFACT_REPLY',
+    );
     expect(response.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
 
     const messages = messagesView(page);
     await expect(messages.getByRole('img', { name: 'Mermaid diagram' })).toBeVisible();

@@ -1,9 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue } from 'jotai';
+import { activeSubagentPanel } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { ChatSurfaceHarness } from 'test/harness';
 import Wakeup from '../Wakeup';
 
@@ -12,8 +12,6 @@ import Wakeup from '../Wakeup';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, vars?: Record<string, string>) =>
     vars == null ? key : `${key}:${Object.values(vars).join(',')}`,
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -23,14 +21,6 @@ jest.mock('~/hooks/MCP', () => ({
 
 jest.mock('../ToolOutput', () => ({
   StackedToolIcons: () => <div data-testid="stacked-tool-icons" />,
-  ToolIcon: ({ type }: { type: string }) => <span data-testid="tool-icon">{type}</span>,
-  getToolIconType: (name: string) => name,
-  getMCPServerName: () => '',
-  OutputRenderer: ({ text, copyText }: { text: string; copyText?: string }) => (
-    <pre data-testid="task-output" data-copy-text={copyText}>
-      {text}
-    </pre>
-  ),
 }));
 
 jest.mock('../MarkdownLite', () => ({
@@ -39,6 +29,7 @@ jest.mock('../MarkdownLite', () => ({
 }));
 
 jest.mock('lucide-react', () => ({
+  ...jest.requireActual('lucide-react'),
   AlertCircle: () => null,
   CheckCircle2: () => null,
   ChevronDown: () => null,
@@ -47,7 +38,10 @@ jest.mock('lucide-react', () => ({
   XCircle: () => null,
 }));
 
+/** The task card is the chat package's and reads the localizer from here, so it delegates to the `~/hooks` mock. */
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
   ),
@@ -68,7 +62,8 @@ const child: ParentSubagentSummary = {
   title: 'Subagent: self',
 } as ParentSubagentSummary;
 
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({
     byThreadId: new Map([['thread-1', child]]),
     byMessageId: new Map(),
@@ -95,6 +90,78 @@ const subagentDisplay = {
 };
 
 describe('Wakeup', () => {
+  it('uses a transparent disclosure for the System header', () => {
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup display={subagentDisplay} />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    expect(
+      screen.getByRole('button', { name: 'com_ui_wakeup_subagent_completed' }),
+    ).toHaveAttribute('variant', 'disclosure');
+  });
+
+  it.each([
+    ['subagent', subagentDisplay, 'com_ui_wakeup_subagent_completed'],
+    [
+      'background tool',
+      {
+        kind: 'background_tool' as const,
+        tasks: [
+          {
+            taskId: 'bg-wide',
+            status: 'completed' as const,
+            result: 'wide output '.repeat(200),
+            toolName: 'bash_tool',
+          },
+        ],
+      },
+      'com_ui_wakeup_task_finished',
+    ],
+  ])('holds the %s width until its closing body unmounts', (_kind, display, label) => {
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup display={display} conversationId="conversation-1" />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    const header = screen.getByRole('button', { name: label });
+    const panel = screen.getByTestId('wakeup-panel');
+    const card = header.parentElement;
+    expect(card).not.toHaveClass('w-[36rem]');
+    expect(panel).toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(panel).toHaveAttribute('aria-hidden', 'true');
+    expect(panel.firstElementChild).toHaveAttribute('inert');
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.transitionEnd(panel.firstElementChild!);
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    fireEvent.transitionEnd(panel);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    fireEvent.transitionEnd(panel);
+    expect(card).not.toHaveClass('w-[36rem]');
+    expect(panel).toBeEmptyDOMElement();
+  });
+
   it('renders a collapsible subagent completion card with the result and panel affordance', () => {
     render(
       <ChatSurfaceHarness>
@@ -216,7 +283,7 @@ describe('Wakeup', () => {
     expect(header.querySelector('[role="status"]')).toHaveClass('text-text-warning');
     fireEvent.click(header);
     expect(screen.getByTestId('background-task-card')).toHaveTextContent('com_ui_cancelled');
-    expect(screen.getByTestId('task-output')).toHaveTextContent('The task was stopped.');
+    expect(screen.getByTestId('background-task-card')).toHaveTextContent('The task was stopped.');
   });
 
   it('shows the originating MCP tool and its server separately', () => {
@@ -244,7 +311,7 @@ describe('Wakeup', () => {
     const card = screen.getByTestId('background-task-card');
     expect(within(card).getByText('search_repository')).toBeInTheDocument();
     expect(within(card).getByText('Docs')).toBeInTheDocument();
-    expect(within(card).getByTestId('task-output')).toHaveTextContent('Found 3 documents.');
+    expect(card).toHaveTextContent('Found 3 documents.');
   });
 
   it('renders the code completion as tool output rather than prose or host-internal JSON', () => {
@@ -278,11 +345,8 @@ describe('Wakeup', () => {
     const card = screen.getByTestId('background-task-card');
     expect(card).toHaveTextContent('com_ui_tool_name_code');
     expect(card).toHaveTextContent('com_ui_background_tasks_completed');
-    expect(screen.getByTestId('tool-icon')).toHaveTextContent('bash_tool');
     expect(screen.getByText('com_ui_output')).toBeInTheDocument();
-    expect(screen.getByTestId('task-output')).toHaveTextContent('"checks": []');
-    expect(screen.getByTestId('task-output').textContent).toContain('{\n  "checks": []\n}');
-    expect(screen.getByTestId('task-output')).toHaveAttribute('data-copy-text', output);
+    expect(card.textContent).toContain('{\n  "checks": []\n}');
     expect(screen.queryByText('com_ui_wakeup_explainer')).not.toBeInTheDocument();
     expect(screen.queryByTestId('markdown')).not.toBeInTheDocument();
   });

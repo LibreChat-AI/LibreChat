@@ -1,6 +1,7 @@
 import { useContext, useId, useMemo, useState } from 'react';
 import { Button } from '@librechat/client';
 import { ChevronRight } from 'lucide-react';
+import { useExpandCollapse } from '@librechat/chat/components';
 import {
   Constants,
   alternateName,
@@ -12,18 +13,20 @@ import {
 } from 'librechat-data-provider';
 import type {
   Agent,
+  AgentDisplay,
   TConfig,
-  TAgentsMap,
   EModelEndpoint,
   TEndpointsConfig,
 } from 'librechat-data-provider';
+import type { TranscriptAgentsMap } from '~/hooks/Agents/useTranscriptAgent';
 import type { ErrorSource } from './source';
 import { isUserProvidedEndpointConfig } from '~/components/Nav/SettingsTabs/ProviderKeys/utils';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useTranscriptAgentsMap } from '~/hooks/Agents/useTranscriptAgent';
 import { supportsCompaction } from '~/hooks/Chat/useCompactConversation';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
-import { useExpandCollapse, useLocalize } from '~/hooks';
 import { ChatContext } from '~/Providers/ChatContext';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 /** A value as `JSON.parse` produces it. */
@@ -105,18 +108,22 @@ export type ErrorEndpoint = {
 };
 
 /** What an agent ran against: its provider (an endpoint id) and model, and the saved agent if any. */
-type AgentIdentity = { agent?: Agent; endpoint?: string; model?: string };
+type AgentIdentity = { agent?: AgentDisplay; endpoint?: string; model?: string };
 
 /**
  * Resolves an agent id the way the transcript's sibling headers do: a saved agent through the
  * agents map (without the `____N` suffix parallel runs append), an ephemeral agent through the
  * endpoint and model its id encodes.
  */
-function resolveAgentId(agentsMap: TAgentsMap | undefined, agentId: string): AgentIdentity {
+function resolveAgentId(
+  agentsMap: TranscriptAgentsMap | undefined,
+  agentId: string,
+): AgentIdentity {
   const agent = agentsMap?.[stripAgentIdSuffix(agentId)];
   if (agent != null) {
     return { agent, endpoint: agent.provider || undefined, model: agent.model ?? undefined };
   }
+  if (stripAgentIdSuffix(agentId).startsWith(Constants.MODEL_SPEC_AGENT_PREFIX)) return {};
   const ephemeral = isEphemeralAgentId(agentId) ? parseEphemeralAgentId(agentId) : undefined;
   return ephemeral == null ? {} : { endpoint: ephemeral.endpoint, model: ephemeral.model };
 }
@@ -130,7 +137,7 @@ function resolveAgentId(agentsMap: TAgentsMap | undefined, agentId: string): Age
  * nor a placeholder is ever shown as a model, while a plain model name is kept.
  */
 function resolveAgentRow(
-  agentsMap: TAgentsMap | undefined,
+  agentsMap: TranscriptAgentsMap | undefined,
   {
     partAgentId,
     rowModel,
@@ -145,7 +152,11 @@ function resolveAgentRow(
     return {};
   }
   const resolved = resolveAgentId(agentsMap, rowModel);
-  if (resolved.endpoint != null || !isEphemeralAgentId(rowModel)) {
+  if (
+    resolved.endpoint != null ||
+    !isEphemeralAgentId(rowModel) ||
+    stripAgentIdSuffix(rowModel).startsWith(Constants.MODEL_SPEC_AGENT_PREFIX)
+  ) {
     return resolved;
   }
   return { model: rowModel };
@@ -188,7 +199,7 @@ function resolveCredentialOwnership(
  */
 export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string): ErrorEndpoint {
   const chat = useContext(ChatContext);
-  const agentsMap = useAgentsMapContext();
+  const savedAgents = useAgentsMapContext();
   const inChat = chat != null;
   const { data: endpointsConfig } = useGetEndpointsQuery({ enabled: inChat });
   const { data: startupConfig } = useGetStartupConfig({ enabled: inChat });
@@ -206,6 +217,7 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
       ? (chat?.conversation?.agent_id ?? undefined)
       : undefined;
   const partAgentId = source?.partAgentId;
+  const agentsMap = useTranscriptAgentsMap(partAgentId ?? rowModel ?? conversationAgentId ?? '');
 
   return useMemo(() => {
     const agentRow = partAgentId != null || isAgentsEndpoint(rowEndpoint);
@@ -222,7 +234,9 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
       endpointType,
       provider: endpoint ? getProviderName(endpoint) : undefined,
       model: agentRow ? agentIdentity?.model : rowModel,
-      agent: agentIdentity?.agent,
+      agent: agentIdentity?.agent
+        ? savedAgents?.[stripAgentIdSuffix(agentIdentity.agent.id)]
+        : undefined,
       userProvidesCredentials: resolveCredentialOwnership(endpointsConfig, endpoint),
       compactionAvailable:
         inChat &&
@@ -239,6 +253,7 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
     partAgentId,
     payloadEndpoint,
     agentsMap,
+    savedAgents,
     endpointsConfig,
     startupConfig?.compactionEnabled,
     startupConfig?.interface?.contextUsage,
@@ -277,20 +292,20 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
         onClick={() => setOpen((expanded) => !expanded)}
         aria-expanded={open}
         aria-controls={panelId}
-        className="flex items-center gap-1 rounded-md text-xs font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+        className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary flex items-center gap-1 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
       >
         {label}
         <ChevronRight
           className={cn(
             'size-3.5 transition-transform duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none',
-            open && 'rotate-90',
+            open ? 'rotate-90' : 'rtl:-scale-x-100',
           )}
           aria-hidden="true"
         />
       </button>
       <div id={panelId} style={panelStyle} aria-hidden={!open}>
         <div ref={panelRef} className="overflow-hidden">
-          <div className="mt-1 whitespace-pre-wrap break-words text-xs text-text-secondary">
+          <div className="text-text-secondary mt-1 text-xs break-words whitespace-pre-wrap">
             {children}
           </div>
         </div>
@@ -340,24 +355,32 @@ export function ErrorActions({ children }: { children: React.ReactNode }) {
 export function ErrorAction({
   onClick,
   children,
+  variant,
+  disabled = false,
 }: {
   onClick: () => void;
   children: React.ReactNode;
+  /** A second action next to the primary one reads as the alternative, not a peer. */
+  variant?: 'outline';
+  disabled?: boolean;
 }) {
   return (
     /** One step tighter than the button default (8px) so the control reads as nested inside the
      *  error card's 12px corner rather than echoing it. */
-    <Button type="button" size="sm" className="rounded-md" onClick={onClick}>
+    <Button
+      type="button"
+      size="sm"
+      variant={variant}
+      className="rounded-md"
+      onClick={onClick}
+      disabled={disabled}
+    >
       {children}
     </Button>
   );
 }
 
 export const formatNumber = (value: number): string => new Intl.NumberFormat().format(value);
-
-/** Token credits are a float balance; two decimals, matching the balance settings row. */
-export const formatCredits = (value: number): string =>
-  new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
 
 const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 

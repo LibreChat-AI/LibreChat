@@ -4,7 +4,8 @@
  * the generation's owner — and a failing listener must never disturb cleanup.
  */
 import type { GenerationSettledEvent } from '../GenerationJobManager';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
+import { buildPendingAction } from '~/agents/hitl/policy';
 
 /** Suppress winston Console transport output (survives jest.resetModules) */
 jest.spyOn(console, 'log').mockImplementation();

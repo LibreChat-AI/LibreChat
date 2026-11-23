@@ -25,6 +25,16 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       type: String,
       required: true,
     },
+    sdk_runtime: {
+      type: new Schema(
+        {
+          id: { type: String, required: true },
+          protocolVersion: { type: Number, enum: [1], required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     model: {
       type: String,
       required: true,
@@ -95,7 +105,29 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       type: String,
     },
     code_workspace_id: { type: String },
+    code_environment_ids: { type: [String], default: undefined },
     repositoryInstructions: { type: String, enum: ['prefer', 'defer', 'off'] },
+    instructionsPrompt: {
+      type: new Schema(
+        {
+          source: { type: String, enum: ['native', 'langfuse'], required: true },
+          groupId: { type: String, required: true },
+          selection: {
+            type: new Schema(
+              {
+                type: { type: String, enum: ['production', 'exact'], required: true },
+                promptId: { type: String },
+                version: { type: Number },
+              },
+              { _id: false },
+            ),
+            required: true,
+          },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     git_identity: {
       type: new Schema(
         {
@@ -176,6 +208,24 @@ agentSchema.index({ id: 1, tenantId: 1 }, { unique: true });
 agentSchema.index({ mcpServerNames: 1, tenantId: 1 });
 agentSchema.index({ updatedAt: -1, _id: 1 });
 agentSchema.index({ tenantId: 1, updatedAt: -1, _id: 1 });
+// Supports newest and oldest scans; oldest reverses the complete key pattern.
+agentSchema.index({ createdAt: -1, _id: 1 });
+agentSchema.index({ tenantId: 1, createdAt: -1, _id: 1 });
 agentSchema.index({ 'edges.to': 1 });
+/** Reference checks before code environment removal match either field; each `$or` branch needs its own index. */
+agentSchema.index(
+  { code_environment_id: 1 },
+  {
+    name: 'agent_code_environment_id',
+    partialFilterExpression: { code_environment_id: { $exists: true } },
+  },
+);
+agentSchema.index(
+  { code_environment_ids: 1 },
+  {
+    name: 'agent_code_environment_ids',
+    partialFilterExpression: { code_environment_ids: { $exists: true } },
+  },
+);
 
 export default agentSchema;

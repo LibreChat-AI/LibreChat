@@ -607,7 +607,7 @@ describe('resolveModelSpecSkillIds', () => {
     });
   });
 
-  it('resolves configured names sequentially to avoid query bursts', async () => {
+  it('resolves configured names concurrently and keeps configured order', async () => {
     const firstId = new Types.ObjectId();
     const secondId = new Types.ObjectId();
     const order: string[] = [];
@@ -643,12 +643,32 @@ describe('resolveModelSpecSkillIds', () => {
     });
 
     await Promise.resolve();
-    expect(order).toEqual(['start:first']);
+    expect(order).toEqual(['start:first', 'start:second', 'end:second']);
 
     releaseFirst();
     const result = await promise;
 
     expect(result.map((id) => id.toString())).toEqual([firstId.toString(), secondId.toString()]);
+    expect(order).toEqual(['start:first', 'start:second', 'end:second', 'end:first']);
+  });
+
+  it('resolves names one at a time when concurrency.skillNameLookups is 1', async () => {
+    const ids = [new Types.ObjectId(), new Types.ObjectId()];
+    const order: string[] = [];
+    const getSkillByName = jest.fn(async (name: string) => {
+      order.push(`start:${name}`);
+      await Promise.resolve();
+      order.push(`end:${name}`);
+      return { _id: ids[name === 'first' ? 0 : 1], name, body: 'body', author: userObjectId };
+    });
+
+    await resolveModelSpecSkillIds({
+      names: ['first', 'second'],
+      accessibleSkillIds: ids,
+      getSkillByName,
+      appConfig: { concurrency: { skillNameLookups: 1 } },
+    });
+
     expect(order).toEqual(['start:first', 'end:first', 'start:second', 'end:second']);
   });
 
@@ -1308,6 +1328,38 @@ describe('injectSkillCatalog', () => {
     expect(definedNames).toContain('read_file');
     expect(definedNames).toContain('bash_tool');
     expect(definedNames).not.toContain('skill');
+  });
+
+  it('carries attached defaults when the skill catalog registers tools first', async () => {
+    const listSkillsByAccess = buildPager([[makeSkill('attached-defaults')]]);
+    const result = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess,
+        codeEnvAvailable: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['read_file', 'execute_command']),
+        workspaceCommandTimeoutMaxMs: 80_000,
+        workspaceCommandTimeoutDefaultMs: 60_000,
+        workspaceReadFileDefaultLines: 500,
+      }),
+    );
+    expect(
+      result.toolDefinitions?.find(({ name }) => name === 'read_file')?.parameters,
+    ).toMatchObject({
+      properties: {
+        max_lines: { maximum: 500, description: expect.stringContaining('Defaults to 500') },
+      },
+    });
+    expect(
+      result.toolDefinitions?.find(({ name }) => name === 'bash_tool')?.parameters,
+    ).toMatchObject({
+      properties: {
+        timeoutMs: {
+          maximum: 80_000,
+          description: expect.stringContaining('Defaults to 60000 for foreground calls'),
+        },
+      },
+    });
   });
 
   it('registers bash_tool with the tool-output reference syntax guide when codeEnvAvailable', async () => {

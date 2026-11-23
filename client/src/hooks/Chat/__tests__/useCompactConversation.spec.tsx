@@ -1,10 +1,16 @@
+import React from 'react';
 import { getDefaultStore } from 'jotai';
+import { ChatContext } from '@librechat/chat/react';
 import { ContentTypes } from 'librechat-data-provider';
 import { renderHook, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
+import type { ChatContract } from '../contract';
 import useCompactConversation, { compactingConversationAtom } from '../useCompactConversation';
 
 const mockAsk = jest.fn();
+/** The message cache hands back one array until it is written, as React Query does. */
+const mockStoredMessages: TMessage[] = [];
 let mockContext: {
   index: number;
   isSubmitting: boolean;
@@ -12,11 +18,12 @@ let mockContext: {
 };
 let mockLatestMessage: TMessage | null;
 
-jest.mock('~/Providers', () => ({
-  useChatContext: () => ({ ...mockContext, ask: mockAsk }),
-}));
+/** The hook's own projection runs over the leaf, so what it reads of one stays under test. */
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({
-  useLatestMessage: () => mockLatestMessage,
+  useLatestMessageSelect: <TData,>(
+    _index: number,
+    pick: (tail: TMessage | null) => TData | null,
+  ): TData | null => pick(mockLatestMessage),
 }));
 
 type ContentPart = NonNullable<TMessage['content']>[number];
@@ -39,6 +46,28 @@ const leaf = (overrides: Partial<TMessage> = {}): TMessage =>
     ...overrides,
   }) as TMessage;
 
+/** The hook reads status and submits through the real `useChat` facade over this contract. */
+const getContract = () =>
+  ({
+    ...mockContext,
+    ask: mockAsk,
+    getMessages: () => mockStoredMessages,
+    messagesKey: mockContext.conversation?.conversationId ?? '',
+    setMessages: jest.fn(),
+    subscribeMessages: () => () => undefined,
+    getMessagesRevision: () => 0,
+    latestMessageId: undefined,
+    regenerate: jest.fn(),
+    stopGenerating: jest.fn(),
+  }) as unknown as ChatContract;
+
+const queryClient = new QueryClient();
+const wrapper = ({ children }: { children: React.ReactNode }) => (
+  <QueryClientProvider client={queryClient}>
+    <ChatContext.Provider value={getContract()}>{children}</ChatContext.Provider>
+  </QueryClientProvider>
+);
+
 describe('useCompactConversation', () => {
   beforeEach(() => {
     mockAsk.mockClear();
@@ -53,7 +82,7 @@ describe('useCompactConversation', () => {
 
   it('drops a marker left by a compaction that finished while the view was away', () => {
     getDefaultStore().set(compactingConversationAtom, 'convo-1');
-    const hook = renderHook(() => useCompactConversation());
+    const hook = renderHook(() => useCompactConversation(), { wrapper });
     expect(hook.result.current.isCompacting).toBe(false);
 
     /** The next ordinary turn in the same conversation is not a compaction. */
@@ -65,7 +94,7 @@ describe('useCompactConversation', () => {
   it('keeps the marker when it mounts into a compaction still streaming', () => {
     getDefaultStore().set(compactingConversationAtom, 'convo-1');
     mockContext.isSubmitting = true;
-    const hook = renderHook(() => useCompactConversation());
+    const hook = renderHook(() => useCompactConversation(), { wrapper });
     expect(hook.result.current.isCompacting).toBe(true);
 
     mockContext.isSubmitting = false;
@@ -75,7 +104,7 @@ describe('useCompactConversation', () => {
   });
 
   it('submits a compaction anchored on the leaf itself', () => {
-    const { result } = renderHook(() => useCompactConversation());
+    const { result } = renderHook(() => useCompactConversation(), { wrapper });
 
     expect(result.current.canCompact).toBe(true);
     act(() => result.current.compact());
@@ -101,7 +130,7 @@ describe('useCompactConversation', () => {
     ],
   ])('cannot compact with %s', (_label, arrange) => {
     arrange();
-    const { result } = renderHook(() => useCompactConversation());
+    const { result } = renderHook(() => useCompactConversation(), { wrapper });
 
     expect(result.current.canCompact).toBe(false);
     act(() => result.current.compact());
@@ -114,13 +143,13 @@ describe('useCompactConversation', () => {
     ['stored without a boundary', summaryPart({ boundary: undefined })],
   ])('lets an interrupted compaction (summary %s) be retried', (_label, part) => {
     mockLatestMessage = leaf({ text: '', content: [part] });
-    const { result } = renderHook(() => useCompactConversation());
+    const { result } = renderHook(() => useCompactConversation(), { wrapper });
 
     expect(result.current.canCompact).toBe(true);
   });
 
   it('reports compacting only for the conversation it submitted, until the turn settles', () => {
-    const hook = renderHook(() => useCompactConversation());
+    const hook = renderHook(() => useCompactConversation(), { wrapper });
     act(() => hook.result.current.compact());
 
     mockContext.isSubmitting = true;

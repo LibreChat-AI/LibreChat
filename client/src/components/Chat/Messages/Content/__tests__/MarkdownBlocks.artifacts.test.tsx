@@ -5,7 +5,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
 import { MessageContext, ArtifactProvider, CodeBlockProvider } from '~/Providers';
+import { getLoadedRehypeModules, loadRehypeModules } from '../rehype';
 import Markdown from '../Markdown';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 /**
  * End-to-end artifact-index regression tests. The real `Artifact` component
@@ -52,7 +56,7 @@ const OldMarkdown = ({ content }: { content: string }) => (
         /** @ts-ignore */
         remarkPlugins={getRemarkPlugins()}
         /** @ts-ignore */
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
         components={getMarkdownComponents()}
       >
         {content}
@@ -180,5 +184,67 @@ describe.each([
 
     const [artifactNode] = await screen.findAllByTestId('art');
     expect(artifactNode.getAttribute('data-content')).toBe(`${markdown}\n`);
+  });
+});
+
+/** The directive grammar the default artifacts prompt documents for models. */
+describe('artifact directive grammar', () => {
+  const opening = ':::artifact{identifier="doc" type="text/markdown" title="Doc"}';
+  const fenced = (header: string) => [header, '````', 'hello', '````', ':::'].join('\n');
+
+  /** Fenced text that is not an artifact renders through `CodeBlock`, which observes visibility. */
+  class IntersectionObserverStub implements IntersectionObserver {
+    readonly root = null;
+    readonly rootMargin = '';
+    readonly scrollMargin = '';
+    readonly thresholds: ReadonlyArray<number> = [];
+    observe = jest.fn();
+    unobserve = jest.fn();
+    disconnect = jest.fn();
+    takeRecords = (): IntersectionObserverEntry[] => [];
+  }
+
+  const originalObserver = global.IntersectionObserver;
+  beforeEach(() => {
+    global.IntersectionObserver = IntersectionObserverStub;
+  });
+  afterEach(() => {
+    global.IntersectionObserver = originalObserver;
+  });
+
+  it('renders the documented opening line as an artifact', async () => {
+    renderMessage(fenced(opening), false);
+
+    const [artifactNode] = await screen.findAllByTestId('art');
+    expect(artifactNode.getAttribute('data-id')).toBe('doc');
+    expect(artifactNode.getAttribute('data-content')).toBe('hello\n');
+  });
+
+  it.each([
+    [
+      'a space before the attributes',
+      ':::artifact {identifier="doc" type="text/markdown" title="Doc"}',
+    ],
+    [
+      'attributes split across lines',
+      ':::artifact{identifier="doc"\ntype="text/markdown" title="Doc"}',
+    ],
+    ['text after the attributes', `${opening} trailing`],
+    [
+      'an escaped quote in a value',
+      ':::artifact{identifier="doc" type="text/markdown" title="A \\"B\\""}',
+    ],
+  ])('renders no artifact for %s', (_label, header) => {
+    renderMessage(fenced(header), false);
+
+    expect(screen.queryAllByTestId('art')).toEqual([]);
+  });
+
+  it('ends the artifact at a bare ::: line, even inside its fence', async () => {
+    const content = [opening, '````markdown', '# Doc', ':::', 'after', '````', ':::'].join('\n');
+    renderMessage(content, false);
+
+    const [artifactNode] = await screen.findAllByTestId('art');
+    expect(artifactNode.getAttribute('data-content')).toBe('# Doc\n');
   });
 });

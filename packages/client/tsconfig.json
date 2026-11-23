@@ -21,7 +21,9 @@
       "~/*": ["./src/*"]
     },
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": ["node", "vite/client"],
+    "noUncheckedSideEffectImports": false
   },
   "include": ["src/**/*"],
   "exclude": [

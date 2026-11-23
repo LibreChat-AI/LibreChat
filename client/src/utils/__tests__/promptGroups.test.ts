@@ -1,5 +1,5 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
-import { InfiniteCollections, QueryKeys } from 'librechat-data-provider';
+import { InfiniteCollections, QueryKeys, PermissionBits } from 'librechat-data-provider';
 import type { PromptGroupListResponse, TPromptGroup } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
 import {
@@ -11,8 +11,9 @@ import {
   updateGroupFieldsInPlace,
   updateGroupInAll,
   updatePromptGroup,
-  getSnippet,
   findPromptGroup,
+  isExternalPromptGroup,
+  getPromptGroupPermissions,
 } from '../promptGroups';
 
 // ---------------------------------------------------------------------------
@@ -326,36 +327,73 @@ describe('findPromptGroup', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getSnippet
+// isExternalPromptGroup
 // ---------------------------------------------------------------------------
 
-describe('getSnippet', () => {
-  it('returns the full string when it is within the default length', () => {
-    const short = 'Hello';
-    expect(getSnippet(short)).toBe('Hello');
+describe('isExternalPromptGroup', () => {
+  it('returns false for a native group', () => {
+    expect(isExternalPromptGroup(makeGroup({ source: 'native' }))).toBe(false);
   });
 
-  it('truncates and appends ellipsis when string exceeds default length', () => {
-    const long = 'a'.repeat(60);
-    const result = getSnippet(long);
-    expect(result.endsWith('...')).toBe(true);
-    expect(result.length).toBe(56);
+  it('returns true for a Langfuse-sourced group', () => {
+    expect(isExternalPromptGroup(makeGroup({ source: 'langfuse' }))).toBe(true);
   });
 
-  it('respects a custom length parameter', () => {
-    const text = 'abcdefghij';
-    const result = getSnippet(text, 7);
-    expect(result).toBe('abcd...');
-    expect(result.length).toBe(7);
+  it('returns false for undefined or null', () => {
+    expect(isExternalPromptGroup(undefined)).toBe(false);
+    expect(isExternalPromptGroup(null)).toBe(false);
   });
 
-  it('returns the original string when it equals the length exactly', () => {
-    const text = 'a'.repeat(56);
-    expect(getSnippet(text)).toBe(text);
+  it('returns false for a group without a source (older server during a rolling deploy)', () => {
+    const { source: _source, ...rest } = makeGroup({ source: 'native' });
+    const groupWithoutSource = rest as { source?: TPromptGroup['source'] };
+    expect(isExternalPromptGroup(groupWithoutSource)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getPromptGroupPermissions
+// ---------------------------------------------------------------------------
+
+describe('getPromptGroupPermissions', () => {
+  const ALL_BITS =
+    PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE;
+
+  it('grants full control for a native group with full ACL bits', () => {
+    const result = getPromptGroupPermissions(makeGroup({ source: 'native' }), ALL_BITS);
+    expect(result).toEqual({
+      isExternal: false,
+      canView: true,
+      canEdit: true,
+      canDelete: true,
+    });
   });
 
-  it('handles an empty string without throwing', () => {
-    expect(getSnippet('')).toBe('');
+  it('denies edit and delete for a Langfuse group even with full ACL bits', () => {
+    const result = getPromptGroupPermissions(makeGroup({ source: 'langfuse' }), ALL_BITS);
+    expect(result.isExternal).toBe(true);
+    expect(result.canView).toBe(true);
+    expect(result.canEdit).toBe(false);
+    expect(result.canDelete).toBe(false);
+  });
+
+  it('treats a group with no source as native (older server during a rolling deploy)', () => {
+    const { source: _source, ...rest } = makeGroup({ source: 'native' });
+    const groupWithoutSource = rest as { source?: TPromptGroup['source'] };
+    const result = getPromptGroupPermissions(groupWithoutSource, ALL_BITS);
+    expect(result.isExternal).toBe(false);
+    expect(result.canEdit).toBe(true);
+    expect(result.canDelete).toBe(true);
+  });
+
+  it('denies view, edit and delete when permission bits are 0', () => {
+    const result = getPromptGroupPermissions(makeGroup({ source: 'native' }), 0);
+    expect(result).toEqual({
+      isExternal: false,
+      canView: false,
+      canEdit: false,
+      canDelete: false,
+    });
   });
 });
 

@@ -90,26 +90,39 @@ describe('withCodeApiRateLimit', () => {
   });
 
   it('waits out a rate limit the budget can absorb, then finishes', async () => {
-    /* A multi-request operation would otherwise abandon the work already
-     * done the moment a limiter window closes mid-flight. */
-    const budget = createCodeApiRateLimitBudget(5_000);
-    const waits: number[] = [];
-    let attempts = 0;
-    const attempt = jest.fn(async () => {
-      attempts++;
-      if (attempts === 1) {
-        throw rateLimited({ headers: { 'retry-after': '1' } });
-      }
-      return 'ok';
-    });
+    jest.useFakeTimers();
+    try {
+      /* A multi-request operation would otherwise abandon the work already
+       * done the moment a limiter window closes mid-flight. */
+      const budget = createCodeApiRateLimitBudget(5_000);
+      const waits: number[] = [];
+      let attempts = 0;
+      const attempt = jest.fn(async () => {
+        attempts++;
+        if (attempts === 1) {
+          throw rateLimited({ headers: { 'retry-after': '1' } });
+        }
+        return 'ok';
+      });
+      const pending = withCodeApiRateLimit({
+        attempt,
+        label: 'reading',
+        budget,
+        onWait: (ms) => waits.push(ms),
+      });
 
-    await expect(
-      withCodeApiRateLimit({ attempt, label: 'reading', budget, onWait: (ms) => waits.push(ms) }),
-    ).resolves.toBe('ok');
+      await jest.advanceTimersByTimeAsync(999);
+      expect(attempts).toBe(1);
+      expect(budget.waitedMs).toBe(0);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toBe('ok');
 
-    expect(attempts).toBe(2);
-    expect(waits).toEqual([1_000]);
-    expect(budget.waitedMs).toBeGreaterThanOrEqual(1_000);
+      expect(attempts).toBe(2);
+      expect(waits).toEqual([1_000]);
+      expect(budget.waitedMs).toBe(1_000);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('names the limit when the wait exceeds the remaining budget', async () => {

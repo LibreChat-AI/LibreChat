@@ -39,44 +39,11 @@ export function createCopyCheckMorphIconMock() {
   ]);
 }
 
-/** Pin favorite morph sites. */
-export function createPinMorphIconMock() {
-  const { Pin, PinOff } = jest.requireActual('lucide') as Record<string, unknown>;
-  return createMorphIconMock([
-    [Pin, 'pin'],
-    [PinOff, 'pin-off'],
-  ]);
-}
-
-/** In-flight steers: preempt Zap + expand chevrons. */
-export function createSteerMorphIconMock() {
-  const { Zap, ZapOff, ChevronUp, ChevronDown, Clock } = jest.requireActual('lucide') as Record<
-    string,
-    unknown
-  >;
-  return createMorphIconMock([
-    [Zap, 'zap'],
-    [ZapOff, 'zap-off'],
-    [ChevronUp, 'chevron-up'],
-    [ChevronDown, 'chevron-down'],
-    [Clock, 'clock'],
-  ]);
-}
-
 /** Mermaid header: exclusive code/preview view toggle. */
 export function createMermaidViewMorphIconMock() {
   const { Eye, Code2 } = jest.requireActual('lucide') as Record<string, unknown>;
   return createMorphIconMock([
     [Eye, 'eye'],
     [Code2, 'code-2'],
-  ]);
-}
-
-/** Subagent expand/collapse. */
-export function createSubagentMorphIconMock() {
-  const { Minimize2, Maximize2 } = jest.requireActual('lucide') as Record<string, unknown>;
-  return createMorphIconMock([
-    [Minimize2, 'minimize-2'],
-    [Maximize2, 'maximize-2'],
   ]);
 }

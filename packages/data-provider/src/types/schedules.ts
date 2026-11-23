@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  scheduleAuthorizationSchema,
+  runGrantFailureReasonSchema,
+  scheduleReauthorizationSchema,
+} from './runGrant';
+import { partialWithoutDefaults } from '../zod';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
 export const scheduleStructuredFrequencies = ['hourly', 'daily', 'weekdays', 'weekly'] as const;
@@ -89,6 +95,12 @@ export const createSchedulePayloadSchema = z.object({
   chatProjectId: z.string().trim().min(1).nullable().optional(),
   enabled: z.boolean().default(true),
   /**
+   * Run only while every MCP server the agent uses is ready. Unset, a server that needs
+   * sign-in, is unavailable or is not configured is left out of the run, and the rest of the
+   * agent runs.
+   */
+  mcpStrict: z.boolean().optional(),
+  /**
    * Client-generated key making creation idempotent across retries. Creation commits
    * the row and arms it in two writes, so a failure between them leaves the client
    * unable to tell whether anything persisted; retrying blind can produce two recurring
@@ -97,23 +109,34 @@ export const createSchedulePayloadSchema = z.object({
    * that omits it, which is exactly the failure the key exists to close.
    */
   clientRequestId: z.string().trim().min(1).max(128),
+  /**
+   * What the owner allows the schedule to use while they are away, chosen from the offer for
+   * its agent. Read only where schedule consent is on. Left out there, the schedule is created
+   * needing authorization and none of its tools runs until the owner confirms.
+   */
+  authorization: scheduleAuthorizationSchema.optional(),
 });
 export type TCreateSchedule = z.infer<typeof createSchedulePayloadSchema>;
 
 /** Idempotency is a property of the CREATE attempt, not of the schedule's config. */
-export const updateSchedulePayloadSchema = createSchedulePayloadSchema
-  .omit({ clientRequestId: true })
-  .partial()
-  .extend({
-    /**
-     * The configRevision the client's edit was computed from (captured when the
-     * dialog opened). The server fences the update on it, so a concurrent edit
-     * from another tab answers 409 instead of being silently overwritten by a
-     * payload rebuilt from a stale snapshot (cadence is sent whole, so the
-     * server-side fresh-read fence alone cannot detect this).
-     */
-    expectedConfigRevision: z.number().int().min(0).optional(),
-  });
+export const updateSchedulePayloadSchema = partialWithoutDefaults(
+  createSchedulePayloadSchema.omit({ clientRequestId: true, authorization: true }),
+).extend({
+  /**
+   * What the owner allows the schedule to use from this edit on. An edit ends the grant the
+   * schedule had; with this, the grant is made again in the same write. Read only where
+   * schedule consent is on. It is not an edit by itself.
+   */
+  authorization: scheduleReauthorizationSchema.optional(),
+  /**
+   * The configRevision the client's edit was computed from (captured when the
+   * dialog opened). The server fences the update on it, so a concurrent edit
+   * from another tab answers 409 instead of being silently overwritten by a
+   * payload rebuilt from a stale snapshot (cadence is sent whole, so the
+   * server-side fresh-read fence alone cannot detect this).
+   */
+  expectedConfigRevision: z.number().int().min(0).optional(),
+});
 export type TUpdateSchedule = z.infer<typeof updateSchedulePayloadSchema>;
 
 export type TScheduleLastRun = {
@@ -125,6 +148,7 @@ export type TScheduleLastRun = {
 };
 
 export type TSchedule = {
+  hasMCPConsent?: boolean;
   id: string;
   user: string;
   name: string;
@@ -136,6 +160,8 @@ export type TSchedule = {
   file_ids?: string[];
   chatProjectId?: string | null;
   enabled: boolean;
+  /** Runs only while every MCP server its agent uses is ready. Unset, it runs without one that is not. */
+  mcpStrict?: boolean;
   disabledReason?: ScheduleDisabledReason;
   nextRunAt?: string;
   lastRun?: TScheduleLastRun;
@@ -171,6 +197,7 @@ export type TScheduleRun = {
  *  per-principal `interface.schedules` resolution the write handlers and the fire
  *  path enforce, so the form can never offer a choice the server would refuse. */
 export type TScheduleLimits = {
+  mcpConsent?: boolean;
   maxPerUser: number;
   /** Served with the list so the dialog can refuse a cadence the floor would reject
    *  rather than surfacing it as a 400 after submit. */
@@ -193,11 +220,23 @@ export type TScheduleRunNowResponse = {
   status: 'started';
 };
 
+/** A durable invocation receipt, not a readiness snapshot or an arbitrary tool error. */
+export function isScheduleMCPAuthorizationFailure(outcome: ScheduleMCPOutcome): boolean {
+  if (outcome.skipped === true) return false;
+  return (
+    outcome.detail === 'unattended_auth_required' ||
+    (outcome.status !== 'ready' && outcome.reason != null && outcome.automaticReplay === false)
+  );
+}
+
 /** Only structured schedule preflight failures may request immediate suspension. */
 export function getScheduleMCPDisabledReason(
   outcomes?: ScheduleMCPOutcome[],
 ): 'mcp_reauth_required' | 'mcp_configuration_missing' | 'mcp_permission_denied' | undefined {
-  const statuses = new Set(outcomes?.map((outcome) => outcome.status));
+  // A server the run was started without is not a failure of the run.
+  const statuses = new Set(
+    outcomes?.filter((outcome) => outcome.skipped !== true).map((outcome) => outcome.status),
+  );
   if (statuses.has('mcp_permission_denied')) return 'mcp_permission_denied';
   if (statuses.has('mcp_configuration_missing')) return 'mcp_configuration_missing';
   if (statuses.has('mcp_reauth_required')) return 'mcp_reauth_required';
@@ -211,6 +250,15 @@ export const scheduleMCPOutcomeSchema = z.object({
   agentId: z.string().optional(),
   /** Additional diagnosis; older clients ignore unknown keys and retain the known status. */
   detail: z.enum(['unattended_auth_required']).optional(),
+  reason: runGrantFailureReasonSchema.optional(),
+  recovery: z.enum(['authorize', 'configure', 'restore_permission', 'retry_later']).optional(),
+  automaticReplay: z.literal(false).optional(),
+  /**
+   * The server was not ready and the run was started without it, as its schedule allows
+   * (`mcpStrict` unset). The status says why. It is a note for the owner, not a denial:
+   * it neither fails the run nor suspends the schedule.
+   */
+  skipped: z.literal(true).optional(),
   status: z.enum([
     'ready',
     'mcp_reauth_required',
@@ -236,4 +284,54 @@ export function readScheduleMCPOutcomes(error?: string): ScheduleMCPOutcome[] {
   } catch {
     return [];
   }
+}
+
+/** Verified generation evidence only; never infer authorization from this projection. */
+export function readScheduleMCPReceipts(error?: string): ScheduleMCPOutcome[] {
+  return readScheduleMCPOutcomes(error).filter(isScheduleMCPAuthorizationFailure);
+}
+export function mergeScheduleMCPReceipts(
+  ...groups: readonly ScheduleMCPOutcome[][]
+): ScheduleMCPOutcome[] {
+  const merged = new Map<string, ScheduleMCPOutcome>();
+  for (const group of groups)
+    for (const outcome of group) {
+      const key = JSON.stringify([
+        outcome.server,
+        outcome.agentId,
+        outcome.status,
+        outcome.reason,
+        outcome.recovery,
+        outcome.detail,
+        outcome.automaticReplay,
+        outcome.skipped,
+      ]);
+      merged.set(key, outcome);
+    }
+  return Array.from(merged.values());
+}
+export interface ScheduleMCPReceiptProjection {
+  status:
+    | 'success'
+    | 'error'
+    | 'requires_action'
+    | 'interrupted'
+    | 'skipped_balance'
+    | 'skipped_overlap';
+  error?: string;
+  mcp?: ScheduleMCPOutcome[];
+}
+/** A known denial dominates every ending, including paused and interrupted recovery. */
+export function projectScheduleMCPReceipt<S extends ScheduleMCPReceiptProjection['status']>(
+  outcome: Omit<ScheduleMCPReceiptProjection, 'status'> & { status: S },
+  ...receipts: readonly ScheduleMCPOutcome[][]
+): Omit<ScheduleMCPReceiptProjection, 'status'> & { status: S | 'error' } {
+  const mcp = mergeScheduleMCPReceipts(outcome.mcp ?? [], ...receipts);
+  const denied = mcp.some(isScheduleMCPAuthorizationFailure);
+  if (!denied) return { ...outcome, ...(mcp.length > 0 && { mcp }) };
+  return {
+    status: 'error',
+    mcp,
+    error: `${getScheduleMCPDisabledReason(mcp) ?? 'mcp_unavailable'}: ${JSON.stringify(mcp)}`,
+  };
 }

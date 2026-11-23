@@ -23,7 +23,7 @@ import {
   useDeleteConversationMutation,
   useArchiveConvoMutation,
 } from '~/data-provider';
-import { MinimalIcon } from '~/components/Endpoints';
+import ConversationEndpointIcon from '~/components/Conversations/ConversationEndpointIcon';
 import { NotificationSeverity } from '~/common';
 import { formatDate, logger } from '~/utils';
 import { useLocalize } from '~/hooks';
@@ -171,26 +171,27 @@ export default function ArchivedChatsTable() {
               to={`/c/${conversationId ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="group flex items-center gap-1.5 truncate rounded-sm font-medium text-text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+              className="group text-text-primary focus-visible:ring-text-primary flex min-w-0 items-center gap-1.5 truncate rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
               aria-label={localize('com_ui_open_archived_chat_new_tab_title', {
                 title: title ?? localize('com_ui_untitled'),
               })}
             >
               <span className="truncate">{title}</span>
               <ExternalLink
-                className="size-3.5 flex-shrink-0 text-text-tertiary transition-colors group-hover:text-text-secondary"
+                className="text-text-tertiary group-hover:text-text-secondary size-3.5 shrink-0 transition-colors"
                 aria-hidden="true"
               />
             </Link>
           );
           return (
-            <div className="flex items-center gap-2.5">
-              <MinimalIcon
-                endpoint={row.original.endpoint}
-                size={28}
-                isCreatedByUser={false}
-                iconClassName="size-4"
-              />
+            <div className="flex w-0 min-w-full items-center gap-2.5">
+              <span className="flex size-5 shrink-0 items-center justify-center">
+                <ConversationEndpointIcon
+                  conversation={row.original}
+                  size={20}
+                  context="menu-item"
+                />
+              </span>
               {title ? <TooltipAnchor description={title} render={link} /> : link}
             </div>
           );
@@ -271,7 +272,7 @@ export default function ArchivedChatsTable() {
         columns={columns}
         data={allConversations}
         getRowId={getRowId}
-        className="scrollbar-gutter-stable max-h-[60vh] min-h-80"
+        className="max-h-[60vh] min-h-80 scrollbar-gutter-stable"
         onFilterChange={handleFilterChange}
         filterValue={queryParams.search}
         fetchNextPage={handleFetchNextPage}

@@ -4,6 +4,7 @@ import {
   getOpenIdRolesForOpenIdSync,
   getLibreChatRolesForOpenIdSync,
   selectOpenIdRole,
+  recordIdpRoleChange,
 } from './openidRoleSync';
 
 describe('getOpenIdRoleSyncOptions', () => {
@@ -394,5 +395,76 @@ describe('selectOpenIdRole', () => {
       selectedRole: 'BASIC-USER',
       reason: 'matched_priority',
     });
+  });
+});
+
+describe('recordIdpRoleChange', () => {
+  it('records an IdP admin grant as a critical user.role_changed entry', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await recordIdpRoleChange({
+      recordAuditEntry,
+      userId: 'u1',
+      previousRole: SystemRoles.USER,
+      role: SystemRoles.ADMIN,
+      source: 'openid_login',
+      tenantId: 't1',
+    });
+
+    expect(recordAuditEntry).toHaveBeenCalledWith({
+      action: 'user.role_changed',
+      severity: 'critical',
+      actor: { type: 'system', name: 'OpenID role sync' },
+      target: { type: 'user', id: 'u1' },
+      metadata: { previousRole: SystemRoles.USER, role: SystemRoles.ADMIN, source: 'openid_login' },
+      tenantId: 't1',
+    });
+  });
+
+  it('records a non-admin change at warning severity', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await recordIdpRoleChange({
+      recordAuditEntry,
+      userId: 'u1',
+      previousRole: SystemRoles.USER,
+      role: 'STAFF',
+      source: 'openid_login',
+    });
+
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: 'warning',
+        metadata: expect.objectContaining({ role: 'STAFF' }),
+      }),
+    );
+  });
+
+  it('records nothing when the role did not change', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await recordIdpRoleChange({
+      recordAuditEntry,
+      userId: 'u1',
+      previousRole: SystemRoles.ADMIN,
+      role: SystemRoles.ADMIN,
+      source: 'openid_login',
+    });
+
+    expect(recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the audit write fails', async () => {
+    const recordAuditEntry = jest.fn().mockRejectedValue(new Error('audit down'));
+
+    await expect(
+      recordIdpRoleChange({
+        recordAuditEntry,
+        userId: 'u1',
+        previousRole: SystemRoles.ADMIN,
+        role: SystemRoles.USER,
+        source: 'openid_login',
+      }),
+    ).resolves.toBeUndefined();
   });
 });

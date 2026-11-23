@@ -1,4 +1,5 @@
 const mockTaskStore = {
+  configureActivity: jest.fn((config) => ({ publicationTimeoutMs: 1000, ...config })),
   configureTaskControlTransport: jest.fn().mockResolvedValue(undefined),
   configureActivityStream: jest.fn(),
   prepareActivityForShutdown: jest.fn(),
@@ -6,6 +7,8 @@ const mockTaskStore = {
   destroyActivityStream: jest.fn(),
 };
 const mockCompletionWakeupHandler = jest.fn().mockResolvedValue(undefined);
+const mockChildGenerations = { open: jest.fn() };
+const mockGenerationJobManager = { getJob: jest.fn(), abortJob: jest.fn() };
 
 jest.mock('@librechat/api', () => ({
   cacheConfig: { USE_REDIS: true, REDIS_KEY_PREFIX: 'test:' },
@@ -14,6 +17,8 @@ jest.mock('@librechat/api', () => ({
   duplicateIoRedisClient: jest.fn(),
   createIoRedisSubscriber: jest.fn(),
   createSubagentThreadTaskStore: jest.fn(() => mockTaskStore),
+  createChildGenerationHost: jest.fn(() => mockChildGenerations),
+  GenerationJobManager: mockGenerationJobManager,
   createSubagentCompletionWakeupHandler: jest.fn(() => mockCompletionWakeupHandler),
   RedisSubagentTaskControlTransport: jest.fn(),
   RedisEventTransport: jest.fn(),
@@ -53,12 +58,14 @@ const {
   registerShutdownTask,
   duplicateIoRedisClient,
   createIoRedisSubscriber,
+  createChildGenerationHost,
   createSubagentThreadTaskStore,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('./subagentThreadStore');
 const { configureSubagentTaskRouting } = subagentThreadTaskStore;
 const taskStoreOptions = createSubagentThreadTaskStore.mock.calls[0][1];
 const taskStoreMethods = createSubagentThreadTaskStore.mock.calls[0][0];
+const childGenerationHostArgs = createChildGenerationHost.mock.calls[0];
 const db = require('~/models');
 const activityPrepareRegistration = registerShutdownTask.mock.calls.find(
   ([name]) => name === 'subagent activity streams prepare',
@@ -73,6 +80,11 @@ describe('subagent thread Redis lifecycle', () => {
       db.recordSubagentTaskControlReceipt,
     );
     expect(taskStoreMethods.getSubagentTaskControlReplay).toBe(db.getSubagentTaskControlReplay);
+  });
+
+  it('gives the host store a child stream backed by the generation job manager', () => {
+    expect(childGenerationHostArgs).toEqual([mockGenerationJobManager]);
+    expect(taskStoreOptions.childGenerations).toBe(mockChildGenerations);
   });
 
   it('pre-registers completion wakeups for every prepared task', async () => {
@@ -111,7 +123,16 @@ describe('subagent thread Redis lifecycle', () => {
       .mockReturnValueOnce(taskPublisher)
       .mockReturnValueOnce(activityPublisher);
 
-    await configureSubagentTaskRouting();
+    await configureSubagentTaskRouting({ publicationTimeoutMs: 4321, replayTtlMs: 600000 });
+    expect(mockTaskStore.configureActivity).toHaveBeenCalledWith({
+      publicationTimeoutMs: 4321,
+      replayTtlMs: 600000,
+    });
+    expect(duplicateIoRedisClient).toHaveBeenCalledWith(ioredisClient, {
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+      commandTimeout: 4321,
+    });
 
     expect(createIoRedisSubscriber.mock.calls).toEqual([
       [ioredisClient, '[SubagentTaskRouting] task subscriber'],

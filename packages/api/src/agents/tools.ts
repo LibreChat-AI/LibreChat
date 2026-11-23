@@ -1,10 +1,4 @@
-import {
-  Tools,
-  Constants,
-  normalizeActionToolName,
-  normalizeServerName,
-  splitMCPToolKey,
-} from 'librechat-data-provider';
+import { HOST_FILE_EDIT_HARD_MAX_COUNT } from 'librechat-data-provider';
 import {
   Constants as AgentConstants,
   CODE_EXECUTION_TOOLS,
@@ -13,6 +7,16 @@ import {
   SkillToolDefinition,
   buildBashExecutionToolDescription,
 } from '@librechat/agents';
+import {
+  Tools,
+  Constants,
+  AgentCapabilities,
+  CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
+  normalizeActionToolName,
+  normalizeServerName,
+  splitMCPToolKey,
+} from 'librechat-data-provider';
 import type {
   AgentToolOptions,
   CodeWorkspaceOperation,
@@ -25,9 +29,11 @@ import {
   buildAttachedWorkspaceBashSchema,
   buildAttachedWorkspaceBashDescription,
 } from '~/code/command';
+import { TOOL_SELECTION_WILDCARD, resolveToolOption } from './selection';
 import { toolkitExpansion } from '~/tools/toolkits/mapping';
 import { normalizeAgentToolKeys } from '~/mcp/utils';
 import { collectReachableAgents } from './traversal';
+import { isDeferrableToolName } from './deferral';
 
 export const CREATE_FILE_TOOL_NAME = 'create_file';
 export const EDIT_FILE_TOOL_NAME = 'edit_file';
@@ -66,6 +72,11 @@ export function isCodeSessionToolName(
     name === LIST_WORKSPACE_FILES_TOOL_NAME ||
     hostFileAuthoringToolNames?.has(name) === true
   );
+}
+
+/** Host-only tool batches do not need live workspace capability discovery. */
+export function requiresCodeWorkspaceCapabilities(toolNames: readonly string[]): boolean {
+  return toolNames.some((name) => isCodeFileToolName(name) || isCodeSessionToolName(name));
 }
 
 /** Tools that consume shared code, search, or image resources need current file records. */
@@ -145,6 +156,13 @@ export function isSkillToolAvailable(config: SkillToolAvailabilityConfig): boole
   return config.modelInvocableSkillsAvailable === true || config.skillAuthoringAvailable === true;
 }
 
+/** Configured entries that expand into other definitions and are never bound themselves. */
+const CAPABILITY_MARKERS: ReadonlySet<string> = new Set([
+  AgentCapabilities.execute_code,
+  AgentCapabilities.memory,
+  AgentCapabilities.skills,
+]);
+
 /** Derives the model-facing names an unresolved lazy agent can expose without loading it. */
 export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig): Set<string> {
   const configuredToolNames = [
@@ -173,17 +191,28 @@ export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig)
     }
   }
 
+  /** Capability marker → the names its registration adds, mirroring `initializeAgent`. */
+  const capabilityToolNames = new Map<string, string[]>();
+  const register = (capability: string, names: readonly string[]): void => {
+    const recorded = capabilityToolNames.get(capability) ?? [];
+    for (const name of names) {
+      toolNames.add(name);
+      recorded.push(name);
+    }
+    capabilityToolNames.set(capability, recorded);
+  };
   if (config.codeExecutionAvailable === true) {
-    toolNames.add('bash_tool');
-    toolNames.add('read_file');
-    toolNames.add(CREATE_FILE_TOOL_NAME);
-    toolNames.add(EDIT_FILE_TOOL_NAME);
-    toolNames.add(SEARCH_WORKSPACE_TOOL_NAME);
-    toolNames.add(LIST_WORKSPACE_FILES_TOOL_NAME);
+    register(AgentCapabilities.execute_code, [
+      'bash_tool',
+      'read_file',
+      CREATE_FILE_TOOL_NAME,
+      EDIT_FILE_TOOL_NAME,
+      SEARCH_WORKSPACE_TOOL_NAME,
+      LIST_WORKSPACE_FILES_TOOL_NAME,
+    ]);
   }
   if (config.memoryAvailable === true) {
-    toolNames.add('set_memory');
-    toolNames.add('delete_memory');
+    register(AgentCapabilities.memory, ['set_memory', 'delete_memory']);
   }
   if (
     isSkillToolAvailable({
@@ -191,19 +220,26 @@ export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig)
       skillAuthoringAvailable: config.skillAuthoringAvailable,
     })
   ) {
-    toolNames.add(SkillToolDefinition.name);
+    register(AgentCapabilities.skills, [SkillToolDefinition.name]);
   }
   if ((config.skillFileAccessAvailable ?? config.skillsAvailable) === true) {
-    toolNames.add('read_file');
+    register(AgentCapabilities.skills, ['read_file']);
   }
   if (config.skillAuthoringAvailable === true) {
-    toolNames.add('read_file');
-    toolNames.add(CREATE_FILE_TOOL_NAME);
-    toolNames.add(EDIT_FILE_TOOL_NAME);
+    register(AgentCapabilities.skills, ['read_file', CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME]);
   }
 
   const options = normalizedOptions;
-  const hasDeferredTool = [...toolNames].some((name) => options[name]?.defer_loading === true);
+  const wildcard = config.toolOptions?.[TOOL_SELECTION_WILDCARD];
+  const deferralPolicy: AgentToolOptions = wildcard
+    ? { [TOOL_SELECTION_WILDCARD]: wildcard, ...options }
+    : options;
+  const hasDeferredTool = [...toolNames].some(
+    (name) =>
+      !CAPABILITY_MARKERS.has(name) &&
+      isDeferrableToolName(name) &&
+      resolveToolOption(name, 'defer_loading', deferralPolicy, capabilityToolNames)?.value === true,
+  );
   if (config.deferredToolsAvailable === true && hasDeferredTool) {
     toolNames.add('tool_search');
   }
@@ -438,9 +474,15 @@ export interface RegisterCodeExecutionToolsParams {
   workspaceOperations?: ReadonlySet<CodeWorkspaceOperation>;
   /** Deployment ceiling advertised on attached Bash tool definitions. */
   workspaceCommandTimeoutMaxMs?: number;
+  workspaceCommandTimeoutDefaultMs?: number;
+  workspaceReadFileDefaultLines?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
+  /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
+  workspaceNativeSandbox?: boolean;
+  /** Background commands are sent detached; tell the model they overlap later commands. */
+  workspaceDetachedCommands?: boolean;
   /**
    * When `true`, the registered `bash_tool` description includes the
    * LLM-facing `{{tool<idx>turn<turn>}}` reference syntax guide so the
@@ -488,22 +530,43 @@ export interface RegisterFileAuthoringToolsParams {
   workspaceOperations?: ReadonlySet<CodeWorkspaceOperation>;
 }
 
-/**
- * Hoisted module-level definition for skill-aware `read_file` so
- * `registerCodeExecutionTools` doesn't re-allocate on every call. The
- * shape is derived from a static `@librechat/agents` export — no
- * per-request state — so a single frozen object is safe to share across
- * every agent init.
- */
+/** Locally extends SDK read parameters without changing the SDK path or intent contract. */
+const READ_FILE_RANGE_PROPERTIES = Object.freeze({
+  start_line: {
+    type: 'integer',
+    minimum: 1,
+    description: 'Optional one-based starting line for a skill, sandbox, or workspace text file.',
+  },
+  max_lines: {
+    type: 'integer',
+    minimum: 1,
+    maximum: CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
+    description: `Optional line limit for a skill, sandbox, or workspace text file. Defaults to ${CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES} when either range parameter is supplied for skill or sandbox text; the byte budget may truncate sooner.`,
+  },
+});
+
+const READ_FILE_RANGE_INSTRUCTIONS = `Omit both range parameters for full skill/sandbox reads; range defaults: 1/${CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES}.`;
+
+const SKILL_READ_FILE_PARAMETERS = Object.freeze({
+  ...ReadFileToolDefinition.parameters,
+  required: [...(ReadFileToolDefinition.parameters.required ?? ['path'])],
+  properties: {
+    ...ReadFileToolDefinition.parameters.properties,
+    ...READ_FILE_RANGE_PROPERTIES,
+  },
+}) as LCTool['parameters'];
+
 const SKILL_READ_FILE_DESCRIPTION = `${ReadFileToolDefinition.description}
 
-Also accepts authored skill file paths using "skills/{skillName}/...", including "skills/{skillName}/SKILL.md".`;
+Also accepts authored skill file paths using "skills/{skillName}/...", including "skills/{skillName}/SKILL.md".
+
+${READ_FILE_RANGE_INSTRUCTIONS}`;
 
 const READ_FILE_DEF: LCTool = Object.freeze({
   name: ReadFileToolDefinition.name,
   toolType: 'builtin',
   description: SKILL_READ_FILE_DESCRIPTION,
-  parameters: ReadFileToolDefinition.parameters as unknown as LCTool['parameters'],
+  parameters: SKILL_READ_FILE_PARAMETERS,
   responseFormat: ReadFileToolDefinition.responseFormat,
 }) as LCTool;
 
@@ -511,13 +574,21 @@ const CODE_READ_FILE_DESCRIPTION = `Read a known code-sandbox file. Text is line
 
 Use paths returned by tool output, just written, or under /mnt/data/. Do not run ls/find to rediscover known paths. Use bash_tool for binary or large files, transforms, metadata, and filesystem discovery.
 
-For managed execution, only retained files under /mnt/data reach later calls. $HOME, /tmp, $TMPDIR, shell/environment state, cwd, global installs, and background processes are call-local.`;
+For managed execution, only retained files under /mnt/data reach later calls. $HOME, /tmp, $TMPDIR, shell/environment state, cwd, global installs, and background processes are call-local.
+
+${READ_FILE_RANGE_INSTRUCTIONS}`;
 
 const ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS = `For an attached environment, read registered files as "workspace/{relativePath}". Use a canonical relative path without empty, ".", or ".." segments; the worker's host path stays private. Only the registered workspace persists for attached commands. Project dependencies stored there persist, while $HOME and global/system packages are operator-managed. Use start_line and max_lines for bounded pagination.`;
 
+/** Skill files live in LibreChat storage; attached commands only see the registered workspace. */
+const ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS =
+  'Skill files are not on the attached machine, so bash_tool cannot run them by path; to run a skill script there, read it and write it into the workspace first.';
+
 const CODE_READ_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
+  ...SKILL_READ_FILE_PARAMETERS,
   type: 'object',
   properties: {
+    ...SKILL_READ_FILE_PARAMETERS?.properties,
     path: {
       type: 'string',
       description:
@@ -527,24 +598,23 @@ const CODE_READ_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
   required: ['path'],
 }) as LCTool['parameters'];
 
+function attachedReadFileLineDescription(defaultReadFileLines: number): string {
+  return `Optional line limit for a skill, sandbox, or workspace text file. Defaults to ${defaultReadFileLines} for workspace reads and ${CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES} for explicit skill or sandbox ranges. Omit both range parameters for a full skill or sandbox read. The byte budget may truncate the result sooner.`;
+}
+
 const ATTACHED_WORKSPACE_READ_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
+  ...SKILL_READ_FILE_PARAMETERS,
   type: 'object',
   properties: {
+    ...SKILL_READ_FILE_PARAMETERS?.properties,
     path: {
       type: 'string',
       description:
         'Use "workspace/{relativePath}" with a canonical relative path (no empty, ".", or ".." segments) for a file in the attached worker workspace directory, or a code-execution sandbox path such as "/mnt/data/result.csv".',
     },
-    start_line: {
-      type: 'integer',
-      minimum: 1,
-      description: 'Optional one-based line at which to start reading a workspace text file.',
-    },
     max_lines: {
-      type: 'integer',
-      minimum: 1,
-      maximum: 500,
-      description: 'Optional maximum number of workspace text-file lines to return.',
+      ...READ_FILE_RANGE_PROPERTIES.max_lines,
+      description: attachedReadFileLineDescription(CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES),
     },
   },
   required: ['path'],
@@ -558,21 +628,56 @@ const CODE_READ_FILE_DEF: LCTool = Object.freeze({
   responseFormat: ReadFileToolDefinition.responseFormat,
 }) as LCTool;
 
-function createAttachedWorkspaceReadFileDef(includeSkillFileInstructions: boolean): LCTool {
+/**
+ * `attachedCommands` is true only when the attached `bash_tool` is registered
+ * beside this definition: the skill-file warning names it.
+ */
+function createAttachedWorkspaceReadFileDef(
+  includeSkillFileInstructions: boolean,
+  defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  attachedCommands = false,
+): LCTool {
   const baseDescription = includeSkillFileInstructions
     ? SKILL_READ_FILE_DESCRIPTION
     : CODE_READ_FILE_DESCRIPTION;
+  const attachedInstructions =
+    includeSkillFileInstructions && attachedCommands
+      ? `${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS} ${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`
+      : ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS;
   return Object.freeze({
     name: ReadFileToolDefinition.name,
     toolType: 'builtin',
-    description: `${baseDescription}\n\n${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS}`,
-    parameters: ATTACHED_WORKSPACE_READ_FILE_PARAMETERS,
+    description: `${baseDescription}\n\n${attachedInstructions}`,
+    parameters:
+      defaultReadFileLines === CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES
+        ? ATTACHED_WORKSPACE_READ_FILE_PARAMETERS
+        : {
+            ...ATTACHED_WORKSPACE_READ_FILE_PARAMETERS,
+            properties: {
+              ...ATTACHED_WORKSPACE_READ_FILE_PARAMETERS?.properties,
+              max_lines: {
+                ...ATTACHED_WORKSPACE_READ_FILE_PARAMETERS?.properties?.max_lines,
+                description: attachedReadFileLineDescription(defaultReadFileLines),
+              },
+            },
+          },
     responseFormat: ReadFileToolDefinition.responseFormat,
   }) as LCTool;
 }
 
 const ATTACHED_CODE_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(false);
 const ATTACHED_SKILL_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(true);
+const ATTACHED_SKILL_COMMAND_READ_FILE_DEF = createAttachedWorkspaceReadFileDef(
+  true,
+  CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  true,
+);
+
+/** Skill-only `read_file` beside the attached `bash_tool` when the worker does not offer `read_file`. */
+const ATTACHED_SKILL_ONLY_READ_FILE_DEF: LCTool = Object.freeze({
+  ...READ_FILE_DEF,
+  description: `${SKILL_READ_FILE_DESCRIPTION}\n\n${ATTACHED_WORKSPACE_SKILL_FILE_INSTRUCTIONS}`,
+}) as LCTool;
 
 /**
  * The SDK constraint the authoring variant rewrites. Left alone it tells the
@@ -784,6 +889,7 @@ const SKILL_EDIT_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
     },
     edits: {
       type: 'array',
+      maxItems: HOST_FILE_EDIT_HARD_MAX_COUNT,
       description:
         'Optional batch of replacements. Each old_text must match exactly once unless its replace_all is true.',
       items: {
@@ -821,6 +927,7 @@ const CODE_EDIT_FILE_PARAMETERS: LCTool['parameters'] = Object.freeze({
     },
     edits: {
       type: 'array',
+      maxItems: HOST_FILE_EDIT_HARD_MAX_COUNT,
       description:
         'Optional batch of replacements. Each old_text must match exactly once unless its replace_all is true.',
       items: {
@@ -914,7 +1021,7 @@ Very long content can exceed the streamed tool-argument limit (64 KB by default)
 
 const ATTACHED_CODE_EDIT_FILE_DESCRIPTION = `Apply one or more ordered text replacements to an existing file in the selected attached environment.
 
-Use a path in the form "workspace/{relativePath}". Every old_text must match exactly one location at its step in the batch, unless that edit sets replace_all. Exact matching is tried first; where this environment allows it, whitespace-only differences are also accepted, and a whitespace-only miss names the line to copy. Up to 100 replacements and 1 MiB of edit text are allowed; the entire batch commits atomically or makes no change. A failure names every edit that did not apply and why, so fix those edits and retry.`;
+Use a path in the form "workspace/{relativePath}". Every old_text must match exactly one location at its step in the batch, unless that edit sets replace_all. Exact matching is tried first; where this environment allows it, whitespace-only differences are also accepted, and a whitespace-only miss names the line to copy. Up to 100 replacements and 1 MiB of edit text are allowed; the entire batch commits atomically or makes no change. A failure names every edit that did not apply and why, and may quote the current text where a missing edit most likely belongs; fix those edits against any quoted current text (read_file shows lines it leaves out or shortens), and retry.`;
 
 const ATTACHED_SKILL_CREATE_FILE_DESCRIPTION = `${SKILL_CREATE_FILE_DESCRIPTION.replace(
   'Non-skills paths target the code-execution sandbox when enabled. Prefer /mnt/data/{file}.',
@@ -925,7 +1032,7 @@ const ATTACHED_SKILL_EDIT_FILE_DESCRIPTION = `Apply targeted text replacements t
 
 For skills/{skillName}/... paths, exact matching falls back to whitespace-tolerant matching when needed and the result includes a unified diff. Keep SKILL.md YAML frontmatter name equal to {skillName}; create a new skills/{newName}/SKILL.md to rename a skill.
 
-For workspace/{relativePath} paths in the selected attached environment, every old_text must match exactly one location at its step unless that edit sets replace_all. Exact matching is tried first; where this environment allows it, whitespace-only differences are also accepted, and a whitespace-only miss names the line to copy. Up to 100 replacements and 1 MiB of edit text commit atomically, a failure names every edit that did not apply and why, and the result is a write summary rather than a unified diff.`;
+For workspace/{relativePath} paths in the selected attached environment, every old_text must match exactly one location at its step unless that edit sets replace_all. Exact matching is tried first; where this environment allows it, whitespace-only differences are also accepted, and a whitespace-only miss names the line to copy. Up to 100 replacements and 1 MiB of edit text commit atomically, a failure names every edit that did not apply and why (and may quote the current text where a missing edit most likely belongs), and the result is a write summary rather than a unified diff.`;
 
 function attachedFileAuthoringParameters(
   parameters: LCTool['parameters'],
@@ -970,11 +1077,24 @@ const ATTACHED_SKILL_EDIT_FILE_DEF: LCTool = Object.freeze({
   parameters: attachedFileAuthoringParameters(SKILL_EDIT_FILE_PARAMETERS, true),
 }) as LCTool;
 
-function buildReadFileDef(includeSkillFileInstructions: boolean, workspaceTools: boolean): LCTool {
+function buildReadFileDef(
+  includeSkillFileInstructions: boolean,
+  workspaceTools: boolean,
+  defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  attachedCommands = false,
+): LCTool {
   if (workspaceTools) {
-    return includeSkillFileInstructions
-      ? ATTACHED_SKILL_READ_FILE_DEF
-      : ATTACHED_CODE_READ_FILE_DEF;
+    if (defaultReadFileLines !== CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES) {
+      return createAttachedWorkspaceReadFileDef(
+        includeSkillFileInstructions,
+        defaultReadFileLines,
+        attachedCommands,
+      );
+    }
+    if (!includeSkillFileInstructions) {
+      return ATTACHED_CODE_READ_FILE_DEF;
+    }
+    return attachedCommands ? ATTACHED_SKILL_COMMAND_READ_FILE_DEF : ATTACHED_SKILL_READ_FILE_DEF;
   }
   return includeSkillFileInstructions ? READ_FILE_DEF : CODE_READ_FILE_DEF;
 }
@@ -1055,6 +1175,9 @@ function createBashToolDef(
   workspaceCommandTimeoutMaxMs?: number,
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'],
   workspaceLinkedWorktrees = false,
+  workspaceCommandTimeoutDefaultMs?: number,
+  workspaceNativeSandbox = false,
+  workspaceDetachedCommands = false,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1064,13 +1187,19 @@ function createBashToolDef(
     name: BashExecutionToolDefinition.name,
     toolType: 'builtin',
     description: workspaceTools
-      ? buildAttachedWorkspaceBashDescription(enableToolOutputReferences, workspaceEnvironment)
+      ? buildAttachedWorkspaceBashDescription(
+          enableToolOutputReferences,
+          workspaceEnvironment,
+          workspaceNativeSandbox,
+          workspaceDetachedCommands,
+        )
       : buildBashExecutionToolDescription(descriptionOpts),
     parameters: (workspaceTools
       ? buildAttachedWorkspaceBashSchema(
           workspaceCommandTimeoutMaxMs,
           workspaceEnvironment,
           workspaceLinkedWorktrees,
+          workspaceCommandTimeoutDefaultMs,
         )
       : BashExecutionToolDefinition.schema) as unknown as LCTool['parameters'],
   }) as LCTool;
@@ -1084,9 +1213,12 @@ function buildBashToolDef(opts: {
   statefulSessions?: boolean;
   workspaceTools?: boolean;
   workspaceCommandTimeoutMaxMs?: number;
+  workspaceCommandTimeoutDefaultMs?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
+  workspaceNativeSandbox?: boolean;
+  workspaceDetachedCommands?: boolean;
 }): LCTool {
   /* Stateful defs are built on demand: the stateless pair covers the
    * default path, and per-run construction is negligible next to init. */
@@ -1098,6 +1230,9 @@ function buildBashToolDef(opts: {
       opts.workspaceCommandTimeoutMaxMs,
       opts.workspaceEnvironment,
       opts.workspaceLinkedWorktrees === true,
+      opts.workspaceCommandTimeoutDefaultMs,
+      opts.workspaceNativeSandbox === true,
+      opts.workspaceDetachedCommands === true,
     );
   }
   return opts.enableToolOutputReferences
@@ -1130,8 +1265,12 @@ export function registerCodeExecutionTools(
     workspaceTools = false,
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
+    workspaceCommandTimeoutDefaultMs,
+    workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
+    workspaceNativeSandbox,
+    workspaceDetachedCommands,
     enableToolOutputReferences = false,
     statefulSessions = false,
   } = params;
@@ -1139,20 +1278,32 @@ export function registerCodeExecutionTools(
   const supportsWorkspaceOperation = (operation: CodeWorkspaceOperation): boolean =>
     !workspaceTools || workspaceOperations?.has(operation) === true;
   const candidates: LCTool[] = [];
+  const bashAvailable = includeBash && supportsWorkspaceOperation('execute_command');
+  const attachedCommands = workspaceTools && bashAvailable;
   if (!workspaceTools || supportsWorkspaceOperation('read_file')) {
-    candidates.push(buildReadFileDef(includeSkillFileInstructions, workspaceTools));
+    candidates.push(
+      buildReadFileDef(
+        includeSkillFileInstructions,
+        workspaceTools,
+        workspaceReadFileDefaultLines,
+        attachedCommands,
+      ),
+    );
   } else if (includeSkillFileInstructions) {
-    candidates.push(buildReadFileDef(true, false));
+    candidates.push(attachedCommands ? ATTACHED_SKILL_ONLY_READ_FILE_DEF : READ_FILE_DEF);
   }
-  if (includeBash && supportsWorkspaceOperation('execute_command')) {
+  if (bashAvailable) {
     candidates.push(
       buildBashToolDef({
         enableToolOutputReferences,
         statefulSessions,
         workspaceTools,
         workspaceCommandTimeoutMaxMs,
+        workspaceCommandTimeoutDefaultMs,
         workspaceEnvironment,
         workspaceLinkedWorktrees,
+        workspaceNativeSandbox,
+        workspaceDetachedCommands,
       }),
     );
   }

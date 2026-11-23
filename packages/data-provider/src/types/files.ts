@@ -28,6 +28,7 @@ export enum FileContext {
   agents = 'agents',
   assistants = 'assistants',
   execute_code = 'execute_code',
+  execute_code_snapshot = 'execute_code_snapshot',
   image_generation = 'image_generation',
   assistants_output = 'assistants_output',
   message_attachment = 'message_attachment',
@@ -58,12 +59,19 @@ export type EndpointFileConfig = {
 };
 
 export type FileConfig = {
+  /** Enable after all replicas and rollback targets support retained file destinations. */
+  retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
+  vectorOwnershipTrackingStart?: string;
+  vectorDeletionConcurrency?: number;
   endpoints: {
     [key: string]: EndpointFileConfig;
   };
   skills?: {
     /** Maximum concurrent blob deletions during failed archive import cleanup. */
     importCleanupConcurrency?: number;
+    /** Maximum concurrent blob deletions during whole-Skill cleanup. */
+    deletionCleanupConcurrency?: number;
     fileSizeLimit?: number;
   };
   fileTokenLimit?: number;
@@ -99,12 +107,19 @@ export type FileConfig = {
 };
 
 export type FileConfigInput = {
+  /** Fail closed on embedded-file deletion until marker-aware readers are deployed. */
+  retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
+  vectorOwnershipTrackingStart?: string;
+  vectorDeletionConcurrency?: number;
   endpoints?: {
     [key: string]: EndpointFileConfig;
   };
   skills?: {
     /** Maximum concurrent blob deletions during failed archive import cleanup. */
     importCleanupConcurrency?: number;
+    /** Maximum concurrent blob deletions during whole-Skill cleanup. */
+    deletionCleanupConcurrency?: number;
     fileSizeLimit?: number;
   };
   serverFileSizeLimit?: number;
@@ -147,6 +162,14 @@ export type RunFileProvenance = {
   inputFileIds: string[];
 };
 
+/** Shared wire bound, not a deployment setting. */
+export const MAX_FILE_TEXT_PREVIEW_LENGTH = 240;
+/** Identifies the bytes of one generated attachment when its file ID is reused. */
+export type CodeOutputProvenance = {
+  messageId: string;
+  sha256: string;
+};
+
 export type TFile = {
   _id?: string;
   __v?: number;
@@ -160,6 +183,10 @@ export type TFile = {
   temp_file_id?: string;
   bytes: number;
   embedded: boolean;
+  /** Every vector namespace has been tracked since this record was inserted. */
+  embeddingOwnersComplete?: boolean;
+  /** Insert-time proof, trusted only after the deployment rollout cutoff. */
+  embeddingOwnersTrackedAt?: string | Date;
   filename: string;
   filepath: string;
   object: 'file';
@@ -171,8 +198,11 @@ export type TFile = {
   width?: number;
   height?: number;
   expiresAt?: string | Date;
+  expiredAt?: string | Date | null;
   preview?: string;
   text?: string;
+  /** Bounded display-only snippet, never editable source text. */
+  textPreview?: string;
   /**
    * Format of the `text` field. `'html'` means the backend produced
    * a sanitized full-document HTML preview the client may inject as
@@ -198,6 +228,7 @@ export type TFile = {
   previewError?: string;
   metadata?: {
     runFile?: RunFileProvenance;
+    codeOutput?: CodeOutputProvenance;
     fileIdentifier?: string;
     /**
      * Structured form of `fileIdentifier`. Persisted alongside the
@@ -206,19 +237,45 @@ export type TFile = {
      */
     codeEnvRef?: CodeEnvRef;
     codeEnvRefs?: CodeEnvRefMap;
+    /** Non-owning provenance. Never reused or deleted as a stored copy. */
+    codeEnvSource?: CodeEnvRef;
     /** Dispatch-order stamp for the current source artifact generation. */
     sourceDispatchedAt?: number;
     /** Vector namespaces this file has been embedded into. */
     embeddedEntities?: string[];
+    /** Search remains a destination even after its vectors are cleared. */
+    searchDestination?: boolean;
+    /** Code remains a destination after a confirmed copy deletion. */
+    codeDestination?: boolean;
     /** The user named this destination, so absent ones were declined. */
     destinationChosen?: boolean;
     /** The type the delivery route was resolved against, when conversion changed it. */
     routingMimeType?: string;
+    /** Copies already placed in attached workspaces; see `TFileWorkspaceImports`. */
+    workspaceImports?: TFileWorkspaceImports;
   };
   llmDeliveryPath?: 'provider' | 'text' | 'none';
   createdAt?: string | Date;
   updatedAt?: string | Date;
 };
+
+/** One copy of a file placed in an attached workspace. */
+export interface TFileWorkspaceImport {
+  sha256: string;
+  /** Workspace-relative path the copy was written to. */
+  path: string;
+}
+
+/**
+ * Lets a later turn skip files an attached workspace already holds without another read.
+ * `digest` describes the stored code-environment object the copies were made from, keyed by
+ * that object so a re-upload is hashed again; `targets` is keyed by an opaque digest of the
+ * conversation, machine, workspace and checkout the copy was written to.
+ */
+export interface TFileWorkspaceImports {
+  digest?: { source: string; sha256: string; bytes: number };
+  targets?: Record<string, TFileWorkspaceImport>;
+}
 
 export type TFileUpload = TFile & {
   temp_file_id: string;

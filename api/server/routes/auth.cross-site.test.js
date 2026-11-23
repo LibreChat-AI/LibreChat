@@ -7,6 +7,7 @@ const mockRequireLocalAuth = jest.fn((req, res, next) => next());
 const mockSetTwoFactorTempUser = jest.fn((req, res, next) => next());
 const mockLoginController = jest.fn((req, res) => res.status(204).end());
 const mockVerify2FAWithTempToken = jest.fn((req, res) => res.status(204).end());
+const mockCancel2FASetup = jest.fn((req, res) => res.status(204).end());
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -36,6 +37,20 @@ jest.mock('~/server/controllers/TwoFactorController', () => ({
 
 jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   verify2FAWithTempToken: (...args) => mockVerify2FAWithTempToken(...args),
+  confirm2FASetupWithTempToken: jest.fn((req, res) => res.status(204).end()),
+  acknowledge2FASetup: jest.fn((req, res) => res.status(204).end()),
+  finalize2FASetup: jest.fn((req, res) => res.status(204).end()),
+  cancel2FASetup: (...args) => mockCancel2FASetup(...args),
+}));
+
+jest.mock('~/server/controllers/auth/PasskeyController', () => ({
+  listPasskeys: jest.fn((req, res) => res.status(204).end()),
+  updatePasskey: jest.fn((req, res) => res.status(204).end()),
+  removePasskey: jest.fn((req, res) => res.status(204).end()),
+  authenticatePasskey: jest.fn((req, res, next) => next()),
+  loginPasskeyOptions: jest.fn((req, res) => res.status(204).end()),
+  registerPasskeyOptions: jest.fn((req, res) => res.status(204).end()),
+  registerPasskeyVerify: jest.fn((req, res) => res.status(204).end()),
 }));
 
 jest.mock('~/server/controllers/auth/LogoutController', () => ({
@@ -61,10 +76,16 @@ jest.mock('~/server/middleware', () => {
     logHeaders: pass,
     requireSameOrigin: jest.requireActual('~/server/middleware/requireSameOrigin'),
     loginLimiter: (...args) => mockLoginLimiter(...args),
+    passkeyLimiter: pass,
+    passkeyStepUpLimiter: pass,
     setTwoFactorTempUser: (...args) => mockSetTwoFactorTempUser(...args),
+    setTwoFactorAcknowledgementTempUser: pass,
+    setTwoFactorFinalizationTempUser: pass,
     twoFactorTempLimiter: pass,
+    twoFactorSetupLimiter: pass,
+    blockRetiredSetupToken: pass,
     checkBan: pass,
-    validateEmailLogin: pass,
+    validateEmailLogin: jest.requireActual('~/server/middleware/validateEmailLogin'),
     requireLocalAuth: (...args) => mockRequireLocalAuth(...args),
     requireLdapAuth: (...args) => mockRequireLocalAuth(...args),
     registerLimiter: pass,
@@ -126,6 +147,22 @@ describe('local login endpoints reject cross-site submissions', () => {
     expect(mockLoginController).not.toHaveBeenCalled();
   });
 
+  it('rejects a cross-site passkey assertion before verifying it', async () => {
+    const { authenticatePasskey } = require('~/server/controllers/auth/PasskeyController');
+
+    await request(app)
+      .post('/api/auth/passkey/login/verify')
+      .set('Host', 'chat.example.com')
+      .set('Sec-Fetch-Site', 'cross-site')
+      .set('Origin', OTHER_ORIGIN)
+      .type('form')
+      .send({ sessionId: 'attacker-session', 'credential[id]': 'attacker-credential' })
+      .expect(403);
+
+    expect(authenticatePasskey).not.toHaveBeenCalled();
+    expect(mockLoginController).not.toHaveBeenCalled();
+  });
+
   it('rejects a cross-site temp-token 2FA submission before verifying it', async () => {
     await request(app)
       .post('/api/auth/2fa/verify-temp')
@@ -138,6 +175,43 @@ describe('local login endpoints reject cross-site submissions', () => {
 
     expect(mockSetTwoFactorTempUser).not.toHaveBeenCalled();
     expect(mockVerify2FAWithTempToken).not.toHaveBeenCalled();
+  });
+
+  /** The setup token rides in the body, but the response clears cookies the browser sends on its own. */
+  it('rejects a cross-site setup cancellation before it can clear the browser session', async () => {
+    const response = await request(app)
+      .post('/api/auth/2fa/setup/cancel')
+      .set('Host', 'chat.example.com')
+      .set('Sec-Fetch-Site', 'cross-site')
+      .set('Origin', OTHER_ORIGIN)
+      .type('form')
+      .send({ tempToken: 'attacker-setup-token' })
+      .expect(403);
+
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(mockSetTwoFactorTempUser).not.toHaveBeenCalled();
+    expect(mockCancel2FASetup).not.toHaveBeenCalled();
+  });
+
+  it('accepts a setup cancellation the app submits from its own origin', async () => {
+    const { generateTwoFactorSetupToken } = require('@librechat/api');
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    process.env.JWT_SECRET = 'cross-site-secret';
+
+    try {
+      await request(app)
+        .post('/api/auth/2fa/setup/cancel')
+        .set('Host', 'chat.example.com')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .set('Origin', APP_ORIGIN)
+        .send({ tempToken: generateTwoFactorSetupToken('user-1', 'cross-site-secret') })
+        .expect(204);
+    } finally {
+      delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+      delete process.env.JWT_SECRET;
+    }
+
+    expect(mockCancel2FASetup).toHaveBeenCalledTimes(1);
   });
 
   it('accepts the login form the app submits from its own origin', async () => {
@@ -184,5 +258,41 @@ describe('local login endpoints reject cross-site submissions', () => {
       .expect(204);
 
     expect(mockLoginController).toHaveBeenCalledTimes(1);
+  });
+
+  describe('with email login disabled', () => {
+    beforeEach(() => {
+      process.env.ALLOW_EMAIL_LOGIN = 'false';
+    });
+
+    afterEach(() => {
+      delete process.env.ALLOW_EMAIL_LOGIN;
+    });
+
+    it('still rejects the password login', async () => {
+      await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'user@example.com', password: 'password' })
+        .expect(403);
+
+      expect(mockLoginController).not.toHaveBeenCalled();
+    });
+
+    it('keeps passkey sign-in reachable', async () => {
+      const {
+        authenticatePasskey,
+        loginPasskeyOptions,
+      } = require('~/server/controllers/auth/PasskeyController');
+
+      await request(app).post('/api/auth/passkey/login/options').expect(204);
+      await request(app)
+        .post('/api/auth/passkey/login/verify')
+        .send({ sessionId: 'session', credential: { id: 'credential' } })
+        .expect(204);
+
+      expect(loginPasskeyOptions).toHaveBeenCalledTimes(1);
+      expect(authenticatePasskey).toHaveBeenCalledTimes(1);
+      expect(mockLoginController).toHaveBeenCalledTimes(1);
+    });
   });
 });

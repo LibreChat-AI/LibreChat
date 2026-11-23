@@ -1,6 +1,6 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type t from 'librechat-data-provider';
 import CategoryTabs from '../CategoryTabs';
@@ -73,7 +73,7 @@ describe('CategoryTabs', () => {
     expect(screen.queryByText('No categories available')).not.toBeInTheDocument();
   });
 
-  it('highlights the active tab', () => {
+  it('marks the active tab as selected', () => {
     render(
       <CategoryTabs
         categories={mockCategories}
@@ -84,11 +84,7 @@ describe('CategoryTabs', () => {
     );
 
     const generalTab = screen.getByText('General').closest('button');
-    expect(generalTab).toHaveClass('bg-surface-hover');
-
-    // Should have active underline
-    const underline = generalTab?.querySelector('.absolute.bottom-0');
-    expect(underline).toBeInTheDocument();
+    expect(generalTab).toHaveAttribute('aria-selected', 'true');
   });
 
   it('calls onChange when a tab is clicked', async () => {
@@ -139,26 +135,7 @@ describe('CategoryTabs', () => {
     expect(mockOnChange).toHaveBeenCalledWith('all');
   });
 
-  it('shows inactive state for non-selected tabs', () => {
-    render(
-      <CategoryTabs
-        categories={mockCategories}
-        activeTab="promoted"
-        isLoading={false}
-        onChange={mockOnChange}
-      />,
-    );
-
-    const generalTab = screen.getByText('General').closest('button');
-    expect(generalTab).toHaveClass('bg-surface-secondary');
-    expect(generalTab).toHaveClass('text-text-secondary');
-
-    // Should not have active underline
-    const underline = generalTab?.querySelector('.absolute.bottom-0');
-    expect(underline).not.toBeInTheDocument();
-  });
-
-  it('renders with proper accessibility', () => {
+  it('marks the selected tab and leaves other tabs unselected', () => {
     render(
       <CategoryTabs
         categories={mockCategories}
@@ -169,10 +146,25 @@ describe('CategoryTabs', () => {
     );
 
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.length).toBe(5);
-    // Verify all tabs are properly clickable buttons
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs[2]).toHaveAttribute('aria-selected', 'false');
+  });
+
+  it('renders accessible tabs connected to category panels', () => {
+    render(
+      <CategoryTabs
+        categories={mockCategories}
+        activeTab="promoted"
+        isLoading={false}
+        onChange={mockOnChange}
+      />,
+    );
+
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs).toHaveLength(5);
     tabs.forEach((tab) => {
       expect(tab.tagName).toBe('BUTTON');
+      expect(tab.getAttribute('aria-controls')).toMatch(/^category-panel-/);
     });
   });
 
@@ -227,5 +219,53 @@ describe('CategoryTabs', () => {
     expect(tabTexts[0]).toBe('Top Picks');
     expect(tabTexts[1]).toBe('All');
     expect(tabTexts.length).toBe(5);
+  });
+
+  describe('arrow key navigation', () => {
+    beforeEach(() => {
+      /** jsdom does not inherit `direction`, so resolve it from the nearest `dir` attribute. */
+      const original = window.getComputedStyle.bind(window);
+      jest.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+        const style = original(el, pseudo);
+        const dir = el.closest('[dir]')?.getAttribute('dir') ?? 'ltr';
+        return new Proxy(style, {
+          get: (target, prop) =>
+            prop === 'direction' ? dir : (Reflect.get(target, prop, target) as unknown),
+        });
+      });
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    const press = (dir: 'ltr' | 'rtl', key: string) => {
+      const { container } = render(
+        <div dir={dir} style={{ direction: dir }}>
+          <CategoryTabs
+            categories={mockCategories}
+            activeTab="all"
+            isLoading={false}
+            onChange={mockOnChange}
+          />
+        </div>,
+      );
+      fireEvent.keyDown(container.querySelector('#category-tab-all') as HTMLElement, { key });
+    };
+
+    it('moves to the next tab on ArrowRight in LTR', () => {
+      press('ltr', 'ArrowRight');
+      expect(mockOnChange).toHaveBeenCalledWith('general');
+    });
+
+    it('moves to the previous tab on ArrowRight in RTL', () => {
+      press('rtl', 'ArrowRight');
+      expect(mockOnChange).toHaveBeenCalledWith('promoted');
+    });
+
+    it('moves to the next tab on ArrowLeft in RTL', () => {
+      press('rtl', 'ArrowLeft');
+      expect(mockOnChange).toHaveBeenCalledWith('general');
+    });
   });
 });

@@ -1,5 +1,4 @@
 import { useEffect } from 'react';
-import { ChevronLeft } from 'lucide-react';
 import { useForm, FormProvider } from 'react-hook-form';
 import {
   AuthTypeEnum,
@@ -15,6 +14,7 @@ import {
   TrashIcon,
 } from '@librechat/client';
 import type { AssistantPanelProps, ActionAuthForm } from '~/common';
+import BackButton from '~/components/SidePanel/BackButton';
 import { useAssistantsMapContext } from '~/Providers';
 import { useDeleteAction } from '~/data-provider';
 import ActionsInput from './ActionsInput';
@@ -97,18 +97,13 @@ export default function ActionsPanel({
         <div className="h-full overflow-auto px-2 pb-12 text-sm">
           <div className="flex flex-col py-3">
             <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 pt-1">
-              <button
-                type="button"
+              <BackButton
                 onClick={() => {
                   setActivePanel(Panel.builder);
                   setAction(undefined);
                 }}
-                aria-label={localize('com_ui_back_to_builder')}
-                className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-border-light text-text-secondary transition-colors hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
-              >
-                <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
-              </button>
-              <h2 className="text-center text-base font-semibold text-text-primary">
+              />
+              <h2 className="text-text-primary text-center text-base font-semibold">
                 {localize(action ? 'com_assistants_edit_actions' : 'com_assistants_add_actions')}
               </h2>
               {action ? (
@@ -118,7 +113,7 @@ export default function ActionsPanel({
                       type="button"
                       disabled={!(assistant_id ?? '') || !action.action_id}
                       aria-label={localize('com_ui_delete_action')}
-                      className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-border-light text-red-500 transition-colors hover:bg-surface-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary disabled:opacity-50"
+                      className="border-border-light hover:bg-surface-secondary focus-visible:ring-ring-primary text-text-destructive rounded-theme-control inline-flex h-10 w-10 shrink-0 items-center justify-center border transition-colors focus:outline-hidden focus-visible:ring-2 disabled:opacity-50"
                     >
                       <TrashIcon className="h-4 w-4" />
                     </button>
@@ -126,9 +121,9 @@ export default function ActionsPanel({
                   <OGDialogTemplate
                     showCloseButton={false}
                     title={localize('com_ui_delete_action')}
-                    className="max-w-[450px]"
+                    className="max-w-[28.125rem]"
                     main={
-                      <Label className="text-left text-sm font-medium">
+                      <Label className="text-start text-sm font-medium">
                         {localize('com_ui_delete_action_confirm')}
                       </Label>
                     }
@@ -149,7 +144,7 @@ export default function ActionsPanel({
                         });
                       },
                       selectClasses:
-                        'bg-surface-destructive hover:bg-surface-destructive-hover transition-color duration-200 text-text-on-status',
+                        'bg-surface-destructive hover:bg-surface-destructive-hover transition-colors duration-200 text-text-on-status',
                       selectText: localize('com_ui_delete'),
                     }}
                   />
@@ -158,7 +153,7 @@ export default function ActionsPanel({
                 <span aria-hidden="true" className="h-10 w-10" />
               )}
             </header>
-            <p className="mt-1 text-center text-xs text-text-secondary">
+            <p className="text-text-secondary mt-1 text-center text-xs">
               {localize('com_assistants_actions_info')}
             </p>
             {/* <div className="text-sm text-text-secondary">

@@ -1,11 +1,15 @@
+import React from 'react';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import {
   megabyte,
   Constants,
+  EToolResources,
   mergeFileConfig,
   EModelEndpoint,
   getEndpointFileConfig,
 } from 'librechat-data-provider';
+import type { ExtendedFile } from '~/common';
+import { setFileSearchChoice, clearFileSearchChoices } from '~/utils/choices';
 
 type MockUploadMutationOptions = {
   onSuccess?: (
@@ -47,9 +51,24 @@ beforeAll(() => {
   });
 });
 
+let mockHeicModuleError: Error | undefined;
 const mockShowToast = jest.fn();
 const mockSetFilesLoading = jest.fn();
 const mockMutate = jest.fn();
+let mockUploadSignal:
+  | AbortSignal
+  | null
+  | ((body: FormData) => AbortSignal | undefined)
+  | undefined;
+let mockEphemeralAgent: { file_search?: boolean; execute_code?: boolean } = {};
+const mockSetEphemeralAgent = jest.fn(
+  (update: (previous: typeof mockEphemeralAgent) => typeof mockEphemeralAgent, _key?: string) => {
+    mockEphemeralAgent = update(mockEphemeralAgent);
+  },
+);
+let mockDownloadedFiles: File[] = [];
+let mockDownloadError: Error | undefined;
+let mockDownloadGate: Promise<void> | undefined;
 const mockProcessFileForUpload = jest.fn(
   async (_file: File, _quality?: number, _onProgress?: (progress: number) => void) => _file,
 );
@@ -93,14 +112,24 @@ jest.mock('@librechat/client', () => ({
 
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
-  useSetRecoilState: jest.fn(() => jest.fn()),
-  useRecoilValue: jest.fn(() => mockIsTemporary),
+  useRecoilCallback: jest.fn((callback) =>
+    callback({ set: (atom, update) => mockSetEphemeralAgent(update, atom.key) }),
+  ),
+  useSetRecoilState: jest.fn(
+    (atom: { key: string }) =>
+      (update: (previous: typeof mockEphemeralAgent) => typeof mockEphemeralAgent) => {
+        mockSetEphemeralAgent(update, atom.key);
+      },
+  ),
+}));
+
+jest.mock('~/Providers/ChatSettingsContext', () => ({
+  useChatSettings: () => ({ isTemporary: mockIsTemporary }),
 }));
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: { isTemporary: { key: 'isTemporary' } },
-  ephemeralAgentByConvoId: jest.fn(() => ({ key: 'mock' })),
+  ephemeralAgentByConvoId: jest.fn((key: string) => ({ key })),
 }));
 
 jest.mock('@tanstack/react-query', () => ({
@@ -114,10 +143,13 @@ jest.mock('~/data-provider', () => ({
   useGetFileConfig: jest.fn(() => ({ data: mockFileConfig })),
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsConfig })),
   useGetAgentByIdQuery: jest.fn(() => ({ data: mockAgentQueryData })),
-  useUploadFileMutation: jest.fn((opts: MockUploadMutationOptions) => {
-    mockUploadOptions = opts;
-    return { mutate: mockMutate };
-  }),
+  useUploadFileMutation: jest.fn(
+    (opts: MockUploadMutationOptions, signal: typeof mockUploadSignal) => {
+      mockUploadOptions = opts;
+      mockUploadSignal = signal;
+      return { mutate: mockMutate };
+    },
+  ),
 }));
 
 jest.mock('~/hooks/useLocalize', () => {
@@ -128,6 +160,23 @@ jest.mock('~/hooks/useLocalize', () => {
   return { __esModule: true, default: fn, TranslationKeys: {} };
 });
 
+jest.mock('../useSharePointDownload', () => ({
+  __esModule: true,
+  default: (options: { onFilesDownloaded?: (files: File[]) => void | Promise<void> }) => ({
+    downloadSharePointFiles: async () => {
+      await mockDownloadGate;
+      if (mockDownloadError) {
+        throw mockDownloadError;
+      }
+      await options.onFilesDownloaded?.(mockDownloadedFiles);
+      return mockDownloadedFiles;
+    },
+    isDownloading: false,
+    downloadProgress: null,
+    error: null,
+  }),
+}));
+
 jest.mock('../useDelayedUploadToast', () => ({
   useDelayedUploadToast: jest.fn(() => ({
     startUploadTimer: jest.fn(),
@@ -135,9 +184,12 @@ jest.mock('../useDelayedUploadToast', () => ({
   })),
 }));
 
-jest.mock('~/utils/heicConverter', () => ({
-  processFileForUpload: mockProcessFileForUpload,
-}));
+jest.mock('~/utils/heicConverter', () => {
+  if (mockHeicModuleError) {
+    throw mockHeicModuleError;
+  }
+  return { processFileForUpload: mockProcessFileForUpload };
+});
 
 jest.mock('../useClientResize', () => ({
   __esModule: true,
@@ -176,6 +228,9 @@ jest.mock('~/utils', () => {
     cachePreview: jest.fn(),
     getCachedPreview: jest.fn(() => undefined),
     removePreviewEntry: jest.fn(),
+    retainFileDeletion: jest.fn(),
+    loadPendingDiscardIds: jest.fn(() => []),
+    storePendingDiscardIds: jest.fn(),
   };
 });
 
@@ -186,8 +241,14 @@ const mockValidateFileLimit = jest.requireMock('~/utils').validateFileLimit;
 const mockValidateFileDuplicates = jest.requireMock('~/utils').validateFileDuplicates;
 
 describe('useFileHandling', () => {
+  afterEach(() => {
+    mockHeicModuleError = undefined;
+    delete window.__lcRecoverStaleAssets;
+    delete window.__lcStaleAssetRecoveryPending;
+  });
   beforeEach(() => {
     jest.clearAllMocks();
+    localStorage.clear();
     mockValidateFiles.mockImplementation(() => true);
     mockPartitionUploads.mockImplementation(jest.requireActual('~/utils/files').partitionUploads);
     mockValidateFileSizes.mockImplementation(jest.requireActual('~/utils/files').validateFileSizes);
@@ -207,9 +268,31 @@ describe('useFileHandling', () => {
     mockIsTemporary = false;
     mockImageDecodes = true;
     mockUploadOptions = {};
+    mockEphemeralAgent = {};
+    mockDownloadedFiles = [];
+    mockDownloadError = undefined;
+    mockDownloadGate = undefined;
+    clearFileSearchChoices();
   });
 
   const loadHook = async () => (await import('../useFileHandling')).default;
+
+  it('requests recovery for the caught HEIC helper import failure without starting an upload', async () => {
+    mockHeicModuleError = new TypeError(
+      'Failed to fetch dynamically imported module: /assets/heicConverter-old.js',
+    );
+    const recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const useFileHandling = await loadHook();
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () => {
+      await result.current.handleFiles([new File(['heic'], 'photo.heic', { type: 'image/heic' })]);
+    });
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockDeleteFileById).toHaveBeenCalledTimes(1);
+  });
 
   it('removes rejected provider audio and localizes the upload error before retry', async () => {
     const consoleLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -233,7 +316,7 @@ describe('useFileHandling', () => {
         body,
       ),
     );
-    expect(mockDeleteFileById).toHaveBeenCalledWith(fileId);
+    expect(mockDeleteFileById).toHaveBeenCalledWith(fileId, expect.any(Function));
     await waitFor(() =>
       expect(mockLocalize).toHaveBeenCalledWith('com_error_files_provider_audio_format'),
     );
@@ -243,6 +326,210 @@ describe('useFileHandling', () => {
     });
     expect(mockMutate).toHaveBeenCalledTimes(2);
     consoleLog.mockRestore();
+  });
+
+  it('stages exact pasted text synchronously while config is pending and cancels without uploading', async () => {
+    mockIsConfigPending = true;
+    let release!: () => void;
+    mockWaitForConfig.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onAbort = jest.fn();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.handleFiles(
+        [new File(['exact paste'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'queued-paste', pastedText: 'exact paste', onAbort },
+      );
+    });
+    expect(mockAddFile).toHaveBeenCalledWith(
+      expect.objectContaining({ file_id: 'queued-paste', pastedText: 'exact paste', progress: 0 }),
+      expect.any(Function),
+    );
+    act(() => cancelUploads(['queued-paste']));
+    expect(onAbort).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      release();
+      expect(await pending).toBe(false);
+    });
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it('aborts only the selected request even when another hook owns the tray', async () => {
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () => {
+      await result.current.handleFiles([new File(['a'], 'first.txt', { type: 'text/plain' })]);
+      await result.current.handleFiles([new File(['b'], 'second.txt', { type: 'text/plain' })]);
+    });
+    const first = mockMutate.mock.calls[0][0] as FormData;
+    const second = mockMutate.mock.calls[1][0] as FormData;
+    expect(typeof mockUploadSignal).toBe('function');
+    if (typeof mockUploadSignal !== 'function')
+      throw new Error('Missing per-request signal resolver');
+    const firstSignal = mockUploadSignal(first);
+    const secondSignal = mockUploadSignal(second);
+    expect(firstSignal?.aborted).toBe(false);
+    expect(secondSignal?.aborted).toBe(false);
+    act(() => cancelUploads([first.get('file_id') as string]));
+    expect(firstSignal?.aborted).toBe(true);
+    expect(mockUploadSignal(first)).toBe(firstSignal);
+    expect(secondSignal?.aborted).toBe(false);
+  });
+
+  it('keeps reconciliation identity after a real transport abort with no success response', async () => {
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onError = jest.fn();
+    await act(async () =>
+      result.current.handleFiles(
+        [new File(['paste'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'aborted-paste', pastedText: 'paste', onError },
+      ),
+    );
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => cancelUploads(['aborted-paste']));
+    act(() => mockUploadOptions.onError?.({ code: 'ERR_CANCELED' }, body));
+    expect(onError).not.toHaveBeenCalled();
+    expect(jest.requireMock('~/utils').storePendingDiscardIds).toHaveBeenCalledTimes(1);
+    expect(jest.requireMock('~/utils').storePendingDiscardIds).toHaveBeenCalledWith(0, [
+      'aborted-paste',
+    ]);
+  });
+
+  it('keeps an edited source local when its original request fails', async () => {
+    const {
+      default: useFileHandling,
+      retainPasteUpload,
+      clearUploadRecovery,
+      hasInFlightUpload,
+    } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onError = jest.fn();
+    const onRecoveryTransferred = jest.fn();
+    await act(async () =>
+      result.current.handleFiles(
+        [new File(['original'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'edited-source', pastedText: 'original', onError, onRecoveryTransferred },
+      ),
+    );
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => {
+      retainPasteUpload(['edited-source']);
+      retainPasteUpload(['edited-source']);
+      mockUploadOptions.onError?.(new Error('source request failed'), body);
+    });
+    expect(onRecoveryTransferred).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(mockDeleteFileById).not.toHaveBeenCalled();
+    expect(hasInFlightUpload('edited-source')).toBe(false);
+    act(() => clearUploadRecovery('edited-source'));
+    expect(mockDeleteFileById).toHaveBeenCalledWith('edited-source', expect.any(Function));
+  });
+
+  it('keeps a source fallback when validation rejects it after editing began', async () => {
+    mockIsConfigPending = true;
+    let release!: () => void;
+    mockWaitForConfig.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const {
+      default: useFileHandling,
+      retainPasteUpload,
+      clearUploadRecovery,
+      hasInFlightUpload,
+    } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onRecoveryTransferred = jest.fn();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.handleFiles(
+        [new File(['original'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'queued-source', pastedText: 'original', onRecoveryTransferred },
+      );
+      retainPasteUpload(['queued-source']);
+    });
+    mockValidateFiles.mockReturnValueOnce(false);
+    await act(async () => {
+      release();
+      expect(await pending).toBe(false);
+    });
+    expect(onRecoveryTransferred).toHaveBeenCalledTimes(1);
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockDeleteFileById).not.toHaveBeenCalled();
+    expect(hasInFlightUpload('queued-source')).toBe(false);
+    act(() => clearUploadRecovery('queued-source'));
+    expect(mockDeleteFileById).toHaveBeenCalledWith('queued-source', expect.any(Function));
+  });
+
+  it('does not retain a failed source in a composer that no longer owns it', async () => {
+    let isCurrent = true;
+    const {
+      default: useFileHandling,
+      retainPasteUpload,
+      clearUploadRecovery,
+    } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () =>
+      result.current.handleFiles(
+        [new File(['original'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'stale-source', pastedText: 'original', isCurrent: () => isCurrent },
+      ),
+    );
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => {
+      retainPasteUpload(['stale-source']);
+      isCurrent = false;
+      mockUploadOptions.onError?.(new Error('source request failed'), body);
+    });
+    expect(mockDeleteFileById).toHaveBeenCalledWith('stale-source', expect.any(Function));
+    act(() => clearUploadRecovery('stale-source'));
+  });
+
+  it('retains a late successful response for cleanup after its paste was sent inline', async () => {
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () => {
+      await result.current.handleFiles(
+        [new File(['paste'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'late-paste', pastedText: 'paste' },
+      );
+    });
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => cancelUploads(['late-paste']));
+    expect(jest.requireMock('~/utils').storePendingDiscardIds).toHaveBeenCalledWith(0, [
+      'late-paste',
+    ]);
+    act(() =>
+      mockUploadOptions.onSuccess?.(
+        {
+          temp_file_id: 'late-paste',
+          file_id: 'orphan',
+          filepath: '/uploads/orphan.txt',
+          type: 'text/plain',
+          filename: 'pasted-text.txt',
+          source: 'local',
+          embedded: false,
+        },
+        body,
+      ),
+    );
+    expect(jest.requireMock('~/utils').retainFileDeletion).toHaveBeenCalledWith(
+      expect.objectContaining({ file_id: 'orphan', filepath: '/uploads/orphan.txt' }),
+    );
+    expect(mockUpdateFileById).not.toHaveBeenCalled();
   });
 
   describe('endpointOverride', () => {
@@ -421,7 +708,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'File size limit exceeded: 5 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -459,7 +746,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'com_error_files_skipped_size',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -533,6 +820,44 @@ describe('useFileHandling', () => {
       }
     });
 
+    it('keeps the toast that lists several errors open until it is dismissed', async () => {
+      jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+      try {
+        mockFileConfig = mergeFileConfig({
+          endpoints: { default: { fileSizeLimit: 20, totalSizeLimit: 500 } },
+        });
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+
+        await act(async () => {
+          await result.current.handleFiles([
+            makeSizedFile('report.txt', 'text/plain', 1 * megabyte),
+          ]);
+          await Promise.resolve();
+        });
+        /** A duplicate and an oversized file are both skipped, so the batch reports two errors. */
+        await act(async () => {
+          await result.current.handleFiles([
+            makeSizedFile('report.txt', 'text/plain', 1 * megabyte),
+            makeSizedFile('huge.txt', 'text/plain', 21 * megabyte),
+            makeSizedFile('notes.txt', 'text/plain', 2 * megabyte),
+          ]);
+          await Promise.resolve();
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(250);
+        });
+
+        expect(mockShowToast).toHaveBeenCalledWith({
+          message: 'com_error_files_skipped_dupe\n• com_error_files_skipped_size\n',
+          status: 'error',
+          duration: Infinity,
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('does not announce skipped files when the batch is rejected anyway', async () => {
       jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
       try {
@@ -572,7 +897,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -684,7 +1009,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -725,11 +1050,55 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
       }
+    });
+
+    it.each([
+      { fileLimit: 1, totalSizeLimit: 500 },
+      { fileLimit: 10, totalSizeLimit: 7 },
+    ])('counts an existing pending upload against a fresh paste: %j', async (limits) => {
+      mockFileConfig = mergeFileConfig({ endpoints: { default: limits } });
+      const ordinary = makeSizedFile('ordinary.txt', 'text/plain', 4 * megabyte);
+      const paste = makeSizedFile('pasted-text.txt', 'text/plain', 4 * megabyte);
+      const sharedState = {
+        files: new Map([
+          [
+            'ordinary-upload',
+            {
+              file_id: 'ordinary-upload',
+              file: ordinary,
+              filename: ordinary.name,
+              type: ordinary.type,
+              size: ordinary.size,
+              progress: 0.2,
+            },
+          ],
+        ]),
+        setFiles: jest.fn(),
+        setFilesLoading: mockSetFilesLoading,
+      };
+      const { useFileHandlingNoChatContext } = await import('../useFileHandling');
+      const { result } = renderHook(() => useFileHandlingNoChatContext(undefined, sharedState));
+      let accepted: boolean | undefined;
+      await act(async () => {
+        accepted = await result.current.handleFiles([paste], EToolResources.context, {
+          fileId: 'fresh-paste',
+          pastedText: 'exact text',
+        });
+      });
+      expect(accepted).toBe(false);
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(mockPartitionUploads).toHaveBeenCalledWith(
+        expect.objectContaining({
+          files: new Map([
+            ['ordinary-upload', expect.objectContaining({ file_id: 'ordinary-upload' })],
+          ]),
+        }),
+      );
     });
 
     it('validates a replacement without counting the source attachment', async () => {
@@ -835,7 +1204,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'com_error_files_dupe',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -929,7 +1298,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -964,7 +1333,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -1486,6 +1855,482 @@ describe('useFileHandling', () => {
     });
   });
 
+  describe('explicit File Search activation', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => {
+      act(() => jest.runOnlyPendingTimers());
+      jest.useRealTimers();
+      mockAddFile.mockReset();
+      mockReplaceFile.mockReset();
+      mockDeleteFileById.mockReset();
+    });
+
+    const document = () => new File(['hello'], 'search.txt', { type: 'text/plain' });
+    const succeed = (body: FormData) => {
+      mockUploadOptions.onSuccess?.(
+        {
+          temp_file_id: body.get('file_id') as string,
+          file_id: 'persisted-search-file',
+          filepath: '/files/search.txt',
+          type: 'text/plain',
+          filename: 'search.txt',
+          source: 'local',
+          embedded: true,
+        },
+        body,
+      );
+    };
+
+    it.each([false, true])(
+      'cancels a visible staged document through a separate tray instance (preenabled: %s)',
+      async (preenabled) => {
+        mockEphemeralAgent = { file_search: preenabled };
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        mockResizeImageIfNeeded.mockImplementationOnce(async (file: File) => {
+          await gate;
+          return { file, resized: false };
+        });
+        const { useFileHandlingNoChatContext, clearUploadRecovery, hasInFlightUpload } =
+          await import('../useFileHandling');
+        const { result } = renderHook(() => {
+          const [files, setFiles] = React.useState(new Map<string, ExtendedFile>());
+          mockAddFile.mockImplementation((file) =>
+            setFiles((previous) => new Map(previous).set(file.file_id, file)),
+          );
+          mockReplaceFile.mockImplementation((file) =>
+            setFiles((previous) => new Map(previous).set(file.file_id, file)),
+          );
+          mockDeleteFileById.mockImplementation((id) =>
+            setFiles((previous) => {
+              const next = new Map(previous);
+              next.delete(id);
+              return next;
+            }),
+          );
+          const state = { files, setFiles, conversation: null };
+          return {
+            owner: useFileHandlingNoChatContext(undefined, state),
+            tray: useFileHandlingNoChatContext(undefined, state),
+            files,
+          };
+        });
+        let pending: Promise<boolean> = Promise.resolve(false);
+        act(() => {
+          pending = result.current.owner.handleFiles(
+            [document(), new File(['image'], 'surviving.png', { type: 'image/png' })],
+            EToolResources.file_search,
+          );
+        });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        const canceledId = mockAddFile.mock.calls[0][0].file_id;
+        expect(result.current.files.has(canceledId)).toBe(true);
+        expect(hasInFlightUpload(canceledId)).toBe(true);
+        act(() => result.current.tray.abortUpload(canceledId));
+        expect(hasInFlightUpload(canceledId)).toBe(false);
+        expect(result.current.files.has(canceledId)).toBe(false);
+        act(() => clearUploadRecovery(canceledId, true));
+        await act(async () => {
+          release();
+          await pending;
+          jest.runAllTicks();
+        });
+        expect(result.current.files.has(canceledId)).toBe(false);
+        expect(mockMutate.mock.calls.some(([body]) => body.get('file_id') === canceledId)).toBe(
+          false,
+        );
+        expect(mockMutate).toHaveBeenCalledTimes(1);
+        expect(mockEphemeralAgent.file_search).toBe(preenabled);
+        act(() => succeed(mockMutate.mock.calls[0][0]));
+        expect(mockEphemeralAgent.file_search).toBe(true);
+      },
+    );
+
+    it('ignores late canceled responses without deleting a replacement or disabling Code', async () => {
+      mockEphemeralAgent = { execute_code: true };
+      const {
+        default: useFileHandling,
+        clearUploadRecovery,
+        hasInFlightUpload,
+      } = await import('../useFileHandling');
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.execute_code, {
+          fileId: 'reused-upload',
+        });
+      });
+      const oldBody = mockMutate.mock.calls[0][0] as FormData;
+      const oldOptions = mockUploadOptions;
+      act(() => clearUploadRecovery('reused-upload'));
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.file_search, {
+          fileId: 'reused-upload',
+        });
+      });
+      const deletes = mockDeleteFileById.mock.calls.length;
+      act(() => {
+        oldOptions.onError?.({ code: 'ERR_CANCELED' }, oldBody);
+        oldOptions.onSuccess?.(
+          {
+            temp_file_id: 'reused-upload',
+            file_id: 'old-server-file',
+            filepath: '',
+            type: 'text/plain',
+            filename: 'old.txt',
+            source: 'local',
+            embedded: true,
+          },
+          oldBody,
+        );
+      });
+      expect(hasInFlightUpload('reused-upload')).toBe(true);
+      expect(mockDeleteFileById).toHaveBeenCalledTimes(deletes);
+      expect(mockEphemeralAgent.execute_code).toBe(true);
+      expect(mockEphemeralAgent.file_search).not.toBe(true);
+      act(() => succeed(mockMutate.mock.calls[1][0]));
+      expect(mockEphemeralAgent.file_search).toBe(true);
+      expect(hasInFlightUpload('reused-upload')).toBe(false);
+    });
+
+    it('releases an assigned ID rejected before staging', async () => {
+      const { default: useFileHandling, hasInFlightUpload } = await import('../useFileHandling');
+      mockValidateFiles.mockReturnValueOnce(false);
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        expect(
+          await result.current.handleFiles([document()], EToolResources.file_search, {
+            fileId: 'rejected-upload',
+          }),
+        ).toBe(false);
+      });
+      expect(hasInFlightUpload('rejected-upload')).toBe(false);
+      expect(mockMutate).not.toHaveBeenCalled();
+    });
+
+    it('does not consume a replacement assigned ID when its canceled queued predecessor finishes', async () => {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      mockIsConfigPending = true;
+      mockWaitForConfig.mockImplementation(() => gate);
+      const { default: useFileHandling, hasInFlightUpload } = await import('../useFileHandling');
+      const { result } = renderHook(() => useFileHandling());
+      let first: Promise<boolean> = Promise.resolve(false);
+      let second: Promise<boolean> = Promise.resolve(false);
+      act(() => {
+        first = result.current.handleFiles([document()], EToolResources.file_search, {
+          fileId: 'queued-replacement',
+        });
+        second = result.current.handleFiles([document()], EToolResources.file_search, {
+          fileId: 'queued-replacement',
+        });
+      });
+      await act(async () => {
+        release();
+        expect(await first).toBe(false);
+        expect(await second).toBe(true);
+      });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      expect(hasInFlightUpload('queued-replacement')).toBe(true);
+      act(() => succeed(mockMutate.mock.calls[0][0]));
+      expect(mockEphemeralAgent.file_search).toBe(true);
+    });
+
+    it.each(['config', 'resize', 'queue'])(
+      'preserves a disable made after initiation but before %s finishes',
+      async (boundary) => {
+        const conversationId = Constants.NEW_CONVO as string;
+        setFileSearchChoice(conversationId, true);
+        mockEphemeralAgent = { file_search: true };
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        if (boundary !== 'resize') {
+          mockIsConfigPending = true;
+          mockWaitForConfig.mockImplementation(() => gate);
+        } else {
+          mockImageDecodes = false;
+          mockResizeImageIfNeeded.mockImplementationOnce(async (file: File) => {
+            await gate;
+            return { file, resized: false };
+          });
+        }
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        let first: Promise<boolean> | undefined;
+        let pending: Promise<boolean> = Promise.resolve(false);
+        act(() => {
+          if (boundary === 'queue') {
+            first = result.current.handleFiles([
+              new File(['one'], 'first.txt', { type: 'text/plain' }),
+            ]);
+          }
+          pending = result.current.handleFiles(
+            boundary === 'resize'
+              ? [document(), new File(['image'], 'companion.png', { type: 'image/png' })]
+              : [document()],
+            EToolResources.file_search,
+          );
+        });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockMutate).not.toHaveBeenCalled();
+        setFileSearchChoice(conversationId, false);
+        mockEphemeralAgent = { file_search: false };
+        await act(async () => {
+          release();
+          await first;
+          await pending;
+          jest.runAllTicks();
+        });
+        const body = mockMutate.mock.calls.find(
+          ([form]) => form.get('tool_resource') === EToolResources.file_search,
+        )?.[0] as FormData;
+        expect(body).toBeDefined();
+        act(() => succeed(body));
+        expect(mockEphemeralAgent.file_search).toBe(false);
+        if (boundary === 'resize') expect(mockDeleteFileById).toHaveBeenCalled();
+      },
+    );
+
+    it.each(['context', 'no-context'])(
+      'captures ordering before the SharePoint download await (%s)',
+      async (variant) => {
+        const conversationId = Constants.NEW_CONVO as string;
+        setFileSearchChoice(conversationId, true);
+        mockEphemeralAgent = { file_search: true };
+        mockDownloadedFiles = [document()];
+        let release: () => void = () => undefined;
+        mockDownloadGate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const sharePoint = await import('../useSharePointFileHandling');
+        const props = { toolResource: EToolResources.file_search };
+        const state = { files: new Map(), setFiles: jest.fn(), conversation: null };
+        const useSharePoint =
+          variant === 'context'
+            ? () => sharePoint.default(props)
+            : () => sharePoint.useSharePointFileHandlingNoChatContext(props, state);
+        const { result } = renderHook(() => useSharePoint());
+        let pending: Promise<void> = Promise.resolve();
+        act(() => {
+          pending = result.current.handleSharePointFiles([]);
+        });
+        expect(mockMutate).not.toHaveBeenCalled();
+        setFileSearchChoice(conversationId, false);
+        mockEphemeralAgent = { file_search: false };
+        await act(async () => {
+          release();
+          await pending;
+        });
+        expect(mockMutate).toHaveBeenCalledTimes(1);
+        act(() => succeed(mockMutate.mock.calls[0][0]));
+        expect(mockEphemeralAgent.file_search).toBe(false);
+      },
+    );
+
+    it('activates after persistence and before the attachment is submit-ready', async () => {
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+      const onSuccess = jest.fn(() => expect(mockEphemeralAgent.file_search).toBe(true));
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.file_search, { onSuccess });
+      });
+      expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+      act(() => succeed(mockMutate.mock.calls[0][0]));
+      expect(mockEphemeralAgent.file_search).toBe(true);
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+      expect(mockUpdateFileById).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ progress: 1 }),
+        expect.anything(),
+      );
+    });
+
+    it.each(['empty', 'rejected', 'invalid', 'oversized'])(
+      'does not activate for an %s batch',
+      async (mode) => {
+        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        if (mode === 'rejected') mockValidateFiles.mockReturnValueOnce(false);
+        if (mode === 'invalid') {
+          mockValidateFiles.mockImplementationOnce(() => {
+            throw new Error('invalid config');
+          });
+        }
+        mockFileConfig = mergeFileConfig({ endpoints: { default: { fileSizeLimit: 1 } } });
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        const files =
+          mode === 'empty'
+            ? []
+            : [
+                mode === 'oversized'
+                  ? makeSizedFile('large.txt', 'text/plain', 2 * megabyte)
+                  : document(),
+              ];
+        await act(async () => {
+          expect(await result.current.handleFiles(files, EToolResources.file_search)).toBe(false);
+        });
+        expect(mockMutate).not.toHaveBeenCalled();
+        expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+        error.mockRestore();
+      },
+    );
+
+    it.each([false, true])('preserves preenabled=%s on cancel/error', async (enabled) => {
+      const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      mockEphemeralAgent = { file_search: enabled };
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.file_search);
+      });
+      const body = mockMutate.mock.calls[0][0] as FormData;
+      act(() => result.current.abortUpload(body.get('file_id') as string));
+      act(() => succeed(body));
+      expect(mockEphemeralAgent.file_search).toBe(enabled);
+      expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+      act(() => mockUploadOptions.onError?.(new Error('upload failed'), body));
+      expect(mockEphemeralAgent.file_search).toBe(enabled);
+      log.mockRestore();
+    });
+
+    it('does not activate on upload failure without cancellation', async () => {
+      const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.file_search);
+      });
+      act(() => {
+        mockUploadOptions.onError?.(new Error('upload failed'), mockMutate.mock.calls[0][0]);
+      });
+      expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+      log.mockRestore();
+    });
+
+    it('activates when a surviving file in a partially rejected batch succeeds', async () => {
+      mockFileConfig = mergeFileConfig({ endpoints: { default: { fileSizeLimit: 1 } } });
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        expect(
+          await result.current.handleFiles(
+            [document(), makeSizedFile('large.txt', 'text/plain', 2 * megabyte)],
+            EToolResources.file_search,
+          ),
+        ).toBe(true);
+      });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+      act(() => succeed(mockMutate.mock.calls[0][0]));
+      expect(mockEphemeralAgent.file_search).toBe(true);
+    });
+
+    it('retains only activation when New Chat keeps the upload as a draft', async () => {
+      const { clearUploadRecovery } = await import('../useFileHandling');
+      const onSuccess = jest.fn();
+      const onAbort = jest.fn();
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.file_search, {
+          onSuccess,
+          onAbort,
+        });
+      });
+      const body = mockMutate.mock.calls[0][0] as FormData;
+      act(() => clearUploadRecovery(body.get('file_id') as string, true));
+      expect(onAbort).toHaveBeenCalledTimes(1);
+      act(() => succeed(body));
+      expect(mockEphemeralAgent.file_search).toBe(true);
+      expect(onSuccess).not.toHaveBeenCalled();
+    });
+
+    it('activates only the originating conversation after navigation', async () => {
+      mockConversation = { conversationId: 'origin', endpoint: 'openAI' };
+      const useFileHandling = await loadHook();
+      const { result, rerender } = renderHook(() => useFileHandling());
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.file_search);
+      });
+      mockConversation = { conversationId: 'destination', endpoint: 'openAI' };
+      rerender();
+      act(() => succeed(mockMutate.mock.calls[0][0]));
+      expect(mockSetEphemeralAgent).toHaveBeenCalledWith(expect.any(Function), 'origin');
+      expect(mockSetEphemeralAgent).not.toHaveBeenCalledWith(expect.anything(), 'destination');
+    });
+
+    it.each([undefined, EToolResources.context])(
+      'leaves implicit/context uploads unchanged (%s)',
+      async (resource) => {
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        await act(async () => {
+          await result.current.handleFiles([document()], resource);
+        });
+        act(() => succeed(mockMutate.mock.calls[0][0]));
+        expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not change saved-agent tool configuration', async () => {
+      mockConversation = { agent_id: 'agent_saved', endpoint: 'agents' };
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        await result.current.handleFiles([document()], EToolResources.file_search);
+      });
+      act(() => succeed(mockMutate.mock.calls[0][0]));
+      expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+    });
+
+    it.each(['empty', 'rejected', 'success', 'download failure'])(
+      'uses the same persistence boundary for SharePoint (%s)',
+      async (mode) => {
+        const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        mockDownloadedFiles = mode === 'empty' ? [] : [document()];
+        if (mode === 'rejected') mockValidateFiles.mockReturnValueOnce(false);
+        if (mode === 'download failure') mockDownloadError = new Error('download failed');
+        const { useSharePointFileHandlingNoChatContext } = await import(
+          '../useSharePointFileHandling'
+        );
+        const { result } = renderHook(() =>
+          useSharePointFileHandlingNoChatContext(
+            { toolResource: EToolResources.file_search },
+            { files: new Map(), setFiles: jest.fn(), conversation: null },
+          ),
+        );
+        await act(async () => {
+          const promise = result.current.handleSharePointFiles([]);
+          if (mode === 'download failure') {
+            await expect(promise).rejects.toThrow('download failed');
+          } else {
+            await promise;
+          }
+        });
+        expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+        if (mode === 'success') {
+          expect(mockMutate).toHaveBeenCalledTimes(1);
+          act(() => succeed(mockMutate.mock.calls[0][0]));
+          expect(mockEphemeralAgent.file_search).toBe(true);
+        } else {
+          expect(mockMutate).not.toHaveBeenCalled();
+        }
+        log.mockRestore();
+      },
+    );
+  });
+
   /** Callers gate success messaging on this result, so a rejected upload must not report true */
   describe('acceptance result', () => {
     it('resolves false when validation rejects the files', async () => {
@@ -1757,6 +2602,112 @@ describe('useFileHandling', () => {
       consoleLog.mockRestore();
     });
   });
+  it('finishes a persisted replacement after its success callback consumes the source', async () => {
+    jest.useFakeTimers();
+    try {
+      let eligible = true;
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+      await act(async () => {
+        await result.current.handleFiles(
+          [new File(['text'], 'replacement.txt', { type: 'text/plain' })],
+          undefined,
+          {
+            shouldCommit: () => eligible,
+            onSuccess: () => {
+              eligible = false;
+            },
+          },
+        );
+      });
+      const body = mockMutate.mock.calls[0][0] as FormData;
+      act(() => {
+        mockUploadOptions.onSuccess?.(
+          {
+            temp_file_id: body.get('file_id') as string,
+            file_id: 'saved',
+            filepath: '/files/saved',
+            type: 'text/plain',
+            filename: 'replacement.txt',
+            source: 'local',
+            embedded: false,
+          },
+          body,
+        );
+        jest.runAllTimers();
+      });
+      expect(eligible).toBe(false);
+      expect(mockUpdateFileById).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({ progress: 1 }),
+        false,
+        expect.any(Function),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('rechecks upload ownership when queued file-map updaters execute', () => {
+    const useUpdateFiles = jest.requireActual('../useUpdateFiles').default;
+    const updates: React.SetStateAction<Map<string, ExtendedFile>>[] = [];
+    const setFiles = (update: React.SetStateAction<Map<string, ExtendedFile>>) =>
+      updates.push(update);
+    const { result } = renderHook(() => useUpdateFiles(setFiles));
+    let ownsComposer = true;
+    const isCurrent = () => ownsComposer;
+    const file = { file_id: 'existing', progress: 0.2, size: 1 } as ExtendedFile;
+    act(() => {
+      result.current.addFile(file, isCurrent);
+      result.current.replaceFile(file, isCurrent);
+      result.current.updateFileById(file.file_id, { progress: 1 }, false, isCurrent);
+      result.current.deleteFileById(file.file_id, isCurrent);
+    });
+    ownsComposer = false;
+    const destination = new Map([[file.file_id, file]]);
+    for (const update of updates) {
+      expect(typeof update === 'function' ? update(destination) : update).toBe(destination);
+    }
+  });
+
+  it('rechecks the upload entry identity when deferred disposal executes', () => {
+    const useUpdateFiles =
+      jest.requireActual<typeof import('../useUpdateFiles')>('../useUpdateFiles').default;
+    const updates: React.SetStateAction<Map<string, ExtendedFile>>[] = [];
+    const { result } = renderHook(() => useUpdateFiles((update) => updates.push(update)));
+    const original = new File(['old'], 'old.txt', { type: 'text/plain' });
+    const replacement = new File(['fresh'], 'fresh.txt', { type: 'text/plain' });
+    const file = { file_id: 'retired-id', file: original, progress: 0.2, size: 3 };
+    act(() =>
+      result.current.deleteFileById('retired-id', (files) => {
+        const entry = files.get('retired-id');
+        return entry?.file === original && entry.progress < 1;
+      }),
+    );
+    const update = updates[0];
+    expect(typeof update).toBe('function');
+    if (typeof update !== 'function') throw new Error('Expected a deferred update');
+    const retained = { file_id: 'kept', progress: 1, size: 1 };
+    const retired = new Map<string, ExtendedFile>([
+      ['retired-id', file],
+      ['kept', retained],
+    ]);
+    expect(update(retired).has('retired-id')).toBe(false);
+    expect(update(retired).get('kept')).toBe(retained);
+    for (const entry of [
+      { ...file, file: replacement },
+      { ...file, progress: 1 },
+    ]) {
+      const current = new Map<string, ExtendedFile>([
+        ['retired-id', entry],
+        ['kept', retained],
+      ]);
+      expect(update(current)).toBe(current);
+    }
+    const current = new Map([['kept', retained]]);
+    expect(update(current)).toBe(current);
+  });
+
   describe('stalled attachments', () => {
     /**
      * The upload only starts once the browser has decoded the image, so a decode
@@ -1780,7 +2731,7 @@ describe('useFileHandling', () => {
 
       const addedFile = mockAddFile.mock.calls[0][0] as { file_id: string };
       expect(mockMutate).not.toHaveBeenCalled();
-      expect(mockDeleteFileById).toHaveBeenCalledWith(addedFile.file_id);
+      expect(mockDeleteFileById).toHaveBeenCalledWith(addedFile.file_id, expect.any(Function));
     });
 
     it('reports the failure through the upload lifecycle when a decode fails', async () => {

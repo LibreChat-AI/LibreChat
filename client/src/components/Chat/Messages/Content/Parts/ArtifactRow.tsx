@@ -9,9 +9,14 @@ import {
   Presentation,
   Workflow,
 } from 'lucide-react';
+import {
+  ARTIFACT_ROW_NAV_SPACING,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
+  LangIcon,
+  hasLangIcon,
+} from '@librechat/chat/components';
 import type { ArtifactGlyph, ArtifactRowKind } from '~/utils/artifacts';
-import LangIcon, { hasLangIcon } from '~/components/Messages/Content/LangIcon';
-import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -26,15 +31,15 @@ const FALLBACK_GLYPHS: Record<ArtifactGlyph, React.ComponentType<{ className?: s
 };
 
 interface ArtifactRowProps {
-  /** Filename for file-backed artifacts, authored title for markdown ones. */
+  /** Filename for file-backed artifacts, title for Mermaid. */
   title: string;
   kind: ArtifactRowKind;
   /** This artifact is the one the panel is currently showing. */
   isSelected: boolean;
   onOpen: () => void;
   /**
-   * Omitted when no real file backs the artifact (model-authored
-   * content). Takes the event because `useAttachmentLink`'s handler
+   * Omitted when no real file backs the artifact.
+   * Takes the event because `useAttachmentLink`'s handler
    * needs it to suppress the anchor default.
    */
   onDownload?: (event: React.MouseEvent<HTMLButtonElement>) => void;
@@ -43,9 +48,7 @@ interface ArtifactRowProps {
 }
 
 /**
- * The single chat-side trigger for every artifact: code-execution output,
- * a model-authored `:::artifact` block, and a mermaid diagram all render
- * through here.
+ * The chat-side trigger for code-execution output and Mermaid artifacts.
  *
  * It is a tool row, not a card. Artifacts arrive interleaved with the
  * rows that produced them, and the previous three-card-variant chip
@@ -79,18 +82,18 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
   }
 
   return (
-    <div className={cn(TOOL_ROW_CLASSES, 'text-sm text-text-secondary')}>
+    <div className={cn(TOOL_ROW_CLASSES, 'text-text-secondary text-sm', ARTIFACT_ROW_NAV_SPACING)}>
       <Button
         ref={ref}
         type="button"
-        variant="ghost"
+        variant="disclosure"
         aria-controls="artifact-viewer"
         aria-expanded={isSelected}
         data-artifact-trigger={artifactId}
         onClick={onOpen}
         className={cn(
-          'inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2.5 rounded-none p-0',
-          'hover:bg-transparent hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
+          'min-w-0 flex-1 gap-2.5',
+          'hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
           isSelected && 'text-text-primary',
         )}
       >
@@ -107,7 +110,7 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
             the streaming cursor and a call header can trade places without
             moving what is under them, and a taller child here would push
             past that box. */}
-        <span className="shrink-0 rounded px-1.5 text-[10px] font-medium uppercase leading-5 tracking-wide text-text-tertiary ring-1 ring-inset ring-border-light">
+        <span className="text-text-tertiary ring-border-light text-3xs shrink-0 rounded px-1.5 leading-5 font-medium tracking-wide uppercase ring-1 ring-inset">
           {label}
         </span>
         {/* The glyph's tint is the visual half of the preview/source split
@@ -124,11 +127,11 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
       {onDownload != null && (
         <Button
           type="button"
-          variant="ghost"
+          variant="quiet"
           size="icon"
           onClick={onDownload}
           aria-label={`${localize('com_ui_download')} ${title}`}
-          className="size-5 shrink-0 rounded text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0"
+          className="size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>

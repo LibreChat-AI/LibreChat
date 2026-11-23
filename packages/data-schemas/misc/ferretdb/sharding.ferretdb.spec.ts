@@ -111,8 +111,7 @@ class TenantRouter {
   }
 
   /** Convenience: get a single model for an org */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async getModel(orgId: string, modelName: string): Promise<Model<any>> {
+  async getModel(orgId: string, modelName: string): Promise<Model<unknown>> {
     const models = await this.getOrgModels(orgId);
     const model = models[modelName];
     if (!model) {
@@ -441,10 +440,9 @@ describeIfFerretDB('Sharding PoC', () => {
 
   describe('simulated Express middleware pattern', () => {
     it('demonstrates the request-scoped getModel pattern', async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fakeReq = { orgId: 'org_1' } as {
         orgId: string;
-        getModel?: (name: string) => Promise<Model<any>>;
+        getModel?: (name: string) => Promise<Model<unknown>>;
       };
 
       fakeReq.getModel = (modelName: string) => router.getModel(fakeReq.orgId, modelName);

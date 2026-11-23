@@ -1,4 +1,6 @@
 import { LocalStorageKeys } from 'librechat-data-provider';
+import { FILE_SEARCH_UPLOAD_PREFIX } from './localStorage';
+import { FILE_SEARCH_CHOICE_PREFIX } from './choices';
 
 /** Suffix for timestamp entries */
 const TIMESTAMP_SUFFIX = '_TIMESTAMP';
@@ -23,16 +25,18 @@ const TIMESTAMPED_KEYS = [
 /**
  * Set only a timestamp for a key (when the value is handled elsewhere)
  */
+export function isTimestampExpired(timestamp: number): boolean {
+  return Date.now() - timestamp > CLEANUP_THRESHOLD;
+}
+
 export function setTimestamp(key: string): void {
   localStorage.setItem(`${key}${TIMESTAMP_SUFFIX}`, Date.now().toString());
 }
 
-/**
- * Set a value in localStorage with an associated timestamp
- */
-export function setTimestampedValue(key: string, value: any): void {
-  localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
-  localStorage.setItem(`${key}${TIMESTAMP_SUFFIX}`, Date.now().toString());
+export function getTimestamp(key: string): number | null {
+  const raw = localStorage.getItem(`${key}${TIMESTAMP_SUFFIX}`);
+  const timestamp = raw == null ? NaN : Number(raw);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 /**
@@ -60,14 +64,6 @@ export function getTimestampedValue(key: string): string | null {
 }
 
 /**
- * Remove a value and its timestamp from localStorage
- */
-export function removeTimestampedValue(key: string): void {
-  localStorage.removeItem(key);
-  localStorage.removeItem(`${key}${TIMESTAMP_SUFFIX}`);
-}
-
-/**
  * Clean up old localStorage entries based on timestamps
  * This should be called on app startup
  */
@@ -81,6 +77,24 @@ export function cleanupTimestampedStorage(): void {
       const key = localStorage.key(i);
       if (!key) continue;
       if (key === LocalStorageKeys.PIN_MCP_) {
+        continue;
+      }
+      if (key.startsWith(FILE_SEARCH_UPLOAD_PREFIX)) {
+        try {
+          const intent = JSON.parse(localStorage.getItem(key) ?? 'null') as {
+            createdAt?: number;
+          } | null;
+          if (
+            !intent ||
+            typeof intent.createdAt !== 'number' ||
+            !Number.isFinite(intent.createdAt) ||
+            isTimestampExpired(intent.createdAt)
+          ) {
+            keysToRemove.push(key);
+          }
+        } catch {
+          keysToRemove.push(key);
+        }
         continue;
       }
 
@@ -108,33 +122,17 @@ export function cleanupTimestampedStorage(): void {
       }
     }
 
-    keysToRemove.forEach((key) => localStorage.removeItem(key));
+    keysToRemove.forEach((key) => {
+      localStorage.removeItem(key);
+      if (
+        key.startsWith(LocalStorageKeys.LAST_FILE_SEARCH_TOGGLE_) &&
+        !key.endsWith(TIMESTAMP_SUFFIX)
+      ) {
+        const conversationId = key.slice(LocalStorageKeys.LAST_FILE_SEARCH_TOGGLE_.length);
+        localStorage.removeItem(`${FILE_SEARCH_CHOICE_PREFIX}${conversationId}`);
+      }
+    });
   } catch (error) {
     console.error('Error during cleanup of timestamped storage:', error);
-  }
-}
-
-/**
- * Migration function to add timestamps to existing entries
- * This ensures existing entries don't get immediately cleaned up
- */
-export function migrateExistingEntries(): void {
-  const now = Date.now().toString();
-
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (!key) continue;
-
-    const isTimestampedKey = TIMESTAMPED_KEYS.some((prefix) => key.startsWith(prefix));
-
-    if (isTimestampedKey && !key.endsWith(TIMESTAMP_SUFFIX)) {
-      const timestampKey = `${key}${TIMESTAMP_SUFFIX}`;
-      const hasTimestamp = localStorage.getItem(timestampKey);
-
-      if (!hasTimestamp) {
-        // Add timestamp to existing entry
-        localStorage.setItem(timestampKey, now);
-      }
-    }
   }
 }

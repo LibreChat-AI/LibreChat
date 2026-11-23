@@ -6,8 +6,10 @@ const {
   createSubagentCompletionWakeupResolver,
   SUBAGENT_COMPLETION_SOURCE,
   createBackgroundToolCompletionWakeupResolver,
+  createBackgroundToolDeadClaimRecovery,
   BACKGROUND_TOOL_COMPLETION_SOURCE,
   createAgentQueuedTurnLifecycle,
+  completePromotedSteerHandoff,
   AGENT_QUEUED_TURN_SOURCE,
   GenerationJobManager,
 } = require('@librechat/api');
@@ -24,12 +26,30 @@ const getGenerationAdmissionEvidence = (userId, clientRequestId, streamId, conve
 const subagentCompletionAdapter = createSubagentCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
 const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   getResultBatchSize: () => service.getBackgroundCompletionResultBatchSize(),
+  getGenerationAdmissionEvidence,
+  recoverDeadClaim: createBackgroundToolDeadClaimRecovery(
+    (...args) => service.retire(...args),
+    methods.releaseBackgroundToolResultClaims,
+    (conversationId) => GenerationJobManager.getJob(conversationId),
+    ({ userId, conversationId, claimId }) =>
+      GenerationJobManager.fenceGenerationClaimForRecovery(
+        userId,
+        claimId,
+        conversationId,
+        conversationId,
+      ),
+    methods.releaseAgentBackgroundToolResultClaims,
+    methods,
+    getGenerationAdmissionEvidence,
+  ),
   getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
 const eventActorAdapter = createAgentEventContinueResolver({
@@ -40,6 +60,8 @@ let service;
 const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  completeSteerHandoff: (handoff) =>
+    completePromotedSteerHandoff(GenerationJobManager.steering, handoff),
   getGenerationAdmissionEvidence,
   enqueue: (...args) => service.enqueue(...args),
   retireDelivery: (...args) => service.retire(...args),
@@ -47,6 +69,7 @@ const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
 });
 
 service = createAgentTriggerService({
+  sourceDispatchers: require('../Responses').backgroundResponseSourceDispatchers,
   methods,
   reclaimCheckpointDeletions: createCheckpointDeletionReclaimer((userId, tenantId) =>
     GenerationJobManager.getAccountCleanupJobIdsForUser(userId, tenantId),
@@ -82,6 +105,7 @@ const purgeAgentTriggerDeliveriesForUser = async (userId) => {
 };
 
 module.exports = {
+  isAgentTriggerServiceReady: service.isReady,
   initializeAgentTriggerService,
   stopAgentTriggerService,
   dispatchAgentTrigger: service.dispatch,
@@ -95,6 +119,7 @@ module.exports = {
   persistAgentBackgroundToolResult: service.persistBackgroundToolResult,
   expediteCompletionWakeups: service.expediteCompletionWakeups,
   getAgentBackgroundToolResultClaim: service.getBackgroundToolResultClaim,
+  getBackgroundCompletionReceiptBatching: service.getBackgroundCompletionReceiptBatching,
   releaseAgentBackgroundToolResultClaims: service.releaseBackgroundToolResultClaims,
   drainAgentTriggerDeliveriesForUser: service.drainUser,
   prepareAgentTriggerUserPurge: service.prepareUserPurge,

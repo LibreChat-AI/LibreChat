@@ -1,8 +1,12 @@
 import type { IConversation } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
+import {
+  createSubagentControlHandler,
+  createSubagentControlReceiptHandler,
+  isValidSubagentControlRequest,
+} from './control';
 import { controlFingerprint, SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
-import { createSubagentControlHandler, isValidSubagentControlRequest } from './control';
 
 const parentConversationId = 'parent-conversation';
 const threadId = 'child-thread';
@@ -573,5 +577,68 @@ describe('subagent control handler', () => {
 
     expect(deps.getConvoOwnership).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(400);
+  });
+});
+
+describe('parent-authorized retained control body', () => {
+  const readRequest = () =>
+    ({
+      ...request({}),
+      params: { parentConversationId, threadId, taskId, invocationId: 'invocation-1' },
+    }) as ServerRequest;
+  it('returns the retained body without private replay fields or invoking control', async () => {
+    const deps = dependencies();
+    deps.getSubagentTaskControlReceipt.mockResolvedValue({
+      invocationId: 'invocation-1',
+      fingerprint: 'private',
+      action: 'queue',
+      status: 'accepted',
+      message: '界'.repeat(4096),
+      createdAt: new Date(0),
+      updatedAt: new Date(1),
+    });
+    const res = response();
+    await createSubagentControlReceiptHandler(deps)(readRequest(), res.value);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json.mock.calls[0][0].receipt.message).toBe('界'.repeat(4096));
+    expect(res.json.mock.calls[0][0].receipt).not.toHaveProperty('fingerprint');
+    expect(deps.store.controlTask).not.toHaveBeenCalled();
+  });
+  it.each(['parent', 'child', 'tenant'] as const)(
+    'does not read a body without its authorized %s',
+    async (missing) => {
+      const deps = dependencies();
+      if (missing === 'parent') deps.getConvoOwnership.mockResolvedValue(null);
+      if (missing === 'child') deps.getSubagentThreadForParent.mockResolvedValue(null);
+      if (missing === 'tenant')
+        deps.getSubagentThreadForParent.mockResolvedValue({ ...child, tenantId: 'other' });
+      const res = response();
+      await createSubagentControlReceiptHandler(deps)(readRequest(), res.value);
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(deps.getSubagentTaskControlReceipt).not.toHaveBeenCalled();
+    },
+  );
+  it('requires an active source receipt from the storage boundary', async () => {
+    const deps = dependencies();
+    const res = response();
+    await createSubagentControlReceiptHandler(deps)(readRequest(), res.value);
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(deps.getSubagentTaskControlReceipt).toHaveBeenCalledWith({
+      userId: 'user-1',
+      conversationId: threadId,
+      taskId,
+      invocationId: 'invocation-1',
+      tenantId: 'tenant-1',
+      activeOnly: true,
+    });
+    expect(deps.getMessages).not.toHaveBeenCalled();
+  });
+  it('sanitizes unexpected body storage failures', async () => {
+    const deps = dependencies();
+    deps.getSubagentTaskControlReceipt.mockRejectedValue(new Error('private storage content'));
+    const res = response();
+    await createSubagentControlReceiptHandler(deps)(readRequest(), res.value);
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain('private');
   });
 });

@@ -1,0 +1,64 @@
+# Codegraph E2E vote gate — starts codegraph-e2e-votes.yml at most once per N hours.
+#
+# A vote runs the whole mock suite on ten runners (about 154 job-minutes) and queues beside PR CI
+# for the same runners. Run on every merge, the votes cost 2,227 job-minutes on 2026-10-22. With
+# repo variable CODEGRAPH_E2E_VOTE_MIN_HOURS set to N > 0, the votes workflow skips its push runs
+# and this gate decides instead, from the votes workflow's run list:
+#
+#   push      a merge starts a vote when the newest started vote is at least N hours old;
+#   schedule  hourly, the catch-up starts one for the newest merge no vote covers yet once the
+#             window opens, so the last merge of a burst is voted within about N + 1 hours.
+#
+# While the catch-up has not run for three hours (this file is not on the default branch yet, where
+# GitHub reads schedules, or GitHub stopped scheduling it), every merge votes as before. The rules
+# and their reasons are in .github/scripts/vote-gate.mjs. The gate shares the votes workflow's path
+# filter, so the merges it sees are the ones that used to start a vote.
+#
+# Unset, empty or 0 is today's behavior: every merge votes through the votes workflow's own push
+# trigger and the job below is skipped. CODEGRAPH_E2E_VOTES=off still stops everything.
+name: Codegraph E2E Vote Gate
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/workflows/**'
+      - '.github/workflows/codegraph-e2e-votes.yml'
+      - '.github/workflows/codegraph-e2e-vote-gate.yml'
+  schedule:
+    - cron: '17 * * * *'
+
+permissions: {}
+
+# One decision at a time, so a merge and the catch-up never both start a vote for the same window.
+concurrency:
+  group: codegraph-e2e-vote-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Gate
+    if: >-
+      vars.CODEGRAPH_E2E_VOTES != 'off' &&
+      vars.CODEGRAPH_E2E_VOTE_MIN_HOURS != '' &&
+      vars.CODEGRAPH_E2E_VOTE_MIN_HOURS != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # list both workflows' runs; start the votes workflow on dev
+      contents: read # check out the gate script
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/vote-gate.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Decide, and start a vote when one is owed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIN_HOURS: ${{ vars.CODEGRAPH_E2E_VOTE_MIN_HOURS }}
+        run: node .github/scripts/vote-gate.mjs

@@ -39,6 +39,33 @@ const persistedAgent = {
 };
 
 describe('Agent Management contract', () => {
+  it.each([
+    { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' as const } },
+    Object.fromEntries(
+      Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' as const }]),
+    ),
+    Object.fromEntries(
+      Array.from({ length: 129 }, (_, i) => [
+        `${i}`.padEnd(256, 'é'),
+        { approval_mode: 'ask' as const },
+      ]),
+    ),
+  ])('preserves over-limit legacy options in responses while rejecting writes', (tool_options) => {
+    const response = projectAgentManagementResponse({ ...persistedAgent, tool_options });
+    expect(response.tool_options).toEqual(tool_options);
+    const page = projectAgentManagementListResponse({
+      data: [{ ...persistedAgent, tool_options }],
+      has_more: false,
+      after: null,
+    });
+    expect(page.data[0].tool_options).toEqual(tool_options);
+    expect(
+      agentManagementCreateSchema.safeParse({ provider: 'openAI', model: 'gpt-5', tool_options })
+        .success,
+    ).toBe(false);
+    expect(agentManagementUpdateSchema.safeParse({ tool_options }).success).toBe(false);
+  });
+
   it('preserves repository instruction mode through API updates and response projection', () => {
     for (const mode of ['prefer', 'defer', 'off'] as const) {
       expect(agentManagementUpdateSchema.parse({ repositoryInstructions: mode })).toEqual({
@@ -54,6 +81,23 @@ describe('Agent Management contract', () => {
     ).toBe(false);
   });
   describe('inputs', () => {
+    it('round-trips the explicit machine allowlist through management create, update and response', () => {
+      const code_environment_ids = ['machine-a', 'machine-b'];
+      expect(
+        agentManagementCreateSchema.parse({
+          provider: 'openAI',
+          model: 'gpt-5',
+          code_environment_ids,
+        }),
+      ).toMatchObject({ code_environment_ids });
+      expect(agentManagementUpdateSchema.parse({ code_environment_ids: [] })).toEqual({
+        code_environment_ids: [],
+      });
+      expect(
+        projectAgentManagementResponse({ ...persistedAgent, code_environment_ids })
+          .code_environment_ids,
+      ).toEqual(code_environment_ids);
+    });
     it('keeps create and update fields aligned with the browser Agent validators', () => {
       expect(
         agentManagementCreateSchema.parse({
@@ -93,6 +137,25 @@ describe('Agent Management contract', () => {
           false,
         );
         expect(schema.safeParse({ ...base, versions: [] }).success).toBe(false);
+      },
+    );
+
+    it.each([agentManagementCreateSchema, agentManagementUpdateSchema])(
+      'rejects instructionsPrompt — the Builder-only prompt-group link is not a Management API field',
+      (schema) => {
+        const base =
+          schema === agentManagementCreateSchema ? { provider: 'openAI', model: 'gpt-5' } : {};
+        expect(
+          schema.safeParse({
+            ...base,
+            instructionsPrompt: {
+              source: 'native',
+              groupId: '64da00000000000000000001',
+              selection: { type: 'production' },
+            },
+          }).success,
+        ).toBe(false);
+        expect(schema.safeParse({ ...base, instructionsPrompt: null }).success).toBe(false);
       },
     );
 
@@ -218,6 +281,29 @@ describe('Agent Management contract', () => {
       expect(response).not.toHaveProperty('versions');
       expect(response).not.toHaveProperty('mcpServerNames');
       expect(response).not.toHaveProperty('is_promoted');
+    });
+
+    it('never returns instructionsPrompt — the Builder-only prompt-group link is not a Management API field', () => {
+      // The projection source type has no `instructionsPrompt` field (see the note above
+      // `agentManagementCreateSchema`); the cast simulates a stored document that still
+      // carries the Builder's own link, to prove the allowlist drops it regardless.
+      const response = projectAgentManagementResponse({
+        ...persistedAgent,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: '64da00000000000000000001',
+          selection: { type: 'production' },
+        },
+      } as Record<string, unknown> as typeof persistedAgent);
+
+      expect(response).not.toHaveProperty('instructionsPrompt');
+      expect(agentManagementResponseSchema.parse(response)).toEqual(response);
+      expect(
+        agentManagementResponseSchema.safeParse({
+          ...response,
+          instructionsPrompt: { source: 'native', restricted: true },
+        }).success,
+      ).toBe(false);
     });
 
     it('omits legacy string avatars that are not part of the management contract', () => {

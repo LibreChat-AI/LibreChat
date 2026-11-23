@@ -512,6 +512,26 @@ describe('Trace Viewer', () => {
     expect(screen.getByTestId('trace-inspector')).toBeInTheDocument();
   });
 
+  it('swaps the fold arrows when the tree runs right to left', async () => {
+    renderViewer();
+    await recordRow('llm');
+    const tree = screen.getByRole('tree');
+    tree.style.direction = 'rtl';
+
+    await userEvent.click(stepRow(1));
+    await waitFor(() =>
+      expect(screen.queryByRole('treeitem', { name: recordName('llm') })).not.toBeInTheDocument(),
+    );
+    expect(stepRow(1)).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.keyDown(tree, { key: 'ArrowLeft' });
+    expect(await recordRow('llm')).toBeInTheDocument();
+    expect(stepRow(1)).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    fireEvent.keyDown(tree, { key: 'ArrowRight' });
+    expect(tree).toHaveAttribute('aria-activedescendant', stepRow(1).id);
+  });
+
   it('keeps the active row mounted while the ledger scrolls away from it', async () => {
     const many = [
       record({

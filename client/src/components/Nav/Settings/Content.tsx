@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import type { SettingsContextValue, SettingsTab, SettingEntry } from './types';
+import { useLayoutEffect, useMemo, useRef } from 'react';
+import type { SettingsContextValue, SettingsTab, SettingEntry, SectionId } from './types';
 import { filterSettings } from './search';
 import { useLocalize } from '~/hooks';
 import { registry } from './registry';
@@ -10,15 +10,25 @@ interface ContentProps {
   activeTab: SettingsTab;
   query: string;
   ctx: SettingsContextValue;
+  initialSection?: SectionId;
 }
 
 function visible(entry: SettingEntry, ctx: SettingsContextValue): boolean {
   return !entry.show || entry.show(ctx);
 }
 
-export default function Content({ activeTab, query, ctx }: ContentProps) {
+export default function Content({ activeTab, query, ctx, initialSection }: ContentProps) {
   const localize = useLocalize();
   const tab = TABS.find((t) => t.id === activeTab)!;
+  const targetRef = useRef<HTMLElement>(null);
+  const didScroll = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!didScroll.current && targetRef.current != null) {
+      targetRef.current.scrollIntoView({ block: 'start' });
+      didScroll.current = true;
+    }
+  }, [activeTab, initialSection, query, ctx]);
 
   const results = useMemo(
     () => (query.trim() ? filterSettings(registry, query, ctx, localize) : null),
@@ -29,18 +39,18 @@ export default function Content({ activeTab, query, ctx }: ContentProps) {
     return (
       <div aria-label={localize('com_ui_settings_results_aria')} aria-live="polite">
         {results.length === 0 ? (
-          <p className="p-2 text-sm text-text-secondary">
+          <p className="text-text-secondary p-2 text-sm">
             {localize('com_ui_settings_no_results')}
           </p>
         ) : (
-          <div className="divide-y divide-border-light overflow-hidden rounded-xl border border-border-light text-sm text-text-primary">
+          <div className="text-text-primary overflow-hidden rounded-xl text-sm">
             {results.map(({ entry, label }) => {
               const Cmp = entry.Component;
               const tabMeta = TABS.find((t) => t.id === entry.tab)!;
               const sectionMeta = tabMeta.sections.find((s) => s.id === entry.section);
               return (
                 <div key={entry.id} className="px-4 py-3">
-                  <div className="mb-1.5 text-xs text-text-tertiary">
+                  <div className="text-text-tertiary mb-1.5 text-xs">
                     {localize(tabMeta.labelKey)} ›{' '}
                     {sectionMeta ? localize(sectionMeta.labelKey) : label}
                   </div>
@@ -66,6 +76,7 @@ export default function Content({ activeTab, query, ctx }: ContentProps) {
         return (
           <Section
             key={section.id}
+            sectionRef={section.id === initialSection ? targetRef : undefined}
             heading={localize(section.labelKey)}
             icon={section.icon}
             danger={section.danger}
@@ -73,7 +84,7 @@ export default function Content({ activeTab, query, ctx }: ContentProps) {
             {entries.map((e) => {
               const Cmp = e.Component;
               return (
-                <div key={e.id} className="px-4 py-3">
+                <div key={e.id} data-settings-row className="px-4 py-3 empty:hidden">
                   <Cmp />
                 </div>
               );

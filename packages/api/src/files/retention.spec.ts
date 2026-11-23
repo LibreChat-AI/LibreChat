@@ -157,6 +157,43 @@ describe('retention helpers', () => {
     });
   });
 
+  it('keeps the source message deadline for a file under EPHEMERAL', async () => {
+    const sourceDeadline = new Date('2029-06-01T00:00:00.000Z');
+    const req = request({
+      config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
+    });
+    req.fileRetentionSource = { isTemporary: true, expiredAt: sourceDeadline };
+
+    const result = await getRetentionExpiry(req, dependencies);
+
+    expect(result).toEqual({ expiredAt: sourceDeadline });
+    expect(dependencies.createExpirationDate).not.toHaveBeenCalled();
+  });
+
+  it('gives a legacy source row a temporary deadline under EPHEMERAL', async () => {
+    const req = request({
+      config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
+    });
+    req.fileRetentionSource = { isTemporary: false };
+
+    await getRetentionExpiry(req, dependencies);
+
+    expect(dependencies.createExpirationDate).toHaveBeenCalledWith(
+      req.config?.interfaceConfig,
+      true,
+    );
+  });
+
+  it('returns expiry when retentionMode is EPHEMERAL', async () => {
+    const result = await getRetentionExpiry(
+      request({ config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } } }),
+      dependencies,
+    );
+
+    expect(result).toEqual({ expiredAt: expirationDate });
+    expect(dependencies.getConvo).not.toHaveBeenCalled();
+  });
+
   it('returns a fresh expiry when the conversation has an active expiration', async () => {
     dependencies.getConvo.mockResolvedValue({
       expiredAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -524,6 +561,22 @@ describe('retention helpers', () => {
         getSharedLinkExpiration(
           {
             req: request({ config: { interfaceConfig: { retentionMode: RetentionMode.ALL } } }),
+            conversationId: 'convo-1',
+          },
+          dependencies,
+        ),
+      ).resolves.toBe(expirationDate);
+    });
+
+    it('returns a fresh expiry for retentionMode EPHEMERAL conversations without an expiration', async () => {
+      dependencies.getConvo.mockResolvedValue({ expiredAt: null });
+
+      await expect(
+        getSharedLinkExpiration(
+          {
+            req: request({
+              config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
+            }),
             conversationId: 'convo-1',
           },
           dependencies,

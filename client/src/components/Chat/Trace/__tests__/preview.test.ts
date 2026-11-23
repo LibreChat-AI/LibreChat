@@ -1,12 +1,9 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TTraceRecord } from 'librechat-data-provider';
-import {
-  buildPreviews,
-  buildStepPreviews,
-  buildPreviewIndex,
-  buildMessagePreview,
-} from '../preview';
+import { buildPreviews, buildPreviewIndex, buildMessagePreview } from '../preview';
 import { buildTraceModel } from '../model';
+
+const buildStepPreviews = (message: TMessage | undefined) => buildMessagePreview(message).steps;
 
 const BASE = Date.UTC(2026, 8, 12, 11, 30, 0);
 const at = (offsetMs: number) => new Date(BASE + offsetMs).toISOString();

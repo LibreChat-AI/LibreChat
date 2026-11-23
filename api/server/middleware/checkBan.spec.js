@@ -61,7 +61,7 @@ describe('checkBan with namespaced Keyv stores and ObjectId user ids', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   it('lets an unbanned OAuth user through without Redis', async () => {

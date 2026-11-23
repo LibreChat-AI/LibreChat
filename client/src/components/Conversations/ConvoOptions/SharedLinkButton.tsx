@@ -267,7 +267,7 @@ export default function SharedLinkButton({
             disabled={isCreateLoading || isPublishing}
             variant="submit"
             onClick={createShareLink}
-            className="ml-auto min-w-28"
+            className="ms-auto min-w-28"
           >
             {!isCreateLoading && !isPublishing && localize('com_ui_create_link')}
             {(isCreateLoading || isPublishing) && <Spinner className="size-4" />}
@@ -299,7 +299,7 @@ export default function SharedLinkButton({
               </GenericGrantAccessDialog>
             )}
 
-            <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+            <div className="ms-auto flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
               {isSmallScreen && canNativeShare && (
                 <TooltipAnchor
                   description={localize('com_ui_share')}
@@ -340,7 +340,7 @@ export default function SharedLinkButton({
                       key={refreshAnimationId}
                       className={
                         refreshAnimationId > 0
-                          ? 'size-4 animate-refresh-link-spin motion-reduce:animate-none'
+                          ? 'animate-refresh-link-spin size-4 motion-reduce:animate-none'
                           : 'size-4'
                       }
                       aria-hidden="true"
@@ -375,7 +375,7 @@ export default function SharedLinkButton({
                     ref={deleteButtonRef}
                     type="button"
                     onClick={() => setShowDeleteDialog(true)}
-                    variant="destructive"
+                    variant="destructive-soft"
                     size="icon"
                     className="size-9 sm:size-10"
                     aria-label={localize('com_ui_delete_link')}
@@ -396,7 +396,7 @@ export default function SharedLinkButton({
           <OGDialogContent className="w-11/12 max-w-md" showCloseButton={false}>
             <OGDialogHeader>
               <OGDialogTitle>{localize('com_ui_update_shared_link_confirm_title')}</OGDialogTitle>
-              <OGDialogDescription className="text-text-secondary">
+              <OGDialogDescription>
                 {localize('com_ui_update_shared_link_confirm_description')}
               </OGDialogDescription>
             </OGDialogHeader>
@@ -424,7 +424,7 @@ export default function SharedLinkButton({
         >
           <OGDialogContent
             role="alertdialog"
-            className="w-11/12 max-w-[450px]"
+            className="w-11/12 max-w-[28.125rem]"
             showCloseButton={false}
           >
             <OGDialogHeader>
@@ -432,7 +432,7 @@ export default function SharedLinkButton({
             </OGDialogHeader>
             <div className="flex w-full flex-col items-center gap-2">
               <div className="grid w-full items-center gap-2">
-                <Label htmlFor="dialog-confirm-delete" className="text-left text-sm font-medium">
+                <Label htmlFor="dialog-confirm-delete" className="text-start text-sm font-medium">
                   <Trans
                     i18nKey="com_ui_delete_confirm_strong"
                     values={{ title: shareId }}

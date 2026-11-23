@@ -236,7 +236,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
                 )}
               >
                 {(spec.showIconInMenu ?? true) && (
-                  <div className="flex-shrink-0">
+                  <div className="shrink-0">
                     <SpecIcon
                       currentSpec={spec}
                       endpointsConfig={endpointsConfig}
@@ -245,7 +245,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
                   </div>
                 )}
                 <div className="flex min-w-0 flex-col gap-1">
-                  <span className="truncate text-left">{spec.label}</span>
+                  <span className="truncate text-start">{spec.label}</span>
                   <SpecDescription description={spec.description} />
                 </div>
               </div>
@@ -253,7 +253,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
                 <>
                   <CheckCircle2
                     className={cn(
-                      'size-4 shrink-0 text-text-primary',
+                      'text-text-primary size-4 shrink-0',
                       spec.description ? 'mt-1' : '',
                     )}
                     aria-hidden="true"
@@ -279,7 +279,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
               </div>
               {showMarketplace && (
                 <MarketplaceItem
-                  className="px-3 py-2 pl-6"
+                  className="px-3 py-2 ps-6"
                   label={localize('com_agents_marketplace')}
                   posInSet={resultOffset + 1}
                   setSize={listboxSetSize}
@@ -309,10 +309,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
           >
             <div className="flex items-center gap-2">
               {endpoint.icon && (
-                <div
-                  className="flex items-center justify-center overflow-hidden rounded-full border border-border-light p-1"
-                  style={{ borderRadius: '50%' }}
-                >
+                <div className="border-border-light flex items-center justify-center overflow-hidden rounded-full border p-1">
                   {endpoint.icon}
                 </div>
               )}
@@ -320,7 +317,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
             </div>
             {isEndpointSelected && (
               <>
-                <CheckCircle2 className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+                <CheckCircle2 className="text-text-primary size-4 shrink-0" aria-hidden="true" />
                 <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>
               </>
             )}

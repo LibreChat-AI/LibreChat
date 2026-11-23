@@ -4,6 +4,8 @@ import { openAgentBuilder } from '../agents.helpers';
 import { NEW_CHAT_PATH, fetchJson, getAccessToken } from '../helpers';
 
 const MCP_SERVER_NAME = 'e2e-memory';
+/** The Tool Library labels the server by its config `title`. */
+const MCP_SERVER_TITLE = 'E2E Memory';
 const MCP_TOOL_ID = `remember_fact_mcp_${MCP_SERVER_NAME}`;
 /** WCAG 1.4.11: a graphical object owes 3:1 against what it sits on. */
 const MARK_FLOOR = 3;
@@ -179,7 +181,9 @@ test.describe('native tool verified mark', () => {
     const dialog = await openToolLibrary(page);
     await dialog.getByRole('textbox', { name: 'Search tools…' }).fill(MCP_SERVER_NAME);
 
-    const serverCard = dialog.getByRole('button', { name: new RegExp(MCP_SERVER_NAME) }).first();
+    const serverCard = dialog
+      .getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) })
+      .first();
     await expect(serverCard).toBeVisible();
     await expect(serverCard.locator('svg[aria-label="Native"]')).toHaveCount(0);
   });

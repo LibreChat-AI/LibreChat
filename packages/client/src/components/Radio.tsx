@@ -1,4 +1,5 @@
 import React, { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
+import { disabledInkClasses, resolveArrowKey } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 /** Matches the `inset-y-1` the single-row indicator uses. */
@@ -24,8 +25,24 @@ interface RadioProps {
    *  dialog's width on a phone and the choices past the edge become unreachable.
    *  The moving indicator follows across rows; the single-row default is untouched. */
   wrap?: boolean;
+  /** `sm` fits a section header row beside its label. */
+  size?: 'default' | 'sm';
+  /** `raised` lightens the track one step and the selected pill with it, for a group on a raised
+   *  surface such as a popover, where the default track would blend into the surface behind it. */
+  tone?: 'default' | 'raised';
   'aria-labelledby'?: string;
 }
+
+/** The track and the selected segment's pill, as a pair that always contrast with each other. */
+const toneClasses = {
+  default: { track: 'bg-surface-secondary', pill: 'bg-surface-primary' },
+  raised: { track: 'bg-surface-tertiary', pill: 'bg-surface-primary-alt' },
+} as const;
+
+const segmentSizeClasses = {
+  default: 'h-[2.125rem] px-4 text-sm',
+  sm: 'h-7 px-2.5 text-xs',
+} as const;
 
 const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   options,
@@ -36,6 +53,8 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   buttonClassName = '',
   fullWidth = false,
   wrap = false,
+  size = 'default',
+  tone = 'default',
   'aria-labelledby': ariaLabelledBy,
 }: RadioProps) {
   const localize = useLocalize();
@@ -66,7 +85,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       Home: 0,
       End: options.length - 1,
     };
-    const target = moves[event.key];
+    const target = moves[resolveArrowKey(event.key, event.currentTarget)];
     if (target == null) {
       return;
     }
@@ -145,11 +164,11 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   if (options.length === 0) {
     return (
       <div
-        className="relative inline-flex items-center rounded-lg bg-surface-tertiary p-1 opacity-50"
+        className={`${toneClasses[tone].track} relative inline-flex items-center rounded-lg p-1 opacity-50`}
         role="radiogroup"
         aria-labelledby={ariaLabelledBy}
       >
-        <span className="px-4 py-2 text-xs text-text-secondary">
+        <span className="text-text-secondary px-4 py-2 text-xs">
           {localize('com_ui_no_options')}
         </span>
       </div>
@@ -163,14 +182,14 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       ref={containerRef}
       className={`relative ${fullWidth ? 'flex' : 'inline-flex'} ${
         wrap ? 'flex-wrap' : ''
-      } items-center rounded-lg bg-surface-tertiary px-1 ${className}`}
+      } ${toneClasses[tone].track} items-center rounded-lg px-0.75 ${className}`}
       role="radiogroup"
       aria-labelledby={ariaLabelledBy}
     >
       {selectedIndex >= 0 && isMounted && (
         <div
-          className={`pointer-events-none absolute left-0 rounded-md border border-border-light bg-surface-primary shadow-sm transition-all duration-300 ease-out ${
-            wrap ? 'top-0' : 'inset-y-1'
+          className={`${toneClasses[tone].pill} pointer-events-none absolute left-0 rounded-md shadow-xs transition-all duration-300 ease-out ${
+            wrap ? 'top-0' : 'inset-y-0.75'
           }`}
           style={backgroundStyle}
         />
@@ -188,12 +207,12 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
           onClick={() => handleChange(option.value)}
           onKeyDown={(event) => handleKeyDown(event, index)}
           disabled={disabled}
-          className={`relative z-10 flex h-[34px] items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary ${
+          className={`focus-visible:ring-focus-control relative z-10 flex items-center justify-center gap-2 rounded-md font-medium ${segmentSizeClasses[size]} transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden ${
             currentValue === option.value ? 'text-text-primary' : 'text-text-secondary'
-          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
+          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${disabledInkClasses} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
         >
           {option.icon && (
-            <span className="flex-shrink-0" aria-hidden="true">
+            <span className="shrink-0" aria-hidden="true">
               {option.icon}
             </span>
           )}

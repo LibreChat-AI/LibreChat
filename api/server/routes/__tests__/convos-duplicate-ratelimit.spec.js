@@ -41,6 +41,7 @@ jest.mock('~/server/middleware', () => {
   };
 });
 
+jest.mock('~/server/services/Config', () => require(MOCKS).appConfig());
 jest.mock('~/server/utils/import/fork', () => require(MOCKS).forkUtils());
 jest.mock('~/server/utils/import', () => require(MOCKS).importUtils());
 jest.mock('~/server/routes/files/multer', () => require(MOCKS).multerSetup());

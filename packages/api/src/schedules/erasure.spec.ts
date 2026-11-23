@@ -32,6 +32,7 @@ async function sweepOnce(options: {
     methods: methods as unknown as ScheduleMethods,
     getJobStatus: jest.fn(async () => options.job ?? null),
     getTriggerDelivery: jest.fn(async () => null),
+    abortScheduledJob: jest.fn(async () => true),
     clearReconciledJob: jest.fn(async () => undefined),
     canInferOwnerDeathFromMissingJob: options.canInferOwnerDeathFromMissingJob,
   });
@@ -49,6 +50,29 @@ describe('schedule erasure fallback owner-death evidence', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  it('drives held-job acknowledgements even when no Mongo run is active or unbookkept', async () => {
+    const reconcileRetainedJobs = jest.fn(async () => undefined);
+    const methods = {
+      getDeletingSchedules: jest.fn(async () => []),
+      getRunsForReconciliation: jest.fn(async () => []),
+      getUnbookkeptRuns: jest.fn(async () => []),
+      markRunsReconciled: jest.fn(async () => undefined),
+      markEraseAttempted: jest.fn(async () => undefined),
+    };
+    const sweep = startScheduleErasureSweep({
+      methods: methods as unknown as ScheduleMethods,
+      getJobStatus: jest.fn(async () => null),
+      getTriggerDelivery: jest.fn(async () => null),
+      abortScheduledJob: jest.fn(async () => true),
+      clearReconciledJob: jest.fn(async () => undefined),
+      canInferOwnerDeathFromMissingJob: false,
+      reconcileRetainedJobs,
+    });
+    await jest.advanceTimersByTimeAsync(5 * 60_000);
+    sweep.stop();
+    expect(reconcileRetainedJobs).toHaveBeenCalledTimes(1);
   });
 
   it('does not settle a peer-owned run from process-local job absence', async () => {
@@ -132,6 +156,7 @@ describe('topology-safe dead-delivery convergence', () => {
       getJobStatus: jest.fn(async () => options.job ?? null),
       getTriggerDelivery: getTriggerDelivery as never,
       clearReconciledJob,
+      abortScheduledJob: jest.fn(async () => true),
       // Defaults to the UNSAFE topology to prove this path never depends on it.
       canInferOwnerDeathFromMissingJob: options.canInferOwnerDeathFromMissingJob ?? false,
     });
@@ -211,6 +236,53 @@ describe('topology-safe dead-delivery convergence', () => {
 
   /** Presence of an identity-matched job is positive evidence in EVERY topology, so this
    *  must not depend on the owner-death inference the unsafe fallback refuses. */
+  it.each(['requires_action', 'aborted', 'complete', 'error'] as const)(
+    'preserves job-only bearer diagnosis in clustered %s recovery',
+    async (status) => {
+      const denial = {
+        server: 'Files',
+        status: 'mcp_permission_denied',
+        reason: 'tool_policy_denied',
+        recovery: 'restore_permission',
+        automaticReplay: false,
+        detail: 'unattended_auth_required',
+      };
+      const { methods, clearReconciledJob } = await convergeOnce({
+        job: {
+          status,
+          scheduleId: 'schedule-1',
+          scheduledFor: '2026-08-17T12:00:00.000Z',
+          scheduleOutcomeError: `mcp_permission_denied: ${JSON.stringify([denial])}`,
+        },
+      });
+      expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', mcp: [denial] }),
+      );
+      expect(clearReconciledJob).toHaveBeenCalled();
+      expect(methods.recordRunOutcome.mock.invocationCallOrder[0]).toBeLessThan(
+        clearReconciledJob.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it.each(['terminalPersistencePending', 'providerDrained', 'terminalHostActionPending'] as const)(
+    'defers clustered denial settlement behind %s',
+    async (fence) => {
+      const { methods, clearReconciledJob } = await convergeOnce({
+        job: {
+          status: 'requires_action',
+          scheduleId: 'schedule-1',
+          scheduledFor: '2026-08-17T12:00:00.000Z',
+          [fence]: fence !== 'providerDrained',
+          scheduleOutcomeError:
+            'mcp_permission_denied: [{"server":"Files","status":"mcp_permission_denied","reason":"tool_policy_denied","detail":"unattended_auth_required"}]',
+        },
+      });
+      expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+      expect(clearReconciledJob).not.toHaveBeenCalled();
+    },
+  );
+
   it('honors the owner-stamped outcome over the generic terminal status', async () => {
     const { methods } = await convergeOnce({
       job: {
@@ -374,6 +446,7 @@ describe('permanent MCP bookkeeping recovery without an armed scheduler', () => 
       methods: methods as unknown as ScheduleMethods,
       getJobStatus: jest.fn(async () => null),
       getTriggerDelivery: jest.fn(async () => null),
+      abortScheduledJob: jest.fn(async () => true),
       clearReconciledJob: jest.fn(async () => undefined),
       canInferOwnerDeathFromMissingJob: false,
     });
@@ -425,6 +498,7 @@ describe('dead-delivery certainty fence', () => {
         status: 'dead',
         lastError: { code: 'x', message: 'timed out', certainty: options.certainty },
       })) as never,
+      abortScheduledJob: jest.fn(async () => true),
       clearReconciledJob: jest.fn(async () => undefined),
       canInferOwnerDeathFromMissingJob: options.canInferOwnerDeathFromMissingJob,
     });

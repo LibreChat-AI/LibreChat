@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS } from 'librechat-data-provider';
 
 import {
   enableCodeInterpreter,
@@ -49,15 +50,48 @@ async function openCodePane(page: Parameters<typeof sendMessage>[0]) {
  * while arguments are still streaming is also what puts the throttle under
  * test, because that is the only time the input keeps changing.
  */
-async function expectHighlightedCode(page: Parameters<typeof sendMessage>[0]) {
-  await openCodePane(page);
+async function expectHighlightedCode(
+  page: Parameters<typeof sendMessage>[0],
+  expectedText: string | RegExp = 'line-119-☃',
+) {
   const code = highlightedCode(page);
-  await expect(code).toBeVisible({ timeout: 30000 });
-  await expect.poll(() => code.locator('span').count(), { timeout: 30000 }).toBeGreaterThan(0);
-  return code;
+  /** History can replace highlighted live code with a collapsed preview. Retry
+   *  opening, full text and tokens together so the replacement also hydrates. */
+  await expect(async () => {
+    await openCodePane(page);
+    await expect(code).toBeVisible();
+    const snapshot = await code.evaluate((element) => ({
+      text: element.textContent ?? '',
+      tokens: element.querySelectorAll('span').length,
+    }));
+    expect(snapshot.text).toMatch(expectedText);
+    expect(snapshot.tokens).toBeGreaterThan(0);
+  }).toPass({ timeout: 30000 });
 }
 
+/** The cadence `e2e/config/librechat.e2e.yaml` sets, off the schema default. */
+const CONFIGURED_THROTTLE_MS = 250;
+
 test.describe('streamed code highlighting', () => {
+  test('configured-highlight-cadence-reaches-client @scenario:configured-highlight-cadence-reaches-client', async ({
+    page,
+  }) => {
+    expect(CONFIGURED_THROTTLE_MS).not.toBe(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS);
+    /** The signed-in payload: the pre-login one carries only the fields a login page needs. */
+    const config = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/config' &&
+        response.ok() &&
+        Boolean(response.request().headers()['authorization']),
+      { timeout: 30000 },
+    );
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    const body = (await (await config).json()) as {
+      interface?: { codeHighlightThrottleMs?: number };
+    };
+    expect(body.interface?.codeHighlightThrottleMs).toBe(CONFIGURED_THROTTLE_MS);
+  });
+
   test('streamed-code-highlights-after-settle @scenario:streamed-code-highlights-after-settle', async ({
     page,
   }) => {
@@ -66,15 +100,13 @@ test.describe('streamed code highlighting', () => {
     await sendMessage(page, 'E2E_HIGHLIGHT_CODE:stream');
 
     await expect(stopButton(page)).toBeVisible({ timeout: 30000 });
-    const streaming = await expectHighlightedCode(page);
-    await expect(streaming).toContainText('line-119-☃');
+    await expectHighlightedCode(page);
 
     await expect(stopButton(page)).toBeHidden({ timeout: 120000 });
     /** Persisting the streamed message rebuilds the card, and a rebuilt card
      *  starts closed, so the settled value is asserted through the same
      *  open-then-wait path instead of against the streaming card's tokens. */
-    const settled = await expectHighlightedCode(page);
-    await expect(settled).toContainText('line-119-☃');
+    await expectHighlightedCode(page);
   });
 
   test('interrupted-code-highlights-after-cancel @scenario:interrupted-code-highlights-after-cancel', async ({
@@ -93,8 +125,7 @@ test.describe('streamed code highlighting', () => {
     await expect(stopButton(page)).toBeHidden({ timeout: 30000 });
     /** Cancellation persists the partial message, which rebuilds the card the
      *  same way a completed run does. */
-    const cancelled = await expectHighlightedCode(page);
-    await expect(cancelled).toContainText(/line-\d+-☃/);
+    await expectHighlightedCode(page, /line-\d+-☃/);
   });
 
   test('regenerated-code-highlights-latest-branch @scenario:regenerated-code-highlights-latest-branch', async ({
@@ -115,8 +146,7 @@ test.describe('streamed code highlighting', () => {
       regenerate.click(),
     ]);
     await expect(stopButton(page)).toBeHidden({ timeout: 120000 });
-    const latestCode = await expectHighlightedCode(page);
-    await expect(latestCode).toContainText('line-119-☃');
+    await expectHighlightedCode(page);
   });
 
   test('restored-history-code-remains-highlighted @scenario:restored-history-code-remains-highlighted', async ({
@@ -131,8 +161,6 @@ test.describe('streamed code highlighting', () => {
 
     await page.reload({ timeout: 10000 });
     await expect(page).toHaveURL(conversationUrl);
-    const restoredCode = await expectHighlightedCode(page);
-    await expect(restoredCode).toContainText('line-119-☃');
-    await expect.poll(() => restoredCode.locator('span').count()).toBeGreaterThan(0);
+    await expectHighlightedCode(page);
   });
 });

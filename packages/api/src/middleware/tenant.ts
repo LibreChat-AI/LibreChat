@@ -1,9 +1,15 @@
 import { randomUUID } from 'crypto';
 import { unlink } from 'fs/promises';
 import { isMainThread } from 'worker_threads';
-import { tenantStorage, logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import {
+  tenantStorage,
+  getTenantId,
+  logger,
+  SYSTEM_TENANT_ID,
+  isReservedTenantId,
+} from '@librechat/data-schemas';
+import type { Response, NextFunction, RequestHandler } from 'express';
 import type { TenantContext } from '@librechat/data-schemas';
-import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
 import { buildSafeRequestLogContext } from './auth';
 
@@ -43,6 +49,31 @@ function isStrict(): boolean {
 export function _resetTenantMiddlewareStrictCache(): void {
   _strictMode = undefined;
 }
+
+export const TENANT_CONTEXT_REQUIRED = 'TENANT_CONTEXT_REQUIRED';
+
+/** Refuses user lookups before authentication when strict isolation has no request tenant. */
+export function createPreAuthTenantGuard(
+  options: { failureRedirect?: string } = {},
+): RequestHandler {
+  return (_req, res, next): void => {
+    const tenantId = getTenantId()?.trim();
+    if (!isStrict() || (tenantId && tenantId !== SYSTEM_TENANT_ID)) {
+      next();
+      return;
+    }
+    if (options.failureRedirect) {
+      res.redirect(options.failureRedirect);
+      return;
+    }
+    res.status(403).json({
+      message: 'Tenant context required in strict isolation mode',
+      code: TENANT_CONTEXT_REQUIRED,
+    });
+  };
+}
+
+export const requirePreAuthTenantContext: RequestHandler = createPreAuthTenantGuard();
 
 function normalizeContextValue(value?: string): string | undefined {
   const trimmed = value?.trim();
@@ -146,11 +177,15 @@ export function tenantContextMiddleware(
   const context = buildTenantContext(req);
   const { tenantId } = context;
 
-  if (tenantId === SYSTEM_TENANT_ID) {
+  if (tenantId === SYSTEM_TENANT_ID || isReservedTenantId(tenantId)) {
     logger.warn('[tenantContextMiddleware] Rejected system tenant for request route', {
       path: req.path,
     });
-    res.status(403).json({ error: SYSTEM_TENANT_REJECTION_MESSAGE });
+    res.status(403).json({
+      error: isReservedTenantId(tenantId)
+        ? 'Reserved tenant identifier'
+        : SYSTEM_TENANT_REJECTION_MESSAGE,
+    });
     return;
   }
 
@@ -280,11 +315,17 @@ export function restoreTenantContextFromReq(
     return;
   }
 
-  if (resolvedTenantId === SYSTEM_TENANT_ID) {
+  if (resolvedTenantId === SYSTEM_TENANT_ID || isReservedTenantId(resolvedTenantId)) {
     logger.warn('[restoreTenantContextFromReq] Rejected system tenant for request route', {
       path: req.path,
     });
-    return rejectRequestWithUploadCleanup(req, res, SYSTEM_TENANT_REJECTION_MESSAGE);
+    return rejectRequestWithUploadCleanup(
+      req,
+      res,
+      isReservedTenantId(resolvedTenantId)
+        ? 'Reserved tenant identifier'
+        : SYSTEM_TENANT_REJECTION_MESSAGE,
+    );
   }
 
   const currentContext = tenantStorage.getStore();

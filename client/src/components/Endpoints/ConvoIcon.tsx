@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import { Feather } from 'lucide-react';
-import { ProviderId } from 'librechat-data-provider';
 import { Sparkles, AssistantIcon, ProviderIcon } from '@librechat/client';
 import type * as t from 'librechat-data-provider';
 import ConvoIconURL from '~/components/Endpoints/ConvoIconURL';
@@ -11,8 +10,7 @@ import { isImageURL } from '~/utils/icons';
 /** Callers frame the mark at two thirds of the round container around it. */
 const artScale = 2 / 3;
 
-const entityAvatarClassName =
-  'bg-token-surface-secondary h-full w-full rounded-full object-cover dark:bg-surface-tertiary';
+const entityAvatarClassName = 'bg-avatar-placeholder h-full w-full rounded-full object-cover';
 
 function AgentAvatar({
   avatar,
@@ -151,7 +149,7 @@ export default function ConvoIcon({
         provider={provider}
         model={conversation?.model}
         size={size != null ? Math.round(size * artScale) : undefined}
-        className={cn(className, context === 'landing' && provider === ProviderId.cohere && 'p-2')}
+        className={className}
       />
     );
   };

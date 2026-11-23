@@ -3,6 +3,8 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { IUser } from '@librechat/data-schemas';
 import type { LCAvailableTools, ParsedServerConfig, ToolDiscoveryOptions } from '../types';
+import type { MCPClientCapabilityProfile } from '../capabilities';
+import { MCP_APPS_CAPABILITY_PROFILE, STANDARD_MCP_CAPABILITY_PROFILE } from '../capabilities';
 import { hasCustomUserVars, waitUntilDeadline, getMissingCustomUserVars } from '../utils';
 import { usesDirectOpenIDBearerRecovery } from '../openid';
 import { getServerCustomUserVars } from '../auth';
@@ -39,6 +41,7 @@ const DEFAULT_RECOVERY_POLICY: MCPServerCatalogRecoveryPolicy = {
 export interface MCPServerCatalogRecoveryInput {
   serverName: string;
   serverConfig: ParsedServerConfig;
+  capabilityProfile?: MCPClientCapabilityProfile;
 }
 
 export interface MCPServerCatalogRecoveryDeps {
@@ -178,12 +181,17 @@ export interface MCPServerCatalogLoaderDeps extends MCPServerCatalogRecoveryDeps
     userId: string,
     serverName: string,
     serverConfig: ParsedServerConfig,
+    capabilityProfile?: MCPClientCapabilityProfile,
   ) => Promise<LCAvailableTools | null>;
   getServerToolFunctionsSnapshot: (
     userId: string,
     serverName: string,
     serverConfig: ParsedServerConfig,
-    options?: { deadlineMs?: number; signal?: AbortSignal },
+    options?: {
+      deadlineMs?: number;
+      signal?: AbortSignal;
+      capabilityProfile?: MCPClientCapabilityProfile;
+    },
   ) => Promise<MCPServerCatalogSnapshot>;
   cacheServerTools: (params: {
     userId: string;
@@ -192,6 +200,7 @@ export interface MCPServerCatalogLoaderDeps extends MCPServerCatalogRecoveryDeps
     serverConfig: ParsedServerConfig;
     publicationGeneration?: string;
     publicationRevision?: string;
+    capabilityProfile?: MCPClientCapabilityProfile;
   }) => Promise<void>;
 }
 
@@ -211,6 +220,7 @@ interface MCPServerCatalogRecoveryResult {
 interface MCPServerCatalogEntry extends MCPServerCatalogSnapshot {
   serverName: string;
   serverConfig: ParsedServerConfig;
+  capabilityProfile?: MCPClientCapabilityProfile;
   source: 'cache' | 'snapshot';
 }
 
@@ -342,15 +352,20 @@ function resolveBudget(
   return policy.discoveryTimeoutMs;
 }
 
-function getRecoveryKey(userId: string, serverName: string): string {
-  return `${userId}\u0000${serverName}`;
+function getRecoveryKey(
+  userId: string,
+  serverName: string,
+  capabilityProfile: MCPClientCapabilityProfile = STANDARD_MCP_CAPABILITY_PROFILE,
+): string {
+  return JSON.stringify([userId, serverName, capabilityProfile]);
 }
 
 function getRecoveryFingerprint(
   serverConfig: ParsedServerConfig,
   policy: MCPServerCatalogRecoveryPolicy,
+  capabilityProfile: MCPClientCapabilityProfile = STANDARD_MCP_CAPABILITY_PROFILE,
 ): string {
-  return JSON.stringify([serverConfig, policy]);
+  return JSON.stringify([serverConfig, policy, capabilityProfile]);
 }
 
 export class MCPServerCatalogRecoveryTracker {
@@ -371,8 +386,8 @@ export class MCPServerCatalogRecoveryTracker {
     policy: MCPServerCatalogRecoveryPolicy,
   ): boolean {
     return !this.isDiscoveryHeld(
-      getRecoveryKey(user.id, candidate.serverName),
-      getRecoveryFingerprint(candidate.serverConfig, policy),
+      getRecoveryKey(user.id, candidate.serverName, candidate.capabilityProfile),
+      getRecoveryFingerprint(candidate.serverConfig, policy, candidate.capabilityProfile),
       undefined,
     );
   }
@@ -385,8 +400,14 @@ export class MCPServerCatalogRecoveryTracker {
     discovery: Promise<unknown>,
   ): void {
     this.detach(
-      getRecoveryKey(user.id, candidate.serverName),
-      { configFingerprint: getRecoveryFingerprint(candidate.serverConfig, policy) },
+      getRecoveryKey(user.id, candidate.serverName, candidate.capabilityProfile),
+      {
+        configFingerprint: getRecoveryFingerprint(
+          candidate.serverConfig,
+          policy,
+          candidate.capabilityProfile,
+        ),
+      },
       discovery,
     );
   }
@@ -458,14 +479,26 @@ export class MCPServerCatalogRecoveryTracker {
    * Clears suppression after a credential/config mutation commits. A clear from a publication
    * carries the generation it wrote; see `clearState` for the state it spares.
    */
-  public clear(userId: string, serverName?: string, generation?: string): void {
+  public clear(
+    userId: string,
+    serverName?: string,
+    generation?: string,
+    capabilityProfile?: MCPClientCapabilityProfile,
+  ): void {
     if (serverName != null) {
-      this.clearState(getRecoveryKey(userId, serverName), generation);
+      if (capabilityProfile != null) {
+        this.clearState(getRecoveryKey(userId, serverName, capabilityProfile), generation);
+        return;
+      }
+      this.clearState(
+        getRecoveryKey(userId, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+        generation,
+      );
+      this.clearState(getRecoveryKey(userId, serverName, MCP_APPS_CAPABILITY_PROFILE), generation);
       return;
     }
-    const prefix = `${userId}\u0000`;
     for (const key of this.states.keys()) {
-      if (key.startsWith(prefix)) {
+      if ((JSON.parse(key) as unknown[])[0] === userId) {
         this.clearState(key, generation);
       }
     }
@@ -504,8 +537,12 @@ export class MCPServerCatalogRecoveryTracker {
       detach: DiscoveryDetacher,
     ) => Promise<RecoveryOutcome>,
   ): Promise<RecoveryOutcome> {
-    const key = getRecoveryKey(user.id, candidate.serverName);
-    const configFingerprint = getRecoveryFingerprint(candidate.serverConfig, policy);
+    const key = getRecoveryKey(user.id, candidate.serverName, candidate.capabilityProfile);
+    const configFingerprint = getRecoveryFingerprint(
+      candidate.serverConfig,
+      policy,
+      candidate.capabilityProfile,
+    );
     const now = Date.now();
     const existing = this.states.get(key);
     const held = this.isDiscoveryHeld(key, configFingerprint, recoveryGeneration);
@@ -656,7 +693,7 @@ function trackPublications(
 
 async function discoverCandidate(
   user: IUser,
-  { serverName, serverConfig, customUserVars }: RecoveryCandidate,
+  { serverName, serverConfig, customUserVars, capabilityProfile }: RecoveryCandidate,
   deps: MCPServerCatalogRecoveryDeps,
   policy: MCPServerCatalogRecoveryPolicy,
   {
@@ -687,6 +724,7 @@ async function discoverCandidate(
         await trackPublication?.(async () => generation);
       },
       onDiscoveryDetached: onDetached,
+      capabilityProfile,
     });
     /** Discovery can await work that ignores its budget — a token refresh persisting behind a
      *  stalled write — and a shared flight has no request signal to end that wait, so it would hold
@@ -931,7 +969,7 @@ async function recoverMCPServerCatalogsWithState(
           observedGeneration == null ||
           snapshotGeneration !== observedGeneration)
       ) {
-        tracker.clear(user.id, candidate.serverName);
+        tracker.clear(user.id, candidate.serverName, undefined, candidate.capabilityProfile);
         results[index] = { serverName: candidate.serverName, tools: null };
         return;
       }
@@ -968,7 +1006,7 @@ async function recoverMCPServerCatalogsWithState(
           ? finalGeneration !== outcomeGeneration
           : finalGeneration != null && finalGeneration !== outcomeGeneration);
       if (superseded) {
-        tracker.clear(user.id, candidate.serverName);
+        tracker.clear(user.id, candidate.serverName, undefined, candidate.capabilityProfile);
         results[index] = { serverName: candidate.serverName, tools: null };
         return;
       }
@@ -1020,13 +1058,24 @@ export async function loadMCPServerCatalogs(
 ): Promise<MCPServerCatalogLoaderResult> {
   const { user, servers, signal } = params;
   const cached: MCPServerCatalogEntry[] = await Promise.all(
-    servers.map(async ({ serverName, serverConfig }) => {
+    servers.map(async ({ serverName, serverConfig, capabilityProfile }) => {
       try {
-        const tools = await deps.getCachedServerTools(user.id, serverName, serverConfig);
-        return { serverName, serverConfig, tools, source: 'cache' as const };
+        const tools = await deps.getCachedServerTools(
+          user.id,
+          serverName,
+          serverConfig,
+          capabilityProfile,
+        );
+        return { serverName, serverConfig, capabilityProfile, tools, source: 'cache' as const };
       } catch (error) {
         logger.error(`[MCP catalog loader] Failed to read cached tools for ${serverName}:`, error);
-        return { serverName, serverConfig, tools: null, source: 'cache' as const };
+        return {
+          serverName,
+          serverConfig,
+          capabilityProfile,
+          tools: null,
+          source: 'cache' as const,
+        };
       }
     }),
   );
@@ -1043,7 +1092,11 @@ export async function loadMCPServerCatalogs(
                   user.id,
                   entry.serverName,
                   entry.serverConfig,
-                  { deadlineMs: Date.now() + mcpConfig.TOOLS_LIST_TIMEOUT_MS, signal },
+                  {
+                    deadlineMs: Date.now() + mcpConfig.TOOLS_LIST_TIMEOUT_MS,
+                    signal,
+                    capabilityProfile: entry.capabilityProfile,
+                  },
                 );
                 snapshots[index] = { ...entry, ...snapshot, source: 'snapshot' as const };
               } catch (error) {
@@ -1064,7 +1117,11 @@ export async function loadMCPServerCatalogs(
 
   const coldServers = snapshots
     .filter(({ tools }) => tools == null)
-    .map(({ serverName, serverConfig }) => ({ serverName, serverConfig }));
+    .map(({ serverName, serverConfig, capabilityProfile }) => ({
+      serverName,
+      serverConfig,
+      capabilityProfile,
+    }));
   let recovered: MCPServerCatalogRecoveryResult = {
     serverTools: new Map(),
     reauthRequiredServers: new Set(),
@@ -1094,7 +1151,12 @@ export async function loadMCPServerCatalogs(
     }
     serverTools.set(snapshot.serverName, tools);
     if (snapshot.tools != null) {
-      deps.recoveryTracker?.clear(user.id, snapshot.serverName);
+      deps.recoveryTracker?.clear(
+        user.id,
+        snapshot.serverName,
+        undefined,
+        snapshot.capabilityProfile,
+      );
     }
 
     if (snapshot.source !== 'snapshot' || snapshot.tools == null) {
@@ -1108,6 +1170,7 @@ export async function loadMCPServerCatalogs(
         serverConfig: snapshot.serverConfig,
         publicationGeneration: snapshot.publicationGeneration,
         publicationRevision: snapshot.publicationRevision,
+        capabilityProfile: snapshot.capabilityProfile,
       })
       .catch((error) =>
         logger.error(

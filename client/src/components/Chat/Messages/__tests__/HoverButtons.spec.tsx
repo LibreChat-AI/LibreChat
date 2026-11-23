@@ -1,7 +1,9 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen } from '@testing-library/react';
+import { ChatContext } from '@librechat/chat/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { HoverButtons } from '@librechat/chat/components';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Constants,
@@ -10,13 +12,16 @@ import {
   type TConversation,
   type TMessage,
 } from 'librechat-data-provider';
+import type { ChatContract } from '@librechat/chat/react';
 import {
-  MessagesViewContext,
-  type MessagesViewContextValue,
+  MessagesOperationsContext,
+  type MessagesOperations,
 } from '~/Providers/MessagesViewContext';
 import { hasCopyableText } from '~/hooks/Messages/useCopyToClipboard';
-import HoverButtons from '~/components/Chat/Messages/HoverButtons';
+import '~/Providers/MessagesHostContext';
 import store from '~/store';
+
+const chatContract = (isSubmitting: boolean) => ({ index: 0, isSubmitting }) as ChatContract;
 
 const conversation = {
   conversationId: 'convo-1',
@@ -41,6 +46,8 @@ function renderHoverButtons({
   getCanCopy = () => hasCopyableText({ text: message.text, content: message.content }),
   handleFeedback,
   thread,
+  voice,
+  textToSpeech = voice != null,
 }: {
   isSubmitting: boolean;
   message?: TMessage;
@@ -52,37 +59,48 @@ function renderHoverButtons({
   /** The rows the hover controls resolve the message's parent from. Omitted, the
    *  thread is unavailable, as on a search row. */
   thread?: TMessage[];
+  /** Enables Read Aloud on the browser engine with this voice selected. */
+  voice?: string;
+  /** The viewer's read-aloud setting; on whenever a voice is set unless given. */
+  textToSpeech?: boolean;
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
-  const initializeState = ({ set }: MutableSnapshot) => set(store.textToSpeech, false);
+  const initializeState = ({ set }: MutableSnapshot) => {
+    set(store.textToSpeech, textToSpeech);
+    if (voice != null) {
+      set(store.voice, voice);
+      set(store.speechSettingsInitialized, true);
+    }
+  };
 
   const { container } = render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot initializeState={initializeState}>
-        <MessagesViewContext.Provider
-          value={{ getMessages: () => thread } as unknown as MessagesViewContextValue}
+        <MessagesOperationsContext.Provider
+          value={{ getMessages: () => thread } as unknown as MessagesOperations}
         >
-          <MemoryRouter>
-            <HoverButtons
-              index={0}
-              isLast={isLast}
-              isEditing={false}
-              message={message}
-              conversation={targetConversation}
-              isSubmitting={isSubmitting}
-              enterEdit={jest.fn()}
-              regenerate={jest.fn()}
-              handleContinue={jest.fn()}
-              copyToClipboard={jest.fn()}
-              getCanCopy={getCanCopy}
-              latestMessageId={latestMessageId}
-              handleFeedback={handleFeedback}
-            />
-          </MemoryRouter>
-        </MessagesViewContext.Provider>
+          <ChatContext.Provider value={chatContract(isSubmitting)}>
+            <MemoryRouter>
+              <HoverButtons
+                index={0}
+                isLast={isLast}
+                isEditing={false}
+                message={message}
+                conversation={targetConversation}
+                enterEdit={jest.fn()}
+                regenerate={jest.fn()}
+                handleContinue={jest.fn()}
+                copyToClipboard={jest.fn()}
+                getCanCopy={getCanCopy}
+                latestMessageId={latestMessageId}
+                handleFeedback={handleFeedback}
+              />
+            </MemoryRouter>
+          </ChatContext.Provider>
+        </MessagesOperationsContext.Provider>
       </RecoilRoot>
     </QueryClientProvider>,
   );
@@ -149,6 +167,30 @@ describe('HoverButtons edit affordance', () => {
     });
 
     expect(screen.getByTestId('copy-response-button')).toBeEnabled();
+  });
+
+  /** A fork of the failed row would copy the provider's error as an ordinary answer, and its text
+   *  is the persisted error, so neither is offered; the error card carries the way out. */
+  it('withholds fork and edit on an error response', () => {
+    const errorMessage = {
+      ...userMessage,
+      messageId: 'assistant-error',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      error: true,
+      text: 'Error uploading code environment file: 429',
+    } as TMessage;
+
+    const container = renderHoverButtons({
+      isSubmitting: false,
+      message: errorMessage,
+      isLast: true,
+      latestMessageId: errorMessage.messageId,
+      thread: [userMessage, errorMessage],
+    });
+
+    expect(screen.queryByRole('button', { name: 'Open Fork Menu' })).toBeNull();
+    expect(container.querySelector(`#edit-${errorMessage.messageId}`)).toBeNull();
   });
 
   it('disables copy when the response serializes to nothing', () => {
@@ -533,6 +575,91 @@ describe('HoverButtons edit affordance', () => {
   });
 });
 
+/**
+ * The row above these controls no longer re-renders when a send starts or settles,
+ * so the rerun gate has to follow the pane's submission state on its own.
+ */
+describe('HoverButtons submission state', () => {
+  const assistantMessage = {
+    ...userMessage,
+    messageId: 'assistant-earlier',
+    parentMessageId: userMessage.messageId,
+    isCreatedByUser: false,
+    text: 'An earlier answer',
+  } as TMessage;
+
+  let setSubmitting: (value: boolean) => void = () => undefined;
+  /** Holds the pane's chat contract; the toolbar element itself never changes. */
+  function SubmittingHost({ children }: { children: React.ReactNode }) {
+    const [submitting, setState] = React.useState(false);
+    setSubmitting = setState;
+    return <ChatContext.Provider value={chatContract(submitting)}>{children}</ChatContext.Provider>;
+  }
+
+  it('withholds and restores rerun on a settled row as a send starts and ends', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const regenerate = jest.fn();
+    const buttons = (
+      <HoverButtons
+        index={0}
+        isLast={true}
+        isEditing={false}
+        message={assistantMessage}
+        conversation={conversation}
+        enterEdit={jest.fn()}
+        regenerate={regenerate}
+        handleContinue={jest.fn()}
+        copyToClipboard={jest.fn()}
+        getCanCopy={() => true}
+        latestMessageId="assistant-latest"
+      />
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot initializeState={({ set }) => set(store.textToSpeech, false)}>
+          <MessagesOperationsContext.Provider
+            value={
+              {
+                getMessages: () => [userMessage, assistantMessage],
+              } as unknown as MessagesOperations
+            }
+          >
+            <MemoryRouter>
+              <SubmittingHost>{buttons}</SubmittingHost>
+            </MemoryRouter>
+          </MessagesOperationsContext.Provider>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+
+    const rerun = screen.getByTestId('regenerate-generation-button');
+    expect(rerun).not.toHaveAttribute('aria-hidden');
+    fireEvent.click(rerun);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+
+    /** Withheld without leaving the row: the same button, out of sight and out of reach. A
+     *  run starts and ends on every row of the thread at once, and removing a button from each,
+     *  or disabling it, re-styles the whole thread both times. */
+    act(() => setSubmitting(true));
+    expect(screen.getByTestId('regenerate-generation-button')).toBe(rerun);
+    expect(rerun).toHaveAttribute('aria-hidden', 'true');
+    /** The marker the narrow-screen stylesheet exempts from its forced visibility. */
+    expect(rerun).toHaveAttribute('data-concealed', 'true');
+    expect(rerun).toHaveClass('lg:invisible', 'max-lg:hidden');
+    expect(rerun).not.toBeDisabled();
+    fireEvent.click(rerun);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+
+    act(() => setSubmitting(false));
+    expect(screen.getByTestId('regenerate-generation-button')).toBe(rerun);
+    expect(rerun).not.toHaveAttribute('aria-hidden');
+    expect(rerun).not.toHaveAttribute('data-concealed');
+    expect(rerun).not.toHaveClass('lg:invisible');
+    fireEvent.click(rerun);
+    expect(regenerate).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('HoverButtons feedback affordance', () => {
   const assistantMessage = {
     ...userMessage,
@@ -553,8 +680,8 @@ describe('HoverButtons feedback affordance', () => {
   it('offers feedback on a settled response when a handler is supplied', () => {
     renderSettledResponse(jest.fn());
 
-    expect(screen.getByTitle('Love this')).toBeInTheDocument();
-    expect(screen.getByTitle('Needs improvement')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Love this' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Needs improvement' })).toBeInTheDocument();
   });
 
   /** `useMessageActions` withholds the handler when `interface.feedback` is false, so
@@ -562,8 +689,106 @@ describe('HoverButtons feedback affordance', () => {
   it('hides feedback when no handler is supplied', () => {
     renderSettledResponse();
 
-    expect(screen.queryByTitle('Love this')).toBeNull();
-    expect(screen.queryByTitle('Needs improvement')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Love this' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Needs improvement' })).toBeNull();
     expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+});
+
+describe('HoverButtons read aloud', () => {
+  const voiceName = 'Test Voice';
+  const spoken: string[] = [];
+
+  class FakeSpeechSynthesisUtterance {
+    public voice: SpeechSynthesisVoice | null = null;
+    public onend: (() => void) | null = null;
+    public onerror: (() => void) | null = null;
+    constructor(public text: string) {}
+  }
+
+  beforeAll(() => {
+    /** jsdom lacks it; the message's audio element revokes its source on unmount. */
+    URL.revokeObjectURL = jest.fn();
+    Object.defineProperty(window, 'speechSynthesis', {
+      writable: true,
+      configurable: true,
+      value: {
+        getVoices: () => [{ name: voiceName, localService: true }],
+        addEventListener: () => undefined,
+        speak: (utterance: FakeSpeechSynthesisUtterance) => spoken.push(utterance.text),
+        cancel: () => undefined,
+      },
+    });
+    Object.defineProperty(global, 'SpeechSynthesisUtterance', {
+      writable: true,
+      configurable: true,
+      value: FakeSpeechSynthesisUtterance,
+    });
+  });
+
+  beforeEach(() => {
+    spoken.length = 0;
+  });
+
+  const readAloud = (message: Partial<TMessage>) => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: { ...userMessage, messageId: 'assistant-1', isCreatedByUser: false, ...message },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+    });
+    fireEvent.click(screen.getByTestId('read-aloud-button'));
+  };
+
+  it('speaks the answer without the reasoning parts before it', () => {
+    readAloud({
+      text: '',
+      content: [
+        { type: ContentTypes.THINK, think: 'Let me work out 2 + 2 first.' },
+        { type: ContentTypes.TEXT, text: 'The answer is 4.' },
+      ],
+    });
+
+    expect(spoken).toEqual(['The answer is 4.']);
+  });
+
+  it('offers no read aloud for a response that only reasoned', () => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: {
+        ...userMessage,
+        messageId: 'assistant-1',
+        isCreatedByUser: false,
+        text: 'Let me work out 2 + 2 first.',
+        content: [{ type: ContentTypes.THINK, think: 'Let me work out 2 + 2 first.' }],
+      },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+    });
+
+    expect(screen.queryByTestId('read-aloud-button')).toBeNull();
+    expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+
+  it('offers no read aloud while text to speech is off', () => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: { ...userMessage, messageId: 'assistant-1', isCreatedByUser: false },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+      textToSpeech: false,
+    });
+
+    expect(screen.queryByTestId('read-aloud-button')).toBeNull();
+    expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+
+  it('speaks the answer without a legacy thinking block in plain text', () => {
+    readAloud({ text: ':::thinking\nLet me work out 2 + 2 first.\n:::\nThe answer is 4.' });
+
+    expect(spoken).toEqual(['The answer is 4.']);
   });
 });

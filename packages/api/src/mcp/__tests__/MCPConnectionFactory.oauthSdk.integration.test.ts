@@ -1,5 +1,7 @@
 import { Keyv } from 'keyv';
-import type { IUser } from '@librechat/data-schemas';
+import { inspect } from 'util';
+import { logger } from '@librechat/data-schemas';
+import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type {
   OAuthClientInformation,
   OAuthStoredClientMetadata,
@@ -12,9 +14,11 @@ import {
   InMemoryTokenStore,
   createOAuthMCPServer,
   type OAuthTestServer,
+  type OAuthTestServerOptions,
 } from './helpers/oauthTestServer';
 import { persistMCPAuthorizationTransaction } from '~/mcp/authorization';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
+import { createOAuthCallback, getMCPOAuthLeaseId } from '~/mcp/oauth';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCPTokenStorage, MCPOAuthHandler } from '~/mcp/oauth';
 import { FlowStateManager } from '~/flow/manager';
@@ -219,6 +223,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
         tokenMethods: {
           findToken: tokenStore.findToken,
           createToken: tokenStore.createToken,
+          replaceTokenIfCurrent: jest.fn(),
           updateToken: tokenStore.updateToken,
           deleteTokens: tokenStore.deleteTokens,
         },
@@ -227,6 +232,49 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
 
     expect(result).toMatchObject({ tools: null, connection: null, oauthRequired: true });
     expect(postHeaders).toEqual([undefined]);
+  });
+
+  it('keeps rejected refreshed credentials unauthorized across discovery and status reads', async () => {
+    server = await createOAuthMCPServer({ issueRefreshTokens: true, rejectRefreshTokens: 1 });
+    const initial = await issueTokens(server);
+    await storeTokens(tokenStore, server, { ...initial, expires_at: Date.now() - 1000 });
+    const tokenMethods = {
+      findToken: tokenStore.findToken,
+      createToken: tokenStore.createToken,
+      replaceTokenIfCurrent: jest.fn(),
+      updateToken: tokenStore.updateToken,
+      deleteTokens: tokenStore.deleteTokens,
+    };
+    const result = await MCPConnectionFactory.discoverTools(
+      {
+        serverName: SERVER_NAME,
+        serverConfig: { type: 'streamable-http', url: server.url, requiresOAuth: true },
+      },
+      {
+        useOAuth: true,
+        user: { id: USER_ID } as IUser,
+        flowManager: createFlowManager(),
+        tokenMethods,
+      },
+    );
+    connection = result.connection;
+    const hasStoredAuthorization = () =>
+      MCPTokenStorage.hasStoredAuthorization({
+        userId: USER_ID,
+        serverName: SERVER_NAME,
+        findToken: tokenStore.findToken,
+        validateClientBinding: (clientInfo, metadata) =>
+          MCPOAuthHandler.assertStoredClientBinding(SERVER_NAME, server.url, clientInfo, metadata),
+      });
+
+    expect(result.oauthRequired).toBe(true);
+    expect(
+      server.tokenRequests.filter((request) => request.grantType === 'refresh_token'),
+    ).toHaveLength(1);
+    await expect(hasStoredAuthorization()).resolves.toBe(false);
+
+    await storeTokens(tokenStore, server, await issueTokens(server));
+    await expect(hasStoredAuthorization()).resolves.toBe(true);
   });
 
   it('does not cancel finished SDK requests when a shared run signal is aborted', async () => {
@@ -242,6 +290,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const tokenMethods = {
       findToken: tokenStore.findToken,
       createToken: tokenStore.createToken,
+      replaceTokenIfCurrent: jest.fn(),
       updateToken: tokenStore.updateToken,
       deleteTokens: tokenStore.deleteTokens,
     };
@@ -257,6 +306,8 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const manager = new MCPManager();
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,
@@ -302,6 +353,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const tokenMethods = {
       findToken: tokenStore.findToken,
       createToken: tokenStore.createToken,
+      replaceTokenIfCurrent: jest.fn(),
       updateToken: tokenStore.updateToken,
       deleteTokens: tokenStore.deleteTokens,
     };
@@ -329,70 +381,119 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
       if (published) waiterReachedFence = true;
       return acquireLease(...args);
     });
-    const oauthStart = jest.fn(async (authorizationUrl: string) => {
-      // Follow the actual authorization URL (including PKCE), then use the same exchange and
-      // persistence transaction as the callback route. Only the elapsed lifetime is injected.
-      const response = await fetch(authorizationUrl, { redirect: 'manual' });
-      const code = new URL(response.headers.get('location')!).searchParams.get('code')!;
-      const flowId = MCPOAuthHandler.generateFlowId(USER_ID, SERVER_NAME);
-      const state = await flowManager.getFlowState(flowId, 'mcp_oauth');
-      const metadata = state!.metadata as MCPOAuthFlowMetadata;
-      const tokenFlowId = MCPOAuthHandler.generateTokenFlowId(USER_ID, SERVER_NAME);
-      await flowManager.initFlow(tokenFlowId, 'mcp_get_tokens');
-      waitingTokens = new TokenLoadingFactory(basic, options).loadTokens();
-      void waitingTokens.catch(() => undefined);
-
-      await MCPOAuthHandler.completeOAuthFlow(
-        flowId,
-        code,
-        flowManager,
-        {},
-        async (exchanged, completeAuthorization) => {
-          server.issuedTokens.delete(exchanged.access_token);
-          return persistMCPAuthorizationTransaction<MCPOAuthTokens>(
-            {
-              scope: { userId: USER_ID, serverName: SERVER_NAME },
-              flowIds: [flowId, MCPOAuthHandler.generateTokenFlowId(USER_ID, SERVER_NAME)],
-              tokens: { ...exchanged, expires_at: Date.now() - 1000 },
-              completeAuthorization: completeAuthorization!,
-              persistTokens: (tokens, onStoreCommitted) =>
-                MCPTokenStorage.storeTokens({
-                  ...tokenMethods,
-                  flowManager,
-                  userId: USER_ID,
-                  serverName: SERVER_NAME,
-                  tokens,
-                  clientInfo: metadata.clientInfo,
-                  metadata: MCPOAuthHandler.buildStoredClientMetadata(
-                    metadata.metadata,
-                    metadata.resourceMetadata,
-                    metadata.serverUrl,
-                    metadata.clientSource,
-                  ),
-                  onStoreCommitted: async (stored) => {
-                    await onStoreCommitted(stored);
-                    published = true;
-                    // Completion wakes the token waiter before storeTokens releases its lease.
-                    // It must not consume the refresh token while rollback is still possible.
-                    await waitFor(() => waiterReachedFence);
-                    expect(
-                      server.tokenRequests.filter((r) => r.grantType === 'refresh_token'),
-                    ).toHaveLength(0);
-                  },
-                }),
-            },
-            {
-              ensureServerActive: async () => true,
-              inactiveServerError: () => new Error('Server deleted'),
-              invalidateRecoveryGeneration: async () => 'callback-publication',
-              flowManager,
-              retryDelaysMs: [0],
-            },
-          );
-        },
-      );
+    let openingStarted = false;
+    let urlStarted = false;
+    let releaseOpening!: () => void;
+    let releaseURL!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      releaseOpening = resolve;
     });
-    connection = await MCPConnectionFactory.create(basic, { ...options, oauthStart });
+    const url = new Promise<void>((resolve) => {
+      releaseURL = resolve;
+    });
+    const publishPrompt = createOAuthCallback({
+      runStepEmitter: async () => {
+        openingStarted = true;
+        await opening;
+      },
+      runStepDeltaEmitter: async () => {
+        urlStarted = true;
+        await url;
+      },
+    });
+    const oauthStart = jest.fn(
+      async (authorizationUrl: string, publicationOptions?: t.OAuthStartOptions) => {
+        await publishPrompt(authorizationUrl, publicationOptions);
+        // Follow the actual authorization URL (including PKCE), then use the same exchange and
+        // persistence transaction as the callback route. Only the elapsed lifetime is injected.
+        const response = await fetch(authorizationUrl, { redirect: 'manual' });
+        const code = new URL(response.headers.get('location')!).searchParams.get('code')!;
+        const flowId = MCPOAuthHandler.generateFlowId(USER_ID, SERVER_NAME);
+        const state = await flowManager.getFlowState(flowId, 'mcp_oauth');
+        const metadata = state!.metadata as MCPOAuthFlowMetadata;
+        const tokenFlowId = MCPOAuthHandler.generateTokenFlowId(USER_ID, SERVER_NAME);
+        await flowManager.initFlow(tokenFlowId, 'mcp_get_tokens');
+        waitingTokens = new TokenLoadingFactory(basic, options).loadTokens();
+        void waitingTokens.catch(() => undefined);
+
+        await MCPOAuthHandler.completeOAuthFlow(
+          flowId,
+          code,
+          flowManager,
+          {},
+          async (exchanged, completeAuthorization) => {
+            server.issuedTokens.delete(exchanged.access_token);
+            return persistMCPAuthorizationTransaction<MCPOAuthTokens>(
+              {
+                scope: { userId: USER_ID, serverName: SERVER_NAME },
+                flowIds: [flowId, MCPOAuthHandler.generateTokenFlowId(USER_ID, SERVER_NAME)],
+                tokens: { ...exchanged, expires_at: Date.now() - 1000 },
+                completeAuthorization: completeAuthorization!,
+                persistTokens: (tokens, onStoreCommitted) =>
+                  MCPTokenStorage.storeTokens({
+                    ...tokenMethods,
+                    flowManager,
+                    userId: USER_ID,
+                    serverName: SERVER_NAME,
+                    tokens,
+                    clientInfo: metadata.clientInfo,
+                    metadata: MCPOAuthHandler.buildStoredClientMetadata(
+                      metadata.metadata,
+                      metadata.resourceMetadata,
+                      metadata.serverUrl,
+                      metadata.clientSource,
+                    ),
+                    onStoreCommitted: async (stored) => {
+                      await onStoreCommitted(stored);
+                      published = true;
+                      // Completion wakes the token waiter before storeTokens releases its lease.
+                      // It must not consume the refresh token while rollback is still possible.
+                      await waitFor(() => waiterReachedFence);
+                      expect(
+                        server.tokenRequests.filter((r) => r.grantType === 'refresh_token'),
+                      ).toHaveLength(0);
+                    },
+                  }),
+              },
+              {
+                ensureServerActive: async () => true,
+                inactiveServerError: () => new Error('Server deleted'),
+                invalidateRecoveryGeneration: async () => 'callback-publication',
+                flowManager,
+                retryDelaysMs: [0],
+              },
+            );
+          },
+        );
+      },
+    );
+    const connecting = MCPConnectionFactory.create(basic, { ...options, oauthStart });
+    void connecting.catch(() => undefined);
+    let openingFenced = false;
+    let urlFenced = false;
+    try {
+      await waitFor(() => openingStarted);
+      const duringOpening = await flowManager.acquireLease(
+        getMCPOAuthLeaseId(USER_ID, SERVER_NAME),
+        { advanceGeneration: true, waitMs: 0 },
+      );
+      openingFenced = duringOpening == null;
+      await duringOpening?.release();
+      releaseOpening();
+      await waitFor(() => urlStarted);
+      const duringURL = await flowManager.acquireLease(getMCPOAuthLeaseId(USER_ID, SERVER_NAME), {
+        advanceGeneration: true,
+        waitMs: 0,
+      });
+      urlFenced = duringURL == null;
+      await duringURL?.release();
+    } finally {
+      releaseOpening();
+      releaseURL();
+    }
+    connection = await connecting;
+    expect(openingFenced).toBe(true);
+    expect(urlFenced).toBe(true);
     const loaded = await waitingTokens;
     expect(loaded).not.toBeNull();
     expect(server.issuedTokens.has(loaded!.access_token)).toBe(true);
@@ -498,9 +599,13 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
   it.each(['invalid_client', 'invalid_grant'])(
     'still requests consent for a permanent HTTP 400 %s',
     async (error) => {
+      const secret = 'sentinel-provider-refresh-credential';
       server = await createOAuthMCPServer({
         issueRefreshTokens: true,
-        refreshFailure: () => ({ status: 400, body: JSON.stringify({ error }) }),
+        refreshFailure: () => ({
+          status: 400,
+          body: JSON.stringify({ error, error_description: secret }),
+        }),
       });
       const initial = await issueTokens(server);
       await storeTokens(tokenStore, server, { ...initial, expires_at: Date.now() - 1000 });
@@ -522,6 +627,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
               tokenMethods: {
                 findToken: tokenStore.findToken,
                 createToken: tokenStore.createToken,
+                replaceTokenIfCurrent: jest.fn(),
                 updateToken: tokenStore.updateToken,
                 deleteTokens: tokenStore.deleteTokens,
               },
@@ -529,6 +635,9 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
           ),
         ).rejects.toThrow('OAuth flow initiated');
         expect(oauthStart).toHaveBeenCalledTimes(1);
+        expect(inspect(jest.mocked(logger.error).mock.calls, { depth: null })).not.toContain(
+          secret,
+        );
       } finally {
         await flowManager.deleteFlow(
           MCPOAuthHandler.generateFlowId(USER_ID, SERVER_NAME),
@@ -566,6 +675,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
         tokenMethods: {
           findToken: tokenStore.findToken,
           createToken: tokenStore.createToken,
+          replaceTokenIfCurrent: jest.fn(),
           updateToken: tokenStore.updateToken,
           deleteTokens: tokenStore.deleteTokens,
         },
@@ -607,6 +717,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const tokenMethods = {
       findToken: tokenStore.findToken,
       createToken: tokenStore.createToken,
+      replaceTokenIfCurrent: jest.fn(),
       updateToken: tokenStore.updateToken,
       deleteTokens: tokenStore.deleteTokens,
     };
@@ -632,6 +743,8 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const manager = new MCPManager();
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,
@@ -665,6 +778,206 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     }
   });
 
+  it.each([undefined, true])(
+    'coalesces concurrent rejection persistence and refresh (coordination: %s)',
+    async (oauthRefreshCoordination) => {
+      server = await createOAuthMCPServer({
+        issueRefreshTokens: true,
+        refreshGate: async () => {
+          server.issuedTokens.clear();
+        },
+      });
+      const initialTokens = await storeTokens(tokenStore, server, await issueTokens(server));
+      const flowManager = createFlowManager();
+      let rejectionStarted!: () => void;
+      let releaseRejection!: () => void;
+      let firstRecoveryDone!: () => void;
+      const started = new Promise<void>((resolve) => (rejectionStarted = resolve));
+      const blocked = new Promise<void>((resolve) => (releaseRejection = resolve));
+      const recovered = new Promise<void>((resolve) => (firstRecoveryDone = resolve));
+      let holdingRejection = false;
+      const updateToken: TokenMethods['updateToken'] = async (query, update) => {
+        const marker =
+          update.metadata instanceof Map
+            ? update.metadata.get('rejected_credential_set_id')
+            : update.metadata?.rejected_credential_set_id;
+        if (marker === initialTokens.credential_set_id) {
+          holdingRejection = true;
+          rejectionStarted();
+          await blocked;
+          holdingRejection = false;
+        }
+        return tokenStore.updateToken(query, update);
+      };
+      const basic = {
+        serverName: SERVER_NAME,
+        serverConfig: {
+          type: 'streamable-http' as const,
+          url: server.url,
+          requiresOAuth: true,
+          oauthRefreshCoordination,
+        },
+        ephemeralConnection: true,
+      };
+      const options = {
+        useOAuth: true as const,
+        user: { id: USER_ID } as IUser,
+        flowManager,
+        tokenMethods: {
+          findToken: tokenStore.findToken,
+          createToken: tokenStore.createToken,
+          replaceTokenIfCurrent: jest.fn(),
+          updateToken,
+          deleteTokens: tokenStore.deleteTokens,
+        },
+      };
+      connection = await MCPConnectionFactory.create(basic, options);
+      const second = await MCPConnectionFactory.create(basic, options);
+      const cleanFirst = MCPConnectionFactory.attachRequestOAuthHandler(basic, options, connection);
+      const cleanSecond = MCPConnectionFactory.attachRequestOAuthHandler(basic, options, second);
+      type RecoveryHandler = (challenge: {
+        serverUrl: string;
+        rejectedCredentialSetId?: string;
+      }) => Promise<void>;
+      const firstHandler = connection.listeners(
+        'oauthReauthenticationRequired',
+      )[0] as RecoveryHandler;
+      const secondHandler = second.listeners('oauthReauthenticationRequired')[0] as RecoveryHandler;
+      const acquireLease = flowManager.acquireLease.bind(flowManager);
+      const acquireSpy = jest
+        .spyOn(flowManager, 'acquireLease')
+        .mockImplementation(async (...args) => {
+          if (holdingRejection) await recovered;
+          return acquireLease(...args);
+        });
+      const generationSpy = jest.spyOn(flowManager, 'getLeaseGeneration');
+      const challenge = {
+        serverUrl: server.url,
+        rejectedCredentialSetId: initialTokens.credential_set_id,
+      };
+      try {
+        server.issuedTokens.delete(initialTokens.access_token);
+        const firstRecovery = firstHandler(challenge);
+        void firstRecovery.then(firstRecoveryDone, firstRecoveryDone);
+        await started;
+        const secondRecovery = secondHandler(challenge);
+        await waitFor(() => generationSpy.mock.calls.length >= 2);
+        releaseRejection();
+        await Promise.all([firstRecovery, secondRecovery]);
+
+        expect(
+          server.tokenRequests.filter((request) => request.grantType === 'refresh_token'),
+        ).toHaveLength(1);
+        expect(connection.getOAuthCredentialSetId()).toBe(second.getOAuthCredentialSetId());
+        cleanFirst();
+        cleanSecond();
+        await Promise.all([connection.disconnect(), second.disconnect()]);
+        await Promise.all([connection.connect(), second.connect()]);
+        const tools = await Promise.all([connection.fetchTools(), second.fetchTools()]);
+        expect(tools.every((catalog) => catalog.some((tool) => tool.name === 'echo'))).toBe(true);
+      } finally {
+        releaseRejection();
+        firstRecoveryDone();
+        cleanFirst();
+        cleanSecond();
+        acquireSpy.mockRestore();
+        generationSpy.mockRestore();
+        await safeDisconnect(second);
+      }
+    },
+  );
+
+  it.each([undefined, false, true])(
+    'joins a token-loader refresh during 401 recovery (coordination: %s)',
+    async (oauthRefreshCoordination) => {
+      server = await createOAuthMCPServer({
+        issueRefreshTokens: true,
+        refreshGate: async () => server.issuedTokens.clear(),
+      });
+      const initial = await storeTokens(tokenStore, server, await issueTokens(server));
+      const flowManager = createFlowManager();
+      const basic = {
+        serverName: SERVER_NAME,
+        serverConfig: {
+          type: 'streamable-http' as const,
+          url: server.url,
+          requiresOAuth: true,
+          oauthRefreshCoordination,
+        },
+      };
+      const options = {
+        useOAuth: true as const,
+        user: { id: USER_ID } as IUser,
+        flowManager,
+        tokenMethods: {
+          findToken: tokenStore.findToken,
+          createToken: tokenStore.createToken,
+          replaceTokenIfCurrent: jest.fn(),
+          updateToken: tokenStore.updateToken,
+          deleteTokens: tokenStore.deleteTokens,
+        },
+      };
+      connection = await MCPConnectionFactory.create(basic, options);
+      const cleanup = MCPConnectionFactory.attachRequestOAuthHandler(basic, options, connection);
+      type RecoveryHandler = (challenge: {
+        serverUrl: string;
+        rejectedCredentialSetId?: string;
+      }) => Promise<void>;
+      const recover = connection.listeners('oauthReauthenticationRequired')[0] as RecoveryHandler;
+      let publicationStarted!: () => void;
+      let releasePublication!: () => void;
+      let rejectionStarted!: () => void;
+      const started = new Promise<void>((resolve) => (publicationStarted = resolve));
+      const blocked = new Promise<void>((resolve) => (releasePublication = resolve));
+      const rejection = new Promise<void>((resolve) => (rejectionStarted = resolve));
+      const acquireLease = flowManager.acquireLease.bind(flowManager);
+      const acquireSpy = jest.spyOn(flowManager, 'acquireLease').mockImplementation((...args) => {
+        rejectionStarted();
+        return acquireLease(...args);
+      });
+      try {
+        server.issuedTokens.delete(initial.access_token);
+        await tokenStore.updateToken(
+          { userId: USER_ID, type: 'mcp_oauth', identifier: `mcp:${SERVER_NAME}` },
+          { expiresIn: -1 },
+        );
+        const loading = new TokenLoadingFactory(basic, {
+          ...options,
+          flowManager: createFlowManager(),
+          onOAuthCredentialsChanging: async () => async () => {
+            publicationStarted();
+            await blocked;
+            return 'loader-publication';
+          },
+        }).loadTokens();
+        void loading.catch(() => undefined);
+        await started;
+        const recovering = recover({
+          serverUrl: server.url,
+          rejectedCredentialSetId: initial.credential_set_id,
+        });
+        void recovering.catch(() => undefined);
+        await rejection;
+        releasePublication();
+        const [loaded] = await Promise.all([loading, recovering]);
+
+        expect(
+          server.tokenRequests.filter((request) => request.grantType === 'refresh_token'),
+        ).toHaveLength(1);
+        expect(server.issuedTokens.has(loaded!.access_token)).toBe(true);
+        cleanup();
+        await connection.disconnect();
+        await connection.connect();
+        expect(loaded?.credential_set_id).toBe(connection.getOAuthCredentialSetId());
+        expect((await connection.fetchTools()).some((tool) => tool.name === 'echo')).toBe(true);
+      } finally {
+        releasePublication();
+        cleanup();
+        acquireSpy.mockRestore();
+      }
+    },
+  );
+
   it('lets an in-flight request finish before a concurrent OAuth reconnect', async () => {
     let markSlowRequestStarted: (() => void) | undefined;
     let releaseFirstSlowRequest: (() => void) | undefined;
@@ -694,6 +1007,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const tokenMethods = {
       findToken: tokenStore.findToken,
       createToken: tokenStore.createToken,
+      replaceTokenIfCurrent: jest.fn(),
       updateToken: tokenStore.updateToken,
       deleteTokens: tokenStore.deleteTokens,
     };
@@ -719,6 +1033,8 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const manager = new MCPManager();
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,
@@ -783,6 +1099,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const tokenMethods = {
       findToken: tokenStore.findToken,
       createToken: tokenStore.createToken,
+      replaceTokenIfCurrent: jest.fn(),
       updateToken: tokenStore.updateToken,
       deleteTokens: tokenStore.deleteTokens,
     };
@@ -808,18 +1125,23 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const manager = new MCPManager();
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,
         useSSRFProtection: false,
       }),
     } as unknown as MCPServersRegistry);
-    const oauthStart = jest.fn(async (): Promise<void> => {
-      const authorizedTokens = await issueTokens(server);
-      const storedTokens = await storeTokens(tokenStore, server, authorizedTokens);
-      const flowId = MCPOAuthHandler.generateFlowId(USER_ID, SERVER_NAME);
-      await flowManager.completeFlow(flowId, 'mcp_oauth', storedTokens);
-    });
+    const oauthStart = jest.fn(
+      async (_url: string, options?: t.OAuthStartOptions): Promise<void> => {
+        options?.onPublished?.();
+        const authorizedTokens = await issueTokens(server);
+        const storedTokens = await storeTokens(tokenStore, server, authorizedTokens);
+        const flowId = MCPOAuthHandler.generateFlowId(USER_ID, SERVER_NAME);
+        await flowManager.completeFlow(flowId, 'mcp_oauth', storedTokens);
+      },
+    );
 
     try {
       await expect(
@@ -876,6 +1198,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
           tokenMethods: {
             findToken: tokenStore.findToken,
             createToken: tokenStore.createToken,
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: tokenStore.updateToken,
             deleteTokens: tokenStore.deleteTokens,
           },
@@ -891,6 +1214,15 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     expect(oauthStart).toHaveBeenCalledTimes(1);
     const authorizationUrl = new URL(oauthStart.mock.calls[0][0]);
     expect(authorizationUrl.searchParams.get('resource')).toBe(server.resourceUrl);
+    await expect(
+      MCPTokenStorage.hasStoredAuthorization({
+        userId: USER_ID,
+        serverName: SERVER_NAME,
+        findToken: tokenStore.findToken,
+        validateClientBinding: (clientInfo, metadata) =>
+          MCPOAuthHandler.assertStoredClientBinding(SERVER_NAME, server.url, clientInfo, metadata),
+      }),
+    ).resolves.toBe(false);
   });
 
   it('does not silently refresh an SDK insufficient_scope challenge before starting OAuth', async () => {
@@ -922,6 +1254,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
           tokenMethods: {
             findToken: tokenStore.findToken,
             createToken: tokenStore.createToken,
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: tokenStore.updateToken,
             deleteTokens: tokenStore.deleteTokens,
           },
@@ -938,5 +1271,218 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     const authorizationUrl = new URL(oauthStart.mock.calls[0][0]);
     expect(authorizationUrl.searchParams.get('resource')).toBe(server.resourceUrl);
     expect(authorizationUrl.searchParams.get('scope')).toBe('write');
+  });
+
+  describe('a caller nobody can sign in for', () => {
+    const user = { id: USER_ID } as IUser;
+    const reauthRequired = { name: 'OAuthPromptUnattendedError', code: 'mcp_reauth_required' };
+    let restore: Array<() => void> = [];
+
+    afterEach(() => {
+      for (const undo of restore) undo();
+      restore = [];
+    });
+
+    function deferred() {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => (resolve = done));
+      return { promise, resolve };
+    }
+
+    /** A live connection whose access token the resource has since revoked. */
+    async function connectThenRevoke(options: OAuthTestServerOptions = {}) {
+      server = await createOAuthMCPServer({
+        issueRefreshTokens: true,
+        requireResourceParameter: true,
+        tokenScopes: ['read'],
+        scopesSupported: ['read'],
+        ...options,
+      });
+      const initialTokens = await issueTokens(server);
+      await storeTokens(tokenStore, server, initialTokens);
+      const flowManager = createFlowManager();
+      const tokenMethods = {
+        findToken: tokenStore.findToken,
+        createToken: tokenStore.createToken,
+        replaceTokenIfCurrent: jest.fn(),
+        updateToken: tokenStore.updateToken,
+        deleteTokens: tokenStore.deleteTokens,
+      };
+      const serverConfig = {
+        type: 'streamable-http' as const,
+        url: server.url,
+        initTimeout: 15000,
+        requiresOAuth: true,
+      };
+      connection = await MCPConnectionFactory.create(
+        { serverName: SERVER_NAME, serverConfig },
+        { useOAuth: true, user, flowManager, tokenMethods },
+      );
+      server.issuedTokens.delete(initialTokens.access_token);
+      const isConnectedSpy = jest.spyOn(connection, 'isConnected').mockResolvedValueOnce(true);
+      const manager = new MCPManager();
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+      const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+        isAppServerConfig: jest.fn().mockResolvedValue(false),
+        isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
+        resolveAllowlists: jest.fn().mockResolvedValue({
+          allowedDomains: null,
+          allowedAddresses: null,
+          useSSRFProtection: false,
+        }),
+      } as unknown as MCPServersRegistry);
+      restore.push(
+        () => isConnectedSpy.mockRestore(),
+        () => registrySpy.mockRestore(),
+      );
+
+      const callTool = (
+        overrides: Partial<Parameters<MCPManager['callTool']>[0]> = {},
+      ): Promise<t.FormattedToolResponse> =>
+        manager.callTool({
+          user,
+          serverName: SERVER_NAME,
+          serverConfig,
+          toolName: 'echo',
+          toolArguments: { message: 'unattended' },
+          provider: 'openai',
+          flowManager,
+          tokenMethods,
+          ...overrides,
+        });
+      /** What the owner does in the browser: authorize, then the callback completes the flow. */
+      const completeSignIn = async () => {
+        const stored = await storeTokens(tokenStore, server, await issueTokens(server));
+        await flowManager.completeFlow(
+          MCPOAuthHandler.generateFlowId(USER_ID, SERVER_NAME),
+          'mcp_oauth',
+          stored,
+        );
+      };
+      /** The owner's browser: shown the prompt, signs in only when the test says so. */
+      const shown = deferred();
+      const signIn = deferred();
+      const ownerOAuthStart = jest.fn(
+        async (_url: string, startOptions?: t.OAuthStartOptions): Promise<void> => {
+          startOptions?.onPublished?.();
+          shown.resolve();
+          await signIn.promise;
+          await completeSignIn();
+        },
+      );
+      const refreshes = () =>
+        server.tokenRequests.filter((request) => request.grantType === 'refresh_token').length;
+      return { callTool, ownerOAuthStart, shown, signIn, refreshes };
+    }
+
+    it('does not start a sign-in or wait for one when it opens a connection', async () => {
+      server = await createOAuthMCPServer({ requireResourceParameter: true });
+      const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+        isAppServerConfig: jest.fn().mockResolvedValue(false),
+        isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
+        resolveAllowlists: jest.fn().mockResolvedValue({
+          allowedDomains: [new URL(server.url).host],
+          allowedAddresses: null,
+          useSSRFProtection: false,
+        }),
+      } as unknown as MCPServersRegistry);
+      restore.push(() => registrySpy.mockRestore());
+      const neverPublished = jest.fn();
+
+      await expect(
+        new MCPManager().getUserConnection({
+          serverName: SERVER_NAME,
+          user,
+          serverConfig: {
+            type: 'streamable-http',
+            url: server.url,
+            initTimeout: 15000,
+            requiresOAuth: true,
+          },
+          flowManager: createFlowManager(),
+          tokenMethods: {
+            findToken: tokenStore.findToken,
+            createToken: tokenStore.createToken,
+            replaceTokenIfCurrent: jest.fn(),
+            updateToken: tokenStore.updateToken,
+            deleteTokens: tokenStore.deleteTokens,
+          },
+          oauthStart: neverPublished,
+          unattended: true,
+        }),
+      ).rejects.toThrow('OAuth authentication failed');
+
+      /** Unguarded, this call publishes the prompt and waits out the OAuth handling timeout. */
+      expect(neverPublished).not.toHaveBeenCalled();
+    });
+
+    it('fails a rejected tool call that only a person could recover', async () => {
+      const { callTool, refreshes } = await connectThenRevoke({ rejectRefreshTokens: 10 });
+      const neverPublished = jest.fn();
+
+      await expect(
+        callTool({ unattended: true, oauthStart: neverPublished }),
+      ).rejects.toMatchObject(reauthRequired);
+
+      expect(refreshes()).toBe(1);
+      expect(neverPublished).not.toHaveBeenCalled();
+    });
+
+    it('still recovers through a silent refresh', async () => {
+      const { callTool, refreshes } = await connectThenRevoke();
+      const neverPublished = jest.fn();
+
+      await expect(
+        callTool({ unattended: true, oauthStart: neverPublished }),
+      ).resolves.toBeDefined();
+
+      expect(refreshes()).toBe(1);
+      expect(neverPublished).not.toHaveBeenCalled();
+    });
+
+    it("leaves the owner's open sign-in running and does not wait on it", async () => {
+      const { callTool, ownerOAuthStart, shown, signIn } = await connectThenRevoke({
+        rejectRefreshTokens: 1,
+      });
+
+      const ownerCall = callTool({ oauthStart: ownerOAuthStart });
+      await shown.promise;
+
+      await expect(callTool({ unattended: true })).rejects.toMatchObject(reauthRequired);
+      expect(ownerOAuthStart).toHaveBeenCalledTimes(1);
+
+      signIn.resolve();
+      await expect(ownerCall).resolves.toBeDefined();
+    });
+
+    it('leaves a shared recovery when it stops being silent', async () => {
+      const refreshHeld = deferred();
+      const releaseRefresh = deferred();
+      const { callTool, ownerOAuthStart, shown, signIn } = await connectThenRevoke({
+        rejectRefreshTokens: 1,
+        refreshGate: () => {
+          refreshHeld.resolve();
+          return releaseRefresh.promise;
+        },
+      });
+
+      const ownerCall = callTool({ oauthStart: ownerOAuthStart });
+      await refreshHeld.promise;
+      let outcome: unknown;
+      const unattendedCall = callTool({ unattended: true }).then(
+        () => (outcome = 'resolved'),
+        (error) => (outcome = error),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(outcome).toBeUndefined();
+
+      releaseRefresh.resolve();
+      await unattendedCall;
+      expect(outcome).toMatchObject(reauthRequired);
+      await shown.promise;
+
+      signIn.resolve();
+      await expect(ownerCall).resolves.toBeDefined();
+    });
   });
 });

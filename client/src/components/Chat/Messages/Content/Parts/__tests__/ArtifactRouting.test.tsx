@@ -1,11 +1,43 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { FilesHostProvider } from '@librechat/chat/react';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import { render as renderRtl, screen, fireEvent, act } from '@testing-library/react';
+import type { RenderOptions } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
+import type { FilesHost } from '@librechat/chat/react';
 import type { MutableSnapshot } from 'recoil';
+import { classifyAttachment, renderAttachmentArtifact } from '../attachmentHost';
 import Attachment, { AttachmentGroup } from '../Attachment';
 import { MessageContext } from '~/Providers/MessageContext';
+import '~/Providers/MessagePartsHostContext';
+import '../renderers';
 import store from '~/store';
+
+const filesHost: FilesHost = {
+  renderEndpointIcon: () => null,
+  useDeleteFile: () => () => undefined,
+  getPreviewUrl: () => undefined,
+  useAttachmentDownload: () => () => undefined,
+  useAttachmentPreview: (attachment) => {
+    const status = (attachment as { status?: string } | undefined)?.status;
+    if (status === 'pending' || status === 'failed') {
+      return { status };
+    }
+    return { status: 'ready' };
+  },
+  useKnownFiles: () => [],
+  classifyAttachment,
+  renderAttachmentArtifact,
+};
+
+function render(ui: React.ReactElement, options?: Omit<RenderOptions, 'wrapper'>) {
+  return renderRtl(ui, {
+    ...options,
+    wrapper: ({ children }) => <FilesHostProvider host={filesHost}>{children}</FilesHostProvider>,
+  });
+}
 
 jest.mock('~/hooks', () => ({
   useLocalize:
@@ -17,26 +49,22 @@ jest.mock('~/hooks', () => ({
    * routing tests don't exercise the preview flow itself — stub it
    * to a no-op so it doesn't blow up jsdom rendering. */
   useAttachmentPreviewSync: () => ({ status: 'ready', previewError: undefined, isPolling: false }),
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
-    ref: { current: null },
-  }),
 }));
 
 jest.mock('../LogLink', () => ({
   useAttachmentLink: () => ({ handleDownload: jest.fn() }),
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
-  __esModule: true,
-  default: ({ file, displayName }: { file: { filename?: string }; displayName?: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
+    ref: { current: null },
+  }),
+  FileContainer: ({ file, displayName }: { file: { filename?: string }; displayName?: string }) => (
     <div data-testid="file-container">{displayName ?? file.filename ?? ''}</div>
   ),
-}));
-
-jest.mock('~/components/Chat/Input/Files/FilePreview', () => ({
-  __esModule: true,
-  default: () => <div data-testid="file-preview" />,
+  FilePreview: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({
@@ -94,8 +122,8 @@ const inMessage = (ui: React.ReactElement, isSubmitting: boolean) => (
 
 const renderWith = (ui: React.ReactElement, opts: { streaming?: boolean } = {}) => {
   const streaming = opts.streaming ?? true;
-  const initializeState = (snapshot: MutableSnapshot) => {
-    snapshot.set(store.isSubmittingFamily(0), streaming);
+  const initializeState = () => {
+    getDefaultStore().set(isSubmittingFamily(0), streaming);
   };
   return render(
     <RecoilRoot initializeState={initializeState}>{inMessage(ui, streaming)}</RecoilRoot>,
@@ -124,8 +152,8 @@ const StateProbe = ({ onSnapshot }: { onSnapshot: (snap: ArtifactsSnapshot) => v
 
 const renderWithProbe = (ui: React.ReactElement, opts: { streaming?: boolean } = {}) => {
   const streaming = opts.streaming ?? true;
-  const initializeState = (snap: MutableSnapshot) => {
-    snap.set(store.isSubmittingFamily(0), streaming);
+  const initializeState = () => {
+    getDefaultStore().set(isSubmittingFamily(0), streaming);
   };
   let snapshot: ArtifactsSnapshot = {
     visibility: false,
@@ -147,6 +175,10 @@ const renderWithProbe = (ui: React.ReactElement, opts: { streaming?: boolean } =
     getSnapshot: () => snapshot,
   };
 };
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('Attachment routing for tool artifacts', () => {
   it('renders an HTML artifact card (panel artifact) and exposes a download control', () => {
@@ -459,7 +491,7 @@ describe('ToolArtifactCard click behaviour', () => {
       text: '<h1>previous answer</h1>',
     });
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), true);
+      getDefaultStore().set(isSubmittingFamily(0), true);
       snap.set(store.artifactsVisibility, false);
     };
     let snapshot: ArtifactsSnapshot = {
@@ -612,8 +644,8 @@ describe('ToolArtifactCard click behaviour', () => {
       filename: 'test.py',
       text: 'print("hello")',
     } as Partial<TAttachment>);
-    const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), true);
+    const initializeState = () => {
+      getDefaultStore().set(isSubmittingFamily(0), true);
     };
     let snapshot: ArtifactsSnapshot = {
       visibility: false,
@@ -649,7 +681,7 @@ describe('ToolArtifactCard click behaviour', () => {
       text: '<h1>fresh</h1>',
     } as Partial<TAttachment>);
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), true);
+      getDefaultStore().set(isSubmittingFamily(0), true);
       snap.set(store.artifactsVisibility, false);
     };
     let snapshot: ArtifactsSnapshot = {
@@ -681,7 +713,7 @@ describe('ToolArtifactCard click behaviour', () => {
       text: '<h1>old</h1>',
     } as Partial<TAttachment>);
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
     };
     let snapshot: ArtifactsSnapshot = {
@@ -721,7 +753,7 @@ describe('ToolArtifactCard click behaviour', () => {
       textFormat: 'html',
     });
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
       snap.set(store.previewJustResolved(['test-response', 'just-resolved-xlsx']), true);
     };
@@ -756,7 +788,7 @@ describe('ToolArtifactCard click behaviour', () => {
       textFormat: 'html',
     });
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
       snap.set(store.previewJustResolved(['test-response', 'one-shot-xlsx']), true);
     };
@@ -783,7 +815,7 @@ describe('ToolArtifactCard click behaviour', () => {
     unmount();
     snapshot = { visibility: false, currentArtifactId: null, artifactIds: [] };
     const secondInit = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
       // flag stays at default (false) — already consumed
     };
@@ -877,7 +909,7 @@ describe('AttachmentGroup routing', () => {
     // render first and visually upstage the real artifact below it.
     // Both files route to the `fileAttachments` bucket (no text, no
     // panel-eligible extension) so the test exercises within-bucket
-    // ordering — sort is per-bucket, not cross-bucket.
+    // ordering. Sort is per-bucket, not cross-bucket.
     const empty = baseAttachment({
       file_id: 'empty-zip',
       filename: 'placeholder.zip',
@@ -888,14 +920,12 @@ describe('AttachmentGroup routing', () => {
       filename: 'archive.zip',
       bytes: 1024,
     });
-    const { container } = renderWith(<AttachmentGroup attachments={[empty, real]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_n_files' }));
-    const chips = Array.from(container.querySelectorAll('[data-testid="file-container"]'));
-    expect(chips.length).toBe(2);
-    const filenames = chips.map((c) => c.textContent ?? '');
-    // Real chip must render before the empty placeholder.
-    expect(filenames[0]).toMatch(/archive\.zip/);
-    expect(filenames[1]).toMatch(/placeholder\.zip/);
+    renderWith(<AttachmentGroup attachments={[empty, real]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 files' }));
+    const chips = screen.getAllByRole('button', { name: /\.zip$/ });
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveAccessibleName('archive.zip');
+    expect(chips[1]).toHaveAccessibleName('placeholder.zip');
   });
 
   it('keeps multiple downloadable files in their own collapsed group while images render outwardly', () => {
@@ -923,14 +953,16 @@ describe('AttachmentGroup routing', () => {
       <AttachmentGroup attachments={[first, second, json, image]} />,
     );
 
-    const toggle = screen.getByRole('button', { name: 'com_ui_show_n_files' });
+    const toggle = screen.getByRole('button', { name: 'Show 3 files' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     const panel = document.getElementById(toggle.getAttribute('aria-controls') ?? '');
     expect(panel?.firstElementChild).toHaveAttribute('aria-hidden', 'true');
     expect(screen.getByTestId('image')).toBeInTheDocument();
-    expect(screen.getAllByTestId('file-container').map((chip) => chip.textContent)).not.toContain(
-      'c.json',
-    );
+    expect(
+      screen
+        .getAllByRole('button', { hidden: true })
+        .map((chip) => chip.getAttribute('aria-label')),
+    ).not.toContain('c.json');
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -951,9 +983,8 @@ describe('AttachmentGroup routing', () => {
       filename: 'archive-deadbe.zip',
       bytes: 1024,
     });
-    const { container } = renderWith(<AttachmentGroup attachments={[sandboxFile]} />);
-    const chip = container.querySelector('[data-testid="file-container"]');
-    expect(chip?.textContent).toBe('archive-deadbe.zip');
+    renderWith(<AttachmentGroup attachments={[sandboxFile]} />);
+    expect(screen.getByRole('button', { name: 'archive-deadbe.zip' })).toBeInTheDocument();
   });
 
   it('strips the suffix and restores the dot for a sandbox dotfile rendered through FileContainer', () => {
@@ -968,9 +999,8 @@ describe('AttachmentGroup routing', () => {
       filename: '_.config-abcdef.zip',
       bytes: 12,
     });
-    const { container } = renderWith(<AttachmentGroup attachments={[sandboxDotfile]} />);
-    const chip = container.querySelector('[data-testid="file-container"]');
-    expect(chip?.textContent).toBe('.config.zip');
+    renderWith(<AttachmentGroup attachments={[sandboxDotfile]} />);
+    expect(screen.getByRole('button', { name: '.config.zip' })).toBeInTheDocument();
   });
 
   it('renders pending-preview chips in the panel-artifact row alongside resolved siblings', () => {
@@ -1100,9 +1130,11 @@ describe('AttachmentGroup routing', () => {
     // Mermaid render
     expect(screen.getByTestId('mermaid-render')).toBeInTheDocument();
     // JSON and plain zip are both downloadable file outputs, so they collapse together.
-    const toggle = screen.getByRole('button', { name: 'com_ui_show_n_files' });
+    const toggle = screen.getByRole('button', { name: 'Show 2 files' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    const chipLabels = screen.getAllByTestId('file-container').map((chip) => chip.textContent);
+    const chipLabels = screen
+      .getAllByRole('button', { hidden: true })
+      .map((chip) => chip.getAttribute('aria-label'));
     expect(chipLabels).toContain('archive.zip');
     expect(chipLabels).not.toContain('data.json');
 

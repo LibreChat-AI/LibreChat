@@ -94,18 +94,29 @@ test.describe('subagent context usage totals', () => {
         0,
       );
 
-      const totals = popover.getByTestId('token-usage-totals');
-      await expect(totals).toBeVisible({ timeout: 10000 });
-      await expect(totals.getByRole('heading', { name: 'Totals' })).toBeVisible();
-      await expect(totals.getByText('Input', { exact: true })).toBeVisible();
-      await expect(totals.getByText('Output', { exact: true })).toBeVisible();
+      const branchTotals = popover.getByTestId('token-usage-totals');
+      await expect(branchTotals).toBeVisible({ timeout: 10000 });
+      await expect(branchTotals.getByText('Input (uncached)', { exact: true })).toBeVisible();
+      await expect(branchTotals.getByText('Output', { exact: true })).toBeVisible();
+      await expect(branchTotals.getByText('Subagents (all branches)', { exact: true })).toHaveCount(
+        0,
+      );
 
-      const subagentRow = totals
-        .locator('div.flex.w-full.items-center.justify-between')
-        .filter({ hasText: 'Subagents (all branches)' });
-      await expect(subagentRow).toHaveCount(1);
+      await page.keyboard.press('Escape');
+      await expect(popover).toBeHidden();
+      await page.locator('#export-menu-button:visible, #header-menu-button:visible').click();
+      await page.getByTestId('conversation-info-menu-item').click();
+      const totals = page
+        .getByRole('dialog', { name: 'Conversation info' })
+        .getByTestId('conversation-total-usage');
+
+      const subagentTerm = totals
+        .getByRole('term')
+        .filter({ hasText: /^Subagents \(all branches\)$/ });
+      await expect(subagentTerm).toHaveCount(1);
+      await expect(subagentTerm).toBeVisible();
       await expect(
-        subagentRow.locator(':scope > span').nth(1),
+        subagentTerm.locator('..').getByRole('definition'),
         // The value is compact-formatted when large; a leading non-zero digit
         // proves the all-branches usage emitted by the child is not zero.
       ).toHaveText(/^[1-9]\d*(?:\.\d+)?[KMB]?$/);

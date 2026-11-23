@@ -8,13 +8,23 @@ import {
   resetCatalogWarmup,
 } from '../useCatalogWarmup';
 
-const CATALOG_IDS: CatalogId[] = ['prompts', 'mcpServers', 'mcpTools'];
+const CATALOG_IDS: CatalogId[] = [
+  'prompts',
+  'mcpServers',
+  'mcpTools',
+  'models',
+  'agents',
+  'assistants',
+];
 
 let readyState: Record<CatalogId, boolean>;
 
 function Harness({ authenticated }: { authenticated: boolean }) {
   useCatalogWarmup(authenticated);
   readyState = {
+    models: useCatalogReady('models'),
+    agents: useCatalogReady('agents'),
+    assistants: useCatalogReady('assistants'),
     prompts: useCatalogReady('prompts'),
     mcpServers: useCatalogReady('mcpServers'),
     mcpTools: useCatalogReady('mcpTools'),
@@ -58,10 +68,24 @@ describe('useCatalogWarmup', () => {
 
   it('keeps every catalog gated until idle fires and each stagger elapses', () => {
     render(<Harness authenticated={true} />);
-    expect(readyState).toEqual({ prompts: false, mcpServers: false, mcpTools: false });
+    expect(readyState).toEqual({
+      prompts: false,
+      mcpServers: false,
+      mcpTools: false,
+      models: false,
+      agents: false,
+      assistants: false,
+    });
 
     flushIdle();
-    expect(readyState).toEqual({ prompts: false, mcpServers: false, mcpTools: false });
+    expect(readyState).toEqual({
+      prompts: false,
+      mcpServers: false,
+      mcpTools: false,
+      models: false,
+      agents: false,
+      assistants: false,
+    });
 
     act(() => {
       jest.advanceTimersByTime(0);
@@ -88,7 +112,14 @@ describe('useCatalogWarmup', () => {
       jest.runAllTimers();
     });
     expect(idleCallbacks.length).toBe(0);
-    expect(readyState).toEqual({ prompts: false, mcpServers: false, mcpTools: false });
+    expect(readyState).toEqual({
+      prompts: false,
+      mcpServers: false,
+      mcpTools: false,
+      models: false,
+      agents: false,
+      assistants: false,
+    });
   });
 
   it('releases a catalog immediately on activation', () => {
@@ -143,7 +174,14 @@ describe('useCatalogWarmup', () => {
     act(() => {
       resetCatalogWarmup();
     });
-    expect(readyState).toEqual({ prompts: false, mcpServers: false, mcpTools: false });
+    expect(readyState).toEqual({
+      prompts: false,
+      mcpServers: false,
+      mcpTools: false,
+      models: false,
+      agents: false,
+      assistants: false,
+    });
   });
 
   it('re-arms the schedule after logout so the next session warms again', () => {
@@ -155,7 +193,14 @@ describe('useCatalogWarmup', () => {
     CATALOG_IDS.forEach((id) => expect(readyState[id]).toBe(true));
 
     view.rerender(<Harness authenticated={false} />);
-    expect(readyState).toEqual({ prompts: false, mcpServers: false, mcpTools: false });
+    expect(readyState).toEqual({
+      prompts: false,
+      mcpServers: false,
+      mcpTools: false,
+      models: false,
+      agents: false,
+      assistants: false,
+    });
 
     view.rerender(<Harness authenticated={true} />);
     flushIdle();
@@ -175,7 +220,14 @@ describe('useCatalogWarmup', () => {
     act(() => {
       jest.runAllTimers();
     });
-    expect(readyState).toEqual({ prompts: false, mcpServers: false, mcpTools: false });
+    expect(readyState).toEqual({
+      prompts: false,
+      mcpServers: false,
+      mcpTools: false,
+      models: false,
+      agents: false,
+      assistants: false,
+    });
 
     /** The next session schedules and warms normally */
     view.rerender(<Harness authenticated={true} />);
@@ -198,7 +250,14 @@ describe('useCatalogWarmup', () => {
     idleCallbacks.length = 0;
 
     render(<Harness authenticated={true} />);
-    expect(readyState).toEqual({ prompts: false, mcpServers: false, mcpTools: false });
+    expect(readyState).toEqual({
+      prompts: false,
+      mcpServers: false,
+      mcpTools: false,
+      models: false,
+      agents: false,
+      assistants: false,
+    });
     flushIdle();
     act(() => {
       jest.advanceTimersByTime(0);

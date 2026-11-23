@@ -14,6 +14,11 @@ import {
   createAgentMemoryCallback,
   collectAgentAttachmentStats,
   collectFileIds,
+  collectTurnHistoricalIds,
+  partitionRequestAttachments,
+  collectHistoricalAttachmentIds,
+  admitSteerAttachmentHistory,
+  rollbackSteerAttachmentHistory,
   buildAgentScopedContext,
   getAgentContextAttachments,
   buildAgentContextAttachmentsByAgentId,
@@ -30,6 +35,21 @@ const makeTextFile = (file_id: string, filename: string, text: string): IMongoFi
     bytes: 0,
     source: FileSources.text,
   }) as IMongoFile;
+
+describe('retained search ownership', () => {
+  it('keeps confirmed-deleted code destinations tool-owned without a live pointer', () => {
+    const file = { embedded: false, metadata: { codeDestination: true } } as IMongoFile;
+    expect(isToolOwnedAttachment(file)).toBe(true);
+    expect(isModelBoundAttachmentFile(file)).toBe(false);
+  });
+
+  it('keeps markerless search files tool-owned while vectors await repair', () => {
+    const file = { embedded: false, metadata: { searchDestination: true } } as IMongoFile;
+    expect(isToolOwnedAttachment(file)).toBe(true);
+    expect(isModelBoundAttachmentFile(file)).toBe(false);
+    expect(isToolOwnedAttachment({ embedded: false } as IMongoFile)).toBe(false);
+  });
+});
 
 describe('agent attachment helpers', () => {
   it('excludes tool-only files while retaining extracted text files', () => {
@@ -97,6 +117,167 @@ describe('agent attachment helpers', () => {
       { fileId: 'file-1', mimeType: 'text/plain', bytes: 12, extractedTextChars: 5 },
       { fileId: 'file-2', mimeType: 'application/pdf', bytes: 8, extractedTextChars: 6 },
     ]);
+  });
+
+  it('counts only new files while retaining historical context budgets', () => {
+    const historical = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `history-${index}`,
+      bytes: 10,
+      text: 'context',
+    }));
+    const current = { file_id: 'current', bytes: 5, text: 'new' };
+    const historicalFileIds = collectHistoricalAttachmentIds(historical, [current]);
+    const stats = assertAgentAttachmentLimits({
+      attachments: [...historical, current],
+      historicalFileIds,
+      fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+    });
+
+    expect(stats).toMatchObject({
+      attachmentCount: 1,
+      totalKnownBytes: 115,
+      extractedTextChars: 80,
+    });
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: historical,
+        historicalFileIds,
+        fileConfig: { fileContextCharLimit: 10 },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'extracted_text' }));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: historical,
+        historicalFileIds,
+        fileConfig: { fileContextSizeLimit: 0.00001 },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'bytes' }));
+  });
+
+  it('counts resubmitted historical files and unidentified files as current', () => {
+    const first = { file_id: 'first' };
+    const second = { file_id: 'second' };
+    const historicalFileIds = collectHistoricalAttachmentIds([first, second], [first]);
+    expect(historicalFileIds).toEqual(new Set(['second']));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: [first, first, second, {}],
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2, limit: 1 }));
+  });
+
+  it('reads only the files the request named as new, not those primed again beside them', () => {
+    const fresh = { file_id: 'fresh' };
+    const earlier = Array.from({ length: 10 }, (_, index) => ({ file_id: `earlier-${index}` }));
+    const handed = [fresh, ...earlier];
+
+    const { named, primed } = partitionRequestAttachments(handed, [fresh]);
+    /** The replay skips what the turn was already handed, so it names none of them itself. */
+    const historicalFileIds = collectHistoricalAttachmentIds([...primed], named);
+
+    expect(named).toEqual([fresh]);
+    expect(primed).toEqual(earlier);
+    expect(historicalFileIds.size).toBe(10);
+    expect(
+      assertAgentAttachmentLimits({
+        attachments: handed,
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 10 } } },
+      }).attachmentCount,
+    ).toBe(1);
+  });
+
+  it('keeps an earlier file the request names again as new', () => {
+    const first = { file_id: 'first' };
+    const second = { file_id: 'second' };
+
+    const { named, primed } = partitionRequestAttachments(
+      [first, second, null, {}],
+      [second, { file_id: 'gone' }],
+    );
+
+    expect(named).toEqual([second]);
+    expect(primed).toEqual([first]);
+    expect(collectHistoricalAttachmentIds([first, second, ...primed], named)).toEqual(
+      new Set(['first']),
+    );
+  });
+
+  it('works out the earlier files the same way wherever a turn asks', () => {
+    const fresh = { file_id: 'fresh' };
+    const earlier = [{ file_id: 'earlier-0' }, { file_id: 'earlier-1' }];
+    const handed = [fresh, ...earlier];
+    const ids = new Set(['earlier-0', 'earlier-1']);
+
+    /** The replay knows none of them: it skips what the turn was already handed. */
+    expect(
+      collectTurnHistoricalIds({ historical: [], attachments: handed, requested: [fresh] }),
+    ).toEqual(ids);
+    /** The final admission and a resume know all of them from the stored history. */
+    expect(
+      collectTurnHistoricalIds({ historical: earlier, attachments: handed, requested: [fresh] }),
+    ).toEqual(ids);
+    expect(
+      collectTurnHistoricalIds({ historical: earlier, attachments: earlier, requested: [] }),
+    ).toEqual(ids);
+    /** A request that names an earlier file again makes it new, and a caller that reports
+     *  nothing has every attachment read as named. */
+    expect(
+      collectTurnHistoricalIds({
+        historical: earlier,
+        attachments: handed,
+        requested: [fresh, earlier[0]],
+      }),
+    ).toEqual(new Set(['earlier-1']));
+    expect(
+      collectTurnHistoricalIds({ historical: earlier, attachments: handed, requested: undefined }),
+    ).toEqual(new Set());
+  });
+
+  it('reads a request that named no file as bringing none', () => {
+    const handed = [{ file_id: 'first' }, { file_id: 'second' }];
+
+    expect(partitionRequestAttachments(handed, [])).toEqual({ named: [], primed: handed });
+  });
+
+  it('reads every attachment as named for a caller that does not say which were', () => {
+    const handed = [{ file_id: 'first' }, null, {}];
+
+    expect(partitionRequestAttachments(handed, undefined)).toEqual({ named: handed, primed: [] });
+    expect(partitionRequestAttachments(handed, null)).toEqual({ named: handed, primed: [] });
+  });
+
+  it('rolls back repeated historical occurrences without excluding a retained current file', () => {
+    const historical = { file_id: 'history' };
+    const current = { file_id: 'current' };
+    const state = admitSteerAttachmentHistory({
+      historicalFileIds: new Set([historical.file_id]),
+      attachments: [historical, historical, current, {}],
+    });
+    expect(state.historicalFileIds).toEqual(new Set());
+    rollbackSteerAttachmentHistory({ state, attachments: [historical] });
+    expect(state.historicalFileIds).toEqual(new Set());
+    const historicalFileIds = rollbackSteerAttachmentHistory({
+      state,
+      attachments: [historical, current, {}, { file_id: 'untracked' }],
+    });
+    expect(historicalFileIds).toEqual(new Set([historical.file_id]));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: [historical, current, { file_id: 'later' }],
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2 }));
+  });
+
+  it('preserves exclusions when a legacy admission has no history ledger', () => {
+    const historicalFileIds = new Set(['history']);
+    expect(
+      rollbackSteerAttachmentHistory({ historicalFileIds, attachments: [{ file_id: 'history' }] }),
+    ).toBe(historicalFileIds);
   });
 
   it('counts bytes once per repeated model injection when requested', () => {
@@ -553,6 +734,30 @@ describe('agent attachment helpers', () => {
       observed: 2,
       limit: 1,
     });
+  });
+
+  it('does not count historical shared or scoped files at context extraction', async () => {
+    const historical = Array.from({ length: 11 }, (_, index) =>
+      makeTextFile(`history-${index}`, `history-${index}.txt`, 'history'),
+    );
+    const current = makeTextFile('current', 'current.txt', 'current');
+    const req = {
+      body: { fileTokenLimit: 1000 },
+      config: {},
+    } as ServerRequest;
+    req.config = {
+      ...req.config!,
+      fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+    };
+    await expect(
+      buildAgentScopedContext({
+        agentIds: ['agent-a'],
+        sharedAttachments: [...historical.slice(0, 8), current],
+        historicalFileIds: collectHistoricalAttachmentIds(historical, [current]),
+        attachmentsByAgentId: new Map([['agent-a', historical.slice(8)]]),
+        req,
+      }),
+    ).resolves.toEqual(new Map([['agent-a', expect.stringContaining('history')]]));
   });
 
   it('rejects shared attachments incompatible with a receiving agent', async () => {

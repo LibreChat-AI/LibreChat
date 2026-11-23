@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { NEW_CHAT_PATH, messagesView, selectMockEndpoint, sendMessage } from './helpers';
 
 const INTRO = "Let me establish today's date and gather independent signals in parallel.";
+const PHASE_LABEL = 'Verified runtime configuration and deployment';
 const LABELS = [
   'Established current date, found active incidents and recent chart updates',
   'Checked chart version and loaded the logs schema',
@@ -38,7 +39,7 @@ for (const autoExpandTools of [false, true]) {
         await request.post(`${LABEL_SERVER}/__e2e/behavior`, {
           data: {
             delayMs: 700,
-            phaseLabel: 'Verified runtime configuration and deployment',
+            phaseLabel: PHASE_LABEL,
             labelsByPrompt: Object.fromEntries(
               LABELS.map((text, batch) => [`activity prose ${label} ${batch}`, text]),
             ),
@@ -49,11 +50,14 @@ for (const autoExpandTools of [false, true]) {
 
     await page.goto(NEW_CHAT_PATH);
     await selectMockEndpoint(page, { label: 'Mock Provider F', model: 'mock-model-f' });
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    const server = page.getByRole('menuitemcheckbox', { name: /E2E Memory/ });
+    await page.getByRole('button', { name: 'Attach and tools' }).click();
+    const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+    const server = palette.getByRole('button', { name: /^E2E Memory\b/ });
+    await expect(server).toBeVisible({ timeout: 20_000 });
     await server.click();
-    await expect(server).toHaveAttribute('aria-checked', 'true');
+    await expect(server).toHaveAttribute('aria-pressed', 'true');
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('listitem', { name: 'E2E Memory', exact: true })).toBeVisible();
     expect((await sendMessage(page, `E2E_ACTIVITY_PROSE_REPLY:${label}`)).ok()).toBeTruthy();
 
     const intro = messagesView(page).locator('.message-content p').filter({ hasText: INTRO });
@@ -152,6 +156,12 @@ for (const autoExpandTools of [false, true]) {
       timeout: 30_000,
     });
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
+    /** Settled work intentionally folds its prose; wait for that boundary before reopening. */
+    const phase = messagesView(page).getByRole('button', { name: PHASE_LABEL, exact: true });
+    await expect(phase).toBeVisible({ timeout: 30_000 });
+    await expect(phase).toHaveAttribute('aria-expanded', 'false');
+    await phase.click();
+    await expect(phase).toHaveAttribute('aria-expanded', 'true');
     await expect(intro).toHaveText(INTRO);
   });
 }

@@ -1,16 +1,22 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
+import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import {
+  ROW_GLYPH_SLOT,
+  FailedRevealContext,
+  HeaderActionSlotContext,
+} from '@librechat/chat/components';
 import type {
   TAttachment,
   SearchResultData,
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
-import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
-import { ROW_GLYPH_SLOT } from '../rows';
+import '~/Providers/MessagePartsHostContext';
 import WebSearch from '../WebSearch';
 
 jest.mock('~/hooks', () => ({
@@ -28,16 +34,24 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
-  useProgress: (progress: number) => progress,
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
+    const translations: Record<string, string> = {
+      com_ui_web_searching: 'Searching the web',
+      com_ui_web_searching_again: 'Searching again',
+      com_ui_web_search_processing: 'Processing results',
+      com_ui_web_search_reading: 'Reading sources',
+      com_ui_web_searched: 'Searched the web',
+      com_ui_web_search_source: `${values?.count ?? 1} source`,
+      com_ui_web_search_sources: `${values?.count ?? 0} sources`,
+      com_ui_web_search_details: 'Search details',
+      com_ui_search_query: 'Query',
+    };
+    return translations[key] || key;
+  },
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -51,9 +65,6 @@ jest.mock('~/utils/cn', () => ({
 }));
 
 jest.mock('~/components/Web/SourceHovercard', () => ({
-  FaviconImage: ({ domain }: { domain: string }) => (
-    <span data-testid="favicon" data-domain={domain} />
-  ),
   getCleanDomain: (url: string) => {
     try {
       return new URL(url).hostname.replace('www.', '');
@@ -434,6 +445,28 @@ describe('WebSearch', () => {
       expect(screen.getByText('1 source')).toBeInTheDocument();
     });
 
+    it('asks for the stored call when the details card opens', async () => {
+      const request = jest.fn();
+      render(
+        <RecoilRoot>
+          <SearchContext.Provider value={{ searchResults: undefined }}>
+            <ToolContentRequestContext.Provider value={request}>
+              <WebSearch
+                initialProgress={1}
+                isSubmitting={false}
+                args={{ query: 'shortened quer…' }}
+                output="done"
+              />
+            </ToolContentRequestContext.Provider>
+          </SearchContext.Provider>
+        </RecoilRoot>,
+      );
+      expect(request).not.toHaveBeenCalled();
+      fireEvent.focus(screen.getByLabelText('Search details'));
+      await screen.findByText('shortened quer…');
+      expect(request).toHaveBeenCalled();
+    });
+
     it('renders shopping, image, and place verticals in the expanded panel', () => {
       const attachment = {
         type: Tools.web_search,
@@ -499,7 +532,7 @@ describe('WebSearch', () => {
       expect(screen.getByText('(812)')).toBeInTheDocument();
     });
 
-    it('uses standard tool-row spacing and reveals its chevron on hover or focus', () => {
+    it('uses standard tool-row spacing and always shows its chevron', () => {
       const searchResults = makeSearchResults({
         0: { organic: [makeSource('https://example.com', 'Example')] },
       });
@@ -507,16 +540,11 @@ describe('WebSearch', () => {
       renderWebSearch({ searchResults });
 
       const button = screen.getByRole('button', { name: /Searched the web/ });
-      expect(button.parentElement).toHaveClass('h-5');
-      expect(button.parentElement?.parentElement).toHaveClass('my-1');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
       expect(button).not.toHaveClass('py-1');
       expect(button).not.toHaveClass('transition-colors');
       const chevron = screen.getByTestId('chevron-icon');
-      expect(chevron).toHaveClass(
-        'opacity-0',
-        'group-hover/disclosure:opacity-100',
-        'group-focus-within/disclosure:opacity-100',
-      );
+      expect(chevron).not.toHaveClass('opacity-0');
       expect(chevron).toHaveClass('transition-transform');
       expect(chevron.className).not.toContain('transition-opacity');
     });
@@ -533,7 +561,7 @@ describe('WebSearch', () => {
 
       const completedRow = screen.getByRole('button', { name: /Searched the web/ });
       const completedSlot = completedRow.firstElementChild;
-      expect(completedSlot).toContainElement(screen.getByTestId('favicon'));
+      expect(completedSlot?.querySelector('img[alt="example.com"]')).not.toBeNull();
       for (const token of ROW_GLYPH_SLOT.split(' ')) {
         expect(completedSlot).toHaveClass(token);
       }
@@ -578,5 +606,57 @@ describe('WebSearch', () => {
       const matches = screen.getAllByText('Searching again');
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
+  });
+});
+
+describe('generated single-search label', () => {
+  const search = () =>
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <GeneratedToolLabelContext.Provider value>
+            <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+          </GeneratedToolLabelContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+  it('does not render a redundant searched-the-web disclosure', () => {
+    search();
+    expect(screen.queryByRole('button', { name: /Searched the web/ })).not.toBeInTheDocument();
+  });
+  it('shows the source links directly', () => {
+    search();
+    expect(screen.getByRole('link', { name: /Example result/ })).toBeInTheDocument();
+  });
+  it('puts its details on the title line when the header offers a slot', () => {
+    const slot = document.createElement('span');
+    document.body.appendChild(slot);
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <HeaderActionSlotContext.Provider value={slot}>
+            <GeneratedToolLabelContext.Provider value>
+              <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+            </GeneratedToolLabelContext.Provider>
+          </HeaderActionSlotContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+    const details = screen.getByRole('button', { name: 'Search details' });
+    expect(slot).toContainElement(details);
+    expect(details).not.toHaveClass('opacity-0');
+    slot.remove();
   });
 });

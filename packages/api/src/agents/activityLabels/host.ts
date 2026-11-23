@@ -7,10 +7,10 @@ import type { ClientOptions } from '@librechat/agents';
 import type { EndpointDbMethods, OpenAIConfiguration, ServerRequest } from '~/types';
 import type { ActivityLabelLLM } from './runtime';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { createSafeUser, createSafeAgent } from '~/utils/env';
 import { resolveRequestTenantId } from '~/middleware/tenant';
 import { resolveConfigHeaders } from '~/utils/headers';
 import { omitTitleOptions } from '~/agents/client';
-import { createSafeUser } from '~/utils/env';
 
 /** Additive label fields may precede the rebuilt data-provider artifact in a
  * package-local typecheck, so keep the endpoint view structural here. */
@@ -111,6 +111,7 @@ export function mapCollectedMetadataToUsage(
 
 /** The agent fields the label model resolution needs. */
 export interface ActivityLabelAgent {
+  id?: string;
   endpoint?: string;
   provider?: string;
   model?: string;
@@ -176,13 +177,9 @@ export interface ResolvedReasoningLabelConfig {
 }
 
 /**
- * Reads the per-endpoint `activity*` settings, mirroring how titles resolve
- * theirs: an `endpoints.all` block wins over the named endpoint, which wins
- * over a custom endpoint's own config.
- */
-/**
  * Reads ONE endpoint setting, global-then-named, rather than picking a whole
- * config object.
+ * config object — the same per-field resolution titles use
+ * (`resolveTitleConfig`).
  *
  * Selecting wholesale means any `endpoints.all` block — even one carrying
  * nothing but `headers` — shadows the named/custom endpoint entirely, so a
@@ -485,6 +482,7 @@ export async function resolveActivityLabelModel({
     user: createSafeUser(req.user as IUser | undefined),
     tenantId: resolveRequestTenantId(req),
     body: ids,
+    agent: createSafeAgent(agent),
   });
   return {
     provider,

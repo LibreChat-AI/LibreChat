@@ -11,9 +11,38 @@ import {
   eReasoningEffortSchema,
   eReasoningModeSchema,
   eReasoningContextSchema,
+  reasoningOverrideSchema,
   subagentThreadLineageSchema,
   getGoogleThinkingBudgetBounds,
+  tPresetSchema,
+  EModelEndpoint,
+  getModelKey,
 } from './schemas';
+
+describe('reasoningOverrideSchema', () => {
+  it.each([
+    { key: 'reasoning_effort', value: ReasoningEffort.high },
+    { key: 'effort', value: AnthropicEffort.medium },
+    { key: 'thinkingLevel', value: 'low' },
+    { key: 'thinkingBudget', value: -1 },
+    { key: 'thinkingBudget', value: 32768 },
+    { key: 'thinkingBudget', value: 500000 },
+  ])('accepts a supported request-scoped override: %o', (override) => {
+    expect(reasoningOverrideSchema.parse(override)).toEqual(override);
+  });
+
+  it.each([
+    { key: 'temperature', value: 1 },
+    { key: 'reasoning_effort', value: 'turbo' },
+    { key: 'effort', value: 'none' },
+    { key: 'thinkingLevel', value: 'max' },
+    { key: 'thinkingBudget', value: 1.5 },
+    { key: 'thinkingBudget', value: -2 },
+    { key: 'thinkingBudget', value: 1000, extra: true },
+  ])('rejects an invalid request-scoped override: %o', (override) => {
+    expect(reasoningOverrideSchema.safeParse(override).success).toBe(false);
+  });
+});
 
 describe('anthropicSettings', () => {
   describe('maxOutputTokens.reset()', () => {
@@ -83,8 +112,11 @@ describe('anthropicSettings', () => {
         expect(reset('claude-haiku-5')).toBe(64000);
       });
 
-      it('should return 64K for future versions like claude-haiku-9', () => {
-        expect(reset('claude-haiku-9')).toBe(64000);
+      it('should return 128K for claude-haiku-5-5 and later', () => {
+        expect(reset('claude-haiku-5-5')).toBe(128000);
+        expect(reset('claude-haiku-5.5')).toBe(128000);
+        expect(reset('global.anthropic.claude-haiku-5-5')).toBe(128000);
+        expect(reset('claude-haiku-9')).toBe(128000);
       });
     });
 
@@ -308,6 +340,11 @@ describe('anthropicSettings', () => {
 
       it('should cap at 64K for claude-haiku-4-5 when value exceeds', () => {
         expect(set(80000, 'claude-haiku-4-5')).toBe(64000);
+      });
+
+      it('should cap at 128K for claude-haiku-5-5 when value exceeds', () => {
+        expect(set(100000, 'claude-haiku-5-5')).toBe(100000);
+        expect(set(200000, 'claude-haiku-5-5')).toBe(128000);
       });
     });
 
@@ -758,5 +795,66 @@ describe('tMessageSchema user-submitted provenance', () => {
     [{ path: '/content/0/tool_call/output', field: 'answer', extra: true }],
   ])('rejects invalid exact message-field provenance %#', (userSubmittedMessageFieldPaths) => {
     expect(() => tMessageSchema.parse({ ...message, userSubmittedMessageFieldPaths })).toThrow();
+  });
+});
+
+describe('tPresetSchema', () => {
+  it('strips all unseen-reply state from preset payloads', () => {
+    /* Saving a preset off a live conversation captures read-state fields; none may stamp stale
+       state back onto every conversation it is applied to. */
+    const parsed = tPresetSchema.parse({
+      conversationId: null,
+      endpoint: 'openAI',
+      lastResponseAt: '2026-08-16T10:00:00.000Z',
+      lastResponseMessageId: 'reply-1',
+      lastResponseIsManual: true,
+      isMarkedUnread: true,
+      lastSeenAt: '2026-08-16T09:00:00.000Z',
+    });
+
+    expect(parsed).not.toHaveProperty('lastResponseAt');
+    expect(parsed).not.toHaveProperty('lastResponseMessageId');
+    expect(parsed).not.toHaveProperty('lastResponseIsManual');
+    expect(parsed).not.toHaveProperty('isMarkedUnread');
+    expect(parsed).not.toHaveProperty('lastSeenAt');
+  });
+
+  it('keeps stripping the runtime timestamps presets never carry', () => {
+    const parsed = tPresetSchema.parse({
+      conversationId: null,
+      endpoint: 'openAI',
+      createdAt: '2026-08-16T10:00:00.000Z',
+      updatedAt: '2026-08-16T10:00:00.000Z',
+    });
+
+    expect(parsed).not.toHaveProperty('createdAt');
+    expect(parsed).not.toHaveProperty('updatedAt');
+  });
+});
+
+describe('getModelKey', () => {
+  it.each([
+    ['anthropic.claude-sonnet-4-6-v1:0', 'anthropic'],
+    ['us.anthropic.claude-sonnet-4-6', 'anthropic'],
+    ['us.meta.llama4-maverick-instruct-v1:0', 'meta'],
+    ['amazon.nova-pro-v1:0', 'amazon'],
+    ['amazon.claude-compatible-v1:0', 'amazon'],
+  ])('keys the provider-qualified Bedrock ID %s as %s', (model, expected) => {
+    expect(getModelKey(EModelEndpoint.bedrock, model)).toBe(expected);
+  });
+
+  it.each(['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-3.5-sonnet'])(
+    'keys the bare Bedrock Claude ID %s as anthropic',
+    (model) => {
+      expect(getModelKey(EModelEndpoint.bedrock, model)).toBe('anthropic');
+    },
+  );
+
+  it('keeps a bare Bedrock ID of an unknown family as its own key', () => {
+    expect(getModelKey(EModelEndpoint.bedrock, 'my-profile-alias')).toBe('my-profile-alias');
+  });
+
+  it('keys other endpoints by the model itself', () => {
+    expect(getModelKey(EModelEndpoint.anthropic, 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
   });
 });

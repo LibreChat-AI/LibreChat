@@ -26,13 +26,15 @@ async function expectGaugeAboveZero(page: Page) {
 /** Select the ephemeral MCP server whose real remember_fact tool creates the
  * tool boundary and causes the fake model to take its tool-response path. */
 async function selectEphemeralMCP(page: Page) {
-  await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-  const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(MCP_SERVER_TITLE) });
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const serverItem = page
+    .getByRole('dialog', { name: 'Attach and tools' })
+    .getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) });
   await expect(serverItem).toBeVisible();
   await serverItem.click();
-  await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+  await expect(serverItem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: new RegExp(MCP_SERVER_TITLE) })).toBeVisible();
+  await expect(page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true })).toBeVisible();
 }
 
 /** The popover opens with only the meter visible; its detail is a remembered
@@ -73,7 +75,7 @@ async function runToolTurn(page: Page, prefix: string) {
 }
 
 function directPeerRows(breakdown: Locator) {
-  return breakdown.locator(':scope > *:not(.pl-6)');
+  return breakdown.locator(':scope > *:not(.ps-6)');
 }
 
 function rowValue(row: Locator) {
@@ -107,8 +109,8 @@ test.describe('retained tool context split', () => {
     await expect(toolRow).toHaveCount(1);
     await expect(messageRow).toHaveCount(1);
     // Tool calls and Messages are meter peers, not an indented subset row.
-    await expect(toolRow.locator('xpath=ancestor::*[contains(@class, "pl-6")]')).toHaveCount(0);
-    await expect(messageRow.locator('xpath=ancestor::*[contains(@class, "pl-6")]')).toHaveCount(0);
+    await expect(toolRow.locator('xpath=ancestor::*[contains(@class, "ps-6")]')).toHaveCount(0);
+    await expect(messageRow.locator('xpath=ancestor::*[contains(@class, "ps-6")]')).toHaveCount(0);
 
     const toolValue = (await rowValue(toolRow).innerText()).split('(')[0].trim();
     const messageValue = (await rowValue(messageRow).innerText()).split('(')[0].trim();

@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect, useRef, useMemo } from 'react';
+import { atom, useAtom } from 'jotai';
 import { EarthIcon } from 'lucide-react';
 import { ControlCombobox } from '@librechat/client';
 import { useFormContext, Controller } from 'react-hook-form';
@@ -13,6 +14,7 @@ import type { TAgentCapabilities, AgentForm } from '~/common';
 import { cn, createProviderOption, processAgentOption, getDefaultAgentFormValues } from '~/utils';
 import { useListAgentsQuery, useGetStartupConfig } from '~/data-provider';
 import { useLocalize, useAgentDefaultPermissionLevel } from '~/hooks';
+import MineFilterToggle from '~/components/Agents/MineFilterToggle';
 import { mergeDirtyToolsWithServerActions } from './agentTools';
 
 const keys = new Set(Object.keys(defaultAgentFormValues));
@@ -28,14 +30,22 @@ function AgentSelect({
   setCurrentAgentId,
   createMutation,
   defaultStatefulCodeEnvironment,
+  instructionsPromptReady = true,
 }: {
   selectedAgentId: string | null;
   agentQuery: QueryObserverResult<Agent>;
   setCurrentAgentId: React.Dispatch<React.SetStateAction<string | undefined>>;
   createMutation: UseMutationResult<Agent, Error, AgentCreateParams>;
   defaultStatefulCodeEnvironment: StatefulCodeEnvironment;
+  /** Whether `agentQuery.data` is the expanded agent (the only source of
+   * `instructionsPrompt`) rather than the basic projection, which never carries it.
+   * `false` keeps the form's existing instructions-source/-prompt values instead of
+   * reading a linked agent as unlinked while the expanded query is still loading. */
+  instructionsPromptReady?: boolean;
 }) {
   const localize = useLocalize();
+  const mineAtom = useMemo(() => atom(false), []);
+  const [mine, setMine] = useAtom(mineAtom);
   const lastSelectedAgent = useRef<string | null>(null);
   const {
     control,
@@ -52,8 +62,8 @@ function AgentSelect({
   const { data: startupConfig } = useGetStartupConfig();
   const selectorLimit = normalizeAgentSelectorLimit(startupConfig?.interface?.agentSelectorLimit);
 
-  const { data: agents = null } = useListAgentsQuery(
-    { requiredPermission: permissionLevel },
+  const { data: listedAgents = null } = useListAgentsQuery(
+    { requiredPermission: permissionLevel, ...(mine ? { mine: 1 as const } : {}) },
     {
       select: (res) =>
         res.data.map((agent) =>
@@ -66,6 +76,24 @@ function AgentSelect({
         ),
     },
   );
+
+  const agents = useMemo(() => {
+    const currentAgent = agentQuery.data;
+    if (
+      !mine ||
+      !currentAgent ||
+      currentAgent.id !== selectedAgentId ||
+      listedAgents?.some((agent) => agent.id === selectedAgentId)
+    ) {
+      return listedAgents;
+    }
+    return [
+      ...(listedAgents ?? []),
+      processAgentOption({
+        agent: { ...currentAgent, name: currentAgent.name || currentAgent.id },
+      }),
+    ];
+  }, [listedAgents, mine, agentQuery.data, selectedAgentId]);
 
   const resetAgentForm = useCallback(
     (fullAgent: Agent, preserveDirtyValues = false) => {
@@ -98,6 +126,19 @@ function AgentSelect({
         agentTools.push(tool);
       });
 
+      /** The basic projection never carries `instructionsPrompt`, so deriving from it
+       * here would read a linked agent as unlinked until the expanded query resolves.
+       * Keep whatever the form already has until then. */
+      let resolvedInstructionsPrompt: AgentForm['instructionsPrompt'];
+      let resolvedInstructionsSource: AgentForm['instructionsSource'];
+      if (instructionsPromptReady) {
+        resolvedInstructionsPrompt = fullAgent.instructionsPrompt ?? null;
+        resolvedInstructionsSource = resolvedInstructionsPrompt != null ? 'prompt' : 'inline';
+      } else {
+        resolvedInstructionsPrompt = getValues('instructionsPrompt');
+        resolvedInstructionsSource = getValues('instructionsSource');
+      }
+
       const formValues: Partial<AgentForm & TAgentCapabilities> = {
         ...capabilities,
         agent: update,
@@ -107,14 +148,19 @@ function AgentSelect({
         category: fullAgent.category || 'general',
         // Make sure support_contact is properly loaded
         support_contact: fullAgent.support_contact,
+        conversation_starters: fullAgent.conversation_starters ?? [],
+        conversation_starter_draft: '',
         avatar_file: null,
         avatar_preview: fullAgent.avatar?.filepath ?? '',
         avatar_action: null,
         stateful_code_environment: fullAgent.stateful_code_environment ?? 'user',
         code_environment_id: fullAgent.code_environment_id,
+        code_environment_ids: fullAgent.code_environment_ids ?? [],
         repositoryInstructions: fullAgent.repositoryInstructions,
         code_workspace_id: fullAgent.code_workspace_id,
         git_identity: fullAgent.git_identity,
+        instructionsSource: resolvedInstructionsSource,
+        instructionsPrompt: resolvedInstructionsPrompt,
       };
 
       Object.entries(fullAgent).forEach(([name, value]) => {
@@ -209,7 +255,7 @@ function AgentSelect({
         setValue('tools', mergedDirtyTools, { shouldDirty: true });
       }
     },
-    [getValues, reset, setValue],
+    [getValues, reset, setValue, instructionsPromptReady],
   );
 
   const onSelect = useCallback(
@@ -285,6 +331,7 @@ function AgentSelect({
           selectPlaceholder={field?.value?.value ?? createAgent}
           iconSide="right"
           searchPlaceholder={localize('com_agents_search_name')}
+          searchActions={<MineFilterToggle iconOnly checked={mine} onCheckedChange={setMine} />}
           popoverMaxHeight={SELECTOR_MAX_HEIGHT}
           unsearchedLimit={selectorLimit}
           SelectIcon={field?.value?.icon}
@@ -320,7 +367,8 @@ const MemoizedAgentSelect = memo(
     prevProps.agentQuery.data === nextProps.agentQuery.data &&
     prevProps.agentQuery.isSuccess === nextProps.agentQuery.isSuccess &&
     prevProps.createMutation.data?.id === nextProps.createMutation.data?.id &&
-    prevProps.createMutation.isLoading === nextProps.createMutation.isLoading,
+    prevProps.createMutation.isLoading === nextProps.createMutation.isLoading &&
+    prevProps.instructionsPromptReady === nextProps.instructionsPromptReady,
 );
 MemoizedAgentSelect.displayName = 'AgentSelect';
 

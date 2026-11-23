@@ -77,7 +77,7 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       transport.destroy();
     });
 
-    test('abort callback survives across reconnect cycles', () => {
+    test('abort callback survives across reconnect cycles', async () => {
       const mockPublisher = createMockPublisher();
       const mockSubscriber = {
         on: jest.fn(),
@@ -94,7 +94,7 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       let abortCallbackFired = false;
 
       // Register abort callback (simulates what createJob does)
-      transport.onAbort(streamId, () => {
+      const disposeAbort = await transport.onAbort(streamId, () => {
         abortCallbackFired = true;
       });
 
@@ -115,6 +115,7 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       // Abort callback should fire — it was preserved across the reconnect
       expect(abortCallbackFired).toBe(true);
 
+      disposeAbort();
       sub2.unsubscribe();
       transport.destroy();
     });

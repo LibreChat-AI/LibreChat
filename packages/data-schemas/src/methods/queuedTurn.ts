@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import { reasoningOverrideSchema } from 'librechat-data-provider';
+import {
+  Constants,
+  CODE_APPROVAL_MODES,
+  MAX_FILE_TEXT_PREVIEW_LENGTH,
+} from 'librechat-data-provider';
+import type { TReasoningOverride } from 'librechat-data-provider';
 import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { FilterQuery, Model, Types } from 'mongoose';
 import type {
@@ -8,6 +14,7 @@ import type {
   AgentQueuedTurnFailure,
   AgentQueuedTurnFileRef,
   AgentQueuedTurnRecord,
+  AgentQueuedTurnSteerSource,
   IAgentQueuedTurn,
   IAgentQueuedTurnDocument,
   IAgentQueuedTurnSequence,
@@ -29,6 +36,7 @@ const RETIRED_LANE_RETENTION_MS = 24 * 60 * 60_000;
 const ROOT_LINEAGE_PREDECESSOR_PREFIX = 'root:';
 const CLAIM_LANE_INDEX = 'agent_queued_turn_claim_lane';
 const ADMISSION_STARTED_LANE_INDEX = 'agent_queued_turn_admission_started_lane';
+const ACTIVE_CAPACITY_INDEX = 'agent_queued_turn_active_capacity';
 const NAMESPACE_EXISTS = 48;
 
 interface DuplicateKeyError {
@@ -111,11 +119,30 @@ export interface EnqueueAgentQueuedTurnInput extends AgentQueuedTurnConversation
   quotes?: readonly string[];
   manualSkills?: readonly string[];
   codeApprovalMode?: CodeApprovalMode;
-  /** Internal publication fence, committed with approval-bearing rows. */
+  /** Internal publication fence, committed with approval-bearing and promoted rows. */
   deliveryReservation?: { queuedTurnId: string; deliveryKey: string };
+  reasoningOverride?: TReasoningOverride;
   expectedPredecessorCreatedAt?: number;
   priority?: boolean;
   availableAt?: Date;
+  /** Marks the row as promoted from an unapplied steer. Written with the row,
+   * so no promoted row ever exists without naming its source. */
+  steerSource?: Omit<AgentQueuedTurnSteerSource, 'handoffAt'>;
+}
+
+/** A queue lineage's root: every turn queued behind one run shares this pair.
+ * A lineage opened by a root admission has no epoch, and its turns carry none. */
+export interface AgentQueuedTurnLineage {
+  parentMessageId: string;
+  expectedPredecessorCreatedAt?: number;
+}
+
+/** Plain identifiers, so callers outside data-schemas need no Mongoose types. */
+export interface AgentQueuedTurnPrecedenceInput {
+  userId: string;
+  tenantId?: string;
+  conversationId: string;
+  now: Date;
 }
 
 export interface AgentQueuedTurnClaimFence extends AgentQueuedTurnConversationScope {
@@ -178,7 +205,7 @@ export interface AgentQueuedTurnPredecessor {
 
 function getRootLineagePredecessorId(parentMessageId: string): string {
   return `${ROOT_LINEAGE_PREDECESSOR_PREFIX}${createHash('sha256')
-    .update(requireBoundedString(parentMessageId, 256))
+    .update(requireBoundedString(parentMessageId, Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH))
     .digest('base64url')}`;
 }
 
@@ -238,6 +265,20 @@ export interface AgentQueuedTurnMethods {
       scheduledAt?: Date;
     },
   ) => Promise<ScheduleAgentQueuedTurnResult>;
+  /**
+   * The queue lineage (root parent and root epoch) a generation belongs to:
+   * that of the queued turn it was admitted from, else that of turns already
+   * queued directly against it. The epoch is absent for a lineage a root
+   * admission opened. Null when the generation has no queue lineage yet.
+   */
+  getAgentQueuedTurnGenerationLineage: (
+    input: AgentQueuedTurnConversationScope & { generationCreatedAt: number },
+  ) => Promise<AgentQueuedTurnLineage | null>;
+  /** Records that a not-yet-admitted promoted row now solely owns its steer's
+   * words. Returns whether the row carries that mark afterwards. */
+  confirmAgentQueuedTurnSourceHandoff: (
+    input: AgentQueuedTurnConversationScope & { queuedTurnId: string; at?: Date },
+  ) => Promise<boolean>;
   cancelAgentQueuedTurn: (
     input: AgentQueuedTurnOwnerScope & {
       queuedTurnId: string;
@@ -254,6 +295,8 @@ export interface AgentQueuedTurnMethods {
       leaseUntil: Date;
     },
   ) => Promise<ClaimAgentQueuedTurnResult>;
+  /** Whether a queued user turn owns the conversation's next admission. */
+  hasPendingAgentQueuedTurn: (input: AgentQueuedTurnPrecedenceInput) => Promise<boolean>;
   releaseAgentQueuedTurn: (
     input: AgentQueuedTurnClaimFence &
       (
@@ -312,12 +355,6 @@ export interface AgentQueuedTurnMethods {
       allowLegacyPredecessorInference?: boolean;
     },
   ) => Promise<AgentQueuedTurnPredecessor | null>;
-  drainAgentQueuedTurns: (
-    input: AgentQueuedTurnOwnerScope & {
-      conversationId?: string;
-      settledAt?: Date;
-    },
-  ) => Promise<number>;
   deleteAgentQueuedTurns: (
     input: AgentQueuedTurnOwnerScope & { conversationId?: string },
   ) => Promise<number>;
@@ -434,8 +471,16 @@ function normalizeFiles(files: readonly AgentQueuedTurnFileRef[] | undefined) {
       continue;
     }
     seen.add(fileId);
+    const textPreview = file.textPreview;
+    if (
+      textPreview != null &&
+      (typeof textPreview !== 'string' || textPreview.length > MAX_FILE_TEXT_PREVIEW_LENGTH)
+    ) {
+      throw new TypeError('Agent queued turn file preview has an invalid length');
+    }
     normalized.push({
       file_id: fileId,
+      ...(textPreview != null && { textPreview }),
       ...(normalizeOptionalString(file.type, 256) != null && {
         type: normalizeOptionalString(file.type, 256),
       }),
@@ -521,6 +566,15 @@ function normalizeText(text: string): string {
   return normalized;
 }
 
+function normalizeReasoningOverride(
+  reasoningOverride: TReasoningOverride | undefined,
+): TReasoningOverride | undefined {
+  if (reasoningOverride == null) {
+    return undefined;
+  }
+  return reasoningOverrideSchema.parse(reasoningOverride);
+}
+
 function normalizePredecessor(value: number | undefined): number | undefined {
   if (value == null) {
     return undefined;
@@ -538,10 +592,27 @@ function requireCodeApprovalMode(mode: CodeApprovalMode): CodeApprovalMode {
   return mode;
 }
 
+function normalizeSteerSource(
+  source: NonNullable<EnqueueAgentQueuedTurnInput['steerSource']>,
+): Omit<AgentQueuedTurnSteerSource, 'handoffAt'> {
+  const generationCreatedAt = normalizePredecessor(source.generationCreatedAt);
+  if (generationCreatedAt == null) {
+    throw new TypeError('Agent queued turn steer source requires its generation');
+  }
+  return {
+    steerId: requireBoundedString(source.steerId, 128),
+    clientSteerId: requireBoundedString(source.clientSteerId, 128),
+    generationCreatedAt,
+  };
+}
+
 function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
   const normalized = {
     agentId: requireBoundedString(input.agentId, 256),
-    parentMessageId: requireBoundedString(input.parentMessageId, 256),
+    parentMessageId: requireBoundedString(
+      input.parentMessageId,
+      Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH,
+    ),
     clientRequestId: requireBoundedString(input.clientRequestId, 128),
     text: normalizeText(input.text),
     files: normalizeFiles(input.files),
@@ -550,8 +621,10 @@ function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
     ...(input.codeApprovalMode != null && {
       codeApprovalMode: requireCodeApprovalMode(input.codeApprovalMode),
     }),
+    reasoningOverride: normalizeReasoningOverride(input.reasoningOverride),
     expectedPredecessorCreatedAt: normalizePredecessor(input.expectedPredecessorCreatedAt),
     priority: input.priority === true,
+    ...(input.steerSource != null && { steerSource: normalizeSteerSource(input.steerSource) }),
   };
   if (normalized.text.length === 0 && normalized.files == null && normalized.quotes == null) {
     throw new TypeError('Agent queued turn must contain text, a file, or a quote');
@@ -560,11 +633,12 @@ function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
 }
 
 function fingerprint(payload: ReturnType<typeof normalizeEnqueue>): string {
-  /** Delivery routing is display metadata, not user intent. Excluding it keeps
-   * retries compatible with replicas deployed before the field was persisted. */
+  /** Display metadata is not user intent; retries must survive mixed-version replicas. */
   const stableIntent = {
     ...payload,
-    files: payload.files?.map(({ llmDeliveryPath: _displayMetadata, ...file }) => file),
+    files: payload.files?.map(
+      ({ llmDeliveryPath: _deliveryPath, textPreview: _preview, ...file }) => file,
+    ),
   };
   return createHash('sha256').update(JSON.stringify(stableIntent)).digest('base64url');
 }
@@ -592,6 +666,17 @@ function effectiveDeliveryState(turn: IAgentQueuedTurn) {
     return 'publishing' as const;
   }
   return 'published' as const;
+}
+
+/** Claim order: priority rows first, then ascending sequence. */
+function precedes(
+  row: Pick<IAgentQueuedTurn, 'priority' | 'sequence'>,
+  other: Pick<IAgentQueuedTurn, 'priority' | 'sequence'>,
+): boolean {
+  if (row.priority !== other.priority) {
+    return row.priority === true;
+  }
+  return (row.sequence ?? Number.MAX_SAFE_INTEGER) < (other.sequence ?? Number.MAX_SAFE_INTEGER);
 }
 
 function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
@@ -623,6 +708,7 @@ function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
     ...(turn.quotes != null && { quotes: turn.quotes }),
     ...(turn.manualSkills != null && { manualSkills: turn.manualSkills }),
     ...(turn.codeApprovalMode != null && { codeApprovalMode: turn.codeApprovalMode }),
+    ...(turn.reasoningOverride != null && { reasoningOverride: turn.reasoningOverride }),
     ...(turn.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: turn.expectedPredecessorCreatedAt,
     }),
@@ -631,6 +717,7 @@ function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
     ...(turn.deliveryKey != null && { deliveryKey: turn.deliveryKey }),
     deliveryState: effectiveDeliveryState(turn),
     ...(turn.scheduledAt != null && { scheduledAt: turn.scheduledAt }),
+    ...(turn.steerSource != null && { steerSource: turn.steerSource }),
     ...(turn.claimId != null && { claimId: turn.claimId }),
     ...(turn.claimBy != null && { claimBy: turn.claimBy }),
     ...(turn.claimUntil != null && { claimUntil: turn.claimUntil }),
@@ -685,6 +772,7 @@ function toActiveRecord(turn: IAgentQueuedTurn): AgentQueuedTurnActiveRecord {
     ...(record.quotes != null && { quotes: record.quotes }),
     ...(record.manualSkills != null && { manualSkills: record.manualSkills }),
     ...(record.codeApprovalMode != null && { codeApprovalMode: record.codeApprovalMode }),
+    ...(record.reasoningOverride != null && { reasoningOverride: record.reasoningOverride }),
     ...(record.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: record.expectedPredecessorCreatedAt,
     }),
@@ -693,6 +781,7 @@ function toActiveRecord(turn: IAgentQueuedTurn): AgentQueuedTurnActiveRecord {
     ...(record.deliveryKey != null && { deliveryKey: record.deliveryKey }),
     ...(record.deliveryState != null && { deliveryState: record.deliveryState }),
     ...(record.scheduledAt != null && { scheduledAt: record.scheduledAt }),
+    ...(record.steerSource != null && { steerSource: record.steerSource }),
     createdAt: record.createdAt,
     ...(record.updatedAt != null && { updatedAt: record.updatedAt }),
     ...(record.terminalReceipt != null && { terminalReceipt: record.terminalReceipt }),
@@ -1097,6 +1186,9 @@ export function createAgentQueuedTurnMethods(
     const normalized = normalizeEnqueue(input);
     if (input.codeApprovalMode != null && input.deliveryReservation == null) {
       throw new TypeError('Approval snapshots require a versioned delivery reservation');
+    }
+    if (input.steerSource != null && input.deliveryReservation == null) {
+      throw new TypeError('Promoted steers require a versioned delivery reservation');
     }
     const requestFingerprint = fingerprint(normalized);
     const existing = await Turn()
@@ -1691,6 +1783,29 @@ export function createAgentQueuedTurnMethods(
     };
   }
 
+  async function confirmAgentQueuedTurnSourceHandoff(
+    input: AgentQueuedTurnConversationScope & { queuedTurnId: string; at?: Date },
+  ): Promise<boolean> {
+    const scope = { ...conversationScope(input), _id: input.queuedTurnId };
+    const confirmed = await Turn().updateOne(
+      {
+        ...scope,
+        status: { $in: ['queued', 'claimed'] },
+        steerSource: { $exists: true },
+        'steerSource.handoffAt': { $exists: false },
+      },
+      { $set: { 'steerSource.handoffAt': input.at ?? new Date() } },
+    );
+    if (confirmed.modifiedCount === 1) {
+      return true;
+    }
+    const current = await Turn()
+      .findOne(scope)
+      .select({ steerSource: 1 })
+      .lean<Pick<IAgentQueuedTurn, 'steerSource'>>();
+    return current?.steerSource?.handoffAt != null;
+  }
+
   async function claimNextAgentQueuedTurn(
     input: AgentQueuedTurnConversationScope & {
       queuedTurnId: string;
@@ -1859,6 +1974,87 @@ export function createAgentQueuedTurnMethods(
     return racedClaim == null
       ? { outcome: 'blocked', claim: null }
       : { outcome: 'replayed', claim: racedClaim };
+  }
+
+  /**
+   * True while a claim is admitting a queued turn under an unexpired lease, or
+   * while the lane head is a due `queued` row that `claimNextAgentQueuedTurn`
+   * could acquire. Rows that need recovery or a user decision (a reservation,
+   * an expired claim, an indeterminate admission, a dead row ahead of the
+   * head) block that head and answer false, so callers never wait on them.
+   *
+   * The reads are ordered so that no blocker is older than the turn it blocks.
+   * The active lane is read first, in one query over the capacity index. Its
+   * key (`activeSlot`) is held unchanged from reservation until a terminal
+   * state, so a row moving between `queued` and `claimed` in either direction
+   * is read exactly once, in one state or the other. Blockers are read only
+   * after that, and only for a due head. A blocker that has already cleared (a
+   * dismissed dead row, a finished reservation, a renewed claim) is therefore
+   * never what answers false, and a lane with no due head costs one read.
+   *
+   * The answer holds for the instant of the last read. A turn that becomes
+   * admissible afterwards arrives after the caller and is ordered by the
+   * generation predecessor fence, as any later send is.
+   */
+  async function hasPendingAgentQueuedTurn(
+    input: AgentQueuedTurnPrecedenceInput,
+  ): Promise<boolean> {
+    if (!(input.now instanceof Date) || !Number.isFinite(input.now.getTime())) {
+      throw new TypeError('Agent queued turn precedence requires a valid time');
+    }
+    if (!mongoose.Types.ObjectId.isValid(input.userId)) {
+      return false;
+    }
+    const scope = conversationScope({
+      user: new mongoose.Types.ObjectId(input.userId),
+      ...(input.tenantId != null && { tenantId: input.tenantId }),
+      conversationId: input.conversationId,
+    });
+    type LaneRow = Pick<
+      IAgentQueuedTurn,
+      'status' | 'priority' | 'sequence' | 'availableAt' | 'claimUntil'
+    >;
+    const readActiveLane = () =>
+      Turn()
+        .find({ ...scope, activeSlot: { $exists: true } })
+        .select('status priority sequence availableAt claimUntil')
+        .lean<LaneRow[]>();
+    /** The hint only pins the stable key. When it is refused (the index is
+     * not built yet, or an engine rejects the hint), a planner-chosen read
+     * is still correct apart from that narrow transition window, and a
+     * genuine outage fails this second read too. */
+    const active = await readActiveLane()
+      .hint(ACTIVE_CAPACITY_INDEX)
+      .catch(() => readActiveLane());
+    const now = input.now.getTime();
+    let head: LaneRow | undefined;
+    for (const row of active) {
+      if (row.status === 'claimed' && row.claimUntil != null && row.claimUntil.getTime() > now) {
+        return true;
+      }
+      if (row.status === 'queued' && (head == null || precedes(row, head))) {
+        head = row;
+      }
+    }
+    if (head == null || head.availableAt.getTime() > now) {
+      return false;
+    }
+    const earlier = { sequence: { $lt: head.sequence ?? Number.MAX_SAFE_INTEGER } };
+    const blocker = await Turn().exists({
+      ...scope,
+      $or: [
+        { status: 'reserving' },
+        { status: 'claimed', claimUntil: { $not: { $gt: input.now } } },
+        { status: 'dead', 'terminalReceipt.failure.code': 'ADMISSION_INDETERMINATE' },
+        {
+          status: 'dead',
+          ...(head.priority === true
+            ? { priority: true, ...earlier }
+            : { $or: [{ priority: true }, earlier] }),
+        },
+      ],
+    });
+    return blocker == null;
   }
 
   async function releaseAgentQueuedTurn(
@@ -2562,6 +2758,46 @@ export function createAgentQueuedTurnMethods(
     return { outcome: 'conflict', turn: toRecord(current) };
   }
 
+  async function getAgentQueuedTurnGenerationLineage(
+    input: AgentQueuedTurnConversationScope & { generationCreatedAt: number },
+  ): Promise<AgentQueuedTurnLineage | null> {
+    const generationCreatedAt = normalizePredecessor(input.generationCreatedAt);
+    if (generationCreatedAt == null) {
+      throw new TypeError('Agent queued turn lineage generation is invalid');
+    }
+    const scope = conversationScope(input);
+    type LineageRow = Pick<IAgentQueuedTurn, 'parentMessageId' | 'expectedPredecessorCreatedAt'>;
+    const [admitted, queued] = await Promise.all([
+      Turn()
+        .findOne({
+          ...scope,
+          status: 'admitted',
+          'terminalReceipt.outcome': 'admitted',
+          'terminalReceipt.generationCreatedAt': generationCreatedAt,
+        })
+        .select({ parentMessageId: 1, expectedPredecessorCreatedAt: 1 })
+        .lean<LineageRow>(),
+      Turn()
+        .findOne({
+          ...scope,
+          status: { $in: ['queued', 'claimed'] },
+          expectedPredecessorCreatedAt: generationCreatedAt,
+        })
+        .sort({ sequence: 1 })
+        .select({ parentMessageId: 1, expectedPredecessorCreatedAt: 1 })
+        .lean<LineageRow>(),
+    ]);
+    const root = admitted ?? queued;
+    if (root == null) {
+      return null;
+    }
+    const rootEpoch = normalizePredecessor(root.expectedPredecessorCreatedAt);
+    return {
+      parentMessageId: root.parentMessageId,
+      ...(rootEpoch != null && { expectedPredecessorCreatedAt: rootEpoch }),
+    };
+  }
+
   async function getEffectiveAgentQueuedTurnPredecessor(
     input: AgentQueuedTurnConversationScope & {
       sequence: number;
@@ -2574,7 +2810,10 @@ export function createAgentQueuedTurnMethods(
       throw new TypeError('Agent queued turn sequence must be a positive integer');
     }
     const rootEpoch = normalizePredecessor(input.expectedPredecessorCreatedAt);
-    const rootParentMessageId = requireBoundedString(input.rootParentMessageId, 256);
+    const rootParentMessageId = requireBoundedString(
+      input.rootParentMessageId,
+      Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH,
+    );
     const rootLineagePredecessorId = getRootLineagePredecessorId(rootParentMessageId);
     const predecessors = await Turn()
       .find({
@@ -2663,57 +2902,6 @@ export function createAgentQueuedTurnMethods(
       lineagePredecessorId,
       ...(effectivePredecessorCreatedAt != null && { effectivePredecessorCreatedAt }),
     };
-  }
-
-  async function drainAgentQueuedTurns(
-    input: AgentQueuedTurnOwnerScope & {
-      conversationId?: string;
-      settledAt?: Date;
-    },
-  ): Promise<number> {
-    const settledAt = input.settledAt ?? new Date();
-    const result = await Turn().updateMany(
-      {
-        ...ownerScope(input),
-        ...(input.conversationId != null && {
-          conversationId: requireBoundedString(input.conversationId, 256),
-        }),
-        status: { $in: ['queued', 'claimed'] },
-        admissionStartedAt: { $exists: false },
-      },
-      {
-        $set: {
-          status: 'cancelled',
-          terminalReceipt: {
-            outcome: 'cancelled',
-            settledAt,
-            failure: {
-              code: 'OWNER_DRAINED',
-              message: 'Queued turn owner was drained',
-            },
-          },
-        },
-        $unset: {
-          activeSlot: 1,
-          admissionSlot: 1,
-          claimId: 1,
-          claimBy: 1,
-          claimUntil: 1,
-        },
-      },
-    );
-    await Turn().updateMany(
-      {
-        ...ownerScope(input),
-        ...(input.conversationId != null && {
-          conversationId: requireBoundedString(input.conversationId, 256),
-        }),
-        status: 'cancelled',
-        deliveryKey: { $exists: false },
-      },
-      { $set: { deliveryState: 'retired' } },
-    );
-    return result.modifiedCount;
   }
 
   async function deleteAgentQueuedTurns(
@@ -2990,15 +3178,17 @@ export function createAgentQueuedTurnMethods(
     deferAgentQueuedTurnAdmissionReconciliation,
     reserveAgentQueuedTurnDelivery,
     markQueuedTurnScheduled,
+    confirmAgentQueuedTurnSourceHandoff,
+    getAgentQueuedTurnGenerationLineage,
     cancelAgentQueuedTurn,
     claimNextAgentQueuedTurn,
+    hasPendingAgentQueuedTurn,
     beginAgentQueuedTurnAdmission,
     releaseAgentQueuedTurn,
     markAgentQueuedTurnAdmitted,
     hasAgentQueuedTurnAdmissionReceipt,
     deadLetterAgentQueuedTurn,
     getEffectiveAgentQueuedTurnPredecessor,
-    drainAgentQueuedTurns,
     deleteAgentQueuedTurns,
     prepareAgentQueuedTurnConversationDeletion,
     deletePreparedAgentQueuedTurnConversations,

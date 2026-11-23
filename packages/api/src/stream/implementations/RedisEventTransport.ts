@@ -3,6 +3,13 @@ import { logger } from '@librechat/data-schemas';
 import type { Redis, Cluster } from 'ioredis';
 import type { IEventTransport, PreemptMessage } from '~/stream/interfaces/IJobStore';
 import type { ChunkPublicationOptions } from '~/stream/internal/chunkPublication';
+import type { ReplayLimits, ReplayPublication } from '../internal/replay';
+import {
+  readChunkEmission,
+  parseChunkEmission,
+  stampChunkEmission,
+  registerChunkPublicationCapability,
+} from '~/stream/internal/chunkPublication';
 import {
   MAX_COALESCED_BYTES,
   MAX_COALESCED_EVENTS,
@@ -12,9 +19,9 @@ import {
   REDIS_ABORT_ACK_TIMEOUT_MS,
   REDIS_EVENT_REORDER_TIMEOUT_MS,
 } from '~/stream/internal/timing';
-import { registerChunkPublicationCapability } from '~/stream/internal/chunkPublication';
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
+import { PUBLISH_REPLAY_LUA, READ_REPLAY_LUA } from '../internal/replay';
 
 /**
  * Redis key prefixes for pub/sub channels
@@ -30,6 +37,9 @@ const CHANNELS = {
 const KEYS = {
   /** Atomic sequence counter: shared across all replicas for a given stream */
   sequence: (streamId: string) => `stream:{${streamId}}:seq`,
+  backlog: (streamId: string) => `stream:{${streamId}}:activity-backlog`,
+  publication: (streamId: string) => `stream:{${streamId}}:activity-publication`,
+  backlogBytes: (streamId: string) => `stream:{${streamId}}:activity-bytes`,
   /** Job metadata, used to keep the sequence counter alive for the full job lifetime */
   job: (streamId: string) => `stream:{${streamId}}:job`,
   /** Latest generation epoch, retained briefly beyond the live job hash. */
@@ -70,6 +80,8 @@ interface PubSubMessage {
   events?: unknown[];
   /** Immutable identity of the generation that emitted the event. */
   generationId?: number;
+  /** The emitting manager and its emission count for a CHUNK; absent from older publishers. */
+  emission?: readonly [string, number];
   /** Opaque nonce linking a replacement abort to its owner acknowledgement. */
   abortRequestId?: string;
   /** Payload for PREEMPT messages; fenced by its own createdAt. */
@@ -232,6 +244,11 @@ const ABORT_ACK_TTL_SECONDS = 86400;
 const PROVIDER_DRAIN_TTL_SECONDS = 86400;
 const SUBSCRIPTION_ATTACHMENT_TIMEOUT_MS = 3_000;
 
+interface ReplaySnapshot {
+  frontier: number;
+  events: string[];
+}
+
 interface SubscriptionFrontierWaiter {
   streamId: string;
   resolve: () => void;
@@ -241,6 +258,7 @@ interface SubscriptionFrontierWaiter {
 
 interface ChannelSubscriptionState {
   ready: Promise<void>;
+  cancel?: () => void;
   phase: 'pending' | 'active';
   /** A timed-out predecessor became active while this replacement was pending. */
   fallbackActive: boolean;
@@ -255,6 +273,7 @@ interface StreamSubscribers {
     string,
     {
       onChunk: (event: unknown, generationId?: number) => void;
+      onReplayMessage?: (message: PubSubMessage) => void;
       onDone?: (event: unknown, generationId?: number) => void;
       onError?: (error: string, generationId?: number) => void;
     }
@@ -293,6 +312,12 @@ interface StreamSubscribers {
  * ```
  */
 export class RedisEventTransport implements IEventTransport {
+  private destroyed = false;
+
+  private assertOpen(): void {
+    if (this.destroyed) throw new Error('Redis event transport is closed.');
+  }
+
   /** Redis client for publishing events */
   private publisher: Redis | Cluster;
   /** Redis client for subscribing to events (separate connection required) */
@@ -301,6 +326,8 @@ export class RedisEventTransport implements IEventTransport {
   private streams = new Map<string, StreamSubscribers>();
   /** Track channel subscription state: resolved promise = active, pending = in-flight */
   private channelSubscriptions = new Map<string, ChannelSubscriptionState>();
+  /** Pending waits outlive channel removal until they settle or the transport closes. */
+  private pendingSubscriptions = new Set<ChannelSubscriptionState>();
   /** Counter for generating unique subscriber IDs */
   private subscriberIdCounter = 0;
   /** Coalescable chunk publications awaiting their window flush, per stream */
@@ -327,6 +354,7 @@ export class RedisEventTransport implements IEventTransport {
   }
 
   private getOrCreateStreamState(streamId: string): StreamSubscribers {
+    this.assertOpen();
     const existing = this.streams.get(streamId);
     if (existing) {
       return existing;
@@ -336,7 +364,13 @@ export class RedisEventTransport implements IEventTransport {
     return state;
   }
 
-  private async captureSubscriptionFrontier(streamId: string): Promise<number> {
+  private captureSubscriptionFrontier(streamId: string): Promise<number>;
+  private captureSubscriptionFrontier(streamId: string, replay: true): Promise<ReplaySnapshot>;
+  private async captureSubscriptionFrontier(
+    streamId: string,
+    replay = false,
+  ): Promise<number | ReplaySnapshot> {
+    this.assertOpen();
     const subscriptionFrontierId = randomUUID();
     let operationTimeout: ReturnType<typeof setTimeout> | undefined;
     const observed = new Promise<void>((resolve, reject) => {
@@ -360,9 +394,10 @@ export class RedisEventTransport implements IEventTransport {
        * admission instead of leaving every surviving local subscriber deferred forever. */
       const operation = Promise.all([
         this.publisher.eval(
-          CAPTURE_SUBSCRIPTION_FRONTIER_LUA,
-          1,
+          replay ? READ_REPLAY_LUA : CAPTURE_SUBSCRIPTION_FRONTIER_LUA,
+          replay ? 2 : 1,
           KEYS.sequence(streamId),
+          ...(replay ? [KEYS.backlog(streamId)] : []),
           CHANNELS.events(streamId),
           JSON.stringify({
             type: EventTypes.SUBSCRIPTION_FRONTIER,
@@ -379,8 +414,11 @@ export class RedisEventTransport implements IEventTransport {
         operationTimeout.unref?.();
       });
       const [raw] = await Promise.race([operation, operationDeadline]);
-      const parsed = raw != null ? parseInt(String(raw), 10) : 0;
-      return Number.isNaN(parsed) ? 0 : parsed;
+      this.assertOpen();
+      const counter = replay ? (raw as [string, string[]])[0] : raw;
+      const parsed = counter != null ? parseInt(String(counter), 10) : 0;
+      const frontier = Number.isNaN(parsed) ? 0 : parsed;
+      return replay ? { frontier, events: (raw as [string, string[]])[1] } : frontier;
     } catch (error) {
       const waiter = this.subscriptionFrontierWaiters.get(subscriptionFrontierId);
       if (waiter != null) {
@@ -422,7 +460,7 @@ export class RedisEventTransport implements IEventTransport {
 
     // Set up message handler for all subscriptions
     this.subscriber.on('message', (channel: string, message: string) => {
-      this.handleMessage(channel, message);
+      if (!this.destroyed) this.handleMessage(channel, message);
     });
   }
 
@@ -515,12 +553,14 @@ export class RedisEventTransport implements IEventTransport {
     if (this.pendingBatches.has(streamId)) {
       void this.flushCoalescedChunks(streamId);
     }
+    const emission = readChunkEmission(event);
     return this.publishWithSequence(
       streamId,
       {
         type: EventTypes.CHUNK,
         data: event,
         ...(generationId != null && { generationId }),
+        ...(emission != null && { emission }),
       },
       generationId,
       false,
@@ -558,9 +598,11 @@ export class RedisEventTransport implements IEventTransport {
 
     const batch = pending;
     const payload = JSON.stringify(event);
+    const emission = readChunkEmission(event);
     const [, envelopeSuffix] = RedisEventTransport.buildPayloadParts({
       type: EventTypes.CHUNK,
       ...(generationId != null && { generationId }),
+      ...(emission != null && { emission }),
     });
     batch.events.push(
       payload === undefined ? envelopeSuffix : `,"data":${payload}${envelopeSuffix}`,
@@ -658,6 +700,7 @@ export class RedisEventTransport implements IEventTransport {
   }
 
   private ensureChannelSubscription(streamId: string): Promise<void> {
+    this.assertOpen();
     const channel = CHANNELS.events(streamId);
     const existing = this.channelSubscriptions.get(channel);
     if (existing) {
@@ -673,6 +716,10 @@ export class RedisEventTransport implements IEventTransport {
       fallbackActive: false,
     };
     const deadline = new Promise<never>((_, reject) => {
+      state.cancel = () => {
+        clearTimeout(timeout);
+        reject(new Error('Redis event transport is closed.'));
+      };
       timeout = setTimeout(() => {
         expired = true;
         reject(new Error(`Timed out synchronizing Redis subscription for ${channel}`));
@@ -680,6 +727,7 @@ export class RedisEventTransport implements IEventTransport {
       timeout.unref?.();
     });
     const ready = Promise.race([operation, deadline]).then(() => {
+      this.assertOpen();
       state.phase = 'active';
       state.fallbackActive = false;
       logger.debug(`[RedisEventTransport] Subscription active for channel ${channel}`);
@@ -688,7 +736,7 @@ export class RedisEventTransport implements IEventTransport {
     operation.then(
       () => {
         if (timeout != null) clearTimeout(timeout);
-        if (expired) {
+        if (expired && !this.destroyed) {
           const current = this.channelSubscriptions.get(channel);
           if (current == null || current === state) {
             if (current === state) this.channelSubscriptions.delete(channel);
@@ -705,13 +753,19 @@ export class RedisEventTransport implements IEventTransport {
       },
     );
     this.channelSubscriptions.set(channel, state);
-    void ready.catch((err) => {
-      if (this.channelSubscriptions.get(channel) === state) {
-        this.channelSubscriptions.delete(channel);
-        if (state.fallbackActive) this.trackOrReleaseActiveChannel(streamId, channel);
-      }
-      logger.error(`[RedisEventTransport] Failed to subscribe to ${channel}:`, err);
-    });
+    this.pendingSubscriptions.add(state);
+    void ready.then(
+      () => this.pendingSubscriptions.delete(state),
+      (err) => {
+        this.pendingSubscriptions.delete(state);
+        if (this.destroyed) return;
+        if (this.channelSubscriptions.get(channel) === state) {
+          this.channelSubscriptions.delete(channel);
+          if (state.fallbackActive) this.trackOrReleaseActiveChannel(streamId, channel);
+        }
+        logger.error(`[RedisEventTransport] Failed to subscribe to ${channel}:`, err);
+      },
+    );
     return ready;
   }
 
@@ -899,6 +953,12 @@ export class RedisEventTransport implements IEventTransport {
         }
         return;
       }
+      let replayOnly = streamState.handlers.size > 0;
+      for (const handlers of streamState.handlers.values()) {
+        if (handlers.onReplayMessage == null) replayOnly = false;
+        else handlers.onReplayMessage(parsed);
+      }
+      if (replayOnly) return;
       /** Aborts, preempts, and abort acknowledgements are consumed by
        *  transport-internal waiters (e.g. pending-ack resolution), not SSE
        *  subscribers, so they must flow even with zero local subscribers. */
@@ -1094,7 +1154,14 @@ export class RedisEventTransport implements IEventTransport {
     streamState: StreamSubscribers,
     message: PubSubMessage,
   ): void {
+    if (message.type === EventTypes.CHUNK) {
+      const emission = parseChunkEmission(message.emission);
+      if (emission != null) {
+        stampChunkEmission(message.data, emission);
+      }
+    }
     for (const [, handlers] of streamState.handlers) {
+      if (handlers.onReplayMessage != null) continue;
       switch (message.type) {
         case EventTypes.CHUNK:
           if (message.generationId == null) {
@@ -1208,6 +1275,130 @@ export class RedisEventTransport implements IEventTransport {
     this.channelSubscriptions.delete(channel);
   }
 
+  private async publishReplayable(
+    streamId: string,
+    type: 'chunk' | 'done',
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    const [prefix, suffix] = RedisEventTransport.buildPayloadParts({ type, data: event });
+    await this.publisher.eval(
+      PUBLISH_REPLAY_LUA,
+      4,
+      KEYS.sequence(streamId),
+      KEYS.backlog(streamId),
+      KEYS.backlogBytes(streamId),
+      KEYS.publication(streamId),
+      CHANNELS.events(streamId),
+      prefix,
+      suffix,
+      limits.items,
+      limits.bytes,
+      limits.ttlMs,
+      RedisEventTransport.SEQUENCE_TTL_SECONDS,
+      publication?.id ?? '',
+      publication?.sequence ?? '',
+      type === 'done' ? '1' : '0',
+    );
+  }
+
+  emitReplayableChunk(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    return this.publishReplayable(streamId, 'chunk', event, limits, publication);
+  }
+
+  emitReplayableDone(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    return this.publishReplayable(streamId, 'done', event, limits, publication);
+  }
+
+  private subscribeReplayable(
+    streamId: string,
+    handlers: Parameters<IEventTransport['subscribe']>[1],
+    limits: ReplayLimits,
+  ): ReturnType<IEventTransport['subscribe']> {
+    const state = this.getOrCreateStreamState(streamId);
+    const id = `sub_${++this.subscriberIdCounter}`;
+    let closed = false;
+    let frontier: number | undefined;
+    let pendingBytes = 0;
+    const pending: PubSubMessage[] = [];
+    const unsubscribe = () => {
+      if (closed) return;
+      closed = true;
+      pending.length = 0;
+      if (this.streams.get(streamId) !== state || !state.handlers.delete(id)) return;
+      state.count--;
+      if (state.count === 0) this.detachStreamSubscribers(streamId, state);
+    };
+    const deliver = (message: PubSubMessage) => {
+      if (closed || this.streams.get(streamId) !== state) return;
+      if (message.seq != null) {
+        if (frontier != null && message.seq < frontier) return;
+        frontier = message.seq + 1;
+      }
+      if (message.type === EventTypes.CHUNK) handlers.onChunk(message.data);
+      else if (message.type === EventTypes.DONE) handlers.onDone?.(message.data);
+      else if (message.type === EventTypes.ERROR)
+        handlers.onError?.(message.error ?? 'Unknown error');
+    };
+    state.count++;
+    state.handlers.set(id, {
+      ...handlers,
+      onReplayMessage: (message) => {
+        if (closed) return;
+        if (frontier != null) return deliver(message);
+        pendingBytes += Buffer.byteLength(JSON.stringify(message), 'utf8');
+        if (pending.length >= limits.items || pendingBytes > limits.bytes) {
+          unsubscribe();
+          handlers.onError?.('Activity replay buffer overflow; reconnect to replay.');
+          return;
+        }
+        pending.push(message);
+      },
+    });
+    const ready = this.ensureChannelSubscription(streamId)
+      .then(async () => {
+        const snapshot = await this.captureSubscriptionFrontier(streamId, true);
+        if (closed || this.streams.get(streamId) !== state) return;
+        const messages = snapshot.events.map((raw) => JSON.parse(raw) as PubSubMessage);
+        const retained = new Set(messages.map((message) => message.seq));
+        /** The observed marker fences all receivable pre-snapshot frames. Older owners
+         * publish without retaining, so their buffered frames are not replay duplicates. */
+        for (const message of pending) {
+          if (message.seq != null && message.seq < snapshot.frontier && !retained.has(message.seq))
+            messages.push(message);
+        }
+        messages.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
+        const chunks = messages.filter((message) => message.type === EventTypes.CHUNK);
+        if (handlers.onReplay != null) handlers.onReplay(chunks.map((message) => message.data));
+        else for (const message of chunks) handlers.onChunk(message.data);
+        frontier = snapshot.frontier;
+        for (const message of messages) {
+          if (message.type === EventTypes.DONE) handlers.onDone?.(message.data);
+          else if (message.type === EventTypes.ERROR)
+            handlers.onError?.(message.error ?? 'Unknown error');
+        }
+        pending.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
+        for (const message of pending) deliver(message);
+        pending.length = 0;
+      })
+      .catch((error) => {
+        unsubscribe();
+        throw error;
+      });
+    return { unsubscribe, ready };
+  }
+
   /**
    * Subscribe to events for a stream.
    *
@@ -1217,11 +1408,13 @@ export class RedisEventTransport implements IEventTransport {
     streamId: string,
     handlers: {
       onChunk: (event: unknown, generationId?: number) => void;
+      onReplay?: (events: unknown[]) => void;
       onDone?: (event: unknown, generationId?: number) => void;
       onError?: (error: string, generationId?: number) => void;
     },
     options?: {
       deferSequenceDelivery?: boolean;
+      replay?: ReplayLimits;
       captureSequenceFrontier?: boolean;
       /** @deprecated Use deferSequenceDelivery. */
       deferDeliveryUntilSynchronized?: boolean;
@@ -1231,6 +1424,8 @@ export class RedisEventTransport implements IEventTransport {
     ready?: Promise<void>;
     syncReorderBuffer?: () => void | Promise<void>;
   } {
+    if (options?.replay != null)
+      return this.subscribeReplayable(streamId, handlers, options.replay);
     const subscriberId = `sub_${++this.subscriberIdCounter}`;
 
     // Initialize stream state if needed
@@ -1789,11 +1984,15 @@ export class RedisEventTransport implements IEventTransport {
    * Destroy all resources.
    */
   destroy(): void {
-    for (const streamId of new Set(
-      [...this.subscriptionFrontierWaiters.values()].map((waiter) => waiter.streamId),
-    )) {
-      this.releaseSubscriptionFrontiers(streamId);
+    if (this.destroyed) return;
+    this.destroyed = true;
+    for (const waiter of this.subscriptionFrontierWaiters.values()) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error('Redis event transport is closed.'));
     }
+    this.subscriptionFrontierWaiters.clear();
+    for (const state of this.pendingSubscriptions) state.cancel?.();
+    this.pendingSubscriptions.clear();
     for (const streamId of this.pendingBatches.keys()) {
       this.discardCoalescedChunks(streamId);
     }
@@ -1813,10 +2012,6 @@ export class RedisEventTransport implements IEventTransport {
         waiter.resolve(false);
       }
       state.abortAckWaiters.clear();
-    }
-
-    for (const channel of this.channelSubscriptions.keys()) {
-      this.subscriber.unsubscribe(channel).catch(() => {});
     }
 
     this.channelSubscriptions.clear();

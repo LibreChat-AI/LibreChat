@@ -178,7 +178,7 @@ Total: 3,390ms for 5 orgs (678ms avg, but 165ms median)
 
 ### 1. Org Provisioning
 
-Use `initializeOrgCollections()` from `packages/data-schemas/src/utils/retryWithBackoff.ts` for all new org setup. Process orgs in batches of 10 with `Promise.all()` to parallelize across pools while minimizing per-pool contention.
+Use `createIndexesWithRetry()` from `packages/data-schemas/src/utils/retry.ts` for all new org setup. Process orgs in batches of 10 with `Promise.all()` to parallelize across pools while minimizing per-pool contention.
 
 ### 2. Backup Strategy
 

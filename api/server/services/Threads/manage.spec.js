@@ -10,6 +10,10 @@ const mockSpendTokens = jest.fn().mockResolvedValue();
 
 jest.mock('@librechat/api', () => ({
   countTokens: jest.fn().mockResolvedValue(0),
+  /* The real predicate, because what may raise an unseen indicator is the behaviour under test
+     here; a stub would assert only that this file calls something. */
+  isAnnounceableReply: jest.requireActual('@librechat/api').isAnnounceableReply,
+  announceReply: jest.fn().mockResolvedValue(false),
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -27,7 +31,8 @@ jest.mock('~/server/services/Files/process', () => ({
   retrieveAndProcessFile: jest.fn(),
 }));
 
-const { recordUsage } = require('./manage');
+const { recordUsage, saveAssistantMessage } = require('./manage');
+const { saveConvo, saveMessage } = require('~/models');
 
 describe('recordUsage', () => {
   beforeEach(() => {
@@ -86,6 +91,62 @@ describe('recordUsage', () => {
     expect(mockSpendTokens).toHaveBeenCalledWith(
       expect.objectContaining({ transactions: undefined }),
       expect.any(Object),
+    );
+  });
+});
+
+describe('saveAssistantMessage', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    saveMessage.mockResolvedValue({ messageId: 'assistant-msg' });
+    saveConvo.mockResolvedValue({});
+  });
+
+  const params = {
+    endpoint: 'assistants',
+    conversationId: 'convo-123',
+    messageId: 'assistant-msg',
+    parentMessageId: 'user-msg',
+    text: 'done',
+    model: 'gpt-4',
+  };
+
+  it('asks saveConvo to stamp the reply at write time', async () => {
+    /* A precomputed stamp can be outranked by a catch-up recorded while saveConvo's own reads
+       are in flight, which would leave the persisted reply reading as already seen. */
+    await saveAssistantMessage({ user: { id: 'user-123' }, body: {} }, params);
+
+    expect(saveConvo).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.not.objectContaining({ lastResponseAt: expect.anything() }),
+      expect.objectContaining({ stampReply: true }),
+    );
+  });
+
+  it.each([
+    ['no content and no text', { ...params, text: undefined, content: undefined }],
+    ['an empty content array', { ...params, text: undefined, content: [] }],
+    ['whitespace-only text', { ...params, text: '   ' }],
+  ])('does not stamp an assistant row with %s', async (_case, emptyParams) => {
+    /* Acknowledging a reply needs the stamped message on screen, so a row that renders nothing
+       would leave a dot that opening the conversation could never clear. */
+    await saveAssistantMessage({ user: { id: 'user-123' }, body: {} }, emptyParams);
+
+    expect(saveConvo).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ stampReply: false }),
+    );
+    expect(saveConvo.mock.calls[0][2]).not.toHaveProperty('replyMessageId');
+  });
+
+  it('never stamps a temporary conversation', async () => {
+    await saveAssistantMessage({ user: { id: 'user-123' }, body: { isTemporary: true } }, params);
+
+    expect(saveConvo).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ stampReply: false }),
     );
   });
 });

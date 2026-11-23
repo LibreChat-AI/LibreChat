@@ -1,8 +1,8 @@
 import React from 'react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { useFormContext, Controller } from 'react-hook-form';
-import { useLocalize } from '~/hooks';
 import InputWithLabel from './InputWithLabel';
+import { useLocalize } from '~/hooks';
 
 const BedrockConfig = ({
   userProvideAccessKeyId,

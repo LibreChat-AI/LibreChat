@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { Plus } from 'lucide-react';
-import { SelectDropDown } from '@librechat/client';
+import { Dropdown } from '@librechat/client';
 import {
   Tools,
   FileSources,
@@ -20,7 +20,6 @@ import type { UseMutationResult } from '@tanstack/react-query';
 import type { UseFormReset } from 'react-hook-form';
 import type { Actions, ExtendedFile, AssistantForm, TAssistantOption } from '~/common';
 import { useListAssistantsQuery } from '~/data-provider';
-import { cn, createDropdownSetter } from '~/utils';
 import { useFileMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
@@ -242,45 +241,28 @@ export default function AssistantSelect({
   }, [selectedAssistant, query.data, onSelect]);
 
   const createAssistant = localize('com_ui_create_assistant');
+  const assistants = query.data ?? [];
+  const selectedValue = typeof value === 'string' ? value : (value.value?.toString() ?? '');
   return (
-    <SelectDropDown
-      value={!value ? createAssistant : value}
-      setValue={createDropdownSetter(onSelect)}
-      availableValues={
-        query.data ?? [
-          {
-            label: 'Loading...',
-            value: '',
-          },
-        ]
-      }
-      iconSide="left"
-      showAbove={false}
-      showLabel={false}
-      emptyTitle={true}
-      containerClassName="flex-grow"
-      searchClassName="dark:from-gray-850"
+    <Dropdown
+      variant="field"
+      className="w-auto min-w-0 grow"
+      /** Kept from the previous picker, so existing locators still find it. */
+      testId="select-dropdown-button"
+      ariaLabel={localize('com_ui_assistant')}
+      value={selectedValue}
+      placeholder={createAssistant}
+      onChange={onSelect}
+      searchable={assistants.length > 10}
       searchPlaceholder={localize('com_assistants_search_name')}
-      optionsClass="hover:bg-gray-20/50 dark:border-gray-700"
-      optionsListClass="rounded-lg shadow-lg dark:bg-gray-850 dark:border-gray-700 dark:last:border"
-      currentValueClass={cn(
-        'text-base font-semibold text-gray-900 dark:text-white',
-        value === '' ? 'text-gray-500' : '',
-      )}
-      className={cn(
-        'mt-1 rounded-md dark:border-gray-700 dark:bg-gray-850',
-        'z-50 flex h-[40px] w-full flex-none items-center justify-center px-4 hover:cursor-pointer hover:border-green-500 focus:border-gray-400',
-      )}
-      renderOption={() => (
-        <span className="flex items-center gap-1.5 truncate">
-          <span className="absolute inset-y-0 left-0 flex items-center pl-2 text-gray-800 dark:text-gray-100">
-            <Plus className="w-[16px]" />
-          </span>
-          <span className={cn('ml-4 flex h-6 items-center gap-1 text-gray-800 dark:text-gray-100')}>
-            {createAssistant}
-          </span>
-        </span>
-      )}
+      searchEmptyText={localize('com_ui_no_results_found')}
+      options={[
+        { value: '', label: createAssistant, icon: <Plus className="size-4" aria-hidden="true" /> },
+        ...assistants.map((assistant) => ({
+          value: assistant.id,
+          label: assistant.name ?? '',
+        })),
+      ]}
     />
   );
 }

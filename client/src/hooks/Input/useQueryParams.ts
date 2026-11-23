@@ -1,33 +1,64 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState, useMemo } from 'react';
+import isEqual from 'lodash/isEqual';
 import { useRecoilValue } from 'recoil';
-import { useSearchParams } from 'react-router-dom';
-import { QueryClient, useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
+import { useLocation, useSearchParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  QueryKeys,
+  Constants,
+  parseConvo,
+  EModelEndpoint,
+  PermissionBits,
+  getEndpointField,
+  getDefaultParamsEndpoint,
+} from 'librechat-data-provider';
 import type {
   AgentListResponse,
   TEndpointsConfig,
+  TMessage,
+  TConversation,
   TStartupConfig,
   TPreset,
 } from 'librechat-data-provider';
+import type { QueryClient } from '@tanstack/react-query';
 import {
   clearModelForNonEphemeralAgent,
   removeUnavailableTools,
   specDisplayFieldReset,
   processValidSettings,
-  getModelSpecIconURL,
+  mergeQuerySettingsWithSpec,
+  getModelSpecPreset,
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
+import {
+  startupConfigKey,
+  useGetAgentByIdQuery,
+  getAgentListQueryData,
+  setAgentListQueryData,
+} from '~/data-provider';
 import { useAuthContext, useAgentsMap, useDefaultConvo, useSubmitMessage } from '~/hooks';
-import { startupConfigKey, useGetAgentByIdQuery } from '~/data-provider';
 import { useChatContext, useChatFormContext } from '~/Providers';
+import { isHistoryRevalidating } from '~/hooks/Chat/ask/guards';
+import { consumeComposerQuery } from '~/utils/drafts';
 import store from '~/store';
 
 const PROJECT_ID_SEARCH_PARAM = 'projectId';
 
-const injectAgentIntoAgentsMap = (queryClient: QueryClient, agent: any) => {
+/** What the history observer reports while a submission waits for the history to settle. */
+const HISTORY_SETTLING_PROPS: Array<'status' | 'fetchStatus' | 'dataUpdatedAt'> = [
+  'status',
+  'fetchStatus',
+  'dataUpdatedAt',
+];
+const NO_PROPS: never[] = [];
+
+const injectAgentIntoAgentsMap = (
+  queryClient: QueryClient,
+  agent: AgentListResponse['data'][number],
+) => {
   const editCacheKey = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT }];
-  const editCache = queryClient.getQueryData<AgentListResponse>(editCacheKey);
+  const editCache = getAgentListQueryData(queryClient, editCacheKey);
 
   if (editCache?.data && !editCache.data.some((cachedAgent) => cachedAgent.id === agent.id)) {
     // Inject agent into EDIT cache so dropdown can display it
@@ -35,53 +66,294 @@ const injectAgentIntoAgentsMap = (queryClient: QueryClient, agent: any) => {
       ...editCache,
       data: [agent, ...editCache.data],
     };
-    queryClient.setQueryData(editCacheKey, updatedCache);
+    setAgentListQueryData(queryClient, editCacheKey, updatedCache);
     logger.log('agent', 'Injected URL agent into cache:', agent);
   }
 };
 
-/**
- * Hook that processes URL query parameters to initialize chat with specified settings and prompt.
- * Handles model switching, prompt auto-filling, and optional auto-submission with race condition protection.
- * Supports immediate or deferred submission based on whether settings need to be applied first.
- */
+/** Stages URL prompts, then auto-submits once normalized conversation settings match. */
 export default function useQueryParams({
   textAreaRef,
+  routed = true,
+  routePending = false,
+  targetReady = true,
+  onBeforePrompt,
+  onPromptSettled,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
+  /**
+   * Whether this composer is the one the route's query addresses. One beside it holds another
+   * conversation, which the route never names, so it does not watch the query at all.
+   */
+  routed?: boolean;
+  routePending?: boolean;
+  targetReady?: boolean;
+  onBeforePrompt?: () => void;
+  onPromptSettled?: (text: string, conversationId: string | null | undefined) => void;
 }) {
   const maxAttempts = 50;
   const attemptsRef = useRef(0);
   const MAX_SETTINGS_WAIT_MS = 3000;
   const processedRef = useRef(false);
   const pendingSubmitRef = useRef(false);
-  const settingsAppliedRef = useRef(false);
+  const validatingRef = useRef(false);
   const submissionHandledRef = useRef(false);
   const promptTextRef = useRef<string | null>(null);
   const validSettingsRef = useRef<TPreset | null>(null);
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const awaitingHistoryRef = useRef(false);
+  /** Mirrors the ref for the one thing that has to render on it: the history observer below
+   *  listens only while a submission is waiting. */
+  const [awaitingHistory, setAwaitingHistory] = useState(false);
+  const requestIdRef = useRef(0);
+  const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
+  const routePendingRef = useRef(routePending);
+  routePendingRef.current = routePending;
+  const targetReadyRef = useRef(targetReady);
+  targetReadyRef.current = targetReady;
+  const onPromptSettledRef = useRef(onPromptSettled);
+  onPromptSettledRef.current = onPromptSettled;
   const methods = useChatFormContext();
   const [searchParams, setSearchParams] = useSearchParams();
+  const setSearchParamsRef = useRef(setSearchParams);
+  setSearchParamsRef.current = setSearchParams;
+  const location = useLocation();
+  const searchIdentity = useMemo(() => {
+    const params = new URLSearchParams(searchParams);
+    params.sort();
+    return params.toString();
+  }, [searchParams]);
+  const requestIdentity = useMemo(() => {
+    const params = new URLSearchParams(searchIdentity);
+    params.delete(PROJECT_ID_SEARCH_PARAM);
+    return params.toString();
+  }, [searchIdentity]);
+  const previousRequestIdentityRef = useRef(requestIdentity);
+  const route = {
+    pathname: location.pathname,
+    search: searchIdentity,
+    projectId: searchParams.get(PROJECT_ID_SEARCH_PARAM),
+  };
+  const originRouteRef = useRef(route);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const originConversationRef = useRef<string | null | undefined>(null);
+  const destinationRef = useRef<{
+    conversationId: string;
+    chatProjectId: TConversation['chatProjectId'];
+    route: typeof route;
+  } | null>(null);
+  const cancelledRef = useRef(false);
+  const mountedRef = useRef(true);
   const getDefaultConversation = useDefaultConvo();
   const modularChat = useRecoilValue(store.modularChat);
   const availableTools = useRecoilValue(store.availableTools);
   const { submitMessage } = useSubmitMessage();
+  const submitMessageRef = useRef(submitMessage);
+  submitMessageRef.current = submitMessage;
 
   const queryClient = useQueryClient();
-  const { conversation, newConversation } = useChatContext();
+  const { conversation, newConversation, isSubmitting, index = 0 } = useChatContext();
+  /**
+   * A new chat has no run of its own, so a busy composer there is still releasing the run of the
+   * conversation it just left (a queued message started in a new chat navigates mid-run). `ask`
+   * refuses until a commit without that run has flushed its effects, so the auto-submit waits for
+   * an effect of this hook to observe one instead of spending its only attempt on that refusal.
+   */
+  const composerReleasedRef = useRef(!isSubmitting);
+  if (isSubmitting) {
+    composerReleasedRef.current = false;
+  }
 
   const urlAgentId = searchParams.get('agent_id') || '';
   const { data: urlAgent } = useGetAgentByIdQuery(urlAgentId);
 
   const getPreservedSearchParams = useCallback(() => {
     const preservedParams = new URLSearchParams();
-    const projectId = searchParams.get(PROJECT_ID_SEARCH_PARAM);
+    const projectId = routeRef.current.projectId;
     if (projectId) {
       preservedParams.set(PROJECT_ID_SEARCH_PARAM, projectId);
     }
     return preservedParams;
-  }, [searchParams]);
+  }, []);
+
+  const conversationRef = useRef(conversation);
+  conversationRef.current = conversation;
+
+  const clearConsumedSearchParams = useCallback(() => {
+    const params = getPreservedSearchParams();
+    consumeComposerQuery(
+      index,
+      conversationRef.current?.conversationId ?? Constants.NEW_CONVO,
+      routeRef.current.pathname,
+      routeRef.current.search,
+      params.toString(),
+    );
+    setSearchParamsRef.current(params, { replace: true });
+  }, [index, getPreservedSearchParams]);
+
+  const awaitsComposerRelease = useCallback(() => {
+    const conversationId = conversationRef.current?.conversationId;
+    return (
+      !composerReleasedRef.current &&
+      (conversationId == null || conversationId === Constants.NEW_CONVO)
+    );
+  }, []);
+
+  const ownsComposer = useCallback(() => {
+    const currentId = conversationRef.current?.conversationId;
+    const current = routeRef.current;
+    return (
+      ((current.projectId === originRouteRef.current.projectId &&
+        current.pathname === originRouteRef.current.pathname) ||
+        (destinationRef.current != null &&
+          current.pathname === destinationRef.current.route.pathname &&
+          current.projectId === destinationRef.current.route.projectId)) &&
+      (!processedRef.current ||
+        currentId == null ||
+        currentId === originConversationRef.current ||
+        currentId === destinationRef.current?.conversationId) &&
+      (destinationRef.current == null ||
+        currentId !== destinationRef.current.conversationId ||
+        (conversationRef.current?.chatProjectId ?? null) === destinationRef.current.chatProjectId)
+    );
+  }, []);
+
+  const ownsRequest = useCallback(
+    (requestId = requestIdRef.current) =>
+      requestId === requestIdRef.current &&
+      mountedRef.current &&
+      !cancelledRef.current &&
+      ((routeRef.current.pathname === originRouteRef.current.pathname &&
+        routeRef.current.search === originRouteRef.current.search) ||
+        (routeRef.current.pathname === destinationRef.current?.route.pathname &&
+          routeRef.current.search === destinationRef.current.route.search)) &&
+      ownsComposer(),
+    [ownsComposer],
+  );
+
+  /** Match the route that useNewConvo writes, including its inherited project. */
+  const expectDestination = useCallback((template: Partial<TConversation>) => {
+    const conversationId = template.conversationId ?? 'new';
+    const params = new URLSearchParams(originRouteRef.current.search);
+    params.delete(PROJECT_ID_SEARCH_PARAM);
+    const projectId = conversationId === 'new' ? template.chatProjectId || null : null;
+    if (projectId) {
+      params.set(PROJECT_ID_SEARCH_PARAM, projectId);
+    }
+    params.sort();
+    destinationRef.current = {
+      conversationId,
+      chatProjectId: template.chatProjectId ?? null,
+      route: { pathname: `/c/${conversationId}`, search: params.toString(), projectId },
+    };
+  }, []);
+
+  /** Existing chats refuse sends until their history has loaded and settled. */
+  const isHistoryPending = useCallback(() => {
+    const conversationId = conversationRef.current?.conversationId;
+    if (conversationId == null || conversationId === Constants.NEW_CONVO) {
+      return false;
+    }
+    const state = queryClient.getQueryState([QueryKeys.messages, conversationId]);
+    if (state?.status === 'error') {
+      return false;
+    }
+    return state?.data == null || isHistoryRevalidating(queryClient, conversationId);
+  }, [queryClient]);
+
+  const cancelRequest = useCallback(() => {
+    requestIdRef.current += 1;
+    cancelledRef.current = true;
+    processedRef.current = true;
+    submissionHandledRef.current = true;
+    pendingSubmitRef.current = false;
+    validatingRef.current = false;
+    if (settingsTimeoutRef.current) {
+      clearTimeout(settingsTimeoutRef.current);
+      settingsTimeoutRef.current = null;
+    }
+    setSubmissionStatus('idle');
+  }, []);
+
+  useEffect(() => {
+    const identityChanged = previousRequestIdentityRef.current !== requestIdentity;
+    previousRequestIdentityRef.current = requestIdentity;
+    const prompt = searchParams.get('prompt') || searchParams.get('q');
+    if (identityChanged && prompt) {
+      /** Project rewrites retain this identity; a new prompt URL starts a separate request. */
+      if (settingsTimeoutRef.current) {
+        clearTimeout(settingsTimeoutRef.current);
+        settingsTimeoutRef.current = null;
+      }
+      requestIdRef.current += 1;
+      attemptsRef.current = 0;
+      awaitingHistoryRef.current = false;
+      setAwaitingHistory(false);
+      processedRef.current = false;
+      submissionHandledRef.current = false;
+      pendingSubmitRef.current = false;
+      validatingRef.current = false;
+      promptTextRef.current = null;
+      validSettingsRef.current = null;
+      originConversationRef.current = null;
+      destinationRef.current = null;
+      originRouteRef.current = routeRef.current;
+      cancelledRef.current = false;
+      setSubmissionStatus('idle');
+    }
+    if (
+      ((!submissionHandledRef.current || validatingRef.current) && !ownsRequest()) ||
+      (submissionStatus === 'failed' && !ownsComposer())
+    ) {
+      cancelRequest();
+    }
+  }, [
+    location,
+    conversation,
+    searchIdentity,
+    requestIdentity,
+    searchParams,
+    submissionStatus,
+    ownsComposer,
+    ownsRequest,
+    cancelRequest,
+  ]);
+
+  const areSettingsApplied = useCallback(() => {
+    const convo = conversationRef.current;
+    if (!convo) return false;
+    if (!validSettingsRef.current) return true;
+
+    const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]) ?? {};
+    const normalizedSettings = convo.endpoint
+      ? parseConvo({
+          endpoint: convo.endpoint,
+          endpointType: convo.endpointType,
+          conversation: validSettingsRef.current,
+          defaultParamsEndpoint: getDefaultParamsEndpoint(endpointsConfig, convo.endpoint),
+        })
+      : validSettingsRef.current;
+
+    for (const [key, value] of Object.entries(validSettingsRef.current)) {
+      if (['presetOverride', 'iconURL', 'modelLabel'].includes(key)) {
+        continue;
+      }
+
+      let expectedValue = normalizedSettings?.[key];
+      if (key === 'endpoint' || (key === 'tools' && value != null)) {
+        expectedValue = value;
+      } else if (key === 'endpointType') {
+        expectedValue = value ?? getEndpointField(endpointsConfig, convo.endpoint, 'type');
+      }
+      if (!isEqual(convo[key], expectedValue)) {
+        return false;
+      }
+    }
+
+    return true;
+  }, [queryClient]);
 
   /**
    * Applies settings from URL query parameters to create a new conversation.
@@ -98,14 +370,10 @@ export default function useQueryParams({
         const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
         const modelSpecs = startupConfig?.modelSpecs?.list ?? [];
         const spec = modelSpecs.find((s) => s.name === newPreset.spec);
-        if (!spec) {
-          return;
+        if (spec) {
+          newPreset = mergeQuerySettingsWithSpec(getModelSpecPreset(spec), newPreset);
         }
-        newPreset = {
-          ...spec.preset,
-          iconURL: getModelSpecIconURL(spec),
-          spec: spec.name,
-        } as TPreset;
+        /** Hidden specs remain opaque here and are resolved server-side by name. */
       }
 
       let newEndpoint = newPreset.endpoint ?? '';
@@ -125,6 +393,12 @@ export default function useQueryParams({
             break;
           }
         }
+      }
+
+      clearModelForNonEphemeralAgent(newPreset);
+      validSettingsRef.current = newPreset;
+      if (areSettingsApplied()) {
+        return true;
       }
 
       const {
@@ -170,21 +444,32 @@ export default function useQueryParams({
 
         /* We don't reset the latest message, only when changing settings mid-converstion */
         logger.log('conversation', 'Switching conversation from query params', currentConvo);
+        expectDestination(currentConvo);
         newConversation({
           template: currentConvo,
           preset: newPreset,
           keepAddedConvos: true,
+          keepComposerState: true,
         });
-        return;
+        return true;
       }
 
+      const newTemplate = {
+        chatProjectId: conversation?.chatProjectId ?? null,
+        ...(newPreset.agent_id ? { agent_id: newPreset.agent_id } : {}),
+      };
+      expectDestination(newTemplate);
       newConversation({
-        template: { chatProjectId: conversation?.chatProjectId ?? null },
+        template: newTemplate,
         preset: newPreset,
         keepAddedConvos: true,
+        keepComposerState: true,
       });
+      return true;
     },
     [
+      areSettingsApplied,
+      expectDestination,
       queryClient,
       modularChat,
       conversation,
@@ -194,54 +479,181 @@ export default function useQueryParams({
     ],
   );
 
-  const conversationRef = useRef(conversation);
-  conversationRef.current = conversation;
-
-  const areSettingsApplied = useCallback(() => {
-    const convo = conversationRef.current;
-    if (!validSettingsRef.current || !convo) {
-      return false;
+  const restoreUrlPrompt = useCallback(() => {
+    const prompt = promptTextRef.current;
+    if (ownsRequest() && prompt != null && methods.getValues('text') !== prompt) {
+      methods.setValue('text', prompt, { shouldValidate: true });
     }
+  }, [methods, ownsRequest]);
 
-    for (const [key, value] of Object.entries(validSettingsRef.current)) {
-      if (['presetOverride', 'iconURL', 'spec', 'modelLabel'].includes(key)) {
-        continue;
-      }
-
-      if (convo[key] !== value) {
-        return false;
-      }
+  const settlePrompt = useCallback(() => {
+    if (!ownsRequest() || promptTextRef.current == null) {
+      return;
     }
-
-    return true;
-  }, []);
+    onPromptSettledRef.current?.(
+      methods.getValues('text'),
+      destinationRef.current?.conversationId ?? conversationRef.current?.conversationId,
+    );
+  }, [methods, ownsRequest]);
 
   /**
-   * Processes message submission exactly once, preventing duplicate submissions.
-   * Sets the prompt text, submits the message, and cleans up URL parameters afterward.
-   * Has internal guards to ensure it only executes once regardless of how many times it's called.
+   * Consumes an auto-submit once, leaving a refused submission in the composer. Callers reach it
+   * only with the requested settings in place, so the settings wait ends here even when the send
+   * itself still waits for the composer or the history.
    */
   const processSubmission = useCallback(() => {
-    if (submissionHandledRef.current || !pendingSubmitRef.current || !promptTextRef.current) {
+    if (
+      routePendingRef.current ||
+      !targetReadyRef.current ||
+      submissionHandledRef.current ||
+      !pendingSubmitRef.current ||
+      !promptTextRef.current ||
+      !ownsRequest()
+    ) {
+      return;
+    }
+
+    setSubmissionStatus('preparing');
+    if (settingsTimeoutRef.current) {
+      clearTimeout(settingsTimeoutRef.current);
+      settingsTimeoutRef.current = null;
+    }
+    if (awaitsComposerRelease()) {
+      return;
+    }
+
+    awaitingHistoryRef.current = isHistoryPending();
+    setAwaitingHistory(awaitingHistoryRef.current);
+    if (awaitingHistoryRef.current) {
       return;
     }
 
     submissionHandledRef.current = true;
     pendingSubmitRef.current = false;
 
-    methods.setValue('text', promptTextRef.current, { shouldValidate: true });
-
-    methods.handleSubmit((data) => {
-      if (data.text?.trim()) {
-        submitMessage(data);
-        logger.log('conversation', 'Message submitted from query params');
+    restoreUrlPrompt();
+    const requestId = requestIdRef.current;
+    validatingRef.current = true;
+    const cleanUp = () => {
+      if (requestId !== requestIdRef.current) {
+        return;
       }
-    })();
+      validatingRef.current = false;
+      if (ownsRequest(requestId)) {
+        clearConsumedSearchParams();
+      }
+    };
+    methods.handleSubmit(
+      (data) => {
+        if (!ownsRequest(requestId)) {
+          return;
+        }
+        if (validSettingsRef.current && !areSettingsApplied()) {
+          setSubmissionStatus('failed');
+          settlePrompt();
+          cleanUp();
+          return;
+        }
+        setSubmissionStatus('idle');
+        if (data.text?.trim() && submitMessageRef.current(data) !== false) {
+          logger.log('conversation', 'Message submitted from query params');
+        } else {
+          settlePrompt();
+        }
+        cleanUp();
+      },
+      () => {
+        if (ownsRequest(requestId)) {
+          setSubmissionStatus('idle');
+          settlePrompt();
+        }
+        cleanUp();
+      },
+    )();
+  }, [
+    methods,
+    ownsRequest,
+    isHistoryPending,
+    areSettingsApplied,
+    awaitsComposerRelease,
+    clearConsumedSearchParams,
+    restoreUrlPrompt,
+    settlePrompt,
+  ]);
 
-    setSearchParams(getPreservedSearchParams(), { replace: true });
-  }, [methods, submitMessage, setSearchParams, getPreservedSearchParams]);
+  /**
+   * Bounds the wait for the requested settings, never the wait for the composer. The timer can
+   * fire between the commit that applied them and that commit's effects, so it reads them again
+   * before reporting a failure.
+   */
+  const armSettingsTimeout = useCallback(() => {
+    if (settingsTimeoutRef.current || routePendingRef.current || !targetReadyRef.current) return;
+    const requestId = requestIdRef.current;
+    settingsTimeoutRef.current = setTimeout(() => {
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
+      settingsTimeoutRef.current = null;
+      if (routePendingRef.current || !targetReadyRef.current) return;
+      if (!ownsRequest()) {
+        cancelRequest();
+        return;
+      }
+      if (!submissionHandledRef.current && pendingSubmitRef.current) {
+        if (areSettingsApplied()) {
+          processSubmission();
+          return;
+        }
+        restoreUrlPrompt();
+        pendingSubmitRef.current = false;
+        submissionHandledRef.current = true;
+        setSubmissionStatus('failed');
+        logger.log('conversation', 'Settings application timeout, retaining prompt');
+        settlePrompt();
+        clearConsumedSearchParams();
+      }
+    }, MAX_SETTINGS_WAIT_MS);
+  }, [
+    ownsRequest,
+    cancelRequest,
+    areSettingsApplied,
+    processSubmission,
+    restoreUrlPrompt,
+    settlePrompt,
+    clearConsumedSearchParams,
+  ]);
+
+  /** Observes the history the composer sends from, so a retry runs after the
+   * render that derives the latest message from it, not during the cache write.
+   * Only while a submission waits on it: every streamed delta is a write to this
+   * query, and an observer that always listened would render the composer for
+   * each one. */
+  const historyKey = [QueryKeys.messages, conversation?.conversationId ?? ''];
+  const history = useQuery<TMessage[]>(
+    historyKey,
+    async () => queryClient.getQueryData<TMessage[]>(historyKey) ?? [],
+    {
+      enabled: false,
+      notifyOnChangeProps: awaitingHistory ? HISTORY_SETTLING_PROPS : NO_PROPS,
+    },
+  );
+  useEffect(() => {
+    if (awaitingHistoryRef.current && !isHistoryPending()) {
+      processSubmission();
+    }
+  }, [
+    awaitingHistory,
+    history.status,
+    history.fetchStatus,
+    history.dataUpdatedAt,
+    isHistoryPending,
+    processSubmission,
+  ]);
 
   useEffect(() => {
+    if (!routed) {
+      return;
+    }
     const processQueryParams = () => {
       const queryParams: Record<string, string> = {};
       searchParams.forEach((value, key) => {
@@ -260,7 +672,12 @@ export default function useQueryParams({
       return { decodedPrompt, validSettings, shouldAutoSubmit };
     };
 
+    const requestId = requestIdRef.current;
     const intervalId = setInterval(() => {
+      if (requestId !== requestIdRef.current) {
+        clearInterval(intervalId);
+        return;
+      }
       if (processedRef.current || attemptsRef.current >= maxAttempts) {
         clearInterval(intervalId);
         if (attemptsRef.current >= maxAttempts) {
@@ -269,17 +686,38 @@ export default function useQueryParams({
         return;
       }
 
-      attemptsRef.current += 1;
+      if (!ownsRequest()) {
+        cancelRequest();
+        clearInterval(intervalId);
+        return;
+      }
 
+      const currentConversation = conversationRef.current;
+      if (
+        routePendingRef.current ||
+        !currentConversation ||
+        (currentConversation.conversationId != null &&
+          routeRef.current.pathname !== `/c/${currentConversation.conversationId}`)
+      ) {
+        return;
+      }
+      attemptsRef.current += 1;
       if (!textAreaRef.current) {
         return;
       }
+      const { decodedPrompt, validSettings, shouldAutoSubmit } = processQueryParams();
+      if (decodedPrompt && promptTextRef.current == null) {
+        promptTextRef.current = decodedPrompt;
+        onBeforePrompt?.();
+        methods.setValue('text', decodedPrompt, { shouldValidate: true });
+        textAreaRef.current.focus();
+        textAreaRef.current.setSelectionRange(decodedPrompt.length, decodedPrompt.length);
+      }
+
       const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
       if (!startupConfig) {
         return;
       }
-
-      const { decodedPrompt, validSettings, shouldAutoSubmit } = processQueryParams();
       const hasSettings = Object.keys(validSettings).length > 0;
 
       const autoSubmitAllowed = startupConfig.interface?.autoSubmitFromUrl !== false;
@@ -296,56 +734,29 @@ export default function useQueryParams({
         clearInterval(intervalId);
 
         // Defer URL cleanup until after submission completes (processSubmission handles it)
-        if (!pendingSubmitRef.current) {
-          setSearchParams(getPreservedSearchParams(), { replace: true });
+        if ((!willAutoSubmit || !decodedPrompt.trim()) && ownsRequest()) {
+          settlePrompt();
+          clearConsumedSearchParams();
         }
       };
 
-      if (hasSettings) {
-        validSettingsRef.current = validSettings;
-      }
-
-      if (decodedPrompt) {
-        promptTextRef.current = decodedPrompt;
-      }
-
-      // Handle auto-submission
-      if (willAutoSubmit && decodedPrompt) {
-        if (hasSettings) {
-          // Settings are changing, defer submission
-          pendingSubmitRef.current = true;
-
-          // Set a timeout to handle the case where settings might never fully apply
-          settingsTimeoutRef.current = setTimeout(() => {
-            if (!submissionHandledRef.current && pendingSubmitRef.current) {
-              logger.log(
-                'conversation',
-                'Settings application timeout, proceeding with submission',
-              );
-              processSubmission();
-            }
-          }, MAX_SETTINGS_WAIT_MS);
+      originConversationRef.current = conversationRef.current?.conversationId;
+      const settingsAccepted = !hasSettings || newQueryConvo(validSettings) === true;
+      if (willAutoSubmit && decodedPrompt.trim()) {
+        pendingSubmitRef.current = true;
+        setSubmissionStatus('preparing');
+        if (!settingsAccepted) {
+          pendingSubmitRef.current = false;
+          submissionHandledRef.current = true;
+          setSubmissionStatus('failed');
+        } else if (!hasSettings || areSettingsApplied()) {
+          processSubmission();
         } else {
-          methods.setValue('text', decodedPrompt, { shouldValidate: true });
-          textAreaRef.current.focus();
-          textAreaRef.current.setSelectionRange(decodedPrompt.length, decodedPrompt.length);
-
-          methods.handleSubmit((data) => {
-            if (data.text?.trim()) {
-              submitMessage(data);
-            }
-          })();
+          setSubmissionStatus('preparing');
+          armSettingsTimeout();
         }
-      } else if (decodedPrompt) {
-        methods.setValue('text', decodedPrompt, { shouldValidate: true });
-        textAreaRef.current.focus();
-        textAreaRef.current.setSelectionRange(decodedPrompt.length, decodedPrompt.length);
       } else {
         submissionHandledRef.current = true;
-      }
-
-      if (hasSettings && !areSettingsApplied()) {
-        newQueryConvo(validSettings);
       }
 
       success();
@@ -353,50 +764,81 @@ export default function useQueryParams({
 
     return () => {
       clearInterval(intervalId);
-      if (settingsTimeoutRef.current) {
-        clearTimeout(settingsTimeoutRef.current);
-      }
     };
   }, [
     searchParams,
+    routed,
+    requestIdentity,
     methods,
     textAreaRef,
+    onBeforePrompt,
+    routePending,
+    settlePrompt,
     newQueryConvo,
     newConversation,
     submitMessage,
-    setSearchParams,
-    getPreservedSearchParams,
+    clearConsumedSearchParams,
     queryClient,
     processSubmission,
+    armSettingsTimeout,
     areSettingsApplied,
+    restoreUrlPrompt,
+    ownsRequest,
+    cancelRequest,
   ]);
 
+  /** Declared ahead of the retry below, so that effect already sees the release it reacts to. */
   useEffect(() => {
+    if (!isSubmitting) {
+      composerReleasedRef.current = true;
+    }
+  }, [isSubmitting]);
+
+  useEffect(() => {
+    if (routePending || !targetReady) {
+      if (settingsTimeoutRef.current) clearTimeout(settingsTimeoutRef.current);
+      settingsTimeoutRef.current = null;
+      return;
+    }
     // Only proceed if we've already processed URL parameters but haven't yet handled submission
     if (
       !processedRef.current ||
       submissionHandledRef.current ||
-      settingsAppliedRef.current ||
-      !validSettingsRef.current ||
-      !conversation
+      !pendingSubmitRef.current ||
+      !conversation ||
+      !ownsRequest()
     ) {
       return;
     }
 
+    restoreUrlPrompt();
     if (areSettingsApplied()) {
-      settingsAppliedRef.current = true;
-
-      if (pendingSubmitRef.current) {
-        if (settingsTimeoutRef.current) {
-          clearTimeout(settingsTimeoutRef.current);
-          settingsTimeoutRef.current = null;
-        }
-
-        logger.log('conversation', 'Settings fully applied, processing submission');
-        processSubmission();
-      }
+      logger.log('conversation', 'Settings fully applied, processing submission');
+      processSubmission();
+    } else {
+      armSettingsTimeout();
     }
-  }, [conversation, processSubmission, areSettingsApplied]);
+  }, [
+    conversation,
+    routePending,
+    targetReady,
+    isSubmitting,
+    processSubmission,
+    armSettingsTimeout,
+    areSettingsApplied,
+    restoreUrlPrompt,
+    ownsRequest,
+  ]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (settingsTimeoutRef.current) {
+        clearTimeout(settingsTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const { isAuthenticated } = useAuthContext();
   const agentsMap = useAgentsMap({ isAuthenticated });
@@ -405,4 +847,12 @@ export default function useQueryParams({
       injectAgentIntoAgentsMap(queryClient, urlAgent);
     }
   }, [urlAgent, queryClient, agentsMap]);
+
+  const clearSettingsError = useCallback(() => setSubmissionStatus('idle'), []);
+
+  return {
+    clearSettingsError,
+    isPreparing: submissionStatus === 'preparing' && ownsRequest(),
+    settingsError: submissionStatus === 'failed' && ownsComposer(),
+  };
 }

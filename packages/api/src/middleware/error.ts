@@ -7,7 +7,10 @@ import { buildTenantIsolationErrorLogContext } from './auth';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 
 const handleDuplicateKeyError = (err: MongoServerError, res: Response) => {
-  logger.warn('Duplicate key error: ' + (err.errmsg || err.message));
+  logger.warn('Duplicate key error', {
+    mongoCode: err.code,
+    fields: err.keyValue ? Object.keys(err.keyValue) : [],
+  });
   const field = err.keyValue ? `${JSON.stringify(Object.keys(err.keyValue))}` : 'unknown';
   const code = 409;
   res

@@ -1,13 +1,87 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { SESSION_HINT_COOKIE } from 'librechat-data-provider';
+import type { Request, Response } from 'express';
 import {
   shouldUseSecureCookie,
   setRefreshTokenCookie,
   setOpenIDMarkerCookies,
+  setSessionHintCookie,
+  setLocalSessionCookies,
   REFRESH_TOKEN_COOKIE,
   TOKEN_PROVIDER_COOKIE,
   OPENID_USER_ID_COOKIE,
+  setOAuthCsrfCookie,
+  setOAuthSessionCookie,
+  validateOAuthCsrf,
+  generateOAuthCsrfToken,
 } from './csrf';
+
+describe('OAuth browser binding cookie paths', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = {
+      ...originalEnv,
+      DOMAIN_CLIENT: 'https://client.example/ui',
+      JWT_SECRET: 'cookie-path-test-secret',
+      SESSION_COOKIE_SECURE: 'false',
+    };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it.each([
+    { domainServer: undefined, basePath: '' },
+    { domainServer: '', basePath: '' },
+    { domainServer: 'invalid', basePath: '' },
+    { domainServer: 'https://server.example', basePath: '' },
+    { domainServer: 'https://server.example/', basePath: '' },
+    { domainServer: 'https://server.example/chat', basePath: '/chat' },
+    { domainServer: 'https://server.example/chat/', basePath: '/chat' },
+    { domainServer: 'https://server.example/chat///', basePath: '/chat' },
+    { domainServer: 'https://server.example/apps/librechat', basePath: '/apps/librechat' },
+  ])(
+    'issues and clears cookies under $basePath for $domainServer',
+    async ({ domainServer, basePath }) => {
+      if (domainServer === undefined) {
+        delete process.env.DOMAIN_SERVER;
+      } else {
+        process.env.DOMAIN_SERVER = domainServer;
+      }
+
+      const res = { cookie: jest.fn(), clearCookie: jest.fn() } as unknown as Response;
+      setOAuthSessionCookie(res, 'user-123');
+      expect(res.cookie).toHaveBeenCalledWith(
+        'oauth_session',
+        generateOAuthCsrfToken('user-123'),
+        expect.objectContaining({ path: `${basePath}/api`, httpOnly: true, sameSite: 'lax' }),
+      );
+      for (const route of ['mcp', 'actions']) {
+        const cookiePath = `/api/${route}`;
+        const flowId = `user-123:${route}`;
+        const token = generateOAuthCsrfToken(flowId);
+        setOAuthCsrfCookie(res, flowId, cookiePath);
+        expect(res.cookie).toHaveBeenCalledWith(
+          'oauth_csrf',
+          token,
+          expect.objectContaining({
+            path: `${basePath}${cookiePath}`,
+            httpOnly: true,
+            sameSite: 'lax',
+          }),
+        );
+        const req = { cookies: { oauth_csrf: token } } as Request;
+        expect(validateOAuthCsrf(req, res, flowId, cookiePath)).toBe(true);
+        expect(res.clearCookie).toHaveBeenCalledWith('oauth_csrf', {
+          path: `${basePath}${cookiePath}`,
+        });
+      }
+    },
+  );
+});
 
 describe('shouldUseSecureCookie', () => {
   const originalEnv = process.env;
@@ -179,6 +253,77 @@ describe('setRefreshTokenCookie', () => {
   });
 });
 
+describe('setSessionHintCookie', () => {
+  it('names the owner and expiry, readable by the page and expiring with the session', () => {
+    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const expires = new Date(Date.now() + 3600000);
+
+    setSessionHintCookie(res, expires, { userId: { toString: () => 'user-1' }, tenantId: 'acme' });
+
+    expect(res.cookie).toHaveBeenCalledWith(
+      SESSION_HINT_COOKIE,
+      `${expires.getTime()}~acme:user-1`,
+      expect.not.objectContaining({ httpOnly: true }),
+    );
+    expect((res.cookie as jest.Mock).mock.calls[0][2]).toMatchObject({
+      expires,
+      sameSite: 'strict',
+    });
+  });
+
+  it('names a tenantless owner the way the client cache does', () => {
+    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const expires = new Date(Date.now() + 3600000);
+
+    setSessionHintCookie(res, expires, { userId: 'user-1' });
+
+    expect(res.cookie).toHaveBeenCalledWith(
+      SESSION_HINT_COOKIE,
+      `${expires.getTime()}~:user-1`,
+      expect.anything(),
+    );
+  });
+
+  it('clears a previous hint when the session names no user', () => {
+    const res = { cookie: jest.fn(), clearCookie: jest.fn() } as unknown as Response;
+
+    setSessionHintCookie(res, new Date(Date.now() + 3600000), { userId: null });
+
+    expect(res.cookie).not.toHaveBeenCalled();
+    expect(res.clearCookie).toHaveBeenCalledWith(SESSION_HINT_COOKIE);
+  });
+});
+
+describe('setLocalSessionCookies', () => {
+  it('issues the refresh token, provider marker and session hint on one expiry and owner', () => {
+    const res = { cookie: jest.fn() } as unknown as Response;
+    const expires = new Date(Date.now() + 3600000);
+
+    setLocalSessionCookies(res, {
+      refreshToken: 'rt-1',
+      expires,
+      userId: 'user-1',
+      tenantId: 'acme',
+    });
+
+    expect(res.cookie).toHaveBeenCalledWith(
+      REFRESH_TOKEN_COOKIE,
+      'rt-1',
+      expect.objectContaining({ expires, httpOnly: true, sameSite: 'strict' }),
+    );
+    expect(res.cookie).toHaveBeenCalledWith(
+      TOKEN_PROVIDER_COOKIE,
+      'librechat',
+      expect.objectContaining({ expires, httpOnly: true, sameSite: 'strict' }),
+    );
+    expect(res.cookie).toHaveBeenCalledWith(
+      SESSION_HINT_COOKIE,
+      `${expires.getTime()}~acme:user-1`,
+      expect.objectContaining({ expires, sameSite: 'strict' }),
+    );
+  });
+});
+
 describe('setOpenIDMarkerCookies', () => {
   const originalEnv = process.env;
 
@@ -222,7 +367,35 @@ describe('setOpenIDMarkerCookies', () => {
     const signedUserId = (res.cookie as jest.Mock).mock.calls.find(
       ([name]) => name === OPENID_USER_ID_COOKIE,
     )?.[1];
-    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({ id: 'user-123' });
+    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({
+      id: 'user-123',
+      issuedAtMs: expect.any(Number),
+    });
+  });
+
+  it('names the session owner and expiry in a readable cookie beside the provider marker', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.DOMAIN_SERVER = 'https://myapp.example.com';
+    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const expires = new Date(Date.now() + 604800000);
+
+    setOpenIDMarkerCookies(res, {
+      userId: 'user-123',
+      tenantId: 'acme',
+      expires,
+      refreshExpiryMs: 604800000,
+      reuseTokens: false,
+    });
+
+    expect(res.cookie).toHaveBeenCalledWith(
+      SESSION_HINT_COOKIE,
+      `${expires.getTime()}~acme:user-123`,
+      {
+        expires,
+        secure: true,
+        sameSite: 'strict',
+      },
+    );
   });
 
   /** Preserves the marker's binding to the durable refresh-token session: a marker signed for one
@@ -244,6 +417,7 @@ describe('setOpenIDMarkerCookies', () => {
     expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({
       id: 'user-123',
       refreshTokenHash: crypto.createHash('sha256').update('the-refresh-token').digest('base64url'),
+      issuedAtMs: expect.any(Number),
     });
   });
 
@@ -260,7 +434,7 @@ describe('setOpenIDMarkerCookies', () => {
   });
 
   it('updates token_provider even when the signed user marker is not applicable', () => {
-    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const res = { cookie: jest.fn(), clearCookie: jest.fn() } as unknown as Response;
     const expires = new Date(Date.now() + 604800000);
 
     setOpenIDMarkerCookies(res, {
@@ -270,6 +444,7 @@ describe('setOpenIDMarkerCookies', () => {
     });
 
     expect(res.cookie).toHaveBeenCalledTimes(1);
+    expect(res.clearCookie).toHaveBeenCalledWith(SESSION_HINT_COOKIE);
     expect(res.cookie).toHaveBeenCalledWith(
       TOKEN_PROVIDER_COOKIE,
       'openid',

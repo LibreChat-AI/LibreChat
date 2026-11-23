@@ -4,7 +4,6 @@ import { getAgentTriggerIdempotencyKey, parseAgentTriggerEnvelope } from './enve
 
 export const MAX_AGENT_TRIGGER_ENVELOPE_BYTES: number = 1024 * 1024;
 export const AGENT_TRIGGER_COALESCE_WINDOW_MS = 750;
-export const MAX_AGENT_TRIGGER_BATCH_SIZE = 8;
 export const MAX_AGENT_TRIGGER_BATCH_BYTES: number = 512 * 1024;
 
 export interface AgentTriggerCoalesceOptions {

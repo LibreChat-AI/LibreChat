@@ -1,5 +1,7 @@
+import { logger, redactMessage } from '@librechat/data-schemas';
 import { AuthType, EToolResources } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 /**
  * Filters out duplicate plugins from the list of plugins.
@@ -82,3 +84,141 @@ export function getToolkitKey({
   }
   return toolkitKey;
 }
+
+/** Tool error text for any failure the tool did not word for the model itself. */
+export const TOOL_ERROR_FALLBACK = 'The tool request failed.';
+
+/**
+ * A tool failure whose message the tool wrote for the model: input guidance such as an unknown
+ * city or a malformed date. It is the only exception text a tool result carries; provider,
+ * network and runtime messages stay in the logs.
+ */
+export class ToolInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ToolInputError';
+    Object.setPrototypeOf(this, ToolInputError.prototype);
+  }
+}
+
+/**
+ * The approved text for a tool failure: a `ToolInputError` message with credentials and email
+ * addresses redacted (it may echo a tool argument), otherwise the fallback.
+ */
+export function getToolErrorText(error: unknown): string {
+  return error instanceof ToolInputError ? redactMessage(error.message) : TOOL_ERROR_FALLBACK;
+}
+
+/** Approved wording for an upstream HTTP status, keyed by the status class a model can act on. */
+function describeToolHttpStatus(status: number): string {
+  if (status === 401 || status === 403) {
+    return 'rejected the configured credentials';
+  }
+  if (status === 404) {
+    return 'found no result for this request';
+  }
+  if (status === 429) {
+    return 'is rate limiting requests; try again later';
+  }
+  if (status >= 500) {
+    return 'is unavailable; try again later';
+  }
+  if (status >= 400) {
+    return 'rejected the request parameters; check them and try again';
+  }
+  return `failed with status ${status}`;
+}
+
+/**
+ * Error text for a tool whose upstream service answered with a failing HTTP status. The response
+ * body is provider text, so only the status reaches the model; `overrides` lets a tool word a
+ * status its service documents specifically.
+ */
+export function formatToolHttpError(
+  service: string,
+  status: number,
+  overrides?: Readonly<Partial<Record<number, string>>>,
+): string {
+  logger.warn(`[${service}] Tool request failed`, { status });
+  const override = overrides?.[status];
+  if (override != null) {
+    return `Error: ${override}`;
+  }
+  return `Error: ${service} ${describeToolHttpStatus(status)} (status ${status}).`;
+}
+
+/**
+ * Error text a tool returns to the model. A `ToolInputError` keeps its message; an upstream HTTP
+ * failure is worded from its status alone (see `formatToolHttpError`); anything else becomes the
+ * stable fallback, and only its sanitized metadata is logged under `service`.
+ */
+export function formatToolError(
+  error: unknown,
+  service = 'tool',
+  statusOverrides?: Readonly<Partial<Record<number, string>>>,
+): string {
+  if (error instanceof ToolInputError) {
+    return `Error: ${getToolErrorText(error)}`;
+  }
+  const metadata = getSafeErrorMetadata(error);
+  if (metadata.status != null && metadata.status >= 400) {
+    return formatToolHttpError(service, metadata.status, statusOverrides);
+  }
+  logger.warn(`[${service}] Tool request failed`, metadata);
+  return `Error: ${TOOL_ERROR_FALLBACK}`;
+}
+
+/** The part of a fetch response a tool request reads, shared by the global and undici responses. */
+export interface ToolHttpResponse {
+  ok: boolean;
+  status: number;
+  body?: { cancel?: () => Promise<unknown> } | null;
+}
+
+export interface ToolRequestParams<R extends ToolHttpResponse> {
+  /** The upstream service as the model should read it, such as `Google Search`. */
+  service: string;
+  /** Sends the request; a rejection is a transport failure. */
+  request: () => Promise<R>;
+  /** Reads the text a successful response contributes to the tool result. */
+  read: (response: R) => string | Promise<string>;
+  /** Wording for statuses the service documents specifically. */
+  statusOverrides?: Readonly<Partial<Record<number, string>>>;
+}
+
+async function cancelResponseBody(response: ToolHttpResponse): Promise<void> {
+  try {
+    await response.body?.cancel?.();
+  } catch {
+    /** Only the status reaches the model, so a body that will not cancel changes nothing. */
+  }
+}
+
+/**
+ * Runs a tool's upstream request and returns the text for the model: what `read` returns for a
+ * successful response, otherwise the approved error text. A failing response is worded from its
+ * status alone, so its body is cancelled unread to release the connection. `read` may throw a
+ * `ToolInputError` to hand the model guidance the tool wrote itself.
+ */
+export async function runToolRequest<R extends ToolHttpResponse>({
+  service,
+  request,
+  read,
+  statusOverrides,
+}: ToolRequestParams<R>): Promise<string> {
+  try {
+    const response = await request();
+    if (!response.ok) {
+      await cancelResponseBody(response);
+      return formatToolHttpError(service, response.status, statusOverrides);
+    }
+    return await read(response);
+  } catch (error) {
+    return formatToolError(error, service, statusOverrides);
+  }
+}
+
+/** The Wolfram|Alpha LLM API answers 501 when it cannot interpret the input; its body echoes the query. */
+export const WOLFRAM_STATUS_TEXT: Readonly<Partial<Record<number, string>>> = {
+  501: 'Wolfram|Alpha could not interpret the input. Rephrase it as a simpler query, such as single keywords or standard math notation, and try again.',
+};

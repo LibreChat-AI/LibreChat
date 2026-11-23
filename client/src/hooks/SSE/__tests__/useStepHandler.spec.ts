@@ -1,7 +1,9 @@
 import React from 'react';
-import { useStore, useAtomValue } from 'jotai';
-import { RecoilRoot, useRecoilCallback } from 'recoil';
+import { RecoilRoot } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
+import { resolveAskUserQuestionPart } from '@librechat/chat';
+import { useStepHandler, phaseReceipts } from '@librechat/chat/react';
+import { useStore, useAtomValue, createStore, Provider as JotaiProvider } from 'jotai';
 import {
   Constants,
   StepTypes,
@@ -9,6 +11,15 @@ import {
   ContentTypes,
   ToolCallTypes,
 } from 'librechat-data-provider';
+import {
+  activeSubagentPanel,
+  listRegisteredSubagentProgressKeys,
+  reduceSubagentProgress,
+  registerSubagentProgressKey,
+  subagentParentStreamOpenByToolCallId,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '@librechat/chat/react';
 import type {
   TMessageContentParts,
   SummaryContentPart,
@@ -20,15 +31,10 @@ import type {
   PtcToolCallEvent,
   Agents,
 } from 'librechat-data-provider';
-import type { PtcTrace, PtcTraceEntry } from '~/store/ptc';
-import {
-  subagentProgressByToolCallId,
-  subagentProgressKey,
-} from '~/components/Chat/Subagents/state';
-import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/store/ptc';
-import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store/sandbox';
-import useStepHandler from '~/hooks/SSE/useStepHandler';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
+import type { PtcTrace, PtcTraceEntry } from '~/common';
+import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { IsolatedAtomStore } from 'test/harness';
 
 /** `Constants` is a heterogeneous enum (`string | number`); annotate as
@@ -367,6 +373,113 @@ describe('useStepHandler', () => {
       expect(getToolCallName(responseMsg?.content?.[1])).toBe(
         `oauth${Constants.mcp_delimiter}Vespa`,
       );
+    });
+
+    it('preserves restored native content while parallel OAuth steps share synthetic index zero', () => {
+      const prefix: TMessageContentParts[] = [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'native-legacy',
+            name: 'search',
+            args: '{}',
+            output: 'stored result',
+            type: ToolCallTypes.TOOL_CALL,
+          },
+        },
+        { type: ContentTypes.TEXT, text: 'Stored answer' },
+        { type: ContentTypes.THINK, think: 'Stored reasoning' },
+      ];
+      const responseMessage = createResponseMessage({ content: prefix });
+      let messages = [responseMessage];
+      mockGetMessages.mockImplementation(() => messages);
+      mockSetMessages.mockImplementation((next) => {
+        messages = next;
+      });
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission({ initialResponse: responseMessage });
+      act(() => {
+        for (const server of ['a', 'b']) {
+          const id = `oauth:${server}`;
+          const stepId = `step-${id}`;
+          const name = `oauth${Constants.mcp_delimiter}${server}`;
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP,
+              data: createToolCallRunStep({
+                id: stepId,
+                index: 0,
+                runId: USE_PRELIM_RESPONSE_MESSAGE_ID,
+                stepDetails: {
+                  type: StepTypes.TOOL_CALLS,
+                  tool_calls: [{ id, name, args: '', type: ToolCallTypes.TOOL_CALL }],
+                },
+              }),
+            },
+            submission,
+          );
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_DELTA,
+              data: {
+                id: stepId,
+                delta: {
+                  type: StepTypes.TOOL_CALLS,
+                  tool_calls: [{ id, name, args: '' }],
+                  auth: `https://auth.example/${server}`,
+                  expires_at: Date.now() + 60000,
+                },
+              },
+            },
+            submission,
+          );
+        }
+      });
+      expect(messages.find((message) => !message.isCreatedByUser)?.content?.slice(0, 3)).toEqual(
+        prefix,
+      );
+      expect(messages.find((message) => !message.isCreatedByUser)?.content).toHaveLength(5);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-oauth:a',
+              index: 0,
+              type: StepTypes.TOOL_CALLS,
+              status: 'completed',
+              created_at: 1,
+              closed_at: 2,
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'step-oauth:a',
+                index: 0,
+                tool_call: {
+                  id: 'oauth:a',
+                  name: `oauth${Constants.mcp_delimiter}a`,
+                  args: '',
+                  output: 'ended',
+                },
+              },
+            },
+          },
+          submission,
+        );
+      });
+      expect(messages.find((message) => !message.isCreatedByUser)?.content?.slice(0, 3)).toEqual(
+        prefix,
+      );
+      expect(messages.find((message) => !message.isCreatedByUser)?.content).toHaveLength(4);
+      expect(
+        getToolCallName(messages.find((message) => !message.isCreatedByUser)?.content?.[3]),
+      ).toBe(`oauth${Constants.mcp_delimiter}b`);
     });
 
     it('should clear OAuth prompt slots when one occupies the real response slot', () => {
@@ -1817,6 +1930,66 @@ describe('useStepHandler', () => {
   });
 
   describe('on_run_step_delta event', () => {
+    it('records browser phase receipt before rendering, preserves duplicates, and clears on reset', () => {
+      const store = createStore();
+      const wrapper = ({ children }: { children: React.ReactNode }) =>
+        React.createElement(JotaiProvider, { store }, children);
+      const { result } = renderHook(() => useStepHandler(createHookParams()), { wrapper });
+      const submission = createSubmission();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(20_000);
+      const receipt = () => store.get(phaseReceipts).get('step-tool-1')?.get(1_000);
+      const event = {
+        event: StepEvents.ON_TOOL_CALLS_DISPATCHED as const,
+        data: {
+          dispatched_at: 1_000,
+          toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
+        },
+      };
+      act(() => result.current.stepHandler(event, submission));
+      expect(receipt()).toBe(20_000);
+      clock.mockReturnValue(28_000);
+      act(() => result.current.stepHandler(event, submission));
+      expect(receipt()).toBe(20_000);
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+        for (const stamp of [100, 200, 300]) {
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_DELTA,
+              data: {
+                id: 'step-tool-1',
+                observed_at: stamp,
+                delta: {
+                  type: StepTypes.TOOL_CALLS,
+                  tool_calls: [{ id: 'tool-call-1', index: 0, args: '{' }],
+                },
+              },
+            },
+            submission,
+          );
+        }
+        result.current.stepHandler(
+          {
+            ...event,
+            data: {
+              ...event.data,
+              toolCalls: [{ ...event.data.toolCalls[0], stepId: 'other-step' }],
+            },
+          },
+          submission,
+        );
+      });
+      expect(store.get(phaseReceipts).get('step-tool-1')?.size).toBe(2);
+      expect(store.get(phaseReceipts).get('step-tool-1')?.get(100)).toBe(28_000);
+      expect(store.get(phaseReceipts).get('other-step')?.get(1_000)).toBe(28_000);
+      act(() => result.current.clearStepMaps());
+      expect(receipt()).toBeUndefined();
+      expect(store.get(phaseReceipts).size).toBe(0);
+    });
+
     it('separates streamed preparation, dispatch, and this call’s result', () => {
       mockGetMessages.mockReturnValue([createResponseMessage()]);
       const { result } = renderHook(() => useStepHandler(createHookParams()));
@@ -2478,24 +2651,25 @@ describe('useStepHandler', () => {
       expect(mockOnSkillAuthoringComplete).not.toHaveBeenCalled();
     });
 
-    it('should warn when step not found for completed event', () => {
+    it('buffers a completion that arrives before its run step and applies it once the step lands', () => {
       const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
 
       const { result } = renderHook(() => useStepHandler(createHookParams()));
-
+      const submission = createSubmission();
       const completedEvent = {
         result: {
-          id: 'nonexistent-step',
+          id: 'step-tool-1',
           index: 0,
           tool_call: {
             id: 'tool-call-1',
-            name: 'test_tool',
-            args: '{}',
+            name: 'create_file',
+            args: JSON.stringify({ file_path: 'skills/demo/SKILL.md' }),
+            output: 'early output',
             type: ToolCallTypes.TOOL_CALL,
           },
         },
       };
-      const submission = createSubmission();
 
       act(() => {
         result.current.stepHandler(
@@ -2507,13 +2681,28 @@ describe('useStepHandler', () => {
         );
       });
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        'No run step or runId found for completed tool call event',
-      );
+      expect(mockOnSkillAuthoringComplete).not.toHaveBeenCalled();
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+      });
+
+      const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
+      const responseMsg = lastCall.find((m: TMessage) => !m.isCreatedByUser);
+      expect(responseMsg?.content?.[0]?.tool_call).toMatchObject({
+        id: 'tool-call-1',
+        output: 'early output',
+        progress: 1,
+      });
+      expect(mockOnSkillAuthoringComplete).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).not.toHaveBeenCalled();
       consoleSpy.mockRestore();
     });
 
-    it('should mark completed OAuth prompts as finished', () => {
+    it('retires a completed OAuth prompt from auxiliary presentation', () => {
       const responseMessage = createResponseMessage();
       mockGetMessages.mockReturnValue([responseMessage]);
 
@@ -2563,7 +2752,7 @@ describe('useStepHandler', () => {
 
       const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
       const responseMsg = lastCall.find((m: TMessage) => !m.isCreatedByUser);
-      expect(responseMsg?.content?.[0]?.tool_call?.progress).toBe(1);
+      expect(responseMsg?.content).toEqual([]);
     });
   });
 
@@ -3762,6 +3951,98 @@ describe('useStepHandler', () => {
       expect(subagentProgressByToolCallId(invocationKey)).not.toBe(held);
     });
 
+    it.each(['tool', 'event'] as const)(
+      'keeps retained %s activity through navigation and releases it on host teardown',
+      (origin) => {
+        const { result } = renderHook(
+          () => ({ ...useStepHandler(createHookParams()), store: useStore() }),
+          { wrapper: subagentStoreWrapper },
+        );
+        const selected: ActiveSubagentPanel = {
+          host: 'conversation',
+          parentConversationId: 'conv-1',
+          parentMessageId: 'response-msg-1',
+          toolCallId: 'call_A',
+          partIndex: 0,
+          subagentType: 'self',
+          initialProgress: 0,
+          isSubmitting: false,
+          durable: { threadId: 'child-thread', taskId: 'task' },
+          ...(origin === 'event'
+            ? { event: { actorId: 'actor', progressKey: 'event-task:child-thread:task' } }
+            : {}),
+        };
+        const key = subagentProgressKey(
+          selected.parentMessageId,
+          selected.event?.progressKey ?? selected.toolCallId,
+          selected.partIndex,
+        );
+        const otherKey = subagentProgressKey('other-message', 'call_B', 1);
+        const store = result.current.store;
+        const held = subagentProgressByToolCallId(key);
+        const earlier = makeUpdate({
+          phase: 'message_delta',
+          activityEventId: 'earlier',
+          activitySequence: 0,
+          data: { delta: { content: [{ type: ContentTypes.TEXT, text: 'Earlier work.' }] } },
+        });
+        const tool = makeUpdate({
+          phase: 'run_step',
+          activityEventId: 'tool',
+          activitySequence: 1,
+          data: {
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [{ id: 'inner-call', name: 'calculator', args: '{"value":4}' }],
+            },
+          },
+        });
+        act(() => {
+          store.set(activeSubagentPanel, selected);
+          registerSubagentProgressKey(key);
+          registerSubagentProgressKey(otherKey);
+          store.set(held, reduceSubagentProgress(null, [earlier, tool], 'parent', true));
+          store.set(
+            subagentProgressByToolCallId(otherKey),
+            reduceSubagentProgress(null, [earlier]),
+          );
+          store.set(subagentParentStreamOpenByToolCallId(key), true);
+        });
+        const before = store.get(held)?.contentParts;
+        act(() => result.current.resetSubagentAtoms({ preserveSelectedTask: true }));
+        expect(store.get(held)?.contentParts).toEqual(before);
+        expect(subagentProgressByToolCallId(key)).toBe(held);
+        expect(store.get(subagentParentStreamOpenByToolCallId(key))).toBe(false);
+        expect(listRegisteredSubagentProgressKeys()).toEqual([key]);
+        expect(store.get(subagentProgressByToolCallId(otherKey))).toBeNull();
+        act(() => {
+          store.set(held, (progress) =>
+            reduceSubagentProgress(
+              progress,
+              [
+                makeUpdate({
+                  phase: 'message_delta',
+                  activityEventId: 'later',
+                  activitySequence: 2,
+                  data: { delta: { content: [{ type: ContentTypes.TEXT, text: 'Later work.' }] } },
+                }),
+              ],
+              'detached',
+              false,
+            ),
+          );
+        });
+        expect(store.get(held)?.contentParts).toEqual([
+          ...(before ?? []),
+          { type: ContentTypes.TEXT, text: 'Later work.' },
+        ]);
+        act(() => result.current.resetSubagentAtoms());
+        expect(store.get(held)).toBeNull();
+        expect(subagentProgressByToolCallId(key)).not.toBe(held);
+        expect(listRegisteredSubagentProgressKeys()).toEqual([]);
+      },
+    );
+
     it('falls back to oldest-unclaimed tool call when parentToolCallId is absent', () => {
       const { result, getProgress } = renderStepHandlerWithReader();
       /** Two subagent tool calls seeded in creation order. Without
@@ -4553,20 +4834,22 @@ describe('useStepHandler', () => {
 
   describe('PTC inner tool-call trace', () => {
     const renderWithTraceReader = () => {
+      const traceStore = createStore();
       const hookResult = renderHook(
         () => {
           const stepHandler = useStepHandler(createHookParams());
-          const read = useRecoilCallback(
-            ({ snapshot }) =>
-              (messageId: string, toolCallId: string): PtcTrace =>
-                snapshot
-                  .getLoadable(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)))
-                  .valueOrThrow(),
-            [],
-          );
+          const read = (messageId: string, toolCallId: string): PtcTrace =>
+            traceStore.get(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)));
           return { ...stepHandler, read };
         },
-        { wrapper: RecoilRoot },
+        {
+          wrapper: ({ children }: { children: React.ReactNode }) =>
+            React.createElement(
+              RecoilRoot,
+              null,
+              React.createElement(JotaiProvider, { store: traceStore }, children),
+            ),
+        },
       );
       return {
         result: hookResult.result,
@@ -4853,12 +5136,15 @@ describe('useStepHandler', () => {
         );
       });
       expect(getEntries('call_ptc')).toHaveLength(1);
+      const removeSpy = jest.spyOn(ptcTraceByToolCallId, 'remove');
 
       act(() => {
         (result.current as unknown as { resetPtcAtoms: () => void }).resetPtcAtoms();
       });
 
       expect(getEntries('call_ptc')).toEqual([]);
+      expect(removeSpy).toHaveBeenCalledWith(ptcTraceKey('response-msg-1', 'call_ptc'));
+      removeSpy.mockRestore();
     });
   });
 });

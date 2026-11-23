@@ -10,7 +10,6 @@ function getService() {
   if (service != null) {
     return service;
   }
-  const mongoose = require('mongoose');
   const { createSchedulesService } = require('@librechat/api');
   const { getAppConfig } = require('~/server/services/Config/app');
   const {
@@ -25,20 +24,12 @@ function getService() {
     preflightMCP: require('./mcp'),
     methods,
     getAppConfig,
-    findUserById: (userId) =>
-      mongoose.models.User.findById(userId).select('_id tenantId role').lean(),
-    findBalance: (userId) => methods.findBalanceByUser(userId, { includeReservedCredits: true }),
+    findUserById: (userId) => methods.findScheduleOwner(userId.toString()),
+    findBalance: (userId, options) =>
+      methods.findBalanceByUser(userId, { includeReservedCredits: true, ...options }),
     upsertBalance: (userId, { set, setOnInsert }) =>
       methods.upsertBalanceFields(userId, set ?? {}, setOnInsert ?? {}),
-    // Compare-and-set: only initialize an existing record while its credit is still null.
-    // No upsert — a CAS miss must re-read the winner, not insert a fresh balance. `null`
-    // in the filter also matches a legacy record whose `tokenCredits` field is absent.
-    initializeNullBalance: (userId, { tokenCredits, sync }) =>
-      mongoose.models.Balance.findOneAndUpdate(
-        { user: userId, tokenCredits: null },
-        { $set: { tokenCredits, ...(sync && Object.keys(sync).length > 0 ? sync : {}) } },
-        { new: true, sort: { _id: 1 } },
-      ).lean(),
+    initializeNullBalance: methods.initializeNullBalance,
     enqueueAgentTrigger,
     // Reconciliation reads the durable delivery to tell a still-live admission (a
     // deferred Retry-After) or a dead-letter apart from a genuinely orphaned run.
@@ -84,10 +75,12 @@ module.exports = {
   getLimits: invoke('getLimits'),
   fireScheduleNow: invoke('fireScheduleNow'),
   recordScheduleOutcome: invoke('recordScheduleOutcome'),
+  registerMCPSettlement: invoke('registerMCPSettlement'),
   recordMCPToolAuthFailure: (input) =>
     require('@librechat/api').recordScheduledMCPToolAuthFailure(
       input,
       () => getService().recordMCPToolAuthFailure,
+      () => getService().getMCPReceiptRetryPolicy(input),
     ),
   beginScheduledStop: invoke('beginScheduledStop'),
   acknowledgeScheduledStopPersistence: invoke('acknowledgeScheduledStopPersistence'),
@@ -106,7 +99,4 @@ module.exports = {
     const methods = require('~/models');
     return !(await methods.isAgentTriggerPrincipalActive(userId));
   },
-  // Identity-fenced delete for a retained job whose run has since been settled
-  // inline; reconciliation only reaches jobs whose run is still active.
-  clearScheduledJob: (...args) => getService().engineDeps.clearReconciledJob(...args),
 };

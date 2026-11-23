@@ -21,6 +21,7 @@ import {
   useUninstallToolCredentials,
 } from './hooks';
 import { useSkillsInfiniteQuery, useDeleteAgentAction } from '~/data-provider';
+import { setSubagentsEnabled, removeHandoffs } from './items/orchestration';
 import { requiresFileManagerRemoval } from './items/capabilities';
 import { useRemoveMCPTool, useVisibleTools } from '~/hooks/MCP';
 import ToolsMarketplaceDialog from './ToolsMarketplaceDialog';
@@ -124,6 +125,17 @@ export default function ToolsSection({ agentId }: Props) {
       }
       const patch = computeToggleAction(item, { selected: true });
       switch (patch.type) {
+        case 'configure':
+          setDialogItem(item);
+          break;
+        case 'subagents':
+          setValue('subagents', setSubagentsEnabled(getValues('subagents'), patch.enabled), {
+            shouldDirty: true,
+          });
+          break;
+        case 'handoffs-remove':
+          setValue('edges', removeHandoffs(getValues('edges')), { shouldDirty: true });
+          break;
         case 'builtin':
           setValue(patch.field as keyof AgentForm, patch.value as never, { shouldDirty: true });
           if (patch.field === AgentCapabilities.execute_code && patch.value === false) {
@@ -196,39 +208,39 @@ export default function ToolsSection({ agentId }: Props) {
     mcpServersMap ?? new Map(),
   );
 
-  /** MCP servers still referenced by the agent's tools but absent from the available
-   * servers map (removed from config, or a legacy server-only token). The catalog is
-   * built from available servers, so these would otherwise be invisible and
-   * unremovable — surface them as removable "needs setup" rows, mirroring the old
-   * UnconfiguredMCPTool. */
-  const orphanedMcpItems = useMemo<AgentItem[]>(
-    () =>
-      attachedMcpServers
-        .filter((name) => mcpServersMap?.has(name) !== true)
-        .map((name) => ({
+  /** The attachable catalog omits consume-only servers, but their persisted
+   * tools still run through shared agents. Show every attached server absent
+   * from the selected catalog, retaining live metadata when available. */
+  const unlistedMcpItems = useMemo<AgentItem[]>(() => {
+    const listed = new Set(selected.filter((item) => item.kind === 'mcp').map((item) => item.id));
+    return attachedMcpServers
+      .filter((name) => !listed.has(name))
+      .map((name) => {
+        const server = mcpServersMap?.get(name);
+        return {
           kind: 'mcp',
           id: name,
-          name,
-          description: '',
+          name: server?.metadata?.name || name,
+          description: server?.metadata?.description ?? '',
           iconKey: 'mcp',
-          status: 'needs_setup',
+          status: server?.isConfigured ? undefined : 'needs_setup',
           toolCount: 0,
-          server: {
+          server: server ?? {
             serverName: name,
             tools: [],
             isConfigured: false,
             isConnected: false,
             metadata: { name, pluginKey: name, description: '' } as TPlugin,
           },
-        })),
-    [attachedMcpServers, mcpServersMap],
-  );
+        };
+      });
+  }, [attachedMcpServers, mcpServersMap, selected]);
 
   /** MCP rows show how many of the server's tools are enabled for this agent, not
    * the total the server exposes, so the count reflects what the agent can use. */
   const toolItems = useMemo(() => {
     const enabled = new Set(tools);
-    const withCounts = selected
+    return [...selected, ...unlistedMcpItems]
       .filter((item) => item.kind !== 'skill')
       .map((item) =>
         item.kind === 'mcp'
@@ -240,8 +252,7 @@ export default function ToolsSection({ agentId }: Props) {
             }
           : item,
       );
-    return [...withCounts, ...orphanedMcpItems];
-  }, [selected, orphanedMcpItems, tools]);
+  }, [selected, unlistedMcpItems, tools]);
   const skillItems = useMemo(() => selected.filter((item) => item.kind === 'skill'), [selected]);
 
   return (
@@ -280,9 +291,9 @@ export default function ToolsSection({ agentId }: Props) {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_ui_delete_action')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               {localize('com_ui_delete_action_confirm')}
             </Label>
           }
@@ -305,9 +316,9 @@ export default function ToolsSection({ agentId }: Props) {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_ui_delete_tool')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               {localize('com_ui_delete_tool_confirm')}
             </Label>
           }
@@ -345,23 +356,17 @@ function SelectedSection({
   onRemove,
 }: SelectedSectionProps) {
   const localize = useLocalize();
-  const badge = items.length > 0 ? String(items.length) : undefined;
   return (
     <div className="mb-3 flex flex-col">
       <div className="mb-1 flex items-center justify-between">
-        <label className="block text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+        <label className="text-text-secondary text-2xs block font-medium tracking-wide uppercase">
           {title}
-          {badge != null && (
-            <span className="ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-surface-tertiary px-1.5 text-[10px] font-medium normal-case tracking-normal text-text-secondary">
-              {badge}
-            </span>
-          )}
         </label>
         <button
           type="button"
           onClick={onAdd}
           aria-label={addLabel}
-          className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+          className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition focus:outline-hidden focus-visible:ring-2"
         >
           <Plus className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
           {localize('com_ui_add')}
@@ -371,11 +376,11 @@ function SelectedSection({
         <button
           type="button"
           onClick={onAdd}
-          className="flex w-full flex-col items-center gap-1 rounded-xl border border-dashed border-border-light px-2 py-4 text-text-secondary transition-colors hover:border-border-medium hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+          className="border-border-medium text-text-secondary hover:border-border-heavy hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary flex w-full flex-col items-center gap-1 rounded-xl border border-dashed px-2 py-4 transition-colors focus:outline-hidden focus-visible:ring-2"
         >
           <Plus className="h-4 w-4" aria-hidden="true" />
           <span className="text-xs">{emptyLabel}</span>
-          <span className="text-[11px] text-text-secondary">{emptyHint}</span>
+          <span className="text-text-secondary text-2xs">{emptyHint}</span>
         </button>
       ) : (
         <ul className="flex flex-col gap-1.5">

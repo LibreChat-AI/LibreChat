@@ -1,13 +1,18 @@
-import { ErrorTypes } from 'librechat-data-provider';
+import { redactMessage } from '@librechat/data-schemas';
+import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
+import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
+import type { LangChainErrorOptions } from '../errors';
 import {
   resolveLangChainError,
   getModelStreamFailure,
   resolveModelStreamError,
   getProviderErrorMessage,
 } from '../errors';
-import { getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
+import { getSafeErrorText, getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
+import { hasModelBoundContentProtection } from '../../middleware/modelBoundContent';
+import { getContentFilterError } from '../../middleware/contentFilter';
 import { traceIdForMessage } from '../../langfuse/trace';
 import { createModelErrorTracker } from './tracker';
 
@@ -16,9 +21,12 @@ const UPSTREAM_MODEL_ERROR_ORIGIN = 'model_provider';
 const UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE = '_OTHER';
 const UPSTREAM_MODEL_ERROR_FALLBACK = 'The model provider could not complete this request.';
 
-function safelyResolveLangChainError(error: unknown): string | undefined {
+function safelyResolveLangChainError(
+  error: unknown,
+  options: LangChainErrorOptions,
+): string | undefined {
   try {
-    return resolveLangChainError(error);
+    return resolveLangChainError(error, options);
   } catch {
     return undefined;
   }
@@ -106,9 +114,13 @@ export function createTerminalRunErrorObserver({
       }
 
       const { status } = getSafeErrorMetadata(upstreamModelError);
+      const langChainOptions: LangChainErrorOptions = {
+        includeProviderMessage: protectionEnabled === false,
+        maxProviderErrorChars,
+      };
       const classifiedError =
-        safelyResolveLangChainError(error) ??
-        safelyResolveLangChainError(upstreamModelError) ??
+        safelyResolveLangChainError(error, langChainOptions) ??
+        safelyResolveLangChainError(upstreamModelError, langChainOptions) ??
         (status == null || status < 400
           ? (resolveModelStreamError(upstreamModelError) ?? resolveModelStreamError(error))
           : undefined);
@@ -147,4 +159,122 @@ export function createTerminalRunErrorObserver({
       );
     },
   });
+}
+
+const TYPED_ERROR_CODES: ReadonlySet<string> = new Set<string>([
+  ...Object.values(ErrorTypes),
+  ...Object.values(ViolationTypes),
+]);
+
+type TypedErrorPayload = Record<string, unknown> & { type: string };
+
+/** A host-thrown `{"type": ...}` payload whose type the client maps to localized copy. */
+function parseTypedErrorMessage(message: string): TypedErrorPayload | undefined {
+  if (!message.trimStart().startsWith('{')) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(message);
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const type = (parsed as { type?: unknown }).type;
+    return typeof type === 'string' && TYPED_ERROR_CODES.has(type)
+      ? (parsed as TypedErrorPayload)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The typed payload as a reader may see it: credentials and emails are always redacted, and while
+ * a content policy is active only the code and its numeric and boolean fields (a balance, a limit)
+ * remain, since any string field may carry provider or submitted content.
+ */
+function getSafeTypedErrorText(
+  message: string,
+  payload: TypedErrorPayload,
+  protectionEnabled: boolean,
+): string {
+  if (!protectionEnabled) {
+    return redactMessage(message);
+  }
+  const safe: Record<string, unknown> = { type: payload.type };
+  for (const [key, value] of Object.entries(payload)) {
+    if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') {
+      safe[key] = value;
+    }
+  }
+  return JSON.stringify(safe);
+}
+
+/** The deployment config that decides whether a failure may show its own text. */
+export interface GenerationErrorConfig {
+  readonly filters?: FiltersConfig | null;
+  readonly messageFilter?: { readonly pii?: MessageFilterPiiConfig | null } | null;
+  readonly endpoints?: {
+    readonly agents?: { readonly maxProviderErrorChars?: number } | null;
+  } | null;
+}
+
+/**
+ * The typed payload of a LangChain-classified provider failure, or `undefined` for any other error.
+ * The provider's message rides along as `info`, bounded by `endpoints.agents.maxProviderErrorChars`,
+ * only while no content policy is active; `formatProviderMessage` applies the caller's redaction.
+ */
+export function resolveClassifiedProviderError(
+  error: unknown,
+  appConfig: GenerationErrorConfig | null | undefined,
+  formatProviderMessage?: (message: string) => string,
+): string | undefined {
+  return safelyResolveLangChainError(error, {
+    includeProviderMessage: !hasModelBoundContentProtection(
+      appConfig?.filters,
+      appConfig?.messageFilter?.pii,
+    ),
+    maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
+    formatProviderMessage,
+  });
+}
+
+/**
+ * The error text a failed generation publishes and persists on its error row, under the same rule
+ * the run's content error parts follow. Host-authored outcomes keep their wording: a typed
+ * `{"type": ...}` payload (redacted, and reduced to its code and numeric fields under a content policy), a LangChain-classified provider failure (with the provider's redacted message as `info` when no
+ * content policy is active), or a content policy block.
+ * Any other exception may echo submitted content, so while a content policy is active the turn
+ * carries `fallback`; otherwise it carries the message with URLs, credentials (API keys, tokens, auth headers) and email
+ * addresses redacted. The exception
+ * itself reaches the logs only through `getSafeErrorMetadata`.
+ */
+export function getUserFacingGenerationError(
+  error: unknown,
+  appConfig: GenerationErrorConfig | null | undefined,
+  fallback: string,
+): string {
+  const policyError = getContentFilterError(error);
+  if (policyError != null) {
+    return policyError.message;
+  }
+  const message = error instanceof Error ? error.message : undefined;
+  const protectionEnabled = hasModelBoundContentProtection(
+    appConfig?.filters,
+    appConfig?.messageFilter?.pii,
+  );
+  const typed = message != null ? parseTypedErrorMessage(message) : undefined;
+  if (message != null && typed != null) {
+    return getSafeTypedErrorText(message, typed, protectionEnabled);
+  }
+  const classified = resolveClassifiedProviderError(error, appConfig, (text) =>
+    redactMessage(getSafeErrorText(text)),
+  );
+  if (classified != null) {
+    return classified;
+  }
+  if (message == null || protectionEnabled) {
+    return fallback;
+  }
+  const trimmed = message.trim();
+  return trimmed === '' ? fallback : redactMessage(getSafeErrorText(trimmed));
 }

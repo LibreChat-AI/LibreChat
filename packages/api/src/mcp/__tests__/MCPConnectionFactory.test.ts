@@ -9,9 +9,9 @@ import {
   OboTokenResolutionError,
   ReauthenticationRequiredError,
 } from '~/mcp/oauth';
+import { MCPAuthenticationRejectedError, ScheduledMCPBearerError } from '~/mcp/errors';
 import { PENDING_STALE_MS, FlowStateNotFoundError } from '~/flow/manager';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { getMCPServerGeneration } from '~/mcp/oauth/cleanup';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { MCPConnection } from '~/mcp/connection';
@@ -71,6 +71,10 @@ class InspectableMCPConnectionFactory extends MCPConnectionFactory {
     options?: t.OAuthConnectionOptions | t.UserConnectionContext,
   ) {
     super(basic, options);
+  }
+
+  public async discoverToolsForTest() {
+    return this.discoverToolsInternal();
   }
 
   public async createConnectionForTest(): Promise<MCPConnection> {
@@ -164,6 +168,14 @@ describe('MCPConnectionFactory', () => {
       completeFlow: jest.fn().mockResolvedValue(true),
       deleteFlow: jest.fn().mockResolvedValue(true),
     } as unknown as jest.Mocked<FlowStateManager<MCPOAuthTokens | null>>;
+    mockFlowManager.initFlow.mockImplementation(async (_flowId, type, metadata = {}) => {
+      mockFlowManager.getFlowState.mockResolvedValueOnce({
+        type,
+        status: 'PENDING',
+        metadata,
+        createdAt: Date.now(),
+      });
+    });
 
     mockConnectionInstance = {
       connect: jest.fn(),
@@ -249,6 +261,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -479,6 +492,33 @@ describe('MCPConnectionFactory', () => {
     expect(mockFlowManager.deleteFlow).not.toHaveBeenCalled();
   });
 
+  it.each(['authenticated', 'fallback'] as const)(
+    'preserves a fatal catalog denial in %s discovery and disposes the session',
+    async (path) => {
+      const config: t.MCPOptions = {
+        type: 'streamable-http',
+        url: 'https://resource.example/mcp',
+        requiresOAuth: false,
+      };
+      mockProcessMCPEnv.mockReturnValue(config);
+      const factory = new InspectableMCPConnectionFactory(
+        { serverName: 'catalog-denial', serverConfig: config },
+        { user: mockUser },
+      );
+      const denial = new ScheduledMCPBearerError('consent_revoked', 'catalog-denial');
+      mockConnectionInstance.connect.mockResolvedValue(undefined);
+      mockConnectionInstance.isConnected.mockResolvedValue(true);
+      if (path === 'fallback')
+        mockConnectionInstance.connect.mockRejectedValueOnce(
+          new Error('temporary transport failure'),
+        );
+      mockConnectionInstance.fetchOrderedToolsSnapshot = jest.fn().mockRejectedValue(denial);
+      await expect(factory.discoverToolsForTest()).rejects.toBe(denial);
+      expect(mockMCPConnection).toHaveBeenCalledTimes(path === 'fallback' ? 2 : 1);
+      expect(mockConnectionInstance.dispose).toHaveBeenCalledTimes(path === 'fallback' ? 2 : 1);
+    },
+  );
+
   describe('static create method', () => {
     it('should create a basic connection without OAuth', async () => {
       const basicOptions = {
@@ -505,6 +545,22 @@ describe('MCPConnectionFactory', () => {
         ephemeralConnection: false,
       });
       expect(mockConnectionInstance.connect).toHaveBeenCalled();
+    });
+
+    it('passes the validated App operation limits into App-profile transport construction', async () => {
+      const operationLimits = { maxBytes: 2 * 1024 * 1024, timeoutMs: 45_000, maxActive: 4 };
+      mockConnectionInstance.isConnected.mockResolvedValue(true);
+
+      await MCPConnectionFactory.create({
+        serverName: 'app-server',
+        serverConfig: mockServerConfig,
+        capabilityProfile: 'apps',
+        operationLimits,
+      });
+
+      expect(mockMCPConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ capabilityProfile: 'apps', operationLimits }),
+      );
     });
 
     it('should merge requestHeaders before Graph pre-processing, overriding by case', async () => {
@@ -715,6 +771,7 @@ describe('MCPConnectionFactory', () => {
         tokenMethods: {
           findToken: undefined as unknown as TokenMethods['findToken'],
           createToken: jest.fn(),
+          replaceTokenIfCurrent: jest.fn(),
           updateToken: jest.fn(),
           deleteTokens: jest.fn(),
         },
@@ -749,6 +806,7 @@ describe('MCPConnectionFactory', () => {
             tokenMethods: {
               findToken: jest.fn(),
               createToken: jest.fn(),
+              replaceTokenIfCurrent: jest.fn(),
               updateToken: jest.fn(),
               deleteTokens: jest.fn(),
             },
@@ -1019,6 +1077,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -1088,6 +1147,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -1151,6 +1211,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -1234,6 +1295,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -1248,7 +1310,10 @@ describe('MCPConnectionFactory', () => {
       );
       expect(result?.tokens).toEqual(freshTokens);
       expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalled();
-      expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize');
+      expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize', {
+        expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
+      });
       expect(oauthStart).not.toHaveBeenCalledWith(
         expect.stringContaining('resource='),
         expect.anything(),
@@ -1330,6 +1395,7 @@ describe('MCPConnectionFactory', () => {
             tokenMethods: {
               findToken: jest.fn(),
               createToken: jest.fn(),
+              replaceTokenIfCurrent: jest.fn(),
               updateToken: jest.fn(),
               deleteTokens: jest.fn(),
             },
@@ -1346,7 +1412,10 @@ describe('MCPConnectionFactory', () => {
           mockFlowManager,
         );
         expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalled();
-        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize');
+        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize', {
+          expiresAt: expect.any(Number),
+          onPublished: expect.any(Function),
+        });
         expect(oauthStart).not.toHaveBeenCalledWith(
           'https://auth.example.com/old-authorize',
           expect.anything(),
@@ -1418,7 +1487,83 @@ describe('MCPConnectionFactory', () => {
       mockConnectionInstance.connect.mockRejectedValue(new Error('OAuth authentication required'));
     });
 
+    it.each(['current', 'missing', 'expired', 'superseded', 'cancelled'])(
+      'publishes only the exact stored fresh-flow deadline when the flow is %s',
+      async (state) => {
+        const oauthStart = jest.fn();
+        const controller = new AbortController();
+        const storedAt = Date.now() - 3 * 60_000;
+        const authorizationUrl = 'https://auth.example.com/fresh';
+        mockMCPOAuthHandler.initiateOAuthFlow.mockResolvedValue({
+          authorizationUrl,
+          flowId: 'fresh-deadline-flow',
+          flowMetadata: {
+            serverName: 'test-server',
+            userId: 'user123',
+            serverUrl: 'https://api.example.com',
+            state: 'fresh-state',
+            clientInfo: { client_id: 'client123' },
+          },
+        });
+        mockFlowManager.initFlow.mockImplementation(async (_flowId, type, metadata = {}) => {
+          if (state === 'cancelled') controller.abort();
+          mockFlowManager.getFlowState.mockResolvedValueOnce(
+            state === 'missing'
+              ? null
+              : {
+                  type,
+                  status: 'PENDING',
+                  createdAt: state === 'expired' ? Date.now() - PENDING_STALE_MS : storedAt,
+                  metadata: {
+                    ...metadata,
+                    authorizationUrl:
+                      state === 'superseded'
+                        ? 'https://auth.example.com/replaced'
+                        : authorizationUrl,
+                  },
+                },
+          );
+        });
+        mockFlowManager.createFlow.mockResolvedValue(null);
+        const factory = new InspectableMCPConnectionFactory(
+          {
+            serverName: 'test-server',
+            serverConfig: { type: 'sse', url: 'https://api.example.com' },
+            skipEnvProcessing: true,
+          },
+          {
+            useOAuth: true,
+            user: mockUser,
+            flowManager: mockFlowManager,
+            oauthStart,
+            signal: controller.signal,
+          },
+        );
+        await factory.handleOAuthRequiredForTest();
+        if (state === 'current') {
+          expect(oauthStart).toHaveBeenCalledWith(authorizationUrl, {
+            expiresAt: storedAt + PENDING_STALE_MS,
+            onPublished: expect.any(Function),
+          });
+          expect(storedAt + PENDING_STALE_MS).toBeGreaterThan(Date.now());
+        } else expect(oauthStart).not.toHaveBeenCalled();
+        expect(mockFlowManager.getFlowState).toHaveBeenCalledWith(
+          'fresh-deadline-flow',
+          'mcp_oauth',
+        );
+      },
+    );
+
     it('should handle oauthRequired event for returnOnOAuth scenario', async () => {
+      const persistedCreatedAt = Date.now() - 30_000;
+      mockFlowManager.initFlow.mockImplementation(async (_flowId, type, metadata = {}) => {
+        mockFlowManager.getFlowState.mockResolvedValueOnce({
+          type,
+          status: 'PENDING',
+          metadata,
+          createdAt: persistedCreatedAt,
+        });
+      });
       const basicOptions = {
         serverName: 'test-server',
         serverConfig: {
@@ -1503,7 +1648,10 @@ describe('MCPConnectionFactory', () => {
         .invocationCallOrder[0];
       expect(initCallOrder).toBeLessThan(oauthStartCallOrder);
 
-      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com');
+      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
+        expiresAt: persistedCreatedAt + PENDING_STALE_MS,
+        onPublished: expect.any(Function),
+      });
       expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
         'oauthFailed',
         expect.objectContaining({
@@ -1826,7 +1974,10 @@ describe('MCPConnectionFactory', () => {
 
       // initFlow should have succeeded and redirect should have happened
       expect(mockFlowManager.initFlow).toHaveBeenCalled();
-      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com');
+      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
+        expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
+      });
       // The background monitor error should be logged, not silently swallowed
       expect(mockLogger.debug).toHaveBeenCalledWith(
         '[MCP][User: user123] OAuth flow monitor ended',
@@ -2305,6 +2456,7 @@ describe('MCPConnectionFactory', () => {
               tokenMethods: {
                 findToken: jest.fn(),
                 createToken: jest.fn(),
+                replaceTokenIfCurrent: jest.fn(),
                 updateToken: jest.fn(),
                 deleteTokens: jest.fn(),
               },
@@ -2324,11 +2476,17 @@ describe('MCPConnectionFactory', () => {
         await handler(challenge);
 
         expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledTimes(1);
+        expect(mockMCPTokenStorage.markAuthorizationRejected).toHaveBeenCalledWith(
+          expect.objectContaining({ credentialSetId: 'grant-1' }),
+        );
         expect(mockMCPTokenStorage.isCurrentAccessToken).toHaveBeenCalledWith(
           expect.objectContaining({ accessToken: 'renewed-access', credentialSetId: 'grant-1' }),
         );
         expect(mockConnectionInstance.emit).toHaveBeenCalledWith('oauthHandled', 'silent-refresh');
-        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com');
+        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
+          expiresAt: expect.any(Number),
+          onPublished: expect.any(Function),
+        });
         expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
           'oauthFailed',
           expect.objectContaining({ message: 'OAuth flow initiated - return early' }),
@@ -2503,6 +2661,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -2711,6 +2870,7 @@ describe('MCPConnectionFactory', () => {
             tokenMethods: {
               findToken: jest.fn(),
               createToken: jest.fn(),
+              replaceTokenIfCurrent: jest.fn(),
               updateToken: jest.fn(),
               deleteTokens: jest.fn(),
             },
@@ -2774,10 +2934,13 @@ describe('MCPConnectionFactory', () => {
       // persistent `mockImplementation`) ensures this never-resolving promise
       // does not leak into later tests' default mock behavior.
       let resolveRefresh: ((tokens: MCPOAuthTokens) => void) | undefined;
+      let started: (() => void) | undefined;
+      const refreshStarted = new Promise<void>((resolve) => (started = resolve));
       mockMCPTokenStorage.forceRefreshTokens.mockImplementationOnce(
         () =>
           new Promise<MCPOAuthTokens>((res) => {
             resolveRefresh = res;
+            started?.();
           }),
       );
       mockConnectionInstance.isConnected.mockResolvedValue(false);
@@ -2802,7 +2965,7 @@ describe('MCPConnectionFactory', () => {
       const second = oauthRequiredHandler!({ serverUrl: 'https://api.example.com' });
 
       // Let the in-flight lock register, then resolve the single redemption.
-      await Promise.resolve();
+      await refreshStarted;
       resolveRefresh!(refreshedTokens);
       await Promise.all([first, second]);
 
@@ -2823,6 +2986,7 @@ describe('MCPConnectionFactory', () => {
         const tokenMethods = {
           findToken: jest.fn(),
           createToken: jest.fn(),
+          replaceTokenIfCurrent: jest.fn(),
           updateToken: jest.fn(),
           deleteTokens: jest.fn(),
         };
@@ -2876,6 +3040,53 @@ describe('MCPConnectionFactory', () => {
         await expect(attemptB).resolves.toEqual(different ? tokensB : tokensA);
       },
     );
+
+    it('coalesces the common storage refresh while timing out its local waiters', async () => {
+      jest.useFakeTimers();
+      let releaseRejection!: () => void;
+      const blocked = new Promise<void>((resolve) => (releaseRejection = resolve));
+      mockMCPTokenStorage.forceRefreshTokens.mockImplementationOnce(async () => {
+        await blocked;
+        return null;
+      });
+      const factory = new InspectableMCPConnectionFactory(
+        {
+          serverName: 'test-server',
+          serverConfig: { type: 'sse', url: 'https://api.example.com', initTimeout: 5000 },
+        },
+        {
+          useOAuth: true,
+          user: mockUser,
+          flowManager: mockFlowManager,
+          tokenMethods: {
+            findToken: jest.fn(),
+            createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
+            updateToken: jest.fn(),
+            deleteTokens: jest.fn(),
+          },
+        },
+      );
+      try {
+        const first = factory.attemptSilentTokenRefreshForTest('rejected-generation');
+        const second = factory.attemptSilentTokenRefreshForTest('rejected-generation');
+        void first.catch(() => undefined);
+        void second.catch(() => undefined);
+        expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledTimes(1);
+        expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledWith(
+          expect.objectContaining({ rejectedCredentialSetId: 'rejected-generation' }),
+        );
+        await jest.advanceTimersByTimeAsync(2001);
+        await expect(first).rejects.toMatchObject({ name: 'MCPTokenRefreshUnavailableError' });
+        await expect(second).rejects.toMatchObject({ name: 'MCPTokenRefreshUnavailableError' });
+        releaseRejection();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseRejection();
+        jest.useRealTimers();
+      }
+    });
 
     it('should keep the in-flight silent-refresh lock until the aborted refresh settles', async () => {
       // A timed-out caller should fall back to interactive OAuth immediately,
@@ -3399,6 +3610,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -3410,9 +3622,25 @@ describe('MCPConnectionFactory', () => {
         error: new Error('Non-200 status code (401)'),
       };
 
-      await Promise.all([requestOAuthHandler!(challenge), requestOAuthHandler!(challenge)]);
-      await requestOAuthHandler!(challenge);
-      await requestOAuthHandler!(challenge);
+      const rejection = (rejectedCredentialSetId: string) => ({
+        ...challenge,
+        rejectedCredentialSetId,
+      });
+      await Promise.all([
+        requestOAuthHandler!(rejection('original-generation')),
+        requestOAuthHandler!(rejection('original-generation')),
+      ]);
+      await requestOAuthHandler!(rejection('refreshed-generation'));
+      await requestOAuthHandler!(rejection('interactive-generation'));
+
+      expect(
+        mockMCPTokenStorage.markAuthorizationRejected.mock.calls.map(
+          ([params]) => params.credentialSetId,
+        ),
+      ).toEqual(['refreshed-generation', 'interactive-generation']);
+      expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ rejectedCredentialSetId: 'original-generation' }),
+      );
 
       expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledTimes(1);
       expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalledTimes(1);
@@ -3493,6 +3721,9 @@ describe('MCPConnectionFactory', () => {
       expect(mockFlowManager.createFlow).not.toHaveBeenCalled();
       expect(oauthStart).not.toHaveBeenCalled();
       expect(oauthEnd).not.toHaveBeenCalled();
+      expect(mockMCPTokenStorage.markAuthorizationRejected).toHaveBeenCalledWith(
+        expect.objectContaining({ credentialSetId: 'rejected-generation' }),
+      );
       expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
         'oauthFailed',
         expect.objectContaining({ message: 'OAuth reauthentication required' }),
@@ -3532,6 +3763,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -3636,6 +3868,7 @@ describe('MCPConnectionFactory', () => {
         tokenMethods: {
           findToken: jest.fn(),
           createToken: jest.fn(),
+          replaceTokenIfCurrent: jest.fn(),
           updateToken: jest.fn(),
           deleteTokens: jest.fn(),
         },
@@ -3656,6 +3889,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -3672,7 +3906,10 @@ describe('MCPConnectionFactory', () => {
       await liveStarted;
 
       expect(staleOAuthStart).not.toHaveBeenCalled();
-      expect(liveOAuthStart).toHaveBeenCalledWith('https://auth.example.com');
+      expect(liveOAuthStart).toHaveBeenCalledWith('https://auth.example.com', {
+        expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
+      });
       expect(handlers.oauthReauthenticationRequired.length).toBe(1);
 
       cleanup();
@@ -4188,6 +4425,7 @@ describe('MCPConnectionFactory', () => {
     });
 
     it('should invalidate mcp_get_tokens cache after interactive OAuth stores fresh tokens', async () => {
+      mockFlowManager.initFlow.mockResolvedValue(undefined);
       // Regression for the Codex finding "Invalidate token cache after
       // interactive fallback": when silent refresh fails but interactive OAuth
       // succeeds, the old `mcp_get_tokens` flow cache could otherwise re-serve
@@ -4245,6 +4483,12 @@ describe('MCPConnectionFactory', () => {
       mockFlowManager.getFlowState
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          type: 'mcp_oauth',
+          metadata: { authorizationUrl: 'https://auth.example.com' },
+          createdAt: Date.now(),
+        })
         .mockResolvedValueOnce({
           status: 'COMPLETED' as const,
           type: 'mcp_get_tokens',
@@ -4603,6 +4847,7 @@ describe('MCPConnectionFactory', () => {
     });
 
     it('should complete PENDING token waiters with the persisted interactive credential generation', async () => {
+      mockFlowManager.initFlow.mockResolvedValue(undefined);
       const sseConfig = {
         ...mockServerConfig,
         url: 'https://api.example.com',
@@ -4648,6 +4893,12 @@ describe('MCPConnectionFactory', () => {
       mockFlowManager.getFlowState
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          type: 'mcp_oauth',
+          metadata: { authorizationUrl: 'https://auth.example.com' },
+          createdAt: Date.now(),
+        })
         .mockResolvedValueOnce({
           status: 'PENDING' as const,
           type: 'mcp_get_tokens',
@@ -4897,6 +5148,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -5156,6 +5408,43 @@ describe('MCPConnectionFactory', () => {
       expect(mockMCPConnection).toHaveBeenCalledTimes(1);
     });
 
+    it('records OAuth rejection when tools/list fails after a successful handshake', async () => {
+      mockFlowManager.createFlowWithHandler.mockResolvedValue({
+        access_token: 'rejected-access',
+        token_type: 'Bearer',
+        obtained_at: Date.now(),
+        credential_set_id: 'rejected-generation',
+      });
+      mockConnectionInstance.connect.mockResolvedValue(undefined);
+      mockConnectionInstance.isConnected.mockResolvedValue(true);
+      mockConnectionInstance.fetchOrderedToolsSnapshot = jest.fn().mockResolvedValue({
+        tools: [],
+        complete: false,
+        authenticationError: Object.assign(new Error('unauthorized'), { status: 401 }),
+      });
+      const result = await MCPConnectionFactory.discoverTools(
+        { serverName: 'test-server', serverConfig: mockServerConfig },
+        {
+          useOAuth: true,
+          user: mockUser,
+          flowManager: mockFlowManager,
+          tokenMethods: {
+            findToken: jest.fn(),
+            createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
+            updateToken: jest.fn(),
+            deleteTokens: jest.fn(),
+          },
+        },
+      );
+
+      expect(result.oauthRequired).toBe(true);
+      expect(result.tools).toBeNull();
+      expect(mockMCPTokenStorage.markAuthorizationRejected).toHaveBeenCalledWith(
+        expect.objectContaining({ credentialSetId: 'rejected-generation' }),
+      );
+    });
+
     it('does not expose an incomplete discovery snapshot as authoritative', async () => {
       const basicOptions = {
         serverName: 'test-server',
@@ -5336,6 +5625,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -5587,6 +5877,90 @@ describe('MCPConnectionFactory', () => {
         expect(Date.now() - start).toBeLessThan(2000);
       });
 
+      describe('OAuth rejection persistence', () => {
+        it.each([
+          ['handshake', 'deadline'],
+          ['handshake', 'abort'],
+          ['tools/list', 'deadline'],
+          ['tools/list', 'abort'],
+        ])('hands off %s rejection persistence when discovery stops at %s', async (phase, stop) => {
+          jest.useFakeTimers();
+          let finishRecording!: () => void;
+          let recordingStarted!: () => void;
+          const started = new Promise<void>((resolve) => (recordingStarted = resolve));
+          const pendingWrite = new Promise<void>((resolve) => (finishRecording = resolve));
+          mockMCPTokenStorage.markAuthorizationRejected.mockImplementationOnce(() => {
+            recordingStarted();
+            return pendingWrite;
+          });
+          const controller = new AbortController();
+          const onDiscoveryDetached = jest.fn();
+          mockFlowManager.createFlowWithHandler.mockResolvedValue({
+            access_token: 'rejected-access',
+            token_type: 'Bearer',
+            obtained_at: Date.now(),
+            credential_set_id: 'rejected-generation',
+          });
+          let oauthHandler: (() => void) | undefined;
+          mockConnectionInstance.once.mockImplementation((event, handler) => {
+            if (event === 'oauthRequired') oauthHandler = handler as () => void;
+            return mockConnectionInstance;
+          });
+          mockConnectionInstance.connect.mockImplementation(async () => {
+            if (phase === 'handshake') {
+              oauthHandler?.();
+              throw new Error('OAuth required');
+            }
+          });
+          mockConnectionInstance.isConnected.mockResolvedValue(true);
+          mockConnectionInstance.fetchOrderedToolsSnapshot = jest.fn().mockResolvedValue({
+            tools: [],
+            complete: false,
+            authenticationError: Object.assign(new Error('unauthorized'), { status: 401 }),
+          });
+          try {
+            const discovery = MCPConnectionFactory.discoverTools(
+              { serverName: 'test-server', serverConfig: mockServerConfig },
+              {
+                useOAuth: true,
+                user: mockUser,
+                flowManager: mockFlowManager,
+                tokenMethods: {
+                  findToken: jest.fn(),
+                  createToken: jest.fn(),
+                  replaceTokenIfCurrent: jest.fn(),
+                  updateToken: jest.fn(),
+                  deleteTokens: jest.fn(),
+                },
+                ...(stop === 'deadline'
+                  ? { deadlineMs: Date.now() + 100 }
+                  : { signal: controller.signal }),
+                onDiscoveryDetached,
+              },
+            );
+            await started;
+            if (stop === 'deadline') await jest.advanceTimersByTimeAsync(100);
+            else controller.abort();
+            const result = await discovery;
+            expect(result.tools).toBeNull();
+            expect(result.oauthRequired).toBe(true);
+            expect(mockMCPConnection).toHaveBeenCalledTimes(1);
+            expect(onDiscoveryDetached).toHaveBeenCalledTimes(1);
+            const [detached] = onDiscoveryDetached.mock.calls[0] as [Promise<void>];
+            let finished = false;
+            void detached.then(() => (finished = true));
+            await Promise.resolve();
+            expect(finished).toBe(false);
+            finishRecording();
+            await detached;
+            expect(finished).toBe(true);
+          } finally {
+            finishRecording();
+            jest.useRealTimers();
+          }
+        });
+      });
+
       describe('OAuth token loading', () => {
         const oauthDiscoveryOptions = (bounds: {
           deadlineMs?: number;
@@ -5599,6 +5973,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -6244,6 +6619,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -6288,6 +6664,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },
@@ -6331,6 +6708,7 @@ describe('MCPConnectionFactory', () => {
               tokenMethods: {
                 findToken: jest.fn(),
                 createToken: jest.fn(),
+                replaceTokenIfCurrent: jest.fn(),
                 updateToken: jest.fn(),
                 deleteTokens: jest.fn(),
               },
@@ -6366,6 +6744,7 @@ describe('MCPConnectionFactory', () => {
               tokenMethods: {
                 findToken: jest.fn(),
                 createToken: jest.fn(),
+                replaceTokenIfCurrent: jest.fn(),
                 updateToken: jest.fn(),
                 deleteTokens: jest.fn(),
               },
@@ -6395,6 +6774,7 @@ describe('MCPConnectionFactory', () => {
             tokenMethods: {
               findToken: jest.fn(),
               createToken: jest.fn(),
+              replaceTokenIfCurrent: jest.fn(),
               updateToken: jest.fn(),
               deleteTokens: jest.fn(),
             },
@@ -6454,6 +6834,7 @@ describe('MCPConnectionFactory', () => {
             tokenMethods: {
               findToken: jest.fn(),
               createToken: jest.fn(),
+              replaceTokenIfCurrent: jest.fn(),
               updateToken: jest.fn(),
               deleteTokens: jest.fn(),
             },
@@ -6501,6 +6882,7 @@ describe('MCPConnectionFactory', () => {
             tokenMethods: {
               findToken: jest.fn(),
               createToken: jest.fn(),
+              replaceTokenIfCurrent: jest.fn(),
               updateToken: jest.fn(),
               deleteTokens: jest.fn(),
             },
@@ -6557,6 +6939,7 @@ describe('MCPConnectionFactory', () => {
           tokenMethods: {
             findToken: jest.fn(),
             createToken: jest.fn(),
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: jest.fn(),
             deleteTokens: jest.fn(),
           },

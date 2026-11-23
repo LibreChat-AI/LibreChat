@@ -1,4 +1,5 @@
 export * from './useMCPSelect';
+export * from './useMCPAppFrame';
 export * from './useVisibleTools';
 export * from './useMCPServerManager';
 export * from './useMCPConnectionStatus';

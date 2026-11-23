@@ -61,6 +61,16 @@ describe('ApiKeys', () => {
     expect(getByText('Connect your agents to external apps')).toBeInTheDocument();
   });
 
+  it('does not open the info hover card when the dialog opens', () => {
+    const { queryByText } = openManageDialog();
+    expect(queryByText(/API keys let external apps and tools/)).not.toBeInTheDocument();
+  });
+
+  it('moves initial focus to the dialog content instead of the info trigger', () => {
+    const { getByRole } = openManageDialog();
+    expect(document.activeElement).toBe(getByRole('dialog'));
+  });
+
   it('opens the create dialog from within the management dialog', () => {
     const { getAllByRole, getByRole } = openManageDialog();
     fireEvent.click(getAllByRole('button', { name: 'Create API Key' })[0]);

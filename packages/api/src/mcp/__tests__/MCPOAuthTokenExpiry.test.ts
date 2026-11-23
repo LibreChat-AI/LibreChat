@@ -536,6 +536,7 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
           tokenMethods: {
             findToken: tokenStore.findToken,
             createToken: tokenStore.createToken,
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: tokenStore.updateToken,
             deleteTokens: tokenStore.deleteTokens,
           },
@@ -651,6 +652,7 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
           tokenMethods: {
             findToken: tokenStore.findToken,
             createToken: tokenStore.createToken,
+            replaceTokenIfCurrent: jest.fn(),
             updateToken: tokenStore.updateToken,
             deleteTokens: tokenStore.deleteTokens,
           },
@@ -874,7 +876,7 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
         expect(result).toBeNull();
         expect(logger.error).toHaveBeenCalledWith(
           expect.stringContaining('Failed to refresh tokens'),
-          expect.any(Error),
+          { type: 'Error' },
         );
       } finally {
         await server.close();

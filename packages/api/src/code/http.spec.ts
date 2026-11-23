@@ -1546,6 +1546,7 @@ describe('moving a sealed conversation code-environment decision', () => {
 
   function setup({
     movesEnabled = true,
+    checkoutEnabled = false,
     allowAttachDetach = true,
     stored = {
       conversationId: 'conversation-1',
@@ -1557,6 +1558,7 @@ describe('moving a sealed conversation code-environment decision', () => {
     fetchImpl = jest.fn().mockImplementation(async () => workerStatusResponse()),
   }: {
     movesEnabled?: boolean;
+    checkoutEnabled?: boolean;
     allowAttachDetach?: boolean;
     stored?: StoredDecision;
     job?: CodeEnvironmentGenerationJob;
@@ -1607,7 +1609,12 @@ describe('moving a sealed conversation code-environment decision', () => {
         endpoints: {
           [EModelEndpoint.agents]: {
             statefulCodeSessions: {
-              environments: [controlPlane],
+              environments: [
+                {
+                  ...controlPlane,
+                  configSchema: { workspaces: { allowCheckoutSelection: checkoutEnabled } },
+                },
+              ],
               conversationMoves: { enabled: movesEnabled, allowAttachDetach },
             },
           },
@@ -1672,6 +1679,39 @@ describe('moving a sealed conversation code-environment decision', () => {
       fetchImpl,
     };
   }
+
+  test.each([
+    { checkout: 'source', enabled: false, capable: true, accepted: false },
+    { checkout: 'isolated', enabled: true, capable: false, accepted: false },
+    { checkout: 'isolated', enabled: false, capable: true, accepted: false },
+    { checkout: 'source', enabled: true, capable: false, accepted: true },
+    { checkout: 'isolated', enabled: true, capable: true, accepted: true },
+  ] as const)(
+    'validates checkout before persisting a move: %j',
+    async ({ checkout, enabled, capable, accepted }) => {
+      const { move, replaceDecision } = setup({
+        checkoutEnabled: enabled,
+        fetchImpl: jest.fn(async () =>
+          workerStatusResponse({
+            workspaces: [
+              { id: vm.workspaceId, ...(capable ? { workspaceInstances: ['git_worktree'] } : {}) },
+            ],
+          }),
+        ),
+      });
+      const to = [{ ...vm, checkout }];
+      const res = await move({ from: [mac], to });
+      expect(res.statusCode).toBe(accepted ? 200 : 409);
+      if (accepted) {
+        expect(replaceDecision).toHaveBeenCalledWith(
+          expect.objectContaining({ codeWorkspaces: to }),
+        );
+      } else {
+        expect(res.body).toEqual(expect.objectContaining({ reason: 'unsupported' }));
+        expect(replaceDecision).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   test('moves a sealed decision onto a workspace the new machine registers', async () => {
     const { move, conversations, fetchImpl } = setup();

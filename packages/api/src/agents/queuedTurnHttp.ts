@@ -1,36 +1,39 @@
 import { Types } from 'mongoose';
 import {
-  enqueueAgentQueuedTurnSchema,
-  isAgentsEndpoint,
-  isEphemeralAgentId,
-} from 'librechat-data-provider';
-import {
   logger,
   AgentQueuedTurnCapacityError,
   AgentQueuedTurnConflictError,
   AgentQueuedTurnLaneRetiredError,
 } from '@librechat/data-schemas';
+import {
+  enqueueAgentQueuedTurnSchema,
+  MAX_AGENT_QUEUED_TURN_TEXT_LENGTH,
+  isAgentsEndpoint,
+  isEphemeralAgentId,
+} from 'librechat-data-provider';
+import type {
+  CodeApprovalMode,
+  TAgentQueuedTurnFileRef,
+  TAgentQueuedTurnReceipt,
+  TFile,
+  TReasoningOverride,
+} from 'librechat-data-provider';
 import type {
   AgentQueuedTurnActiveRecord,
   AgentQueuedTurnMethods,
   AgentQueuedTurnRecord,
   IMongoFile,
 } from '@librechat/data-schemas';
-import type {
-  CodeApprovalMode,
-  TAgentQueuedTurnFileRef,
-  TAgentQueuedTurnReceipt,
-  TFile,
-} from 'librechat-data-provider';
 import type { Request, RequestHandler } from 'express';
 import type { AgentQueuedTurnLifecycle } from './queuedTurns';
 import type { SteerFileFetcher } from './steering/request';
 import type { SteerRequestUser } from './steering/refs';
 import { buildOwnerFilter, collectFileIds, toSteerFileRef } from './steering/refs';
 import { createQueuedTurnDeliveryReservation } from './queuedTurns';
+import { sanitizeFileForTransmit } from '../utils/message';
 import { getReferencedQuotes } from '~/utils';
 
-const MAX_QUEUED_TURN_LENGTH = 16_000;
+const MAX_QUEUED_TURN_LENGTH = MAX_AGENT_QUEUED_TURN_TEXT_LENGTH;
 const MAX_QUEUED_TURN_FILES = 10;
 const CAPABILITY = { supported: true, durability: 'durable', protocolVersion: 2 } as const;
 
@@ -77,7 +80,8 @@ function sameTenant(actual: unknown, expected: string | undefined): boolean {
   return expected == null ? actual == null : actual === expected;
 }
 
-function receipt(
+/** Client-visible projection of a durable queued turn. */
+export function toQueuedTurnReceipt(
   turn: AgentQueuedTurnRecord | AgentQueuedTurnActiveRecord,
   position?: number,
 ): TAgentQueuedTurnReceipt {
@@ -92,6 +96,7 @@ function receipt(
     ...(turn.quotes != null && { quotes: turn.quotes }),
     ...(turn.manualSkills != null && { manualSkills: turn.manualSkills }),
     ...(turn.codeApprovalMode != null && { codeApprovalMode: turn.codeApprovalMode }),
+    ...(turn.reasoningOverride != null && { reasoningOverride: turn.reasoningOverride }),
     priority: turn.priority,
     ...(turn.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: turn.expectedPredecessorCreatedAt,
@@ -104,6 +109,13 @@ function receipt(
       turn.terminalReceipt.rootPredecessor === true && { rootPredecessor: true as const }),
     status: turn.status,
     ...(position != null && { position }),
+    ...(turn.steerSource != null && {
+      steer: {
+        steerId: turn.steerSource.steerId,
+        clientSteerId: turn.steerSource.clientSteerId,
+        ...(turn.steerSource.handoffAt != null && { owned: true as const }),
+      },
+    }),
     revision: turn.sequence,
     createdAt: turn.createdAt.toISOString(),
     updatedAt: updatedAt.toISOString(),
@@ -138,6 +150,13 @@ function uniqueStrings(values: readonly string[] | undefined): string[] | undefi
   return values == null ? undefined : [...new Set(values)];
 }
 
+function sameReasoningOverride(
+  left: TReasoningOverride | undefined,
+  right: TReasoningOverride | undefined,
+): boolean {
+  return left?.key === right?.key && left?.value === right?.value;
+}
+
 function matchesReplayIntent(
   turn: AgentQueuedTurnRecord,
   input: {
@@ -146,6 +165,7 @@ function matchesReplayIntent(
     files?: readonly TAgentQueuedTurnFileRef[];
     manualSkills?: readonly string[];
     codeApprovalMode?: CodeApprovalMode;
+    reasoningOverride?: TReasoningOverride;
     expectedPredecessorCreatedAt?: number;
   },
   text: string,
@@ -162,6 +182,7 @@ function matchesReplayIntent(
     sameStrings(turn.quotes, quotes) &&
     sameStrings(turn.manualSkills, uniqueStrings(input.manualSkills)) &&
     turn.codeApprovalMode === input.codeApprovalMode &&
+    sameReasoningOverride(turn.reasoningOverride, input.reasoningOverride) &&
     turn.expectedPredecessorCreatedAt === input.expectedPredecessorCreatedAt
   );
 }
@@ -230,7 +251,8 @@ async function resolveFiles(
   const docs = (await deps.getFiles(filter, {}, {})) ?? [];
   const byId = new Map(docs.map((doc: IMongoFile) => [doc.file_id, doc]));
   const resolved = ids.flatMap((id): TAgentQueuedTurnFileRef[] => {
-    const ref = toSteerFileRef(byId.get(id));
+    const doc = byId.get(id);
+    const ref = doc == null ? null : toSteerFileRef(sanitizeFileForTransmit(doc));
     return ref == null ? [] : [{ ...ref, file_id: id }];
   });
   if (resolved.length !== ids.length) {
@@ -309,7 +331,7 @@ export async function handleAgentQueuedTurnEnqueue(
     if (existing.status !== 'queued' && existing.status !== 'claimed') {
       return {
         status: 200,
-        body: { receipt: receipt(existing), capability: CAPABILITY },
+        body: { receipt: toQueuedTurnReceipt(existing), capability: CAPABILITY },
       };
     }
     try {
@@ -325,7 +347,7 @@ export async function handleAgentQueuedTurnEnqueue(
     return {
       status: 202,
       body: {
-        receipt: receipt(existing, position >= 0 ? position + 1 : undefined),
+        receipt: toQueuedTurnReceipt(existing, position >= 0 ? position + 1 : undefined),
         capability: CAPABILITY,
       },
     };
@@ -350,6 +372,7 @@ export async function handleAgentQueuedTurnEnqueue(
       ...(quotes != null && { quotes }),
       ...(input.manualSkills != null && { manualSkills: input.manualSkills }),
       ...(input.codeApprovalMode != null && { codeApprovalMode: input.codeApprovalMode }),
+      ...(input.reasoningOverride != null && { reasoningOverride: input.reasoningOverride }),
       priority: false,
       ...(input.expectedPredecessorCreatedAt != null && {
         expectedPredecessorCreatedAt: input.expectedPredecessorCreatedAt,
@@ -367,7 +390,7 @@ export async function handleAgentQueuedTurnEnqueue(
     if (queued.replayed && queued.turn.status !== 'queued' && queued.turn.status !== 'claimed') {
       return {
         status: 200,
-        body: { receipt: receipt(queued.turn), capability: CAPABILITY },
+        body: { receipt: toQueuedTurnReceipt(queued.turn), capability: CAPABILITY },
       };
     }
     try {
@@ -385,7 +408,7 @@ export async function handleAgentQueuedTurnEnqueue(
     return {
       status: 202,
       body: {
-        receipt: receipt(queued.turn, position >= 0 ? position + 1 : undefined),
+        receipt: toQueuedTurnReceipt(queued.turn, position >= 0 ? position + 1 : undefined),
         capability: CAPABILITY,
       },
     };
@@ -438,10 +461,10 @@ export async function handleAgentQueuedTurnList(
     body: {
       queuedTurns: turns.map((turn) => {
         if (turn.status !== 'queued' && turn.status !== 'claimed') {
-          return receipt(turn);
+          return toQueuedTurnReceipt(turn);
         }
         activePosition += 1;
-        return receipt(turn, activePosition);
+        return toQueuedTurnReceipt(turn, activePosition);
       }),
       capability: CAPABILITY,
       revision: turns.reduce((latest, turn) => Math.max(latest, turn.sequence), 0),
@@ -472,7 +495,7 @@ export async function handleAgentQueuedTurnCancel(
   if (cancelled.outcome === 'not_cancellable') {
     return { status: 409, body: { code: 'QUEUED_TURN_ALREADY_ADMITTING' } };
   }
-  return { status: 200, body: { receipt: receipt(cancelled.turn) } };
+  return { status: 200, body: { receipt: toQueuedTurnReceipt(cancelled.turn) } };
 }
 
 /** Keep protocol selection and error handling in the TypeScript backend. */

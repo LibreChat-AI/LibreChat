@@ -427,7 +427,9 @@ export function createAuditLogMethods(
           actorType: actor.type,
           targetType: target.type,
           targetId: target.id ?? null,
-          err,
+          /** Name and driver code only: the message can echo query text or connection details. */
+          errName: err instanceof Error ? err.name : typeof err,
+          errCode: (err as { code?: unknown } | null)?.code ?? null,
         });
         if (options?.failClosed) {
           throw err instanceof Error ? err : new Error('Failed to record audit entry');
@@ -707,6 +709,29 @@ export function createAuditLogMethods(
       .sort({ seq: 1 })
       .select('seq prevHash')
       .lean<{ seq: number; prevHash: string }>();
+
+    /** The purge itself is audited after the checkpoint is read, so the new
+     * entry cannot shift the boundary; a failed write is logged, not thrown. */
+    try {
+      await recordAuditEntry({
+        action: 'audit.purged',
+        severity: 'critical',
+        actor: { type: 'system', name: 'audit-retention' },
+        target: { type: 'audit_log' },
+        metadata: {
+          deletedCount,
+          before: options.before.toISOString(),
+          ...(newFirst ? { throughSeq: newFirst.seq - 1 } : {}),
+        },
+        tenantId,
+      });
+    } catch (err) {
+      logger.error('[auditLog] failed to record retention purge', {
+        chainKey,
+        deletedCount,
+        error: err instanceof Error ? err.name : 'unknown error',
+      });
+    }
 
     return {
       deletedCount,

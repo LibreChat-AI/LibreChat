@@ -26,7 +26,10 @@ const focusableWithin = (row: HTMLElement): HTMLElement | null => {
   if (row.matches('a[href],button:not([disabled]),[tabindex]:not([tabindex="-1"])')) {
     return row;
   }
-  return row.querySelector<HTMLElement>('a[href],button:not([disabled])');
+  return (
+    row.querySelector<HTMLElement>('[data-conversation-link]') ??
+    row.querySelector<HTMLElement>('a[href],button:not([disabled])')
+  );
 };
 
 /**
@@ -63,13 +66,6 @@ export const resolveRowBeside = (row: HTMLElement | null): HTMLElement | null =>
  */
 export const focusableInRow = (row: HTMLElement | null): HTMLElement | null =>
   row ? focusableWithin(row) : null;
-
-/** Resolves and focuses in one step, for removals that happen synchronously. */
-export const focusRowBeside = (row: HTMLElement | null): boolean => {
-  const target = resolveRowBeside(row);
-  target?.focus();
-  return target != null && document.activeElement === target;
-};
 
 /**
  * Focuses the first surviving row in `scope`, falling back to the New Chat

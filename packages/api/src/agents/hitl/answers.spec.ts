@@ -16,7 +16,6 @@ import {
   applyRetainedAnswers,
   prepareRetainedAnswerInvocationMessages,
   RETAINED_ANSWERS_MESSAGE_ID,
-  buildRetainedAnswersContext,
   collectRetainedAnswers,
   orderConversationBranch,
   reachesBranchRoot,
@@ -372,7 +371,10 @@ describe('resolveRetainedAnswersConfig', () => {
   });
 });
 
-describe('buildRetainedAnswersContext', () => {
+describe('retained answers context', () => {
+  const buildRetainedAnswersContext = async (
+    input: Parameters<typeof prepareRetainedAnswers>[0],
+  ): Promise<string | undefined> => (await prepareRetainedAnswers(input)).block;
   const answered = askPart(batchRequest, JSON.stringify({ answers: { environment: 'staging' } }));
   const summary = {
     type: ContentTypes.SUMMARY,
@@ -897,6 +899,28 @@ describe('retained answer lifecycle', () => {
       expect(exact.mock.calls.every(([text]) => text.length < 4096)).toBe(true);
       const changed = new HumanMessage({ ...restored[0], content: 'redacted content' });
       expect(counter(changed)).toBe(fallback(changed));
+    } finally {
+      exact.mockRestore();
+    }
+  });
+
+  test('counts an answer with a long unbroken run in linear time instead of exactly', async () => {
+    /** The SDK counts the block in 8,192-character slices, and each slice of this
+     *  answer takes ~0.3 s to count whole; the block is measured several times per
+     *  turn, so no slice of the run may reach the exact counter. */
+    await Tokenizer.initEncoding('o200k_base');
+    const answer = '漢'.repeat(16_000);
+    const block = `Q: Paste the log\nA: ${answer}`;
+    const message = new HumanMessage({
+      content: block,
+      additional_kwargs: { librechat_retained_answers: block },
+    });
+    const fallback = jest.fn(() => 5);
+    const exact = jest.spyOn(Tokenizer, 'countExactTokens');
+    try {
+      const count = withRetainedAnswerTokenCounter(fallback, 'o200k_base')(message);
+      expect(exact.mock.calls.some(([text]) => text.includes('漢'.repeat(1000)))).toBe(false);
+      expect(count).toBeGreaterThanOrEqual(Tokenizer.getTokenCount(block, 'o200k_base'));
     } finally {
       exact.mockRestore();
     }

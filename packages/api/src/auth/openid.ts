@@ -1,9 +1,16 @@
 import { logger } from '@librechat/data-schemas';
-import { ErrorTypes } from 'librechat-data-provider';
-import type { IUser, UserMethods } from '@librechat/data-schemas';
+import { ErrorTypes, SystemRoles } from 'librechat-data-provider';
+import type { IUser, AppConfig, UserMethods, UserRecord } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
-import { isMetricsConfigured, recordOpenIDUserLookup } from '~/app/metrics';
+import type {
+  GetAppConfig,
+  GetBalanceConfig,
+  FindBalanceByUser,
+  CreateUserIfAbsent,
+} from './provision';
 import type { OpenIDUserLookupResult } from '~/app/metrics';
+import { isMetricsConfigured, recordOpenIDUserLookup } from '~/app/metrics';
+import { createUserOnce } from './provision';
 
 export type OpenIdEmailClaims = {
   email?: unknown;
@@ -20,6 +27,17 @@ export type OpenIdIssuerSource = {
 
 type OpenIdLookupField = 'openidId' | 'idOnTheSource';
 type OpenIdUserResolution = { user: IUser | null; error: string | null; migration: boolean };
+
+/** The account fields an OpenID login writes from the current callback's claims. */
+export type OpenIDProfile = {
+  openidId: string;
+  openidIssuer?: string;
+  username: string;
+  name: string;
+  email?: string;
+  emailVerified: boolean;
+  idOnTheSource?: string;
+};
 
 const OPENID_DISCOVERY_PATH = '/.well-known/openid-configuration';
 const LEGACY_ISSUER_FILTERS: Array<FilterQuery<IUser>['openidIssuer']> = [
@@ -296,4 +314,80 @@ export async function findOpenIDUser({
     }
     throw error;
   }
+}
+
+/** Returns `user` carrying the current callback's claims, as every OpenID login refreshes them. */
+export function applyOpenIDProfile<T extends UserRecord>(user: T, profile: OpenIDProfile): T {
+  const updated = {
+    ...user,
+    provider: 'openid',
+    openidId: profile.openidId,
+    username: profile.username,
+    name: profile.name,
+    idOnTheSource: profile.idOnTheSource,
+  };
+  if (profile.openidIssuer) {
+    updated.openidIssuer = profile.openidIssuer;
+  }
+  if (profile.email && profile.email !== user.email) {
+    updated.email = profile.email;
+    updated.emailVerified = profile.emailVerified;
+  }
+  return updated;
+}
+
+/**
+ * Creates a first-login OpenID user, in the USER role, through `createUserOnce`, which admits it
+ * under the USER role's config and under `claimedRole`'s, the role this login's claims move it
+ * into, before creating it. It recovers a concurrent first login by repeating `findOpenIDUser`,
+ * with its provider and issuer checks, once the winner finished provisioning the account,
+ * admitting that account exactly as a found one (its own config and email-domain policy). The
+ * recovered account is refreshed with this callback's claims like any account the lookup finds.
+ * Returns the account with the config the login continues under, and whether this call
+ * created it.
+ */
+export async function createOpenIDUser({
+  lookup,
+  profile,
+  claimedRole,
+  getAppConfig,
+  getBalanceConfig,
+  createUserIfAbsent,
+  findBalanceByUser,
+}: {
+  lookup: Parameters<typeof findOpenIDUser>[0];
+  profile: OpenIDProfile;
+  claimedRole?: string;
+  getAppConfig: GetAppConfig;
+  getBalanceConfig: GetBalanceConfig;
+  createUserIfAbsent: CreateUserIfAbsent;
+  findBalanceByUser: FindBalanceByUser;
+}): Promise<{ user: UserRecord; appConfig: AppConfig; created: boolean }> {
+  const result = await createUserOnce({
+    strategyName: lookup.strategyName ?? 'openid',
+    newUser: {
+      provider: 'openid',
+      role: SystemRoles.USER,
+      openidId: profile.openidId,
+      username: profile.username,
+      email: profile.email || '',
+      emailVerified: profile.emailVerified,
+      name: profile.name,
+      idOnTheSource: profile.idOnTheSource,
+      openidIssuer: profile.openidIssuer,
+    },
+    email: profile.email ?? '',
+    claimedRole,
+    getAppConfig,
+    getBalanceConfig,
+    lookup: () => findOpenIDUser(lookup),
+    createUserIfAbsent,
+    findBalanceByUser,
+  });
+  if (result.error !== null) throw new Error(result.error);
+  return {
+    user: result.created ? result.user : applyOpenIDProfile(result.user, profile),
+    appConfig: result.appConfig,
+    created: result.created,
+  };
 }

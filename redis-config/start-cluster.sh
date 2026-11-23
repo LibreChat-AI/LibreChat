@@ -6,13 +6,29 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Writable location for data/logs/cluster files, separate from the (possibly read-only) config dir.
+RUNTIME_DIR="${REDIS_CLUSTER_RUNTIME_DIR:-$SCRIPT_DIR}"
+# Config files redis-server actually reads; rewritten copies when RUNTIME_DIR differs from SCRIPT_DIR.
+CONFIG_DIR="$SCRIPT_DIR"
 cd "$SCRIPT_DIR"
 
 echo "🚀 Starting Redis Cluster..."
 
 # Create necessary directories
-mkdir -p data/7001 data/7002 data/7003
-mkdir -p logs
+mkdir -p "$RUNTIME_DIR/data/7001" "$RUNTIME_DIR/data/7002" "$RUNTIME_DIR/data/7003"
+mkdir -p "$RUNTIME_DIR/logs"
+
+# "dir" chdirs as the config file is parsed, before a CLI override applies, so rewrite it here.
+if [ "$RUNTIME_DIR" != "$SCRIPT_DIR" ]; then
+    CONFIG_DIR="$RUNTIME_DIR/config"
+    mkdir -p "$CONFIG_DIR"
+    for port in 7001 7002 7003; do
+        sed -e "s#^dir .*#dir $RUNTIME_DIR/data/$port#" \
+            -e "s#^cluster-config-file .*#cluster-config-file $RUNTIME_DIR/data/$port/nodes-$port.conf#" \
+            "$SCRIPT_DIR/redis-$port.conf" > "$CONFIG_DIR/redis-$port.conf"
+        printf '\nlogfile %s/logs/redis-%s.log\n' "$RUNTIME_DIR" "$port" >> "$CONFIG_DIR/redis-$port.conf"
+    done
+fi
 
 # Check if Redis is installed
 if ! command -v redis-server &> /dev/null; then
@@ -30,9 +46,9 @@ if ! command -v redis-cli &> /dev/null; then
 fi
 
 # Start Redis instances
-redis-server redis-7001.conf --daemonize yes
-redis-server redis-7002.conf --daemonize yes
-redis-server redis-7003.conf --daemonize yes
+for port in 7001 7002 7003; do
+    redis-server "$CONFIG_DIR/redis-$port.conf" --daemonize yes
+done
 
 # Wait for nodes to start
 sleep 5

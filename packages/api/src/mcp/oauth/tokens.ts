@@ -11,7 +11,9 @@ import type {
 import type { OAuthTokens, OAuthClientInformation } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { MCPOAuthTokens, ExtendedOAuthTokens, OAuthStoredClientMetadata } from './types';
 import type { FlowLease, FlowStateManager } from '~/flow/manager';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { isInvalidClientMessage } from '~/mcp/utils';
+import { getSafeOAuthError } from './errors';
 import { isSystemUserId } from '~/mcp/enum';
 
 export class ReauthenticationRequiredError extends Error {
@@ -362,7 +364,56 @@ export class MCPTokenStorage {
     };
   }
 
-  /** Returns whether storage contains a currently usable, generation-bound authorization. */
+  /** Records upstream rejection without invalidating a newer refresh or interactive authorization. */
+  static async markAuthorizationRejected({
+    userId,
+    serverName,
+    credentialSetId,
+    findToken,
+    updateToken,
+    flowManager,
+    persistenceWaitTimeoutMs,
+  }: {
+    userId: string;
+    serverName: string;
+    credentialSetId: string;
+    findToken: TokenMethods['findToken'];
+    updateToken: TokenMethods['updateToken'];
+    flowManager?: Pick<FlowStateManager, 'acquireLease'>;
+    persistenceWaitTimeoutMs?: number;
+  }): Promise<void> {
+    const lease = flowManager
+      ? await flowManager.acquireLease(getMCPOAuthLeaseId(userId, serverName), {
+          waitMs: this.resolvePersistenceWaitMs(persistenceWaitTimeoutMs),
+        })
+      : undefined;
+    if (flowManager && !lease) {
+      throw new MCPTokenStorageUnavailableError(
+        serverName,
+        new Error('OAuth persistence fence unavailable'),
+      );
+    }
+    const scope = {
+      userId,
+      type: 'mcp_oauth_client',
+      identifier: `mcp:${serverName}:client`,
+      metadataCredentialSetId: credentialSetId,
+    };
+    try {
+      const client = await findToken(scope);
+      if (!client || getTokenMetadata(client).rejected_credential_set_id === credentialSetId) {
+        return;
+      }
+      await updateToken(
+        { ...scope, token: client.token },
+        { metadata: { ...getTokenMetadata(client), rejected_credential_set_id: credentialSetId } },
+      );
+    } finally {
+      if (lease) await this.releaseRefreshFlight(lease, this.getLogPrefix(userId, serverName));
+    }
+  }
+
+  /** Returns whether storage contains a usable, generation-bound authorization not rejected upstream. */
   static async hasStoredAuthorization({
     userId,
     serverName,
@@ -384,6 +435,12 @@ export class MCPTokenStorage {
         findToken({ userId, type: 'mcp_oauth_client', identifier: `${identifier}:client` }),
       ]);
       const clientCredentialSetId = getCredentialSetId(clientInfoData);
+      if (
+        clientCredentialSetId &&
+        getTokenMetadata(clientInfoData).rejected_credential_set_id === clientCredentialSetId
+      ) {
+        return false;
+      }
       const accessCredentialSetId = getCredentialSetId(accessTokenData);
       let hasUsableAuthorization = false;
       if (accessTokenData) {
@@ -1021,7 +1078,18 @@ export class MCPTokenStorage {
     const inflight = this.inflightRefreshes.get(refreshKey);
     if (inflight) {
       logger.debug(`${logPrefix} Joining in-flight token refresh`);
-      return this.raceWithAbort(inflight, signal);
+      if (!params.rejectedCredentialSetId || !params.updateToken) {
+        return this.raceWithAbort(inflight, signal);
+      }
+      const rejection = this.recordRefreshRejection(params);
+      const joined = (async () => {
+        try {
+          return await inflight;
+        } finally {
+          await rejection;
+        }
+      })();
+      return this.raceWithAbort(joined, signal);
     }
 
     if (!refreshTokens) {
@@ -1056,6 +1124,10 @@ export class MCPTokenStorage {
       if (this.refreshTeardownCounts.has(ownerKey)) {
         logger.debug(`${logPrefix} Skipping token refresh during OAuth teardown`);
         return null;
+      }
+      if (params.rejectedCredentialSetId && params.updateToken) {
+        await this.recordRefreshRejection(params);
+        if (executionController.signal.aborted) return null;
       }
       /** Serialize with the redemptions other replicas may be running for this credential. */
       let flight: MCPRefreshFlight | null = null;
@@ -1194,6 +1266,27 @@ export class MCPTokenStorage {
     this.inflightRefreshControllers.set(refreshKey, executionController);
     this.inflightRefreshOwners.set(refreshKey, ownerKey);
     return this.raceWithAbort(refreshPromise, signal);
+  }
+
+  /** Records rejection inside the common refresh lifetime, without blocking entry-point coalescing. */
+  private static async recordRefreshRejection(params: GetTokensParams): Promise<void> {
+    if (!params.rejectedCredentialSetId || !params.updateToken) return;
+    try {
+      await this.markAuthorizationRejected({
+        userId: params.userId,
+        serverName: params.serverName,
+        credentialSetId: params.rejectedCredentialSetId,
+        findToken: params.findToken,
+        updateToken: params.updateToken,
+        flowManager: params.flowManager,
+        persistenceWaitTimeoutMs: params.persistenceWaitTimeoutMs,
+      });
+    } catch (error) {
+      logger.warn(
+        `${this.getLogPrefix(params.userId, params.serverName)} Failed to record upstream OAuth rejection`,
+        error,
+      );
+    }
   }
 
   /**
@@ -1710,10 +1803,10 @@ export class MCPTokenStorage {
           deleteTokens,
           findToken,
           clientInfo,
+          /** Rejection evidence may change during redemption; read its rollback snapshot under the lease. */
           existingTokens: {
             accessToken: existingAccessToken ?? undefined,
             refreshToken: refreshTokenData,
-            clientInfoToken: clientInfoData,
           },
           metadata: storedClientMetadata,
           expectedCredentialSetId: refreshCredentialSetId,
@@ -1745,7 +1838,7 @@ export class MCPTokenStorage {
       logger.info(`${logPrefix} Successfully refreshed and stored OAuth tokens`);
       return storedTokens;
     } catch (refreshError) {
-      logger.error(`${logPrefix} Failed to refresh tokens`, refreshError);
+      logger.error(`${logPrefix} Failed to refresh tokens`, getSafeErrorMetadata(refreshError));
       if (
         refreshError instanceof ReauthenticationRequiredError ||
         refreshError instanceof MCPTokenRefreshUnavailableError
@@ -1807,7 +1900,10 @@ export class MCPTokenStorage {
         );
         return null;
       }
-      throw new MCPTokenRefreshUnavailableError(serverName, refreshError);
+      throw new MCPTokenRefreshUnavailableError(
+        serverName,
+        getSafeOAuthError(refreshError, 'OAuth token refresh failed'),
+      );
     }
   }
 

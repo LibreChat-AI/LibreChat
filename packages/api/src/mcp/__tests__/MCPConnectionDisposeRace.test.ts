@@ -135,3 +135,45 @@ describe('MCPConnection disposal during connect', () => {
     expect(serverSawClose).toBe(true);
   });
 });
+
+it('detaches a noncooperative header resolver on disposal without retiring another connection', async () => {
+  let release!: () => void;
+  const stalled = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const signals: AbortSignal[] = [];
+  const headers = jest.fn(async (signal?: AbortSignal) => {
+    signals.push(signal!);
+    await stalled;
+    return { authorization: 'Bearer waiter-only' };
+  });
+  const first = new MCPConnection({
+    serverName: 'local-first',
+    serverConfig: { type: 'streamable-http', url: 'https://resource.example/mcp' },
+    resolveRequestHeaders: headers,
+  });
+  const second = new MCPConnection({
+    serverName: 'local-second',
+    serverConfig: { type: 'streamable-http', url: 'https://resource.example/mcp' },
+    resolveRequestHeaders: headers,
+  });
+  const rejected = first['trackRequest'](() => first['authorizeRequestHeaders']()).catch(
+    (error) => error,
+  );
+  const sibling = second['trackRequest'](() => second['authorizeRequestHeaders']());
+  try {
+    await first.dispose();
+    await expect(rejected).resolves.toMatchObject({ name: 'AbortError' });
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+    release();
+    await expect(sibling).resolves.toEqual({ authorization: 'Bearer waiter-only' });
+    expect(Reflect.get(first, 'pendingRequests').size).toBe(0);
+  } finally {
+    release();
+    await rejected;
+    await sibling;
+    await first.dispose();
+    await second.dispose();
+  }
+});

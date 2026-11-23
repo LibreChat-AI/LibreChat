@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, balanceSchema } from '@librechat/data-schemas';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IBalance, IBalanceUpdate } from '@librechat/data-schemas';
-import { createSetBalanceConfig } from './balance';
+import { toBalanceResponse, buildBalanceUpdateFields, createSetBalanceConfig } from './balance';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -37,7 +37,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -68,9 +68,16 @@ describe('createSetBalanceConfig', () => {
       const getAppConfig = jest.fn().mockResolvedValue({
         balance: { enabled: true, startBalance: 1000 },
       });
+      const winnerGrant = new Date('2026-07-01T00:00:00.000Z');
       const findThenCharge = async (id: string) => {
         const record = await findBalanceByUser(id);
-        await Balance.create({ user: id, tokenCredits: 50 });
+        await Balance.create({
+          user: id,
+          tokenCredits: 50,
+          allotment: 1000,
+          allottedAt: winnerGrant,
+          lastRefill: winnerGrant,
+        });
         return record;
       };
 
@@ -83,8 +90,44 @@ describe('createSetBalanceConfig', () => {
 
       await middleware(createMockRequest(userId) as ServerRequest, res as ServerResponse, mockNext);
 
-      expect((await Balance.findOne({ user: userId }).lean())?.tokenCredits).toBe(50);
+      const stored = await Balance.findOne({ user: userId }).lean();
+      expect(stored).toMatchObject({
+        tokenCredits: 50,
+        allotment: 1000,
+        allottedAt: winnerGrant,
+        lastRefill: winnerGrant,
+      });
       expect((res.locals as { balanceData?: IBalance }).balanceData?.tokenCredits).toBe(50);
+    });
+
+    test('stores the start balance as the allotment only when it grants credits', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const config = { enabled: true, startBalance: 1000 };
+      const getAppConfig = jest.fn().mockResolvedValue({ balance: config });
+      const middleware = createSetBalanceConfig({
+        getAppConfig,
+        findBalanceByUser,
+        upsertBalanceFields,
+      });
+
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      const created = await Balance.findOne({ user: userId }).lean();
+      expect(created?.allotment).toBe(1000);
+      expect(created?.allottedAt).toEqual(created?.lastRefill);
+
+      getAppConfig.mockResolvedValue({ balance: { ...config, startBalance: 5000 } });
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      const record = await Balance.findOne({ user: userId }).lean();
+      expect(record?.tokenCredits).toBe(1000);
+      expect(record?.allotment).toBe(1000);
     });
 
     test('should create balance record for new user with start balance', async () => {
@@ -176,6 +219,26 @@ describe('createSetBalanceConfig', () => {
 
       const balanceRecord = await Balance.findOne({ user: userId });
       expect(balanceRecord).toBeNull();
+    });
+
+    test('resolves user-scoped config for a lean user without `id`', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const getAppConfig = jest.fn().mockResolvedValue({
+        balance: { enabled: true, startBalance: 1000 },
+      });
+
+      const middleware = createSetBalanceConfig({
+        getAppConfig,
+        findBalanceByUser,
+        upsertBalanceFields,
+      });
+      const req = { user: { _id: userId, role: 'USER' } } as unknown as ServerRequest;
+
+      await middleware(req, createMockResponse() as ServerResponse, mockNext);
+
+      expect(getAppConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'USER', userId: userId.toString() }),
+      );
     });
 
     test('should handle user._id as string', async () => {
@@ -379,6 +442,41 @@ describe('createSetBalanceConfig', () => {
       expect(balanceRecord?.autoRefillEnabled).toBe(true);
       expect(balanceRecord?.lastRefill).toBeInstanceOf(Date);
       // This should have fixed the issue - user should no longer get the error
+    });
+
+    test('disables a due stored reset before balance reads and admission', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const lastRefill = new Date('2020-01-01');
+      await Balance.create({
+        user: userId,
+        tokenCredits: 500,
+        autoRefillEnabled: true,
+        refillMode: 'reset',
+        refillAmount: 1000,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        lastRefill,
+      });
+      const read = jest.fn(findBalanceByUser);
+      const middleware = createSetBalanceConfig({
+        getAppConfig: jest.fn().mockResolvedValue({
+          balance: { enabled: true, startBalance: 1000, autoRefillEnabled: false },
+        }),
+        findBalanceByUser: read,
+        upsertBalanceFields,
+      });
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith(userId.toString(), { applyReset: false });
+      expect(await findBalanceByUser(userId.toString())).toMatchObject({
+        tokenCredits: 500,
+        autoRefillEnabled: false,
+        lastRefill,
+      });
     });
 
     test('should not set lastRefill when auto-refill is disabled', async () => {
@@ -729,5 +827,68 @@ describe('createSetBalanceConfig', () => {
         expect(balanceRecord?.lastRefill).toBeInstanceOf(Date);
       },
     );
+  });
+});
+
+describe('toBalanceResponse', () => {
+  const record = {
+    _id: 'balance-1',
+    tokenCredits: 100,
+    refillAmount: 500,
+    refillIntervalValue: 1,
+    refillIntervalUnit: 'weeks',
+    refillAnchor: '2026-01-05T00:00:00Z',
+    lastRefill: new Date('2026-07-01T00:00:00.000Z'),
+  };
+  test('returns the refill schedule, anchor included, under auto-refill', () => {
+    const { _id: _, ...rest } = record;
+    expect(toBalanceResponse({ ...record, autoRefillEnabled: true })).toEqual({
+      ...rest,
+      autoRefillEnabled: true,
+    });
+  });
+  test('hides the schedule but keeps the period start without auto-refill', () => {
+    expect(toBalanceResponse({ ...record, autoRefillEnabled: false })).toEqual({
+      tokenCredits: 100,
+      autoRefillEnabled: false,
+      lastRefill: record.lastRefill,
+    });
+  });
+});
+
+describe('balance refill mode synchronization', () => {
+  const config = {
+    autoRefillEnabled: true,
+    refillAmount: 1000,
+    refillIntervalValue: 1,
+    refillIntervalUnit: 'weeks' as const,
+  };
+  test('persists reset mode for existing balances', () => {
+    expect(
+      buildBalanceUpdateFields({ ...config, refillMode: 'reset' }, null, 'user-1'),
+    ).toMatchObject({ refillMode: 'reset' });
+  });
+  test('restores additive mode when the reset option is removed', () => {
+    const record = { ...config, refillMode: 'reset', lastRefill: new Date() } as IBalance;
+    expect(buildBalanceUpdateFields(config, record, 'user-1')).toEqual({ refillMode: 'add' });
+  });
+  test('syncs an added anchor and clears a removed one', () => {
+    const refillAnchor = '2026-01-05T00:00:00Z';
+    const record = { ...config, refillMode: 'add', lastRefill: new Date() } as IBalance;
+    expect(buildBalanceUpdateFields({ ...config, refillAnchor }, record, 'user-1')).toEqual({
+      refillAnchor,
+    });
+    const anchored = { ...record, refillAnchor } as IBalance;
+    expect(buildBalanceUpdateFields(config, anchored, 'user-1')).toEqual({ refillAnchor: null });
+  });
+  test('disables auto-refill for an anchor whose interval cannot form boundaries', () => {
+    const record = { ...config, refillMode: 'add', lastRefill: new Date() } as IBalance;
+    expect(
+      buildBalanceUpdateFields(
+        { ...config, refillIntervalValue: 0.5, refillAnchor: '2026-01-05T00:00:00Z' },
+        record,
+        'user-1',
+      ),
+    ).toEqual({ autoRefillEnabled: false });
   });
 });

@@ -1,13 +1,18 @@
 import getStream from 'get-stream';
+import { addAbortSignal } from 'node:stream';
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import {
   FileSources,
   mergeFileConfig,
   isExplicitMimeConfig,
   getEndpointFileConfig,
 } from 'librechat-data-provider';
+import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, ProcessedFile } from '~/types';
+import type { outboundRequestBudget } from '~/utils/timeouts';
 import type { StoredFileRef } from '~/storage/path';
+import { getOutboundTimeout } from '~/utils/timeouts';
 import { resolveDownloadPath } from '~/storage/path';
 
 export class AttachmentObjectNotFoundError extends Error {
@@ -19,13 +24,130 @@ export class AttachmentObjectNotFoundError extends Error {
   }
 }
 
+/**
+ * One attachment is larger than the limit for the model it is going to. The client recognizes the
+ * opening words (`ProviderError.tsx`) and shows this under its localized attachment-limit headline.
+ */
+export class AttachmentSizeError extends Error {
+  readonly code = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
+  readonly status = 413;
+  readonly statusCode = 413;
+
+  constructor(
+    readonly fileId: string | undefined,
+    filename: string | undefined,
+    readonly limit: number,
+  ) {
+    const megabytes = Number((limit / (1024 * 1024)).toFixed(1));
+    super(
+      `The attached file "${filename ?? 'attachment'}" is over the ${megabytes} MB limit for a file sent to this model. Remove it or attach a smaller file, then try again.`,
+    );
+    this.name = 'AttachmentSizeError';
+  }
+}
+
 export function isAttachmentObjectNotFoundError(
   error: unknown,
 ): error is AttachmentObjectNotFoundError {
   return error instanceof AttachmentObjectNotFoundError;
 }
 
-function isStorageNotFoundError(error: unknown): boolean {
+export type MissingAttachment = Pick<IMongoFile, 'file_id' | 'filename'>;
+
+/**
+ * Receives a file whose stored object is gone. Encoders given one leave that file out of the
+ * request instead of failing the turn; without one, a miss still throws, because a file the
+ * user attached this turn can be removed and uploaded again.
+ */
+export type MissingAttachmentHandler = (file: MissingAttachment) => void;
+
+/** Reports a storage miss to a tolerant caller; rethrows every other failure and strict misses. */
+export function skipMissingAttachment(
+  error: unknown,
+  file: MissingAttachment,
+  onMissingFile?: MissingAttachmentHandler,
+): boolean {
+  if (!isAttachmentObjectNotFoundError(error)) {
+    return false;
+  }
+  if (!onMissingFile) {
+    throw error;
+  }
+  onMissingFile(file);
+  return true;
+}
+
+/** Collects the files an encoder skipped as missing for one message. */
+export function createMissingAttachmentCollector(): {
+  files: MissingAttachment[];
+  onMissingFile: MissingAttachmentHandler;
+  has: (fileId: string | undefined) => boolean;
+} {
+  const files: MissingAttachment[] = [];
+  const fileIds = new Set<string>();
+  return {
+    files,
+    onMissingFile: (file) => {
+      files.push(file);
+      fileIds.add(file.file_id);
+    },
+    has: (fileId) => fileId != null && fileIds.has(fileId),
+  };
+}
+
+/**
+ * Replays one earlier message's attachments with missing files tolerated: the encoders skip
+ * whatever storage deleted, the message's file context names those files, and the returned
+ * ids are the files that were actually processed.
+ */
+export async function replayMessageAttachments(params: {
+  message: { fileContext?: string };
+  addFileContext: () => Promise<void>;
+  processAttachments: (
+    onMissingFile: MissingAttachmentHandler,
+  ) => Promise<Array<{ file_id?: string } | null | undefined> | null | undefined>;
+}): Promise<Set<string>> {
+  const { message, addFileContext, processAttachments } = params;
+  const missing = createMissingAttachmentCollector();
+  const [, processedFiles] = await Promise.all([
+    addFileContext(),
+    processAttachments(missing.onMissingFile),
+  ]);
+  if (missing.files.length > 0) {
+    message.fileContext = appendMissingAttachmentsNote(message.fileContext, missing.files);
+  }
+  const processedFileIds = new Set<string>();
+  for (const file of processedFiles ?? []) {
+    if (file?.file_id && !missing.has(file.file_id)) {
+      processedFileIds.add(file.file_id);
+    }
+  }
+  return processedFileIds;
+}
+
+/**
+ * Tells the model which earlier attachments were deleted from storage, so it neither claims
+ * to have read them nor stays silent about why they are absent.
+ */
+export function appendMissingAttachmentsNote(
+  fileContext: string | undefined,
+  files: MissingAttachment[],
+): string | undefined {
+  if (!files.length) {
+    return fileContext;
+  }
+  logger.warn('[appendMissingAttachmentsNote] Attachments missing from storage were skipped', {
+    fileIds: files.map((file) => file.file_id),
+  });
+  const names = files.map((file) => `"${file.filename || file.file_id}"`).join(', ');
+  const note =
+    `The following attached files were deleted from storage and were not read this turn: ${names}. ` +
+    'If their contents are needed, ask the user to upload them again.';
+  return fileContext ? `${fileContext}\n\n${note}` : note;
+}
+
+/** Whether a storage backend reported that the requested object does not exist. */
+export function isStorageNotFoundError(error: unknown): boolean {
   if (typeof error !== 'object' || error == null) {
     return false;
   }
@@ -54,6 +176,10 @@ function isStorageNotFoundError(error: unknown): boolean {
  * @param params - Object containing provider and optional endpoint
  * @param params.provider - The provider to get the limit for
  * @param params.endpoint - Optional endpoint name for lookup
+ * @param params.explicit - Return a limit only when the operator set one. Merging fills every
+ * endpoint with the built-in default, so without this any `fileConfig` section yields a limit and
+ * a caller that prefers it over a provider's own limit never applies the provider's. A limit set
+ * to exactly the built-in default reads as inherited.
  * @returns The configured file size limit in bytes, or undefined if not configured
  */
 export const getConfiguredFileSizeLimit = (
@@ -61,18 +187,23 @@ export const getConfiguredFileSizeLimit = (
   params: {
     provider: Providers;
     endpoint?: string;
+    explicit?: boolean;
   },
 ): number | undefined => {
   if (!req.config?.fileConfig) {
     return undefined;
   }
-  const { provider, endpoint } = params;
+  const { provider, endpoint, explicit } = params;
   const fileConfig = mergeFileConfig(req.config.fileConfig);
   const endpointConfig = getEndpointFileConfig({
     fileConfig,
     endpoint: endpoint ?? provider,
   });
-  return endpointConfig?.fileSizeLimit;
+  const limit = endpointConfig?.fileSizeLimit;
+  if (explicit && limit === getEndpointFileConfig({}).fileSizeLimit) {
+    return undefined;
+  }
+  return limit;
 };
 
 /**
@@ -176,19 +307,49 @@ export const getAudioFormat = (mimeType: string, filename: string): string | und
   return extension && supportedAudioFormats.has(extension) ? extension : undefined;
 };
 
+/** The `outboundRequestBudget` fields a stream read needs: the deadline and its overrun message. */
+type ReadBudget = Pick<ReturnType<typeof outboundRequestBudget>, 'signal' | 'timeoutErrorMessage'>;
+
 /**
  * Processes a file by downloading and encoding it to base64
  * @param req - Express request object
  * @param file - File object to process
  * @param encodingMethods - Cache of encoding methods by source
  * @param getStrategyFunctions - Function to get strategy functions for a source
+ * @param budget - Wall-clock budget for the whole read. The strategy receives its signal, and a
+ * stream still open when the signal aborts is destroyed, so a stalled read ends with an
+ * `OutboundTimeoutError` instead of holding the caller. Without one the read is unbounded.
+ * @param maxBytes - The most the stored object may hold. The read stops and the stream is destroyed
+ * as soon as it yields more, so an object larger than its record never reaches memory in full.
  * @returns Processed file with content and metadata, or null if no download reference exists
  */
+/** Collects a stream, giving up at the first chunk that takes it past `maxBytes`. */
+async function readUpTo(
+  stream: AsyncIterable<unknown>,
+  maxBytes: number,
+  tooLarge: () => Error,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  // Leaving the loop by throwing destroys the stream, so the rest is never downloaded.
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    size += bytes.length;
+    if (size > maxBytes) {
+      throw tooLarge();
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks, size);
+}
+
 export async function getFileStream<T extends ProcessedFile['metadata'] & StoredFileRef>(
   req: ServerRequest,
   file: T,
   encodingMethods: Record<string, StrategyFunctions>,
   getStrategyFunctions: (source: string) => StrategyFunctions,
+  budget?: ReadBudget,
+  maxBytes?: number,
 ): Promise<ProcessedFile<T> | null> {
   if (!file?.filepath && !file?.storageKey) {
     return null;
@@ -200,9 +361,18 @@ export async function getFileStream<T extends ProcessedFile['metadata'] & Stored
   }
 
   const { getDownloadStream } = encodingMethods[source];
+  const downloadPath = resolveDownloadPath(file);
   try {
-    const stream = await getDownloadStream(req, resolveDownloadPath(file));
-    let buffer: Buffer | null = await getStream.buffer(stream);
+    const stream = budget
+      ? await getDownloadStream(req, downloadPath, { signal: budget.signal })
+      : await getDownloadStream(req, downloadPath);
+    const guarded = budget ? addAbortSignal(budget.signal, stream) : stream;
+    let buffer: Buffer | null =
+      maxBytes == null
+        ? await getStream.buffer(guarded)
+        : await readUpTo(guarded, maxBytes, () => {
+            return new AttachmentSizeError(file.file_id, file.filename, maxBytes);
+          });
     const content = buffer.toString('base64');
     buffer = null;
 
@@ -219,6 +389,12 @@ export async function getFileStream<T extends ProcessedFile['metadata'] & Stored
       },
     };
   } catch (error) {
+    /** A budget has the shape of the request config `getOutboundTimeout` reads its deadline from. */
+    const overrun = budget && getOutboundTimeout({ config: budget });
+    if (overrun) {
+      logger.warn(`[getFileStream] ${overrun.message} (file ${file.file_id}, source ${source})`);
+      throw overrun;
+    }
     if (isStorageNotFoundError(error)) {
       throw new AttachmentObjectNotFoundError(file.file_id);
     }
