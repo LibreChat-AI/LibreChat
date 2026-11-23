@@ -8830,8 +8830,10 @@ class GenerationJobManagerClass {
   }
 
   /** Resolves true once the exact provider segment recorded its drain and false
-   * when `PROVIDER_DRAIN_TIMEOUT_MS` passes without one. A store read failure
-   * rejects: it is not evidence about the owner. */
+   * when `PROVIDER_DRAIN_TIMEOUT_MS` passes without one. A read failure is not
+   * evidence about the owner: a job store failure rejects at once, and a drain
+   * record that is still unreadable at the deadline rejects instead of
+   * reporting a timeout. An earlier failed poll is retried by the next one. */
   private async waitForProviderExecutionDrain(
     streamId: string,
     expectedCreatedAt: number,
@@ -8839,11 +8841,14 @@ class GenerationJobManagerClass {
   ): Promise<boolean> {
     const deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
     for (;;) {
-      if (
-        (await this.eventTransport
-          .hasProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId)
-          .catch(() => false)) === true
-      ) {
+      let unreadable: { error: unknown } | undefined;
+      const recorded = await this.eventTransport
+        .hasProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId)
+        .catch((error: unknown) => {
+          unreadable = { error };
+          return false;
+        });
+      if (recorded === true) {
         return true;
       }
       const job = await this.jobStore.getJob(streamId);
@@ -8855,6 +8860,9 @@ class GenerationJobManagerClass {
         return true;
       }
       if (Date.now() >= deadline) {
+        if (unreadable != null) {
+          throw unreadable.error;
+        }
         return false;
       }
       await new Promise<void>((resolve) => {
