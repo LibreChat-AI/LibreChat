@@ -261,3 +261,54 @@ describe('syncMessages stored aggregates', () => {
     expect(deps.saveMessage).not.toHaveBeenCalled();
   });
 });
+
+describe('syncMessages partially tagged replies', () => {
+  it('saves content appended between two provider messages tagged with the same reply', async () => {
+    const saveMessage = jest.fn(async (_ctx: unknown, message: Record<string, unknown>) => message);
+    const deps = {
+      saveMessage,
+      saveConvo: jest.fn().mockResolvedValue(null),
+      stampConvoLastResponse: jest.fn().mockResolvedValue(null),
+      addThreadMetadata: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ThreadSyncDeps;
+    const update = jest.fn().mockResolvedValue({});
+    const openai: ThreadSyncClient = {
+      req: { user: { id: 'user-123' } },
+      beta: { threads: { messages: { update } } },
+    };
+    const text = (value: string) => [{ type: 'text', text: { value, annotations: [] } }];
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-reply', role: 'assistant', content: text('one') }],
+      apiMessages: [
+        {
+          id: 'msg_a',
+          role: 'assistant',
+          created_at: 1,
+          content: text('one'),
+          metadata: { messageId: 'db-reply' },
+        },
+        { id: 'msg_b', role: 'assistant', created_at: 2, content: text('two') },
+        {
+          id: 'msg_c',
+          role: 'assistant',
+          created_at: 3,
+          content: [],
+          metadata: { messageId: 'db-reply' },
+        },
+      ],
+      conversationId: 'convo-123',
+    });
+
+    expect(result).toHaveLength(1);
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(saveMessage.mock.calls[0][1].content).toHaveLength(2);
+    expect(update).toHaveBeenCalledWith('msg_b', {
+      thread_id: 'thread_1',
+      metadata: { messageId: 'db-reply' },
+    });
+  });
+});

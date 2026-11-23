@@ -154,15 +154,30 @@ export async function syncMessages(
   };
 
   let lastMessage: SyncedMessage | null = null;
+  /** The newest provider message of an assistant reply not yet saved. A reply can span several
+   *  provider messages, so it is saved once, when its run of assistant messages ends. */
+  let pending: ThreadMessage | null = null;
+  const flush = () => {
+    if (pending && lastMessage) {
+      processNewMessage(lastMessage, pending);
+    }
+    pending = null;
+  };
 
   await settleStarted(
     () => {
-      for (let i = 0; i < apiMessages.length; i++) {
-        const apiMessage = apiMessages[i];
-
+      for (const apiMessage of apiMessages) {
         /* Whether the message exists in the database, by its metadata */
         const dbMessageId = apiMessage.metadata?.messageId;
         const dbMessage = dbMessageId != null ? dbMessageMap.get(dbMessageId) : undefined;
+        const continues =
+          apiMessage.role === 'assistant' &&
+          lastMessage?.role === 'assistant' &&
+          (!dbMessage || dbMessage === lastMessage);
+
+        if (!continues) {
+          flush();
+        }
 
         /* Every provider message of an aggregated reply carries the same LibreChat id */
         if (dbMessage && dbMessage === lastMessage) {
@@ -176,7 +191,7 @@ export async function syncMessages(
           continue;
         }
 
-        if (apiMessage.role === 'assistant' && lastMessage && lastMessage.role === 'assistant') {
+        if (continues && lastMessage) {
           /* Aggregate consecutive assistant messages */
           lastMessage.content = [...(lastMessage.content ?? []), ...apiMessage.content];
           lastMessage.files = [...(lastMessage.files ?? []), ...(apiMessage.files ?? [])];
@@ -185,50 +200,47 @@ export async function syncMessages(
             ...(lastMessage.aggregateMessages ?? []),
             { id: apiMessage.id },
           ];
-        } else {
-          const newMessage: SyncedMessage = {
-            thread_id,
-            conversationId,
-            messageId: randomUUID(),
-            endpoint,
-            parentMessageId: lastMessage ? lastMessage.messageId : Constants.NO_PARENT,
-            role: apiMessage.role,
-            isCreatedByUser: apiMessage.role === 'user',
-            // TODO: process generated files in content parts
-            content: apiMessage.content,
-            aggregateMessages: [{ id: apiMessage.id }],
-            model: apiMessage.role === 'user' ? null : apiMessage.assistant_id,
-            user: openai.req.user.id,
-            unfinished: false,
-          };
-
-          if (apiMessage.file_ids?.length) {
-            // TODO: retrieve file objects from API
-            newMessage.files = apiMessage.file_ids.map((file_id) => ({ file_id }));
-          }
-
-          /* Assign assistant_id if defined */
-          if (assistant_id && apiMessage.role === 'assistant' && !newMessage.model) {
-            apiMessage.model = assistant_id;
-            newMessage.model = assistant_id;
-          }
-
-          result.push(newMessage);
-          lastMessage = newMessage;
-
-          if (apiMessage.role === 'user') {
-            processNewMessage(newMessage, apiMessage);
-            continue;
-          }
+          pending = apiMessage;
+          continue;
         }
 
-        const nextMessage = apiMessages[i + 1];
-        const processAssistant = !nextMessage || nextMessage.role === 'user';
+        const newMessage: SyncedMessage = {
+          thread_id,
+          conversationId,
+          messageId: randomUUID(),
+          endpoint,
+          parentMessageId: lastMessage ? lastMessage.messageId : Constants.NO_PARENT,
+          role: apiMessage.role,
+          isCreatedByUser: apiMessage.role === 'user',
+          // TODO: process generated files in content parts
+          content: apiMessage.content,
+          aggregateMessages: [{ id: apiMessage.id }],
+          model: apiMessage.role === 'user' ? null : apiMessage.assistant_id,
+          user: openai.req.user.id,
+          unfinished: false,
+        };
 
-        if (apiMessage.role === 'assistant' && processAssistant && lastMessage) {
-          processNewMessage(lastMessage, apiMessage);
+        if (apiMessage.file_ids?.length) {
+          // TODO: retrieve file objects from API
+          newMessage.files = apiMessage.file_ids.map((file_id) => ({ file_id }));
+        }
+
+        /* Assign assistant_id if defined */
+        if (assistant_id && apiMessage.role === 'assistant' && !newMessage.model) {
+          apiMessage.model = assistant_id;
+          newMessage.model = assistant_id;
+        }
+
+        result.push(newMessage);
+        lastMessage = newMessage;
+
+        if (apiMessage.role === 'user') {
+          processNewMessage(newMessage, apiMessage);
+        } else if (apiMessage.role === 'assistant') {
+          pending = apiMessage;
         }
       }
+      flush();
     },
     () => [...modifyPromises, ...recordPromises],
   );
