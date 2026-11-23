@@ -185,20 +185,26 @@ const deleteFirebaseFile = (req, file) =>
  * @param {Express.Multer.File} params.file - The file object, which is part of the request. The file object should
  *                                     have a `path` property that points to the location of the uploaded file.
  * @param {string} params.file_id - The file ID.
+ * @param {string} [params.basePath='images'] - The base folder in Firebase Storage.
  *
  * @returns {Promise<{ filepath: string, bytes: number }>}
  *          A promise that resolves to an object containing:
  *            - filepath: The download URL of the uploaded file.
  *            - bytes: The size of the uploaded file in bytes.
  */
-async function uploadFileToFirebase({ req, file, file_id }) {
+async function uploadFileToFirebase({ req, file, file_id, basePath = 'images' }) {
   const inputFilePath = file.path;
   const inputBuffer = await fs.promises.readFile(inputFilePath);
   const bytes = Buffer.byteLength(inputBuffer);
   const userId = req.user.id;
   const fileName = `${file_id}__${path.basename(inputFilePath)}`;
   try {
-    const downloadURL = await saveBufferToFirebase({ userId, buffer: inputBuffer, fileName });
+    const downloadURL = await saveBufferToFirebase({
+      userId,
+      buffer: inputBuffer,
+      fileName,
+      basePath,
+    });
     return { filepath: downloadURL, bytes };
   } catch (err) {
     logger.error('[uploadFileToFirebase] Error saving file buffer to Firebase:', err);
