@@ -3250,16 +3250,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           await titleEventPromise;
         }
 
-        if (scheduleId) {
-          await settleScheduledRun(
-            completedOutcome({
-              stopped: terminalWasAborted,
-              preempted: preemptIncomplete,
-              stepLimit: stepLimitReached,
-              content: response.content,
-            }),
-          );
-        }
+        await settleScheduledRun(
+          completedOutcome({
+            stopped: terminalWasAborted,
+            preempted: preemptIncomplete,
+            stepLimit: stepLimitReached,
+            content: response.content,
+          }),
+        );
 
         let terminalPublicationStarted = false;
         try {

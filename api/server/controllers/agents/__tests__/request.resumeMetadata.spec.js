@@ -5515,6 +5515,8 @@ describe('ResumableAgentController resume metadata', () => {
     );
     expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
     expect(mockGenerationJobManager.steering.closeAndDrain).not.toHaveBeenCalled();
+    // An ordinary turn has no schedule to settle, whatever its response holds.
+    expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
   });
 
   it.each([
