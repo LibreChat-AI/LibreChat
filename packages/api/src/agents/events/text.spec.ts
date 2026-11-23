@@ -91,43 +91,22 @@ describe('excerpt', () => {
     expect(excerpt(`${'x'.repeat(95)} ${TOKEN}`, 100)).toBe(`${'x'.repeat(95)} [re…`);
   });
 
-  it('reads only the first 16,384 characters', () => {
-    const text = `${'word '.repeat(4000)}TAIL`;
-    expect(text.length).toBeGreaterThan(16_384);
-    expect(excerpt(text, 100_000)).not.toContain('TAIL');
-    expect(excerpt(`${'word '.repeat(3000)}TAIL`, 100_000)).toContain('TAIL');
+  it('removes a credential wherever it sits in a long text', () => {
+    const filler = 'word '.repeat(26_000);
+    const text = excerpt(`${filler}${TOKEN}`, 200_000);
+    expect(text).toBe(`${filler}[redacted]`);
+    expect(excerpt(`https://bot:${'p'.repeat(17_000)}@github.com/o/r`, 2000)).toBe(
+      'https://[redacted]@github.com/o/r',
+    );
+    expect(excerpt(`${'字'.repeat(60_000)}${TOKEN}`, 2000)).toBe(`${'字'.repeat(1999)}…`);
   });
 
-  it('drops a word the reading bound cuts, so a token cannot survive as a fragment', () => {
-    const lead = `${'\u0000'.repeat(16_384 - 14)}ok `;
-    const text = excerpt(`${lead}${TOKEN}`, 2000);
-    expect(text).toBe('ok');
-  });
-
-  it.each([[' '], ['\t'], ['\n'], ['\r']])('ends the last whole word at %p', (gap) => {
-    const text = excerpt(`${'x'.repeat(16_370)}${gap}whole${gap}${TOKEN}`, 100_000);
-    expect(text?.endsWith('whole')).toBe(true);
-    expect(text).not.toContain('ghp_');
-  });
-
-  it('looks 1,024 characters back for white space and cuts there when it finds none', () => {
-    expect(excerpt('字'.repeat(20_000), 100_000)).toBe('字'.repeat(16_384 - 1024));
-    expect(excerpt('x'.repeat(16_384), 100_000)).toHaveLength(16_384);
-    const far = `${'x'.repeat(16_384 - 1024 - 1)} ${'y'.repeat(5000)}`;
-    expect(excerpt(far, 100_000)).toBe('x'.repeat(16_384 - 1024 - 1));
-    const near = `${'x'.repeat(16_384 - 1024)} ${'y'.repeat(5000)}`;
-    expect(excerpt(near, 100_000)).toBe('x'.repeat(16_384 - 1024));
-  });
-
-  it('does not end the part it reads on half of a surrogate pair', () => {
-    const text = excerpt(`x${'😀'.repeat(10_000)}`, 100_000);
-    expect(text).toBe(`x${'😀'.repeat((16_384 - 1024 - 2) / 2)}`);
-    expect(excerpt(`${'😀'.repeat(10_000)}`, 100_000)).toBe('😀'.repeat((16_384 - 1024) / 2));
-  });
-
-  it('exposes no fragment of a token when there is no white space to cut at', () => {
-    const text = excerpt(`ok${'\u0000'.repeat(16_384 - 12)}${TOKEN}`, 2000);
-    expect(text).toBe('ok');
+  it('reads a text of 131,072 characters and leaves out a longer one', () => {
+    const most = `${'x'.repeat(131_072 - TOKEN.length - 1)} ${TOKEN}`;
+    expect(most).toHaveLength(131_072);
+    expect(excerpt(most, 200_000)).toBe(`${'x'.repeat(131_072 - TOKEN.length - 1)} [redacted]`);
+    expect(excerpt(`${most}x`, 200_000)).toBeUndefined();
+    expect(excerpt(`https://bot:${'p'.repeat(200_000)}@github.com/o/r`, 2000)).toBeUndefined();
   });
 });
 
@@ -144,6 +123,7 @@ describe('line', () => {
     expect(line(`key\u0000 ${TOKEN}`, 100)).toBe('key [redacted]');
     expect(line(7, 100)).toBeUndefined();
     expect(line(' \n ', 100)).toBeUndefined();
+    expect(line('t'.repeat(131_073), 100)).toBeUndefined();
   });
 
   it('leaves the lines of an excerpt alone', () => {

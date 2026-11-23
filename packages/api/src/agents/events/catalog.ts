@@ -81,7 +81,8 @@ export interface Repo {
  * One thing that happened to one item, reduced to what routing and the turn's first message
  * need. Every field is copied by name from the payload, so nothing else in a delivery can
  * reach a queue, a log or a prompt through it. Identity fields are required and exact; the
- * display fields are optional, bounded, and dropped when they do not read cleanly.
+ * display fields are optional, bounded, and dropped when they do not read cleanly or are
+ * longer than anything GitHub sends.
  */
 export interface Occurrence {
   type: AgentEventType;

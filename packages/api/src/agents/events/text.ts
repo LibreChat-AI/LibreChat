@@ -3,10 +3,12 @@
  * outside the deployment, so it is bounded and cleaned before it is stored or shown.
  */
 
-/** Most characters of one field that are looked at; the rest is never read. */
-const SCAN = 16_384;
-/** How far back from that bound the end of the last whole word is looked for. */
-const TAIL = 1024;
+/**
+ * Longest field that is read. A longer one is left out whole, never read in part: a cut made
+ * before the credential patterns run could leave a fragment none of them recognises. GitHub
+ * caps a comment or a review at 65,536 characters, so twice that loses nothing it can send.
+ */
+const SCAN = 131_072;
 const URL_MAX = 2048;
 /** A fragment that names a place on the page, such as `#issuecomment-1`, and nothing else. */
 const ANCHOR = /^#[A-Za-z0-9_-]{1,64}$/;
@@ -37,34 +39,6 @@ function isControl(code: number): boolean {
   );
 }
 
-function isSpace(code: number): boolean {
-  return code === SPACE || code === TAB || code === LF || code === CR;
-}
-
-/** `end`, one earlier when a cut there would leave half of a surrogate pair. */
-function whole(value: string, end: number): number {
-  const last = value.charCodeAt(end - 1);
-  return last >= 0xd800 && last <= 0xdbff ? end - 1 : end;
-}
-
-/**
- * The part of `value` that is read. A word the bound would cut in half is dropped whole, so
- * a credential can never survive as a fragment too short to recognise. Text with no white
- * space near the bound, as in a script written without spaces, loses its last 1,024
- * characters instead, which is longer than any fragment the patterns above would miss.
- */
-function scanned(value: string): string {
-  if (value.length <= SCAN) {
-    return value;
-  }
-  const floor = SCAN - TAIL;
-  let end = SCAN;
-  while (end > floor && !isSpace(value.charCodeAt(end - 1))) {
-    end -= 1;
-  }
-  return value.slice(0, whole(value, end));
-}
-
 /** Line endings become line feeds; controls that can hide or reorder text are removed. */
 function clean(value: string): string {
   let out = '';
@@ -91,22 +65,25 @@ function clip(value: string, max: number): string {
   if (value.length <= max) {
     return value;
   }
-  return `${value.slice(0, whole(value, max - 1)).trimEnd()}…`;
+  const last = value.charCodeAt(max - 2);
+  const end = last >= 0xd800 && last <= 0xdbff ? max - 2 : max - 1;
+  return `${value.slice(0, end).trimEnd()}…`;
 }
 
+/** Credentials are removed from the whole field before anything is cut from it. */
 function bounded(value: unknown, max: number, flat: boolean): string | undefined {
-  if (typeof value !== 'string') {
+  if (typeof value !== 'string' || value.length > SCAN) {
     return undefined;
   }
-  const cleaned = redact(clean(scanned(value)));
+  const cleaned = redact(clean(value));
   const text = clip((flat ? cleaned.replace(/\s+/g, ' ') : cleaned).trim(), max);
   return text.length > 0 ? text : undefined;
 }
 
 /**
  * A bounded, cleaned copy of a payload's text: at most `max` characters, with control
- * characters and recognised credentials removed. `undefined` for anything that is not text or
- * that has nothing left.
+ * characters and recognised credentials removed. `undefined` for anything that is not text,
+ * that has nothing left, or that is longer than 131,072 characters to begin with.
  */
 export function excerpt(value: unknown, max: number): string | undefined {
   return bounded(value, max, false);

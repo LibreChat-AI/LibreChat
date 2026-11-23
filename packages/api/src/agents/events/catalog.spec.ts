@@ -555,6 +555,13 @@ describe('normalize', () => {
       expect(only('github.pull_request_review.submitted', body).occurredAt).toBe(0);
     });
 
+    it('leaves out a text too long to have come from GitHub and keeps the event', () => {
+      const body = set(issueCommentCreated(), 'comment.body', 'b'.repeat(131_073));
+      const event = only('github.issue_comment.created', body);
+      expect(event).not.toHaveProperty('text');
+      expect(event.url).toBe(`${PAGE}#issuecomment-3300`);
+    });
+
     it('cuts a text where the caller says', () => {
       const body = set(issueCommentCreated(), 'comment.body', 'b'.repeat(300));
       const cut = (type: AgentEventType, payload: Payload): string | undefined => {
