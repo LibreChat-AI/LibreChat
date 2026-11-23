@@ -209,12 +209,7 @@ describe('PUT /api/roles/:roleName/prompts', () => {
     const res = await request(app).put('/api/roles/STAFF/prompts').send({ CREATE: true });
 
     expect(res.status).toBe(200);
-    expect(mockSetRolePermissions).toHaveBeenCalledWith(
-      'STAFF',
-      'PROMPTS',
-      { CREATE: true },
-      undefined,
-    );
+    expect(mockSetRolePermissions).toHaveBeenCalledWith('STAFF', 'PROMPTS', { CREATE: true }, {});
     expect(mockRecordAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'role.permissions_updated',

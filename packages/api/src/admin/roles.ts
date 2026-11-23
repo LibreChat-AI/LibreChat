@@ -1332,6 +1332,19 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
   };
 }
 
+/** The boolean flags of a permission object; `undefined` when there are none. */
+function booleanFlags(
+  permissions: Record<string, boolean | undefined> | undefined,
+): Record<string, boolean> | undefined {
+  const flags: Record<string, boolean> = {};
+  for (const [flag, value] of Object.entries(permissions ?? {})) {
+    if (typeof value === 'boolean') {
+      flags[flag] = value;
+    }
+  }
+  return Object.keys(flags).length ? flags : undefined;
+}
+
 export interface RolePermissionsUpdateDeps {
   getRoleByName: (name: string, fields?: string | string[] | null) => Promise<IRole | null>;
   /** Sets each flag by its own path, so a concurrent update to another type or flag is kept. */
@@ -1339,7 +1352,7 @@ export interface RolePermissionsUpdateDeps {
     name: string,
     permissionType: string,
     flags: Record<string, boolean>,
-    options?: { id?: string },
+    options?: { id?: string; seed?: Record<string, boolean> },
   ) => Promise<IRole | null>;
   recordAuditEntry?: RecordAuditEntry;
   /** When true, a failed audit write surfaces as a 5xx after the update has
@@ -1393,21 +1406,14 @@ export function createRolePermissionsUpdateHandler(
         config.permissionType
       ] as Record<string, boolean | undefined> | undefined;
       const currentPermissions = permissions[config.permissionType] || legacyPermissions || {};
-      /** A type still stored only at the legacy top level carries its flags into `permissions`. */
       const nextPermissions = { ...currentPermissions, ...parsedUpdates };
-      const written = permissions[config.permissionType] ? parsedUpdates : nextPermissions;
-      const flags: Record<string, boolean> = {};
-      for (const [flag, value] of Object.entries(written)) {
-        if (typeof value === 'boolean') {
-          flags[flag] = value;
-        }
-      }
-
+      /** A type still stored only at the legacy top level seeds `permissions` with its flags. */
+      const seed = permissions[config.permissionType] ? undefined : booleanFlags(legacyPermissions);
       const updatedRole = await setRolePermissions(
         roleName,
         config.permissionType,
-        flags,
-        roleIdentity(role),
+        booleanFlags(parsedUpdates) ?? {},
+        { ...roleIdentity(role), ...(seed ? { seed } : {}) },
       );
       if (!updatedRole) {
         return res.status(404).send({ message: 'Role not found' });

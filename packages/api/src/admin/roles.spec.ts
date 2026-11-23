@@ -2793,7 +2793,7 @@ describe('createRolePermissionsUpdateHandler', () => {
     expect(deps.recordAuditEntry).not.toHaveBeenCalled();
   });
 
-  it('carries legacy top-level flags into permissions when the type has none there', async () => {
+  it('seeds permissions with legacy top-level flags when the type has none there', async () => {
     const { deps, handler } = setup(
       mockRole({
         name: 'USER',
@@ -2809,8 +2809,8 @@ describe('createRolePermissionsUpdateHandler', () => {
     expect(deps.setRolePermissions).toHaveBeenCalledWith(
       'USER',
       'PROMPTS',
-      { USE: true, CREATE: false },
-      undefined,
+      { CREATE: false },
+      { seed: { USE: true, CREATE: true } },
     );
   });
 

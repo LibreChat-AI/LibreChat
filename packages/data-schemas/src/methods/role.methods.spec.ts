@@ -1492,7 +1492,37 @@ describe('setRolePermissions', () => {
     });
   });
 
-  it('returns the updated role and caches it', async () => {
+  it('keeps concurrent flag updates of a type seeded from legacy top-level flags', async () => {
+    const legacy = { [Permissions.USE]: true, [Permissions.CREATE]: true };
+    await Role.collection.insertOne({
+      name: 'editor',
+      permissions: {},
+      [PermissionTypes.PROMPTS]: legacy,
+    });
+
+    await Promise.all([
+      setRolePermissions(
+        'editor',
+        PermissionTypes.PROMPTS,
+        { [Permissions.CREATE]: false },
+        { seed: legacy },
+      ),
+      setRolePermissions(
+        'editor',
+        PermissionTypes.PROMPTS,
+        { [Permissions.USE]: false },
+        { seed: legacy },
+      ),
+    ]);
+
+    const stored = await Role.findOne({ name: 'editor' }).lean();
+    expect(stored?.permissions?.[PermissionTypes.PROMPTS]).toEqual({
+      [Permissions.USE]: false,
+      [Permissions.CREATE]: false,
+    });
+  });
+
+  it('returns the updated role and invalidates the cached one', async () => {
     await createRoleByName({ name: 'editor' });
     mockCache.set.mockClear();
 
@@ -1501,10 +1531,8 @@ describe('setRolePermissions', () => {
     });
 
     expect(updated?.permissions?.[PermissionTypes.PROMPTS]).toEqual({ [Permissions.USE]: true });
-    expect(mockCache.set).toHaveBeenCalledWith(
-      'editor',
-      expect.objectContaining({ name: 'editor' }),
-    );
+    expect(mockCache.set).toHaveBeenCalledWith('editor', null);
+    expect(mockCache.set).toHaveBeenCalledTimes(1);
   });
 
   it('returns null when no role matches the name or the id', async () => {
