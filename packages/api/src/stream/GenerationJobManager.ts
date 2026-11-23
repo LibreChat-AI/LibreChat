@@ -324,6 +324,11 @@ function isRecoverableTakeoverSplit(
   );
 }
 
+/** Statuses no provider run can leave: only trailing owner work may still be pending. */
+function isTerminalStatus(status: SerializableJobData['status']): boolean {
+  return status === 'complete' || status === 'error' || status === 'aborted';
+}
+
 /**
  * Name the reason a terminal-state CAS was lost, off the job that now holds the
  * conversation. Losing to natural completion IS a stop; losing to a replacement, or to
@@ -2150,7 +2155,16 @@ class GenerationJobManagerClass {
   /** Deliver every transaction-time predecessor receipt retained by the
    * current creation attempt, then epoch/attempt-fenced acknowledge only the
    * receipts whose provider/client handoff completed. A replacement racing the
-   * acknowledgement inherits the still-unacknowledged chain and retries it. */
+   * acknowledgement inherits the still-unacknowledged chain and retries it.
+   *
+   * A terminal predecessor that stays undrained through `PROVIDER_DRAIN_TIMEOUT_MS`
+   * is acknowledged as lost: a process killed between the terminal status and
+   * the drain mark can never record that drain. The bound cannot tell that
+   * process from a live owner whose trailing work is this slow, which is then
+   * no longer waited for. A running predecessor and a wait that could not read
+   * the stores still fail closed. Schedule-owned generations never reach this
+   * path while undrained; the store refuses to replace a job preserved for
+   * schedule reconciliation. */
   private async processDurableReplacementReceipts(
     streamId: string,
     job: CreatedJobData,
@@ -2186,14 +2200,24 @@ class GenerationJobManagerClass {
           delivered = false;
         } else {
           try {
-            await this.waitForProviderExecutionDrain(
+            const drained = await this.waitForProviderExecutionDrain(
               streamId,
               receipt.createdAt,
               receipt.providerExecutionId,
             );
+            if (!drained && isTerminalStatus(receipt.status)) {
+              logger.warn(
+                `[GenerationJobManager] Terminal provider owner treated as lost after ${PROVIDER_DRAIN_TIMEOUT_MS}ms undrained: ${streamId}/${receipt.createdAt}`,
+              );
+            } else if (!drained) {
+              logger.error(
+                `[GenerationJobManager] Replaced provider did not drain: ${streamId}/${receipt.createdAt}`,
+              );
+              delivered = false;
+            }
           } catch (error) {
             logger.error(
-              `[GenerationJobManager] Replaced provider did not drain: ${streamId}/${receipt.createdAt}`,
+              `[GenerationJobManager] Failed to confirm replaced provider drain: ${streamId}/${receipt.createdAt}`,
               error,
             );
             delivered = false;
@@ -8805,11 +8829,14 @@ class GenerationJobManagerClass {
     this.openProviderExecutions.clear();
   }
 
+  /** Resolves true once the exact provider segment recorded its drain and false
+   * when `PROVIDER_DRAIN_TIMEOUT_MS` passes without one. A store read failure
+   * rejects: it is not evidence about the owner. */
   private async waitForProviderExecutionDrain(
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
     for (;;) {
       if (
@@ -8817,7 +8844,7 @@ class GenerationJobManagerClass {
           .hasProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId)
           .catch(() => false)) === true
       ) {
-        return;
+        return true;
       }
       const job = await this.jobStore.getJob(streamId);
       if (
@@ -8825,10 +8852,10 @@ class GenerationJobManagerClass {
         job.providerExecutionId === providerExecutionId &&
         job.providerDrained === true
       ) {
-        return;
+        return true;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for provider execution to drain: ${streamId}`);
+        return false;
       }
       await new Promise<void>((resolve) => {
         setTimeout(resolve, PROVIDER_DRAIN_POLL_MS);
@@ -8850,7 +8877,11 @@ class GenerationJobManagerClass {
     // provider can win its exact begin CAS after that read but before the
     // terminal CAS. Re-read the exact segment only after terminal ownership is
     // committed, when no not-yet-started provider can begin anymore.
-    await this.waitForProviderExecutionDrain(streamId, job.createdAt, job.providerExecutionId);
+    if (
+      !(await this.waitForProviderExecutionDrain(streamId, job.createdAt, job.providerExecutionId))
+    ) {
+      throw new Error(`Timed out waiting for provider execution to drain: ${streamId}`);
+    }
   }
 
   /**

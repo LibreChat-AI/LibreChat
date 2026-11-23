@@ -96,7 +96,10 @@ export const PAUSE_PERSISTENCE_TIMEOUT_ERROR = 'Paused response persistence time
 /** Maximum time a terminal provider owner may remain undrained before its
  * process is treated as lost. Terminal host settlement retains the last
  * durable evidence through this grace period, then releases the lane from a
- * crashed owner instead of refreshing its fence forever. */
+ * crashed owner instead of refreshing its fence forever. A replacement
+ * generation waits the same period for a terminal predecessor's drain, then
+ * starts. Neither applies to a schedule-owned generation, which waits for a
+ * confirmed owner termination. */
 export const PROVIDER_DRAIN_TIMEOUT_MS = 30_000;
 
 /**
