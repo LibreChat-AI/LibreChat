@@ -37,8 +37,8 @@ const BUDGETS = {
   read: 30_050,
   /** Rows the thread adds in one frame as it mounts. */
   step: 32,
-  /** Listeners on `document` and `window` once every row has been read: 263. */
-  listeners: 276,
+  /** Listeners on `document` and `window` once every row has been read: 131. */
+  listeners: 138,
   /** Component renders in one streamed frame of a reply: 59. */
   frame: 62,
   /** Of those, the renders outside every row: 31. */
