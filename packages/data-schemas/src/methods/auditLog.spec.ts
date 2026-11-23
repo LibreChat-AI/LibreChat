@@ -659,6 +659,35 @@ describe('auditLog methods', () => {
       expect((await methods.verifyAuditChain('tenant-a')).ok).toBe(true);
     });
 
+    it('records a failed full purge when the delete rejects after the purge was audited', async () => {
+      await seed(2);
+      const spy = jest
+        .spyOn(AuditLog.collection, 'deleteMany')
+        .mockRejectedValueOnce(new Error('delete failed'));
+
+      try {
+        await expect(
+          methods.purgeAuditLogEntries('tenant-a', {
+            before: new Date(Date.now() + 60_000),
+            confirm: true,
+          }),
+        ).rejects.toThrow('delete failed');
+      } finally {
+        spy.mockRestore();
+      }
+      const rows = await AuditLog.find({ chainKey: CK_A })
+        .sort({ seq: 1 })
+        .select('seq action outcome')
+        .lean<{ seq: number; action: string; outcome: string }[]>();
+      expect(rows.map((r) => [r.seq, r.action, r.outcome])).toEqual([
+        [1, baseInput().action, 'success'],
+        [2, baseInput().action, 'success'],
+        [3, 'audit.purged', 'success'],
+        [4, 'audit.purged', 'failure'],
+      ]);
+      expect((await methods.verifyAuditChain('tenant-a')).ok).toBe(true);
+    });
+
     it('does not mint a checkpoint when a confirmed purge removed nothing', async () => {
       await seed(2);
       const result = await methods.purgeAuditLogEntries('tenant-a', {

@@ -718,8 +718,17 @@ export function createAuditLogMethods(
      * intentionally uses the raw driver to bypass the append-only Mongoose hooks
      * (the model blocks every delete). Tenant isolation is applied via `chainKey`.
      */
-    // eslint-disable-next-line no-restricted-syntax -- privileged retention purge; append-only hooks block deleteMany, tenant scoped via chainKey
-    const result = await AuditLog.collection.deleteMany({ chainKey, seq: { $lt: boundary } });
+    let result: { deletedCount?: number };
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- privileged retention purge; append-only hooks block deleteMany, tenant scoped via chainKey
+      result = await AuditLog.collection.deleteMany({ chainKey, seq: { $lt: boundary } });
+    } catch (err) {
+      /** The full purge was already recorded as done; record that it failed. */
+      if (!firstRetained) {
+        await recordAuditEntry({ ...purge(0, tail.seq), outcome: 'failure' });
+      }
+      throw err;
+    }
     const deletedCount = result.deletedCount ?? 0;
 
     logger.warn('[auditLog] retention purge executed', {
