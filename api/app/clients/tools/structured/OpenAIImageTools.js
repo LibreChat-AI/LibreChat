@@ -17,6 +17,8 @@ const { getFiles } = require('~/models');
 
 const displayMessage =
   "The tool displayed an image. All generated images are already plainly visible, so don't repeat the descriptions in detail. Do not list download links as they are available in the UI already. The user may download the images by clicking on them, but do not mention anything about downloading to the user.";
+const emptyMessage =
+  'No image was returned by the image API. The provider may have declined this prompt, so ask the user to rephrase it; if this keeps happening, check the image API configuration.';
 
 /**
  * Replaces unwanted characters from the input string
@@ -195,12 +197,10 @@ function createOpenAIImageTools(fields = {}) {
 
       // For gpt-image-1, the response contains base64-encoded images
       // TODO: handle cost in `resp.usage`
-      const base64Image = resp.data[0].b64_json;
+      const base64Image = resp.data?.[0]?.b64_json;
 
       if (!base64Image) {
-        return returnValue(
-          'No image data returned from OpenAI API. There may be a problem with the API or your configuration.',
-        );
+        return returnValue(emptyMessage);
       }
 
       const content = [
@@ -361,16 +361,12 @@ function createOpenAIImageTools(fields = {}) {
         const response = await axios.post('/images/edits', formData, axiosConfig);
 
         if (!response.data || !response.data.data || !response.data.data.length) {
-          return returnValue(
-            'No image data returned from OpenAI API. There may be a problem with the API or your configuration.',
-          );
+          return returnValue(emptyMessage);
         }
 
         const base64Image = response.data.data[0].b64_json;
         if (!base64Image) {
-          return returnValue(
-            'No image data returned from OpenAI API. There may be a problem with the API or your configuration.',
-          );
+          return returnValue(emptyMessage);
         }
 
         const content = [
