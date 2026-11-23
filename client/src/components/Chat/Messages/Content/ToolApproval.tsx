@@ -1,7 +1,7 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
-import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
 import { useComposerPresentsApproval, useOptionalChatSurface } from '@librechat/chat/react';
+import { SCHEDULE_APPROVAL_REASON, SUBSCRIPTION_APPROVAL_REASON } from 'librechat-data-provider';
 import {
   X,
   Check,
@@ -88,6 +88,7 @@ function seedArgs(args: string | Record<string, unknown> | undefined): string {
 /** Explanations the server sends as a code, said here in the reader's language. */
 const descriptionKeys = new Map<string, TranslationKeys>([
   [SCHEDULE_APPROVAL_REASON, 'com_ui_approval_schedule_owner'],
+  [SUBSCRIPTION_APPROVAL_REASON, 'com_ui_approval_subscription_owner'],
 ]);
 
 /**

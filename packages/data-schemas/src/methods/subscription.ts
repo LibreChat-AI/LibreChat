@@ -45,6 +45,10 @@ export type Subscriptions = {
   /**
    * Applies an owner's edit and moves the revision forward by one. Given the revision the
    * edit was made from, it is refused when the stored one has moved since.
+   *
+   * The grant the subscription holds was made for one revision. An edit that only turns the
+   * subscription on or off takes the grant along, so it still stands for the new revision.
+   * Any other edit leaves it behind: it allows nothing until the owner grants again.
    */
   update: (
     id: string,
@@ -142,12 +146,25 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
       else if (value !== undefined) set[field] = value;
     }
     const mine = { id, user: owner };
-    const row = await Model.findOneAndUpdate(
-      { ...mine, ...(expected !== undefined && { revision: expected }) },
-      // The only writer of `revision`: an edit moves it in the same write that applies it.
-      { $set: set, $unset: unset, $inc: { revision: 1 } },
-      { new: true, runValidators: true },
-    ).lean<SubscriptionRecord>();
+    const fenced = { ...mine, ...(expected !== undefined && { revision: expected }) };
+    const write = (holds: Record<string, unknown>, along: Record<string, 1>) =>
+      Model.findOneAndUpdate(
+        { ...fenced, ...holds },
+        // The only writer of `revision`: an edit moves it in the same write that applies it.
+        { $set: set, $unset: unset, $inc: { revision: 1, ...along } },
+        { new: true, runValidators: true },
+      ).lean<SubscriptionRecord>();
+    /** Turning it on or off changes nothing the owner granted against. */
+    const activation =
+      Object.keys(unset).length === 0 && Object.keys(set).every((field) => field === 'enabled');
+    // Both numbers move by one, so a grant made for this revision is made for the next, and
+    // one already left behind stays behind. Two writes, because a path that is not there
+    // cannot be moved: the first matches only a subscription that holds a grant. A grant
+    // stored between the two is left one revision behind, and so allows nothing.
+    const row = activation
+      ? ((await write({ grant: { $exists: true } }, { 'grant.scheduleRevision': 1 })) ??
+        (await write({}, {})))
+      : await write({}, {});
     if (row != null) return { ok: true, value: view(row) };
     // Nothing matched: the owner has no such subscription, or its revision has moved.
     const exists = await Model.exists(mine);

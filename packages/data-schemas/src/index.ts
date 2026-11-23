@@ -31,6 +31,7 @@ export type {
 } from './models/slackWorkspace';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
 export {
+  createSubscriptionGrantStorage,
   createAgentKeyMCPConsentStorage,
   createScheduleMCPConsentStorage,
 } from './methods/runGrant';

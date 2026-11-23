@@ -6,14 +6,21 @@ import {
   subscriptionEventsSchema,
   subscriptionWindowSchema,
   subscriptionFiltersSchema,
+  subscriptionEnrollmentSchema,
   SUBSCRIPTION_PROMPT_MAX_LENGTH,
 } from 'librechat-data-provider';
-import type { Subscription } from 'librechat-data-provider';
+import type { Subscription, SubscriptionIdentity, RunGrant } from 'librechat-data-provider';
 import type { Model, Types } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
 export interface SubscriptionRecord extends Omit<Subscription, 'user'> {
   user: Types.ObjectId;
+  /**
+   * What the owner allowed its runs, made for one `revision`. Absent until the owner grants
+   * anything: a run of a subscription with no grant uses none of its agent's tools. Read and
+   * written through the grant storage alone, never returned with the subscription.
+   */
+  grant?: RunGrant<SubscriptionIdentity>;
 }
 
 type Check = { safeParse: (value: unknown) => { success: boolean } };
@@ -57,6 +64,11 @@ export function createAgentEventSubscriptionModel(
       enabled: { type: Boolean, required: true },
       /** Moved only by an owner's edit, so a run can tell it started under an older one. */
       revision: { type: Number, required: true },
+      grant: {
+        type: Schema.Types.Mixed,
+        default: undefined,
+        validate: within(subscriptionEnrollmentSchema),
+      },
     },
     { timestamps: true },
   );

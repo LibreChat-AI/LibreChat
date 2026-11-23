@@ -2740,6 +2740,33 @@ describe('initializeClient — subagent loading', () => {
     );
   });
 
+  it.each([true, false])(
+    'tells the tool loader when nobody can follow a sign-in prompt (unattended=%s)',
+    async (unattended) => {
+      mockInitializeAgent.mockImplementationOnce(async (params) => {
+        await params.loadTools({ agentId: PRIMARY_ID, tools: ['execute_code'] });
+        return makePrimaryConfig({});
+      });
+
+      await initializeClient({
+        req: makeSubagentReq(),
+        res: {},
+        signal: new AbortController().signal,
+        executionContext: {
+          principal: { userId: 'owner' },
+          source: { type: 'trigger', manual: false, resumed: false },
+          unattended,
+        },
+        endpointOption: makeEndpointOption(),
+      });
+
+      const [params] = loadAgentTools.mock.calls.at(-1);
+      // Left out altogether for an attended run, as it always was.
+      expect(params.unattended).toBe(unattended ? true : undefined);
+      expect('unattended' in params).toBe(unattended);
+    },
+  );
+
   it('keeps a lazy subagent off its attached machine in a conversation that chose no workspace', async () => {
     const subAgent = await createAgent({
       id: SUBAGENT_ID,

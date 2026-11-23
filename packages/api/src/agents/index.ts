@@ -20,6 +20,7 @@ export * from './errors';
 export * from './eventRetention';
 export * from './envelope';
 export * from './authority';
+export * from './events/subject';
 export * from './execution';
 export * from './files';
 export * from './handlers';
