@@ -661,6 +661,16 @@ export function createAuditLogMethods(
     const AuditLog = model();
     const chainKey = auditChainKey(tenantId);
 
+    /** Read before the retention boundary, so a row appended in between is
+     * always above the tail and never deleted by a full purge. */
+    const tail = await AuditLog.findOne({ chainKey })
+      .sort({ seq: -1 })
+      .select('seq')
+      .lean<{ seq: number }>();
+    if (!tail) {
+      return { deletedCount: 0 };
+    }
+
     /**
      * Translate the date intent into a contiguous `seq` boundary before deleting.
      * `createdAt` is app-generated, so under multi-instance clock skew a later
@@ -676,9 +686,32 @@ export function createAuditLogMethods(
       .select('seq')
       .lean<{ seq: number }>();
 
-    const deleteFilter: FilterQuery<IAuditLog> = firstRetained
-      ? { chainKey, seq: { $lt: firstRetained.seq } }
-      : { chainKey };
+    const purge = (deletedCount: number, throughSeq?: number): RecordAuditEntryInput => ({
+      action: 'audit.purged',
+      severity: 'critical',
+      actor: { type: 'system', name: 'audit-retention' },
+      target: { type: 'audit_log' },
+      metadata: {
+        deletedCount,
+        before: options.before.toISOString(),
+        ...(throughSeq !== undefined ? { throughSeq } : {}),
+      },
+      tenantId,
+    });
+
+    /**
+     * A purge that empties the chain would leave its own record to start a fresh
+     * chain at the genesis hash, with nothing tying it to the deleted history. So
+     * the record is written first, chained to the current tail, and only rows up
+     * to that tail are deleted: the record resumes the chain and the checkpoint
+     * below bridges the gap. Without that record the chain would restart
+     * unanchored, so a failed write aborts the purge instead of being skipped.
+     */
+    const boundary = firstRetained?.seq ?? tail.seq + 1;
+    if (!firstRetained) {
+      const pending = await AuditLog.countDocuments({ chainKey, seq: { $lt: boundary } });
+      await recordAuditEntry(purge(pending, tail.seq), { failClosed: true });
+    }
 
     /**
      * Retention purge is the one privileged path that removes audit rows. It
@@ -686,7 +719,7 @@ export function createAuditLogMethods(
      * (the model blocks every delete). Tenant isolation is applied via `chainKey`.
      */
     // eslint-disable-next-line no-restricted-syntax -- privileged retention purge; append-only hooks block deleteMany, tenant scoped via chainKey
-    const result = await AuditLog.collection.deleteMany(deleteFilter);
+    const result = await AuditLog.collection.deleteMany({ chainKey, seq: { $lt: boundary } });
     const deletedCount = result.deletedCount ?? 0;
 
     logger.warn('[auditLog] retention purge executed', {
@@ -710,27 +743,18 @@ export function createAuditLogMethods(
       .select('seq prevHash')
       .lean<{ seq: number; prevHash: string }>();
 
-    /** The purge itself is audited after the checkpoint is read, so the new
-     * entry cannot shift the boundary; a failed write is logged, not thrown. */
-    try {
-      await recordAuditEntry({
-        action: 'audit.purged',
-        severity: 'critical',
-        actor: { type: 'system', name: 'audit-retention' },
-        target: { type: 'audit_log' },
-        metadata: {
+    /** A partial purge is audited after the checkpoint is read, so the new entry
+     * cannot shift the boundary; a failed write is logged, not thrown. */
+    if (firstRetained) {
+      try {
+        await recordAuditEntry(purge(deletedCount, newFirst ? newFirst.seq - 1 : undefined));
+      } catch (err) {
+        logger.error('[auditLog] failed to record retention purge', {
+          chainKey,
           deletedCount,
-          before: options.before.toISOString(),
-          ...(newFirst ? { throughSeq: newFirst.seq - 1 } : {}),
-        },
-        tenantId,
-      });
-    } catch (err) {
-      logger.error('[auditLog] failed to record retention purge', {
-        chainKey,
-        deletedCount,
-        error: err instanceof Error ? err.name : 'unknown error',
-      });
+          error: err instanceof Error ? err.name : 'unknown error',
+        });
+      }
     }
 
     return {

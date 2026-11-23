@@ -576,6 +576,89 @@ describe('auditLog methods', () => {
       expect(await AuditLog.countDocuments({ chainKey: CK_A, action: 'audit.purged' })).toBe(0);
     });
 
+    it('chains the purge record to the deleted history when a purge empties the chain', async () => {
+      await seed(3);
+      const tail = await AuditLog.findOne({ chainKey: CK_A, seq: 3 }).lean();
+
+      const result = await methods.purgeAuditLogEntries('tenant-a', {
+        before: new Date(Date.now() + 60_000),
+        confirm: true,
+      });
+      expect(result).toEqual({
+        deletedCount: 3,
+        checkpoint: { throughSeq: 3, prevHash: tail!.hash },
+      });
+
+      const remaining = await AuditLog.find({ chainKey: CK_A }).sort({ seq: 1 }).lean();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]).toMatchObject({
+        action: 'audit.purged',
+        seq: 4,
+        prevHash: tail!.hash,
+        metadata: { deletedCount: 3, throughSeq: 3 },
+      });
+
+      const unverified = await methods.verifyAuditChain('tenant-a');
+      expect(unverified.ok).toBe(false);
+      expect(unverified.reason).toMatch(/non-genesis/);
+
+      const verified = await methods.verifyAuditChain('tenant-a', {
+        trustedCheckpoint: result.checkpoint,
+      });
+      expect(verified).toMatchObject({ ok: true, checked: 1, range: { firstSeq: 4, lastSeq: 4 } });
+    });
+
+    it('keeps an entry appended while a full purge runs', async () => {
+      await seed(2);
+      const count = AuditLog.countDocuments.bind(AuditLog);
+      const spy = jest.spyOn(AuditLog, 'countDocuments').mockImplementationOnce(((
+        ...args: Parameters<typeof AuditLog.countDocuments>
+      ) => {
+        return methods.recordAuditEntry(baseInput()).then(() => count(...args));
+      }) as unknown as typeof AuditLog.countDocuments);
+
+      try {
+        const result = await methods.purgeAuditLogEntries('tenant-a', {
+          before: new Date(Date.now() + 60_000),
+          confirm: true,
+        });
+        expect(result.deletedCount).toBe(2);
+        expect(result.checkpoint?.throughSeq).toBe(2);
+        const verified = await methods.verifyAuditChain('tenant-a', {
+          trustedCheckpoint: result.checkpoint,
+        });
+        expect(verified).toMatchObject({ ok: true, range: { firstSeq: 3, lastSeq: 4 } });
+      } finally {
+        spy.mockRestore();
+      }
+      const remaining = await AuditLog.find({ chainKey: CK_A })
+        .sort({ seq: 1 })
+        .select('seq action')
+        .lean<{ seq: number; action: string }[]>();
+      expect(remaining.map((r) => [r.seq, r.action])).toEqual([
+        [3, baseInput().action],
+        [4, 'audit.purged'],
+      ]);
+    });
+
+    it('deletes nothing when a purge that would empty the chain cannot be audited', async () => {
+      await seed(3);
+      const spy = jest.spyOn(AuditLog, 'create').mockRejectedValue(new Error('audit store down'));
+
+      try {
+        await expect(
+          methods.purgeAuditLogEntries('tenant-a', {
+            before: new Date(Date.now() + 60_000),
+            confirm: true,
+          }),
+        ).rejects.toThrow('audit store down');
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await AuditLog.countDocuments({ chainKey: CK_A })).toBe(3);
+      expect((await methods.verifyAuditChain('tenant-a')).ok).toBe(true);
+    });
+
     it('does not mint a checkpoint when a confirmed purge removed nothing', async () => {
       await seed(2);
       const result = await methods.purgeAuditLogEntries('tenant-a', {
