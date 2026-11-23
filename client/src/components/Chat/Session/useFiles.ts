@@ -2,9 +2,9 @@ import { useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { QueryKeys } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import type { FileRow } from './files';
+import type { FileRow } from './rows';
 import { useFileExclusionMutation, useFileExclusionQuery } from '~/data-provider';
-import { collectFiles } from './files';
+import { collectFiles } from './rows';
 
 export type SessionFilesView = {
   rows: FileRow[];

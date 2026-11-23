@@ -203,6 +203,13 @@ instead of stacking nouns; do not substitute cryptic abbreviations or sacrifice 
 tokens. Use short, single-word file names when possible; group related modules in a single-word
 directory.
 
+Two modules in one directory must not have names that differ only by case or extension, such as
+`Files.tsx` beside `files.ts`, or `Live.tsx` beside `live.ts`. On macOS and Windows the file system
+ignores case, so `import './Files'` resolves to `files.ts` and the build fails there, while Linux CI
+passes. The same applies to a file and a directory, such as `Row.tsx` beside `row/`. When a
+component needs helpers, give the helpers a different word (`rows.ts`), not a different case. The
+`casing` static check rejects an added or renamed path that collides this way.
+
 Prefer flat early returns, pure functions, and explicit types. Avoid `any`, broad `unknown`/casts,
 duplicated types, and dynamic imports. Extract genuinely repeated logic instead of copying it;
 write comments only for non-obvious behavior or public API contracts.

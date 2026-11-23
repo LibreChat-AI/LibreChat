@@ -1,6 +1,6 @@
 import { FileContext, FileSources } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { collectFiles } from '../files';
+import { collectFiles } from '../rows';
 
 const message = (overrides: Partial<TMessage>): TMessage =>
   ({
