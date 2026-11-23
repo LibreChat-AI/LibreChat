@@ -689,7 +689,9 @@ export default function AgentPanel() {
   const agent_id = useWatch({ control, name: 'id' });
   const selectionReady = !isPersistedAgent || agent_id === current_agent_id;
   // The builder's fields subscribe after reset installs this selection's values.
-  const selectionLoading = !selectionReady && instructionsPromptStatus !== 'error';
+  const basicFailed = basicAgentQuery.isError && !basicAgentQuery.data;
+  const selectionFailed = !selectionReady && (basicFailed || instructionsPromptStatus === 'error');
+  const selectionLoading = !selectionReady && !selectionFailed;
   const previousVersionRef = useRef<number | undefined>();
   const submittedDirtyRef = useRef(false);
   const submittedRef = useRef<{ payload?: AgentUpdateParams; previous?: Agent }>({});
@@ -1106,8 +1108,12 @@ export default function AgentPanel() {
             )}
           </div>
           {(agentQuery.isInitialLoading || selectionLoading) && <AgentPanelSkeleton />}
-          {!selectionReady && instructionsPromptStatus === 'error' && (
-            <LoadError onRetry={retryInstructionsPrompt} retrying={expandedAgentQuery.isFetching} />
+          {selectionFailed && (
+            <LoadError
+              messageKey="com_agents_error_title"
+              onRetry={basicFailed ? () => void basicAgentQuery.refetch() : retryInstructionsPrompt}
+              retrying={basicFailed ? basicAgentQuery.isFetching : expandedAgentQuery.isFetching}
+            />
           )}
           {!canEditAgent && !agentQuery.isInitialLoading && (
             <div

@@ -188,7 +188,13 @@ jest.mock('~/common', () => ({
 
 // Mock child components to simplify testing
 jest.mock('./InstructionsPromptFields', () => ({
-  LoadError: () => <div role="alert" />,
+  LoadError: ({ onRetry }: { onRetry: () => void }) => (
+    <div role="alert">
+      <button type="button" onClick={onRetry}>
+        {'Retry agent load'}
+      </button>
+    </div>
+  ),
 }));
 
 jest.mock('./AgentPanelSkeleton', () => ({
@@ -691,6 +697,25 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
 
       expect(capturedFormMethods?.getValues('provider')).toBe('anthropic');
       expect(capturedFormMethods?.getValues('model')).toBe('chosen-claude');
+    });
+
+    it('offers a retry when the basic agent request fails before hydration', async () => {
+      const { mockUseGetAgentByIdQuery } = setupMocks();
+      mockFormDefaults = { id: '' };
+      const refetch = jest.fn();
+      mockUseGetAgentByIdQuery.mockReturnValue({
+        data: undefined,
+        isError: true,
+        isInitialLoading: false,
+        refetch,
+      } as ReturnType<typeof useGetAgentByIdQuery>);
+
+      render(<AgentPanel />, { wrapper: createWrapper() });
+
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(screen.queryByText('Loading...')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Retry agent load' }));
+      expect(refetch).toHaveBeenCalledTimes(1);
     });
 
     it('keeps instructions controls loading for an admin without ACL EDIT until the expanded agent arrives', async () => {
