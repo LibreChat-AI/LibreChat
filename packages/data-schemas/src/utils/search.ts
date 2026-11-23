@@ -334,22 +334,26 @@ export function buildSearchTokenFilter(
  * email and handle fields also store. A whole email address also matches the
  * stored address, since a domain part with a hyphen adds a token of its own; an
  * address typed as separate words with such a domain is ranked only from the
- * prefix window. Documents written before the token fields existed are left to
- * the prefix filter's fallback.
+ * prefix window. Documents written before the token fields existed match when
+ * a source field equals the query, ignoring case, through the same `$exists:
+ * false` seek as the prefix filter's fallback.
  */
 export function buildSearchExactFilter(
   fields: readonly SearchTokenField[],
   query: string,
 ): Record<string, unknown> | null {
-  const normalized = normalizeSearchText(query.trim());
+  const trimmed = query.trim();
+  const normalized = normalizeSearchText(trimmed);
   const queryTokens = [...new Set(words(normalized))];
   if (queryTokens.length === 0 || queryTokens.length > MAX_SEARCH_QUERY_TOKENS) {
     return null;
   }
 
   const whole = truncate(normalized, MAX_SEARCH_VALUE_LENGTH);
+  const legacy = new RegExp(`^${escapeRegExp(trimmed)}$`, 'i');
   const clauses: Record<string, unknown>[] = [];
   for (const field of fields) {
+    clauses.push({ [field.tokens]: { $exists: false }, [field.source]: legacy });
     clauses.push({ [field.tokens]: { $all: queryTokens, $size: queryTokens.length } });
     if (field.kind === 'words') {
       continue;

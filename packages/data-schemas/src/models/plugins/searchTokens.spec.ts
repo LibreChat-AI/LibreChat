@@ -221,6 +221,19 @@ describe('searchPrincipals word-prefix search', () => {
     expect(results[0].name).toBe('Adà');
   });
 
+  it('keeps an exact legacy user match, saved without tokens, that sits past the window', async () => {
+    await User.collection.insertMany(
+      Array.from({ length: 12 }, (_, i) => ({
+        name: `Old Prefix${i}`,
+        email: `old${i}@legacy.io`,
+      })),
+    );
+    await User.collection.insertOne({ name: 'Old', email: 'exact@legacy.io' });
+    const results = await methods.searchPrincipals('old', 10, [PrincipalType.USER]);
+    expect(results).toHaveLength(10);
+    expect(results[0].name).toBe('Old');
+  });
+
   it('keeps an exact group match that sits past the per-type window of prefix matches', async () => {
     await Group.create(
       Array.from({ length: 12 }, (_, i) => ({ name: `Ops Prefix${i}`, source: 'local' })),
