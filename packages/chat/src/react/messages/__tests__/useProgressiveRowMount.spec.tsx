@@ -192,6 +192,27 @@ describe('useProgressiveRowMount', () => {
     expect(finishProgressiveRowMounts()).toBe(false);
   });
 
+  it('tells a thread whose latest rows are still to come from one that has them', () => {
+    /** Opened at its end: what is waiting is older than the rows already in. */
+    const fromEnd = setup({ anchorBottom: true });
+    let finished = true;
+    act(() => {
+      finished = finishProgressiveRowMounts('later');
+    });
+    expect(finished).toBe(false);
+    expect(fromEnd.result.current).not.toBeNull();
+    fromEnd.unmount();
+
+    /** Opened at its start: the latest rows are the ones waiting. */
+    const fromStart = setup({ anchorBottom: false });
+    expect(fromStart.result.current).toEqual({ start: 0, end: 15 });
+    act(() => {
+      finished = finishProgressiveRowMounts('later');
+      expect(fromStart.result.current).toBeNull();
+    });
+    expect(finished).toBe(true);
+  });
+
   it('re-arms a fresh window when the conversation changes', () => {
     const { result, rerender } = setup();
 

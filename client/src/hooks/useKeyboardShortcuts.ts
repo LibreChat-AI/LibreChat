@@ -615,11 +615,14 @@ export function useShortcutActions(): ShortcutAction[] {
       return text !== '' && copy(text, { format: 'text/plain' });
     };
     /**
-     * A long thread mounts from its end, so a block among the rows already in is the last one.
-     * With none there, the last block may be in a row that is still waiting: bring the rest of
-     * the thread in within this key press and look again, so the shortcut claims the press only
-     * for a real copy and makes it while the browser still allows one.
+     * A long thread mounts in steps, and the last block has to be looked for among all of its
+     * rows. One that opened at its start (auto-scroll off) still has its latest rows to come,
+     * so they come in first. One that opened at its end has them already: a block among the
+     * rows in is the last one, and only with none there is the rest of the thread brought in.
+     * Either way it happens within this key press, so the shortcut claims the press only for a
+     * real copy and makes it while the browser still allows one.
      */
+    finishProgressiveRowMounts('later');
     return copyLast() || (finishProgressiveRowMounts() && copyLast());
   }, []);
 

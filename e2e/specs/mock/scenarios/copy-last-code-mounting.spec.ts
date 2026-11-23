@@ -11,17 +11,21 @@ import { MOCK_ENDPOINTS, selectMockEndpoint, sendMessage } from '../helpers';
 import { getE2EUser } from '../../../setup/user';
 
 /**
- * A long thread mounts from its end in steps, so for a moment after it opens its oldest rows
- * are not in the document. The copy-last-code shortcut reads the document: with the thread's
- * only code block in one of those rows it found nothing, copied nothing and let the key press
- * through, where the same press a second later copied the block.
+ * A long thread mounts in steps, so for a moment after it opens some of its rows are not in the
+ * document, and the copy-last-code shortcut reads the document. Opened at its end, a thread is
+ * missing its oldest rows: with its only code block in one of those the shortcut found
+ * nothing, copied nothing and let the key press through. Opened at its start (auto-scroll off),
+ * it is missing its latest rows, and the shortcut copied an older block than the last one.
  */
 
 const TURNS = 800;
 const CODE = 'const only = "block";';
+const LATEST = 'const latest = "block";';
 
-/** A thread whose one code block is in its first reply, the last row to mount. */
-async function seedThread(): Promise<string> {
+const fenced = (code: string) => `Some code:\n\n\`\`\`js\n${code}\n\`\`\`\n`;
+
+/** A thread with a code block in its first reply and, when given one, another in its last. */
+async function seedThread(latest?: string): Promise<string> {
   const conversationId = randomUUID();
   const { email } = getE2EUser();
   await seedConversations(email, [
@@ -34,10 +38,7 @@ async function seedThread(): Promise<string> {
     const message = {
       messageId,
       parentMessageId,
-      text:
-        index === 1
-          ? `The only code in this thread:\n\n\`\`\`js\n${CODE}\n\`\`\`\n`
-          : `Turn ${index + 1} of the thread`,
+      text: codeAt(index, latest) ?? `Turn ${index + 1} of the thread`,
       isCreatedByUser,
       sender: isCreatedByUser ? 'User' : 'Mock Provider A',
     };
@@ -46,6 +47,13 @@ async function seedThread(): Promise<string> {
   });
   await seedMessages(email, conversationId, messages);
   return conversationId;
+}
+
+function codeAt(index: number, latest?: string): string | undefined {
+  if (index === 1) {
+    return fenced(CODE);
+  }
+  return latest != null && index === TURNS - 1 ? fenced(latest) : undefined;
 }
 
 /**
@@ -66,10 +74,6 @@ test.describe('copy last code in a long thread', () => {
 
   let conversationId: string;
 
-  test.beforeEach(async () => {
-    conversationId = await seedThread();
-  });
-
   test.afterEach(async () => {
     await deleteMessagesByConversation([conversationId]);
     await deleteConversations([conversationId]);
@@ -78,6 +82,7 @@ test.describe('copy last code in a long thread', () => {
   test('copies a block from a row the thread had not mounted yet @scenario:copy-last-code-while-thread-mounts', async ({
     page,
   }, info) => {
+    conversationId = await seedThread();
     await page.goto(`/c/${conversationId}`);
     await page.evaluate(() => navigator.clipboard.writeText('nothing copied'));
     /** The thread has opened on its latest rows and is still bringing in the rest. */
@@ -99,6 +104,7 @@ test.describe('copy last code in a long thread', () => {
   test('keeps a reader who scrolled up beside a reply where they were @scenario:copy-last-code-holds-the-reader-beside-a-reply', async ({
     page,
   }) => {
+    conversationId = await seedThread();
     await page.goto(`/c/${conversationId}`);
     const rows = page.locator('.message-render');
     await expect(rows).toHaveCount(TURNS, { timeout: 60_000 });
@@ -148,5 +154,27 @@ test.describe('copy last code in a long thread', () => {
     expect(Math.abs(after - before)).toBeLessThanOrEqual(60);
     await stop.click();
     await expect(stop).toBeHidden({ timeout: 30_000 });
+  });
+
+  test('copies the latest block of a thread opened at its start, not an older one @scenario:copy-last-code-while-thread-mounts-from-its-start', async ({
+    page,
+  }) => {
+    /** With auto-scroll off a thread opens on its first turn and mounts towards its end. */
+    await page.addInitScript(() => window.localStorage.setItem('autoScroll', 'false'));
+    conversationId = await seedThread(LATEST);
+    await page.goto(`/c/${conversationId}`);
+    await page.evaluate(() => navigator.clipboard.writeText('nothing copied'));
+    const rows = page.locator('.message-render');
+    await page.waitForFunction(
+      () => document.getElementsByClassName('message-render').length >= 16,
+    );
+    /** The first reply and its block are in from the first step; the last reply is not. */
+    await expect(rows.first()).toBeInViewport();
+    await copyLastCode(page);
+
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(LATEST);
+    expect(await mountedRows(page)).toBe(TURNS);
+    /** The latest rows landed below the reader, who is still on the first turn. */
+    await expect(rows.first()).toBeInViewport();
   });
 });

@@ -409,6 +409,10 @@ export function useProgressiveRowMount({
   /** Registered while a window is active, so a consumer of the whole thread can bring the
    *  remaining rows in (`completeProgressiveRowMounts`, `finishProgressiveRowMounts`). */
   const isWindowActive = mountWindow != null;
+  /** Whether rows after the mounted ones are still to come: a thread that opened at its start
+   *  mounts towards its end, where one that opened at its end has had its latest rows all along. */
+  const laterRef = useRef(false);
+  laterRef.current = mountWindow != null && tailDepth != null && mountWindow.end < tailDepth;
   useEffect(() => {
     if (!isWindowActive) {
       return;
@@ -423,17 +427,19 @@ export function useProgressiveRowMount({
       captureAnchor(!anchorsNatively());
       moveTo(null);
     };
-    mounting.add(finish);
+    const thread = { finish, later: () => laterRef.current };
+    mounting.add(thread);
     return () => {
-      mounting.delete(finish);
+      mounting.delete(thread);
     };
   }, [isWindowActive, captureAnchor, moveTo]);
 
   return mountWindow;
 }
 
-/** What mounts the remaining rows of each thread that is still mounting. */
-const mounting = new Set<() => void>();
+/** Each thread that is still mounting: what mounts the rest of its rows, and whether any of
+ *  those come after the rows already in. */
+const mounting = new Set<{ finish: () => void; later: () => boolean }>();
 
 /**
  * Forces every in-flight progressive mount to completion and resolves after
@@ -445,8 +451,8 @@ export async function completeProgressiveRowMounts(): Promise<void> {
   if (mounting.size === 0) {
     return;
   }
-  for (const finish of [...mounting]) {
-    finish();
+  for (const thread of [...mounting]) {
+    thread.finish();
   }
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
@@ -460,15 +466,18 @@ export async function completeProgressiveRowMounts(): Promise<void> {
  * made after the key press is one the browser may refuse.
  *
  * The rest of the thread lands in one commit, which is what mounting in steps exists to avoid,
- * so call it once the rows already in have been found not to hold the answer.
+ * so call it once the rows already in have been found not to hold the answer. `'later'` keeps
+ * to the threads with rows still to come after the ones already in, for an action that wants
+ * the latest of something: there the rows already in cannot be trusted to hold it.
  */
-export function finishProgressiveRowMounts(): boolean {
-  if (mounting.size === 0) {
+export function finishProgressiveRowMounts(which: 'all' | 'later' = 'all'): boolean {
+  const threads = [...mounting].filter((thread) => which === 'all' || thread.later());
+  if (threads.length === 0) {
     return false;
   }
   flushSync(() => {
-    for (const finish of [...mounting]) {
-      finish();
+    for (const thread of threads) {
+      thread.finish();
     }
   });
   return true;
