@@ -265,6 +265,30 @@ it('persists cancellation intent before signalling and waits for the cancelled j
     expect(await f.service.retrieve(owner, record.responseId)).toEqual({ ok: true, response });
   }));
 
+it('settles an owner cancellation that no remaining execution can confirm', () =>
+  scope(async () => {
+    const f = fixture();
+    await f.service.create(envelope(), 'same');
+    const record = await admit([...f.deliveries.values()][0]);
+    const settle = jest.fn(async (current: StoredResponseRecord) => {
+      const response = { ...completed(current), status: 'cancelled' as const, completed_at: 0 };
+      const published = await storage.publish(current, current.responseId, current.revision, {
+        status: 'cancelled',
+        responseJSON: JSON.stringify(response),
+      });
+      return published.ok;
+    });
+    f.deps.settleCancellation = settle;
+    expect(await f.service.cancel(owner, record.responseId)).toMatchObject({
+      ok: true,
+      response: { status: 'cancelled' },
+    });
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledWith(
+      expect.objectContaining({ responseId: record.responseId, status: 'in_progress' }),
+    );
+  }));
+
 it.each(['retrieve', 'replay', 'cancel'] as const)(
   'routes %s of a pending receipt through completion without restarting or cancelling work',
   (entry) =>

@@ -25,10 +25,10 @@ import {
 } from './completion';
 import { createBackgroundResponseWorkerAuth, getBackgroundResponseWorkerRecord } from './worker';
 import { createBackgroundResponseTransport, createResponseResumeTransport } from './transport';
+import { createBackgroundResponseService, buildPendingBackgroundResponse } from './background';
 import { resolveImportRetentionFields, isTemporaryRecord } from '~/conversations/retention';
 import { createBackgroundResponseQueue, createResponseResumeQueue } from './queue';
 import { createBackgroundResponseAuthority } from './authority';
-import { createBackgroundResponseService } from './background';
 import { createBackgroundResponseHttpHandlers } from './http';
 import { createResponseDecisionSubmission } from './decision';
 import { resolveResponseContinuation } from './persistence';
@@ -38,8 +38,7 @@ import { createResponseDispatchOutbox } from './outbox';
 import { createResponseReview } from './review';
 import { responseTenantId } from './scope';
 
-export interface BackgroundResponsesHostDependencies
-  extends BackgroundResponseAuthorityDependencies {
+export interface BackgroundResponsesHostDependencies extends BackgroundResponseAuthorityDependencies {
   storage: ResponseStorage;
   enqueue: AgentTriggerService['enqueue'];
   /** Reuse the queue owner’s live producer capability; listener binding alone is insufficient. */
@@ -224,6 +223,23 @@ export function createBackgroundResponsesHost(
       recoverTerminal: completion.finish,
       cancel: async (record) => {
         await retire(record, record.responseId);
+      },
+      settleCancellation: async (record) => {
+        if (record.generationCreatedAt == null) return false;
+        const job = await deps.jobs.getJob(record.responseId);
+        if (job) return false;
+        /** A paused approval keeps its review and resume authority: an absent job is not proof the owner may discard it. */
+        if (record.status !== 'in_progress' || record.review || record.resume) return false;
+        const published = await deps.storage.publish(record, record.responseId, record.revision, {
+          status: 'cancelled',
+          responseJSON: JSON.stringify({
+            ...buildPendingBackgroundResponse(record),
+            model: record.agentId,
+            status: 'cancelled',
+            completed_at: Math.floor((deps.now ?? Date.now)() / 1000),
+          }),
+        });
+        return published.ok;
       },
     });
   }

@@ -11,8 +11,7 @@ import {
 import { publishResponseDispatch } from './outbox';
 
 export type BackgroundResponseResult =
-  | { ok: true; response: Response }
-  | { ok: false; status: 400 | 403 | 404 | 409; code: string };
+  { ok: true; response: Response } | { ok: false; status: 400 | 403 | 404 | 409; code: string };
 
 /** The host supplies the existing durable queue and Responses execution runtime. */
 export interface BackgroundResponseDependencies {
@@ -43,6 +42,12 @@ export interface BackgroundResponseDependencies {
   recoverTerminal: (record: StoredResponseRecord) => Promise<ResponseCompletionRecord>;
   /** Signal exact execution; the completion journal confirms its final outcome. Never claim a missing job stopped. */
   cancel: (record: StoredResponseRecord) => Promise<void>;
+  /**
+   * Records the owner's cancellation as the terminal outcome when no execution
+   * remains that could confirm it. This is the one case where an absent job may
+   * settle a request: the owner withdrew it, not the system claiming a stop.
+   */
+  settleCancellation?: (record: StoredResponseRecord) => Promise<boolean>;
   now?: () => number;
 }
 
@@ -236,8 +241,14 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
       const record = await deps.storage.requestCancellation(owner, responseId, now());
       if (!record) return { ok: false, status: 404, code: 'response_not_found' };
       if (!hasTerminalResult(record)) await deps.cancel(record);
-      const current = await readAuthorized(owner, responseId);
+      let current = await readAuthorized(owner, responseId);
       if (!current) return { ok: false, status: 404, code: 'response_not_found' };
+      if (!hasTerminalResult(current) && deps.settleCancellation) {
+        if (await deps.settleCancellation(current)) {
+          current = await readAuthorized(owner, responseId);
+          if (!current) return { ok: false, status: 404, code: 'response_not_found' };
+        }
+      }
       return responseResult(current);
     },
   };
