@@ -125,6 +125,23 @@ async function killBatch(): Promise<string> {
   return kill(shared);
 }
 
+/** The commands one call sends to the database, and the projection its first one asked for. */
+async function commands(
+  run: () => Promise<unknown>,
+): Promise<{ methods: string[]; projection: unknown }> {
+  const sent: Array<[string, unknown]> = [];
+  mongoose.set('debug', (_collection: string, method: string, ...args: unknown[]) => {
+    const options = args[args.length - 1] as { projection?: unknown } | undefined;
+    sent.push([method, options?.projection]);
+  });
+  try {
+    await run();
+  } finally {
+    mongoose.set('debug', false);
+  }
+  return { methods: sent.map(([method]) => method), projection: sent[0]?.[1] };
+}
+
 describe('dead letters by tenant partition', () => {
   it('lists only the dead roots of the named partition, newest first', async () => {
     const first = await kill();
@@ -229,53 +246,70 @@ describe('dead letters by tenant partition', () => {
   });
 
   it('lists a delivery that died inside its capability shield and can requeue it', async () => {
-    const dead = await kill();
-    const shielded = await kill();
-    const working = await kill();
-    const done = await kill();
     const set = (id: string, fields: Record<string, unknown>) =>
       Delivery.collection.updateOne({ _id: new mongoose.Types.ObjectId(id) }, { $set: fields });
+    const shield = { requiredWorkerCapability: 'capability-v1', capabilityStatus: 'dead' };
+    const dead = await kill();
+    const leased = await kill();
+    const pending = await kill();
+    const working = await kill();
+    const bare = await kill();
+    const done = await kill();
     await set(dead, { status: 'capability_dead', requiredWorkerCapability: 'capability-v1' });
-    await set(shielded, {
-      status: 'leased',
-      requiredWorkerCapability: 'capability-v1',
-      capabilityStatus: 'dead',
-    });
-    await set(working, { status: 'staging', capabilityStatus: 'dead' });
-    await set(done, { status: 'succeeded', capabilityStatus: 'dead' });
+    await set(leased, { status: 'leased', ...shield });
+    await set(pending, { status: 'pending', ...shield });
+    await set(working, { status: 'staging', ...shield });
+    await set(bare, { status: 'leased', capabilityStatus: 'dead' });
+    await set(done, { status: 'succeeded', ...shield });
 
     const page = await methods.listAgentTriggerDeadLetterPage('tenant-1', { limit: 50, offset: 0 });
 
     expect(
       Object.fromEntries(page.letters.map(({ id, requeueable }) => [id, requeueable])),
-    ).toEqual({ [dead]: true, [shielded]: true, [working]: false });
-    await expect(
-      methods.requeueAgentTriggerDelivery(working, START, { tenantId: 'tenant-1' }),
-    ).resolves.toBeNull();
-    await expect(
-      methods.requeueAgentTriggerDelivery(shielded, START, { tenantId: 'tenant-1' }),
-    ).resolves.toMatchObject({ id: shielded, requeueCount: 1 });
+    ).toEqual({
+      [dead]: true,
+      [leased]: true,
+      [pending]: true,
+      [working]: false,
+      [bare]: false,
+    });
+    for (const id of [working, bare, done]) {
+      await expect(
+        methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
+      ).resolves.toBeNull();
+    }
+    for (const id of [leased, pending]) {
+      await expect(
+        methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
+      ).resolves.toMatchObject({ id, requeueCount: 1 });
+    }
     await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', done)).resolves.toBe(false);
     await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', working)).resolves.toBe(true);
+  });
+
+  it('orders by last change and then id, whatever order the index holds the rows in', async () => {
+    const stamp = (id: string, fields: Record<string, unknown>) =>
+      Delivery.collection.updateOne({ _id: new mongoose.Types.ObjectId(id) }, { $set: fields });
+    const oldest = await kill();
+    const earlier = await kill();
+    const later = await kill();
+    /** `capability_dead` sorts ahead of `dead` in the status index, though this row is the oldest. */
+    await stamp(oldest, {
+      status: 'capability_dead',
+      updatedAt: new Date(START.getTime() - 60_000),
+    });
+    await stamp(earlier, { updatedAt: START });
+    await stamp(later, { updatedAt: START });
+
+    const page = await methods.listAgentTriggerDeadLetterPage('tenant-1', { limit: 50, offset: 0 });
+
+    expect(page.letters.map(({ id }) => id)).toEqual([later, earlier, oldest]);
   });
 
   it('leaves out a label the stored envelope or failure does not carry as text', async () => {
     const id = await kill();
     const _id = new mongoose.Types.ObjectId(id);
-    await Delivery.collection.updateOne(
-      { _id },
-      {
-        $set: {
-          envelope: { event: { type: '', source: { type: 7 } }, target: {} },
-          'lastError.code': '',
-        },
-        $unset: { settledAt: 1, requeueCount: 1 },
-      },
-    );
-
-    const letter = await methods.getAgentTriggerDeadLetter('tenant-1', id);
-
-    expect(letter).toEqual({
+    const bare = {
       id,
       deliveryKey: expect.any(String),
       user: expect.any(String),
@@ -284,14 +318,28 @@ describe('dead letters by tenant partition', () => {
       requeueable: true,
       dismissable: true,
       createdAt: expect.any(Date),
-    });
+    };
+    await Delivery.collection.updateOne(
+      { _id },
+      { $set: { 'lastError.code': '' }, $unset: { settledAt: 1, requeueCount: 1 } },
+    );
+
+    for (const envelope of [
+      { event: { type: '', source: { type: 7 } }, target: {} },
+      { event: { type: 3 } },
+      { target: { agentId: null } },
+      { version: 1 },
+    ]) {
+      await Delivery.collection.updateOne({ _id }, { $set: { envelope } });
+      await expect(methods.getAgentTriggerDeadLetter('tenant-1', id)).resolves.toStrictEqual(bare);
+    }
 
     await Delivery.collection.updateOne({ _id }, { $unset: { envelope: 1, lastError: 1 } });
-    await expect(methods.getAgentTriggerDeadLetter('tenant-1', id)).resolves.toEqual(letter);
+    await expect(methods.getAgentTriggerDeadLetter('tenant-1', id)).resolves.toStrictEqual(bare);
 
     await Delivery.collection.updateOne({ _id }, { $unset: { createdAt: 1 } });
     await expect(methods.getAgentTriggerDeadLetter('tenant-1', id)).rejects.toThrow(
-      'Persisted agent trigger delivery is missing its identity or creation time',
+      'Persisted agent trigger delivery is missing its creation time',
     );
   });
 
@@ -302,7 +350,7 @@ describe('dead letters by tenant partition', () => {
 
     const letter = await methods.getAgentTriggerDeadLetter('tenant-1', id);
 
-    expect(letter).toEqual({
+    expect(letter).toStrictEqual({
       id,
       deliveryKey: expect.stringMatching(/^trigger_dead_/),
       user: String(user),
@@ -360,7 +408,6 @@ describe('dead letters by tenant partition', () => {
         'backgroundToolResultBatch.proofCopiedAt',
         'batchMemberIds',
         'batchMembersSettledAt',
-        'capabilityStatus',
         'createdAt',
         'deadLetterExpiresAt',
         'deliveryKey',
@@ -453,6 +500,32 @@ describe('requeue within a tenant partition', () => {
       methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
     ).resolves.toBeNull();
   });
+
+  it('reports a delivery an event actor settled as not requeueable', async () => {
+    const id = await kill();
+    await Delivery.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(id) },
+      {
+        $set: {
+          actorReceipt: {
+            bindingId: 'binding-1',
+            resolution: 'history_repaired',
+            checkpoint: { threadId: 'thread-1', checkpointNs: '' },
+            action: { toolName: 'tool' },
+            settledAt: START,
+          },
+        },
+      },
+    );
+
+    await expect(methods.getAgentTriggerDeadLetter('tenant-1', id)).resolves.toMatchObject({
+      requeueable: false,
+      dismissable: true,
+    });
+    await expect(
+      methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
+    ).resolves.toBeNull();
+  });
 });
 
 describe('dismiss within a tenant partition', () => {
@@ -463,7 +536,12 @@ describe('dismiss within a tenant partition', () => {
     await expect(methods.dismissAgentTriggerDeadLetter(undefined, id)).resolves.toBe(false);
     await expect(Delivery.countDocuments({ _id: id })).resolves.toBe(1);
 
-    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(true);
+    await expect(
+      commands(() => methods.dismissAgentTriggerDeadLetter('tenant-1', id)),
+    ).resolves.toEqual({
+      methods: ['findOneAndDelete'],
+      projection: { _id: 1, batchMemberIds: 1 },
+    });
     await expect(Delivery.countDocuments({ _id: id })).resolves.toBe(0);
     await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(false);
     await expect(
@@ -487,8 +565,16 @@ describe('dismiss within a tenant partition', () => {
     const root = await killBatch();
     const bystander = await kill();
     await expect(Delivery.countDocuments({ batchRootId: root, status: 'dead' })).resolves.toBe(1);
+    await expect(methods.getAgentTriggerDeadLetter('tenant-1', root)).resolves.toMatchObject({
+      dismissable: true,
+    });
 
-    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', root)).resolves.toBe(true);
+    await expect(
+      commands(() => methods.dismissAgentTriggerDeadLetter('tenant-1', root)),
+    ).resolves.toEqual({
+      methods: ['findOneAndDelete', 'deleteMany'],
+      projection: { _id: 1, batchMemberIds: 1 },
+    });
 
     await expect(Delivery.find({}).distinct('_id')).resolves.toEqual([
       new mongoose.Types.ObjectId(bystander),

@@ -95,7 +95,6 @@ const DEAD_LETTER_FIELDS = {
   user: 1,
   status: 1,
   requiredWorkerCapability: 1,
-  capabilityStatus: 1,
   attempts: 1,
   requeueCount: 1,
   'lastError.code': 1,
@@ -663,7 +662,6 @@ type DeadLetterRow = Pick<
   | 'user'
   | 'status'
   | 'requiredWorkerCapability'
-  | 'capabilityStatus'
   | 'attempts'
   | 'requeueCount'
   | 'settledAt'
@@ -702,15 +700,17 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-/** `requeueable` and `dismissable` restate the filters of the writes they describe. */
+/**
+ * `requeueable` and `dismissable` restate the filters of the writes they describe. A row only
+ * reaches this function through `DEAD_SCOPE`, so one whose status is not a dead one is dead
+ * inside its capability shield.
+ */
 function toDeadLetter(row: DeadLetterRow): AgentTriggerDeadLetter {
-  if (row._id == null || row.createdAt == null) {
-    throw new Error('Persisted agent trigger delivery is missing its identity or creation time');
+  if (row.createdAt == null) {
+    throw new Error('Persisted agent trigger delivery is missing its creation time');
   }
   const shielded =
-    (row.status === 'pending' || row.status === 'leased') &&
-    row.requiredWorkerCapability != null &&
-    row.capabilityStatus === 'dead';
+    (row.status === 'pending' || row.status === 'leased') && row.requiredWorkerCapability != null;
   const untouched =
     row.actorReceipt == null && row.actorActionAdmittedAt == null && row.handling == null;
   const settled =
@@ -4829,7 +4829,13 @@ export function createAgentTriggerDeliveryMethods(
     }
     const boundedLimit = Math.min(limit, MAX_DEAD_LETTER_LIMIT);
     const deliveries = await Delivery()
-      .find({ ...DEAD_SCOPE, batchRootId: { $exists: false } })
+      .find({
+        $or: [
+          { status: { $in: ['dead', 'capability_dead'] } },
+          { status: { $ne: 'succeeded' }, capabilityStatus: 'dead' },
+        ],
+        batchRootId: { $exists: false },
+      })
       .sort({ updatedAt: -1, _id: -1 })
       .limit(boundedLimit)
       .lean<IAgentTriggerDelivery[]>();
