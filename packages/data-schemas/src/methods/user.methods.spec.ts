@@ -2097,6 +2097,18 @@ describe('User Methods - Database Tests', () => {
       expect((results[0] as unknown as t.IUser).name).toBe('Zoë');
     });
 
+    test('should score a name that repeats the query words as an exact match', async () => {
+      await User.create([
+        { name: 'Zoe Adams', email: 'zadams@repeat.test', provider: 'local' },
+        { name: 'Zoe Zoe', email: 'zoezoe@repeat.test', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'zoe', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('Zoe Zoe');
+    });
+
     test('should keep an exact email match that sits past the window of prefix matches', async () => {
       await User.create(
         Array.from({ length: 3 }, (_, i) => ({

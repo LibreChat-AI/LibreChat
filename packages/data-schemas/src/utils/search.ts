@@ -79,12 +79,18 @@ export function normalizeSearchPhrase(value: string): string {
   return words(normalizeSearchText(value)).join(' ');
 }
 
+/** The distinct words of a phrase in sorted order, as one comparable string. */
+function wordSet(phraseWords: readonly string[]): string {
+  return [...new Set(phraseWords)].sort().join(' ');
+}
+
 /**
  * Relevance of a matched document for `query`, over the values the filter
- * searched. Like the filter, it ignores word order: 100 when a value has the
- * query's words in any order, 80 when a value starts with the query, 50 when a
- * value contains it or every query word prefixes some word (in one value or
- * across them), 10 otherwise.
+ * searched. Like the filter, it compares sets of words: 100 when a value has
+ * exactly the query's words in any order, however often each repeats (the set
+ * `buildSearchExactFilter` fetches), 80 when a value starts with the query, 50
+ * when a value contains it or every query word prefixes some word (in one value
+ * or across them), 10 otherwise.
  */
 export function scoreSearchMatch(
   values: ReadonlyArray<string | null | undefined>,
@@ -95,7 +101,7 @@ export function scoreSearchMatch(
     return 10;
   }
   const queryWords = phrase.split(' ');
-  const sortedQuery = [...queryWords].sort().join(' ');
+  const querySet = wordSet(queryWords);
   const valueWords: string[] = [];
   let score = 10;
   for (const value of values) {
@@ -104,7 +110,7 @@ export function scoreSearchMatch(
     }
     const field = normalizeSearchPhrase(value);
     const words = field.split(' ');
-    if (field === phrase || [...words].sort().join(' ') === sortedQuery) {
+    if (field === phrase || wordSet(words) === querySet) {
       return 100;
     }
     if (field.startsWith(phrase)) {
@@ -324,12 +330,12 @@ export function buildSearchTokenFilter(
  * match is never cut.
  *
  * It stays index-bound: `$all` seeks one query word by equality and `$size`
- * pins the token array to the query's words, plus the whole value that email
- * and handle fields also store. An email query also matches the whole stored
- * address, since a domain part with a hyphen adds a token of its own. A value
- * that repeats a word can match without scoring 100, so callers still score
- * what comes back. Documents written before the token fields existed are left
- * to the prefix filter's fallback.
+ * pins the token array to the query's distinct words, plus the whole value that
+ * email and handle fields also store. A whole email address also matches the
+ * stored address, since a domain part with a hyphen adds a token of its own; an
+ * address typed as separate words with such a domain is ranked only from the
+ * prefix window. Documents written before the token fields existed are left to
+ * the prefix filter's fallback.
  */
 export function buildSearchExactFilter(
   fields: readonly SearchTokenField[],
