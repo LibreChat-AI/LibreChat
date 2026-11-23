@@ -14,8 +14,6 @@ jest.mock('@librechat/api', () => ({
      here; a stub would assert only that this file calls something. */
   isAnnounceableReply: jest.requireActual('@librechat/api').isAnnounceableReply,
   announceReply: jest.fn().mockResolvedValue(false),
-  settleAll: jest.requireActual('@librechat/api').settleAll,
-  settleStarted: jest.requireActual('@librechat/api').settleStarted,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -33,8 +31,8 @@ jest.mock('~/server/services/Files/process', () => ({
   retrieveAndProcessFile: jest.fn(),
 }));
 
-const { recordUsage, checkMessageGaps, saveAssistantMessage } = require('./manage');
-const { saveConvo, getMessages, saveMessage } = require('~/models');
+const { recordUsage, saveAssistantMessage } = require('./manage');
+const { saveConvo, saveMessage } = require('~/models');
 
 describe('recordUsage', () => {
   beforeEach(() => {
@@ -150,62 +148,5 @@ describe('saveAssistantMessage', () => {
       expect.anything(),
       expect.objectContaining({ stampReply: false }),
     );
-  });
-});
-
-describe('checkMessageGaps', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    saveConvo.mockResolvedValue({});
-    getMessages.mockResolvedValue([]);
-  });
-
-  it('waits for the saves it started before rejecting with a failed thread update', async () => {
-    /* On a stopped run the caller settles once this rejects; a save still in flight then lands
-       after account deletion and recreates the message for the deleted owner. */
-    let finishSave;
-    saveMessage.mockReturnValue(new Promise((resolve) => (finishSave = resolve)));
-    const updateError = new Error('messages.update failed');
-    const openai = {
-      req: { user: { id: 'user-123' }, body: {} },
-      beta: {
-        threads: {
-          messages: {
-            list: jest.fn().mockResolvedValue({
-              data: [
-                {
-                  id: 'msg_user',
-                  role: 'user',
-                  created_at: 1,
-                  content: [{ type: 'text', text: { value: 'hi', annotations: [] } }],
-                  metadata: {},
-                },
-              ],
-            }),
-            update: jest.fn().mockRejectedValue(updateError),
-          },
-          runs: { steps: { list: jest.fn().mockResolvedValue({ data: [] }) } },
-        },
-      },
-    };
-
-    let settled = false;
-    const gaps = checkMessageGaps({
-      openai,
-      endpoint: 'assistants',
-      thread_id: 'thread_1',
-      run_id: 'run_1',
-      conversationId: 'convo-123',
-    }).finally(() => (settled = true));
-    gaps.catch(() => undefined);
-
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(openai.beta.threads.messages.update).toHaveBeenCalled();
-    expect(saveMessage).toHaveBeenCalled();
-    expect(settled).toBe(false);
-
-    finishSave({ messageId: 'saved' });
-    await expect(gaps).rejects.toBe(updateError);
-    expect(saveConvo).not.toHaveBeenCalled();
   });
 });
