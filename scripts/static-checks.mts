@@ -154,7 +154,8 @@ const FILTERS = {
     '.github/workflows/static-checks.yml',
     '!**.md',
   ],
-  // Any added or renamed path can collide with a tracked one on a file system that ignores case.
+  /** Any added or renamed path can collide with a tracked one on a file system that ignores case.
+   *  CI runs this check in the Repository Safety workflow, which has no path filter. */
   casing: ['**'],
   // Mirrors the Backend Unit Tests workflow, which owns both of these jobs.
   circular_deps: [
