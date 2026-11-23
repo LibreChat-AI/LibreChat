@@ -134,5 +134,7 @@ describe('getInlineImageType', () => {
     expect(getInlineImageType('icon.svg', 'image/svg+xml')).toBeUndefined();
     expect(getInlineImageType('README')).toBeUndefined();
     expect(getInlineImageType('archive.png.html')).toBeUndefined();
+    expect(getInlineImageType('upload.constructor')).toBeUndefined();
+    expect(getInlineImageType('upload.__proto__')).toBeUndefined();
   });
 });

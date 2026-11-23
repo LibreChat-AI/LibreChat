@@ -104,17 +104,17 @@ export function sniffImageMimeType(buffer: Buffer): string | undefined {
  * `image/svg+xml` as such would let the browser render it as an active document from the
  * storage origin, while a raster type is only ever displayed as an image.
  */
-const INLINE_IMAGE_TYPES: Readonly<Record<string, string>> = {
-  avif: 'image/avif',
-  bmp: 'image/bmp',
-  gif: 'image/gif',
-  jpeg: 'image/jpeg',
-  jpg: 'image/jpeg',
-  png: 'image/png',
-  webp: 'image/webp',
-};
+const INLINE_IMAGE_TYPES: ReadonlyMap<string, string> = new Map([
+  ['avif', 'image/avif'],
+  ['bmp', 'image/bmp'],
+  ['gif', 'image/gif'],
+  ['jpeg', 'image/jpeg'],
+  ['jpg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['webp', 'image/webp'],
+]);
 
-const inlineImageTypes = new Set(Object.values(INLINE_IMAGE_TYPES));
+const inlineImageTypes = new Set(INLINE_IMAGE_TYPES.values());
 
 /**
  * Resolves the content type to store a file with: the reported type when it is a raster image
@@ -129,5 +129,5 @@ export function getInlineImageType(fileName: string, reported?: string | null): 
   if (dot === -1) {
     return undefined;
   }
-  return INLINE_IMAGE_TYPES[fileName.slice(dot + 1).toLowerCase()];
+  return INLINE_IMAGE_TYPES.get(fileName.slice(dot + 1).toLowerCase());
 }
