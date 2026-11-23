@@ -58,7 +58,7 @@ const {
   createCodeApiRateLimitBudget,
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
-  discardUnresolvedFile,
+  failUnresolvedFile,
   isLeader,
 } = require('@librechat/api');
 const {
@@ -389,8 +389,13 @@ const processFileURL = async ({
         : (savedFile.filepath ??
           (await getFileURL({ userId, fileName: fallbackFileName, basePath, tenantId })));
     if (!filepath) {
-      await discardUnresolvedFile({ remove: deleteByPath, userId, fileName, basePath });
-      throw new Error(`Strategy "${fileStrategy}" did not return a file URL for "${fileName}"`);
+      await failUnresolvedFile({
+        source: fileStrategy,
+        remove: deleteByPath,
+        userId,
+        fileName,
+        basePath,
+      });
     }
     const storageMetadata = getStorageMetadata({
       filepath,

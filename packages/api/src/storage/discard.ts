@@ -9,23 +9,27 @@ export interface StoredObjectRef {
 }
 
 /**
- * Removes an object a strategy stored but could not resolve to a URL, so no file record will
- * reference it. Strategies without a path-based delete pass no `remove`. Never throws, so the
- * caller's original error is what surfaces.
+ * Fails a save whose stored object could not be resolved to a URL. The object is removed first
+ * (best effort) so no unreferenced file is left behind; strategies without a path-based delete
+ * pass no `remove`. A failed delete is logged and the missing-URL error is what surfaces.
  */
-export async function discardUnresolvedFile({
+export async function failUnresolvedFile({
+  source,
   remove,
   ...target
-}: StoredObjectRef & { remove?: (target: StoredObjectRef) => Promise<void> }): Promise<void> {
-  if (!remove) {
-    return;
+}: StoredObjectRef & {
+  source: string;
+  remove?: (target: StoredObjectRef) => Promise<void>;
+}): Promise<never> {
+  if (remove) {
+    try {
+      await remove(target);
+    } catch (error) {
+      logger.warn('[failUnresolvedFile] Could not remove the unresolved stored file', {
+        ...getSafeErrorMetadata(error),
+      });
+    }
   }
 
-  try {
-    await remove(target);
-  } catch (error) {
-    logger.warn('[discardUnresolvedFile] Could not remove the unresolved stored file', {
-      ...getSafeErrorMetadata(error),
-    });
-  }
+  throw new Error(`Strategy "${source}" did not return a file URL for "${target.fileName}"`);
 }
