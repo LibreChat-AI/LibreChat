@@ -51,14 +51,14 @@ jest.mock('@librechat/client', () => ({
 function Harness({
   agent,
   onMethods,
-  instructionsPromptReady,
+  formReady,
   defaultValues,
   selectedAgentId = null,
 }: {
   selectedAgentId?: string | null;
   agent: Agent;
   onMethods: (methods: UseFormReturn<AgentForm>) => void;
-  instructionsPromptReady?: boolean;
+  formReady?: boolean;
   defaultValues?: Partial<AgentForm>;
 }) {
   const methods = useForm<AgentForm>({ defaultValues });
@@ -75,7 +75,7 @@ function Harness({
           { reset: jest.fn() } as unknown as UseMutationResult<Agent, Error, AgentCreateParams>
         }
         defaultStatefulCodeEnvironment="user"
-        instructionsPromptReady={instructionsPromptReady}
+        formReady={formReady}
       />
     </FormProvider>
   );
@@ -139,33 +139,24 @@ describe('AgentSelect resetAgentForm', () => {
     expect(methods?.getValues('instructionsPrompt')).toBeNull();
   });
 
-  it('keeps the form instructions-source/prompt untouched when the data is the basic projection', async () => {
+  it('hydrates the editor only after the expanded response arrives', async () => {
     let methods: UseFormReturn<AgentForm> | undefined;
+    const onMethods = (value: UseFormReturn<AgentForm>) => (methods = value);
+    const { rerender } = render(
+      <Harness agent={createAgent()} formReady={false} onMethods={onMethods} />,
+    );
 
-    render(
+    expect(methods?.getValues('name')).toBeUndefined();
+
+    rerender(
       <Harness
-        /** No `instructionsPrompt` key at all, as the basic agent projection sends it. */
-        agent={createAgent()}
-        instructionsPromptReady={false}
-        defaultValues={{
-          instructionsSource: 'prompt',
-          instructionsPrompt: {
-            source: 'native',
-            groupId: 'group_1',
-            selection: { type: 'production' },
-          },
-        }}
-        onMethods={(m) => (methods = m)}
+        agent={createAgent({ instructions: 'Saved instructions', tools: ['mock_tool'] })}
+        onMethods={onMethods}
       />,
     );
 
-    await waitFor(() => expect(methods?.getValues('name')).toBe('Agent'));
-    expect(methods?.getValues('instructionsSource')).toBe('prompt');
-    expect(methods?.getValues('instructionsPrompt')).toEqual({
-      source: 'native',
-      groupId: 'group_1',
-      selection: { type: 'production' },
-    });
+    await waitFor(() => expect(methods?.getValues('instructions')).toBe('Saved instructions'));
+    expect(methods?.getValues('tools')).toEqual(['mock_tool']);
   });
 });
 

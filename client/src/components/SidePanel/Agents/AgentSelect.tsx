@@ -30,23 +30,21 @@ function AgentSelect({
   setCurrentAgentId,
   createMutation,
   defaultStatefulCodeEnvironment,
-  instructionsPromptReady = true,
+  formReady = true,
 }: {
   selectedAgentId: string | null;
   agentQuery: QueryObserverResult<Agent>;
   setCurrentAgentId: React.Dispatch<React.SetStateAction<string | undefined>>;
   createMutation: UseMutationResult<Agent, Error, AgentCreateParams>;
   defaultStatefulCodeEnvironment: StatefulCodeEnvironment;
-  /** Whether `agentQuery.data` is the expanded agent (the only source of
-   * `instructionsPrompt`) rather than the basic projection, which never carries it.
-   * `false` keeps the form's existing instructions-source/-prompt values instead of
-   * reading a linked agent as unlinked while the expanded query is still loading. */
-  instructionsPromptReady?: boolean;
+  /** Editors hydrate only once the expanded configuration is available. */
+  formReady?: boolean;
 }) {
   const localize = useLocalize();
   const mineAtom = useMemo(() => atom(false), []);
   const [mine, setMine] = useAtom(mineAtom);
   const lastSelectedAgent = useRef<string | null>(null);
+  const loadedAgent = useRef<string>();
   const {
     control,
     getValues,
@@ -126,18 +124,7 @@ function AgentSelect({
         agentTools.push(tool);
       });
 
-      /** The basic projection never carries `instructionsPrompt`, so deriving from it
-       * here would read a linked agent as unlinked until the expanded query resolves.
-       * Keep whatever the form already has until then. */
-      let resolvedInstructionsPrompt: AgentForm['instructionsPrompt'];
-      let resolvedInstructionsSource: AgentForm['instructionsSource'];
-      if (instructionsPromptReady) {
-        resolvedInstructionsPrompt = fullAgent.instructionsPrompt ?? null;
-        resolvedInstructionsSource = resolvedInstructionsPrompt != null ? 'prompt' : 'inline';
-      } else {
-        resolvedInstructionsPrompt = getValues('instructionsPrompt');
-        resolvedInstructionsSource = getValues('instructionsSource');
-      }
+      const instructionsPrompt = fullAgent.instructionsPrompt ?? null;
 
       const formValues: Partial<AgentForm & TAgentCapabilities> = {
         ...capabilities,
@@ -159,8 +146,8 @@ function AgentSelect({
         repositoryInstructions: fullAgent.repositoryInstructions,
         code_workspace_id: fullAgent.code_workspace_id,
         git_identity: fullAgent.git_identity,
-        instructionsSource: resolvedInstructionsSource,
-        instructionsPrompt: resolvedInstructionsPrompt,
+        instructionsSource: instructionsPrompt == null ? 'inline' : 'prompt',
+        instructionsPrompt,
       };
 
       Object.entries(fullAgent).forEach(([name, value]) => {
@@ -255,7 +242,7 @@ function AgentSelect({
         setValue('tools', mergedDirtyTools, { shouldDirty: true });
       }
     },
-    [getValues, reset, setValue, instructionsPromptReady],
+    [getValues, reset, setValue],
   );
 
   const onSelect = useCallback(
@@ -266,35 +253,27 @@ function AgentSelect({
 
       createMutation.reset();
       if (!agentExists) {
+        loadedAgent.current = undefined;
         setCurrentAgentId(undefined);
         return reset(getDefaultAgentFormValues(defaultStatefulCodeEnvironment));
       }
 
       setCurrentAgentId(selectedId);
-      const agent = agentQuery.data;
-      if (!agent) {
-        console.warn('Agent not found');
-        return;
-      }
-
-      resetAgentForm(agent);
     },
-    [
-      agents,
-      createMutation,
-      setCurrentAgentId,
-      agentQuery.data,
-      resetAgentForm,
-      reset,
-      defaultStatefulCodeEnvironment,
-    ],
+    [agents, createMutation, setCurrentAgentId, reset, defaultStatefulCodeEnvironment],
   );
 
   useEffect(() => {
-    if (agentQuery.data && agentQuery.isSuccess) {
-      resetAgentForm(agentQuery.data, true);
+    const agent = agentQuery.data;
+    if (!formReady || !agent || !agentQuery.isSuccess) {
+      if (!agent) {
+        loadedAgent.current = undefined;
+      }
+      return;
     }
-  }, [agentQuery.data, agentQuery.isSuccess, resetAgentForm]);
+    resetAgentForm(agent, loadedAgent.current === agent.id);
+    loadedAgent.current = agent.id;
+  }, [agentQuery.data, agentQuery.isSuccess, formReady, resetAgentForm]);
 
   useEffect(() => {
     let timerId: NodeJS.Timeout | null = null;
@@ -368,7 +347,7 @@ const MemoizedAgentSelect = memo(
     prevProps.agentQuery.isSuccess === nextProps.agentQuery.isSuccess &&
     prevProps.createMutation.data?.id === nextProps.createMutation.data?.id &&
     prevProps.createMutation.isLoading === nextProps.createMutation.isLoading &&
-    prevProps.instructionsPromptReady === nextProps.instructionsPromptReady,
+    prevProps.formReady === nextProps.formReady,
 );
 MemoizedAgentSelect.displayName = 'AgentSelect';
 

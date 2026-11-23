@@ -542,14 +542,14 @@ export default function AgentPanel() {
    *  the editor for a linked agent even without ACL EDIT on it. */
   const hasEditorAccess = canEdit || user?.role === SystemRoles.ADMIN;
 
+  const isPersistedAgent = Boolean(current_agent_id) && !isEphemeralAgent(current_agent_id);
   const expandedAgentQuery = useGetExpandedAgentByIdQuery(current_agent_id ?? '', {
-    enabled: !isEphemeralAgent(current_agent_id) && hasEditorAccess && !permissionsLoading,
+    enabled: isPersistedAgent && hasEditorAccess && !permissionsLoading,
   });
 
   const agentQuery =
     hasEditorAccess && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
 
-  const isPersistedAgent = Boolean(current_agent_id) && !isEphemeralAgent(current_agent_id);
   /** `instructionsPrompt` only ever arrives on the expanded query. A persisted,
    *  editable agent stays in a disabled loading (or error) state here until that
    *  query resolves, instead of briefly reading a linked agent as unlinked. */
@@ -686,6 +686,7 @@ export default function AgentPanel() {
     [getValues, uploadAvatarMutation],
   );
   const agent_id = useWatch({ control, name: 'id' });
+  const selectionReady = !isPersistedAgent || agent_id === current_agent_id;
   const previousVersionRef = useRef<number | undefined>();
   const submittedDirtyRef = useRef(false);
   const submittedRef = useRef<{ payload?: AgentUpdateParams; previous?: Agent }>({});
@@ -900,6 +901,9 @@ export default function AgentPanel() {
 
   const onSubmit = useCallback(
     async (data: AgentForm) => {
+      if (!selectionReady) {
+        return;
+      }
       const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
       /** A persisted agent whose expanded query hasn't resolved (or failed) carries no
@@ -1002,6 +1006,7 @@ export default function AgentPanel() {
       instructionsPromptStatus,
       models,
       isProviderReady,
+      selectionReady,
       update,
       showToast,
       startupConfig,
@@ -1062,7 +1067,7 @@ export default function AgentPanel() {
                 setCurrentAgentId={setCurrentAgentId}
                 selectedAgentId={agentQuery.isInitialLoading ? null : (current_agent_id ?? null)}
                 defaultStatefulCodeEnvironment={defaultStatefulCodeEnvironment}
-                instructionsPromptReady={instructionsPromptStatus === 'ready'}
+                formReady={!permissionsLoading && instructionsPromptStatus === 'ready'}
               />
             </div>
             {agent_id && (
@@ -1083,7 +1088,9 @@ export default function AgentPanel() {
                 </Button>
                 <Button
                   variant="submit"
-                  disabled={isEphemeralAgent(agent_id) || agentQuery.isInitialLoading}
+                  disabled={
+                    !selectionReady || isEphemeralAgent(agent_id) || agentQuery.isInitialLoading
+                  }
                   onClick={(e) => {
                     e.preventDefault();
                     handleSelectAgent();
@@ -1160,7 +1167,7 @@ export default function AgentPanel() {
             <AdvancedPanel />
           )}
         </div>
-        {canEditAgent && !agentQuery.isInitialLoading && (
+        {canEditAgent && selectionReady && !agentQuery.isInitialLoading && (
           <AgentFooter
             createMutation={create}
             updateMutation={update}
