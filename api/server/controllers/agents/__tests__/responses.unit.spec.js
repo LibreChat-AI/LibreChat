@@ -2757,6 +2757,7 @@ describe('createResponse controller', () => {
                   name: 'lookup',
                   args: '{}',
                   output: 'actual protected result',
+                  runStepStatus: 'completed',
                 },
               },
             ],
