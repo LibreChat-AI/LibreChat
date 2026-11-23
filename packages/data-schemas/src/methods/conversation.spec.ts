@@ -5626,13 +5626,13 @@ describe('Conversation Operations', () => {
         shareId: `share-${uuidv4()}`,
       });
 
-      process.env.ALLOW_SHARED_LINKS = 'false';
-      try {
-        const result = await methods.getConvosByCursor('user123', { limit: 25 });
-        expect(result.conversations[0].isShared).toBeUndefined();
-      } finally {
-        delete process.env.ALLOW_SHARED_LINKS;
-      }
+      const disabled = createConversationMethods(mongoose, {
+        getMessages,
+        deleteMessages,
+        allowSharedLinks: false,
+      });
+      const result = await disabled.getConvosByCursor('user123', { limit: 25 });
+      expect(result.conversations[0].isShared).toBeUndefined();
 
       await SharedLink.deleteMany({ user: 'user123' });
       await Conversation.deleteMany({ user: 'user123' });
@@ -9799,11 +9799,38 @@ describe('Conversation Operations', () => {
         shareId: `share-${uuidv4()}`,
       });
 
+      const disabled = createConversationMethods(mongoose, {
+        getMessages,
+        deleteMessages,
+        allowSharedLinks: false,
+      });
+      try {
+        const result = await disabled.getConvosByCursor(user, { sharedOnly: true });
+        expect(result.conversations).toEqual([]);
+      } finally {
+        await SharedLink.deleteMany({ user });
+      }
+    });
+
+    it('takes the sharing setting from its caller, not the process env', async () => {
+      const SharedLink = mongoose.models.SharedLink as mongoose.Model<{
+        conversationId: string;
+        user: string;
+        shareId: string;
+      }>;
+      const shared = await makeConvo({ title: 'shared' });
+      await SharedLink.create({
+        conversationId: shared.conversationId,
+        user,
+        shareId: `share-${uuidv4()}`,
+      });
+
       const previous = process.env.ALLOW_SHARED_LINKS;
       process.env.ALLOW_SHARED_LINKS = 'false';
       try {
         const result = await getConvosByCursor(user, { sharedOnly: true });
-        expect(result.conversations).toEqual([]);
+        expect(result.conversations.map((c) => c.conversationId)).toEqual([shared.conversationId]);
+        expect(result.conversations[0].isShared).toBe(true);
       } finally {
         if (previous === undefined) {
           delete process.env.ALLOW_SHARED_LINKS;
