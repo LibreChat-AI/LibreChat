@@ -551,6 +551,39 @@ describe('CodeWorkspaceMenu', () => {
     expect(screen.getByRole('menuitemradio', { name: 'Solo' })).toBeInTheDocument();
   });
 
+  test('tells machines that share a display name apart by id', async () => {
+    const twin = (id: string) => ({ ...environment, id, name: 'Laptop' });
+    const graph = workspace({ machineOptions: [twin('vm-a'), twin('vm-b'), environment] });
+    graph.environments = ['vm-a', 'vm-b'].map((id) => ({
+      environment: twin(id),
+      state: 'ready' as const,
+      workspaces: [
+        {
+          id: 'repo',
+          name: 'Repo',
+          environment: { fingerprint: 'f', repo: 'org/repo', ref: 'main', actions: [] },
+        },
+      ],
+      selected: { environmentId: id, workspaceId: 'repo' },
+    }));
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    await userEvent.click(screen.getByTestId('code-machine'));
+    expect(screen.getByRole('menuitem', { name: /^Laptop\s*vm-a$/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^Laptop\s*vm-b$/ })).toBeInTheDocument();
+    /** A unique name stays bare. */
+    expect(screen.getByRole('menuitem', { name: 'Personal VM' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    for (const id of ['vm-a', 'vm-b']) {
+      /** Each machine's rows sit in a group its label names, so the pick names its machine. */
+      const section = screen.getByRole('group', { name: new RegExp(`^Laptop\\s*${id}$`) });
+      expect(within(section).getByRole('menuitemradio', { name: /^Repo/ })).toBeInTheDocument();
+    }
+  });
+
   test('hides Git context when continuing without an attached workspace', () => {
     const graph = workspace({ mode: 'without_attached', state: 'without_attached' });
     graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];

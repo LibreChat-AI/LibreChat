@@ -215,6 +215,36 @@ test.describe('composer code workspace chips', () => {
     ).toBeChecked();
   });
 
+  test('machines that share a name read apart in the menus @scenario:same-named-machines-read-apart', async ({
+    page,
+  }) => {
+    const twin = {
+      ...secondMachine(),
+      name: 'ZimaCube',
+      defaultWorkspaceId: 'librechat',
+      workspaces: [
+        workspace('librechat', { worktree: true, repo: 'danny-avila/LibreChat', ref: 'dev' }),
+      ],
+    };
+    await installCodeMocks(page, { environments: [singleMachine(), twin] });
+    await openCodeChat(page);
+
+    const machines = await openChip(page, '[data-testid="code-machine"]');
+    await expect(machines.getByRole('menuitem', { name: 'ZimaCube env-zimacube' })).toBeVisible();
+    await expect(machines.getByRole('menuitem', { name: 'ZimaCube env-studio' })).toBeVisible();
+    await closeMenu(page);
+
+    const menu = await openChip(page, WORKSPACE);
+    for (const id of ['env-zimacube', 'env-studio']) {
+      const section = menu.getByRole('group', { name: new RegExp(`^ZimaCube ${id}(\\s|$)`) });
+      await expect(section).toBeVisible();
+      await expect(
+        section.getByRole('menuitemradio', { name: /^librechat.*danny-avila\/LibreChat · dev/ }),
+      ).toBeVisible();
+    }
+    await closeMenu(page);
+  });
+
   test('an open chip menu does not read as disabled @scenario:open-chip-menu-not-disabled', async ({
     page,
   }) => {
