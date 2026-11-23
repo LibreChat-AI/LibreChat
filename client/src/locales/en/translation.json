@@ -939,6 +939,7 @@
   "com_error_attachments_older_info": "Retry without older files stops sending the files from earlier messages and sends your last message again with its own. Nothing is deleted: any of them can be switched back on under Files in the Session panel.",
   "com_error_attachments_retry_info": "Retry without files sends your message again without its files. Your original message is kept.",
   "com_error_details_attachment": "Attachment limit details",
+  "com_error_output_budget_exhausted": "The model used its entire output budget on reasoning before answering. Lower the thinking level or increase Max Output Tokens and try again.",
   "com_error_provider_failed": "{{0}} could not complete this request.",
   "com_error_refusal": "{{0}} declined to answer this request. Rewrite your message and try again.",
   "com_error_refusal_reason": "The model's explanation",

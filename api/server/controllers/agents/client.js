@@ -6,6 +6,7 @@ const { getBufferString, HumanMessage } = require('@librechat/agents/langchain/m
 const {
   createRun,
   isEnabled,
+  settleOutputTruncation,
   checkAccess,
   buildRunToolSet,
   logToolError,
@@ -664,6 +665,7 @@ class AgentClient extends BaseClient {
       subagentAggregatorsByToolCallId,
       contextUsageSink,
       usageEmitSink,
+      truncationSink,
       toolInputValidationErrors,
       ...clientOptions
     } = options;
@@ -682,6 +684,9 @@ class AgentClient extends BaseClient {
      *  persisted on `metadata.usage`.
      *  @type {Array<import('librechat-data-provider').TTokenUsageEvent> | undefined} */
     this.usageEmitSink = usageEmitSink;
+    /** Whether the latest answer call hit its output limit, filled by the model-end handler.
+     *  @type {import('@librechat/api').OutputTruncationSink | undefined} */
+    this.truncationSink = truncationSink;
     /** Schema-validation exceptions keyed by tool-call ID. The completion
      *  handler consumes these to distinguish execution failures from tool
      *  output that merely contains similar text.
@@ -5251,6 +5256,10 @@ class AgentClient extends BaseClient {
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       this.applyHideSequentialOutputsFilter();
       this.rebaseActivityPhaseBounds(contentBeforeReshape);
+      /** BaseClient spreads `metadata` onto the response row. */
+      this.metadata = settleOutputTruncation(this.truncationSink, this.contentParts, {
+        continued: this.options.req?.body?.isContinued === true,
+      });
     } catch (err) {
       if (
         err?.code === 'SCHEDULED_HITL_REQUIRES_SHARED_STORE' ||
@@ -5999,6 +6008,10 @@ class AgentClient extends BaseClient {
       const contentBeforeReshape = [...this.contentParts];
       this.applyHideSequentialOutputsFilter();
       this.rebaseActivityPhaseBounds(contentBeforeReshape);
+      /** BaseClient spreads `metadata` onto the response row. */
+      this.metadata = settleOutputTruncation(this.truncationSink, this.contentParts, {
+        continued: this.options.req?.body?.isContinued === true,
+      });
     } catch (err) {
       if (isAgentAttachmentLimitError(err) || isAttachmentObjectNotFoundError(err)) {
         logger.warn(

@@ -3442,6 +3442,79 @@ describe('AgentClient - startup telemetry', () => {
     );
   });
 
+  describe('settles a Gemini output-budget truncation into the response', () => {
+    const think = { type: ContentTypes.THINK, [ContentTypes.THINK]: 'Reasoning so far' };
+    const code = JSON.stringify({ type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED });
+
+    const runTruncatedTurn = async ({ contentParts, ending, continued = false }) => {
+      jest.clearAllMocks();
+      mockCreateRun.mockResolvedValue({
+        Graph: null,
+        processStream: jest.fn().mockResolvedValue(undefined),
+        getCalibrationRatio: jest.fn(() => 0),
+      });
+      mockIsHITLEnabled.mockReturnValue(false);
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: { isContinued: continued },
+          /** A content policy withholds thrown error text; the settled part is code only. */
+          config: {
+            endpoints: { [EModelEndpoint.agents]: {} },
+            messageFilter: { pii: { enabled: true } },
+          },
+          _resumableStreamId: 'conversation-output-budget',
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.google,
+          provider: EModelEndpoint.google,
+          model_parameters: { model: 'gemini-3-pro' },
+          hide_sequential_outputs: false,
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts,
+        collectedUsage: [],
+        artifactPromises: [],
+        truncationSink: { calls: { 'agent=agent-123': ending } },
+      });
+      client.conversationId = 'conversation-output-budget';
+      client.responseMessageId = 'response-output-budget';
+      client.parentMessageId = 'parent-output-budget';
+      client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+      await client.chatCompletion({ payload: [] });
+      return client;
+    };
+
+    it('keeps the reasoning and adds the code when the model answered with nothing', async () => {
+      const client = await runTruncatedTurn({ contentParts: [think], ending: 'exhausted' });
+
+      expect(client.contentParts).toEqual([think, { type: ContentTypes.ERROR, error: code }]);
+      expect(client.metadata).toBeUndefined();
+    });
+
+    it('keeps a partial answer and finishes it as length so Continue is offered', async () => {
+      const answer = { type: ContentTypes.TEXT, text: 'The first half' };
+      const client = await runTruncatedTurn({ contentParts: [think, answer], ending: 'partial' });
+
+      expect(client.contentParts).toEqual([think, answer]);
+      expect(client.metadata).toEqual({ finish_reason: 'length' });
+    });
+
+    it('finishes a completed continuation as stop', async () => {
+      const client = await runTruncatedTurn({
+        contentParts: [{ type: ContentTypes.TEXT, text: 'The rest' }],
+        ending: 'complete',
+        continued: true,
+      });
+
+      expect(client.metadata).toEqual({ finish_reason: 'stop' });
+    });
+  });
+
   it('records collected usage as an abort when the run is stopped', async () => {
     jest.clearAllMocks();
     const abortController = new AbortController();

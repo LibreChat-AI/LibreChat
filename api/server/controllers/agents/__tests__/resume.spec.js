@@ -3137,6 +3137,25 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
   });
 
   describe('happy path: approve -> reconstruct -> resume -> finalize', () => {
+    it('persists the length finish reason of a resumed answer cut off at the output limit', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({ metadata: { finish_reason: 'length' } }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockSaveMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ finish_reason: 'length', unfinished: false }),
+        expect.anything(),
+      );
+    });
+
     const statefulCodeAgent = (bridgeWorkerId) => ({
       id: AGENT_ID,
       codeExecutionContext: {

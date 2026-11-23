@@ -5946,6 +5946,10 @@ export enum ErrorTypes {
    */
   REFUSAL = 'refusal',
   /**
+   * Model reached its output token limit before writing any answer text (e.g. spent it on reasoning)
+   */
+  OUTPUT_BUDGET_EXHAUSTED = 'output_budget_exhausted',
+  /**
    * SSE stream 404 — job completed, expired, or was deleted before the subscriber connected
    */
   STREAM_EXPIRED = 'stream_expired',
