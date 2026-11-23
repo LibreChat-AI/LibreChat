@@ -642,6 +642,8 @@ const initializeClientWithProvider = async ({
   const contextUsageSink = { latest: null, count: 0 };
   /** @type {Array<import('librechat-data-provider').TTokenUsageEvent>} */
   const usageEmitSink = [];
+  /** @type {import('@librechat/api').OutputTruncationSink} */
+  const truncationSink = {};
 
   const chatProjectContextPromise = resolveInitializationProjectContext(
     { req, endpointOption, conversationId, conversationPromise: requestConversationPromise },
@@ -2085,6 +2087,7 @@ const initializeClientWithProvider = async ({
     usageCost,
     contextUsageSink,
     usageEmitSink,
+    truncationSink,
     eventChildActivity,
     resolveMcpServerName,
     toolTimingReplayEvents,
@@ -2141,6 +2144,7 @@ const initializeClientWithProvider = async ({
      *  them to persist the breakdown + usage rollup on the response message. */
     contextUsageSink,
     usageEmitSink,
+    truncationSink,
     startupTelemetry,
     toolInputValidationErrors,
     jobCreatedAt,

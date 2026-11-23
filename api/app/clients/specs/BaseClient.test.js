@@ -820,6 +820,16 @@ describe('BaseClient', () => {
       expect(response).toEqual(expectedResult);
     });
 
+    test('carries the finish reason the run recorded in `metadata` onto the response', async () => {
+      TestClient.metadata = { finish_reason: 'length' };
+      try {
+        const response = await TestClient.sendMessage(userMessage);
+        expect(response.finish_reason).toBe('length');
+      } finally {
+        TestClient.metadata = undefined;
+      }
+    });
+
     test('persists exact provenance paths for edited and steered assistant content', async () => {
       const history = [
         {

@@ -498,6 +498,7 @@ async function finalizeResumedTurn({
     iconURL: meta.iconURL,
     model: meta.model,
     unfinished: preemptIncomplete || stepLimitReached,
+    ...client?.metadata,
     ...(stepLimitReached && { finish_reason: Constants.TOOL_CALL_LIMIT_FINISH_REASON }),
     error: false,
     isCreatedByUser: false,

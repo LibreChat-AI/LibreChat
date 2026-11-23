@@ -1016,6 +1016,22 @@ describe('Error — manual compaction', () => {
   });
 });
 
+describe('Error: output budget exhausted', () => {
+  it.each([
+    ['the code alone', JSON.stringify({ type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED })],
+    [
+      'the failed-run text the server persists',
+      `An error occurred while processing the request: ${JSON.stringify({
+        type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED,
+      })}`,
+    ],
+  ])('renders the reasoning-budget notice from %s', (_label, text) => {
+    renderError(text, { endpoint: EModelEndpoint.google, model: 'gemini-3-pro' } as TMessage);
+
+    expect(screen.getByText(catalog.com_error_output_budget_exhausted)).toBeInTheDocument();
+  });
+});
+
 describe('Error — identity of the row an error part belongs to', () => {
   const failedTurn = { endpoint: EModelEndpoint.anthropic, model: 'claude-sonnet-4-5' } as TMessage;
 
