@@ -4,6 +4,7 @@ import { ContentTypes, imageGenTools } from 'librechat-data-provider';
 import type { TMessageContentParts, TAttachment } from 'librechat-data-provider';
 import type { NamedExoticComponent, ReactNode, ReactElement } from 'react';
 import type { ReasoningDisclosures, ToolDisclosures } from '../react/parts/disclosure';
+import type { ToolCallStepOwner, ToolCallStepOwners } from '../core/parts/owners';
 import type { ContentPartsProps, ContentPartsSlots } from './contentTypes';
 import type { ToolCallGroupExpansionState } from './parts/ToolCallGroup';
 import type { ActivityPhaseSegment } from '../core/parts/activityLabels';
@@ -35,16 +36,17 @@ import {
   SubagentAttachmentsContext,
 } from '../react/subagents/attachments';
 import {
+  groupActivityPhases,
+  lastCursorContentIdx,
+  getActivityLabelText,
+  shareActivitySegments,
+} from '../core/parts/activityLabels';
+import {
   toolGroupId,
   toolGroupAnchor,
   toolGroupOccurrences,
   groupSequentialToolCalls,
 } from '../core/parts/groups';
-import {
-  groupActivityPhases,
-  lastCursorContentIdx,
-  getActivityLabelText,
-} from '../core/parts/activityLabels';
 import { PreviewedToolCallPart, isPreviewedToolCallPart } from './parts/hydration';
 import { mapAttachments, partitionWorkspaceChanges } from '../core/attachments';
 import MemoryArtifacts, { hasMemoryArtifacts } from './parts/MemoryArtifacts';
@@ -54,6 +56,7 @@ import { getPartKeyIndex, isEmptyTextPart } from '../core/content';
 import { advanceRenderIdentity } from '../core/parts/identity';
 import { AppSuppressionContext } from '../react/parts/apps';
 import ActivityPhaseGroup from './parts/ActivityPhaseGroup';
+import { sameItems, sameMap, sameSet } from '../core/same';
 import { hasPendingApprovalInPart } from '../core/pending';
 import { AGENT_STYLE_TOOLS } from '../core/parts/routing';
 import { HiddenAttachmentsContext } from './parts/media';
@@ -67,10 +70,27 @@ import { MediaContext } from '../react/parts/media';
 import { MessageContext } from '../react/message';
 import ToolCallGroup from './parts/ToolCallGroup';
 import ApprovalProvider from './approval/context';
+import { useShared } from '../react/shared';
 import Container from './parts/Container';
 import AgentUpdate from './AgentUpdate';
 import EmptyText from './EmptyText';
 import { Part } from './Part';
+
+const sameOwner = (a: ToolCallStepOwner, b: ToolCallStepOwner): boolean =>
+  a.stepId === b.stepId && a.agentId === b.agentId;
+
+const sameOwners = (a: ToolCallStepOwners, b: ToolCallStepOwners): boolean =>
+  sameMap(
+    a,
+    b,
+    (left, right) =>
+      left.length === right.length && left.every((owner, index) => sameOwner(owner, right[index])),
+  );
+
+const sameAssignments = <K,>(
+  a: ReadonlyMap<K, TAttachment[]>,
+  b: ReadonlyMap<K, TAttachment[]>,
+): boolean => sameMap(a, b, sameItems);
 
 const NO_SLOTS: ContentPartsSlots = {};
 const NO_ANSWERS: [] = [];
@@ -175,6 +195,157 @@ const PartWithContext = memo(function PartWithContext({
   );
 });
 
+type FileRow = { key: string; files: TAttachment[]; source: TAttachment[] };
+
+type PhaseSegment = Extract<ActivityPhaseSegment, { type: 'phase' }>;
+
+/** The props every body nested under one body shares. */
+type NestedBodyProps = Pick<
+  ContentPartsProps,
+  | 'messageId'
+  | 'mediaScope'
+  | 'createdAt'
+  | 'authorHeader'
+  | 'conversationId'
+  | 'attachments'
+  | 'searchResults'
+  | 'isCreatedByUser'
+  | 'isSubmitting'
+  | 'isLatestMessage'
+  | 'nestedActivityPhase'
+  | 'showThinking'
+  | 'workspaceAttachmentsPartitioned'
+  | 'laneGroups'
+  | 'toolGroupExpansionState'
+  | 'toolGroupOccurrenceByIndex'
+  | 'toolCallStepOwnersById'
+  | 'slots'
+> & { resumeAuthors: ReadonlyMap<number, string | undefined> };
+
+/** Whether a synthesized span is waiting on its reader, and so draws unfolded for now. */
+const awaitsReader = (segment: PhaseSegment, showThinking: boolean): boolean => {
+  if (segment.live !== true) {
+    return segment.content.some((part) => part != null && hasPendingApprovalInPart(part));
+  }
+  return (
+    (showThinking && segment.content.some((part) => part?.type === ContentTypes.THINK)) ||
+    segment.content.some(blocksLiveFold)
+  );
+};
+
+type PhaseCardProps = {
+  segment: PhaseSegment;
+  /** The card's render identity; see `stableCardKey`. */
+  cardKey: string;
+  nested: NestedBodyProps;
+  /** Transcript index of a position in the parent body's content. */
+  indexAt: (localIndex: number) => number;
+  attachmentsFor: (part: TMessageContentParts) => TAttachment[] | undefined;
+  /** Whether the body inside holds the message's tail, and with it the cursor. */
+  holdsTail: boolean;
+  showCursor: boolean;
+  animateEntrance: boolean;
+  cursorOwnedElsewhere: boolean;
+};
+
+/**
+ * One activity phase: its card, and the body of the span it folds. Memoized, and given only
+ * values a streamed update leaves alone once the phase has settled, so the phases a long run has
+ * already finished cost nothing while its tail streams.
+ */
+const PhaseCard = memo(function PhaseCard({
+  segment,
+  cardKey,
+  nested,
+  indexAt,
+  attachmentsFor,
+  holdsTail,
+  showCursor,
+  animateEntrance,
+  cursorOwnedElsewhere,
+}: PhaseCardProps) {
+  const disclosureStore = useStore();
+  const reasoningDisclosures = useContext(ReasoningDisclosureContext);
+  const { content } = segment;
+  const live = segment.live === true;
+  const segmentIndices = useMemo(
+    () => segment.contentIndices.map(indexAt),
+    [segment.contentIndices, indexAt],
+  );
+  const hasPendingApproval = useMemo(
+    () => content.some((part) => part != null && hasPendingApprovalInPart(part)),
+    [content],
+  );
+  /** The span's files, lifted out of the fold into their own row
+   *  under the header.
+   *
+   *  This is why a span carrying attachments no longer has to skip
+   *  folding. `ToolCallGroup` hoists `groupAttachments` outside its
+   *  own panel so generated output survives collapsing the group,
+   *  and folding that group into a card used to put the hoist back
+   *  inside a disclosure — so a synthesized span with any output
+   *  rendered unfolded rather than swallow it. Hoisting one level
+   *  further makes the card safe for exactly that content, and
+   *  agent runs that produce files are the ones with the longest
+   *  lists to fold. */
+  const attachments = useMemo(
+    () => collectPartAttachments(content, attachmentsFor),
+    [content, attachmentsFor],
+  );
+  const soleTool = useMemo(
+    () => content.filter((part) => part?.type === ContentTypes.TOOL_CALL).length === 1,
+    [content],
+  );
+  const foldsReasoning =
+    live &&
+    reasoningDisclosures != null &&
+    !content.some((part) => part?.type === ContentTypes.TOOL_CALL);
+  return (
+    <ActivityPhaseGroup
+      labelPart={segment.labelPart}
+      hasContent={segment.hasContent}
+      attachments={attachments}
+      renderAppViews={nested.slots?.renderAppViews}
+      hasPendingApproval={hasPendingApproval}
+      onExpansionChange={
+        foldsReasoning
+          ? (expanded) => {
+              content.forEach((part, position) => {
+                if (part?.type !== ContentTypes.THINK) {
+                  return;
+                }
+                const index = getPartKeyIndex(part, segmentIndices[position]);
+                disclosureStore.set(reasoningDisclosure(reasoningDisclosures, index), expanded);
+              });
+            }
+          : undefined
+      }
+      liveParts={live ? content : undefined}
+      spanParts={segment.hasContent ? content : undefined}
+      animateEntrance={animateEntrance}
+      showCursor={showCursor}
+    >
+      <SoleToolContext.Provider value={soleTool}>
+        <ContentPartsBody
+          key={`phase-content-${cardKey}`}
+          {...nested}
+          content={content}
+          isLast={holdsTail}
+          /** Opening a live row should show the calls running, so its
+           *  groups keep their own live expansion rather than the
+           *  settled-phase default of staying shut. */
+          withinActivityPhase={!live}
+          parentPhaseOwnsFailurePill
+          cursorOwnedElsewhere={cursorOwnedElsewhere}
+          hideAttachments
+          contentIndexOffset={indexAt(segment.startIndex)}
+          contentIndices={segmentIndices}
+        />
+      </SoleToolContext.Provider>
+    </ActivityPhaseGroup>
+  );
+});
+
 /**
  * ContentParts renders message content parts, handling both sequential and parallel layouts.
  *
@@ -255,8 +426,6 @@ const ContentPartsBody = memo(function ContentPartsBody({
     },
     [attachmentMap, resolvedToolCallStepOwners, nestedAttachments, nestedFiles],
   );
-  const disclosureStore = useStore();
-  const reasoningDisclosures = useContext(ReasoningDisclosureContext);
   const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
   const localToolGroupExpansionRef = useRef(new Map<string, ToolCallGroupExpansionState>());
   const expansionState = toolGroupExpansionState ?? localToolGroupExpansionRef.current;
@@ -297,28 +466,27 @@ const ContentPartsBody = memo(function ContentPartsBody({
    *  re-render of a message that has no phases at all. */
   /** Resolved once over the whole message and handed to every slice below —
    *  and to `groupActivityPhases`, so a streamed delta scans content once. */
-  const messageLaneGroups = useMemo(
-    () => laneGroups ?? parallelLaneGroups(content),
-    [laneGroups, content],
+  const messageLaneGroups = useShared(
+    useMemo(() => laneGroups ?? parallelLaneGroups(content), [laneGroups, content]),
+    sameSet,
   );
 
   const foldsLiveTail = foldLiveActivity && isLast && effectiveIsSubmitting;
-  const phaseSegments = useMemo(
-    () =>
-      nestedActivityPhase
-        ? undefined
-        : groupActivityPhases(content, messageLaneGroups, foldsLiveTail),
-    [nestedActivityPhase, content, messageLaneGroups, foldsLiveTail],
-  );
-  /** Every file a phase's parts produced; hoisting makes its row the only surface for them. */
-  const collectPhaseAttachments = useCallback(
-    (parts: ReadonlyArray<TMessageContentParts | undefined>) =>
-      collectPartAttachments(parts, attachmentsForPart),
-    [attachmentsForPart],
-  );
+  /** A streamed update regroups the whole message, but only its tail differs: every segment that
+   *  came out as before keeps its object, so the card memoized on it below is skipped. */
+  const groupedSegments = useRef<ActivityPhaseSegment[] | undefined>(undefined);
+  const phaseSegments = useMemo(() => {
+    if (nestedActivityPhase) {
+      return undefined;
+    }
+    const grouped = groupActivityPhases(content, messageLaneGroups, foldsLiveTail);
+    groupedSegments.current =
+      grouped == null ? undefined : shareActivitySegments(groupedSegments.current, grouped);
+    return groupedSegments.current;
+  }, [nestedActivityPhase, content, messageLaneGroups, foldsLiveTail]);
   const inheritedHiddenFiles = useContext(HiddenAttachmentsContext);
+  const sharedRows = useRef<ReadonlyMap<string, FileRow>>(new Map());
   const fileRows = useMemo(() => {
-    type FileRow = { key: string; files: TAttachment[]; source: TAttachment[] };
     const rows = new Map<TMessageContentParts, FileRow>();
     const ownerByFile = new Map<string, { row: FileRow; index: number }>();
     if (
@@ -337,7 +505,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       if (imageGenTools.has(name) || AGENT_STYLE_TOOLS.has(name)) {
         continue;
       }
-      const files = collectPhaseAttachments([part])?.filter(
+      const files = collectPartAttachments([part], attachmentsForPart)?.filter(
         (file) => isFileOutput(file) && !inheritedHiddenFiles?.has(file),
       );
       if (!files?.length) continue;
@@ -359,6 +527,19 @@ const ContentPartsBody = memo(function ContentPartsBody({
       // Keep source-only entries so legacy duplicates are suppressed at every matching part.
       rows.set(part, row);
     }
+    /** A row that came out as before keeps its arrays, so its attachment group is skipped. */
+    const kept = new Map<string, FileRow>();
+    for (const [part, row] of rows) {
+      const earlier = sharedRows.current.get(row.key);
+      const same =
+        earlier != null &&
+        sameItems(earlier.files, row.files) &&
+        sameItems(earlier.source, row.source);
+      const shared = same ? earlier : row;
+      kept.set(row.key, shared);
+      rows.set(part, shared);
+    }
+    sharedRows.current = kept;
     return rows;
   }, [
     content,
@@ -366,7 +547,6 @@ const ContentPartsBody = memo(function ContentPartsBody({
     nestedActivityPhase,
     hideAttachments,
     edit,
-    collectPhaseAttachments,
     attachmentsForPart,
     inheritedHiddenFiles,
     mediaScope,
@@ -626,11 +806,58 @@ const ContentPartsBody = memo(function ContentPartsBody({
     return parts;
   }, [absoluteIndexAt, content]);
 
-  const resolvedToolGroupOccurrences = useMemo(
-    () =>
-      toolGroupOccurrenceByIndex ??
-      toolGroupOccurrences(groupSequentialToolCalls(sequentialParts), fallbackScope),
-    [toolGroupOccurrenceByIndex, sequentialParts, fallbackScope],
+  const resolvedToolGroupOccurrences = useShared(
+    useMemo(
+      () =>
+        toolGroupOccurrenceByIndex ??
+        toolGroupOccurrences(groupSequentialToolCalls(sequentialParts), fallbackScope),
+      [toolGroupOccurrenceByIndex, sequentialParts, fallbackScope],
+    ),
+    sameMap,
+  );
+  /** What every body nested under this one is given. One object that a streamed update leaves
+   *  alone, so a settled phase card sees the same props and is skipped. */
+  const nested = useMemo<NestedBodyProps>(
+    () => ({
+      messageId,
+      mediaScope,
+      createdAt,
+      authorHeader,
+      conversationId,
+      attachments: inlineAttachments,
+      searchResults,
+      isCreatedByUser,
+      isSubmitting,
+      isLatestMessage,
+      nestedActivityPhase: true,
+      showThinking,
+      workspaceAttachmentsPartitioned: true,
+      laneGroups: messageLaneGroups,
+      resumeAuthors,
+      toolGroupExpansionState: expansionState,
+      toolGroupOccurrenceByIndex: resolvedToolGroupOccurrences,
+      toolCallStepOwnersById: resolvedToolCallStepOwners,
+      slots,
+    }),
+    [
+      messageId,
+      mediaScope,
+      createdAt,
+      authorHeader,
+      conversationId,
+      inlineAttachments,
+      searchResults,
+      isCreatedByUser,
+      isSubmitting,
+      isLatestMessage,
+      showThinking,
+      messageLaneGroups,
+      resumeAuthors,
+      expansionState,
+      resolvedToolGroupOccurrences,
+      resolvedToolCallStepOwners,
+      slots,
+    ],
   );
 
   const groupParts = useCallback(
@@ -868,44 +1095,17 @@ const ContentPartsBody = memo(function ContentPartsBody({
       segmentStartIndex: number,
       segmentIndices: ReadonlyArray<number>,
       key: string,
-      withinPhase = false,
-      ownsCursor = false,
-      hoisted = false,
-      underPhase = false,
-    ) => {
-      return (
-        <ContentPartsBody
-          key={key}
-          content={segmentContent}
-          messageId={messageId}
-          mediaScope={mediaScope}
-          createdAt={createdAt}
-          authorHeader={authorHeader}
-          conversationId={conversationId}
-          attachments={inlineAttachments}
-          searchResults={searchResults}
-          isCreatedByUser={isCreatedByUser}
-          isLast={!ownsCursor && isLast && segmentIndices.includes(lastContentIdx)}
-          isSubmitting={isSubmitting}
-          isLatestMessage={isLatestMessage}
-          nestedActivityPhase
-          showThinking={showThinking}
-          withinActivityPhase={withinPhase}
-          parentPhaseOwnsFailurePill={underPhase}
-          cursorOwnedElsewhere={cursorOwnedByCard}
-          hideAttachments={hoisted}
-          workspaceAttachmentsPartitioned
-          contentIndexOffset={segmentStartIndex}
-          contentIndices={segmentIndices}
-          laneGroups={messageLaneGroups}
-          resumeAuthors={resumeAuthors}
-          toolGroupExpansionState={expansionState}
-          toolGroupOccurrenceByIndex={resolvedToolGroupOccurrences}
-          toolCallStepOwnersById={resolvedToolCallStepOwners}
-          slots={slots}
-        />
-      );
-    };
+    ) => (
+      <ContentPartsBody
+        key={key}
+        {...nested}
+        content={segmentContent}
+        isLast={isLast && segmentIndices.includes(lastContentIdx)}
+        cursorOwnedElsewhere={cursorOwnedByCard}
+        contentIndexOffset={segmentStartIndex}
+        contentIndices={segmentIndices}
+      />
+    );
     phaseContent = phaseSegments.flatMap((segment) => {
       if (segment.type !== 'phase') {
         if (hasParallelContent) {
@@ -953,28 +1153,13 @@ const ContentPartsBody = memo(function ContentPartsBody({
        *  `toolGroupId` uses an occurrence counter. */
       const cardKey = stableCardKey(segment);
       const labelText = getActivityLabelText(segment.labelPart);
-      const segmentIndices = segment.contentIndices.map(absoluteIndexAt);
+      const holdsTail = segment.contentIndices.some(
+        (index) => absoluteIndexAt(index) === lastContentIdx,
+      );
       /** While a run streams, the cursor sits INSIDE a synthesized span.
        *  A collapsed card would swallow it, so the card carries it below
        *  the header and the nested body stands down. */
-      const ownsCursor =
-        synthesized && isLast && effectiveIsSubmitting && segmentIndices.includes(lastContentIdx);
-      const hasPendingApproval = segment.content.some(
-        (part) => part != null && hasPendingApprovalInPart(part),
-      );
-      /** The span's files, lifted out of the fold into their own row
-       *  under the header.
-       *
-       *  This is why a span carrying attachments no longer has to skip
-       *  folding. `ToolCallGroup` hoists `groupAttachments` outside its
-       *  own panel so generated output survives collapsing the group,
-       *  and folding that group into a card used to put the hoist back
-       *  inside a disclosure — so a synthesized span with any output
-       *  rendered unfolded rather than swallow it. Hoisting one level
-       *  further makes the card safe for exactly that content, and
-       *  agent runs that produce files are the ones with the longest
-       *  lists to fold. */
-      const phaseAttachments = collectPhaseAttachments(segment.content);
+      const ownsCursor = synthesized && isLast && effectiveIsSubmitting && holdsTail;
       /** A fold summarizes work that is DONE. An unresolved approval is
        *  the run asking the reader for something and blocking until it
        *  gets it — never put that behind a disclosure they have to find.
@@ -987,47 +1172,27 @@ const ContentPartsBody = memo(function ContentPartsBody({
        *  see reasoning as it streams. A collapsed live row would unmount
        *  it, so a reasoning-bearing span stays unfolded for them — the
        *  same exception `ToolCallGroup` makes to its auto-collapse. */
-      const keepsThinkingOpen =
-        live && showThinking && segment.content.some((part) => part?.type === ContentTypes.THINK);
-      const awaitsReader = live
-        ? keepsThinkingOpen || segment.content.some(blocksLiveFold)
-        : hasPendingApproval;
-      if (synthesized && awaitsReader) {
+      if (synthesized && awaitsReader(segment, showThinking)) {
         return [
           renderSegment(
             segment.content,
             absoluteIndexAt(segment.startIndex),
-            segmentIndices,
+            segment.contentIndices.map(absoluteIndexAt),
             `phase-awaiting-${cardKey}`,
           ),
           ...renderFiles(segment.content),
         ];
       }
       return [
-        <ActivityPhaseGroup
+        <PhaseCard
           key={`activity-phase-${cardKey}`}
-          labelPart={segment.labelPart}
-          hasContent={segment.hasContent}
-          attachments={phaseAttachments}
-          renderAppViews={slots.renderAppViews}
-          hasPendingApproval={hasPendingApproval}
-          onExpansionChange={
-            live &&
-            reasoningDisclosures != null &&
-            !segment.content.some((part) => part?.type === ContentTypes.TOOL_CALL)
-              ? (expanded) => {
-                  segment.content.forEach((part, position) => {
-                    if (part?.type !== ContentTypes.THINK) {
-                      return;
-                    }
-                    const index = getPartKeyIndex(part, segmentIndices[position]);
-                    disclosureStore.set(reasoningDisclosure(reasoningDisclosures, index), expanded);
-                  });
-                }
-              : undefined
-          }
-          liveParts={live ? segment.content : undefined}
-          spanParts={segment.hasContent ? segment.content : undefined}
+          segment={segment}
+          cardKey={cardKey}
+          nested={nested}
+          indexAt={absoluteIndexAt}
+          attachmentsFor={attachmentsForPart}
+          holdsTail={!ownsCursor && isLast && holdsTail}
+          cursorOwnedElsewhere={cursorOwnedByCard}
           animateEntrance={
             /** Never for a synthesized card. The entrance mounts a card
              *  OPEN and folds it shut, and this component remounts
@@ -1053,27 +1218,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
                 effectiveIsSubmitting &&
                 absoluteIndexAt(segment.labelIndex) === lastContentIdx
           }
-        >
-          <SoleToolContext.Provider
-            value={
-              segment.content.filter((part) => part?.type === ContentTypes.TOOL_CALL).length === 1
-            }
-          >
-            {renderSegment(
-              segment.content,
-              absoluteIndexAt(segment.startIndex),
-              segmentIndices,
-              `phase-content-${cardKey}`,
-              /** Opening a live row should show the calls running, so its
-               *  groups keep their own live expansion rather than the
-               *  settled-phase default of staying shut. */
-              !live,
-              ownsCursor,
-              true,
-              true,
-            )}
-          </SoleToolContext.Provider>
-        </ActivityPhaseGroup>,
+        />,
         ...renderFiles(segment.content),
       ];
     });
@@ -1184,7 +1329,10 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
   );
   /** Built once for the message: every body it splits into, and each routing pass below, reads
    *  the same owners instead of walking the content again. */
-  const owners = useMemo(() => toolCallStepOwners(props.content), [props.content]);
+  const owners = useShared(
+    useMemo(() => toolCallStepOwners(props.content), [props.content]),
+    sameOwners,
+  );
   const inlineByToolCall = useMemo(() => mapAttachments(inlineAttachments), [inlineAttachments]);
   const liveRouting = useMemo(
     () =>
@@ -1209,7 +1357,7 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
   );
   /** Assigned once for the whole message: the bodies an MCP App or a phase
    *  splits it into each see a slice, and must agree on every file's owner. */
-  const nestedAttachments = useMemo(() => {
+  const routedAttachments = useMemo(() => {
     if (storedSubagentHints.size === 0) {
       return liveRouting.nested;
     }
@@ -1228,6 +1376,9 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
     inlineByToolCall,
     owners,
   ]);
+  /** Routing runs on every streamed update and usually comes out as before. Handing every body the
+   *  earlier map then keeps the context, and each body's attachment lookup, unchanged. */
+  const nestedAttachments = useShared(routedAttachments, sameAssignments);
   const byToolCall = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
   const messageContent = useMemo(
     () =>
@@ -1248,12 +1399,14 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
       props.contentIndices,
     ],
   );
+  const drawnApps = useShared(messageContent.attachments, sameItems);
+  const resumeAuthors = useShared(messageContent.resumeAuthors, sameMap);
   /** The Apps this message draws as rows of its own, which the views under a tool group or a phase
    *  leave out. Only a host that draws those rows has any: without `renderApp` nothing is held
    *  back, so `renderAppViews` is where its Apps appear. */
   const suppressedAppAttachments = useMemo<ReadonlySet<TAttachment> | null>(
-    () => (renderApp == null ? null : new Set(messageContent.attachments)),
-    [renderApp, messageContent.attachments],
+    () => (renderApp == null ? null : new Set(drawnApps)),
+    [renderApp, drawnApps],
   );
   const messageContext = useMemo(
     () => ({
@@ -1333,7 +1486,7 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
               continuation={start > 0}
               isLast={props.isLast && end === props.content?.length}
               laneGroups={lanes}
-              resumeAuthors={props.resumeAuthors ?? messageContent.resumeAuthors}
+              resumeAuthors={props.resumeAuthors ?? resumeAuthors}
               toolCallStepOwnersById={owners}
             />
           </SoleToolContext.Provider>
@@ -1367,6 +1520,7 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
     renderApp,
     summarized,
     renderWorkspaceChanges,
+    resumeAuthors,
   ]);
   /** Published once for the whole message so every markdown block below —
    *  including the ones nested inside phase cards — resolves a bare
@@ -1402,7 +1556,7 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
                     <ContentPartsBody
                       {...props}
                       mediaScope={appRenderScope}
-                      resumeAuthors={props.resumeAuthors ?? messageContent.resumeAuthors}
+                      resumeAuthors={props.resumeAuthors ?? resumeAuthors}
                       toolCallStepOwnersById={owners}
                     />
                   </SoleToolContext.Provider>

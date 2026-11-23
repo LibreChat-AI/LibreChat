@@ -50,11 +50,15 @@ jest.mock('../AgentUpdate', () => ({
   ),
 }));
 
+/** Every list of files a file row was handed, in render order. */
+const mockFileLists: unknown[] = [];
+
 jest.mock('../parts/Attachment', () => ({
   __esModule: true,
-  AttachmentGroup: ({ attachments }: { attachments?: unknown[] }) => (
-    <div data-testid="attachment-group" data-count={String(attachments?.length ?? 0)} />
-  ),
+  AttachmentGroup: ({ attachments }: { attachments?: unknown[] }) => {
+    mockFileLists.push(attachments);
+    return <div data-testid="attachment-group" data-count={String(attachments?.length ?? 0)} />;
+  },
 }));
 
 jest.mock('../parts/MemoryArtifacts', () => ({
@@ -106,6 +110,15 @@ jest.mock('../parts/ToolCallGroup', () => ({
   ),
 }));
 
+/** Every set of message-level MCP App attachments a part read from its context, in render order. */
+const mockSuppressedSets: unknown[] = [];
+
+/** Every map of subagent-owned files a part read from its context, in render order. */
+const mockNestedMaps: unknown[] = [];
+
+/** How many times each phase card rendered, by its label. */
+const mockPhaseRenders = new Map<string, number>();
+
 jest.mock('../parts/ActivityPhaseGroup', () => ({
   __esModule: true,
   default: ({
@@ -114,22 +127,28 @@ jest.mock('../parts/ActivityPhaseGroup', () => ({
     animateEntrance,
     attachments,
     renderAppViews,
+    labelPart,
   }: {
     children: React.ReactNode;
     showCursor?: boolean;
     animateEntrance?: boolean;
     attachments?: TAttachment[];
     renderAppViews?: (attachments: TAttachment[]) => React.ReactNode;
-  }) => (
-    <div
-      data-testid="activity-phase-group"
-      data-show-cursor={String(showCursor === true)}
-      data-animate-entrance={String(animateEntrance === true)}
-    >
-      {renderAppViews?.(attachments ?? [])}
-      {children}
-    </div>
-  ),
+    labelPart: { activity_label?: string };
+  }) => {
+    const label = labelPart.activity_label ?? '';
+    mockPhaseRenders.set(label, (mockPhaseRenders.get(label) ?? 0) + 1);
+    return (
+      <div
+        data-testid="activity-phase-group"
+        data-show-cursor={String(showCursor === true)}
+        data-animate-entrance={String(animateEntrance === true)}
+      >
+        {renderAppViews?.(attachments ?? [])}
+        {children}
+      </div>
+    );
+  },
 }));
 
 jest.mock('../Part', () => {
@@ -138,6 +157,11 @@ jest.mock('../Part', () => {
   const { SoleToolContext } = jest.requireActual<typeof import('../../react/parts/disclosure')>(
     '../../react/parts/disclosure',
   );
+  const { AppSuppressionContext } =
+    jest.requireActual<typeof import('../../react/parts/apps')>('../../react/parts/apps');
+  const { SubagentAttachmentsContext } = jest.requireActual<
+    typeof import('../../react/subagents/attachments')
+  >('../../react/subagents/attachments');
   const { useContext } = jest.requireActual<typeof import('react')>('react');
   return {
     __esModule: true,
@@ -154,6 +178,8 @@ jest.mock('../Part', () => {
     }) {
       const { partIndex } = useMessageContext();
       const soleTool = useContext(SoleToolContext);
+      mockNestedMaps.push(useContext(SubagentAttachmentsContext));
+      mockSuppressedSets.push(useContext(AppSuppressionContext));
       return (
         <div
           data-testid={`real-part-${part.type}`}
@@ -2072,5 +2098,247 @@ describe('ContentParts: host slots', () => {
 
     render(<ContentParts {...baseProps} content={[tool('tool-1')]} />);
     expect(mockUseSubagentAttachmentCallsQueries).toHaveBeenCalled();
+  });
+});
+
+describe('ContentParts: settled phases while the tail streams', () => {
+  const tool = (id: string, output = 'done'): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name: 'search', args: {}, output },
+    }) as unknown as TMessageContentParts;
+  const summary = (label: string, start: number, end: number): TMessageContentParts =>
+    ({
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: label,
+      activity_label_type: 'phase',
+      activity_start_index: start,
+      activity_end_index: end,
+      activity_count: 1,
+      pending: false,
+    }) as unknown as TMessageContentParts;
+  const text = (value: string) =>
+    ({ type: ContentTypes.TEXT, text: value }) as TMessageContentParts;
+  const live = { isLast: true, isSubmitting: true, isLatestMessage: true };
+  const renders = (label: string) => mockPhaseRenders.get(label) ?? 0;
+
+  beforeEach(() => {
+    mockPhaseRenders.clear();
+  });
+
+  it('does not render a settled phase again when a later part streams', () => {
+    const first = [tool('tool-1'), summary('Searched the docs', 0, 1)];
+    const second = [tool('tool-2'), summary('Checked the source', 2, 3)];
+    const { rerender } = render(
+      <ContentParts {...baseProps} {...live} content={[...first, ...second, text('The')]} />,
+    );
+    expect(renders('Searched the docs')).toBe(1);
+    expect(renders('Checked the source')).toBe(1);
+
+    for (const delta of ['The answer', 'The answer is', 'The answer is here.']) {
+      rerender(
+        <ContentParts {...baseProps} {...live} content={[...first, ...second, text(delta)]} />,
+      );
+    }
+
+    expect(renders('Searched the docs')).toBe(1);
+    expect(renders('Checked the source')).toBe(1);
+    expect(screen.getByTestId(`real-part-${ContentTypes.TEXT}`)).toHaveAttribute(
+      'data-is-last',
+      'true',
+    );
+  });
+
+  it('does not render a settled phase again while the next phase grows', () => {
+    const first = [tool('tool-1'), summary('Searched the docs', 0, 1)];
+    const { rerender } = render(<ContentParts {...baseProps} {...live} content={first} />);
+
+    /** The cursor leaves the first card for the call that starts next: one render, and its last. */
+    rerender(<ContentParts {...baseProps} {...live} content={[...first, tool('tool-2', '')]} />);
+    const before = renders('Searched the docs');
+
+    rerender(<ContentParts {...baseProps} {...live} content={[...first, tool('tool-2')]} />);
+    rerender(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[...first, tool('tool-2'), tool('tool-3', '')]}
+      />,
+    );
+    rerender(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[...first, tool('tool-2'), tool('tool-3')]}
+      />,
+    );
+
+    expect(renders('Searched the docs')).toBe(before);
+  });
+
+  it('renders a settled phase again when one of its own parts changes', () => {
+    const second = [tool('tool-2'), summary('Checked the source', 2, 3)];
+    const label = summary('Searched the docs', 0, 1);
+    const { rerender } = render(
+      <ContentParts {...baseProps} {...live} content={[tool('tool-1', ''), label, ...second]} />,
+    );
+    const before = renders('Searched the docs');
+    const untouched = renders('Checked the source');
+
+    rerender(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[tool('tool-1', 'late'), label, ...second]}
+      />,
+    );
+
+    expect(renders('Searched the docs')).toBe(before + 1);
+    expect(renders('Checked the source')).toBe(untouched);
+  });
+
+  it('hands a file row the same list of files while a later part streams', () => {
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
+      );
+    const chart = {
+      toolCallId: 'tool-1',
+      filename: 'chart.png',
+      file_id: 'chart',
+      filepath: '/files/chart.png',
+    } as TAttachment;
+    const first = [tool('tool-1'), summary('Charted the results', 0, 1)];
+    const { rerender } = render(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[...first, text('The')]}
+        attachments={[chart]}
+      />,
+    );
+    mockFileLists.length = 0;
+
+    for (const delta of ['The chart', 'The chart shows']) {
+      rerender(
+        <ContentParts
+          {...baseProps}
+          {...live}
+          content={[...first, text(delta)]}
+          attachments={[chart]}
+        />,
+      );
+    }
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+
+    expect(screen.getByTestId('attachment-group')).toHaveAttribute('data-count', '1');
+    expect(mockFileLists.length).toBeGreaterThan(0);
+    expect(new Set(mockFileLists).size).toBe(1);
+  });
+
+  it('keeps one map of subagent-owned files while a later part streams', () => {
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
+      );
+    const subagent = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'subagent-1',
+        name: 'subagent',
+        args: {},
+        output: 'done',
+        subagent_content: [tool('child-1')],
+      },
+    } as unknown as TMessageContentParts;
+    const image = {
+      toolCallId: 'child-1',
+      filename: 'cat.png',
+      filepath: '/cat.png',
+    } as TAttachment;
+    const { rerender } = render(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[subagent, text('The')]}
+        attachments={[image]}
+      />,
+    );
+    mockNestedMaps.length = 0;
+
+    for (const delta of ['The cat', 'The cat is']) {
+      rerender(
+        <ContentParts
+          {...baseProps}
+          {...live}
+          content={[subagent, text(delta)]}
+          attachments={[image]}
+        />,
+      );
+    }
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+
+    const maps = new Set(mockNestedMaps);
+    expect(maps.size).toBe(1);
+    expect((mockNestedMaps[0] as Map<unknown, unknown>).get(subagent)).toEqual([image]);
+  });
+
+  it('keeps one set of message-level MCP Apps while a later part streams', () => {
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
+      );
+    const app = {
+      toolCallId: 'tool-1',
+      type: Tools.ui_resources,
+      [Tools.ui_resources]: [
+        { uri: 'ui://a', mimeType: 'text/html;profile=mcp-app', toolName: 'show', serverName: 's' },
+      ],
+    } as unknown as TAttachment;
+    const call = tool('tool-1');
+    const appSlots: ContentPartsSlots = { renderApp: () => <div data-testid="app-row" /> };
+    const draw = (value: string) => (
+      <ChatContentParts
+        {...baseProps}
+        {...live}
+        content={[call, text(value)]}
+        attachments={[app]}
+        slots={appSlots}
+      />
+    );
+    const { rerender } = render(draw('The'));
+    mockSuppressedSets.length = 0;
+
+    rerender(draw('The app'));
+    rerender(draw('The app is'));
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+
+    expect(screen.getByTestId('app-row')).toBeInTheDocument();
+    expect(mockSuppressedSets.length).toBeGreaterThan(0);
+    expect(new Set(mockSuppressedSets).size).toBe(1);
+    expect([...(mockSuppressedSets[0] as Set<unknown>)]).toEqual([app]);
+  });
+
+  it('renders every phase again when the run ends', () => {
+    const content = [
+      tool('tool-1'),
+      summary('Searched the docs', 0, 1),
+      tool('tool-2'),
+      summary('Checked the source', 2, 3),
+      text('Done.'),
+    ];
+    const { rerender } = render(<ContentParts {...baseProps} {...live} content={content} />);
+    const before = renders('Searched the docs');
+
+    rerender(<ContentParts {...baseProps} {...live} isSubmitting={false} content={content} />);
+
+    expect(renders('Searched the docs')).toBe(before + 1);
+    expect(renders('Checked the source')).toBeGreaterThan(1);
   });
 });
