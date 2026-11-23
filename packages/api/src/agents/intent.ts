@@ -42,6 +42,7 @@ import {
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from './memory';
 import { ASK_USER_QUESTION_TOOL_NAME } from './hitl/askUserQuestionTool';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from './tools';
+import { AGENT_BUILDER_WRITE_TOOL_NAMES } from './builder';
 
 /** Argument carrying the model-authored label for a tool call. */
 export const INTENT_ARG = 'intent';
@@ -61,6 +62,7 @@ export const NATIVE_INTENT_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   EDIT_FILE_TOOL_NAME,
   SET_MEMORY_TOOL_NAME,
   DELETE_MEMORY_TOOL_NAME,
+  ...AGENT_BUILDER_WRITE_TOOL_NAMES,
 ]);
 
 /**

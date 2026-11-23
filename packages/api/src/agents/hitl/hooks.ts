@@ -1,5 +1,10 @@
 import type { AppConfig } from '@librechat/data-schemas';
 import type { HookCallback } from '@librechat/agents';
+import {
+  AGENT_BUILDER_MARKER,
+  agentBuilderApprovalHook,
+  AGENT_BUILDER_WRITE_TOOL_NAMES,
+} from '../builder';
 
 /**
  * Per-run context handed to a {@link ToolApprovalHookFactory} when a run is built. It carries
@@ -117,6 +122,13 @@ export function buildToolApprovalHooks(
   context: ToolApprovalHookContext,
 ): ResolvedToolApprovalHook[] {
   const built: ResolvedToolApprovalHook[] = [];
+  if (context.appConfig?.endpoints?.agents?.capabilities?.includes(AGENT_BUILDER_MARKER)) {
+    built.push({
+      hook: agentBuilderApprovalHook,
+      matcher: `^(${AGENT_BUILDER_WRITE_TOOL_NAMES.join('|')})$`,
+      toolNames: AGENT_BUILDER_WRITE_TOOL_NAMES,
+    });
+  }
   for (const { factory, matcher } of registeredHooks) {
     const hook = factory(context);
     if (hook) {

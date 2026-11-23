@@ -128,6 +128,7 @@ import { extractAgentContent, extractSkillContent } from '../protection/adapters
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
+import { registerAgentBuilderTools, AGENT_BUILDER_MARKER } from './builder';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
@@ -2544,6 +2545,21 @@ export async function initializeAgent(
     logger.debug(
       `[initializeAgent] Agent "${agent.id}" requests memory but memoryAvailable=${String(params.memoryAvailable)}; skipping set_memory + delete_memory registration.`,
     );
+  }
+
+  const agentsEndpoint = appConfig?.endpoints?.[EModelEndpoint.agents];
+  if (
+    (agent.tools ?? []).includes(AGENT_BUILDER_MARKER) &&
+    (agentsEndpoint?.capabilities ?? []).includes(AGENT_BUILDER_MARKER)
+  ) {
+    const builderResult = registerAgentBuilderTools({
+      toolRegistry,
+      toolDefinitions,
+      toolOptions: agent.tool_options,
+      approvalEnabled: agentsEndpoint?.toolApproval?.enabled === true,
+    });
+    toolDefinitions = builderResult.toolDefinitions;
+    recordCapabilityToolNames(AGENT_BUILDER_MARKER, builderResult.toolNames);
   }
 
   if (skillAuthoringAvailable) {
