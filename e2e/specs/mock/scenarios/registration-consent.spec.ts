@@ -94,6 +94,48 @@ test.describe('registration consent', () => {
     }
   });
 
+  test('the registration form arrives with its consent already in it @scenario:registration-form-arrives-with-its-consent', async ({
+    browser,
+    baseURL,
+  }) => {
+    test.setTimeout(60000);
+    const context = await browser.newContext({ storageState: undefined, baseURL });
+    const page = await context.newPage();
+    /** Every insertion is recorded as it is committed, before any later commit
+     *  can fill in what the first one left out. A consent inserted into a form
+     *  that was already on the page means the form was committed without it,
+     *  which is what a settled fetch paired with a config not yet copied did. */
+    await page.addInitScript(() => {
+      const target = window as Window & { lateConsent?: number };
+      target.lateConsent = 0;
+      new MutationObserver((records) => {
+        for (const record of records) {
+          const form = record.target instanceof Element ? record.target.closest('form') : null;
+          for (const node of record.addedNodes) {
+            if (form && node.textContent?.includes('By continuing')) {
+              target.lateConsent = (target.lateConsent ?? 0) + 1;
+            }
+          }
+        }
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await withConfig(page, bothPolicies);
+
+    try {
+      await page.goto('/register', { timeout: 15000 });
+      const form = page.locator('form');
+      await expect(form.getByRole('button', { name: 'Submit registration' })).toBeVisible({
+        timeout: 15000,
+      });
+      await expect(form.getByText(/By continuing, you agree to the/i)).toBeVisible();
+      expect(
+        await page.evaluate(() => (window as Window & { lateConsent?: number }).lateConsent),
+      ).toBe(0);
+    } finally {
+      await closeContext(context);
+    }
+  });
+
   test('the consent names only the policy the deployment published @scenario:registration-consent-names-only-the-published-policy', async ({
     browser,
     baseURL,

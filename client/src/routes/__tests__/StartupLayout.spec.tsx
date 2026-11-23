@@ -1,8 +1,10 @@
 /* eslint-disable i18next/no-literal-string */
 import React from 'react';
-import { createMemoryRouter, RouterProvider } from 'react-router-dom';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider, useOutletContext } from 'react-router-dom';
 import { clearTwoFactorSetupToken, persistTwoFactorSetupToken } from 'librechat-data-provider';
+import type { TStartupConfig } from 'librechat-data-provider';
+import { useGetStartupConfig } from '~/data-provider';
 import StartupLayout from '~/routes/Layouts/Startup';
 import { SESSION_KEY } from '~/utils';
 
@@ -210,5 +212,84 @@ describe('StartupLayout: mandatory enrollment', () => {
     render(<RouterProvider router={router} />);
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/c/new'));
+  });
+});
+
+describe('StartupLayout: startup config in the outlet context', () => {
+  type Context = { startupConfig: TStartupConfig | null; isFetching: boolean };
+  type Result = { data: TStartupConfig | undefined; isFetching: boolean; error: null };
+
+  const config = { appTitle: 'Configured' } as TStartupConfig;
+  const query = jest.mocked(useGetStartupConfig);
+  const original = query.getMockImplementation();
+  let seen: Context[] = [];
+  let result: Result = { data: undefined, isFetching: true, error: null };
+  let authenticate: (value: boolean) => void = () => undefined;
+
+  function Recorder() {
+    const { startupConfig, isFetching } = useOutletContext<Context>();
+    seen.push({ startupConfig, isFetching });
+    return null;
+  }
+
+  /** The route element stays mounted while the query result and the session change under it. */
+  function Driver() {
+    const [state, setState] = React.useState({ isAuthenticated: false, renders: 0 });
+    React.useEffect(() => {
+      authenticate = (isAuthenticated) =>
+        setState((prev) => ({ isAuthenticated, renders: prev.renders + 1 }));
+    }, []);
+    return <StartupLayout isAuthenticated={state.isAuthenticated} />;
+  }
+
+  const settle = (next: Result, isAuthenticated = false) =>
+    act(() => {
+      result = next;
+      authenticate(isAuthenticated);
+    });
+
+  beforeEach(() => {
+    seen = [];
+    result = { data: undefined, isFetching: true, error: null };
+    query.mockImplementation(() => result as ReturnType<typeof useGetStartupConfig>);
+    render(
+      <RouterProvider
+        router={createMemoryRouter(
+          [
+            {
+              path: '/register',
+              element: <Driver />,
+              children: [{ index: true, element: <Recorder /> }],
+            },
+          ],
+          { initialEntries: ['/register'] },
+        )}
+      />,
+    );
+  });
+
+  afterEach(() => {
+    if (original) {
+      query.mockImplementation(original);
+    }
+  });
+
+  it('never hands the screens a settled fetch without the config it fetched', () => {
+    settle({ data: config, isFetching: false, error: null });
+
+    const settled = seen.filter((entry) => !entry.isFetching);
+    expect(settled.length).toBeGreaterThan(0);
+    expect(settled.every((entry) => entry.startupConfig === config)).toBe(true);
+  });
+
+  it('keeps the loaded config when authentication moves the query to a key with no data', () => {
+    settle({ data: config, isFetching: false, error: null });
+
+    seen = [];
+    settle({ data: undefined, isFetching: false, error: null }, true);
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((entry) => entry.startupConfig === config)).toBe(true);
+    expect(query).toHaveBeenLastCalledWith({ enabled: false });
   });
 });
