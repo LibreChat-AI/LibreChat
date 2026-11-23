@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useMemo } from 'react';
+import { memo, useCallback, useEffect, useRef, useMemo, useState } from 'react';
 import { atom, useAtom } from 'jotai';
 import { EarthIcon } from 'lucide-react';
 import { ControlCombobox } from '@librechat/client';
@@ -43,6 +43,7 @@ function AgentSelect({
   const localize = useLocalize();
   const mineAtom = useMemo(() => atom(false), []);
   const [mine, setMine] = useAtom(mineAtom);
+  const [mounted, setMounted] = useState(false);
   const lastSelectedAgent = useRef<string | null>(null);
   const loadedAgent = useRef<string>();
   const {
@@ -263,9 +264,12 @@ function AgentSelect({
     [agents, createMutation, setCurrentAgentId, reset, defaultStatefulCodeEnvironment],
   );
 
+  // Cached data can be available before the parent form has subscribed to resets.
+  useEffect(() => setMounted(true), []);
+
   useEffect(() => {
     const agent = agentQuery.data;
-    if (!formReady || !agent || !agentQuery.isSuccess) {
+    if (!mounted || !formReady || !agent || !agentQuery.isSuccess) {
       if (!agent) {
         loadedAgent.current = undefined;
       }
@@ -273,7 +277,7 @@ function AgentSelect({
     }
     resetAgentForm(agent, loadedAgent.current === agent.id);
     loadedAgent.current = agent.id;
-  }, [agentQuery.data, agentQuery.isSuccess, formReady, resetAgentForm]);
+  }, [agentQuery.data, agentQuery.isSuccess, formReady, mounted, resetAgentForm]);
 
   useEffect(() => {
     let timerId: NodeJS.Timeout | null = null;

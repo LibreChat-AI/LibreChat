@@ -174,6 +174,21 @@ describe('AgentSelect resetAgentForm', () => {
     );
     expect(methods?.getValues('tools')).toEqual(['mock_tool']);
   });
+
+  it('hydrates watched fields when the editor remounts with cached expanded data', async () => {
+    render(
+      <Harness
+        agent={createAgent({ instructions: 'Restored instructions' })}
+        defaultValues={{ id: '', instructions: '' }}
+        onMethods={() => undefined}
+        showInstructions
+      />,
+    );
+
+    expect(await screen.findByRole('textbox', { name: 'Instructions' })).toHaveValue(
+      'Restored instructions',
+    );
+  });
 });
 
 describe('AgentSelect ownership filter', () => {
