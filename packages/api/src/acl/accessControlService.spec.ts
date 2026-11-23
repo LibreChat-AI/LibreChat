@@ -41,6 +41,8 @@ beforeAll(async () => {
 
   // Initialize all models
   createModels(mongoose);
+  /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+  await mongoose.models.ResourceLock.createIndexes();
 
   AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
 
