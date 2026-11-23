@@ -649,7 +649,31 @@ describe('performSync() - syncThreshold logic', () => {
     expect(Message.cleanupOwnerlessMeiliIndex.mock.invocationCallOrder[0]).toBeLessThan(
       Message.getSyncProgress.mock.invocationCallOrder[0],
     );
+    expect(Conversation.cleanupOwnerlessMeiliIndex.mock.invocationCallOrder[0]).toBeLessThan(
+      Conversation.getSyncProgress.mock.invocationCallOrder[0],
+    );
     expect(mockBatchResetMeiliFlags).not.toHaveBeenCalled();
+  });
+
+  test('reconciles conversations and reports the failure when message cleanup fails', async () => {
+    const cleanupError = new Error('ownerless cleanup task failed');
+    Message.cleanupOwnerlessMeiliIndex.mockRejectedValueOnce(cleanupError);
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      isComplete: true,
+    });
+
+    const indexSync = require('./indexSync');
+    await expect(indexSync()).rejects.toThrow(cleanupError);
+
+    expect(Message.getSyncProgress).not.toHaveBeenCalled();
+    expect(Conversation.cleanupOwnerlessMeiliIndex).toHaveBeenCalledTimes(1);
+    expect(Conversation.getSyncProgress).toHaveBeenCalledTimes(1);
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      '[indexSync] Message reconciliation failed; continuing with conversations:',
+      cleanupError,
+    );
   });
 
   test('reconciles ownerless documents after updated settings reset the sync flags', async () => {

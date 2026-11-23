@@ -2664,6 +2664,7 @@ describe('Meilisearch Mongoose plugin', () => {
 
       const requeued = await messageModel.collection.findOne({ messageId: owned });
       expect(requeued).toMatchObject({ _meiliIndex: false, _meiliIndexAttempted: true });
+      expect(requeued?._meiliIndexVersion).toEqual(expect.any(String));
       const untouched = await messageModel.collection.findOne({ messageId: ownerless });
       expect(untouched).toMatchObject({ _meiliIndex: true });
       expect(untouched).not.toHaveProperty('_meiliIndexAttempted');
@@ -2704,38 +2705,65 @@ describe('Meilisearch Mongoose plugin', () => {
       }
     });
 
-    test('stops when a deleted page comes back unchanged', async () => {
+    test('rejects when a deleted page comes back unchanged', async () => {
       const Model = createPagedModel(`OwnerlessStuck${Date.now()}`);
-      const errorSpy = jest.spyOn(meiliLogger, 'error').mockImplementation(() => meiliLogger);
       try {
         mockGetDocuments.mockResolvedValue({ results: [{ docId: 'a' }, { docId: 'b' }] });
 
-        await Model.cleanupOwnerlessMeiliIndex();
+        await expect(Model.cleanupOwnerlessMeiliIndex()).rejects.toThrow('made no progress');
 
         expect(mockGetDocuments).toHaveBeenCalledTimes(2);
         expect(mockDeleteDocuments).toHaveBeenCalledTimes(1);
-        expect(errorSpy).toHaveBeenCalledWith(
-          expect.stringContaining('[cleanupOwnerlessMeiliIndex]'),
-          expect.objectContaining({ message: expect.stringContaining('made no progress') }),
-        );
       } finally {
         mongoose.deleteModel(Model.modelName);
       }
     });
 
-    test('logs a failed deletion task without throwing', async () => {
+    test('rejects when a deletion task fails', async () => {
       const messageModel = createMessageModel(mongoose) as unknown as SchemaWithMeiliMethods;
       await messageModel.deleteMany({});
-      const errorSpy = jest.spyOn(meiliLogger, 'error').mockImplementation(() => meiliLogger);
       mockGetDocuments.mockResolvedValueOnce({ results: [{ messageId: 'orphan' }] });
       mockWaitForTask.mockResolvedValueOnce({ status: 'failed' });
 
-      await expect(messageModel.cleanupOwnerlessMeiliIndex()).resolves.toBeUndefined();
+      await expect(messageModel.cleanupOwnerlessMeiliIndex()).rejects.toThrow('ended with failed');
+    });
 
-      expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[cleanupOwnerlessMeiliIndex]'),
-        expect.objectContaining({ message: expect.stringContaining('ended with failed') }),
-      );
+    test('requeues a record that became indexable while its document was deleted', async () => {
+      const messageModel = createMessageModel(mongoose) as unknown as SchemaWithMeiliMethods;
+      await messageModel.deleteMany({});
+      const messageId = new mongoose.Types.ObjectId().toString();
+      await messageModel.collection.insertOne({
+        messageId,
+        conversationId: new mongoose.Types.ObjectId().toString(),
+        user: new mongoose.Types.ObjectId().toString(),
+        isCreatedByUser: true,
+        isTemporary: true,
+        expiredAt: new Date(Date.now() + 60_000),
+      });
+      mockGetDocuments.mockResolvedValueOnce({ results: [{ messageId }] });
+      /** A concurrent save keeps the chat and its detached write acknowledges first. */
+      mockDeleteDocuments.mockImplementationOnce(async () => {
+        await messageModel.collection.updateOne(
+          { messageId },
+          {
+            $set: {
+              isTemporary: false,
+              expiredAt: null,
+              _meiliIndex: true,
+              _meiliIndexVersion: 'v1',
+            },
+          },
+        );
+        return { taskUid: 1 };
+      });
+
+      await messageModel.cleanupOwnerlessMeiliIndex();
+
+      expect(mockDeleteDocuments).toHaveBeenCalledWith([messageId]);
+      const record = await messageModel.collection.findOne({ messageId });
+      expect(record).toMatchObject({ _meiliIndex: false, _meiliIndexAttempted: true });
+      expect(record?._meiliIndexVersion).toEqual(expect.any(String));
+      expect(record?._meiliIndexVersion).not.toBe('v1');
     });
 
     test('ignores a missing index quietly', async () => {

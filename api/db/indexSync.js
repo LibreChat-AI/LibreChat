@@ -134,13 +134,9 @@ async function performSync(flowManager, flowId, flowType) {
       await batchResetMeiliFlags(Conversation.collection);
     }
 
-    await Promise.all([
-      Message.cleanupOwnerlessMeiliIndex(),
-      Conversation.cleanupOwnerlessMeiliIndex(),
-    ]);
-
     let messageSyncError;
     try {
+      await Message.cleanupOwnerlessMeiliIndex();
       // Check if we need to sync messages
       logger.info('[indexSync] Requesting message sync progress...');
       const messageProgress = await Message.getSyncProgress();
@@ -196,6 +192,7 @@ async function performSync(flowManager, flowId, flowType) {
       );
     }
 
+    await Conversation.cleanupOwnerlessMeiliIndex();
     // Check if we need to sync conversations
     const convoProgress = await Conversation.getSyncProgress();
     if (!convoProgress.isComplete || settingsUpdated) {
