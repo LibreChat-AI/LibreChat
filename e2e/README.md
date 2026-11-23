@@ -78,6 +78,12 @@ npm run e2e:email-change:disabled
 
 Override `E2E_SMTP_PORT` or `E2E_MAILBOX_PORT` if ports 1025 or 8025 are already in use. The mailbox binds only to `127.0.0.1` and is discarded with the test process.
 
+## Harness address
+
+The mock profile starts its own LibreChat at `http://localhost:3180` (a two-replica run also
+uses 3181 and 3182), so it can run beside a normal deployment on 3080, and it never reuses a
+server already listening on its port. Set `E2E_BASE_URL` to move it.
+
 ## Stream Stores and Shards
 
 The mock profile uses the in-memory generation stream store by default. To exercise the same browser scenarios through a real Redis job store and pub/sub transport, start Redis on port 6379 and run:
