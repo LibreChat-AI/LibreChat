@@ -164,6 +164,11 @@ export async function syncMessages(
         const dbMessageId = apiMessage.metadata?.messageId;
         const dbMessage = dbMessageId != null ? dbMessageMap.get(dbMessageId) : undefined;
 
+        /* Every provider message of an aggregated reply carries the same LibreChat id */
+        if (dbMessage && dbMessage === lastMessage) {
+          continue;
+        }
+
         if (dbMessage) {
           dbMessage.parentMessageId = lastMessage ? lastMessage.messageId : Constants.NO_PARENT;
           lastMessage = dbMessage;

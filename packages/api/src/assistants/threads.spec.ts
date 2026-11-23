@@ -219,3 +219,45 @@ describe('processMessages annotations', () => {
     expect(result.messages[0].files).toEqual([]);
   });
 });
+
+describe('syncMessages stored aggregates', () => {
+  it('returns a reply tagged on two provider messages once, under its own parent', async () => {
+    const deps = {
+      saveMessage: jest.fn(),
+      saveConvo: jest.fn().mockResolvedValue(null),
+      stampConvoLastResponse: jest.fn().mockResolvedValue(null),
+      addThreadMetadata: jest.fn(),
+    } as unknown as ThreadSyncDeps;
+    const openai: ThreadSyncClient = {
+      req: { user: { id: 'user-123' } },
+      beta: { threads: { messages: { update: jest.fn() } } },
+    };
+    const tagged = (id: string, role: string, messageId: string, created_at: number) => ({
+      id,
+      role,
+      created_at,
+      content: [],
+      metadata: { messageId },
+    });
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [
+        { messageId: 'db-user', role: 'user' },
+        { messageId: 'db-reply', role: 'assistant' },
+      ],
+      apiMessages: [
+        tagged('msg_u', 'user', 'db-user', 1),
+        tagged('msg_a', 'assistant', 'db-reply', 2),
+        tagged('msg_b', 'assistant', 'db-reply', 3),
+      ],
+      conversationId: 'convo-123',
+    });
+
+    expect(result.map((message) => message.messageId)).toEqual(['db-user', 'db-reply']);
+    expect(result[1].parentMessageId).toBe('db-user');
+    expect(deps.saveMessage).not.toHaveBeenCalled();
+  });
+});
