@@ -214,22 +214,30 @@ function ambiguousMachines(machines: Pick<TPublicCodeEnvironment, 'id' | 'name'>
   );
 }
 
-/** A machine's name, with its id beside it when another machine reads the same. */
+/** A machine's name, with its id beside it when another machine reads the same. The id keeps
+ *  its width up to the whole row and the name truncates first, so a long name never hides it. */
 function MachineName({
   machine,
   showId,
+  truncate = false,
 }: {
   machine: { id: string; name?: string };
   showId: boolean;
+  /** Lets the name shrink even when no id follows it. */
+  truncate?: boolean;
 }) {
   return (
     <>
-      <span className="shrink-0">{machine.name ?? machine.id}</span>
-      {/* The space keeps the name and id apart in the accessible name of an inline row. */}
+      <span className={truncate || showId ? 'min-w-0 truncate' : 'shrink-0'}>
+        {machine.name ?? machine.id}
+      </span>
+      {/* The space keeps the name and id apart in the accessible name. */}
       {showId && (
         <>
           {' '}
-          <span className="text-text-tertiary min-w-0 truncate font-normal">{machine.id}</span>
+          <span className="text-text-tertiary max-w-full shrink-0 truncate font-normal">
+            {machine.id}
+          </span>
         </>
       )}
     </>
@@ -949,8 +957,12 @@ export default function CodeWorkspaceMenu({
                 }}
               >
                 <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-                <span className="text-text-primary min-w-0 flex-1 truncate text-start text-sm">
-                  <MachineName machine={candidate} showId={ambiguous.has(candidate.id)} />
+                <span className="text-text-primary flex min-w-0 flex-1 items-baseline gap-1.5 text-start text-sm">
+                  <MachineName
+                    machine={candidate}
+                    showId={ambiguous.has(candidate.id)}
+                    truncate={true}
+                  />
                 </span>
                 {workspace.mode === 'attached' && environmentIds.has(candidate.id) && (
                   <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
