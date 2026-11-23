@@ -1457,6 +1457,37 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       );
     });
 
+    it('records an error when the resumed run ended in an error part', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeScheduledJob());
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({
+          contentParts: [
+            { type: 'text', text: 'resumed answer' },
+            {
+              type: 'error',
+              error: '{"type":"model_rate_limit","info":"PRIVATE gateway wording"}',
+            },
+          ],
+        }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+
+      expect(mockRecordScheduleOutcome).toHaveBeenCalledWith({
+        scheduleId: 'schedule-1',
+        scheduledFor,
+        streamId: CONVO_ID,
+        jobCreatedAt: 1000,
+        status: 'error',
+        conversationId: CONVO_ID,
+        error: 'Scheduled run ended with an error response',
+      });
+      expect(JSON.stringify(mockRecordScheduleOutcome.mock.calls)).not.toContain('PRIVATE');
+    });
+
     it('keeps the approval paused when global scheduled-run capacity is full', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeScheduledJob());
       mockClaimScheduleResume.mockResolvedValue({ conflict: 'capacity' });
