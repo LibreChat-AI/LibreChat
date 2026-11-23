@@ -42,17 +42,38 @@ export interface DeadLetterDeps {
 const CONFLICT: DeadLetterOutcome = { ok: false, error: { code: 'conflict' } };
 
 /**
+ * Sources that reserve a run record and a capacity slot before they enqueue, and whose sweep
+ * ends both once the delivery is dead. Reviving such a delivery would start a run that no
+ * record or slot covers, so it is run again from its source instead: a schedule is run now.
+ */
+const RESERVING_SOURCES: readonly string[] = ['schedule'];
+
+function describe(letter: AgentTriggerDeadLetter): AgentTriggerDeadLetter {
+  return letter.source != null && RESERVING_SOURCES.includes(letter.source)
+    ? { ...letter, requeueable: false }
+    : letter;
+}
+
+/**
  * The queue is written by workers outside any request, so its rows are read as the system
  * and the partition is part of each query rather than taken from the caller's context.
  */
 export function createDeadLetters({ methods, requeue }: DeadLetterDeps): DeadLetters {
   return {
-    list: (tenantId, page) =>
-      runAsSystem(async () => methods.listAgentTriggerDeadLetterPage(tenantId, page)),
-    get: (tenantId, id) => runAsSystem(async () => methods.getAgentTriggerDeadLetter(tenantId, id)),
+    list: async (tenantId, page) => {
+      const found = await runAsSystem(async () =>
+        methods.listAgentTriggerDeadLetterPage(tenantId, page),
+      );
+      return { letters: found.letters.map(describe), total: found.total };
+    },
+    get: async (tenantId, id) => {
+      const letter = await runAsSystem(async () => methods.getAgentTriggerDeadLetter(tenantId, id));
+      return letter == null ? null : describe(letter);
+    },
     requeue: async (tenantId, id) => {
       try {
-        return (await requeue(id, undefined, { tenantId })) == null ? CONFLICT : { ok: true };
+        const revived = await requeue(id, undefined, { tenantId, except: RESERVING_SOURCES });
+        return revived == null ? CONFLICT : { ok: true };
       } catch (error) {
         if (error instanceof AgentTriggerServiceUnavailableError) {
           return { ok: false, error: { code: 'unavailable' } };

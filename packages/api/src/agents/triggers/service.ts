@@ -202,7 +202,7 @@ export interface AgentTriggerDeliveryPersistence {
   requeueAgentTriggerDelivery: (
     id: string,
     availableAt: Date,
-    scope?: { tenantId: string | undefined },
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ) => Promise<AgentTriggerStoredRecord | null>;
   countActiveAgentTriggerDeliveriesByUser: (userId: string, now: Date) => Promise<number>;
   recoverAgentTriggerLanePublications: (
@@ -253,11 +253,11 @@ export interface AgentTriggerService {
     tenantId?: string,
   ) => Promise<AgentTriggerDeliveryStatusRecord | null>;
   getDeadLetters: (limit?: number) => Promise<AgentTriggerStoredRecord[]>;
-  /** With a `scope`, only a dead delivery of that tenant partition is revived. */
+  /** With a `scope`, only a dead delivery of that tenant partition is revived, and none from a source in `except`. */
   requeue: (
     id: string,
     availableAt?: Date,
-    scope?: { tenantId: string | undefined },
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ) => Promise<AgentTriggerStoredRecord | null>;
   retire: (
     deliveryKey: string,

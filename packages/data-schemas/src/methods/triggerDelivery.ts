@@ -71,11 +71,19 @@ const UNDELIVERED_STATUSES: IAgentTriggerDelivery['status'][] = [
   'leased',
   'capability_leased',
 ];
-/** A delivery no worker will run again: dead outright, or dead inside its capability shield. */
+/**
+ * A delivery no worker will claim: dead outright, or dead inside its capability shield. These
+ * are the states a requeue accepts. A `capability_pending` row whose private lifecycle still
+ * reads `dead` is not one of them: a pre-shield replica requeued it, and it is waiting to run.
+ */
 const DEAD_SCOPE = {
   $or: [
     { status: { $in: ['dead', 'capability_dead'] } },
-    { status: { $ne: 'succeeded' }, capabilityStatus: 'dead' },
+    {
+      status: { $in: ['pending', 'leased'] },
+      requiredWorkerCapability: { $exists: true },
+      capabilityStatus: 'dead',
+    },
   ],
 };
 /** Detached actions whose outcome a later write on the delivery still has to record. */
@@ -93,8 +101,6 @@ const DEAD_LETTER_INDEX = { status: 1, updatedAt: -1 } as const;
 const DEAD_LETTER_FIELDS = {
   deliveryKey: 1,
   user: 1,
-  status: 1,
-  requiredWorkerCapability: 1,
   attempts: 1,
   requeueCount: 1,
   'lastError.code': 1,
@@ -599,11 +605,14 @@ export interface AgentTriggerDeliveryMethods {
     tenantId: string | undefined,
     id: string,
   ) => Promise<AgentTriggerDeadLetter | null>;
-  /** With a `scope`, only a delivery of that tenant partition is revived. */
+  /**
+   * With a `scope`, only a delivery of that tenant partition is revived, and none whose
+   * source type is listed in `except`.
+   */
   requeueAgentTriggerDelivery: (
     id: string,
     availableAt: Date,
-    scope?: { tenantId: string | undefined },
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ) => Promise<AgentTriggerDeliveryRecord | null>;
   /**
    * Removes a dead letter of that partition together with its batch receipts, as its
@@ -660,8 +669,6 @@ type DeadLetterRow = Pick<
   | '_id'
   | 'deliveryKey'
   | 'user'
-  | 'status'
-  | 'requiredWorkerCapability'
   | 'attempts'
   | 'requeueCount'
   | 'settledAt'
@@ -702,15 +709,13 @@ function text(value: unknown): string | undefined {
 
 /**
  * `requeueable` and `dismissable` restate the filters of the writes they describe. A row only
- * reaches this function through `DEAD_SCOPE`, so one whose status is not a dead one is dead
- * inside its capability shield.
+ * reaches this function through `DEAD_SCOPE`, which is the state a requeue accepts, so what is
+ * left to decide is whether the delivery was acted on.
  */
 function toDeadLetter(row: DeadLetterRow): AgentTriggerDeadLetter {
   if (row.createdAt == null) {
     throw new Error('Persisted agent trigger delivery is missing its creation time');
   }
-  const shielded =
-    (row.status === 'pending' || row.status === 'leased') && row.requiredWorkerCapability != null;
   const untouched =
     row.actorReceipt == null && row.actorActionAdmittedAt == null && row.handling == null;
   const settled =
@@ -735,7 +740,7 @@ function toDeadLetter(row: DeadLetterRow): AgentTriggerDeadLetter {
     attempts: row.attempts,
     requeues: row.requeueCount ?? 0,
     ...(code != null && { code }),
-    requeueable: (DEAD_STATUSES.includes(row.status) || shielded) && untouched,
+    requeueable: untouched,
     dismissable: settled && !acting,
     createdAt: row.createdAt,
     ...(row.settledAt != null && { diedAt: row.settledAt }),
@@ -4933,9 +4938,18 @@ export function createAgentTriggerDeliveryMethods(
   async function requeueAgentTriggerDelivery(
     id: string,
     availableAt: Date,
-    scope?: { tenantId: string | undefined },
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ): Promise<AgentTriggerDeliveryRecord | null> {
-    const partition = scope == null ? {} : { $and: [tenantPartition(scope.tenantId)] };
+    const partition =
+      scope == null
+        ? {}
+        : {
+            $and: [tenantPartition(scope.tenantId)],
+            ...(scope.except != null &&
+              scope.except.length > 0 && {
+                'envelope.event.source.type': { $nin: [...scope.except] },
+              }),
+          };
     const candidate = await Delivery()
       .findOne({
         _id: id,

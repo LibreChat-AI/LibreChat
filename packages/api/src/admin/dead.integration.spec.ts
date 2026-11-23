@@ -131,8 +131,8 @@ async function until(condition: () => Promise<boolean>): Promise<void> {
   }
 }
 
-/** Enqueues a schedule occurrence that the host rejects, and waits for it to dead-letter. */
-async function kill(tenantId: string | null = TENANT): Promise<string> {
+/** Enqueues an event that the host rejects, and waits for it to dead-letter. */
+async function kill(tenantId: string | null = TENANT, source = 'webhook'): Promise<string> {
   counter += 1;
   const receipt = await service.enqueue(
     createAgentTriggerEnvelope({
@@ -147,10 +147,10 @@ async function kill(tenantId: string | null = TENANT): Promise<string> {
       target: { agentId: 'agent_reports' },
       event: {
         id: `event-${counter}`,
-        type: 'schedule.occurrence',
+        type: 'resource.ready',
         occurredAt: Date.now(),
         payload: { note: MARKER },
-        source: { id: `schedule-${counter}`, type: 'schedule' },
+        source: { id: `source-${counter}`, type: source },
       },
       input: `Summarize ${MARKER}`,
     }),
@@ -190,8 +190,8 @@ describe('admin dead letters over a real queue', () => {
       id,
       key: expect.stringMatching(/^trigger_[a-f0-9]{64}$/),
       userId: expect.stringMatching(/^[a-f0-9]{24}$/),
-      source: 'schedule',
-      event: 'schedule.occurrence',
+      source: 'webhook',
+      event: 'resource.ready',
       agentId: 'agent_reports',
       attempts: 1,
       requeues: 0,
@@ -264,7 +264,7 @@ describe('admin dead letters over a real queue', () => {
       category: 'agent_run',
       tenantId: TENANT,
       target: { type: 'dead_letter', id },
-      metadata: { source: 'schedule', agentId: 'agent_reports', failure: 'UNCLASSIFIED' },
+      metadata: { source: 'webhook', agentId: 'agent_reports', failure: 'UNCLASSIFIED' },
     });
     expect(JSON.stringify(entries)).not.toContain(MARKER);
   });
@@ -320,6 +320,27 @@ describe('admin dead letters over a real queue', () => {
       ['failure', 'conflict'],
     ]);
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to requeue a schedule occurrence, whose run its schedule has already ended', async () => {
+    const id = await kill(TENANT, 'schedule');
+    reply = started;
+
+    await expect(list(TENANT)).resolves.toMatchObject({
+      body: { letters: [{ id, source: 'schedule', requeueable: false, dismissable: true }] },
+    });
+    await expect(call(handlers.requeue, { tenantId: TENANT, id })).resolves.toEqual({
+      status: 409,
+      body: { error: 'Dead letter cannot be requeued', code: 'DEAD_LETTER_NOT_REQUEUEABLE' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await expect(
+      mongoose.models.AgentTriggerDelivery.findById(id).lean<{ status: string }>(),
+    ).resolves.toMatchObject({ status: 'dead', requeueCount: 0 });
+    await expect(call(handlers.dismiss, { tenantId: TENANT, id })).resolves.toMatchObject({
+      status: 200,
+    });
   });
 
   it('answers a stopped queue with 503 on requeue and still lists and dismisses', async () => {

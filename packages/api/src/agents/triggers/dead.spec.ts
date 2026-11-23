@@ -57,6 +57,29 @@ describe('createDeadLetters', () => {
     expect(methods.dismissAgentTriggerDeadLetter).toHaveBeenCalledWith(undefined, letter.id);
   });
 
+  it('describes a schedule occurrence as not requeueable, and any other source as stored', async () => {
+    const occurrence = { ...letter, id: 'c'.repeat(24), source: 'schedule' };
+    const event = { ...letter, id: 'd'.repeat(24), source: 'remote_api_key' };
+    const { methods, letters } = setup({
+      listAgentTriggerDeadLetterPage: jest.fn(async () => ({
+        letters: [occurrence, event, letter],
+        total: 3,
+      })),
+      getAgentTriggerDeadLetter: jest.fn(async () => occurrence),
+    });
+
+    await expect(letters.list('tenant-a', { limit: 5, offset: 0 })).resolves.toEqual({
+      letters: [{ ...occurrence, requeueable: false }, event, letter],
+      total: 3,
+    });
+    await expect(letters.get('tenant-a', occurrence.id)).resolves.toEqual({
+      ...occurrence,
+      requeueable: false,
+    });
+    (methods.getAgentTriggerDeadLetter as jest.Mock).mockResolvedValueOnce(null);
+    await expect(letters.get('tenant-a', occurrence.id)).resolves.toBeNull();
+  });
+
   it('reports a dead letter the store left in place as a conflict', async () => {
     const { letters } = setup({ dismissAgentTriggerDeadLetter: jest.fn(async () => false) });
 
@@ -71,13 +94,19 @@ describe('createDeadLetters', () => {
     requeue.mockResolvedValueOnce({ id: letter.id } as never);
 
     await expect(letters.requeue('tenant-a', letter.id)).resolves.toEqual({ ok: true });
-    expect(requeue).toHaveBeenLastCalledWith(letter.id, undefined, { tenantId: 'tenant-a' });
+    expect(requeue).toHaveBeenLastCalledWith(letter.id, undefined, {
+      tenantId: 'tenant-a',
+      except: ['schedule'],
+    });
 
     await expect(letters.requeue(undefined, letter.id)).resolves.toEqual({
       ok: false,
       error: { code: 'conflict' },
     });
-    expect(requeue).toHaveBeenLastCalledWith(letter.id, undefined, { tenantId: undefined });
+    expect(requeue).toHaveBeenLastCalledWith(letter.id, undefined, {
+      tenantId: undefined,
+      except: ['schedule'],
+    });
   });
 
   it('reports a queue that is not running as unavailable and rethrows anything else', async () => {

@@ -252,39 +252,49 @@ describe('dead letters by tenant partition', () => {
     const dead = await kill();
     const leased = await kill();
     const pending = await kill();
-    const working = await kill();
-    const bare = await kill();
-    const done = await kill();
     await set(dead, { status: 'capability_dead', requiredWorkerCapability: 'capability-v1' });
     await set(leased, { status: 'leased', ...shield });
     await set(pending, { status: 'pending', ...shield });
-    await set(working, { status: 'staging', ...shield });
-    await set(bare, { status: 'leased', capabilityStatus: 'dead' });
-    await set(done, { status: 'succeeded', ...shield });
 
     const page = await methods.listAgentTriggerDeadLetterPage('tenant-1', { limit: 50, offset: 0 });
 
     expect(
       Object.fromEntries(page.letters.map(({ id, requeueable }) => [id, requeueable])),
-    ).toEqual({
-      [dead]: true,
-      [leased]: true,
-      [pending]: true,
-      [working]: false,
-      [bare]: false,
-    });
-    for (const id of [working, bare, done]) {
-      await expect(
-        methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
-      ).resolves.toBeNull();
-    }
+    ).toEqual({ [dead]: true, [leased]: true, [pending]: true });
     for (const id of [leased, pending]) {
       await expect(
         methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
       ).resolves.toMatchObject({ id, requeueCount: 1 });
     }
-    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', done)).resolves.toBe(false);
-    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', working)).resolves.toBe(true);
+  });
+
+  it('leaves alone a delivery that is waiting to run though its private lifecycle reads dead', async () => {
+    const set = (id: string, fields: Record<string, unknown>) =>
+      Delivery.collection.updateOne({ _id: new mongoose.Types.ObjectId(id) }, { $set: fields });
+    const shield = { requiredWorkerCapability: 'capability-v1', capabilityStatus: 'dead' };
+    /** What a pre-shield replica leaves behind when it requeues a dead capability delivery. */
+    const republished = await kill();
+    const publishing = await kill();
+    const running = await kill();
+    const bare = await kill();
+    const done = await kill();
+    await set(republished, { status: 'capability_pending', ...shield });
+    await set(publishing, { status: 'capability_staging', ...shield });
+    await set(running, { status: 'capability_leased', ...shield });
+    await set(bare, { status: 'leased', capabilityStatus: 'dead' });
+    await set(done, { status: 'succeeded', ...shield });
+
+    await expect(
+      methods.listAgentTriggerDeadLetterPage('tenant-1', { limit: 50, offset: 0 }),
+    ).resolves.toEqual({ letters: [], total: 0 });
+    for (const id of [republished, publishing, running, bare, done]) {
+      await expect(methods.getAgentTriggerDeadLetter('tenant-1', id)).resolves.toBeNull();
+      await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(false);
+      await expect(
+        methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
+      ).resolves.toBeNull();
+    }
+    await expect(Delivery.countDocuments({})).resolves.toBe(5);
   });
 
   it('orders by last change and then id, whatever order the index holds the rows in', async () => {
@@ -418,9 +428,7 @@ describe('dead letters by tenant partition', () => {
         'handling.status',
         'lastError.code',
         'requeueCount',
-        'requiredWorkerCapability',
         'settledAt',
-        'status',
         'user',
       ]);
     }
@@ -462,6 +470,29 @@ describe('requeue within a tenant partition', () => {
     await expect(
       methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1' }),
     ).resolves.toBeNull();
+  });
+
+  it('revives no delivery from a source the caller excepts', async () => {
+    const id = await kill();
+
+    await expect(
+      methods.requeueAgentTriggerDelivery(id, START, {
+        tenantId: 'tenant-1',
+        except: ['webhook', 'schedule'],
+      }),
+    ).resolves.toBeNull();
+    await expect(Delivery.findById(id).lean()).resolves.toMatchObject({
+      status: 'dead',
+      requeueCount: 0,
+    });
+
+    await expect(
+      methods.requeueAgentTriggerDelivery(id, START, { tenantId: 'tenant-1', except: ['webhook'] }),
+    ).resolves.toMatchObject({ id, status: 'pending' });
+    const other = await kill();
+    await expect(
+      methods.requeueAgentTriggerDelivery(other, START, { tenantId: 'tenant-1', except: [] }),
+    ).resolves.toMatchObject({ id: other, status: 'pending' });
   });
 
   it('revives a tenantless dead letter only for the tenantless partition', async () => {
