@@ -218,38 +218,17 @@ test('a Keycloak outage keeps admin renewal retryable with the same credential',
       expect(Boolean(unavailable.body.token || unavailable.body.refreshToken)).toBe(false);
       expect(unavailable.response.headers.has('set-cookie')).toBe(false);
       expect(Boolean(await harness.db.collection('sessions').findOne(sessionFilter))).toBe(true);
-      const pending = await flights
-        .find(
-          { _id: { $nin: existingFlightIds }, status: 'pending' },
-          { projection: { lockExpiresAt: 1 } },
-        )
+      // A failed grant marks its flight failed, so the retry takes the flight over at once.
+      const started = await flights
+        .find({ _id: { $nin: existingFlightIds } }, { projection: { status: 1 } })
         .toArray();
-      expect(pending).toHaveLength(1);
-      const [flight] = pending;
-      expect(flight.lockExpiresAt).toBeInstanceOf(Date);
-      expect(Number.isFinite(flight.lockExpiresAt.getTime())).toBe(true);
-      // A failed grant keeps its lease. Retry after that lease expires.
-      await expect
-        .poll(
-          async () => {
-            const current = await flights.findOne(
-              { _id: flight._id },
-              { projection: { lockExpiresAt: 1 } },
-            );
-            return (
-              current?.lockExpiresAt instanceof Date &&
-              current.lockExpiresAt.getTime() <= Date.now()
-            );
-          },
-          { timeout: 40_000 },
-        )
-        .toBe(true);
+      expect(started.map((flight) => flight.status)).toEqual(['failed']);
       await evidence(info, 'admin-provider-outage', {
         status: unavailable.response.status,
         errorCode: unavailable.body.error_code,
         credentialsIssued: false,
         sessionPreserved: true,
-        grantLeaseExpired: true,
+        grantFlightFailed: true,
       });
     } finally {
       await harness.startKeycloak();
