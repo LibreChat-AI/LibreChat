@@ -14,6 +14,7 @@ import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
 import { ErrorSourceProvider } from '../../react/messages/error';
 import { MessageIconSlot } from '../../react/messages/host';
 import { AuthorContext } from '../../react/messages/author';
+import { renderContentParts } from '../contentRenderer';
 import { useMessagePartsHost } from '../../react/host';
 import { getHeaderHoverLabel } from './HeaderLabel';
 import MessageFooter from './MessageFooter';
@@ -156,7 +157,7 @@ export default function ContentRow({
       <AuthorContext.Provider value={author}>
         <ErrorSourceProvider message={message}>
           {body ??
-            host.renderContentParts({
+            (host.renderContentParts ?? renderContentParts)({
               edit,
               isLast,
               enterEdit,

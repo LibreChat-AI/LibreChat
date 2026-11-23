@@ -11,9 +11,14 @@ import { MessagesHostProvider } from '../../../react/messages/host';
 import { useAuthorContext } from '../../../react/messages/author';
 import { useErrorSource } from '../../../react/messages/error';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { renderContentParts } from '../../contentRenderer';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import { MessageContext } from '../../../react/message';
 import ContentRow from '../ContentRow';
+
+jest.mock('../../contentRenderer', () => ({
+  renderContentParts: jest.fn(() => <span data-testid="package-content" />),
+}));
 
 beforeAll(initEnglish);
 
@@ -94,6 +99,25 @@ function renderRow(
 }
 
 describe('ContentRow', () => {
+  it('draws its parts with the package renderer when the host names none', () => {
+    const hostRenderer = renderRow({}, { renderContentParts: undefined });
+
+    expect(hostRenderer).not.toHaveBeenCalled();
+    expect(screen.getByTestId('package-content')).toBeInTheDocument();
+    expect(jest.mocked(renderContentParts)).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'assistant-1', content: reply.content }),
+    );
+  });
+
+  it('leaves the package renderer alone when the host names its own', () => {
+    jest.mocked(renderContentParts).mockClear();
+    const hostRenderer = renderRow();
+
+    expect(hostRenderer).toHaveBeenCalled();
+    expect(jest.mocked(renderContentParts)).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('package-content')).not.toBeInTheDocument();
+  });
+
   describe('the author the model selector already shows', () => {
     const agent = { id: 'agent-1', name: 'Research Agent' } as Agent;
     const convo = { ...conversation, agent_id: 'agent-1' } as TConversation;

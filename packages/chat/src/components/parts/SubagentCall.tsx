@@ -28,6 +28,7 @@ import { PartsPreviewContext } from '../../react/parts/preview';
 import { FailedRevealContext, useFailedReveal } from './reveal';
 import { useToolCallIntent } from '../../react/parts/intent';
 import { useBranchTailSelect } from '../../react/latest';
+import { renderContentParts } from '../contentRenderer';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
 import { FOLD_GLYPH_CLASS } from './rows';
@@ -674,7 +675,7 @@ function SubagentPreview({
         <PartsPreviewContext.Provider value={true}>
           <FailedRevealContext.Provider value={NO_REVEAL}>
             <MessagePartsHostProvider host={pictureHost}>
-              {host.renderContentParts({
+              {(host.renderContentParts ?? renderContentParts)({
                 content,
                 messageId,
                 conversationId: null,

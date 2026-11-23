@@ -34,6 +34,7 @@ import ResumeAuthorHeader from '../parts/ResumeAuthorHeader';
 import { AuthorContext } from '../../react/messages/author';
 import { messageFooterClasses } from '../messages/styles';
 import { isEmptyContentPart } from '../../core/content';
+import { renderContentParts } from '../contentRenderer';
 import { ChatContext } from '../../react/chat/context';
 import { ElapsedTimer } from '../messages/Elapsed';
 import MessageRow from '../messages/MessageRow';
@@ -186,7 +187,7 @@ function TriggerMessage({
       fullWidth={fullWidth}
     >
       {content.length > 0 ? (
-        host.renderContentParts({
+        (host.renderContentParts ?? renderContentParts)({
           content,
           messageId: `${turn.taskId}:trigger`,
           conversationId: null,
@@ -323,7 +324,7 @@ function ChildMessage({
               onCancelControl={onCancelControl}
             />
             {outcomeContent != null &&
-              host.renderContentParts({
+              (host.renderContentParts ?? renderContentParts)({
                 content: outcomeContent,
                 messageId: message.messageId,
                 conversationId: conversationId ?? null,
