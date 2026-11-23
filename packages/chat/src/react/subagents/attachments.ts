@@ -9,6 +9,7 @@ import type {
   SubagentAttachmentCallsResponse,
 } from 'librechat-data-provider';
 import type { Context } from 'react';
+import type { AttachmentsByToolCall, ToolCallStepOwners } from '../../core/parts/owners';
 import type { SubagentContentPart } from '../../core/subagents';
 import {
   nestedToolCallOf,
@@ -19,6 +20,7 @@ import {
   rememberedSubagentChildCalls,
   subagentProgressByToolCallId,
 } from './state';
+import { collectClaimedAttachments } from '../../core/parts/owners';
 import { getPartKeyIndex } from '../../core/content';
 
 export type NestedPart = TMessageContentParts | SubagentContentPart | undefined;
@@ -143,6 +145,31 @@ export function assignNestedAttachments(
     assigned.set(owner[0], files);
   }
   return assigned.size > 0 ? assigned : NO_NESTED;
+}
+
+/**
+ * The subagent call part each tool attachment no top-level part accepts goes to, given the child
+ * calls each subagent part holds outside its stored transcript. `inDoubt` lists the files no call
+ * owns under their full scope, top-level or nested: one taken only by a call missing some of its
+ * scope may belong to a child call of a transcript the preview left out. `byToolCall` and
+ * `owners` are the message's own, built once for every caller that routes its attachments.
+ */
+export function routeNestedAttachments(
+  content: ReadonlyArray<TMessageContentParts | undefined> | undefined,
+  attachments: TAttachment[],
+  calls: ReadonlyMap<number, NestedCall[]>,
+  byToolCall: AttachmentsByToolCall,
+  owners: ToolCallStepOwners,
+): { nested: ReadonlyMap<NestedPart, TAttachment[]>; inDoubt: TAttachment[] } {
+  const reserved = selectExactlyNestedAttachments(content, attachments, calls);
+  const { claimed, exact } = collectClaimedAttachments(content, byToolCall, owners, reserved);
+  const unclaimed = selectUnclaimedAttachments(attachments, claimed);
+  const nested = assignNestedAttachments(content, unclaimed, calls);
+  const inDoubt = attachments.filter(
+    (attachment) =>
+      attachment.toolCallId != null && !exact.has(attachment) && !reserved.has(attachment),
+  );
+  return { nested, inDoubt };
 }
 
 /**
