@@ -312,6 +312,29 @@ test('the shared facet follows live links and drops expired ones @scenario:list-
   expect(rows.every((row) => row.isShared === true)).toBe(true);
 });
 
+test('a list without the shared facet still flags the chats with a live link @scenario:list-flags-shared-rows-without-facet', async ({
+  page,
+}) => {
+  const endpoint = uniqueEndpoint();
+  const shared = randomUUID();
+  const lapsed = randomUUID();
+  const unshared = randomUUID();
+  await seedRows(endpoint, [
+    { conversationId: shared },
+    { conversationId: lapsed },
+    { conversationId: unshared },
+  ]);
+  await seedShare(shared, null);
+  await seedShare(lapsed, new Date(Date.now() - DAY));
+
+  const { status, body } = await list(page, `endpoints=${endpoint}`);
+  expect(status).toBe(200);
+  const flags = Object.fromEntries(
+    (body as ListResponse).conversations.map((row) => [row.conversationId, row.isShared]),
+  );
+  expect(flags).toEqual({ [shared]: true, [lapsed]: false, [unshared]: false });
+});
+
 test('a malformed facet is refused instead of listing unfiltered @scenario:list-malformed-facet-refused', async ({
   page,
 }) => {
