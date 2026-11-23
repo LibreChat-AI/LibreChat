@@ -319,15 +319,33 @@ interface TextContent {
 
 const uniqueCitationStart = '^====||===';
 const uniqueCitationEnd = '==|||||^';
-const citationStart = escapeRegExp(uniqueCitationStart);
-const citationEnd = escapeRegExp(uniqueCitationEnd);
-const adjacentCitationRegex = new RegExp(
-  `${citationStart}(\\d+)${citationEnd}(\\s*)${citationStart}(\\d+)${citationEnd}`,
-  'g',
-);
-const remainingAdjacentRegex = new RegExp(`(${citationStart}(\\d+)${citationEnd})\\s*\\1+`, 'g');
-const citationStartRegex = new RegExp(citationStart, 'g');
-const citationEndRegex = new RegExp(citationEnd, 'g');
+interface CitationPatterns {
+  adjacent: RegExp;
+  remaining: RegExp;
+  start: RegExp;
+  end: RegExp;
+}
+
+let citationPatterns: CitationPatterns | undefined;
+
+/**
+ * Compiled once, on first use rather than at load: specs that mock `@librechat/data-schemas`
+ * down to its logger still load this package, so loading it must not call `escapeRegExp`.
+ */
+function getCitationPatterns(): CitationPatterns {
+  if (citationPatterns) {
+    return citationPatterns;
+  }
+  const start = escapeRegExp(uniqueCitationStart);
+  const end = escapeRegExp(uniqueCitationEnd);
+  citationPatterns = {
+    adjacent: new RegExp(`${start}(\\d+)${end}(\\s*)${start}(\\d+)${end}`, 'g'),
+    remaining: new RegExp(`(${start}(\\d+)${end})\\s*\\1+`, 'g'),
+    start: new RegExp(start, 'g'),
+    end: new RegExp(end, 'g'),
+  };
+  return citationPatterns;
+}
 
 /**
  * Sorts thread messages, retrieves the files they reference, and flattens them to one string with
@@ -459,16 +477,17 @@ export async function processMessages<TOpenAI, TClient extends ThreadRunClient>(
   );
 
   /* Collapse adjacent identical citations in the unique format */
-  text = text.replace(adjacentCitationRegex, (_match, num1, space, num2) => {
+  const patterns = getCitationPatterns();
+  text = text.replace(patterns.adjacent, (_match, num1, space, num2) => {
     return num1 === num2
       ? `${uniqueCitationStart}${num1}${uniqueCitationEnd}`
       : `${uniqueCitationStart}${num1}${uniqueCitationEnd}${space}${uniqueCitationStart}${num2}${uniqueCitationEnd}`;
   });
-  text = text.replace(remainingAdjacentRegex, '$1');
+  text = text.replace(patterns.remaining, '$1');
 
   /* Replace the unique citation format with the final format */
-  text = text.replace(citationStartRegex, '^');
-  text = text.replace(citationEndRegex, '^');
+  text = text.replace(patterns.start, '^');
+  text = text.replace(patterns.end, '^');
 
   if (sources.size) {
     text += '\n\n';
