@@ -2705,6 +2705,38 @@ describe('Meilisearch Mongoose plugin', () => {
       }
     });
 
+    test('steps back when concurrent saves repair documents between pages', async () => {
+      const Model = createPagedModel(`OwnerlessRepaired${Date.now()}`);
+      try {
+        await Model.collection.insertMany([
+          { docId: 'owned-1', user: 'u1', _meiliIndex: true },
+          { docId: 'owned-2', user: 'u2', _meiliIndex: true },
+        ]);
+        mockGetDocuments
+          .mockResolvedValueOnce({
+            results: [{ docId: 'owned-1' }, { docId: 'orphan-1' }],
+            total: 4,
+          })
+          /** owned-1 was rewritten with its owner, so owned-2 moved to offset 0. */
+          .mockResolvedValueOnce({ results: [{ docId: 'orphan-2' }], total: 2 })
+          .mockResolvedValueOnce({
+            results: [{ docId: 'owned-2' }, { docId: 'orphan-2' }],
+            total: 2,
+          })
+          .mockResolvedValueOnce({ results: [], total: 1 });
+
+        await Model.cleanupOwnerlessMeiliIndex();
+
+        expect(mockGetDocuments.mock.calls.map(([query]) => query.offset)).toEqual([0, 1, 0, 1]);
+        expect(mockDeleteDocuments.mock.calls).toEqual([[['orphan-1']], [['orphan-2']]]);
+        const owned = await Model.collection.findOne({ docId: 'owned-2' });
+        expect(owned).toMatchObject({ _meiliIndex: false, _meiliIndexAttempted: true });
+      } finally {
+        await Model.collection.drop().catch(() => undefined);
+        mongoose.deleteModel(Model.modelName);
+      }
+    });
+
     test('rejects when a deleted page comes back unchanged', async () => {
       const Model = createPagedModel(`OwnerlessStuck${Date.now()}`);
       try {

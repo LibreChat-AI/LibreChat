@@ -761,6 +761,7 @@ const createMeiliMongooseModel = ({
       let deleted = 0;
       let requeued = 0;
       let previousPage: string | undefined;
+      let expectedTotal: number | undefined;
 
       let settings: Awaited<ReturnType<typeof index.getSettings>>;
       try {
@@ -810,6 +811,14 @@ const createMeiliMongooseModel = ({
           limit: batchSize,
           offset,
         });
+        /** Documents repaired by concurrent saves leave the filter and shift later ones back. */
+        const shortfall = expectedTotal == null ? 0 : expectedTotal - batch.total;
+        expectedTotal = batch.total;
+        if (shortfall > 0 && offset > 0) {
+          offset = Math.max(0, offset - shortfall);
+          previousPage = undefined;
+          continue;
+        }
         if (batch.results.length === 0) {
           break;
         }
@@ -835,6 +844,7 @@ const createMeiliMongooseModel = ({
             );
           }
           deleted += orphans.length;
+          expectedTotal -= orphans.length;
           /** A record that became indexable meanwhile may have lost a fresh document. */
           await requeue(orphans);
         }
