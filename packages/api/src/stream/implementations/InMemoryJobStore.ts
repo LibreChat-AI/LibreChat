@@ -557,6 +557,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
           enumerable: false,
         });
       }
+      if (previousJob.completedAt != null) {
+        Object.defineProperty(replaced, 'completedAt', {
+          value: previousJob.completedAt,
+          enumerable: false,
+        });
+      }
       addReplacedJob(replaced);
     }
     this.lastGenerationEpoch = createdAt;
