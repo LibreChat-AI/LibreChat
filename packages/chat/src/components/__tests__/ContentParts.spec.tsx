@@ -17,6 +17,7 @@ import {
 } from '../../react/subagents/state';
 import { preserveStreamedContentIdentity } from '../../core/content';
 import { groupSequentialToolCalls } from '../../core/parts/groups';
+import { AppSuppressionContext } from '../../react/parts/apps';
 import { mapAttachments } from '../../core/attachments';
 
 /** The message's attachment index is empty unless a case installs one, and workspace files are
@@ -1931,6 +1932,48 @@ describe('ContentParts: host slots', () => {
       'data-files',
       'chart.png',
     );
+  });
+
+  it('holds an App back from the views under a group only for a host that draws App rows', () => {
+    realIndex();
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    /** A view that leaves out what the message says it draws itself, as LibreChat's does. */
+    function Views({ attachments }: { attachments: TAttachment[] }) {
+      const suppressed = React.useContext(AppSuppressionContext);
+      const shown = attachments.filter((attachment) => suppressed?.has(attachment) !== true);
+      return <div data-testid="app-views" data-shown={shown.length} />;
+    }
+    const renderAppViews: ContentPartsSlots['renderAppViews'] = (attachments) => (
+      <Views attachments={attachments} />
+    );
+    const content = [tool('tool-1'), tool('tool-2')];
+    const attachments = [app('tool-1', 'ui://first')];
+
+    const { unmount } = render(
+      <ChatContentParts
+        {...baseProps}
+        content={content}
+        attachments={attachments}
+        slots={{ renderAppViews }}
+      />,
+    );
+    expect(screen.getByTestId('app-views')).toHaveAttribute('data-shown', '1');
+    unmount();
+
+    render(
+      <ChatContentParts
+        {...baseProps}
+        content={content}
+        attachments={attachments}
+        slots={{ renderAppViews, renderApp: () => <div data-testid="app-row" /> }}
+      />,
+    );
+    expect(screen.getByTestId('app-row')).toBeInTheDocument();
+    for (const views of screen.getAllByTestId('app-views')) {
+      expect(views).toHaveAttribute('data-shown', '0');
+    }
   });
 
   it('draws an MCP App as a row after its part only when the host draws Apps and allows them', () => {

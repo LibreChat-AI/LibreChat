@@ -1248,9 +1248,12 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
       props.contentIndices,
     ],
   );
-  const suppressedAppAttachments = useMemo<ReadonlySet<TAttachment>>(
-    () => new Set(messageContent.attachments),
-    [messageContent.attachments],
+  /** The Apps this message draws as rows of its own, which the views under a tool group or a phase
+   *  leave out. Only a host that draws those rows has any: without `renderApp` nothing is held
+   *  back, so `renderAppViews` is where its Apps appear. */
+  const suppressedAppAttachments = useMemo<ReadonlySet<TAttachment> | null>(
+    () => (renderApp == null ? null : new Set(messageContent.attachments)),
+    [renderApp, messageContent.attachments],
   );
   const messageContext = useMemo(
     () => ({
