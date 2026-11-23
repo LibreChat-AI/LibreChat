@@ -135,3 +135,87 @@ describe('processMessages', () => {
     expect(client.processedFileIds.has('file-img')).toBe(true);
   });
 });
+
+describe('syncMessages aggregation', () => {
+  it('appends an unrecorded assistant message to a database reply without an aggregation list', async () => {
+    const saveMessage = jest.fn(async (_ctx: unknown, message: Record<string, unknown>) => message);
+    const deps = {
+      saveMessage,
+      saveConvo: jest.fn().mockResolvedValue(null),
+      stampConvoLastResponse: jest.fn().mockResolvedValue(null),
+      addThreadMetadata: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ThreadSyncDeps;
+    const update = jest.fn().mockResolvedValue({});
+    const openai: ThreadSyncClient = {
+      req: { user: { id: 'user-123' } },
+      beta: { threads: { messages: { update } } },
+    };
+    const text = (value: string) => [{ type: 'text', text: { value, annotations: [] } }];
+
+    const result = await syncMessages(deps, {
+      openai,
+      endpoint: 'assistants',
+      thread_id: 'thread_1',
+      dbMessages: [{ messageId: 'db-reply', role: 'assistant', content: text('first') }],
+      apiMessages: [
+        {
+          id: 'msg_a',
+          role: 'assistant',
+          created_at: 1,
+          content: text('first'),
+          metadata: { messageId: 'db-reply' },
+        },
+        { id: 'msg_b', role: 'assistant', created_at: 2, content: text('second') },
+      ],
+      conversationId: 'convo-123',
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toHaveLength(2);
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith('msg_b', {
+      thread_id: 'thread_1',
+      metadata: { messageId: 'db-reply' },
+    });
+  });
+});
+
+describe('processMessages annotations', () => {
+  it('resolves a citation to a file an earlier message already attached', async () => {
+    const retrieveAndProcessFile = jest.fn().mockResolvedValue({ filename: 'doc.txt' });
+    const client = { processedFileIds: new Set<string>(['file-doc']) };
+    const messages = [
+      {
+        id: 'msg_1',
+        role: 'assistant',
+        created_at: 1,
+        content: [
+          {
+            type: 'text',
+            text: {
+              value: 'See [0]',
+              annotations: [
+                {
+                  type: 'file_citation',
+                  text: '[0]',
+                  start_index: 4,
+                  end_index: 7,
+                  file_citation: { file_id: 'file-doc' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ] as unknown as ThreadMessage[];
+
+    const result = await processMessages({ retrieveAndProcessFile } as never, {
+      openai: {},
+      client,
+      messages,
+    });
+
+    expect(result.text).toBe('See ^1^\n\n^1.^ doc.txt');
+    expect(result.messages[0].files).toEqual([]);
+  });
+});

@@ -175,7 +175,11 @@ export async function syncMessages(
           /* Aggregate consecutive assistant messages */
           lastMessage.content = [...(lastMessage.content ?? []), ...apiMessage.content];
           lastMessage.files = [...(lastMessage.files ?? []), ...(apiMessage.files ?? [])];
-          (lastMessage.aggregateMessages as { id: string }[]).push({ id: apiMessage.id });
+          /* A row read back from the database carries no aggregation list of its own */
+          lastMessage.aggregateMessages = [
+            ...(lastMessage.aggregateMessages ?? []),
+            { id: apiMessage.id },
+          ];
         } else {
           const newMessage: SyncedMessage = {
             thread_id,
@@ -418,16 +422,14 @@ export async function processMessages<TOpenAI, TClient extends ThreadRunClient>(
             let replacementText = '';
 
             try {
-              if (alreadyProcessed) {
-                file = await deps.retrieveAndProcessFile({
-                  openai,
-                  client,
-                  file_id,
-                  unknownType: true,
-                });
-              } else if (type === AnnotationTypes.FILE_PATH) {
-                const basename = path.basename(annotation.text);
-                file = await deps.retrieveAndProcessFile({ openai, client, file_id, basename });
+              /* A file an earlier message already attached is only looked up again, but its
+                 path or citation still resolves in this text. */
+              if (type === AnnotationTypes.FILE_PATH) {
+                file = await deps.retrieveAndProcessFile(
+                  alreadyProcessed
+                    ? { openai, client, file_id, unknownType: true }
+                    : { openai, client, file_id, basename: path.basename(annotation.text) },
+                );
                 replacementText = (file as RetrievedFile).filepath as string;
               } else if (type === AnnotationTypes.FILE_CITATION && file_id) {
                 file = await deps.retrieveAndProcessFile({
@@ -442,6 +444,13 @@ export async function processMessages<TOpenAI, TClient extends ThreadRunClient>(
                   }
                   replacementText = `${uniqueCitationStart}${sources.get(file.filename)}${uniqueCitationEnd}`;
                 }
+              } else if (alreadyProcessed) {
+                file = await deps.retrieveAndProcessFile({
+                  openai,
+                  client,
+                  file_id,
+                  unknownType: true,
+                });
               }
 
               if (file && replacementText) {
