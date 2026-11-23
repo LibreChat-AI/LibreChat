@@ -120,27 +120,9 @@ jest.mock('@librechat/api', () => {
       return UPLOAD_EXTRACTED_TEXT_PLANS.documentParser;
     },
   );
-  const withStoredUploadCleanup = async (
-    { stored, resolveDeleteFile, recordExists, req, trackWrite, revert },
-    next,
-  ) => {
-    let writeBegun = trackWrite !== true;
-    try {
-      return await next(() => {
-        writeBegun = true;
-      });
-    } catch (error) {
-      try {
-        if (!writeBegun || !(await recordExists(stored))) {
-          await revert?.().catch(() => {});
-          await resolveDeleteFile()?.(req, stored);
-        }
-      } catch {
-        /* the helper logs cleanup failures; the original error wins */
-      }
-      throw error;
-    }
-  };
+  const { withStoredUploadCleanup, recordAgentUpload } = jest.requireActual(
+    '../../../../packages/api/src/files/orphan',
+  );
   return {
     ...jest.requireActual('../../../../packages/api/src/files/storage'),
     ...jest.requireActual('../../../../packages/api/src/files/operations'),
@@ -196,25 +178,7 @@ jest.mock('@librechat/api', () => {
         await Promise.all(deleters.map((deleteFile) => deleteFile?.(req, file)));
       },
     withStoredUploadCleanup,
-    /** Mirrors the package helper; its own cases live in packages/api. */
-    recordAgentUpload: ({ cleanup, link, addLink, removeLinks, createRecord }) => {
-      const revert = async () => {
-        if (link != null) {
-          const { agent_id, tool_resource, file_id } = link;
-          await removeLinks({ agent_id, files: [{ tool_resource, file_id }] });
-        }
-      };
-      return withStoredUploadCleanup(
-        { ...cleanup, trackWrite: true, revert },
-        async (beginWrite) => {
-          if (link != null) {
-            await addLink(link);
-          }
-          beginWrite();
-          return createRecord();
-        },
-      );
-    },
+    recordAgentUpload,
     resolveStoredUploadTarget: ({ isAssistantUpload, stored, convertedImage, storageMetadata }) => {
       if (!isAssistantUpload) {
         return { source: stored.source, stored: { ...stored, ...storageMetadata } };

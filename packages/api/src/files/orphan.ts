@@ -1,6 +1,6 @@
 import { FileSources } from 'librechat-data-provider';
 
-import { getSafeErrorMetadata } from '~/utils/errors';
+import { getSafeErrorMetadata } from '../utils/errors';
 
 export type StoredUploadRef = {
   file_id: string;
