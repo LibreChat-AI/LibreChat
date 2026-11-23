@@ -457,7 +457,12 @@ jobs:
             --reserve "$E2E_SHARD_RESERVE" \
             --skip "$E2E_SKIP" \
             --out e2e/.generated/shard-tests.txt
-          npx playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt
+          # Skips or the reservation can leave a shard no files: the plan warns and writes an
+          # empty list, which Playwright would fail with "No tests found". An empty suite
+          # listing still fails, in the plan itself.
+          if [ -s e2e/.generated/shard-tests.txt ]; then
+            npx playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt
+          fi
 
       - name: Run Redis stream transport e2e
         if: matrix.suite == 'transport'
