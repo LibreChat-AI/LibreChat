@@ -1966,6 +1966,8 @@
   "com_ui_enabled": "Enabled",
   "com_ui_endpoint": "Endpoint",
   "com_ui_endpoint_filter_limit": "Endpoint limit reached ({{count}})",
+  "com_ui_endpoint_filter_load_error": "Couldn't load endpoints",
+  "com_ui_endpoint_filter_loading": "Loading endpoints…",
   "com_ui_enter": "Enter",
   "com_ui_enter_api_key": "Enter API Key",
   "com_ui_enter_api_key_optional": "Enter API Key (optional)",
