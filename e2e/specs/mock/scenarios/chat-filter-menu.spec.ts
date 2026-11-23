@@ -5,6 +5,7 @@ import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   mockReply,
+  modelSelectorTrigger,
   selectMockEndpoint,
   sendMessage,
 } from '../helpers';
@@ -455,8 +456,20 @@ test.describe('chat list properties menu', () => {
     await expect(endpoints.first()).toBeVisible();
     await expect(status).toHaveCount(0);
     await expect(retry).toHaveCount(0);
+
+    /* The new chat was waiting on the same endpoints and starts once they land, which
+     * rebuilds the shell, so the menu is opened afresh before an endpoint is chosen. A
+     * phone's drawer covers the header that names the chat's model. */
+    if (!isPhone(page)) {
+      await expect(modelSelectorTrigger(page)).not.toContainText('Select a model');
+    }
+    await closeMenus(page);
+    await openFilterSubmenu(page);
+    await page.getByRole('menuitem', { name: /^Endpoint\b/ }).click();
     await endpoints.first().click();
     await expect(endpoints.first()).toHaveAttribute('aria-checked', 'true');
+    await closeMenus(page);
+    await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 1');
   });
 
   test('a chat sent while a server-only facet is active is not added to the filtered list @scenario:live-chat-respects-active-facet', async ({
