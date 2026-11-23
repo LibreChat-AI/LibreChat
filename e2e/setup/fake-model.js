@@ -49,6 +49,12 @@ const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
 const LONG_THINK_REPLY_MARKER = 'E2E_LONG_THINK_REPLY:';
 const LONG_THINK_WORDS = 400;
 const SLOW_THINK_REPLY_MARKER = 'E2E_SLOW_THINK_REPLY:';
+/** `E2E_OUTPUT_BUDGET:<label>`: a Gemini call that spends its whole output budget on reasoning,
+ *  ending with the raw `MAX_TOKENS` finish reason and no answer text. */
+const OUTPUT_BUDGET_MARKER = 'E2E_OUTPUT_BUDGET:';
+/** `E2E_OUTPUT_BUDGET_PARTIAL:<label>`: the first call is cut off at `MAX_TOKENS` mid-answer;
+ *  a later call for the same label (a Continue) finishes the answer. */
+const OUTPUT_BUDGET_PARTIAL_MARKER = 'E2E_OUTPUT_BUDGET_PARTIAL:';
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
@@ -251,6 +257,7 @@ const SKILL_DESCRIPTION =
 const EDITED_SKILL_DESCRIPTION =
   'Use this edited skill to verify LibreChat skill file authoring in mock end-to-end tests.';
 const countedReplies = new Map();
+const outputBudgetPartialReplies = new Map();
 const slowCountedReplies = new Map();
 
 function messageType(message) {
@@ -882,6 +889,28 @@ function replyResponses(text) {
     };
   }
 
+  const budgetPartialName = getMarkerValue(text, OUTPUT_BUDGET_PARTIAL_MARKER);
+  if (budgetPartialName) {
+    const count = (outputBudgetPartialReplies.get(budgetPartialName) ?? 0) + 1;
+    outputBudgetPartialReplies.set(budgetPartialName, count);
+    return count === 1
+      ? {
+          responses: [`E2E partial answer ${budgetPartialName}`],
+          reasoning: `E2E reasoning ${budgetPartialName}`,
+          finishReason: 'MAX_TOKENS',
+        }
+      : { responses: [`E2E rest of the answer ${budgetPartialName}`] };
+  }
+
+  const budgetName = getMarkerValue(text, OUTPUT_BUDGET_MARKER);
+  if (budgetName) {
+    return {
+      responses: [''],
+      reasoning: `E2E reasoning ${budgetName}`,
+      finishReason: 'MAX_TOKENS',
+    };
+  }
+
   const thinkName = getMarkerValue(text, THINK_REPLY_MARKER);
   if (thinkName) {
     /** The `<think>` tags are parsed downstream by the agents stream pipeline, so this
@@ -997,9 +1026,23 @@ function replyResponses(text) {
  * instructions included — since the context snapshot calibrates against it.
  */
 class UsageEmittingFakeChatModel extends FakeChatModel {
-  constructor({ graph, resolveInvocation, resolveOnStream, sleep, ...options }) {
+  constructor({
+    graph,
+    resolveInvocation,
+    resolveOnStream,
+    sleep,
+    reasoning,
+    finishReason,
+    ...options
+  }) {
     super({ ...options, sleep });
     this.graph = graph;
+    /** Thoughts streamed ahead of the answer as a `reasoning` content block, the shape Gemini's
+     *  thought parts take on Vertex AI, so they stay out of the call's answer text. */
+    this.reasoning = reasoning;
+    /** A provider's raw finish reason, carried as generation info on the final chunk the way
+     *  Gemini's stream adapter reports it. */
+    this.finishReason = finishReason;
     this.resolveInvocation = resolveInvocation;
     this.resolveOnStream = resolveOnStream;
     this.streamSleep = sleep ?? CHUNK_DELAY_MS;
@@ -1101,6 +1144,14 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       ? null
       : await this.resolveOnStream?.(messages, options, runManager);
     let chunkStream;
+    if (this.reasoning) {
+      yield new ChatGenerationChunk({
+        text: '',
+        message: new AIMessageChunk({
+          content: [{ type: 'reasoning', reasoning: this.reasoning }],
+        }),
+      });
+    }
     if (scriptedResponse) {
       chunkStream = this.streamScriptedResponseChunks({
         response: scriptedResponse.response ?? '',
@@ -1148,6 +1199,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
         content: '',
         ...cacheUsageFields(messages, input_tokens, output_tokens),
       }),
+      ...(this.finishReason != null && { generationInfo: { finishReason: this.finishReason } }),
     });
   }
 }
@@ -1156,6 +1208,8 @@ function overrideModel({
   graph,
   responses,
   sleep,
+  reasoning,
+  finishReason,
   toolCalls,
   thrownError,
   overrideSubagentModel,
@@ -1189,6 +1243,8 @@ function overrideModel({
     const model = new UsageEmittingFakeChatModel({
       graph,
       responses,
+      reasoning,
+      finishReason,
       sleep: sleep ?? CHUNK_DELAY_MS,
       emitCustomEvent: true,
       toolCalls,
@@ -4244,6 +4300,8 @@ module.exports = function fakeModelHook(run, context) {
   const {
     responses,
     sleep,
+    reasoning,
+    finishReason,
     toolCalls,
     thrownError,
     overrideSubagentModel,
@@ -4262,6 +4320,8 @@ module.exports = function fakeModelHook(run, context) {
     graph,
     responses,
     sleep,
+    reasoning,
+    finishReason,
     toolCalls,
     thrownError,
     overrideSubagentModel:
