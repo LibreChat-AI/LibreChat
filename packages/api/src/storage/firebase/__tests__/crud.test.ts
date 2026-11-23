@@ -11,13 +11,15 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('firebase/storage', () => ({
   ref: jest.fn((_storage: unknown, objectPath: string) => ({ objectPath })),
   uploadBytes: jest.fn(),
+  deleteObject: jest.fn(),
   getDownloadURL: jest.fn(
     async ({ objectPath }: { objectPath: string }) =>
       `https://firebasestorage.googleapis.com/${objectPath}`,
   ),
 }));
 
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { logger } from '@librechat/data-schemas';
+import { ref, uploadBytes, deleteObject, getDownloadURL } from 'firebase/storage';
 import { createFirebaseUploads } from '../crud';
 
 const storage = { app: { name: 'test' } } as unknown as FirebaseStorage;
@@ -77,7 +79,24 @@ describe('uploadFileToFirebase', () => {
     await expect(
       uploadFileToFirebase({ req, file, file_id: 'file-1', basePath: 'uploads' }),
     ).rejects.toThrow('Firebase returned no download URL');
+    expect(deleteObject).toHaveBeenCalledWith({
+      objectPath: 'uploads/user-1/file-1__report.pdf',
+    });
     await expect(fs.promises.access(file.path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('still surfaces the missing URL when deleting the stored object fails', async () => {
+    (getDownloadURL as jest.Mock).mockRejectedValueOnce(new Error('url lookup failed'));
+    (deleteObject as jest.Mock).mockRejectedValueOnce(new Error('delete denied'));
+
+    await expect(
+      uploadFileToFirebase({ req, file, file_id: 'file-1', basePath: 'uploads' }),
+    ).rejects.toThrow('Firebase returned no download URL');
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[deleteFirebaseObject] Could not delete the unreferenced Firebase object',
+      expect.any(Object),
+    );
+    expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('delete denied');
   });
 
   it('rejects without touching Firebase when storage is not configured', async () => {
@@ -87,5 +106,35 @@ describe('uploadFileToFirebase', () => {
       uploads.uploadFileToFirebase({ req, file, file_id: 'file-1', basePath: 'uploads' }),
     ).rejects.toThrow('Firebase is not initialized');
     expect(uploadBytes).not.toHaveBeenCalled();
+  });
+
+  it('does not delete anything when the upload itself fails', async () => {
+    (uploadBytes as jest.Mock).mockRejectedValueOnce(new Error('upload failed'));
+
+    await expect(uploadFileToFirebase({ req, file, file_id: 'file-1' })).rejects.toThrow(
+      'upload failed',
+    );
+    expect(deleteObject).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteFirebaseObject', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('deletes the object at basePath/userId/fileName', async () => {
+    const { deleteFirebaseObject } = createFirebaseUploads({ getStorage: () => storage });
+
+    await deleteFirebaseObject({ userId: 'user-1', fileName: 'a.png', basePath: 'images' });
+
+    expect(ref).toHaveBeenCalledWith(storage, 'images/user-1/a.png');
+    expect(deleteObject).toHaveBeenCalledWith({ objectPath: 'images/user-1/a.png' });
+  });
+
+  it('does nothing when Firebase is not configured', async () => {
+    const { deleteFirebaseObject } = createFirebaseUploads({ getStorage: () => null });
+
+    await deleteFirebaseObject({ userId: 'user-1', fileName: 'a.png' });
+
+    expect(deleteObject).not.toHaveBeenCalled();
   });
 });

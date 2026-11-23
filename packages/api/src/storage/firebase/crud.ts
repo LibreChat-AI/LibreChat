@@ -1,9 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from '@librechat/data-schemas';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, deleteObject, getDownloadURL } from 'firebase/storage';
 import type { FirebaseStorage } from 'firebase/storage';
 import type { SaveBufferParams, UploadFileParams, UploadResult } from '~/storage/types';
+import type { StoredObjectRef } from '~/storage/discard';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 const defaultBasePath = 'images';
 
@@ -16,6 +18,7 @@ export interface FirebaseUploads {
   getFirebaseURL(params: { fileName: string; basePath?: string }): Promise<string | null>;
   saveBufferToFirebase(params: SaveBufferParams): Promise<string | null>;
   uploadFileToFirebase(params: UploadFileParams): Promise<UploadResult>;
+  deleteFirebaseObject(params: StoredObjectRef): Promise<void>;
 }
 
 /** Builds the Firebase upload helpers around a caller-supplied storage resolver. */
@@ -66,6 +69,29 @@ export function createFirebaseUploads({ getStorage }: FirebaseUploadDeps): Fireb
   }
 
   /**
+   * Best-effort delete of `${basePath}/${userId}/${fileName}`, for an object that was stored
+   * but has no download URL (so no file record can point at it). Failures are logged, never thrown.
+   */
+  async function deleteFirebaseObject({
+    userId,
+    fileName,
+    basePath = defaultBasePath,
+  }: StoredObjectRef): Promise<void> {
+    const storage = getStorage();
+    if (!storage) {
+      return;
+    }
+
+    try {
+      await deleteObject(ref(storage, `${basePath}/${userId}/${fileName}`));
+    } catch (error) {
+      logger.warn('[deleteFirebaseObject] Could not delete the unreferenced Firebase object', {
+        ...getSafeErrorMetadata(error),
+      });
+    }
+  }
+
+  /**
    * Uploads a multer temp file under the caller's `basePath` (`images` when omitted).
    * On failure the temp file is removed and the error is rethrown.
    */
@@ -92,6 +118,7 @@ export function createFirebaseUploads({ getStorage }: FirebaseUploadDeps): Fireb
         basePath,
       });
       if (!downloadURL) {
+        await deleteFirebaseObject({ userId, fileName, basePath });
         throw new Error('[uploadFileToFirebase] Firebase returned no download URL');
       }
       return { filepath: downloadURL, bytes };
@@ -111,5 +138,5 @@ export function createFirebaseUploads({ getStorage }: FirebaseUploadDeps): Fireb
     }
   }
 
-  return { getFirebaseURL, saveBufferToFirebase, uploadFileToFirebase };
+  return { getFirebaseURL, saveBufferToFirebase, uploadFileToFirebase, deleteFirebaseObject };
 }

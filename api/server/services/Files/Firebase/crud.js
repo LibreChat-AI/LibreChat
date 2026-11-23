@@ -17,9 +17,8 @@ const {
 const { ref, uploadBytes, deleteObject } = require('firebase/storage');
 const { getBufferMetadata } = require('~/server/utils');
 
-const { getFirebaseURL, saveBufferToFirebase, uploadFileToFirebase } = createFirebaseUploads({
-  getStorage: getFirebaseStorage,
-});
+const { getFirebaseURL, saveBufferToFirebase, uploadFileToFirebase, deleteFirebaseObject } =
+  createFirebaseUploads({ getStorage: getFirebaseStorage });
 
 /**
  * Deletes a file from Firebase Storage.
@@ -157,5 +156,6 @@ module.exports = {
   deleteFirebaseFile,
   uploadFileToFirebase,
   saveBufferToFirebase,
+  deleteFirebaseObject,
   getFirebaseFileStream,
 };
