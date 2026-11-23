@@ -52,6 +52,7 @@ const {
   createRecordExists,
   createStoredUploadDelete,
   withStoredUploadCleanup,
+  recordAgentUpload,
   resolveStoredUploadTarget,
   startExpiredFileSweep: startExpiredFileSweepWithDeps,
   resolveToolRoleGrants,
@@ -922,6 +923,10 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     messageAttachment,
     tool_resource: effectiveToolResource,
   });
+  const agentFileLink =
+    !messageAttachment && effectiveToolResource
+      ? { file_id, agent_id, tool_resource: effectiveToolResource, updatingUserId: req?.user?.id }
+      : undefined;
 
   const isImage = file.mimetype.startsWith('image');
   let fileInfoMetadata;
@@ -1066,21 +1071,13 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
         ...retentionExpiry,
       };
 
-      const result = await withStoredUploadCleanup(
-        { ...storedCleanup, trackWrite: true },
-        async (beginWrite) => {
-          if (!messageAttachment && effectiveToolResource) {
-            await db.addAgentResourceFile({
-              file_id,
-              agent_id,
-              tool_resource: effectiveToolResource,
-              updatingUserId: req?.user?.id,
-            });
-          }
-          beginWrite();
-          return db.createFile(fileInfo, true);
-        },
-      );
+      const result = await recordAgentUpload({
+        cleanup: storedCleanup,
+        link: agentFileLink,
+        addLink: db.addAgentResourceFile,
+        removeLinks: db.removeAgentResourceFiles,
+        createRecord: () => db.createFile(fileInfo, true),
+      });
       sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
     };
 
@@ -1453,21 +1450,13 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     ...retentionExpiry,
   };
 
-  const result = await withStoredUploadCleanup(
-    { ...storedCleanup, trackWrite: true },
-    async (beginWrite) => {
-      if (!messageAttachment && effectiveToolResource) {
-        await db.addAgentResourceFile({
-          file_id,
-          agent_id,
-          tool_resource: effectiveToolResource,
-          updatingUserId: req?.user?.id,
-        });
-      }
-      beginWrite();
-      return db.createFile(fileInfo, true);
-    },
-  );
+  const result = await recordAgentUpload({
+    cleanup: storedCleanup,
+    link: agentFileLink,
+    addLink: db.addAgentResourceFile,
+    removeLinks: db.removeAgentResourceFiles,
+    createRecord: () => db.createFile(fileInfo, true),
+  });
 
   sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
 };
