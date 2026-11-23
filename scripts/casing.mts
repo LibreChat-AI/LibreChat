@@ -29,11 +29,14 @@ function namesOf(path: string): string[] {
 
 /**
  * Returns one line per collision a `changed` path takes part in, as `a <-> b`, sorted.
- * `tracked` is every path in the tree and should already include the changed paths.
+ * `tracked` is every path in the index. A changed path that the index does not hold with the
+ * same spelling is ignored: a deleted path, or the old spelling of a case-only rename, which
+ * still opens the renamed file on a file system that ignores case.
  */
 export function findCasingCollisions(tracked: string[], changed: string[]): string[] {
+  const index = new Set(tracked);
   const spellings = new Map<string, Set<string>>();
-  for (const path of new Set([...tracked, ...changed])) {
+  for (const path of index) {
     for (const name of namesOf(path)) {
       const key = name.toLowerCase();
       const set = spellings.get(key) ?? new Set<string>();
@@ -44,6 +47,7 @@ export function findCasingCollisions(tracked: string[], changed: string[]): stri
 
   const collisions = new Set<string>();
   for (const path of changed) {
+    if (!index.has(path)) continue;
     for (const name of namesOf(path)) {
       const set = spellings.get(name.toLowerCase());
       if (set && set.size > 1) collisions.add([...set].sort().join(' <-> '));

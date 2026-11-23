@@ -1844,9 +1844,13 @@ function checkCssColors(): CheckOutcome {
 
 /** Changed paths that are one path on macOS or Windows, where the file system ignores case. */
 function checkCasing(context: CheckContext): CheckOutcome {
-  const changed = context.files.filter((file) => existsSync(resolve(ROOT, file)));
+  const tracked = trackedPaths(ROOT);
+  const index = new Set(tracked);
+  /** Exact index spellings, not `existsSync`: on macOS the old spelling of a case-only rename
+   *  still opens the renamed file. */
+  const changed = context.files.filter((file) => index.has(file));
   if (changed.length === 0) return { ok: true, skipped: 'no added or changed paths' };
-  const collisions = findCasingCollisions(trackedPaths(ROOT), changed);
+  const collisions = findCasingCollisions(tracked, changed);
   if (collisions.length === 0) return { ok: true };
   return {
     ok: false,

@@ -43,6 +43,22 @@ test('accepts names that differ by more than case', () => {
   assert.deepEqual(findCasingCollisions(tracked, tracked), []);
 });
 
+test('accepts a case-only rename, whose old spelling the index no longer holds', () => {
+  assert.deepEqual(findCasingCollisions(['a/Foo.ts'], ['a/foo.ts', 'a/Foo.ts']), []);
+});
+
+test('accepts a case-only rename of a directory', () => {
+  const tracked = [`${dir}/Files.tsx`, `${dir}/rows.ts`].map((path) =>
+    path.replace('/Session/', '/session/'),
+  );
+  const changed = [`${dir}/Files.tsx`, `${dir}/rows.ts`, ...tracked];
+  assert.deepEqual(findCasingCollisions(tracked, changed), []);
+});
+
+test('ignores a deleted path that would have collided', () => {
+  assert.deepEqual(findCasingCollisions(['a/Files.tsx'], ['a/files.ts']), []);
+});
+
 test('leaves a collision on the base branch to the change that touches it', () => {
   const tracked = ['a/Files.tsx', 'a/files.ts', 'b/Other.tsx'];
   assert.deepEqual(findCasingCollisions(tracked, ['b/Other.tsx']), []);
