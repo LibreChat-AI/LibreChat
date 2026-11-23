@@ -30,6 +30,7 @@ const {
   clearToolApprovalHooks,
   getPluginHookSource,
   setPluginHookSource,
+  ATTACHMENT_ONLY_TEXT,
 } = require('@librechat/api');
 const BaseClient = require('~/app/clients/BaseClient');
 const AgentClient = require('./client');
@@ -5866,6 +5867,47 @@ describe('AgentClient - titleConvo', () => {
         'new-user': 30,
       });
       expect(built.prompt).toHaveLength(3);
+    });
+
+    it.each([
+      ['the endpoint does not resend files', { resendFiles: false }],
+      ['every file of the turn is left out', { excludedFiles: ['upload-1'] }],
+    ])('keeps the stand-in for an attachment-only turn when %s', async (_case, fileOptions) => {
+      Object.assign(client.options, fileOptions);
+      const messages = [
+        {
+          messageId: 'upload-turn',
+          parentMessageId: Constants.NO_PARENT,
+          text: '',
+          isCreatedByUser: true,
+          files: [{ file_id: 'upload-1', filename: 'report.xlsx' }],
+        },
+        {
+          messageId: 'upload-answer',
+          parentMessageId: 'upload-turn',
+          text: 'The sheet lists three regions.',
+          isCreatedByUser: false,
+        },
+        {
+          messageId: 'follow-up',
+          parentMessageId: 'upload-answer',
+          text: 'Which region grew most?',
+          isCreatedByUser: true,
+        },
+      ];
+
+      const built = await client.buildMessages(
+        BaseClient.prototype.getModelBoundStoredMessages.call(client, messages),
+        'follow-up',
+        {},
+      );
+
+      expect(built.prompt.map((message) => message.content)).toEqual([
+        ATTACHMENT_ONLY_TEXT,
+        'The sheet lists three regions.',
+        'Which region grew most?',
+      ]);
+      expect(messages[0].text).toBe('');
     });
 
     it('loads RAG, memory, attachment, and MCP context without serial waits', async () => {
