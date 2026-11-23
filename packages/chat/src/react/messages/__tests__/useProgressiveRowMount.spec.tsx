@@ -509,6 +509,216 @@ describe('row gates', () => {
     });
   });
 
+  /**
+   * Chromium keeps a scroll position in whole pixels, and rows are not whole pixels tall.
+   * Beside a reply in flight a step lands on every frame, so whatever each one leaves out of
+   * the position adds up: the row a reader is on sinks a little with every step.
+   */
+  describe('holding the reader to the pixel over many steps', () => {
+    /** Four of these to a step: 100.375px, which no scroll position can move by. */
+    const ROW = 25.09375;
+    const START = 5000;
+    /** Rows that are some other height, by depth. */
+    const heights = new Map<number, number>();
+    let container: HTMLDivElement;
+    let rect: jest.SpyInstance;
+    let top: number;
+    /** How the browser turns what it is asked for into a position it can hold. */
+    let snap: (value: number) => number;
+    /** The end of the scroll range. */
+    let limit: number;
+
+    beforeEach(() => {
+      heights.clear();
+      top = START;
+      snap = Math.round;
+      limit = Number.POSITIVE_INFINITY;
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      Object.defineProperty(container, 'scrollTop', {
+        get: () => top,
+        set: (value: number) => {
+          top = Math.min(limit, Math.max(0, snap(value)));
+        },
+        configurable: true,
+      });
+      /** Each row sits below the rows mounted above it. */
+      rect = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+        this: Element,
+      ) {
+        let offset = 100;
+        for (const row of Array.from(container.getElementsByClassName('message-render'))) {
+          if (row === this) {
+            break;
+          }
+          offset += heights.get(Number((row as HTMLElement).dataset.depth)) ?? ROW;
+        }
+        return { top: offset - top } as DOMRect;
+      });
+    });
+
+    afterEach(() => {
+      rect.mockRestore();
+      container.remove();
+    });
+
+    /** Mounts taller than it stays, as a long user turn does: clamped in a layout effect. */
+    function Settling({ depth, to }: { depth: number; to: number }) {
+      const [settled, setSettled] = React.useState(false);
+      React.useLayoutEffect(() => setSettled(true), []);
+      heights.set(depth, settled ? to : to + 500);
+      return null;
+    }
+    const Message = React.memo(function Message({
+      depth,
+      settles,
+    }: {
+      depth: number;
+      settles?: number;
+    }) {
+      if (!useRowMounted(depth)) {
+        return null;
+      }
+      return (
+        <div className="message-render" data-depth={depth}>
+          {settles == null ? null : <Settling depth={depth} to={settles} />}
+        </div>
+      );
+    });
+    function Reading({
+      conversationId = 'convo-a',
+      settling,
+    }: {
+      conversationId?: string;
+      /** The depth of a row that settles to another height, and the height. */
+      settling?: [number, number];
+    }) {
+      const [gates] = React.useState(createRowGates);
+      const ref = React.useRef(container);
+      const mountWindow = useProgressiveRowMount({
+        tailDepth: 59,
+        anchorBottom: true,
+        isSubmitting: true,
+        conversationId,
+        scrollableRef: ref,
+        gates,
+      });
+      return (
+        <RowMountProvider key={conversationId} mountWindow={mountWindow} gates={gates}>
+          {Array.from({ length: 60 }, (_, depth) => (
+            <Message
+              key={depth}
+              depth={depth}
+              settles={settling?.[0] === depth ? settling[1] : undefined}
+            />
+          ))}
+        </RowMountProvider>
+      );
+    }
+
+    /** One step of four rows, and the microtask after its commit. */
+    const mountStep = () =>
+      act(async () => {
+        const pending = frames.length;
+        for (let index = 0; index < pending; index += 1) {
+          const frame = frames[index];
+          frames[index] = undefined;
+          frame?.(index);
+        }
+      });
+    const rows = () => container.getElementsByClassName('message-render');
+    /** Where the row the reader is on sits on their screen: the thread's last. */
+    const reading = () => rows()[rows().length - 1].getBoundingClientRect().top;
+
+    it('keeps the row a reader is on where it was, though no step is a whole number of pixels', async () => {
+      render(<Reading />, { container });
+      const place = reading();
+      for (let step = 1; step <= 11; step += 1) {
+        await mountStep();
+        expect(rows()).toHaveLength(16 + step * 4);
+        /** Never further off than the half pixel a rounded position can be. */
+        expect(Math.abs(reading() - place)).toBeLessThanOrEqual(0.5);
+      }
+      /** Every step's 0.375px is in the position: 44 rows are 1104.125px. */
+      expect(top).toBe(START + 1104);
+    });
+
+    it('does the same where the browser drops the part of a pixel instead of rounding', async () => {
+      snap = Math.floor;
+      render(<Reading />, { container });
+      const place = reading();
+      for (let step = 1; step <= 11; step += 1) {
+        await mountStep();
+        expect(Math.abs(reading() - place)).toBeLessThan(1);
+      }
+      expect(top).toBe(START + 1104);
+    });
+
+    it('holds a reader whose position a browser can keep exactly, as before', async () => {
+      snap = (value) => value;
+      render(<Reading />, { container });
+      const place = reading();
+      for (let step = 1; step <= 11; step += 1) {
+        await mountStep();
+        expect(reading()).toBe(place);
+      }
+    });
+
+    it('starts again from the position a reader scrolls to', async () => {
+      render(<Reading />, { container });
+      await mountStep();
+      expect(top).toBe(START + 100);
+
+      /** The reader moves: what the last step left out belonged to where they were. */
+      top = 4000;
+      await mountStep();
+      expect(top).toBe(4100);
+
+      /** And from there on the steps add up again: two are 200.75px. */
+      await mountStep();
+      expect(top).toBe(4201);
+    });
+
+    it('counts a row that settles to another height after its step at the height it settled to', async () => {
+      /** In the second step, 500px taller as it mounts than the 40.6875px it stays. */
+      render(<Reading settling={[38, 40.6875]} />, { container });
+      const place = reading();
+      for (let step = 1; step <= 11; step += 1) {
+        await mountStep();
+        expect(Math.abs(reading() - place)).toBeLessThanOrEqual(0.5);
+      }
+      /** 43 rows and the settled one: 1119.71875px. */
+      expect(top).toBe(START + 1120);
+    });
+
+    it('makes up nothing a later step cannot have been short of: the end of the scroll range', async () => {
+      /** The thread ends 50px on, and the browser stops the position there. */
+      limit = START + 50;
+      render(<Reading />, { container });
+      await mountStep();
+      expect(top).toBe(START + 50);
+
+      /** With room again, the next step moves by its own rows and no more. */
+      limit = Number.POSITIVE_INFINITY;
+      await mountStep();
+      expect(top).toBe(START + 150);
+    });
+
+    it('carries nothing from one conversation into the next', async () => {
+      const { rerender } = render(<Reading />, { container });
+      await mountStep();
+      expect(top).toBe(START + 100);
+
+      /** The next thread opens on the same scroller, which happens to be where the last
+       *  step left it. */
+      rerender(<Reading conversationId="convo-b" />);
+      expect(rows()).toHaveLength(16);
+      await mountStep();
+      expect(rows()).toHaveLength(20);
+      expect(top).toBe(START + 200);
+    });
+  });
+
   it('follows the window a commit later when nothing publishes to the gates', () => {
     const tree = (mountWindow: RowMountWindow) => (
       <RowMountProvider mountWindow={mountWindow}>
