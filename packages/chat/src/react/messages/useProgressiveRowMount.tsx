@@ -238,6 +238,9 @@ export function useProgressiveRowMount({
     documentOffset: number;
     /** Whether the mount is the one holding the reader for this step (`pinsByHand`). */
     byHand: boolean;
+    /** Where the anchor sat on the reader's screen, when the commit follows its capture within
+     *  the same task (`finish`): the reader cannot have scrolled between the two. */
+    restingTop: number | null;
   } | null>(null);
   /** The thread's height before the step in flight, while one is. */
   const heightRef = useRef<number | null>(null);
@@ -294,7 +297,7 @@ export function useProgressiveRowMount({
   }, [isSubmitting, mountWindow, moveTo]);
 
   const captureAnchor = useCallback(
-    (byHand = pinsByHand(isSubmitting)) => {
+    (finishing = false) => {
       const container = scrollableRef.current;
       heightRef.current = container && anchorBottom ? container.scrollHeight : null;
       if (!container || !anchorBottom) {
@@ -304,18 +307,22 @@ export function useProgressiveRowMount({
       /** Taken even where the browser anchors: whether it will for this step is only known once
        *  the rows are in, by where the reader is then. */
       const element = container.querySelector('.message-render');
+      if (!element) {
+        anchorRef.current = null;
+        return;
+      }
+      const top = element.getBoundingClientRect().top;
       /** Document-space offset (viewport top + scrollTop): the widening commit
        *  is transition-deferred, so the user may scroll between capture and
        *  commit. User scrolling moves viewport coordinates but not document
        *  ones, so measuring here isolates the inserted-row shift and never
        *  folds the user's own movement into the correction. */
-      anchorRef.current = element
-        ? {
-            element,
-            documentOffset: element.getBoundingClientRect().top + container.scrollTop,
-            byHand,
-          }
-        : null;
+      anchorRef.current = {
+        element,
+        documentOffset: top + container.scrollTop,
+        byHand: pinsByHand(isSubmitting),
+        restingTop: finishing ? top : null,
+      };
     },
     [anchorBottom, isSubmitting, scrollableRef],
   );
@@ -364,6 +371,32 @@ export function useProgressiveRowMount({
       }
     }
     if (!captured || !container || !captured.element.isConnected) {
+      return;
+    }
+    const { element, restingTop: sat } = captured;
+    if (sat != null) {
+      /**
+       * The rest of the thread, landed in the commit that also ends the window (`finish`). The
+       * scroller's anchoring comes back on in this commit, and who holds the reader through it
+       * is not known beforehand. A browser that was anchoring all along has. One whose anchoring
+       * was off until now, beside a reply, may have (Chromium, Firefox) or may not (WebKit), and
+       * one that does not anchor never has. Pinning the reader regardless corrects twice wherever
+       * the browser did hold them, and throws them to the end of the thread. So the mount looks:
+       * any adjustment the browser makes is in by the time the row is measured here, and the row
+       * is put back where it sat only when it is not there. Again once the commit has finished,
+       * as for a step below.
+       */
+      const putBack = () => {
+        if (!element.isConnected) {
+          return;
+        }
+        const drift = element.getBoundingClientRect().top - sat;
+        if (Math.abs(drift) >= 1) {
+          container.scrollTop += drift;
+        }
+      };
+      putBack();
+      queueMicrotask(putBack);
       return;
     }
     const before = container.scrollTop;
@@ -419,12 +452,11 @@ export function useProgressiveRowMount({
     }
     /**
      * The rest of the thread lands above the reader like any step, in the commit that ends the
-     * window. The thread's scroller anchors again from that commit on, so where the browser
-     * anchors it is the one holding the reader for these rows, beside a reply included: pinning
-     * them by hand as well corrected twice and left the reader at the end of the thread.
+     * window. Called inside `flushSync`, so that commit follows the capture at once and the
+     * layout effect can tell whether the reader's row is still where it sat.
      */
     const finish = () => {
-      captureAnchor(!anchorsNatively());
+      captureAnchor(true);
       moveTo(null);
     };
     const thread = { finish, later: () => laterRef.current };
@@ -451,9 +483,11 @@ export async function completeProgressiveRowMounts(): Promise<void> {
   if (mounting.size === 0) {
     return;
   }
-  for (const thread of [...mounting]) {
-    thread.finish();
-  }
+  flushSync(() => {
+    for (const thread of [...mounting]) {
+      thread.finish();
+    }
+  });
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });

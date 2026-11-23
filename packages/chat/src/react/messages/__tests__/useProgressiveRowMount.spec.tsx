@@ -422,13 +422,19 @@ describe('row gates', () => {
       }
       return <div className="message-render">{depth === 20 ? <LongMessage /> : null}</div>;
     });
-    function Reading({ onInsertAbove }: { onInsertAbove?: (height: number) => void }) {
+    function Reading({
+      onInsertAbove,
+      isSubmitting = false,
+    }: {
+      onInsertAbove?: (height: number) => void;
+      isSubmitting?: boolean;
+    }) {
       const [gates] = React.useState(createRowGates);
       const ref = React.useRef(container);
       const mountWindow = useProgressiveRowMount({
         tailDepth: 59,
         anchorBottom: true,
-        isSubmitting: false,
+        isSubmitting,
         conversationId: 'convo-a',
         scrollableRef: ref,
         gates,
@@ -544,6 +550,108 @@ describe('row gates', () => {
       render(<Reading />, { container });
       await mountLongMessage();
       expect(container.scrollTop).toBe(5000 + CLAMPED);
+    });
+
+    /**
+     * `finishProgressiveRowMounts` and `completeProgressiveRowMounts` land the rest of the
+     * thread above the reader in the commit that also ends the window, which is the commit the
+     * scroller starts anchoring again in. Whether the browser holds the reader through it is
+     * not something the mount can know beforehand, so it looks: the row is put back where it
+     * sat when it is not there, and left alone when it is.
+     */
+    describe('through the commit that finishes the mount', () => {
+      afterEach(restoreCSS);
+
+      /** Every row still to come, the long message among them, and the microtask after. */
+      const finish = () =>
+        act(async () => {
+          finishProgressiveRowMounts();
+        });
+
+      const rows = () => container.getElementsByClassName('message-render').length;
+
+      /**
+       * A browser whose anchoring holds the reader: by the time anything can measure it, the
+       * scroll position has moved by what landed above them. Returns what records a position
+       * written on top of that.
+       */
+      const browserHolds = () => {
+        const write = jest.fn();
+        Object.defineProperty(container, 'scrollTop', {
+          get: () => 5000 + anchorOffset - 100,
+          set: write,
+          configurable: true,
+        });
+        return write;
+      };
+
+      it.each([false, true])(
+        'puts the reader back where the browser does not anchor (reply in flight: %s)',
+        async (isSubmitting) => {
+          browserAnchors(false);
+          render(<Reading isSubmitting={isSubmitting} />, { container });
+          expect(rows()).toBe(16);
+          await finish();
+          expect(rows()).toBe(60);
+          expect(container.scrollTop).toBe(5000 + CLAMPED);
+        },
+      );
+
+      it.each([false, true])(
+        'writes no scroll position where the browser held the reader, and says what landed above them (reply in flight: %s)',
+        async (isSubmitting) => {
+          browserAnchors(true);
+          Object.defineProperty(container, 'scrollHeight', {
+            get: () => 1000 + (rows() - 16) * 30,
+            configurable: true,
+          });
+          const write = browserHolds();
+          const added = jest.fn();
+          render(<Reading isSubmitting={isSubmitting} onInsertAbove={added} />, { container });
+          await finish();
+          expect(rows()).toBe(60);
+          expect(write).not.toHaveBeenCalled();
+          expect(added).toHaveBeenCalledTimes(1);
+          expect(added).toHaveBeenCalledWith(44 * 30);
+        },
+      );
+
+      /**
+       * WebKit beside a reply: the scroller's anchoring was off while the mount held the reader,
+       * and the browser holds nothing through the commit that turns it back on.
+       */
+      it.each([false, true])(
+        'puts the reader back where a browser that anchors did not hold them (reply in flight: %s)',
+        async (isSubmitting) => {
+          browserAnchors(true);
+          render(<Reading isSubmitting={isSubmitting} />, { container });
+          await finish();
+          expect(rows()).toBe(60);
+          expect(container.scrollTop).toBe(5000 + CLAMPED);
+        },
+      );
+
+      /** Scroll anchoring selects no anchor at the scroll origin. */
+      it.each([false, true])(
+        'puts a reader at the very top back (browser anchors: %s)',
+        async (anchors) => {
+          browserAnchors(anchors);
+          container.scrollTop = 0;
+          render(<Reading />, { container });
+          await finish();
+          expect(container.scrollTop).toBe(CLAMPED);
+        },
+      );
+
+      it('holds the reader the same way for a consumer that waits for the paint', async () => {
+        browserAnchors(true);
+        render(<Reading isSubmitting />, { container });
+        await act(async () => {
+          void completeProgressiveRowMounts();
+        });
+        expect(rows()).toBe(60);
+        expect(container.scrollTop).toBe(5000 + CLAMPED);
+      });
     });
   });
 
