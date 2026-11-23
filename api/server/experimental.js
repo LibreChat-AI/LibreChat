@@ -102,6 +102,7 @@ const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions: updateInterfacePerms } = require('@librechat/api');
 const {
   getRoleByName,
+  getPartitionRole,
   updateAccessPermissions,
   seedDatabase,
   initializeFavorites,
@@ -572,6 +573,7 @@ if (cluster.isMaster) {
         getRoleByName,
         updateAccessPermissions,
         recordAuditEntry,
+        getPartitionRole,
       });
     });
 
