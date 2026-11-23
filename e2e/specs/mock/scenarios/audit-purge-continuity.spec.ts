@@ -86,9 +86,10 @@ test.describe('audit log retention purge', () => {
     expect(outcome.result.checkpoint).toEqual({ throughSeq: 3, prevHash: outcome.tailHash });
     expect(outcome.remaining).toEqual([
       { seq: 4, action: 'audit.purged', prevHash: outcome.tailHash },
+      { seq: 5, action: 'audit.purged', prevHash: expect.any(String) },
     ]);
     expect(outcome.unverified.ok).toBe(false);
     expect(outcome.unverified.reason).toMatch(/non-genesis/);
-    expect(outcome.verified).toMatchObject({ ok: true, range: { firstSeq: 4, lastSeq: 4 } });
+    expect(outcome.verified).toMatchObject({ ok: true, range: { firstSeq: 4, lastSeq: 5 } });
   });
 });

@@ -686,32 +686,42 @@ export function createAuditLogMethods(
       .select('seq')
       .lean<{ seq: number }>();
 
-    const purge = (deletedCount: number, throughSeq?: number): RecordAuditEntryInput => ({
+    const purge = (
+      metadata: Record<string, number>,
+      outcome?: 'failure',
+    ): RecordAuditEntryInput => ({
       action: 'audit.purged',
       severity: 'critical',
       actor: { type: 'system', name: 'audit-retention' },
       target: { type: 'audit_log' },
-      metadata: {
-        deletedCount,
-        before: options.before.toISOString(),
-        ...(throughSeq !== undefined ? { throughSeq } : {}),
-      },
+      metadata: { ...metadata, before: options.before.toISOString() },
+      ...(outcome ? { outcome } : {}),
       tenantId,
     });
 
     /**
      * A purge that empties the chain would leave its own record to start a fresh
      * chain at the genesis hash, with nothing tying it to the deleted history. So
-     * the record is written first, chained to the current tail, and only rows up
-     * to that tail are deleted: the record resumes the chain and the checkpoint
-     * below bridges the gap. Without that record the chain would restart
+     * an intent record is written first, chained to the current tail, and only
+     * rows up to that tail are deleted: the intent resumes the chain and the
+     * checkpoint below bridges the gap. Without it the chain would restart
      * unanchored, so a failed write aborts the purge instead of being skipped.
+     * The intent only states what is about to be removed; the result record
+     * written after the delete carries what actually was, so an overlapping
+     * purge or a failed delete never leaves a success claim behind.
      */
     const boundary = firstRetained?.seq ?? tail.seq + 1;
     if (!firstRetained) {
-      const pending = await AuditLog.countDocuments({ chainKey, seq: { $lt: boundary } });
-      await recordAuditEntry(purge(pending, tail.seq), { failClosed: true });
+      const pendingCount = await AuditLog.countDocuments({ chainKey, seq: { $lt: boundary } });
+      await recordAuditEntry(purge({ pendingCount, throughSeq: tail.seq }), { failClosed: true });
     }
+    const complete = async (deletedCount: number) => {
+      if (!firstRetained) {
+        await recordAuditEntry(
+          purge({ deletedCount, throughSeq: tail.seq }, deletedCount === 0 ? 'failure' : undefined),
+        );
+      }
+    };
 
     /**
      * Retention purge is the one privileged path that removes audit rows. It
@@ -723,13 +733,11 @@ export function createAuditLogMethods(
       // eslint-disable-next-line no-restricted-syntax -- privileged retention purge; append-only hooks block deleteMany, tenant scoped via chainKey
       result = await AuditLog.collection.deleteMany({ chainKey, seq: { $lt: boundary } });
     } catch (err) {
-      /** The full purge was already recorded as done; record that it failed. */
-      if (!firstRetained) {
-        await recordAuditEntry({ ...purge(0, tail.seq), outcome: 'failure' });
-      }
+      await complete(0);
       throw err;
     }
     const deletedCount = result.deletedCount ?? 0;
+    await complete(deletedCount);
 
     logger.warn('[auditLog] retention purge executed', {
       chainKey,
@@ -756,7 +764,9 @@ export function createAuditLogMethods(
      * cannot shift the boundary; a failed write is logged, not thrown. */
     if (firstRetained) {
       try {
-        await recordAuditEntry(purge(deletedCount, newFirst ? newFirst.seq - 1 : undefined));
+        await recordAuditEntry(
+          purge({ deletedCount, ...(newFirst ? { throughSeq: newFirst.seq - 1 } : {}) }),
+        );
       } catch (err) {
         logger.error('[auditLog] failed to record retention purge', {
           chainKey,
