@@ -350,6 +350,18 @@ describe('inactive history payload budget', () => {
   );
 });
 
+describe('shared-link QR configuration', () => {
+  it('defaults QR sharing to enabled', () => {
+    expect(interfaceSchema.parse(undefined).sharedLinks).toMatchObject({ qrCode: true });
+  });
+
+  it('accepts an explicit QR-sharing override', () => {
+    expect(interfaceSchema.parse({ sharedLinks: { qrCode: false } }).sharedLinks).toEqual({
+      qrCode: false,
+    });
+  });
+});
+
 describe('steer escalation confirmation timeout', () => {
   it('defaults to the existing ten-second confirmation window', () => {
     expect(interfaceSchema.parse({}).steerArmConfirmationTimeoutMs).toBe(

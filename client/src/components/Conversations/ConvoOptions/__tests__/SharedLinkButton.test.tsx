@@ -60,6 +60,7 @@ const renderActions = (overrides = {}) => {
     targetMessageId: 'message-1',
     showQR: true,
     setShowQR: jest.fn(),
+    qrCodeEnabled: true,
     sharedLink: 'http://example.test/share/share-old',
     setSharedLink: jest.fn(),
     snapshotFiles: true,
@@ -103,6 +104,14 @@ describe('SharedLinkButton', () => {
     const dialog = screen.getByRole('alertdialog');
     const confirmDelete = within(dialog).getByRole('button', { name: 'com_ui_delete_link' });
     expect(confirmDelete).toHaveClass('bg-surface-destructive');
+  });
+
+  it('omits the QR-code action when QR sharing is disabled', () => {
+    renderActions({ qrCodeEnabled: false });
+
+    expect(screen.queryByRole('button', { name: /com_ui_(hide|show)_qr/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_update_shared_link' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_delete_link' })).toBeInTheDocument();
   });
 
   it('updates the existing URL with the latest conversation state', async () => {
