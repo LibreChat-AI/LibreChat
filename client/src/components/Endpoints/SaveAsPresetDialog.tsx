@@ -69,7 +69,7 @@ const SaveAsPresetDialog = ({ open, onOpenChange, preset }: TEditPresetProps) =>
             className="flex w-full flex-col items-center gap-2"
           >
             <div className="grid w-full items-center gap-2">
-              <Label htmlFor={inputId} className="text-left text-sm font-medium">
+              <Label htmlFor={inputId} className="text-start text-sm font-medium">
                 {localize('com_endpoint_preset_name')}
               </Label>
               <Input

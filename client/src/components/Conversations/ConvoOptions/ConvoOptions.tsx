@@ -1,7 +1,9 @@
 import { useState, useId, useRef, memo, useMemo, useCallback } from 'react';
+import { useAtomValue } from 'jotai';
 import * as Ariakit from '@ariakit/react';
 import { DropdownPopup, Spinner } from '@librechat/client';
-import { Ellipsis, Archive, ArchiveRestore, Mail, Pen, Pin, Trash } from 'lucide-react';
+import { sideChatAvailableAtom } from '@librechat/chat/react';
+import { Ellipsis, Archive, ArchiveRestore, Mail, PanelRight, Pen, Pin, Trash } from 'lucide-react';
 import type { MouseEvent } from 'react';
 import type { ConvoMenuHandlers, ConvoMenuLoading } from './Controller';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
@@ -31,6 +33,7 @@ function ConvoOptions({
   isArchived = false,
   isUnseen = false,
   retainView,
+  toggleNav,
   renameHandler,
   canRename = true,
   isPopoverActive,
@@ -47,6 +50,12 @@ function ConvoOptions({
   isArchived?: boolean;
   isUnseen?: boolean;
   retainView: () => void;
+  /**
+   * Leaves the sidebar the way selecting a conversation does: on a small screen it closes the
+   * drawer and runs `afterSlide` once it is out of the way, on a wide one it runs it at once.
+   * An action that shows something in the chat's place goes through it.
+   */
+  toggleNav?: (afterSlide?: () => void) => void;
   renameHandler: (e: MouseEvent) => void;
   canRename?: boolean;
   isPopoverActive: boolean;
@@ -87,6 +96,8 @@ function ConvoOptions({
   );
   const handleArchiveClick = useCallback((e?: MouseEvent) => handlersRef.current?.archive(e), []);
   const handlePinClick = useCallback(() => handlersRef.current?.pin(), []);
+  const handleOpenBesideClick = useCallback(() => handlersRef.current?.openBeside(), []);
+  const canOpenBeside = useAtomValue(sideChatAvailableAtom);
   const handleMarkUnreadClick = useCallback(() => handlersRef.current?.markUnread(), []);
   const controller = armed ? (
     <ConvoMenuController
@@ -94,6 +105,7 @@ function ConvoOptions({
       isPinned={isPinned}
       isArchived={isArchived}
       retainView={retainView}
+      toggleNav={toggleNav}
       setIsPopoverActive={setIsPopoverActive}
       handlersRef={handlersRef}
       onLoadingChange={setLoading}
@@ -109,7 +121,7 @@ function ConvoOptions({
         icon: isPinLoading ? (
           <Spinner className="size-4" />
         ) : (
-          <Pin className="icon-sm text-text-primary mr-2" aria-hidden="true" />
+          <Pin className="icon-sm text-text-primary me-2" aria-hidden="true" />
         ),
       },
       {
@@ -118,24 +130,31 @@ function ConvoOptions({
         /* The conversation on screen is definitionally read: its own seen triggers would
            clear the flag the moment it is set. */
         show: !isActiveConvo && !isUnseen,
-        icon: <Mail className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+        icon: <Mail className="icon-sm text-text-primary me-2" aria-hidden="true" />,
+      },
+      {
+        label: localize('com_ui_side_chat_open_beside'),
+        onClick: handleOpenBesideClick,
+        /* Beside the chat on screen, so not that chat itself, and only where there is one. */
+        show: canOpenBeside && !isActiveConvo && !isArchived,
+        icon: <PanelRight className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       },
       {
         label: localize('com_ui_rename'),
         onClick: renameHandler,
         disabled: !canRename,
-        icon: <Pen className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+        icon: <Pen className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       },
       {
         label: localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive'),
         onClick: handleArchiveClick,
         hideOnClick: false,
-        icon: renderArchiveIcon(isArchiveLoading, isArchived, 'icon-sm mr-2 text-text-primary'),
+        icon: renderArchiveIcon(isArchiveLoading, isArchived, 'icon-sm me-2 text-text-primary'),
       },
       {
         label: localize('com_ui_delete'),
         onClick: deleteHandler,
-        icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+        icon: <Trash className="icon-sm text-text-primary me-2" aria-hidden="true" />,
         ariaHasPopup: 'dialog' as const,
         ariaControls: 'delete-conversation-dialog',
         /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */
@@ -158,6 +177,8 @@ function ConvoOptions({
       handlePinClick,
       handleMarkUnreadClick,
       handleArchiveClick,
+      handleOpenBesideClick,
+      canOpenBeside,
     ],
   );
 

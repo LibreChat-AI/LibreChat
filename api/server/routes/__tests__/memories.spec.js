@@ -3,9 +3,6 @@ const request = require('supertest');
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
-  Tokenizer: {
-    getTokenCount: jest.fn().mockReturnValue(5),
-  },
   generateCheckAccess: jest.fn(() => (req, res, next) => next()),
 }));
 
@@ -33,7 +30,22 @@ jest.mock('~/server/middleware', () => ({
   configMiddleware: (req, res, next) => next(),
 }));
 
+const { Tokenizer } = require('@librechat/api');
 const { createMemory, getUserMemories, setMemory } = require('~/models');
+
+/** Over the tokenizer's 4 KiB slice length, where the cold-start estimate is the byte length. */
+const LONG_VALUE = 'The user prefers concise answers about gardening. '.repeat(100).trim();
+
+/** Drops the loaded o200k encoding so the next count runs as the first one after startup. */
+function resetTokenizer() {
+  delete Tokenizer.tokenizersCache.o200k_base;
+  delete Tokenizer.loadingPromises.o200k_base;
+}
+
+async function exactTokenCount(value) {
+  const count = await Tokenizer.createExactTokenCounter('o200k_base');
+  return count(value);
+}
 
 describe('memories routes', () => {
   let app;
@@ -91,9 +103,39 @@ describe('memories routes', () => {
         expect.objectContaining({ userId: 'user-1', key: 'my_key' }),
       );
     });
+
+    it('stores the exact token count for a long value saved before the tokenizer loads', async () => {
+      resetTokenizer();
+      getUserMemories.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      createMemory.mockResolvedValue({ ok: true });
+
+      const response = await request(app)
+        .post('/api/memories')
+        .send({ key: 'long_key', value: LONG_VALUE });
+
+      expect(response.status).toBe(201);
+      const { tokenCount } = createMemory.mock.calls[0][0];
+      expect(tokenCount).toBe(await exactTokenCount(LONG_VALUE));
+      expect(tokenCount).toBeLessThan(Buffer.byteLength(LONG_VALUE, 'utf8') / 2);
+    });
   });
 
   describe('PATCH /:key', () => {
+    it('stores the exact token count for a long update saved before the tokenizer loads', async () => {
+      resetTokenizer();
+      getUserMemories
+        .mockResolvedValueOnce([{ key: 'my_key', value: 'old value', tokenCount: 5 }])
+        .mockResolvedValueOnce([]);
+      setMemory.mockResolvedValue({ ok: true });
+
+      const response = await request(app).patch('/api/memories/my_key').send({ value: LONG_VALUE });
+
+      expect(response.status).toBe(200);
+      const { tokenCount } = setMemory.mock.calls[0][0];
+      expect(tokenCount).toBe(await exactTokenCount(LONG_VALUE));
+      expect(tokenCount).toBeLessThan(Buffer.byteLength(LONG_VALUE, 'utf8') / 2);
+    });
+
     it('returns 400 when renaming to a key with invalid characters', async () => {
       const response = await request(app)
         .patch('/api/memories/my_key')

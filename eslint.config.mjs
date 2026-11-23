@@ -58,6 +58,7 @@ const chatLiteralAttributes = {
 export default [
   {
     ignores: [
+      'vendor/code/**/*',
       'client/dist/**/*',
       'client/public/**/*',
       'client/coverage/**/*',
@@ -246,6 +247,14 @@ export default [
               pattern: '^(Label|Description|DialogTitle|DialogDescription|SeriesLabel)(\\$\\d+)?$',
               allow: ['layout', 'icon-*', 'typography'],
             },
+            // The sweep on an in-flight label is drawn over the caller's own line of text, so
+            // the caller sets that line's size, weight and truncation, `tool-status-text`
+            // included: the status rows' type scale, which has no Tailwind form. The sweep's
+            // two colors are the theme's.
+            {
+              pattern: '^Shimmer(\\$\\d+)?$',
+              allow: ['layout', 'icon-*', 'typography', 'tool-status-text'],
+            },
             // A skeleton stands in for the caller's content, so it takes that content's
             // silhouette and footprint.
             { pattern: '^Skeleton(\\$\\d+)?$', allow: ['layout', 'icon-*', 'shape', 'spacing'] },
@@ -316,6 +325,7 @@ export default [
             'select-item',
             'reset-rc-number-input',
             'reset-rc-number-input-text-right',
+            'choice-badge',
             'assistant-item',
             'animated-tab',
             'animated-tab-list',
@@ -328,12 +338,17 @@ export default [
             'animate-fadeIn',
             'slow-pulse',
             'hide-scrollbar',
+            'custom-icon-tint',
             'scrollbar-gutter-spacer',
+            'progress-text-wrapper',
+            'progress-text-content',
             'active',
             // put in the DOM by a dependency, not by Tailwind
             'lucide',
             'lucide-*',
             'language-*',
+            'hljs',
+            'hljs-*',
             'i-heroicons-*',
             'form-check-label',
             // Markers a selector reads rather than Tailwind styling: each one is queried by a
@@ -347,14 +362,53 @@ export default [
             'hover-button-active',
             'open',
             'split-parent',
-            // Message-text markers the app's stylesheet paints; a @librechat/chat source cannot see
-            // that stylesheet, so its lint has no Tailwind entry that declares them.
+            // Message-text markers a stylesheet outside any Tailwind entry paints: the typography
+            // ships in the library's component CSS (`packages/client/src/theme/prose.css`), the
+            // rest in the app's stylesheet, which a @librechat/chat source cannot see.
             'markdown',
+            'markdown-table-wrapper',
             'prose',
+            'prose-sm',
             'message-content',
             'submitting',
             'result-streaming',
             'result-thinking',
+            'shimmer',
+            'shimmer-clip',
+            'shimmer-band',
+            'shimmer-copy',
+            'attachment-settle',
+            'part-fold',
+            'tool-status-text',
+            'tool-call-expand',
+            'part-expand',
+            'thought-peek',
+            'message-render',
+            'message-timestamp',
+            'popover-animate',
+            // The thinking-level slider's spring curves, which have no theme token.
+            'composer-effort-glide',
+            'composer-effort-thumb',
+            'composer-effort-fill',
+            // The thinking button's label roll and the composer popover clock it resizes on.
+            'composer-slot-resize',
+            'composer-label-in-up',
+            'composer-label-in-down',
+            'composer-label-out-up',
+            'composer-label-out-down',
+            'animate-composer-icon',
+            'animate-composer-popover',
+            'animate-composer-popover-resize',
+            // Composer palette list chrome and row motion, painted by parts.css.
+            'composer-palette-scroll',
+            'composer-palette-rows',
+            'composer-palette-instant',
+            'animate-composer-palette-row',
+            'animate-composer-palette-row-out',
+            // The box a chat image of known dimensions reserves before it loads.
+            'chat-image-sized',
+            // Sizes the code and logs of a code-interpreter card; an e2e spec queries it too.
+            'code-analyze-block',
           ],
         },
       ],

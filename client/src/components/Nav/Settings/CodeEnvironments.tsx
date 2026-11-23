@@ -83,7 +83,7 @@ function WorkerCommand({ pairing }: { pairing: CodeEnvironmentPairingResponse['p
           ariaLabel={localize('com_ui_code_environment_shell')}
           testId="code-environment-shell"
           className="shrink-0"
-          sizeClasses="z-50 min-w-48"
+          minWidth="12rem"
         />
       </div>
       <p className="text-text-secondary text-xs">
@@ -192,7 +192,7 @@ function EnvironmentPermissions({ environment }: { environment: TCodeEnvironment
               aria-labelledby={`${idPrefix}-${category}`}
               testId={`code-environment-${category}`}
               variant="field"
-              sizeClasses="z-50 min-w-48"
+              minWidth="12rem"
             />
           </div>
         );
@@ -295,7 +295,7 @@ export default function CodeEnvironments() {
             aria-labelledby={planeId}
             testId="code-environment-control-plane"
             variant="field"
-            sizeClasses="z-50 min-w-48"
+            minWidth="12rem"
           />
         </div>
         <Button type="submit" disabled={!name.trim() || pairMutation.isLoading}>

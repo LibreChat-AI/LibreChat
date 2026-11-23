@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
-import type { IThemeRGB } from '../../../../packages/client/src/theme/types';
+import type { IThemeRGB } from '../../../../packages/data-provider/src/themes/types';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -9,8 +9,8 @@ import {
   withMongo,
 } from '../db';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { defaultTheme } from '../../../../packages/client/src/theme/themes/default';
-import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { defaultTheme } from '../../../../packages/data-provider/src/themes/default';
+import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import { openAgentBuilder, uniqueAgentName, cleanupAgent } from '../agents.helpers';
 import { MOCK_ENDPOINTS, getAccessToken, requestJson } from '../helpers';
 import { getE2EUser } from '../../../setup/user';

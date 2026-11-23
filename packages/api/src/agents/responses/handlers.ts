@@ -7,6 +7,7 @@
 import type { Response as ServerResponse } from 'express';
 import type {
   Response,
+  ResponseAccounting,
   ResponseContext,
   ResponseEvent,
   OutputItem,
@@ -20,6 +21,7 @@ import type {
   ResponseStatus,
   Usage,
 } from './types';
+import { writeGuarded } from '~/utils/events';
 
 /* =============================================================================
  * RESPONSE TRACKER
@@ -102,15 +104,15 @@ export function createResponseTracker(): ResponseTracker {
  * The `event:` field matches the `type` in the data payload.
  */
 export function writeEvent(res: ServerResponse, event: ResponseEvent): void {
-  res.write(`event: ${event.type}\n`);
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  writeGuarded(res, `event: ${event.type}\n`);
+  writeGuarded(res, `data: ${JSON.stringify(event)}\n\n`);
 }
 
 /**
  * Write the terminal [DONE] event
  */
 export function writeDone(res: ServerResponse): void {
-  res.write('data: [DONE]\n\n');
+  writeGuarded(res, 'data: [DONE]\n\n');
 }
 
 /* =============================================================================
@@ -126,6 +128,7 @@ export function buildResponse(
   tracker: ResponseTracker,
   status: ResponseStatus = 'in_progress',
   usageOverride?: Usage,
+  accounting?: ResponseAccounting,
 ): Response {
   const isCompleted = status === 'completed';
 
@@ -133,6 +136,7 @@ export function buildResponse(
     // Required fields
     id: context.responseId,
     object: 'response',
+    ...(isCompleted && accounting ? { accounting } : {}),
     created_at: context.createdAt,
     completed_at: isCompleted ? Math.floor(Date.now() / 1000) : null,
     status,
@@ -165,7 +169,7 @@ export function buildResponse(
       : null,
     max_output_tokens: null,
     max_tool_calls: null,
-    store: false,
+    store: context.stored === true,
     background: false,
     service_tier: 'default',
     metadata: {},
@@ -317,10 +321,16 @@ export function emitResponseInProgress(config: StreamHandlerConfig): void {
 /**
  * Emit response.completed event
  */
-export function emitResponseCompleted(config: StreamHandlerConfig, usage?: Usage): void {
+export function emitResponseCompleted(
+  config: StreamHandlerConfig,
+  usage?: Usage,
+  accounting?: ResponseAccounting,
+  preparedResponse?: Response,
+): void {
   const { res, context, tracker } = config;
   tracker.status = 'completed';
-  const response = buildResponse(context, tracker, 'completed', usage);
+  const response =
+    preparedResponse ?? buildResponse(context, tracker, 'completed', usage, accounting);
   writeEvent(res, {
     type: 'response.completed',
     sequence_number: tracker.nextSequence(),

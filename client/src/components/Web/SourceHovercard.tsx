@@ -3,6 +3,7 @@ import * as Ariakit from '@ariakit/react';
 import { Button } from '@librechat/client';
 import { VisuallyHidden } from '@ariakit/react';
 import { ChevronDown, FileText } from 'lucide-react';
+import { getCleanDomain, FaviconImage } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -26,25 +27,7 @@ interface SourceHovercardProps {
   fileRelevance?: number;
 }
 
-function getFaviconUrl(domain: string) {
-  return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
-}
-
-export function getCleanDomain(url: string) {
-  const domain = url.replace(/(^\w+:|^)\/\//, '').split('/')[0];
-  return domain.startsWith('www.') ? domain.substring(4) : domain;
-}
-
-export function FaviconImage({ domain, className = '' }: { domain: string; className?: string }) {
-  return (
-    <img
-      src={getFaviconUrl(domain)}
-      alt={domain}
-      className={cn('size-4 shrink-0 rounded-full', className)}
-      loading="lazy"
-    />
-  );
-}
+export { getCleanDomain, FaviconImage };
 
 const hovercardClass = cn(
   'z-[999] w-[20rem] max-w-[calc(100vw-2rem)] rounded-xl border border-border-medium bg-surface-secondary p-3 text-text-primary shadow-lg',
@@ -128,7 +111,7 @@ export function SourceHovercard({
   );
 
   return (
-    <span className="relative ml-0.5 inline-block">
+    <span className="relative ms-0.5 inline-block">
       <Ariakit.HovercardProvider store={hovercard}>
         <span className="flex items-center">
           <Ariakit.HovercardAnchor
@@ -136,7 +119,7 @@ export function SourceHovercard({
               isFile ? (
                 <button
                   onClick={handleFileClick}
-                  className="border-border-heavy bg-surface-secondary text-text-primary hover:bg-surface-hover ml-1 inline-flex h-5 max-w-36 items-center gap-1 overflow-hidden rounded-xl border px-2 text-xs font-medium text-ellipsis whitespace-nowrap no-underline transition-colors"
+                  className="border-border-heavy bg-surface-secondary text-text-primary hover:bg-surface-hover ms-1 inline-flex h-5 max-w-36 items-center gap-1 overflow-hidden rounded-xl border px-2 text-xs font-medium text-ellipsis whitespace-nowrap no-underline transition-colors"
                   onMouseEnter={onMouseEnter}
                   onMouseLeave={onMouseLeave}
                   title={
@@ -151,7 +134,7 @@ export function SourceHovercard({
                   href={source.link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="border-border-heavy bg-surface-secondary hover:bg-surface-hover ml-1 inline-block h-5 max-w-36 cursor-pointer items-center overflow-hidden rounded-xl border px-2 text-xs font-medium text-ellipsis whitespace-nowrap no-underline transition-colors"
+                  className="border-border-heavy bg-surface-secondary hover:bg-surface-hover ms-1 inline-block h-5 max-w-36 cursor-pointer items-center overflow-hidden rounded-xl border px-2 text-xs font-medium text-ellipsis whitespace-nowrap no-underline transition-colors"
                   onMouseEnter={onMouseEnter}
                   onMouseLeave={onMouseLeave}
                 >
@@ -160,7 +143,7 @@ export function SourceHovercard({
               )
             }
           />
-          <Ariakit.HovercardDisclosure className="text-text-primary focus:ring-text-primary ml-0.5 rounded-full focus:ring-2 focus:outline-hidden">
+          <Ariakit.HovercardDisclosure className="text-text-primary focus:ring-text-primary ms-0.5 rounded-full focus:ring-2 focus:outline-hidden">
             <VisuallyHidden>{localize('com_citation_more_details', { label })}</VisuallyHidden>
             <ChevronDown className="icon-sm" aria-hidden="true" />
           </Ariakit.HovercardDisclosure>
@@ -183,8 +166,8 @@ export function SourceHovercard({
                 ) : (
                   <>
                     <div className="mb-1.5 overflow-hidden text-sm">
-                      <FaviconImage domain={domain} className="float-left mt-0.5 mr-2" />
-                      <span className="text-text-secondary float-right ml-2 max-w-[40%] truncate text-xs">
+                      <FaviconImage domain={domain} className="float-start me-2 mt-0.5" />
+                      <span className="text-text-secondary float-end ms-2 max-w-[40%] truncate text-xs">
                         {domain}
                       </span>
                       <a

@@ -149,7 +149,7 @@ export default function CodeApprovalMenu({
               className={cn(chipMenuItemClasses(isSelected), 'items-start')}
             >
               <Icon className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
-              <div className="min-w-0 flex-1 text-left">
+              <div className="min-w-0 flex-1 text-start">
                 <div className="text-text-primary text-sm font-medium">{localize(label)}</div>
                 <p className="text-text-secondary text-xs">{localize(description)}</p>
               </div>

@@ -1,12 +1,15 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { IThemeAppearance, IThemeRGB } from './types';
+import {
+  darkTheme,
+  defaultTheme,
+  defaultAppearance,
+  highContrastDarkTheme,
+  highContrastLightTheme,
+} from 'librechat-data-provider';
+import type { IThemeAppearance, IThemeRGB } from 'librechat-data-provider';
 import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './themes/clickhouse';
-import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
 import { fieldControl } from '../components/Field';
-import { defaultTheme } from './themes/default';
-import { defaultAppearance } from './registry';
-import { darkTheme } from './themes/dark';
 
 const sharedComponents = [
   'AnimatedSearchInput.tsx',
@@ -14,8 +17,6 @@ const sharedComponents = [
   'Button.tsx',
   'Chip.tsx',
   'SegmentedMeter.tsx',
-  'Dialog.tsx',
-  'DialogTemplate.tsx',
   'IconButton.tsx',
   'OGDialogTemplate.tsx',
   'OriginalDialog.tsx',
@@ -23,13 +24,7 @@ const sharedComponents = [
   'Toast.tsx',
 ];
 
-const sharedDialogComponents = [
-  'AlertDialog.tsx',
-  'Dialog.tsx',
-  'DialogTemplate.tsx',
-  'OGDialogTemplate.tsx',
-  'OriginalDialog.tsx',
-];
+const sharedDialogComponents = ['AlertDialog.tsx', 'OGDialogTemplate.tsx', 'OriginalDialog.tsx'];
 
 describe('shared component color guardrail', () => {
   it('keeps shared primitives free of direct palette utilities and raw colors', () => {
@@ -710,11 +705,10 @@ describe('syntax highlighting palette', () => {
   });
 
   it('leaves no hard-coded syntax hex behind in the stylesheet', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
+    const syntaxStyles = readFileSync(join(__dirname, 'syntax.css'), 'utf8');
+    const hljsRules = [...syntaxStyles.matchAll(/^\.hljs[^{]*\{([^}]*)\}/gm)].map(
+      (match) => match[1],
     );
-    const hljsRules = [...appStyles.matchAll(/^\.hljs[^{]*\{([^}]*)\}/gm)].map((match) => match[1]);
 
     expect(hljsRules.length).toBeGreaterThan(0);
     expect(hljsRules.filter((body) => /#[0-9a-f]{3,8}|hsla?\(/i.test(body))).toEqual([]);

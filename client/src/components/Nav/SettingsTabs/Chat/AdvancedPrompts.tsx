@@ -37,7 +37,7 @@ export default function AdvancedPrompts() {
         id={rootId}
         checked={isAdvanced}
         onCheckedChange={handleChange}
-        className="ml-4"
+        className="ms-4"
         data-testid="advancedPrompts"
         aria-labelledby={labelId}
       />

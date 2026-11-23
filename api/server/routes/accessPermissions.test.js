@@ -76,7 +76,7 @@ describe('Access Permissions Routes - Security Tests (SBA-ADV-20251203-02)', () 
       delete mongoose.models[modelName];
     }
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

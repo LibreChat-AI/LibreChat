@@ -132,6 +132,15 @@ describe('buildSandpackOptions', () => {
     const options = buildSandpackOptions('react-ts');
     expect(options?.bundlerURL).toBeUndefined();
   });
+
+  it.each(['static', 'react-ts'] as const)(
+    'treats an empty bundler URL as unset for the %s template',
+    (template) => {
+      const options = buildSandpackOptions(template, { bundlerURL: '', staticBundlerURL: '' });
+      expect(options?.bundlerURL).toBeUndefined();
+      expect(options?.externalResources).toEqual([TAILWIND_CDN]);
+    },
+  );
 });
 
 describe('detectArtifactTypeFromFile', () => {

@@ -80,7 +80,7 @@ export default function ActionsAuth({ disableOAuth }: { disableOAuth?: boolean }
         <OGDialogTrigger asChild>
           <button
             type="button"
-            className="group border-border-light hover:bg-surface-secondary focus-visible:ring-text-primary rounded-theme-control flex w-full items-center gap-3 border bg-transparent px-3 py-2.5 text-left transition-colors focus:outline-hidden focus-visible:ring-2"
+            className="group border-border-light hover:bg-surface-secondary focus-visible:ring-text-primary rounded-theme-control flex w-full items-center gap-3 border bg-transparent px-3 py-2.5 text-start transition-colors focus:outline-hidden focus-visible:ring-2"
           >
             <current.icon className="text-text-secondary size-5 shrink-0" aria-hidden={true} />
             <span className="min-w-0 flex-1">
@@ -91,7 +91,10 @@ export default function ActionsAuth({ disableOAuth }: { disableOAuth?: boolean }
                 {localize(current.descKey)}
               </span>
             </span>
-            <ChevronRight className="text-text-secondary size-4 shrink-0" aria-hidden={true} />
+            <ChevronRight
+              className="text-text-secondary size-4 shrink-0 rtl:-scale-x-100"
+              aria-hidden={true}
+            />
           </button>
         </OGDialogTrigger>
       </div>
@@ -110,6 +113,7 @@ export default function ActionsAuth({ disableOAuth }: { disableOAuth?: boolean }
             value={type}
             onChange={(value) => setValue('type', value)}
             fullWidth
+            wrap
             aria-labelledby="auth-method-label"
           />
           <AnimatedAuthFields type={type} />
@@ -213,6 +217,7 @@ function SegmentedField({
         value={value}
         onChange={onValueChange}
         fullWidth
+        wrap
         aria-labelledby={id}
       />
     </div>

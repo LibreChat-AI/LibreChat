@@ -1,10 +1,9 @@
 import { Types } from 'mongoose';
 import { logger } from '@librechat/data-schemas';
-
 import type { IUser } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
 import type { AdminExchangeResponse } from '~/auth/exchange';
-
+import { SERVICE_REQUEST_TIMEOUT_MS } from '~/utils/timeouts';
 import { serializeUserForExchange } from '~/auth/exchange';
 import { AdminRefreshError } from '~/auth/refresh';
 
@@ -69,6 +68,7 @@ async function resolveSubFromUserinfo(accessToken: string): Promise<string | und
   try {
     const response = await fetch(GOOGLE_USERINFO_ENDPOINT, {
       headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
       logger.warn('[admin/oauth/refresh] userinfo fallback returned non-OK', {
@@ -100,6 +100,7 @@ async function fetchGoogleTokenset(
   try {
     response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
       method: 'POST',
+      signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: options.clientId,

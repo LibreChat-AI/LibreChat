@@ -25,13 +25,12 @@ describe('GroupIcon', () => {
     expect(screen.getByRole('img', { name: 'OpenRouter' })).toBeInTheDocument();
   });
 
-  it('resolves known endpoint asset aliases to shipped file paths', () => {
+  it('resolves the Lemonade alias to its mark', () => {
     render(<GroupIcon iconURL="Lemonade" groupName="Lemonade" />);
 
-    expect(screen.getByRole('img', { name: 'AMD Lemonade' })).toHaveAttribute(
-      'src',
-      'assets/lemonade.png',
-    );
+    const icon = screen.getByRole('img', { name: 'AMD Lemonade' });
+    expect(icon).not.toHaveAttribute('src');
+    expect(icon.querySelector('svg')).toHaveAttribute('fill', 'currentColor');
   });
 
   it('renders known endpoint aliases backed by components', () => {

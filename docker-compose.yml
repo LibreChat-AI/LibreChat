@@ -55,7 +55,7 @@ services:
       - SESSION_COOKIE_SECURE=${ADMIN_PANEL_SESSION_COOKIE_SECURE:-false}
   mongodb:
     container_name: chat-mongodb
-    image: mongo:8.0.20
+    image: docker.io/library/mongo:8.0.20
     restart: always
     user: "${UID}:${GID}"
     volumes:
@@ -63,7 +63,7 @@ services:
     command: mongod --noauth
   meilisearch:
     container_name: chat-meilisearch
-    image: getmeili/meilisearch:v1.35.1
+    image: docker.io/getmeili/meilisearch:v1.35.1
     restart: always
     user: "${UID}:${GID}"
     environment:
@@ -74,7 +74,7 @@ services:
       - ./meili_data_v1.35.1:/meili_data
   vectordb:
     container_name: vectordb
-    image: pgvector/pgvector:0.8.0-pg15-trixie
+    image: docker.io/pgvector/pgvector:0.8.0-pg15-trixie
     environment:
       POSTGRES_DB: mydatabase
       POSTGRES_USER: myuser

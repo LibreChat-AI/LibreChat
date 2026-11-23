@@ -26,7 +26,7 @@ jest.mock('~/server/middleware', () => ({
 
 const bcrypt = require('bcryptjs');
 const { CacheKeys } = require('librechat-data-provider');
-const { createPasskeyHandlers } = require('@librechat/api');
+const { createPasskeyHandlers, compareSecret } = require('@librechat/api');
 const controller = require('./PasskeyController');
 
 const [deps] = createPasskeyHandlers.mock.calls[0];
@@ -69,8 +69,8 @@ describe('PasskeyController wiring', () => {
     );
   });
 
-  it('hands the model methods, bcrypt and the ban check to the handler factory', () => {
-    expect(deps.compare).toBe(bcrypt.compare);
+  it('hands the model methods, the off-thread compare and the ban check to the handler factory', () => {
+    expect(deps.compare).toBe(compareSecret);
     expect(deps.getAppConfig).toBe(mockGetAppConfig);
     for (const name of Object.keys(mockModels)) {
       expect(deps[name]).toBe(mockModels[name]);

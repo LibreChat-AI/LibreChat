@@ -167,7 +167,7 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               onZoomIn={handleZoomIn}
               onZoomOut={handleZoomOut}
               onReset={handleResetZoom}
-              className="absolute right-4 bottom-4 z-10"
+              className="absolute inset-e-4 bottom-4 z-10"
             />
           </div>
         </OGDialogContent>

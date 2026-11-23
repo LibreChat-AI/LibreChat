@@ -49,7 +49,7 @@ export default function Retrieval({
                 checked={field.value}
                 disabled={isDisabled}
                 onCheckedChange={field.onChange}
-                className="relative float-left mr-2 inline-flex cursor-pointer"
+                className="relative float-start me-2 inline-flex cursor-pointer"
                 value={field.value.toString()}
                 aria-labelledby={Capabilities.retrieval}
               />
@@ -79,7 +79,7 @@ export default function Retrieval({
             </HoverCardTrigger>
           </div>
           <HoverCardPortal>
-            <HoverCardContent side={ESide.Top} disabled={isDisabled} className="ml-16 w-80">
+            <HoverCardContent side={ESide.Top} disabled={isDisabled} className="ms-16 w-80">
               <div className="space-y-2">
                 <p className="text-text-secondary text-sm">
                   {version == 2 && localize('com_assistants_file_search_info')}
@@ -93,7 +93,7 @@ export default function Retrieval({
             description="com_assistants_non_retrieval_model"
             langCode={true}
             sideOffset={20}
-            className="ml-16"
+            className="ms-16"
           />
         </div>
       </HoverCard>

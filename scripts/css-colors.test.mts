@@ -207,6 +207,52 @@ test('reads math function channels in a custom property triplet', () => {
   );
 });
 
+test('reads angle channels in a custom property triplet', () => {
+  assert.deepEqual(literals('a { --brand: sin(90deg) 0 0; }'), ['sin(90deg) 0 0']);
+  assert.deepEqual(literals('a { --h: 90deg 50% 50%; }'), ['90deg 50% 50%']);
+  assert.deepEqual(literals('a { --h: 0.25turn 50% 50%; }'), ['0.25turn 50% 50%']);
+  assert.deepEqual(literals('a { --h: calc(45deg * 2) 50% 50%; }'), ['calc(45deg * 2) 50% 50%']);
+  assert.deepEqual(literals('a { --h: 120 50% cos(1rad); }'), ['120 50% cos(1rad)']);
+  assert.deepEqual(literals('a { --h: sin(calc(90deg)) 0 0; }'), ['sin(calc(90deg)) 0 0']);
+  assert.deepEqual(literals('a { --size: calc(1px + 2px) 0 0; }'), []);
+  assert.deepEqual(literals('a { --size: calc(1deg + 2px) 0 0; }'), []);
+  assert.deepEqual(literals('a { --h: sin(var(--angle)) 0 0; }'), []);
+  assert.deepEqual(literals('a { --h: 0 90deg 0; }'), []);
+});
+
+test('reads rounding and other math functions over angles in a hue triplet', () => {
+  assert.deepEqual(literals('a { --h: round(to-zero, 90deg, 1deg) 50% 50%; }'), [
+    'round(to-zero, 90deg, 1deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: round(up, 90.5deg) 50% 50%; }'), [
+    'round(up, 90.5deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: mod(400deg, 360deg) 50% 50%; }'), [
+    'mod(400deg, 360deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: atan2(1, 1) 50% 50%; }'), ['atan2(1, 1) 50% 50%']);
+  assert.deepEqual(literals('a { --h: calc(pi * 1rad) 50% 50%; }'), ['calc(pi * 1rad) 50% 50%']);
+  assert.deepEqual(literals('a { --h: round(future-strategy, 90deg) 50% 50%; }'), [
+    'round(future-strategy, 90deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: round(to-zero, 90px, 1px) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --h: round(to-zero, var(--angle), 1deg) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --h: env(hue, 90deg) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --h: atan2(1px, 1px) 50% 50%; }'), ['atan2(1px, 1px) 50% 50%']);
+  assert.deepEqual(literals('a { --brand: 255 sign(90deg) 0; }'), ['255 sign(90deg) 0']);
+  assert.deepEqual(literals('a { --brand: 255 sign(-4px) 0; }'), ['255 sign(-4px) 0']);
+  assert.deepEqual(literals('a { --h: calc(90deg + 1px) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --orientation: 0 calc(90deg) 0; }'), []);
+  assert.deepEqual(literals('a { --orientation: 0 round(to-zero, 90deg, 1deg) 0; }'), []);
+  assert.deepEqual(literals('a { --orientation: 0 0 atan(1); }'), []);
+  assert.deepEqual(literals('a { --h: calc(90deg) 50% 50%; }'), ['calc(90deg) 50% 50%']);
+  assert.deepEqual(literals('a { --h: atan2(calc(1px + 1px), 1px) 50% 50%; }'), [
+    'atan2(calc(1px + 1px), 1px) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255 sign(calc(-4px)) 0; }'), ['255 sign(calc(-4px)) 0']);
+  assert.deepEqual(literals('a { --size: max(calc(1px + 1px), 2px) 0 0; }'), []);
+});
+
 test('a token source exempts its custom properties only', () => {
   const css = ':root { --x: 255 0 0; --y: #fff; }\na { color: #fff; width: calc(1 * 2); }';
   assert.deepEqual(findCssColorLiterals(css, [], true), [{ line: 2, literal: '#fff' }]);

@@ -44,7 +44,7 @@ describe('Code output commits', () => {
   afterAll(async () => {
     await mongoose.disconnect();
     mongoose.deleteModel('File');
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   it('creates foreground output without an upload TTL from plain file data', async () => {

@@ -8,6 +8,7 @@ import {
   Label,
   SecretInput,
   Spinner,
+  Switch,
   ESide,
   useToastContext,
 } from '@librechat/client';
@@ -17,10 +18,15 @@ import type {
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import {
+  useGetStartupConfig,
   useGetLangfuseConnectionQuery,
   useUpdateLangfuseConnectionMutation,
   useTestLangfuseConnectionMutation,
+  useUpdateLangfusePromptSyncMutation,
+  useSyncLangfusePromptsMutation,
 } from '~/data-provider';
+import LangfusePromptsDialog from './LangfusePromptsDialog';
+import { getPromptErrorMessage } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 type ConnectionTestState = 'idle' | 'unverified' | 'checking' | 'connected' | 'failed';
@@ -101,6 +107,11 @@ function getDisplayPublicKey(publicKey: string): string {
 export default function LangfuseConnection() {
   const localize = useLocalize();
   const { showToast } = useToastContext();
+  const { data: startupConfig } = useGetStartupConfig();
+  // The server's `POST /prompts/sync` route requires `manage:prompts` in addition to the
+  // `langfuse` config capability that gates this whole tab, so an admin can see the
+  // connection without being able to run the sync.
+  const canManagePrompts = startupConfig?.langfusePromptManageAccess === true;
   const {
     data: status,
     isLoading: isConnectionLoading,
@@ -110,6 +121,8 @@ export default function LangfuseConnection() {
   } = useGetLangfuseConnectionQuery();
   const updateMutation = useUpdateLangfuseConnectionMutation();
   const testMutation = useTestLangfuseConnectionMutation();
+  const promptSyncMutation = useUpdateLangfusePromptSyncMutation();
+  const syncPromptsMutation = useSyncLangfusePromptsMutation();
 
   const [connectionStatus, setConnectionStatus] = useState<TLangfuseConnectionStatus>();
   const [destination, setDestination] = useState('');
@@ -119,6 +132,8 @@ export default function LangfuseConnection() {
   const [isEditingSecretKey, setIsEditingSecretKey] = useState(false);
   const [connectionTestState, setConnectionTestState] = useState<ConnectionTestState>('idle');
   const [connectionTestMessage, setConnectionTestMessage] = useState('');
+  const [promptSyncError, setPromptSyncError] = useState(false);
+  const [isPromptsDialogOpen, setIsPromptsDialogOpen] = useState(false);
   const autoTestedConnectionRef = useRef<string>();
   const connectionTestRequestRef = useRef(0);
   const publicKeyInputRef = useRef<HTMLInputElement>(null);
@@ -143,14 +158,15 @@ export default function LangfuseConnection() {
     setConnectionStatus(status);
   }, [status]);
 
+  // Scoped to the two fields this syncs, not the whole `connectionStatus` object,
+  // so an unrelated update (e.g. toggling prompt sync) cannot reset unsaved edits
+  // to the destination or public key.
   useEffect(() => {
-    if (!connectionStatus) {
-      return;
-    }
-    setDestination(connectionStatus.destination ?? '');
-    setPublicKey(connectionStatus.publicKey ?? '');
-  }, [connectionStatus]);
+    setDestination(connectionStatus?.destination ?? '');
+    setPublicKey(connectionStatus?.publicKey ?? '');
+  }, [connectionStatus?.destination, connectionStatus?.publicKey]);
 
+  const connectionAvailable = connectionStatus?.connectionAvailable !== false;
   const secretConfigured = connectionStatus?.configured === true;
   const destinations = connectionStatus?.destinations ?? [];
   const connectionDestinationAvailable = destinations.some(
@@ -189,11 +205,12 @@ export default function LangfuseConnection() {
     destination !== '' &&
     trimmedPublicKey !== '' &&
     ((!connectionCredentialsChanged && secretConfigured) || trimmedSecretKey !== '');
-  const busy = testMutation.isLoading || updateMutation.isLoading;
+  const isSavingStatus = updateMutation.isLoading || promptSyncMutation.isLoading;
+  const busy = testMutation.isLoading || isSavingStatus || syncPromptsMutation.isLoading;
 
   useEffect(() => {
     const storedConnectionTestKey = getStoredConnectionTestKey(connectionStatus);
-    if (!connectionStatus) {
+    if (!connectionStatus || !connectionAvailable) {
       return;
     }
     if (!storedConnectionTestKey) {
@@ -238,7 +255,7 @@ export default function LangfuseConnection() {
         },
       },
     );
-  }, [connectionStatus, localize, testMutation]);
+  }, [connectionStatus, connectionAvailable, localize, testMutation]);
 
   const connectionStatusLabel =
     connectionTestState === 'failed' && connectionTestMessage !== ''
@@ -364,6 +381,54 @@ export default function LangfuseConnection() {
     saveEnabledState();
   };
 
+  const handlePromptSyncChange = (nextEnabled: boolean) => {
+    setPromptSyncError(false);
+    // The dialog unmounts once the switch is off; reset `open` so re-enabling keeps it closed.
+    if (!nextEnabled) {
+      setIsPromptsDialogOpen(false);
+    }
+    promptSyncMutation.mutate(
+      { enabled: nextEnabled },
+      {
+        onSuccess: (nextStatus) => {
+          setConnectionStatus(nextStatus);
+        },
+        onError: () => {
+          setPromptSyncError(true);
+        },
+      },
+    );
+  };
+
+  const handleSyncPrompts = () => {
+    syncPromptsMutation.mutate(undefined, {
+      onSuccess: (result) => {
+        if (result.complete === false) {
+          showToast({
+            message: localize('com_ui_langfuse_prompt_sync_incomplete', {
+              0: result.created,
+              1: result.unchanged,
+              2: result.skipped,
+            }),
+            status: 'warning',
+          });
+          return;
+        }
+        showToast({
+          message: localize('com_ui_langfuse_prompt_sync_result', {
+            0: result.created,
+            1: result.unchanged,
+            2: result.skipped,
+          }),
+          status: 'success',
+        });
+      },
+      onError: (error) => {
+        showToast({ message: getPromptErrorMessage(error, localize), status: 'error' });
+      },
+    });
+  };
+
   if (isConnectionLoading && connectionStatus == null) {
     return (
       <div
@@ -406,146 +471,206 @@ export default function LangfuseConnection() {
             </span>
           </InfoHoverCard>
         </div>
-        <div
-          data-testid="langfuse-connection-status"
-          className={`ml-auto flex max-w-full shrink-0 items-start justify-end gap-1.5 text-right text-xs sm:max-w-[50%] ${connectionStatusTextClass}`}
-          aria-live="polite"
-          title={connectionStatusTitle}
-        >
-          {connectionTestState === 'checking' ? (
-            <Spinner className="h-3 w-3" />
-          ) : (
-            <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${connectionStatusDotClass}`} />
-          )}
-          <span>{connectionStatusLabel}</span>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label id="langfuse-destination-label">{localize('com_ui_langfuse_destination')}</Label>
-        <Dropdown
-          value={destination}
-          label={destination === '' ? localize('com_ui_select') : ''}
-          onChange={handleDestinationChange}
-          options={destinationOptions}
-          disabled={destinations.length === 0 || busy}
-          className="w-full"
-          triggerClassName="w-full"
-          sizeClasses="z-50 w-[var(--popover-anchor-width)]"
-          testId="langfuse-destination"
-          aria-labelledby="langfuse-destination-label"
-        />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="langfuse-public-token">{localize('com_ui_langfuse_public_key')}</Label>
-        {secretConfigured && !isEditingPublicKey && (
-          <button
-            type="button"
-            className="border-border-light hover:border-border-medium focus-visible:ring-ring-primary w-full rounded-lg border px-3 py-2 text-left focus-visible:ring-2 focus-visible:outline-hidden"
-            aria-label={`${localize('com_ui_edit')} ${localize('com_ui_langfuse_public_key')}`}
-            disabled={busy}
-            onClick={() => setIsEditingPublicKey(true)}
+        {connectionAvailable && (
+          <div
+            data-testid="langfuse-connection-status"
+            className={`ms-auto flex max-w-full shrink-0 items-start justify-end gap-1.5 text-end text-xs sm:max-w-[50%] ${connectionStatusTextClass}`}
+            aria-live="polite"
+            title={connectionStatusTitle}
           >
-            <code className="text-text-primary block min-w-0 truncate font-mono text-sm">
-              {displayPublicKey}
-            </code>
-          </button>
-        )}
-        {publicKeyInputVisible && (
-          <Input
-            ref={publicKeyInputRef}
-            id="langfuse-public-token"
-            autoComplete="off"
-            data-lpignore="true"
-            data-1p-ignore="true"
-            data-bwignore="true"
-            data-form-type="other"
-            value={publicKey}
-            disabled={busy}
-            placeholder="pk-lf-..."
-            onChange={(e) => {
-              connectionTestRequestRef.current += 1;
-              const nextPublicKey = e.target.value;
-              setPublicKey(nextPublicKey);
-              if (
-                secretConfigured &&
-                nextPublicKey.trim() !== (connectionStatus?.publicKey ?? '')
-              ) {
-                setIsEditingSecretKey(true);
-              }
-              setConnectionTestState('unverified');
-              setConnectionTestMessage('');
-            }}
-          />
-        )}
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="langfuse-private-token">{localize('com_ui_langfuse_secret_key')}</Label>
-        {secretConfigured && !isEditingSecretKey && (
-          <button
-            type="button"
-            className="border-border-light hover:border-border-medium focus-visible:ring-ring-primary w-full rounded-lg border px-3 py-2 text-left focus-visible:ring-2 focus-visible:outline-hidden"
-            aria-label={`${localize('com_ui_edit')} ${localize('com_ui_langfuse_secret_key')}`}
-            disabled={busy}
-            onClick={() => setIsEditingSecretKey(true)}
-          >
-            <code className="text-text-primary block min-w-0 truncate font-mono text-sm">
-              {connectionStatus?.secretKeyPreview}
-            </code>
-          </button>
-        )}
-        {secretInputVisible && (
-          <SecretInput
-            ref={secretKeyInputRef}
-            id="langfuse-private-token"
-            autoComplete="off"
-            data-lpignore="true"
-            data-1p-ignore="true"
-            data-bwignore="true"
-            data-form-type="other"
-            value={secretKey}
-            disabled={busy}
-            placeholder="sk-lf-..."
-            onChange={(e) => {
-              connectionTestRequestRef.current += 1;
-              setSecretKey(e.target.value);
-              setConnectionTestState('unverified');
-              setConnectionTestMessage('');
-            }}
-          />
-        )}
-      </div>
-
-      <div className="flex min-h-9 items-center justify-end gap-2">
-        {isEditing ? (
-          <Button variant="submit" disabled={!canSubmit || busy} onClick={handleSave}>
-            {testMutation.isLoading ? (
-              <span className="flex items-center gap-2">
-                <Spinner className="h-4 w-4" />
-                {localize('com_ui_langfuse_testing')}
-              </span>
+            {connectionTestState === 'checking' ? (
+              <Spinner className="h-3 w-3" />
             ) : (
-              localize('com_ui_save')
+              <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${connectionStatusDotClass}`} />
             )}
-          </Button>
-        ) : (
-          <Button
-            variant={connectionStatus?.enabled === true ? 'outline' : 'submit'}
-            disabled={
-              busy || (connectionStatus?.enabled !== true && !connectionDestinationAvailable)
-            }
-            onClick={handleEnabledChange}
-          >
-            {localize(
-              connectionStatus?.enabled === true
-                ? 'com_ui_langfuse_disable'
-                : 'com_ui_langfuse_enable',
-            )}
-          </Button>
+            <span>{connectionStatusLabel}</span>
+          </div>
         )}
       </div>
+
+      {connectionAvailable && (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <Label id="langfuse-destination-label">{localize('com_ui_langfuse_destination')}</Label>
+            <Dropdown
+              value={destination}
+              label={destination === '' ? localize('com_ui_select') : ''}
+              onChange={handleDestinationChange}
+              options={destinationOptions}
+              disabled={destinations.length === 0 || busy}
+              className="w-full"
+              triggerClassName="w-full"
+              sameWidth
+              testId="langfuse-destination"
+              aria-labelledby="langfuse-destination-label"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="langfuse-public-token">{localize('com_ui_langfuse_public_key')}</Label>
+            {secretConfigured && !isEditingPublicKey && (
+              <button
+                type="button"
+                className="border-border-light hover:border-border-medium focus-visible:ring-ring-primary w-full rounded-lg border px-3 py-2 text-start focus-visible:ring-2 focus-visible:outline-hidden"
+                aria-label={`${localize('com_ui_edit')} ${localize('com_ui_langfuse_public_key')}`}
+                disabled={busy}
+                onClick={() => setIsEditingPublicKey(true)}
+              >
+                <code className="text-text-primary block min-w-0 truncate font-mono text-sm">
+                  {displayPublicKey}
+                </code>
+              </button>
+            )}
+            {publicKeyInputVisible && (
+              <Input
+                ref={publicKeyInputRef}
+                id="langfuse-public-token"
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-bwignore="true"
+                data-form-type="other"
+                value={publicKey}
+                disabled={busy}
+                placeholder="pk-lf-..."
+                onChange={(e) => {
+                  connectionTestRequestRef.current += 1;
+                  const nextPublicKey = e.target.value;
+                  setPublicKey(nextPublicKey);
+                  if (
+                    secretConfigured &&
+                    nextPublicKey.trim() !== (connectionStatus?.publicKey ?? '')
+                  ) {
+                    setIsEditingSecretKey(true);
+                  }
+                  setConnectionTestState('unverified');
+                  setConnectionTestMessage('');
+                }}
+              />
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="langfuse-private-token">{localize('com_ui_langfuse_secret_key')}</Label>
+            {secretConfigured && !isEditingSecretKey && (
+              <button
+                type="button"
+                className="border-border-light hover:border-border-medium focus-visible:ring-ring-primary w-full rounded-lg border px-3 py-2 text-start focus-visible:ring-2 focus-visible:outline-hidden"
+                aria-label={`${localize('com_ui_edit')} ${localize('com_ui_langfuse_secret_key')}`}
+                disabled={busy}
+                onClick={() => setIsEditingSecretKey(true)}
+              >
+                <code className="text-text-primary block min-w-0 truncate font-mono text-sm">
+                  {connectionStatus?.secretKeyPreview}
+                </code>
+              </button>
+            )}
+            {secretInputVisible && (
+              <SecretInput
+                ref={secretKeyInputRef}
+                id="langfuse-private-token"
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-bwignore="true"
+                data-form-type="other"
+                value={secretKey}
+                disabled={busy}
+                placeholder="sk-lf-..."
+                onChange={(e) => {
+                  connectionTestRequestRef.current += 1;
+                  setSecretKey(e.target.value);
+                  setConnectionTestState('unverified');
+                  setConnectionTestMessage('');
+                }}
+              />
+            )}
+          </div>
+
+          <div className="flex min-h-9 items-center justify-end gap-2">
+            {isEditing ? (
+              <Button variant="submit" disabled={!canSubmit || busy} onClick={handleSave}>
+                {testMutation.isLoading ? (
+                  <span className="flex items-center gap-2">
+                    <Spinner className="h-4 w-4" />
+                    {localize('com_ui_langfuse_testing')}
+                  </span>
+                ) : (
+                  localize('com_ui_save')
+                )}
+              </Button>
+            ) : (
+              <Button
+                variant={connectionStatus?.enabled === true ? 'outline' : 'submit'}
+                disabled={
+                  busy || (connectionStatus?.enabled !== true && !connectionDestinationAvailable)
+                }
+                onClick={handleEnabledChange}
+              >
+                {localize(
+                  connectionStatus?.enabled === true
+                    ? 'com_ui_langfuse_disable'
+                    : 'com_ui_langfuse_enable',
+                )}
+              </Button>
+            )}
+          </div>
+        </>
+      )}
+
+      {connectionStatus?.promptSync?.available === true && (
+        <div className="border-border-light flex flex-col gap-2 border-t pt-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-0.5">
+              <Label id="langfuse-prompt-sync-label">
+                {localize('com_ui_langfuse_prompt_sync')}
+              </Label>
+              <span className="text-text-secondary text-xs">
+                {localize('com_ui_langfuse_prompt_sync_description')}
+              </span>
+            </div>
+            <Switch
+              checked={connectionStatus.promptSync.enabled}
+              onCheckedChange={handlePromptSyncChange}
+              disabled={isSavingStatus || syncPromptsMutation.isLoading}
+              aria-labelledby="langfuse-prompt-sync-label"
+            />
+          </div>
+          {promptSyncError && (
+            <p className="text-text-destructive text-xs">
+              {localize('com_ui_langfuse_prompt_sync_error')}
+            </p>
+          )}
+          {connectionStatus.promptSync.enabled && (
+            <div className="flex flex-wrap items-center gap-2">
+              {canManagePrompts && (
+                <Button variant="submit" size="sm" disabled={busy} onClick={handleSyncPrompts}>
+                  {syncPromptsMutation.isLoading ? (
+                    <span className="flex items-center gap-2">
+                      <Spinner className="h-4 w-4" />
+                      {localize('com_ui_langfuse_prompt_sync_running')}
+                    </span>
+                  ) : (
+                    localize('com_ui_langfuse_prompt_sync_run')
+                  )}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => setIsPromptsDialogOpen(true)}
+              >
+                {localize('com_ui_langfuse_prompt_sync_open')}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {connectionStatus?.promptSync?.enabled === true && (
+        <LangfusePromptsDialog open={isPromptsDialogOpen} onOpenChange={setIsPromptsDialogOpen} />
+      )}
     </div>
   );
 }

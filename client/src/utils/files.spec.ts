@@ -17,6 +17,15 @@ describe('hasIncompleteFiles', () => {
     expect(hasIncompleteFiles(files)).toBe(true);
   });
 
+  it('allows sending a pending paste that has a synchronous inline fallback', () => {
+    const files = new Map<string, ExtendedFile>([
+      ['paste', { ...createFile('paste', 0), pastedText: 'the exact pasted text' }],
+    ]);
+    expect(hasIncompleteFiles(files)).toBe(false);
+    files.set('upload', createFile('upload', 0.2));
+    expect(hasIncompleteFiles(files)).toBe(true);
+  });
+
   it('returns false as soon as every attachment is complete', () => {
     const files = new Map([
       ['first', createFile('first', 1)],

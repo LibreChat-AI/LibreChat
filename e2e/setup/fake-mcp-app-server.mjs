@@ -13,6 +13,7 @@ import {
   registerAppTool,
 } from '@modelcontextprotocol/ext-apps/server';
 import { z } from 'zod/v4';
+import { keepIdleConnections } from './keepalive.js';
 
 const require = createRequire(import.meta.url);
 const HOST = '127.0.0.1';
@@ -427,6 +428,7 @@ const httpServer = http.createServer(async (req, res) => {
   }
 });
 
+keepIdleConnections(httpServer);
 httpServer.listen(PORT, HOST, () => {
   console.log(`[e2e] MCP App fixture listening on ${ORIGIN}/mcp`);
 });

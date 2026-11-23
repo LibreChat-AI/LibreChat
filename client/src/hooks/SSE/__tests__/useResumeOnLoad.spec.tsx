@@ -1,7 +1,8 @@
 import { RecoilRoot } from 'recoil';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
+import { useResumeOnLoad, pendingApprovalActionFamily } from '@librechat/chat/react';
+import { Constants, ContentTypes, QueryKeys, RetentionMode } from 'librechat-data-provider';
 import { isSubmittingFamily, resetSubmitting, submissionByIndex } from '@librechat/chat/react';
 import {
   Provider as JotaiProvider,
@@ -28,18 +29,20 @@ import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-dat
 import type { QueuedMessage, PendingSteer, DetachedRun } from '@librechat/chat';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
+import { usePaneConversation } from '~/routes/ChatSettings';
+import { StreamHostTestProvider } from 'test/streamHost';
 import { SteerHostTestProvider } from 'test/steerHost';
-import useResumeOnLoad from '../useResumeOnLoad';
+import { ChatHostTestProvider } from 'test/chatHost';
 import store from '~/store';
 
 const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();
 const mockUseAgentQueuedTurns = jest.fn();
 const mockExtendActiveJobsGrace = jest.fn();
-let mockStartupConfig: { interface?: { retentionMode?: string } } | undefined;
+let mockStartupConfig: { interface?: { retentionMode?: RetentionMode } } | undefined;
 let mockStartupConfigSettled = true;
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
@@ -62,7 +65,6 @@ jest.mock('~/data-provider', () => ({
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS: jest.requireActual('~/data-provider/SSE/queries')
     .ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
   extendActiveJobsGrace: () => mockExtendActiveJobsGrace(),
-  useGetStartupConfig: () => ({ data: mockStartupConfig, isFetched: mockStartupConfigSettled }),
   streamStatusQueryKey: (conversationId: string) => ['streamStatus', conversationId],
 }));
 
@@ -211,12 +213,28 @@ function renderUseResumeOnLoad({
       <JotaiProvider store={jotaiStore}>
         <RecoilRoot initializeState={initializeState}>
           <SteerHostTestProvider>
-            <SubmissionProbe />
-            <SubmissionStartProbe />
-            <SiblingIndexProbe />
-            <PendingSteersProbe />
-            <QueuedMessagesProbe />
-            {children}
+            <ChatHostTestProvider>
+              <StreamHostTestProvider>
+                <SubmissionProbe />
+                <SubmissionStartProbe />
+                <SiblingIndexProbe />
+                <PendingSteersProbe />
+                <QueuedMessagesProbe />
+                <ChatSettingsContext.Provider
+                  value={{
+                    ...defaultChatSettings,
+                    usePaneConversation,
+                    config: {
+                      ...defaultChatSettings.config,
+                      retentionMode: mockStartupConfig?.interface?.retentionMode,
+                      loaded: mockStartupConfigSettled,
+                    },
+                  }}
+                >
+                  {children}
+                </ChatSettingsContext.Provider>
+              </StreamHostTestProvider>
+            </ChatHostTestProvider>
           </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>
@@ -466,7 +484,7 @@ describe('useResumeOnLoad', () => {
      *  `isTemporary: false`, but the resume converts it; the rebuilt submission must
      *  already treat it as hidden so it never bumps the chat in the history caches. */
     it('treats a pre-policy run as temporary once retention is forced', async () => {
-      mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+      mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
       const observedSubmissions: Array<TSubmission | null> = [];
       mockUseStreamStatus.mockReturnValue({
         ...ACTIVE_STATUS,
@@ -509,7 +527,7 @@ describe('useResumeOnLoad', () => {
         });
         expect(observedSubmissions.filter(Boolean)).toHaveLength(0);
 
-        mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+        mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
         mockStartupConfigSettled = true;
         rerender();
         await act(async () => {

@@ -21,7 +21,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
             {headerGroup.headers.map((header) => (
               <th
                 key={header.id}
-                className="border-border-light bg-surface-primary text-text-secondary text-2xs sticky top-0 z-10 border-b py-2 pr-3 text-left font-medium tracking-wide uppercase"
+                className="border-border-light bg-surface-primary text-text-secondary text-2xs sticky top-0 z-10 border-b py-2 pe-3 text-start font-medium tracking-wide uppercase"
               >
                 {header.isPlaceholder
                   ? null
@@ -38,7 +38,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
             className="border-border-light hover:bg-surface-secondary border-b transition-colors last:border-0"
           >
             {row.getVisibleCells().map((cell) => (
-              <td key={cell.id} className="py-2 pr-3 align-middle">
+              <td key={cell.id} className="py-2 pe-3 align-middle">
                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
               </td>
             ))}

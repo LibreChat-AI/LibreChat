@@ -1,37 +1,43 @@
-const mockWarnOnMissingSearchTokens = jest.fn();
+const mockCheckStartupMigrations = jest.fn();
 const mockCheckAgentPermissionsMigration = jest.fn();
 const mockCheckPromptPermissionsMigration = jest.fn();
+const mockWarnOnMissingSearchTokens = jest.fn();
+const mockRunAsSystem = jest.fn((fn) => fn());
 
 jest.mock('@librechat/data-schemas', () => ({
-  logger: { error: jest.fn() },
+  runAsSystem: (fn) => mockRunAsSystem(fn),
   warnOnMissingSearchTokens: (...args) => mockWarnOnMissingSearchTokens(...args),
 }));
 jest.mock('@librechat/api', () => ({
-  logAgentMigrationWarning: jest.fn(),
-  logPromptMigrationWarning: jest.fn(),
+  checkStartupMigrations: (...args) => mockCheckStartupMigrations(...args),
   checkAgentPermissionsMigration: (...args) => mockCheckAgentPermissionsMigration(...args),
   checkPromptPermissionsMigration: (...args) => mockCheckPromptPermissionsMigration(...args),
 }));
 jest.mock('~/models', () => ({ findRoleByIdentifier: jest.fn() }));
 
+const mongoose = require('mongoose');
+const { findRoleByIdentifier } = require('~/models');
 const { checkMigrations } = require('../migration');
 
-describe('checkMigrations', () => {
-  it('starts the search token probe while the permission checks are still running', async () => {
-    let finishAgentCheck;
-    mockCheckAgentPermissionsMigration.mockReturnValue(
-      new Promise((resolve) => {
-        finishAgentCheck = resolve;
-      }),
-    );
-    mockCheckPromptPermissionsMigration.mockResolvedValue({});
-    mockWarnOnMissingSearchTokens.mockResolvedValue(undefined);
+it('runs the startup checks as the system against the app models', async () => {
+  mockCheckStartupMigrations.mockImplementationOnce(async (checks) => {
+    await checks.probeSearchTokens();
+    await checks.checkAgentPermissions();
+    await checks.checkPromptPermissions();
+  });
 
-    const done = checkMigrations();
-    expect(mockWarnOnMissingSearchTokens).toHaveBeenCalledTimes(1);
+  await expect(checkMigrations()).resolves.toBeUndefined();
 
-    finishAgentCheck({});
-    await done;
-    expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledTimes(1);
+  expect(mockRunAsSystem).toHaveBeenCalledTimes(1);
+  expect(mockWarnOnMissingSearchTokens).toHaveBeenCalledWith(mongoose.connection);
+  expect(mockCheckAgentPermissionsMigration).toHaveBeenCalledWith({
+    mongoose,
+    methods: { findRoleByIdentifier },
+    AgentModel: mongoose.models.Agent,
+  });
+  expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledWith({
+    mongoose,
+    methods: { findRoleByIdentifier },
+    PromptGroupModel: mongoose.models.PromptGroup,
   });
 });

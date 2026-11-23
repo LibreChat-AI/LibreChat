@@ -277,6 +277,31 @@ export async function storeAndStripChallenge(
   }
 }
 
+/** The part of an `openid-client` configuration's server metadata that reports PKCE support. */
+export interface PkceSupportMetadata {
+  supportsPKCE(method?: string): boolean;
+}
+
+/**
+ * Keeps the admin route's `state` on an OpenID authorization request.
+ *
+ * openid-client's Passport Strategy replaces the `state` it is given with a random one when the
+ * IdP's discovery metadata does not list S256 in `code_challenge_methods_supported` (Azure Entra
+ * ID omits it) and the request carries no `nonce`. The admin panel's PKCE challenge is cached
+ * under `pkce:<state>`, so a replaced state leaves the callback unable to find it. With a nonce,
+ * openid-client keeps the state and checks the nonce against the ID token on the callback.
+ */
+export function preserveAdminOAuthState(
+  params: URLSearchParams,
+  metadata: PkceSupportMetadata,
+): URLSearchParams {
+  if (!params.has('state') || params.has('nonce') || metadata.supportsPKCE()) {
+    return params;
+  }
+  params.set('nonce', crypto.randomBytes(32).toString('base64url'));
+  return params;
+}
+
 /**
  * Normalizes a URL path by removing any trailing slash, except for the root path.
  * @returns The normalized path.

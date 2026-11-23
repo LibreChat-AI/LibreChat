@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { logger } from '@librechat/data-schemas';
-import { filterPiiCustomPatternSchema } from 'librechat-data-provider';
+import { filterPiiCustomPatternSchema, setPiiRegexProgramSizer } from 'librechat-data-provider';
 import type {
   OutputProtectionResult,
   OutputProtectionTarget,
@@ -8,8 +8,12 @@ import type {
 } from 'librechat-data-provider';
 import type { TextContentFragment } from '../types';
 import { createPiiTextTransformer, PiiTransformationError } from '../transform';
+import { getPiiRegexProgramSize } from '../programSize';
 import { inspectContent } from '../runtime';
 import corpus from './cases.json';
+
+/** The corpus is parsed at module scope, so register the server's engine before it runs. */
+setPiiRegexProgramSizer(getPiiRegexProgramSize);
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() },

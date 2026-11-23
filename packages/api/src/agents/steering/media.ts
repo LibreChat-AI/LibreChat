@@ -10,6 +10,7 @@ import type { SteerRequestUser } from './refs';
 import { toSteerFileRef, collectFileIds, buildOwnerFilter } from './refs';
 import { isAttachmentObjectNotFoundError } from '~/files/encode/utils';
 import { getReferencedQuotes, mergeQuotedText } from '~/utils';
+import { sanitizeFileForTransmit } from '../../utils/message';
 import { prependFileContext } from '../client';
 
 /** The BaseClient encode surface the steer media pipeline reuses. */
@@ -112,7 +113,9 @@ async function encodeSteerContent({
     ? formatted.content
     : [{ type: ContentTypes.TEXT, text: formatted.content ?? modelText }];
   const refSource = Array.isArray(validated) && validated.length > 0 ? validated : fileDocs;
-  const files = refSource.map(toSteerFileRef).filter((ref): ref is Partial<TFile> => ref != null);
+  const files = refSource
+    .map((doc) => toSteerFileRef(sanitizeFileForTransmit(doc)))
+    .filter((ref): ref is Partial<TFile> => ref != null);
   return { content, files };
 }
 

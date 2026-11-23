@@ -1,5 +1,6 @@
 jest.mock('~/models', () => ({
   getRoleByName: jest.fn(),
+  findSharedLinkById: jest.fn(),
   findMCPServerByObjectId: jest.fn(),
   getSkillById: jest.fn(),
 }));
@@ -34,7 +35,6 @@ jest.mock('~/server/controllers/PermissionsController', () => ({
 
 const express = require('express');
 const request = require('supertest');
-const mongoose = require('mongoose');
 const {
   SystemRoles,
   ResourceType,
@@ -49,12 +49,11 @@ const { updateResourcePermissions } = require('~/server/controllers/PermissionsC
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { canAccessResource } = require('~/server/middleware');
 const accessPermissionsRouter = require('./accessPermissions');
-const { getRoleByName } = require('~/models');
+const { getRoleByName, findSharedLinkById } = require('~/models');
 
 describe('Access permissions share policy', () => {
   let app;
-  const mockSharedLinkFindById = jest.fn();
-  const originalSharedLinkModel = mongoose.models.SharedLink;
+  const mockSharedLinkFindById = findSharedLinkById;
 
   const resourceId = '507f1f77bcf86cd799439011';
   const sharePolicyCases = [
@@ -135,18 +134,11 @@ describe('Access permissions share policy', () => {
   };
 
   const mockSharedLinkOwner = (ownerId = 'owner-user') => {
-    mockSharedLinkFindById.mockReturnValue({
-      lean: jest.fn().mockResolvedValue({ user: ownerId }),
-    });
+    mockSharedLinkFindById.mockResolvedValue({ user: ownerId });
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    if (mongoose.models.SharedLink) {
-      mongoose.models.SharedLink.findById = mockSharedLinkFindById;
-    } else {
-      mongoose.models.SharedLink = { findById: mockSharedLinkFindById };
-    }
     hasCapability.mockResolvedValue(false);
 
     app = express();
@@ -156,14 +148,6 @@ describe('Access permissions share policy', () => {
       next();
     });
     app.use('/api/permissions', accessPermissionsRouter);
-  });
-
-  afterAll(() => {
-    if (originalSharedLinkModel) {
-      mongoose.models.SharedLink = originalSharedLinkModel;
-    } else {
-      delete mongoose.models.SharedLink;
-    }
   });
 
   it.each(sharePolicyCases)(
@@ -336,5 +320,15 @@ describe('Access permissions share policy', () => {
 
     expect(response.status).toBe(200);
     expect(updateResourcePermissions).toHaveBeenCalledTimes(1);
+  });
+  it('fails closed when the canonical owner query rejects', async () => {
+    allowSharedLinkSharing();
+    findSharedLinkById.mockRejectedValueOnce(new Error('database secret'));
+    const response = await request(app)
+      .put(`/api/permissions/${ResourceType.SHARED_LINK}/${resourceId}`)
+      .send({ removed: [{ type: PrincipalType.USER, id: 'owner-user' }] });
+    expect(response.status).toBe(500);
+    expect(response.body.message).toBe('Failed to validate shared link owner permissions');
+    expect(updateResourcePermissions).not.toHaveBeenCalled();
   });
 });

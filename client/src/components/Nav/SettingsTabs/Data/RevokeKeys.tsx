@@ -55,7 +55,7 @@ export const RevokeKeys = ({
           title={localize('com_ui_revoke_keys')}
           className="max-w-[28.125rem]"
           main={
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               {localize('com_ui_revoke_keys_confirm')}
             </Label>
           }

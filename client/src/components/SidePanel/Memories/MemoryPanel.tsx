@@ -220,7 +220,7 @@ export default function MemoryPanel() {
                 size="sm"
                 variant="outline"
                 className={cn(
-                  showUsageBadge ? 'ml-auto' : 'w-full',
+                  showUsageBadge ? 'ms-auto' : 'w-full',
                   referenceSavedMemories && 'bg-surface-hover hover:bg-surface-hover',
                 )}
                 onClick={() => handleMemoryToggle(!referenceSavedMemories)}

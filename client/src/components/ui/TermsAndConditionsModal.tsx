@@ -29,7 +29,7 @@ const TermsAndConditionsModal = ({
       onOpenChange(false);
     },
     onError: () => {
-      showToast({ message: 'Failed to accept terms' });
+      showToast({ message: localize('com_ui_terms_accept_failed'), status: 'error' });
     },
   });
 

@@ -60,7 +60,7 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
       /* The highlight is painted by the cells, not the row: `border-radius` has no
          effect on a table row, so rounding the outer cells is what gives the hover
          its pill shape. */
-      className="group border-0 hover:bg-transparent [&>*:first-child]:rounded-l-lg [&>*:last-child]:rounded-r-lg"
+      className="group border-0 hover:bg-transparent [&>*:first-child]:rounded-s-lg [&>*:last-child]:rounded-e-lg"
       style={style}
     >
       {row.getVisibleCells().map((cell) => {

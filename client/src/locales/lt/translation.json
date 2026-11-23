@@ -373,7 +373,7 @@
   "com_error_google_tool_conflict": "Integruotų Google įrankių naudojimas su išoriniais įrankiais nepalaikomas. Išjunkite integruotus įrankius arba išorinius įrankius.",
   "com_error_heic_conversion": "Nepavyko konvertuoti HEIC vaizdo į JPEG. Pabandykite konvertuoti vaizdą rankiniu būdu arba naudokite kitą formatą.",
   "com_error_illegal_model_request": "Modelis „{{0}}\" nepasiekiamas {{1}}. Pasirinkite kitą modelį.",
-  "com_error_input_length": "Paskutinės žinutės tokenų skaičius per didelis, viršija tokenų limitą arba jūsų tokenų limito parametrai sukonfigūruoti neteisingai, neigiamai veikdami konteksto langą. Daugiau informacijos: {{0}}. Sutrumpinkite žinutę, pakoreguokite maksimalų konteksto dydį pokalbio parametruose arba šakokite pokalbį, kad galėtumėte tęsti.",
+  "com_error_input_length": "Jūsų žinutei reikia {{0}} žetonų, tačiau šiame pokalbyje leidžiama {{1}}.",
   "com_error_invalid_agent_provider": "„{{0}}\" tiekėjas nepasiekiamas naudojimui su agentais. Eikite į agento nustatymus ir pasirinkite šiuo metu prieinamą tiekėją.",
   "com_error_invalid_base_url": "Jūsų pateiktas pagrindinis URL nurodo ribotą adresą. Naudokite tinkamą išorinį URL ir bandykite dar kartą.",
   "com_error_invalid_user_key": "Pateiktas netinkamas raktas. Pateikite tinkamą raktą ir bandykite dar kartą.",
@@ -381,8 +381,8 @@
   "com_error_models_not_loaded": "Modelių konfigūracijos nepavyko įkelti. Atnaujinkite puslapį ir bandykite dar kartą.",
   "com_error_moderation": "Atrodo, kad pateiktas turinys buvo pažymėtas mūsų moderavimo sistemos kaip neatitinkantis mūsų bendruomenės gairių. Negalime tęsti šia konkrečia tema. Jei turite kitų klausimų ar temų, kurias norėtumėte nagrinėti, redaguokite savo žinutę arba pradėkite naują pokalbį.",
   "com_error_no_base_url": "Pagrindinis URL nerastas. Pateikite jį ir bandykite dar kartą.",
-  "com_error_no_user_key": "Raktas nerastas. Pateikite raktą ir bandykite dar kartą.",
-  "com_error_refusal": "Atsakymą atmetė saugos filtrai. Perrašykite žinutę ir bandykite dar kartą. Jei su tuo dažnai susiduriate naudodami Claude Sonnet 4.5 arba Opus 4.1, galite išbandyti Sonnet 4, kuris turi kitokius naudojimo apribojimus.",
+  "com_error_no_user_key": "Norėdami siųsti žinutes, pridėkite savo {{0}} API raktą.",
+  "com_error_refusal": "{{0}} atsisakė atsakyti į šią užklausą. Perrašykite žinutę ir bandykite dar kartą.",
   "com_error_stream_expired": "Atsakymo srautas baigė galioti arba jau baigtas. Bandykite dar kartą.",
   "com_file_pages": "Puslapiai: {{pages}}",
   "com_file_source": "Failas",
@@ -1889,5 +1889,6 @@
   "com_ui_zoom_in": "Padidinti",
   "com_ui_zoom_level": "Mastelio lygis",
   "com_ui_zoom_out": "Sumažinti",
-  "com_user_message": "Jūs"
+  "com_user_message": "Jūs",
+  "com_ui_feedback_tag_other_issue": "Kita problema"
 }

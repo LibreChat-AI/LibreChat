@@ -38,8 +38,10 @@ Standard labels for chart-managed workloads.
 {{- $root := .root -}}
 helm.sh/chart: {{ include "librechat.chart" $root }}
 {{ .selectorLabels }}
-{{- if $root.Chart.AppVersion }}
-app.kubernetes.io/version: {{ $root.Chart.AppVersion | quote }}
+{{- $version := $root.Chart.AppVersion -}}
+{{- if hasKey . "version" -}}{{- $version = .version -}}{{- end -}}
+{{- if $version }}
+app.kubernetes.io/version: {{ $version | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ $root.Release.Service }}
 {{- end -}}
@@ -244,3 +246,55 @@ Define apiVersion of HorizontalPodAutoscaler
 {{- print "autoscaling/v2beta1" -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Keep the gateway suffix even when the application name reaches 63 characters. */}}
+{{- define "librechat.channelGateway.fullname" -}}
+{{- $base := include "librechat.fullname" . -}}
+{{- $name := printf "%s-channel-gateway" $base -}}
+{{- if gt (len $name) 63 -}}
+{{- $name = printf "%s-channel-gateway-%s" ($base | trunc 38 | trimSuffix "-") ($base | sha256sum | trunc 8) -}}
+{{- end -}}
+{{- if eq $name $base -}}
+{{- fail "The gateway name collides with the application name; choose a different fullnameOverride" -}}
+{{- end -}}
+{{- $name -}}
+{{- end }}
+
+{{- define "librechat.channelGateway.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "librechat.channelGateway.fullname" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "librechat.channelGateway.labels" -}}
+{{- $version := include "librechat.channelGateway.imageTag" . | trunc 63 -}}
+{{- $version = regexReplaceAll "^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$" $version "" -}}
+{{- include "librechat.standardLabels" (dict "root" . "selectorLabels" (include "librechat.channelGateway.selectorLabels" .) "version" $version) }}
+{{- end }}
+
+{{/* Shared platform controls; application secrets, storage and probes stay workload-owned. */}}
+{{- define "librechat.podSettings" -}}
+{{- $settings := dict "serviceAccountName" (include "librechat.serviceAccountName" .) -}}
+{{- range $key := list "hostAliases" "dnsPolicy" "dnsConfig" "imagePullSecrets" "nodeSelector" "affinity" "tolerations" -}}
+{{- with index $.Values $key -}}{{- $_ := set $settings $key . -}}{{- end -}}
+{{- end -}}
+{{- if kindIs "bool" .Values.enableServiceLinks -}}
+{{- $_ := set $settings "enableServiceLinks" .Values.enableServiceLinks -}}
+{{- end -}}
+{{- toYaml $settings -}}
+{{- end }}
+
+{{- define "librechat.channelGateway.imageTag" -}}
+{{- $tag := required "Set image.tag to a published LibreChat release containing Channels before enabling channelGateway" .Values.image.tag -}}
+{{- .Values.channelGateway.image.tag | default $tag -}}
+{{- end }}
+
+{{/* Match the gateway runtime title contract, including UTF-16 length. */}}
+{{- define "librechat.channelGateway.appTitle" -}}
+{{- $raw := .Values.channelGateway.appTitle | default (get (default dict .Values.librechat.configEnv) "APP_TITLE") | default "LibreChat" | toString -}}
+{{- $title := regexReplaceAll "^[\\s\\p{Z}\\x{FEFF}]+|[\\s\\p{Z}\\x{FEFF}]+$" $raw "" -}}
+{{- $units := add (len (regexFindAll "." $title -1)) (len (regexFindAll "[\\x{10000}-\\x{10FFFF}]" $title -1)) -}}
+{{- if or (empty $title) (gt $units 40) (regexMatch "[<>|\\p{Cc}]" $title) -}}
+{{- fail "Set channelGateway.appTitle to a compatible title: 1-40 UTF-16 characters, without <, >, | or control characters" -}}
+{{- end -}}
+{{- $title -}}
+{{- end }}

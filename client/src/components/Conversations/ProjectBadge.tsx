@@ -12,7 +12,7 @@ function ProjectBadge({ projectId, labelId }: { projectId: string; labelId: stri
 
   return (
     <span
-      className="text-text-secondary mr-1 flex shrink-0 items-center"
+      className="text-text-secondary me-1 flex shrink-0 items-center"
       title={label}
       data-testid="convo-project-badge"
     >

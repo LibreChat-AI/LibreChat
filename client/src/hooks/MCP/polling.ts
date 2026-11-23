@@ -8,6 +8,7 @@ import type {
 export function applyMCPDiscoveryAuthorizationState(
   connectionStatus: Record<string, MCPServerStatus> | undefined,
   discoveredTools: MCPServersResponse | undefined,
+  knownGenerations: Readonly<Record<string, string>> = {},
 ): Record<string, MCPServerStatus> | undefined {
   const reauthRequired = Object.entries(discoveredTools?.servers ?? {})
     .filter(([, server]) => server.authorizationState === 'reauth_required')
@@ -21,7 +22,7 @@ export function applyMCPDiscoveryAuthorizationState(
   for (const serverName of reauthRequired) {
     const discoveryGeneration = discoveredTools?.servers[serverName]?.authorizationGeneration;
     const current = nextStatus?.[serverName];
-    const statusGeneration = current?.authorizationGeneration;
+    const statusGeneration = knownGenerations[serverName] ?? current?.authorizationGeneration;
     const statusIsActive =
       current?.connectionState === 'connecting' || current?.authorizationState === 'authorizing';
     if (statusIsActive) {
@@ -45,6 +46,7 @@ export function applyMCPDiscoveryAuthorizationState(
       requiresOAuth: true,
       connectionState: 'disconnected',
       authorizationState: 'needs_authorization',
+      connectionStateSource: 'authorization',
     };
   }
   return changed ? nextStatus : connectionStatus;
@@ -74,6 +76,7 @@ export function applyPendingOAuthState(
       requiresOAuth: true,
       connectionState: 'connecting',
       authorizationState: 'authorizing',
+      connectionStateSource: 'authorization',
     };
   }
   return nextStatus ?? connectionStatus;

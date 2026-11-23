@@ -15,14 +15,6 @@ describe('ProviderIcon', () => {
     expect(container.querySelector('svg')).toHaveAttribute('fill', 'currentColor');
   });
 
-  it('renders asset art as an image from the packaged module', () => {
-    render(<ProviderIcon provider={ProviderId.lemonade} />);
-    expect(screen.getByRole('img', { name: 'AMD Lemonade' })).toHaveAttribute(
-      'src',
-      'assets/lemonade.png',
-    );
-  });
-
   it('gives monochrome art a theme token so it follows light and dark', () => {
     const { container } = render(<ProviderIcon provider={ProviderId.xai} />);
     expect(container.firstChild).toHaveClass('text-text-primary');

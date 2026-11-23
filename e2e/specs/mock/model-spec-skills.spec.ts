@@ -181,7 +181,7 @@ async function deleteInaccessibleSkill(skillId: string) {
 }
 
 test.describe('model spec skills', () => {
-  test('loads accessible configured skills and skips missing or inaccessible names', async ({
+  test('loads accessible configured skills and skips missing or inaccessible names @scenario:model-spec-skills-load', async ({
     page,
   }) => {
     test.setTimeout(120000);

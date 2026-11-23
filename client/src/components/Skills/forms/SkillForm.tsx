@@ -196,7 +196,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                     id="skill-name"
                     type="text"
                     readOnly={readOnly}
-                    className="peer text-text-primary mr-2 w-full p-2 text-2xl"
+                    className="peer text-text-primary me-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}
@@ -206,7 +206,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                   />
                   <label
                     htmlFor="skill-name"
-                    className="bg-surface-primary-alt text-text-secondary peer-focus:text-text-primary pointer-events-none absolute -top-1 left-3 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75"
+                    className="bg-surface-primary-alt text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-3 -top-1 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75 rtl:origin-right"
                   >
                     {localize('com_ui_name')}*
                   </label>
@@ -262,7 +262,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
               <AlertTriangle className="size-4" aria-hidden="true" />
               {localize('com_ui_skill_warnings')}
             </div>
-            <ul className="ml-6 list-disc">
+            <ul className="ms-6 list-disc">
               {warnings.map((w) => (
                 <li key={`${w.field}:${w.code}`}>{w.message}</li>
               ))}
@@ -291,7 +291,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                   className="mb-1 text-sm font-medium"
                 >
                   {localize('com_ui_description')}
-                  <span className="text-text-destructive ml-0.5">*</span>
+                  <span className="text-text-destructive ms-0.5">*</span>
                 </Label>
                 <TextareaAutosize
                   variant="framed"

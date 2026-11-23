@@ -1,0 +1,573 @@
+import { z } from 'zod';
+import jwt from 'jsonwebtoken';
+import { createServer } from 'node:http';
+import WebSocket, { WebSocketServer } from 'ws';
+import {
+  Run,
+  createHostToolBindings,
+  HookRegistry,
+  HOOK_EVENTS,
+  GraphEvents,
+} from '@librechat/agents';
+import type {
+  HostModelDescriptor,
+  EventHandler,
+  AggregatedHookResult,
+  HookOutput,
+} from '@librechat/agents';
+import type { Duplex } from 'node:stream';
+import type { Server } from 'node:http';
+import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
+import type { RuntimeRecoveryOptions } from './recovery/server';
+import type { SdkAgentIdentity } from './identity';
+import { createWorkerModelLifecycle, supportsModelInvocationContext } from './admission';
+import { policyDescriptorSchema, createWorkerProviderTextPolicy } from './policy';
+import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
+import { createWorkerFileChannel, fileChannelSchema } from './files';
+import { remoteSdkLimits, isRemoteSdkSecret } from './types';
+import { RECOVERY_HEADER_BYTES } from './recovery/socket';
+import { createWorkerToolService } from './hostTools';
+import { RemoteSdkCheckpointer } from './checkpoint';
+import { createWorkerModelChannel } from './model';
+import { sendSnapshot } from './snapshot';
+import { createSdkPeer } from './peer';
+
+const identitySchema = z
+  .object({
+    runtimeId: z.string().min(1),
+    agentId: z.string().min(1),
+    runId: z.string().min(1),
+    userId: z.string().min(1),
+    tenantId: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+  })
+  .strict();
+const claimSchema = z.object({
+  protocolVersion: z.literal(1),
+  recovery: recoveryClaimSchema.optional(),
+  identity: identitySchema,
+  threadId: z.string().min(1),
+  invocationId: z.string().uuid(),
+  iat: z.number(),
+  exp: z.number(),
+});
+const startSchema = z.object({
+  transportVersion: z.literal(2),
+  files: fileChannelSchema.optional(),
+  modelAdmission: z
+    .object({ version: z.literal(1), maxEntries: z.number().int().min(16).max(65536) })
+    .strict()
+    .optional(),
+  // The SDK HostChatModel constructor owns descriptor validation.
+  model: z
+    .object({
+      version: z.literal(1),
+      publicKey: z.string().length(60),
+      descriptor: z.custom<HostModelDescriptor>(),
+    })
+    .strict()
+    .optional(),
+  providerText: policyDescriptorSchema.optional(),
+  hostTools: z
+    .array(
+      z.object({
+        reference: z.string().min(1),
+        definition: z.object({ name: z.string().min(1) }).passthrough(),
+      }),
+    )
+    .optional(),
+  operation: z.enum(['start', 'resume']),
+  input: z.object({ messages: z.array(z.unknown()) }).passthrough(),
+  resume: z.unknown().optional(),
+  commandOptions: z
+    .object({ update: z.unknown().optional(), goto: z.unknown().optional() })
+    .optional(),
+  options: z.object({
+    configurable: z.record(z.string(), z.unknown()),
+    recursionLimit: z.number().int().positive().optional(),
+  }),
+  handlers: z.array(z.nativeEnum(GraphEvents)).max(128),
+  hooks: z.array(z.enum(HOOK_EVENTS)),
+  checkpoint: z.boolean(),
+  streamLimits: z
+    .object({
+      maxToolCallArgBytes: z.number().nonnegative().optional(),
+      maxToolCallArgBytesByTool: z.record(z.string(), z.number().nonnegative()).optional(),
+      maxDeltaEventsPerTurn: z.number().nonnegative().optional(),
+    })
+    .strict()
+    .optional(),
+  humanInTheLoop: z.object({ enabled: z.boolean() }).passthrough().optional(),
+  agent: z.object({
+    id: z.string(),
+    name: z.string().optional(),
+    instructions: z.string().optional(),
+    model: z
+      .object({
+        provider: z.string().min(1),
+        name: z.string().min(1),
+        streaming: z.boolean(),
+      })
+      .strict()
+      .optional(),
+  }),
+});
+
+export interface RemoteSdkServerOptions extends Partial<RemoteSdkLimits> {
+  recovery?: RuntimeRecoveryOptions;
+  runtimeId: string;
+  secret: string;
+  /** Authorize the signed saved-agent identity against this worker's deployment policy. */
+  authorize: (
+    identity: Readonly<SdkAgentIdentity>,
+    signal: AbortSignal,
+  ) => boolean | Promise<boolean>;
+  createRun: (input: RemoteSdkFactoryInput) => Promise<SdkRun>;
+  maxConcurrentRuns?: number;
+  maxReplayEntries?: number;
+  /** Trusted operator diagnostics; errors are never forwarded over the bridge. */
+  onError?: (error: unknown) => void;
+}
+
+/** A separately hosted, operator-trusted SDK runtime. The caller owns listen/TLS and shutdown. */
+export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
+  server: Server;
+  close: () => Promise<void>;
+} {
+  if (!isRemoteSdkSecret(options.secret) || !options.runtimeId)
+    throw new Error('Invalid SDK runtime server configuration');
+  const limits = remoteSdkLimits(options);
+  if (
+    [options.maxConcurrentRuns ?? 32, options.maxReplayEntries ?? 10_000].some(
+      (value) => !Number.isSafeInteger(value) || value <= 0,
+    )
+  )
+    throw new Error('Invalid SDK runtime admission limits');
+  const server = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/healthz') {
+      res
+        .writeHead(200, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify({ protocolVersion: 1 }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  const recovery = options.recovery
+    ? createRuntimeRecovery({ ...options.recovery, ...limits, onError: options.onError })
+    : undefined;
+  const sockets = new WebSocketServer({
+    noServer: true,
+    maxPayload: limits.maxFrameBytes + (recovery ? RECOVERY_HEADER_BYTES : 0),
+    perMessageDeflate: false,
+  });
+  const seen = new Map<string, number>();
+  const active = new Set<AbortController>();
+  const admitting = new Map<Duplex, AbortController>();
+  let closing = false;
+  server.on('upgrade', (req, socket, head) => {
+    if (
+      closing ||
+      admitting.size >= (options.maxConcurrentRuns ?? 32) ||
+      sockets.clients.size + admitting.size >= 2 * (options.maxConcurrentRuns ?? 32)
+    ) {
+      socket.destroy();
+      return;
+    }
+    const admission = new AbortController();
+    admitting.set(socket, admission);
+    const abortAdmission = () => admission.abort();
+    socket.once('close', abortAdmission);
+    const deadline = setTimeout(() => {
+      admission.abort();
+      socket.destroy();
+    }, limits.connectTimeoutMs);
+    deadline.unref();
+    void (async () => {
+      const deny = () => {
+        if (!socket.destroyed)
+          socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+      };
+      if (req.url !== '/sdk') {
+        deny();
+        return;
+      }
+      let claim: z.infer<typeof claimSchema>;
+      try {
+        const auth = req.headers.authorization;
+        if (!auth?.startsWith('Bearer ')) {
+          deny();
+          return;
+        }
+        claim = claimSchema.parse(
+          jwt.verify(auth.slice(7), options.secret, {
+            algorithms: ['HS256'],
+            audience: options.runtimeId,
+            issuer: 'librechat-sdk',
+            maxAge: '60s',
+          }),
+        );
+        if (
+          claim.identity.runtimeId !== options.runtimeId ||
+          !(await options.authorize(Object.freeze(claim.identity), admission.signal))
+        ) {
+          deny();
+          return;
+        }
+      } catch {
+        deny();
+        return;
+      }
+      const now = Date.now();
+      for (const [id, expiry] of seen) if (expiry <= now) seen.delete(id);
+      if (
+        closing ||
+        claim.exp * 1000 <= now ||
+        admission.signal.aborted ||
+        socket.destroyed ||
+        seen.has(claim.invocationId) ||
+        seen.size >= (options.maxReplayEntries ?? 10_000) ||
+        (!claim.recovery && active.size >= (options.maxConcurrentRuns ?? 32))
+      ) {
+        deny();
+        return;
+      }
+      seen.set(claim.invocationId, now + 61_000);
+      if (claim.recovery && !recovery) {
+        deny();
+        return;
+      }
+      const recovered = claim.recovery
+        ? await recovery!.prepare(Object.freeze(claim.identity), claim.threadId, claim.recovery)
+        : undefined;
+      const needsEngine = recovered?.needsEngine ?? true;
+      if (
+        closing ||
+        admission.signal.aborted ||
+        socket.destroyed ||
+        (needsEngine && active.size >= (options.maxConcurrentRuns ?? 32))
+      ) {
+        if (needsEngine) recovered?.dispose();
+        deny();
+        return;
+      }
+      sockets.handleUpgrade(req, socket, head, (ws) => {
+        if (recovered && !needsEngine) {
+          recovered.attach(ws, claim.recovery!.after);
+          return;
+        }
+        const controller = recovered?.controller ?? new AbortController();
+        active.add(controller);
+        if (recovered) recovered.needsEngine = false;
+        const transport = recovered?.socket ?? ws;
+        let outcome: 'completed' | 'paused' | 'failed' | 'cancelled' = 'failed';
+        let started = false;
+        let running = false;
+        const timer = setTimeout(() => {
+          controller.abort();
+          transport.close(1000);
+        }, limits.maxRunMs);
+        timer.unref();
+        const cleanup = () => {
+          controller.abort();
+          workerFiles.dispose();
+          clearTimeout(timer);
+          if (!running) active.delete(controller);
+        };
+        transport.once('close', cleanup);
+        const workerTools = createWorkerToolService({
+          call: (method, data, _timeoutMs, signal) =>
+            peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined, signal),
+        });
+        const workerFiles = createWorkerFileChannel({
+          peer: { call: (...args) => peer.call(...args) },
+          limits,
+          signal: controller.signal,
+        });
+        const workerModel = createWorkerModelChannel({
+          peer: { call: (...args) => peer.call(...args) },
+          limits,
+          signal: controller.signal,
+        });
+        const peer = createSdkPeer(transport, {
+          ...limits,
+          timeoutMs: limits.rpcTimeoutMs,
+          onClose: cleanup,
+          onError: options.onError,
+          onFrame: async () => {
+            throw new Error('Unexpected runtime frame');
+          },
+          onCall: async (method, data, _timeoutMs, signal) => {
+            if (method === 'capabilities')
+              return {
+                transportVersion: 2,
+                hostTools: 2,
+                hostFiles: 1,
+                providerText: 1,
+                hostModel: 1,
+                builderModel: 1,
+                modelAdmission: 1,
+                ...(supportsModelInvocationContext && { modelAdmissionWithProviderText: 1 }),
+              };
+            if (method === 'files.chunk') return workerFiles.accept(data, signal);
+            if (method === 'model.chunk') return workerModel.accept(data, signal);
+            if (method === 'tool.result') return workerTools.accept(data);
+            if (method === 'tool.session') return workerTools.accept(data, 'session');
+            if (method !== 'run' || started) throw new Error('SDK execution already admitted');
+            started = true;
+            const request = startSchema.parse(data) as RemoteSdkStart;
+            if (request.modelAdmission && request.providerText && !supportsModelInvocationContext)
+              throw new Error(
+                'Combined model admission and provider-text protection is unsupported',
+              );
+            const identity = Object.freeze(claim.identity);
+            if (
+              request.agent.id !== identity.agentId ||
+              request.options.configurable?.thread_id !== claim.threadId ||
+              request.options.configurable?.run_id !== identity.runId ||
+              request.options.configurable?.user_id !== identity.userId ||
+              (claim.recovery != null &&
+                request.options.configurable?.__librechat_checkpoint_ns !==
+                  claim.recovery.generation)
+            ) {
+              throw new Error('SDK runtime identity mismatch');
+            }
+            const handlers: Record<string, EventHandler> = {};
+            for (const name of request.handlers) {
+              if (name === GraphEvents.ON_TOOL_EXECUTE)
+                throw new Error('Host tool delegation is not supported');
+              handlers[name] = {
+                handle: async (event, value, metadata) => {
+                  peer.send({ type: 'event', name: event, data: value, metadata });
+                },
+              };
+            }
+            let hooks: HookRegistry | undefined;
+            if (request.hooks.length) {
+              hooks = new HookRegistry();
+              for (const event of request.hooks)
+                hooks.register(event, {
+                  internal: true,
+                  ...(recovered ? { timeout: limits.rpcTimeoutMs } : {}),
+                  hooks: [
+                    async (input, hookSignal): Promise<HookOutput> => {
+                      const abort = () => controller.abort();
+                      hookSignal.addEventListener('abort', abort, { once: true });
+                      try {
+                        const {
+                          errors,
+                          hasHookFailures,
+                          additionalContexts,
+                          stopDecision,
+                          ...result
+                        } = (await peer.call('hook', {
+                          input,
+                          matchQuery: 'toolName' in input ? input.toolName : undefined,
+                        })) as AggregatedHookResult;
+                        if (errors.length || hasHookFailures) throw new Error('Host hook failed');
+                        return {
+                          ...result,
+                          ...(stopDecision ? { decision: stopDecision } : {}),
+                          additionalContext: additionalContexts.join('\n'),
+                        };
+                      } catch {
+                        controller.abort();
+                        throw new Error('Host policy unavailable');
+                      } finally {
+                        hookSignal.removeEventListener('abort', abort);
+                      }
+                    },
+                  ],
+                });
+            }
+            const hostFiles = request.files ? workerFiles.bind(identity, request.files) : undefined;
+            const hostTools = request.hostTools?.length
+              ? createHostToolBindings({
+                  identity,
+                  tools: request.hostTools,
+                  service: workerTools.service,
+                })
+              : undefined;
+            const providerTextProtection = request.providerText
+              ? createWorkerProviderTextPolicy({
+                  descriptor: request.providerText,
+                  identity,
+                  peer,
+                  limits,
+                })
+              : undefined;
+            if (request.modelAdmission && !request.model)
+              throw new Error('Model admission requires a host model');
+            const modelLifecycle = request.modelAdmission
+              ? createWorkerModelLifecycle(
+                  identity.agentId,
+                  request.modelAdmission.maxEntries,
+                  peer,
+                )
+              : undefined;
+            const hostModel = request.model
+              ? workerModel.bind(identity, request.model, modelLifecycle)
+              : undefined;
+            const profile = request.agent.model;
+            if (
+              profile &&
+              (!hostModel ||
+                request.model?.descriptor.provider !== profile.provider ||
+                request.model.descriptor.model !== profile.name ||
+                request.model.descriptor.streaming !== profile.streaming)
+            ) {
+              throw new Error('SDK runtime builder model mismatch');
+            }
+            const execute = async () => {
+              await recovered?.begin();
+              const run = await options.createRun({
+                identity,
+                hostTools,
+                hostFiles,
+                hostModel,
+                config: {
+                  runId: identity.runId,
+                  customHandlers: { ...handlers, ...hostTools?.customHandlers },
+                  hooks,
+                  humanInTheLoop: request.humanInTheLoop,
+                  streamLimits: request.streamLimits,
+                  providerTextProtection,
+                },
+                compileOptions: request.checkpoint
+                  ? { checkpointer: new RemoteSdkCheckpointer(peer.call) }
+                  : {},
+                signal: controller.signal,
+                agent: request.agent,
+              });
+              if (
+                !(run instanceof Run) ||
+                run.id !== identity.runId ||
+                run.Graph?.defaultAgentId !== identity.agentId
+              )
+                throw new Error('SDK runtime run identity mismatch');
+              if (
+                providerTextProtection &&
+                run.Graph.providerTextProtection !== providerTextProtection
+              )
+                throw new Error('SDK runtime omitted required provider protection');
+              if (hostModel && run.Graph.overrideModel !== hostModel)
+                throw new Error('SDK runtime omitted required host model');
+              if (profile) {
+                const context = run.Graph.agentContexts.get(identity.agentId);
+                if (
+                  context?.provider !== profile.provider ||
+                  context.clientOptions?.model !== profile.name ||
+                  (context.clientOptions?.streaming !== false) !== profile.streaming
+                ) {
+                  throw new Error('SDK runtime omitted required builder model configuration');
+                }
+              }
+              if (hostTools) {
+                const names = new Set(
+                  run.Graph.agentContexts
+                    .get(identity.agentId)
+                    ?.toolDefinitions?.map((t) => t.name),
+                );
+                if (hostTools.toolDefinitions.some((t) => !names.has(t.name)))
+                  throw new Error('SDK runtime omitted required host tools');
+              }
+              const callerOptions = {
+                ...request.options,
+                ...(modelLifecycle && { callbacks: [modelLifecycle.callback] }),
+                version: 'v2' as const,
+                signal: controller.signal,
+              };
+              run.returnContent = true;
+              const content =
+                request.operation === 'resume'
+                  ? await run.resume(
+                      request.resume,
+                      callerOptions,
+                      undefined,
+                      request.commandOptions,
+                    )
+                  : await run.processStream(request.input, callerOptions);
+              outcome = run.getInterrupt() ? 'paused' : 'completed';
+              await sendSnapshot(
+                peer,
+                {
+                  content,
+                  messages: run.getRunMessages(),
+                  state: {
+                    getDiscoveredTools: run.getDiscoveredTools(),
+                    getCalibrationRatio: run.getCalibrationRatio(),
+                    getFadingTier: run.getFadingTier(),
+                    getFadingTiers: run.getFadingTiers(),
+                    getFadingTierResetAgentIds: run.getFadingTierResetAgentIds(),
+                    getResolvedInstructionOverhead: run.getResolvedInstructionOverhead(),
+                    getToolCount: run.getToolCount(),
+                    getOutputTruncated: run.getOutputTruncated(),
+                    getHandoffOutcome: run.getHandoffOutcome(),
+                  },
+                  interrupt: run.getInterrupt(),
+                  haltReason: run.getHaltReason(),
+                  runSteps: run.Graph?.createRunStepResumeState(),
+                },
+                limits,
+                recovered ? () => recovered.socket.flush() : undefined,
+              );
+            };
+            running = true;
+            void execute()
+              .catch((error) => {
+                try {
+                  options.onError?.(error);
+                } catch {
+                  /* Diagnostics must not prevent cleanup. */
+                }
+                try {
+                  if (transport.readyState === WebSocket.OPEN) peer.send({ type: 'error' });
+                } catch {
+                  controller.abort();
+                } finally {
+                  transport.close(1011);
+                }
+              })
+              .finally(async () => {
+                running = false;
+                if (recovered) {
+                  try {
+                    await recovered.complete(controller.signal.aborted ? 'cancelled' : outcome);
+                  } catch {
+                    recovered.dispose();
+                  }
+                }
+                if (transport.readyState === WebSocket.CLOSED) active.delete(controller);
+              });
+            return { accepted: true };
+          },
+        });
+        recovered?.attach(ws, claim.recovery!.after);
+      });
+    })()
+      .catch(() => socket.destroy())
+      .finally(() => {
+        clearTimeout(deadline);
+        socket.removeListener('close', abortAdmission);
+        admitting.delete(socket);
+      });
+  });
+  return {
+    server,
+    close: async () => {
+      closing = true;
+      recovery?.close();
+      for (const [socket, admission] of admitting) {
+        admission.abort();
+        socket.destroy();
+      }
+      for (const controller of active) controller.abort();
+      for (const socket of sockets.clients) socket.terminate();
+      await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      if (server.listening)
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+    },
+  };
+}

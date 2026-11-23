@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 import { AxiosError, AxiosHeaders } from 'axios';
-import { generateKeyPairSync } from 'node:crypto';
+import { FileSources } from 'librechat-data-provider';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 
@@ -307,6 +308,45 @@ describe('createProvisionService', () => {
     });
   });
 
+  describe('digestFile', () => {
+    it('hashes the stored bytes a code-environment upload would send', async () => {
+      const getDownloadStream = jest
+        .fn()
+        .mockResolvedValue(Readable.from([Buffer.from('hello '), Buffer.from('world')]));
+      const { service } = buildService({
+        getStrategyFunctions: () => ({ getDownloadStream }),
+      });
+
+      await expect(service.digestFile({ req, file: makeFile() })).resolves.toEqual({
+        sha256: createHash('sha256').update('hello world').digest('hex'),
+        bytes: 11,
+      });
+      expect(getDownloadStream).toHaveBeenCalledWith(req, '/x/data.csv', { signal: undefined });
+    });
+
+    it('returns null for a source without a storage stream', async () => {
+      const { service } = buildService();
+      await expect(
+        service.digestFile({ req, file: makeFile({ source: FileSources.openai }) }),
+      ).resolves.toBeNull();
+    });
+
+    it('stops reading when the signal aborts', async () => {
+      const controller = new AbortController();
+      const stream = new Readable({ read() {} });
+      stream.push('partial');
+      const { service } = buildService({
+        getStrategyFunctions: () => ({ getDownloadStream: jest.fn().mockResolvedValue(stream) }),
+      });
+
+      const digest = service.digestFile({ req, file: makeFile(), signal: controller.signal });
+      setImmediate(() => controller.abort(new Error('deadline')));
+
+      await expect(digest).rejects.toThrow('deadline');
+      expect(stream.destroyed).toBe(true);
+    });
+  });
+
   describe('checkSessionsAlive', () => {
     const staleFile = (id: string) =>
       makeFile({
@@ -423,6 +463,33 @@ describe('createProvisionService', () => {
       const alive = await service.checkSessionsAlive({ files: [staleFile('f5')], apiKey: 'k' });
 
       expect(alive.has('f5')).toBe(false);
+    });
+
+    it.each([null, {}, { files: [] }, 'not an array'])(
+      'keeps a malformed summary %p unverified',
+      async (data) => {
+        mockAxios.mockResolvedValue({ data });
+        const { service } = buildService();
+        expect(await service.checkSessionsAlive({ files: [staleFile('f1')], req })).toEqual(
+          new Set(['f1']),
+        );
+      },
+    );
+
+    it('starts independent session probes in parallel and probes each session once', async () => {
+      const pending: Array<(value: { data: unknown[] }) => void> = [];
+      mockAxios.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+      const files = [staleFile('f1'), staleFile('f2'), staleFile('f3')];
+      files[2].metadata!.codeEnvRef!.storage_session_id = 'sess-2';
+      const { service } = buildService();
+      const checking = service.checkSessionsAlive({ files, req });
+      await new Promise(setImmediate);
+      expect(mockAxios).toHaveBeenCalledTimes(2);
+      for (const resolve of pending)
+        resolve({
+          data: [{ fileId: 'remote-f1' }, { fileId: 'remote-f2' }, { fileId: 'remote-f3' }],
+        });
+      expect(await checking).toEqual(new Set(['f1', 'f2', 'f3']));
     });
 
     describe('on an attached or stateful route', () => {

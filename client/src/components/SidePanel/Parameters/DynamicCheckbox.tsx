@@ -60,7 +60,7 @@ function DynamicCheckbox({
           <div className="flex justify-start gap-4">
             <Label
               htmlFor={`${settingKey}-dynamic-checkbox`}
-              className="text-left text-xs font-medium"
+              className="text-start text-xs font-medium"
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (

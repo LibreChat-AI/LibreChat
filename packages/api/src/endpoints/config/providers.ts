@@ -124,6 +124,53 @@ export function resolveTitleTiming({
   return 'immediate';
 }
 
+/** The settings conversation title generation reads for one endpoint. */
+export type TitleConfig = Pick<
+  Partial<TEndpoint>,
+  | 'titleConvo'
+  | 'titleEndpoint'
+  | 'titleModel'
+  | 'titleMethod'
+  | 'titlePrompt'
+  | 'titlePromptTemplate'
+>;
+
+/**
+ * Resolves an endpoint's title settings field by field: `endpoints.all` wins, then the named
+ * endpoint block, then the custom endpoint's own config. An `all` block that sets only other
+ * keys (`headers`, `streamRate`, activity labels) therefore leaves the endpoint's title
+ * settings in effect. `titleEndpoint` and `titleModel` are one choice: both come from the
+ * first layer that sets either, so a model named for one endpoint never runs on another.
+ */
+export function resolveTitleConfig({
+  appConfig,
+  endpoint,
+  customEndpointConfig,
+}: {
+  appConfig?: AppConfig;
+  endpoint: string;
+  customEndpointConfig?: Partial<TEndpoint>;
+}): TitleConfig {
+  const endpoints = appConfig?.endpoints;
+  const named = endpoints?.[endpoint as keyof NonNullable<typeof endpoints>] as
+    | Partial<TEndpoint>
+    | undefined;
+  const layers = [endpoints?.all, named, customEndpointConfig].filter(
+    (layer): layer is Partial<TEndpoint> => layer != null,
+  );
+  const pick = <K extends keyof TitleConfig>(field: K): TitleConfig[K] =>
+    layers.find((layer) => layer[field] != null)?.[field];
+  const routing = layers.find((layer) => layer.titleEndpoint != null || layer.titleModel != null);
+  return {
+    titleConvo: pick('titleConvo'),
+    titleEndpoint: routing?.titleEndpoint,
+    titleModel: routing?.titleModel,
+    titleMethod: pick('titleMethod'),
+    titlePrompt: pick('titlePrompt'),
+    titlePromptTemplate: pick('titlePromptTemplate'),
+  };
+}
+
 /**
  * Result from getProviderConfig
  */

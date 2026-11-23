@@ -267,7 +267,7 @@ export default function SharedLinkButton({
             disabled={isCreateLoading || isPublishing}
             variant="submit"
             onClick={createShareLink}
-            className="ml-auto min-w-28"
+            className="ms-auto min-w-28"
           >
             {!isCreateLoading && !isPublishing && localize('com_ui_create_link')}
             {(isCreateLoading || isPublishing) && <Spinner className="size-4" />}
@@ -299,7 +299,7 @@ export default function SharedLinkButton({
               </GenericGrantAccessDialog>
             )}
 
-            <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+            <div className="ms-auto flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
               {isSmallScreen && canNativeShare && (
                 <TooltipAnchor
                   description={localize('com_ui_share')}
@@ -432,7 +432,7 @@ export default function SharedLinkButton({
             </OGDialogHeader>
             <div className="flex w-full flex-col items-center gap-2">
               <div className="grid w-full items-center gap-2">
-                <Label htmlFor="dialog-confirm-delete" className="text-left text-sm font-medium">
+                <Label htmlFor="dialog-confirm-delete" className="text-start text-sm font-medium">
                   <Trans
                     i18nKey="com_ui_delete_confirm_strong"
                     values={{ title: shareId }}

@@ -16,6 +16,7 @@ jest.mock('@librechat/client', () => ({
   }: React.ComponentProps<'button'> & { variant?: string }) => (
     <button {...props}>{children}</button>
   ),
+  TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
 }));
 
 const item: McpItem = {

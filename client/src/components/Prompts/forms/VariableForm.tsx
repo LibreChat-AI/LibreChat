@@ -2,13 +2,16 @@ import { useMemo } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import supersub from 'remark-supersub';
-import rehypeKatex from 'rehype-katex';
 import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
 import { replaceSpecialVars } from 'librechat-data-provider';
 import { TextareaAutosize, InputCombobox, Button } from '@librechat/client';
 import { useForm, useFieldArray, Controller, useWatch } from 'react-hook-form';
 import type { TPromptGroup } from 'librechat-data-provider';
+import {
+  PROMPT_HIGHLIGHT,
+  toRehypePlugins,
+  useRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
 import { cn, wrapVariable, defaultTextProps, extractVariableInfo } from '~/utils';
 import { useAuthContext, useLocalize, useSubmitMessage } from '~/hooks';
@@ -65,17 +68,20 @@ const parseFieldConfig = (variable: string): FieldConfig => {
 export default function VariableForm({
   group,
   onClose,
+  promptText,
 }: {
   group: TPromptGroup;
   onClose: () => void;
+  /** Resolved prompt text; falls back to the production prompt when absent. */
+  promptText?: string;
 }) {
   const localize = useLocalize();
   const { user } = useAuthContext();
 
   const mainText = useMemo(() => {
-    const initialText = group.productionPrompt?.prompt ?? '';
+    const initialText = promptText ?? group.productionPrompt?.prompt ?? '';
     return replaceSpecialVars({ text: initialText, user });
-  }, [group.productionPrompt?.prompt, user]);
+  }, [promptText, group.productionPrompt?.prompt, user]);
 
   const { allVariables, uniqueVariables, variableIndexMap } = useMemo(
     () => extractVariableInfo(mainText),
@@ -104,24 +110,24 @@ export default function VariableForm({
     name: 'fields',
   });
 
+  /* The preview renders the template with the entered values, so the plugins load for what it
+     shows: math typed into a variable needs KaTeX even when the template has none. */
+  let previewText = mainText;
+  allVariables.forEach((variable) => {
+    const placeholder = `{{${variable}}}`;
+    const fieldIndex = variableIndexMap.get(variable) as string | number;
+    const fieldValue = fieldValues[fieldIndex]?.value as string | undefined;
+    if (fieldValue === placeholder || fieldValue === '' || !fieldValue) {
+      return;
+    }
+    /* A replacer function, so `$$`, `$&` and the like in the value stay literal. */
+    previewText = previewText.replaceAll(placeholder, () => `**${fieldValue}**`);
+  });
+  const rehypeModules = useRehypeModules(previewText);
+
   if (!uniqueVariables.length) {
     return null;
   }
-
-  const generateHighlightedMarkdown = () => {
-    let tempText = mainText;
-    allVariables.forEach((variable) => {
-      const placeholder = `{{${variable}}}`;
-      const fieldIndex = variableIndexMap.get(variable) as string | number;
-      const fieldValue = fieldValues[fieldIndex].value as string | undefined;
-      if (fieldValue === placeholder || fieldValue === '' || !fieldValue) {
-        return;
-      }
-      const highlightText = fieldValue !== '' ? `**${fieldValue}**` : placeholder;
-      tempText = tempText.replaceAll(placeholder, highlightText);
-    });
-    return tempText;
-  };
 
   const onSubmit = (data: FormValues) => {
     let text = mainText;
@@ -132,7 +138,7 @@ export default function VariableForm({
 
       const escapedVariable = variable.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
       const regex = new RegExp(escapedVariable, 'g');
-      text = text.replace(regex, value);
+      text = text.replace(regex, () => value);
     });
 
     submitPrompt(text);
@@ -149,17 +155,13 @@ export default function VariableForm({
           <ReactMarkdown
             /** @ts-ignore */
             remarkPlugins={[supersub, remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
-            rehypePlugins={[
-              /** @ts-ignore */
-              [rehypeKatex],
-              /** @ts-ignore */
-              [rehypeHighlight, { ignoreMissing: true }],
-            ]}
+            /** @ts-ignore */
+            rehypePlugins={toRehypePlugins(rehypeModules, PROMPT_HIGHLIGHT)}
             /** @ts-ignore */
             components={{ code: codeNoExecution, p: PromptVariableGfm }}
             className="markdown prose light my-1 max-h-[50vh] max-w-full break-words"
           >
-            {generateHighlightedMarkdown()}
+            {previewText}
           </ReactMarkdown>
         </div>
         <div className="space-y-4">
@@ -204,7 +206,7 @@ export default function VariableForm({
                       />
                       <label
                         htmlFor={`fields.${index}.value`}
-                        className="text-text-secondary peer-focus:text-text-primary absolute top-0 left-3 text-sm transition-all duration-200 peer-focus:-top-6 peer-focus:left-1 peer-focus:text-xs peer-[:not(:placeholder-shown)]:-top-6 peer-[:not(:placeholder-shown)]:left-1 peer-[:not(:placeholder-shown)]:text-xs"
+                        className="text-text-secondary peer-focus:text-text-primary absolute inset-s-3 top-0 text-sm transition-all duration-200 peer-focus:inset-s-1 peer-focus:-top-6 peer-focus:text-xs peer-[:not(:placeholder-shown)]:inset-s-1 peer-[:not(:placeholder-shown)]:-top-6 peer-[:not(:placeholder-shown)]:text-xs"
                       >
                         {field.config.variable}
                       </label>

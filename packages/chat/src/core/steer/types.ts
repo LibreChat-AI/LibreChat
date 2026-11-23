@@ -1,4 +1,4 @@
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, CodeApprovalMode } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '../protocol';
 
 /**
@@ -39,6 +39,9 @@ export type PendingSteer = {
   preempt?: boolean;
   /** Monotonic server revision; delayed ACKs cannot undo SSE corrections. */
   preemptRevision?: number;
+  /** The code approval mode the steer was sent under. A retry repeats it, so a
+   *  turn the server promotes from this steer starts under the same mode. */
+  codeApprovalMode?: CodeApprovalMode;
   /** Exact server generation this steer belongs to. Conversation ids are
    * reused by later turns, so retries/arm/cancel must retain this epoch rather
    * than mutating whatever generation currently occupies the conversation. */
@@ -117,6 +120,24 @@ export type QueuedMessageOrigin = {
   beforeIds: string[];
   afterIds: string[];
 };
+
+/** The host's `ask`, as the drain calls it to send one queued message as a new turn. The
+ *  overrides carry everything the message was queued with, so `ask` does not take what the
+ *  composer has staged for the user's next message instead. Returns `false` when it refused
+ *  without sending, which puts the message back in the queue. */
+export type QueuedTurnAsk = (
+  props: { text: string; overrideUserMessageId?: string },
+  options: {
+    overrideFiles: NonNullable<QueuedMessage['files']>;
+    overrideQuotes: string[];
+    overrideManualSkills: string[];
+    overrideReasoning: QueuedMessage['reasoningOverride'] | null;
+    overrideClientRequestId?: string;
+    overrideRecoverySteerId?: string;
+    overrideExpectedPredecessorCreatedAt?: number;
+    overrideQueuedMessageOrigin?: QueuedMessageOrigin;
+  },
+) => false | void;
 
 export type SettledQueuedTurnReceipt = {
   clientRequestId: string;

@@ -91,11 +91,11 @@ export default function FavoriteItem(props: FavoriteItemProps) {
 
   const renderIcon = () => {
     if (props.type === 'agent') {
-      return renderAgentAvatar(props.item, { size: 'icon', className: 'mr-2' });
+      return renderAgentAvatar(props.item, { size: 'icon', className: 'me-2' });
     }
     if (props.type === 'spec') {
       return (
-        <div className="mr-2 h-5 w-5">
+        <div className="me-2 h-5 w-5">
           <SpecIcon
             currentSpec={props.item}
             endpointsConfig={props.endpointsConfig}
@@ -105,7 +105,7 @@ export default function FavoriteItem(props: FavoriteItemProps) {
       );
     }
     return (
-      <div className="mr-2 h-5 w-5">
+      <div className="me-2 h-5 w-5">
         <MinimalIcon
           endpoint={props.item.endpoint}
           endpointsConfig={props.endpointsConfig}
@@ -142,7 +142,7 @@ export default function FavoriteItem(props: FavoriteItemProps) {
       onKeyDown={handleKeyDown}
       data-testid="favorite-item"
     >
-      <div className="flex flex-1 items-center truncate pr-6">
+      <div className="flex flex-1 items-center truncate pe-6">
         {renderIcon()}
         <span className="truncate">{name}</span>
       </div>
@@ -151,7 +151,7 @@ export default function FavoriteItem(props: FavoriteItemProps) {
           36px row, which is also where a pinned chat keeps its last control, so
           the two row kinds line up. Clicks are swallowed here rather than
           reaching the row underneath. */}
-      <div className="absolute right-1 flex items-center" onClick={(e) => e.stopPropagation()}>
+      <div className="absolute inset-e-1 flex items-center" onClick={(e) => e.stopPropagation()}>
         <UnpinButton
           testId="favorite-unpin-button"
           onClick={handleRemove}

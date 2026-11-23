@@ -3,17 +3,21 @@ import useRum from './useRum';
 
 const mockGetSessionId = jest.fn<string | undefined, []>();
 const mockInit = jest.fn();
+const mockStopSessionRecorder = jest.fn();
+const mockResumeSessionRecorder = jest.fn();
 const mockAddAction = jest.fn();
 const mockSetGlobalAttributes = jest.fn();
 const mockUseGetStartupConfig = jest.fn();
 const mockUseAuthContext = jest.fn();
 const mockUseLocation = jest.fn();
 
-jest.mock('@hyperdx/browser', () => ({
+jest.mock('./browser', () => ({
   __esModule: true,
   default: {
     addAction: (...args: unknown[]) => mockAddAction(...args),
     init: (...args: unknown[]) => mockInit(...args),
+    stopSessionRecorder: () => mockStopSessionRecorder(),
+    resumeSessionRecorder: () => mockResumeSessionRecorder(),
     getSessionId: () => mockGetSessionId(),
     setGlobalAttributes: (...args: unknown[]) => mockSetGlobalAttributes(...args),
   },
@@ -92,6 +96,8 @@ describe('useRum', () => {
         apiKey: 'public-token',
         consoleCapture: false,
         disableReplay: true,
+        maskAllInputs: true,
+        maskAllText: true,
         service: 'librechat-web',
         tracePropagationTargets: ['https://librechat.example.com'],
         url: 'https://rum.example.com',
@@ -113,6 +119,7 @@ describe('useRum', () => {
       expect.objectContaining({ init: expect.any(Function) }),
       expect.any(Function),
     );
+    expect(mockResumeSessionRecorder).not.toHaveBeenCalled();
   });
 
   it('does not initialize RUM for unsupported auth modes', async () => {
@@ -134,6 +141,179 @@ describe('useRum', () => {
 
     expect(mockInit).not.toHaveBeenCalled();
     expect(discardEarlyRumQueue).toHaveBeenCalled();
+  });
+
+  it('captures masked replays only when opted in and stops recording on unmount', async () => {
+    mockUseGetStartupConfig.mockReturnValue({
+      isFetched: true,
+      data: {
+        rum: {
+          provider: 'hyperdx',
+          enabled: true,
+          url: '/api/rum',
+          serviceName: 'librechat-web',
+          authMode: 'proxy',
+          sessionReplay: { enabled: true },
+          disableReplay: true,
+        },
+      },
+    });
+
+    const { unmount } = renderHook(() => useRum());
+    await waitFor(() => expect(mockResumeSessionRecorder).toHaveBeenCalled());
+    expect(mockInit).toHaveBeenCalledWith(
+      expect.objectContaining({ disableReplay: false, maskAllInputs: true, maskAllText: true }),
+    );
+    unmount();
+    expect(mockStopSessionRecorder).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors an explicit replay-off policy over a legacy replay opt-in', async () => {
+    mockUseGetStartupConfig.mockReturnValue({
+      isFetched: true,
+      data: {
+        rum: {
+          provider: 'hyperdx',
+          enabled: true,
+          url: '/api/rum',
+          serviceName: 'librechat-web',
+          authMode: 'proxy',
+          sessionReplay: { enabled: false },
+          disableReplay: false,
+        },
+      },
+    });
+    renderHook(() => useRum());
+    await waitFor(() => expect(mockInit).toHaveBeenCalled());
+    expect(mockInit).toHaveBeenCalledWith(expect.objectContaining({ disableReplay: true }));
+    expect(mockResumeSessionRecorder).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/login',
+    '/login/2fa',
+    '/login/2fa/setup',
+    '/register',
+    '/reset-password',
+    '/verify',
+    '/oauth/success',
+  ])('does not start replay on %s even in public-token mode', async (pathname) => {
+    mockUseAuthContext.mockReturnValue({ token: undefined, user: undefined });
+    mockUseLocation.mockReturnValue({ pathname, search: '?tempToken=fake-login-token' });
+    mockUseGetStartupConfig.mockReturnValue({
+      isFetched: true,
+      data: {
+        rum: {
+          provider: 'hyperdx',
+          enabled: true,
+          url: 'https://collector.example',
+          serviceName: 'librechat-web',
+          authMode: 'publicToken',
+          publicToken: 'public-test-key',
+          sessionReplay: { enabled: true },
+        },
+      },
+    });
+    renderHook(() => useRum());
+    await waitFor(() => expect(mockInit).toHaveBeenCalled());
+    expect(mockInit).toHaveBeenCalledWith(expect.objectContaining({ disableReplay: true }));
+    expect(mockResumeSessionRecorder).not.toHaveBeenCalled();
+  });
+
+  it('stops recording on an auth-route transition even while a session token remains present', async () => {
+    mockUseGetStartupConfig.mockReturnValue({
+      isFetched: true,
+      data: {
+        rum: {
+          provider: 'hyperdx',
+          enabled: true,
+          url: '/api/rum',
+          serviceName: 'librechat-web',
+          authMode: 'proxy',
+          sessionReplay: { enabled: true },
+        },
+      },
+    });
+    const { rerender } = renderHook(() => useRum());
+    await waitFor(() => expect(mockResumeSessionRecorder).toHaveBeenCalledTimes(1));
+    mockUseLocation.mockReturnValue({
+      pathname: '/login/2fa',
+      search: '?tempToken=fake-login-token',
+    });
+    rerender();
+    await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(2));
+    expect(mockStopSessionRecorder).toHaveBeenCalledTimes(1);
+    expect(mockInit).toHaveBeenLastCalledWith(expect.objectContaining({ disableReplay: true }));
+    expect(mockResumeSessionRecorder).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops recording when proxy authentication is lost', async () => {
+    mockUseGetStartupConfig.mockReturnValue({
+      isFetched: true,
+      data: {
+        rum: {
+          provider: 'hyperdx',
+          enabled: true,
+          url: '/api/rum',
+          serviceName: 'librechat-web',
+          authMode: 'proxy',
+          disableReplay: false,
+        },
+      },
+    });
+
+    const { rerender } = renderHook(() => useRum());
+    await waitFor(() => expect(mockResumeSessionRecorder).toHaveBeenCalled());
+    mockUseAuthContext.mockReturnValue({ token: undefined, user: undefined });
+    rerender();
+    expect(mockStopSessionRecorder).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops an active recorder when replay is disabled in startup config', async () => {
+    let rum = {
+      provider: 'hyperdx',
+      enabled: true,
+      url: '/api/rum',
+      serviceName: 'librechat-web',
+      authMode: 'proxy',
+      disableReplay: false,
+    };
+    mockUseGetStartupConfig.mockImplementation(() => ({ isFetched: true, data: { rum } }));
+    const { rerender } = renderHook(() => useRum());
+    await waitFor(() => expect(mockResumeSessionRecorder).toHaveBeenCalledTimes(1));
+
+    rum = { ...rum, disableReplay: true };
+    rerender();
+    await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(2));
+    expect(mockStopSessionRecorder).toHaveBeenCalledTimes(1);
+    expect(mockResumeSessionRecorder).toHaveBeenCalledTimes(1);
+    expect(mockInit).toHaveBeenLastCalledWith(expect.objectContaining({ disableReplay: true }));
+  });
+
+  it('does not re-sample general RUM when replay policy changes', async () => {
+    const random = jest.spyOn(Math, 'random').mockReturnValueOnce(0.1).mockReturnValue(0.9);
+    try {
+      let rum = {
+        provider: 'hyperdx',
+        enabled: true,
+        url: '/api/rum',
+        serviceName: 'librechat-web',
+        authMode: 'proxy',
+        sessionReplay: { enabled: true },
+        sampleRate: 0.5,
+      };
+      mockUseGetStartupConfig.mockImplementation(() => ({ isFetched: true, data: { rum } }));
+      const { rerender } = renderHook(() => useRum());
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(1));
+      rum = { ...rum, sessionReplay: { enabled: false } };
+      rerender();
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(2));
+      expect(random).toHaveBeenCalledTimes(1);
+      expect(mockStopSessionRecorder).toHaveBeenCalledTimes(1);
+      expect(mockInit).toHaveBeenLastCalledWith(expect.objectContaining({ disableReplay: true }));
+    } finally {
+      random.mockRestore();
+    }
   });
 
   it('discards the early RUM queue when sampling excludes the page', async () => {
@@ -262,6 +442,8 @@ describe('useRum', () => {
         apiKey: 'librechat-rum-proxy',
         consoleCapture: false,
         disableReplay: true,
+        maskAllInputs: true,
+        maskAllText: true,
         service: 'librechat-web',
         tracePropagationTargets: undefined,
         url: '/api/rum',

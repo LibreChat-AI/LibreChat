@@ -67,19 +67,19 @@ const observationSchema = z.object({
   /** Langfuse Cloud serves the `model` field group as `model`; its SDK types name it `providedModelName`. */
   model: z.string().nullish(),
   providedModelName: z.string().nullish(),
-  usageDetails: z.record(z.number()).nullish(),
-  costDetails: z.record(z.number()).nullish(),
+  usageDetails: z.record(z.string(), z.number()).nullish(),
+  costDetails: z.record(z.string(), z.number()).nullish(),
   totalCost: z.number().nullish(),
-  input: z.unknown(),
-  output: z.unknown(),
-  metadata: z.unknown(),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+  metadata: z.unknown().optional(),
 });
 const pageSchema = z.object({
   data: z.array(z.unknown()),
   meta: z.object({ cursor: z.string().nullish() }).partial().nullish(),
 });
 
-const roundSchema = z.object({ id: z.string().min(1), input: z.unknown() });
+const roundSchema = z.object({ id: z.string().min(1), input: z.unknown().optional() });
 
 type LangfuseObservation = z.infer<typeof observationSchema>;
 /** The response that owns a trace, and whether the trace is its title run rather than the run itself. */

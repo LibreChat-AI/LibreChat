@@ -191,7 +191,7 @@ function Avatar() {
         <span>{localize('com_nav_profile_picture')}</span>
         <OGDialogTrigger asChild>
           <Button variant="outline">
-            <FileImage className="mr-2 flex w-[1.375rem] items-center" aria-hidden="true" />
+            <FileImage className="me-2 flex w-[1.375rem] items-center" aria-hidden="true" />
             <span>{localize('com_nav_change_picture')}</span>
           </Button>
         </OGDialogTrigger>
@@ -335,9 +335,9 @@ function Avatar() {
                   disabled={isUploading}
                 >
                   {isUploading ? (
-                    <Spinner className="icon-sm mr-2" />
+                    <Spinner className="icon-sm me-2" />
                   ) : (
-                    <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
+                    <Upload className="me-2 h-4 w-4" aria-hidden="true" />
                   )}
                   {localize('com_ui_upload')}
                 </Button>

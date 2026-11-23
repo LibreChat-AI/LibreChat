@@ -23,7 +23,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -65,5 +65,16 @@ describe('user provider keys', () => {
     await expect(methods.getUserKeyValues({ userId, name: 'google' })).resolves.toEqual({
       apiKey: 'legacy-key',
     });
+  });
+});
+
+describe('user key indexes', () => {
+  it('reads a user key by user and name through an index', async () => {
+    await mongoose.models.Key.syncIndexes();
+    await methods.updateUserKey({ userId, name: 'openAI', value: 'sk-test' });
+
+    const plan = await mongoose.models.Key.find({ userId, name: 'openAI' }).explain();
+
+    expect(JSON.stringify(plan)).toContain('"IXSCAN"');
   });
 });

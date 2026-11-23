@@ -1,21 +1,23 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import copy from 'copy-to-clipboard';
 import { Download } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import {
   Button,
+  Shimmer,
   OGDialog,
   OGDialogContent,
   OGDialogTitle,
   OGDialogDescription,
 } from '@librechat/client';
-import type { TFile } from 'librechat-data-provider';
 import {
   getFileExtension,
   getPreviewKind,
   isExtractedTextPreviewLoading,
   shouldUseExtractedTextPreview,
   shouldUseSharedFileDownload,
-} from './preview';
+} from '@librechat/chat';
+import type { TFile } from 'librechat-data-provider';
 import {
   useFilePreview,
   useFilePreviewBlob,
@@ -24,7 +26,6 @@ import {
 } from '~/data-provider';
 import { getDownloadFilename, logger, sortPagesByRelevance, triggerDownload } from '~/utils';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
@@ -266,7 +267,7 @@ export default function FilePreviewDialog({
         className="flex w-full max-w-4xl flex-col !overflow-hidden p-0"
         showCloseButton={true}
       >
-        <div className="shrink-0 px-6 pt-6 pr-12">
+        <div className="shrink-0 px-6 pe-12 pt-6">
           <OGDialogTitle className="truncate text-base">{fileName}</OGDialogTitle>
           <div className="mt-0.5 flex items-center gap-3">
             <OGDialogDescription className="min-w-0 truncate">
@@ -288,10 +289,8 @@ export default function FilePreviewDialog({
 
         <div className="relative min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-6">
           {isLoading && (
-            <div className="bg-surface-secondary flex h-60 items-center justify-center rounded-lg">
-              <span className="shimmer text-text-secondary text-sm">
-                {localize('com_ui_loading')}
-              </span>
+            <div className="bg-surface-secondary text-text-secondary flex h-60 items-center justify-center rounded-lg">
+              <Shimmer className="text-sm">{localize('com_ui_loading')}</Shimmer>
             </div>
           )}
           {hasPreviewError && !isLoading && (
@@ -321,7 +320,7 @@ export default function FilePreviewDialog({
           )}
           {displayedText !== null && !isLoading && !hasPreviewError && (
             <>
-              <div className="pointer-events-none sticky top-0 z-10 flex justify-end pr-1">
+              <div className="pointer-events-none sticky top-0 z-10 flex justify-end pe-1">
                 <CopyButton
                   isCopied={isCopied}
                   onClick={handleCopy}
@@ -331,7 +330,7 @@ export default function FilePreviewDialog({
                 />
               </div>
               <div className="bg-surface-secondary -mt-8 rounded-lg p-4">
-                <pre className="text-text-primary pr-8 font-mono text-sm leading-6 break-words whitespace-pre-wrap">
+                <pre className="text-text-primary pe-8 font-mono text-sm leading-6 break-words whitespace-pre-wrap">
                   {displayedText}
                 </pre>
               </div>

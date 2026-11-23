@@ -85,6 +85,41 @@ test.describe('chat context', () => {
     await expect(messageRows(page).last().locator('.message-content')).toHaveText(replyText(label));
   });
 
+  test('editing a reply reruns from the edited text and keeps it after reload @scenario:editing-a-reply-reruns-from-the-edited-text', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('edit-reply');
+    const edited = `Edited answer ${label}`;
+    await openMockChat(page);
+
+    const response = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
+    expect(response.ok()).toBeTruthy();
+    const assistant = messageRows(page).last();
+    await expect(assistant.locator('.message-content')).toHaveText(replyText(label), {
+      timeout: 30_000,
+    });
+
+    await assistant.hover();
+    await assistant.getByRole('button', { name: 'Edit', exact: true }).last().click();
+    await page.getByRole('textbox', { name: 'Editable Message: Response' }).fill(edited);
+    const [rerun] = await Promise.all([
+      page.waitForResponse(isAgentsStream, { timeout: 30_000 }),
+      page.getByRole('button', { name: 'Update & rerun' }).click(),
+    ]);
+    expect(rerun.ok()).toBeTruthy();
+
+    await expect(stopButton(page)).toBeHidden({ timeout: 30_000 });
+    await expect(messageRows(page).last().locator('.message-content')).toContainText(edited, {
+      timeout: 30_000,
+    });
+
+    await page.reload();
+    await expect(messageRows(page).last().locator('.message-content')).toContainText(edited, {
+      timeout: 30_000,
+    });
+  });
+
   test('stopping a streaming reply keeps the partial response after reload @scenario:stop-keeps-the-partial-response', async ({
     page,
   }) => {

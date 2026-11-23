@@ -89,9 +89,7 @@ const BackupCodesItem: React.FC = () => {
           <Label className="font-light">{localize('com_ui_backup_codes')}</Label>
         </div>
         <OGDialogTrigger asChild>
-          <Button aria-label="Manage Backup Codes" variant="outline">
-            {localize('com_ui_manage')}
-          </Button>
+          <Button variant="outline">{localize('com_ui_manage')}</Button>
         </OGDialogTrigger>
       </div>
 
@@ -185,9 +183,9 @@ const BackupCodesItem: React.FC = () => {
                     size="wide"
                   >
                     {isLoading ? (
-                      <Spinner className="mr-2" />
+                      <Spinner className="me-2" />
                     ) : (
-                      <RefreshCcw className="mr-2 h-4 w-4" aria-hidden="true" />
+                      <RefreshCcw className="me-2 h-4 w-4" aria-hidden="true" />
                     )}
                     {isLoading
                       ? localize('com_ui_regenerating')
@@ -203,7 +201,7 @@ const BackupCodesItem: React.FC = () => {
                   variant="default"
                   size="wide"
                 >
-                  {isLoading && <Spinner className="mr-2" />}
+                  {isLoading && <Spinner className="me-2" />}
                   {localize('com_ui_regenerate_backup')}
                 </Button>
               </div>

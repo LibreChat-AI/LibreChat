@@ -58,7 +58,7 @@ export function SortFilterHeader<TData, TValue>({
               onClick: () => column.setFilterValue(value),
               icon: <ListFilter className="icon-sm text-text-secondary" aria-hidden="true" />,
               show: true,
-              className: isActive ? 'border-l-2 border-l-border-xheavy' : '',
+              className: isActive ? 'border-s-2 border-s-border-xheavy' : '',
             });
           }
         });

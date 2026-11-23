@@ -1,3 +1,4 @@
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '@librechat/data-schemas';
 import type { MessageMethods } from '@librechat/data-schemas';
 import type { TCustomConfig } from 'librechat-data-provider';
 import { resolveLangfuseTenantDestination } from './tenantDestinations';
@@ -38,6 +39,7 @@ export async function resolveLangfuseSession({
     {
       user: userId,
       conversationId,
+      ...SERVER_AUTHORED_MESSAGE_FILTER,
       langfuseSampled: true,
       langfuseDestinationIds: destinationId,
     },

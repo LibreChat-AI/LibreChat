@@ -36,8 +36,11 @@ export function getTelemetryConfig(env: NodeJS.ProcessEnv = process.env): Teleme
   const tracingEnabled = isTruthy(env.OTEL_TRACING_ENABLED) && !sdkDisabled;
   const logsEnabled = isTruthy(env.OTEL_LOGS_ENABLED) && !sdkDisabled;
   const serviceName = normalizeEnvValue(env.OTEL_SERVICE_NAME) ?? DEFAULT_SERVICE_NAME;
+  /** Images bake BUILD_COMMIT, which names the exact code a pod runs; the package version does not. */
   const serviceVersion =
-    normalizeEnvValue(env.OTEL_SERVICE_VERSION) ?? normalizeEnvValue(env.npm_package_version);
+    normalizeEnvValue(env.OTEL_SERVICE_VERSION) ??
+    normalizeEnvValue(env.BUILD_COMMIT) ??
+    normalizeEnvValue(env.npm_package_version);
   const ioredisTracingEnabled = isTruthy(env.OTEL_IOREDIS_TRACING_ENABLED);
   const logsLevel = normalizeEnvValue(env.OTEL_LOGS_LEVEL)?.toLowerCase() ?? DEFAULT_LOGS_LEVEL;
 

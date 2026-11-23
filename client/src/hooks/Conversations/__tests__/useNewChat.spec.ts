@@ -7,11 +7,16 @@ import type { FilesDraft } from '~/utils';
 
 const mockNewConversation = jest.fn();
 const mockClearMessagesCache = jest.fn();
+const mockRefetchQueries = jest.fn();
 const mockInvalidateQueries = jest.fn();
 const mockClearAllDrafts = jest.fn();
 const mockClearFilesDraft = jest.fn();
 const mockDeleteFiles = jest.fn();
 const mockScheduleRetainedRetry = jest.fn();
+const mockQueryClient = {
+  invalidateQueries: mockInvalidateQueries,
+  refetchQueries: mockRefetchQueries,
+};
 
 /** A live composer entry: what the ownership check reads off the file map. */
 type LiveFile = {
@@ -35,7 +40,7 @@ const mockState = {
     return getDefaultStore().get(filesFamily(0));
   },
   set files(files: Map<string, LiveFile>) {
-    getDefaultStore().set(filesFamily(0), files as Map<string, ExtendedFile>);
+    act(() => getDefaultStore().set(filesFamily(0), files as Map<string, ExtendedFile>));
   },
   retainedDeletions: [] as { file_id: string; filepath: string; source: string }[],
   markedPasteIds: [] as string[],
@@ -46,6 +51,7 @@ const mockState = {
   foreignLiveAttachmentIds: [] as string[],
   foreignDraftedIds: [] as string[],
   retainedPassInFlight: false,
+  fileConfig: { deletionRetryLimit: 5 } as { deletionRetryLimit: number } | undefined,
   persistedPendingDiscardIds: [] as string[],
   retainedListener: null as (() => void) | null,
   pendingDiscardListener: null as (() => void) | null,
@@ -61,7 +67,7 @@ const mockState = {
 };
 
 jest.mock('@tanstack/react-query', () => ({
-  useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
+  useQueryClient: () => mockQueryClient,
 }));
 
 jest.mock('recoil', () => ({
@@ -121,6 +127,19 @@ jest.mock('~/utils', () => ({
     };
   },
   takeRetainedFileDeletions: () => mockState.retainedDeletions,
+  claimFileDeletionRetries: (records: typeof mockState.retainedDeletions) => {
+    const unique = Array.from(new Map(records.map((record) => [record.file_id, record])).values());
+    mockState.retainedDeletions = unique;
+    return unique;
+  },
+  settleFileDeletionRetries: (
+    _records: typeof mockState.retainedDeletions,
+    failed: Set<string>,
+  ) => {
+    mockState.retainedDeletions = mockState.retainedDeletions.filter((record) =>
+      failed.has(record.file_id),
+    );
+  },
   clearRetainedFileDeletion: (fileId: string) => {
     mockState.retainedDeletions = mockState.retainedDeletions.filter(
       (record) => record.file_id !== fileId,
@@ -128,7 +147,8 @@ jest.mock('~/utils', () => ({
   },
   failedFileIdsFrom: (result: { failedFileIds?: string[] } | void) =>
     result != null && Array.isArray(result.failedFileIds) ? result.failedFileIds : [],
-  scheduleRetainedFileDeletionRetry: () => mockScheduleRetainedRetry(),
+  scheduleRetainedFileDeletionRetry: (pendingDiscard?: boolean) =>
+    mockScheduleRetainedRetry(pendingDiscard),
   isPastedTextFileMarked: (fileId: string) => mockState.markedPasteIds.includes(fileId),
   isPasteSubmitted: (fileId: string) => mockState.submittedPasteIds.includes(fileId),
   collectLiveAttachmentIds: ({ excludeOwnPane }: { excludeOwnPane?: number | 'tab' } = {}) =>
@@ -209,6 +229,7 @@ jest.mock('~/utils', () => ({
 jest.mock('~/data-provider', () => ({
   useGetFiles: () => ({ data: mockState.fileList }),
   useDeleteFilesMutation: () => ({ mutateAsync: mockDeleteFiles }),
+  useGetFileConfig: () => ({ data: mockState.fileConfig, isSuccess: mockState.fileConfig != null }),
 }));
 
 jest.mock('~/store', () => ({
@@ -219,7 +240,8 @@ jest.mock('~/store', () => ({
 }));
 
 jest.mock('librechat-data-provider', () => ({
-  QueryKeys: { messages: 'messages' },
+  QueryKeys: { messages: 'messages', files: 'files' },
+  fileConfig: { deletionRetryLimit: 5 },
 }));
 
 import useNewChat from '../useNewChat';
@@ -255,7 +277,83 @@ describe('useNewChat', () => {
     mockState.foreignLiveAttachmentIds = [];
     mockState.foreignDraftedIds = [];
     mockState.retainedPassInFlight = false;
+    mockState.fileConfig = { deletionRetryLimit: 5 };
     mockScheduleRetainedRetry.mockClear();
+  });
+
+  it('reconciles a transport-aborted paste through its persisted temporary ID', async () => {
+    mockState.persistedPendingDiscardIds = ['aborted-paste'];
+    mockState.fileList = [];
+    const { rerender } = renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockRefetchQueries).toHaveBeenCalledWith(
+      { queryKey: ['files'] },
+      { cancelRefetch: false },
+    );
+    expect(mockState.persistedPendingDiscardIds).toEqual(['aborted-paste']);
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'aborted-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    await act(async () => rerender());
+    expect(mockDeleteFiles).toHaveBeenCalledWith({
+      files: [expect.objectContaining({ file_id: 'server-paste' })],
+    });
+    expect(mockState.persistedPendingDiscardIds).toEqual([]);
+  });
+
+  it('bounds cache refreshes while retaining unresolved abort identities', async () => {
+    mockState.persistedPendingDiscardIds = ['aborted-paste'];
+    mockState.fileList = [];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await act(async () => mockState.retainedListener?.());
+    }
+    expect(mockRefetchQueries).toHaveBeenCalledTimes(5);
+    expect(mockState.persistedPendingDiscardIds).toEqual(['aborted-paste']);
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['temporary-paste', 'server-paste'],
+    ['server-paste', 'temporary-paste'],
+  ])('protects a discarded %s claimed elsewhere as %s', async (discarded, claimed) => {
+    mockState.persistedPendingDiscardIds = [discarded];
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'temporary-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    mockState.foreignDraftedIds = [claimed];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+  });
+
+  it('protects a retained server ID when another draft holds its temporary ID', async () => {
+    mockState.retainedDeletions = [
+      { file_id: 'server-paste', filepath: '/uploads/paste.txt', source: 'local' },
+    ];
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'temporary-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    mockState.foreignDraftedIds = ['temporary-paste'];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
   });
 
   it('clears the outgoing conversation before resetting', () => {
@@ -694,6 +792,32 @@ describe('useNewChat', () => {
       ],
     });
     expect(mockState.retainedDeletions).toHaveLength(0);
+  });
+
+  it('waits for the configured budget before claiming restored cleanup work', async () => {
+    mockState.fileConfig = undefined;
+    mockState.fileList = [];
+    mockState.retainedDeletions = [
+      { file_id: 'retained-file', filepath: '/uploads/file.txt', source: 'local' },
+    ];
+    const { rerender } = renderHook(() => useNewChat());
+    await act(async () => undefined);
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+    expect(mockState.retainedDeletions).toHaveLength(1);
+    mockState.fileConfig = { deletionRetryLimit: 10 };
+    await act(async () => rerender());
+    expect(mockDeleteFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for a deferred wakeup when another mounted pane owns the cleanup pass', () => {
+    mockState.retainedPassInFlight = true;
+    mockState.persistedPendingDiscardIds = ['late-paste'];
+    mockState.fileList = [
+      { file_id: 'late-paste', filepath: '/uploads/late.txt', source: 'local' },
+    ];
+    renderHook(() => useNewChat());
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+    expect(mockScheduleRetainedRetry).toHaveBeenCalledWith(true);
   });
 
   it('keeps retained deletions when the retried request fails again', async () => {

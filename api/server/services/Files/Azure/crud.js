@@ -5,6 +5,7 @@ const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
+  dispatchFileDeletion,
   createOwnedBlobFileDeleter,
   extractAzureBlobPath,
   assertRemoteFileURL,
@@ -122,13 +123,13 @@ async function getAzureURL({ fileName, basePath = defaultBasePath, userId, conta
  * @param {ServerRequest} params.req - The Express request object.
  * @param {MongoFile} params.file - The file object.
  */
-const deleteFileFromAzure = (req, file) =>
+const deleteFileFromAzure = (req, file, _client, onDelete) =>
   createOwnedBlobFileDeleter({
     extractPath: (filepath) => extractAzureBlobPath(filepath, AZURE_CONTAINER_NAME),
     deleteBlob: async (blobPath) => {
       const containerClient = await getAzureContainerClient(AZURE_CONTAINER_NAME);
       const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
-      await blockBlobClient.delete();
+      await dispatchFileDeletion(onDelete, () => blockBlobClient.delete());
       logger.debug('[deleteFileFromAzure] Blob deleted successfully from Azure Blob Storage');
     },
     isMissing: (error) => error?.statusCode === 404,

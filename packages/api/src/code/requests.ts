@@ -11,6 +11,27 @@ interface RequestStatus {
 /** A failed body read is transport uncertainty, not malformed application data. */
 export class WorkspaceResponseTransportError extends Error {}
 
+/** Keeps a tight run budget from spending most of its admission on a possible resend. */
+const RESUBMISSION_WINDOW_SHARE = 0.1;
+
+/**
+ * Admission a submission leaves unclaimed so a lost POST can be resent under the same
+ * fingerprint without the resend's window running past the original one. The default
+ * covers a timed-out POST, the lookup that misses it, and the poll between them.
+ */
+function resubmissionWindowMs(
+  available: number,
+  options: Pick<
+    DurableWorkspaceTransport<unknown, unknown>,
+    'resubmissionWindowMs' | 'transportTimeoutMs' | 'pollIntervalMs'
+  >,
+): number {
+  return Math.min(
+    options.resubmissionWindowMs ?? 2 * options.transportTimeoutMs + options.pollIntervalMs,
+    Math.floor(available * RESUBMISSION_WINDOW_SHARE),
+  );
+}
+
 export interface DurableWorkspaceTransport<TRequest, TResult> {
   baseURL: string;
   request: TRequest;
@@ -27,6 +48,8 @@ export interface DurableWorkspaceTransport<TRequest, TResult> {
   queueWaitMs: number;
   rateLimitWaitMs: number;
   pollIntervalMs: number;
+  /** Admission held back for a same-ID resend of a lost POST; omission derives it from transport. */
+  resubmissionWindowMs?: number;
   readJson: (response: Response, signal: AbortSignal) => Promise<unknown>;
   validateResult: (request: TRequest, value: unknown) => value is TResult;
   rejected: (
@@ -118,10 +141,14 @@ export async function executeDurableWorkspaceRequest<TRequest, TResult>(
       const available = Math.floor(options.deadlineAtMs - Date.now() - options.completionReserveMs);
       if (submissionQueueWaitMs === undefined) {
         if (available < 1) throw options.insufficient();
-        submissionQueueWaitMs = Math.min(options.queueWaitMs, available);
+        submissionQueueWaitMs = Math.min(
+          options.queueWaitMs,
+          available - resubmissionWindowMs(available, options),
+        );
       } else if (available < submissionQueueWaitMs) {
         // Same-ID resubmission must keep its fingerprint without extending admission.
-        // A delayed first POST may still commit. Keep observing it until Stop/deadline.
+        // Past the reserved window, a delayed first POST may still commit. Keep
+        // observing it until Stop/deadline.
         return;
       }
       submissionStarted = true;

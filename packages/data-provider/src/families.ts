@@ -14,13 +14,23 @@ export function gptPointReleaseFamily(model: string): string | undefined {
   return model.replace(GPT_POINT_RELEASE, '$1$2');
 }
 
-export type Gpt6Tier = 'astra' | 'sol' | 'luna';
+export type Gpt6Tier = 'astra' | 'sol' | 'terra' | 'luna';
 
-const GPT6_TIERS: Record<string, Gpt6Tier> = { astra: 'astra', sol: 'sol', luna: 'luna' };
-const GPT6_TIER = /^gpt-6(?:\.\d+)?-(astra|sol|luna)(?=-|$)/i;
+const GPT6_TIERS: Record<string, Gpt6Tier> = {
+  astra: 'astra',
+  sol: 'sol',
+  terra: 'terra',
+  luna: 'luna',
+};
+const GPT6_TIER = /^gpt-6(?:\.\d+)?-(astra|sol|terra|luna)(?=-|$)/i;
 
 /** The GPT-6 tier of `model`, including point releases and snapshots (`gpt-6.1-sol-2026-10-01` → `sol`). */
 export function gpt6Tier(model?: string | null): Gpt6Tier | undefined {
   const tier = GPT6_TIER.exec(model ?? '')?.[1];
   return tier == null ? undefined : GPT6_TIERS[tier.toLowerCase()];
+}
+
+/** The release key without its snapshot suffix. */
+export function gpt6Release(model?: string | null): string | undefined {
+  return GPT6_TIER.exec(model ?? '')?.[0];
 }

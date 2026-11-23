@@ -1,5 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import { ErrorTypes } from 'librechat-data-provider';
+import { ErrorTypes, SystemRoles } from 'librechat-data-provider';
 import type {
   AppConfig,
   UserRecord,
@@ -48,18 +48,26 @@ function hasStartBalance(balanceConfig?: BalanceConfig | null): boolean {
 }
 
 /**
- * Inserts a first-login user. Concurrent first logins for one identity all miss the strategy's
- * lookup, and `createUserIfAbsent` reports `user_exists` for every insert but the first. A
- * rejected request repeats `lookup`, with the strategy's provider and identity checks, and
- * resolves to the account that won (`created: false`) admitted exactly as a found account: a
- * tenant account resolves its tenant config and that config's email-domain policy applies. The
- * caller then refreshes it like any account its lookup finds. A user this request created keeps
- * `appConfig`. A conflict the lookup cannot account for throws.
+ * Inserts a first-login user. The account is admitted before it exists exactly as a found account
+ * is: the config it is created under is its own (the overrides of the role it is created with, in
+ * the request's tenant if any), and a domain that config's `registration.allowedDomains` excludes
+ * fails the login without creating anything. `claimedRole` is the role the login moves the new
+ * account into once it exists (OpenID role claims); its config, read in parallel, must admit the
+ * email too, so a login that role would refuse creates nothing either.
+ *
+ * Concurrent first logins for one identity all miss the strategy's lookup, and
+ * `createUserIfAbsent` reports `user_exists` for every insert but the first. A rejected request
+ * repeats `lookup`, with the strategy's provider and identity checks, and resolves to the account
+ * that won (`created: false`) admitted exactly as a found account: the account resolves its own
+ * config (its role's overrides, in its tenant if any) and that config's email-domain policy
+ * applies. The caller then refreshes it like any account its lookup finds. A user this request
+ * created continues under the config it was created under. A conflict the lookup cannot account
+ * for throws.
  *
  * It resolves to the winner's account only once the winner finished provisioning it. When the
- * config new users are created under (`appConfig`) sets a start balance, the balance must
- * exist: `createUserIfAbsent` writes it before the user, but a winner on an earlier release adds
- * it with `$inc` after its insert, and login balance sync must not initialize it first; such a
+ * config new users are created under sets a start balance, the balance must exist:
+ * `createUserIfAbsent` writes it before the user, but a winner on an earlier release adds it
+ * with `$inc` after its insert, and login balance sync must not initialize it first; such a
  * login fails as it did before recovery existed. A start balance only the account's tenant
  * config sets is initialized by login balance sync with an insert-only write that cannot be
  * added on top, so it does not hold the login back.
@@ -67,7 +75,7 @@ function hasStartBalance(balanceConfig?: BalanceConfig | null): boolean {
 export async function createUserOnce({
   newUser,
   email,
-  appConfig,
+  claimedRole,
   getAppConfig,
   getBalanceConfig,
   lookup,
@@ -77,7 +85,7 @@ export async function createUserOnce({
 }: {
   newUser: NewUserData;
   email: string;
-  appConfig: AppConfig;
+  claimedRole?: string;
   getAppConfig: GetAppConfig;
   getBalanceConfig: GetBalanceConfig;
   lookup: () => Promise<LoginUserResolution>;
@@ -85,6 +93,23 @@ export async function createUserOnce({
   createUserIfAbsent: CreateUserIfAbsent;
   findBalanceByUser: FindBalanceByUser;
 }): Promise<FirstLoginResult> {
+  const role = newUser.role ?? SystemRoles.USER;
+  const roles = claimedRole && claimedRole !== role ? [role, claimedRole] : [role];
+  const configs = await Promise.all(
+    roles.map((admittedRole) => resolveAppConfigForUser(getAppConfig, { role: admittedRole })),
+  );
+  const refused = configs.findIndex(
+    (config) => !isEmailDomainAllowed(email, config?.registration?.allowedDomains),
+  );
+  if (refused !== -1) {
+    logger.error(
+      `[${strategyName}] Authentication blocked - email domain not allowed for a new account in the ${roles[refused]} role`,
+    );
+    return { user: null, error: EMAIL_DOMAIN_NOT_ALLOWED, created: false };
+  }
+
+  const appConfig = configs[0];
+
   const created = await createUserIfAbsent(newUser, getBalanceConfig(appConfig) ?? undefined);
   if (created.ok) return { user: created.value, appConfig, created: true, error: null };
 
@@ -99,7 +124,7 @@ export async function createUserOnce({
   const userId = resolution.user._id.toString();
   const requiresBalance = hasStartBalance(getBalanceConfig(appConfig));
   const [accountConfig, balance] = await Promise.all([
-    resolution.user.tenantId ? resolveAppConfigForUser(getAppConfig, resolution.user) : appConfig,
+    resolveAppConfigForUser(getAppConfig, resolution.user),
     requiresBalance ? findBalanceByUser(userId) : null,
   ]);
   if (!isEmailDomainAllowed(email, accountConfig?.registration?.allowedDomains)) {

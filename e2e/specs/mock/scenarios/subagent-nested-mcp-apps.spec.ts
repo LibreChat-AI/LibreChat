@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import type { Page } from '@playwright/test';
 import type { SeedMessage } from '../db';
@@ -9,6 +8,7 @@ import {
   deleteMessagesByConversation,
 } from '../db';
 import { getE2EUser } from '../../../setup/user';
+import { expect, test } from '../fixtures';
 
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 

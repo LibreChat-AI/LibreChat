@@ -50,12 +50,13 @@ function getRandomVoiceId(voiceIds) {
  * @param {string} messageId
  * @returns {() => Promise<{ text: string, isFinished: boolean }[] | string>}
  */
-function createChunkProcessor(user, messageId) {
+function createChunkProcessor(user, messageId, maxInputChars) {
   return createSpeechChunkProcessor({
     user,
     messageId,
     cache: getLogStores(CacheKeys.MESSAGES),
     getMessage,
+    maxInputChars,
   });
 }
 

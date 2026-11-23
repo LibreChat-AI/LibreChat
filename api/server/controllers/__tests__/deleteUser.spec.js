@@ -70,6 +70,10 @@ jest.mock('@librechat/api', () => ({
   getNewS3URL: jest.fn(),
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
   eraseUserData: jest.requireActual('../../../../packages/api/src/user/erasure.ts').eraseUserData,
+  createUserDeletionAttempt: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .createUserDeletionAttempt,
+  cancelUserDataDeletion: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .cancelUserDataDeletion,
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {
     getAccountCleanupJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
@@ -98,6 +102,7 @@ jest.mock('~/models', () => ({
   deleteUserById: (...args) => mockDeleteUserById(...args),
   deleteAllUserPluginAuths: (...args) => mockDeleteAllUserPluginAuths(...args),
   beginAgentTriggerUserDeletion: (...args) => mockBeginAgentTriggerUserDeletion(...args),
+  isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
   cancelAgentTriggerUserDeletion: (...args) => mockCancelAgentTriggerUserDeletion(...args),
   deleteMessages: (...args) => mockDeleteMessages(...args),
   deletePresets: (...args) => mockDeletePresets(...args),
@@ -213,7 +218,10 @@ function stubDeletionMocks() {
   mockDeleteAllSharedLinks.mockResolvedValue();
   mockDeleteAllSharedLinksWithCleanup.mockResolvedValue({ deletedCount: 0 });
   mockGetFiles.mockResolvedValue([]);
-  mockProcessDeleteRequest.mockResolvedValue({ deletedFileIds: [], failedFileIds: [] });
+  mockProcessDeleteRequest.mockImplementation(async ({ files }) => ({
+    deletedFileIds: files.map((file) => file.file_id),
+    failedFileIds: [],
+  }));
   mockDeleteFiles.mockResolvedValue();
   mockDeleteToolCalls.mockResolvedValue();
   mockDeleteUserAgents.mockResolvedValue();
@@ -265,7 +273,7 @@ describe('deleteUserController - 2FA enforcement', () => {
     const req = { user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' } };
     const res = createRes();
     mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
-    mockGetFiles.mockResolvedValue(files);
+    mockGetFiles.mockResolvedValueOnce(files);
 
     await deleteUserController(req, res);
 
@@ -274,6 +282,27 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(deleted).toBe(files);
     expect(fileRequest.body).toEqual({});
     expect(fileRequest.user).toBe(req.user);
+  });
+
+  it.each(['reported', 'thrown'])('retains the account on %s failure', async (failure) => {
+    const req = { user: { id: USER_ID, _id: USER_ID }, body: {} };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
+    mockGetFiles.mockResolvedValue([{ file_id: 'file-1', embedded: true }]);
+    if (failure === 'reported') {
+      mockProcessDeleteRequest.mockResolvedValueOnce({
+        deletedFileIds: [],
+        failedFileIds: ['file-1'],
+      });
+    } else {
+      mockProcessDeleteRequest.mockRejectedValueOnce(new Error('provider down'));
+    }
+    await deleteUserController(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+    expect(mockDeleteUserKey).not.toHaveBeenCalled();
+    expect(mockDeleteUserById).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerUserDeletion).toHaveBeenCalled();
   });
 
   it('proceeds with deletion when 2FA is not enabled', async () => {
@@ -405,7 +434,10 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockBeginAgentTriggerUserDeletion).toHaveBeenCalledTimes(1);
     expect(mockDeleteMessages).toHaveBeenCalled();
-    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID, {
+      startedAt: mockBeginAgentTriggerUserDeletion.mock.calls[0][1],
+      attemptId: mockBeginAgentTriggerUserDeletion.mock.calls[0][2],
+    });
     expect(mockDeleteUserCodeEnvironments).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserDeletion).not.toHaveBeenCalled();

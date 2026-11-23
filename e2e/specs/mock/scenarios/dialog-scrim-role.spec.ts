@@ -101,8 +101,17 @@ async function seedConversation(title: string): Promise<string> {
 async function openConversationDeleteDialog(page: Page, title: string) {
   const row = page.getByTestId('convo-item').filter({ hasText: title }).first();
   await expect(row).toBeVisible({ timeout: 20000 });
-  await row.hover();
-  await row.getByRole('button', { name: 'Conversation Menu Options' }).click();
+  /* Focusing the row mounts and reveals its menu button the way a hover does, and keeps
+   * to this row when rows left by earlier specs in the shard shift the list under the
+   * pointer. A chat still streaming in the sidebar can remount the row and drop the
+   * mounted button, so the focus is repeated until the button holds it. */
+  const menuButton = row.getByRole('button', { name: 'Conversation Menu Options' });
+  await expect(async () => {
+    await row.getByRole('button', { name: `${title} conversation` }).focus();
+    await menuButton.focus({ timeout: 2000 });
+    await expect(menuButton).toBeFocused({ timeout: 1000 });
+  }).toPass({ timeout: 20000 });
+  await page.keyboard.press('Enter');
   await page.getByRole('menuitem', { name: 'Delete' }).click();
   await expect(page.getByRole('dialog', { name: 'Delete chat?' })).toBeVisible({ timeout: 10000 });
 }

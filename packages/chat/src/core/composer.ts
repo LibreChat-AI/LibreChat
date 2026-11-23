@@ -51,3 +51,20 @@ export function isComposerFileTaken(id: string): boolean {
 export function releaseComposerFile(id: string): void {
   takenFileIds.delete(id);
 }
+
+/** The DOM id of main chat's composer textarea; selection and quote features locate it by id. */
+export const mainTextareaId = 'prompt-textarea';
+
+/**
+ * The DOM id of the composer textarea of the pane at `index`. Main chat's keeps the id every
+ * lookup already knows; a composer in any other pane takes one of its own, so two on a page
+ * never share it.
+ */
+export const composerTextareaId = (index = 0): string =>
+  index === 0 ? mainTextareaId : `${mainTextareaId}-${index}`;
+
+/** Whether an element is a composer's textarea, in whichever pane. Never, where there is no DOM. */
+export const isComposerTextarea = (element: Element | null): element is HTMLTextAreaElement =>
+  typeof HTMLTextAreaElement !== 'undefined' &&
+  element instanceof HTMLTextAreaElement &&
+  (element.id === mainTextareaId || element.id.startsWith(`${mainTextareaId}-`));

@@ -2,8 +2,16 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { logger } from '@librechat/data-schemas';
-import { THEME_BOOT_FILE, DEPLOYMENT_THEME_BOOT_ID } from 'librechat-data-provider';
-import type { BundledThemeBoot, DeploymentThemeBoot } from 'librechat-data-provider';
+import {
+  THEME_BOOT_FILE,
+  describeThemeModes,
+  DEPLOYMENT_THEME_BOOT_ID,
+} from 'librechat-data-provider';
+import type {
+  ThemeDefinition,
+  BundledThemeBoot,
+  DeploymentThemeBoot,
+} from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import {
   readBundledThemeBoot,
@@ -51,8 +59,25 @@ describe('injectDeploymentThemeBoot', () => {
     expect(html.indexOf(DEPLOYMENT_THEME_BOOT_ID)).toBeLessThan(html.indexOf('boot()'));
   });
 
-  it('embeds only the source of an inline definition, which the bundle resolves', () => {
-    const inline = { version: 1 as const, name: 'acme', modes: { light: {}, dark: {} } };
+  it('resolves both modes of an inline definition as the client does', () => {
+    const inline = {
+      version: 1 as const,
+      name: 'acme',
+      modes: { light: { colors: { 'rgb-surface-primary': '10 20 30' } }, dark: {} },
+    } satisfies ThemeDefinition;
+    const boot = bootOf(injectDeploymentThemeBoot(SHELL, inline, bundled));
+
+    expect(boot).toEqual({ source: inline, modes: describeThemeModes(inline) });
+    expect(boot?.modes?.light.properties).toContainEqual(['--surface-primary', '10 20 30']);
+    expect(boot?.modes?.dark.attributes).toEqual(expect.objectContaining({ 'data-theme': 'acme' }));
+  });
+
+  it('embeds only the source of an inline definition the client would reject', () => {
+    const inline = {
+      version: 1 as const,
+      name: 'acme',
+      modes: { light: { colors: { 'rgb-x': 'red' } } },
+    };
     expect(bootOf(injectDeploymentThemeBoot(SHELL, inline, bundled))).toEqual({ source: inline });
   });
 

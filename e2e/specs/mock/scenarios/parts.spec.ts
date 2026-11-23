@@ -116,7 +116,9 @@ test.describe('UI parts view of persisted messages', () => {
       content: '# Parts view\n',
     });
     expect(upload.ok()).toBeTruthy();
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName }),
+    ).toBeVisible({ timeout: 15_000 });
     const response = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
     expect(response.ok()).toBeTruthy();
 

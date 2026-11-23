@@ -56,7 +56,7 @@ function headerParts(dialog: Locator) {
       .locator('..'),
     view: dialog.getByRole('radiogroup', { name: 'Filter skills', exact: true }),
     create: dialog.getByRole('button', { name: 'Create Skill', exact: true }),
-    filter: dialog.getByRole('textbox', { name: 'Search skills...', exact: true }),
+    filter: dialog.getByRole('textbox', { name: 'Search skills', exact: true }),
   };
 }
 

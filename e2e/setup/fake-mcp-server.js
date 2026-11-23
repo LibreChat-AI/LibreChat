@@ -77,6 +77,22 @@ server.registerTool(
   },
 );
 
+/** Returns its text padded with an unbroken run of spaces, the shape of a scraped page
+ *  or a program's output that tokenizes in quadratic time when counted whole. */
+server.registerTool(
+  'padded_echo',
+  {
+    description: 'Echoes text followed by a run of spaces; used to verify tool-output budgets.',
+    inputSchema: {
+      text: z.string(),
+      pad_spaces: z.number().int().min(0).max(500000).optional(),
+    },
+  },
+  async ({ text, pad_spaces = 0 }) => ({
+    content: [{ type: 'text', text: `E2E padded echo: ${text}${' '.repeat(pad_spaces)}end` }],
+  }),
+);
+
 server.registerTool(
   'approval_probe',
   {
@@ -98,6 +114,34 @@ server.registerTool(
       ],
     };
   },
+);
+
+/** Mirrors a Pydantic-style tool with many optional fields: the nullable object is
+ *  declared after the eighth property, so validation feedback must scan the whole schema. */
+server.registerTool(
+  'create_work_item',
+  {
+    description:
+      'Creates a work item; used to verify schema-validation feedback in mock e2e tests.',
+    inputSchema: {
+      project: z.string(),
+      subject: z.string(),
+      type: z.string().optional(),
+      description: z.string().optional(),
+      assignee: z.string().optional(),
+      priority: z.string().optional(),
+      status: z.string().optional(),
+      start_date: z.string().optional(),
+      due_date: z.string().optional(),
+      estimated_hours: z.number().optional(),
+      parent_id: z.number().int().optional(),
+      custom_fields: z.record(z.string(), z.unknown()).nullable().optional(),
+      confirm: z.boolean().optional(),
+    },
+  },
+  async ({ subject }) => ({
+    content: [{ type: 'text', text: `E2E work item created: ${subject}` }],
+  }),
 );
 
 if (process.env.E2E_MCP_LIST_CHANGED === 'true') {

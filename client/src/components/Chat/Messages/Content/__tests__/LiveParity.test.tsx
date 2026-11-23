@@ -2,19 +2,19 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, useSetAtom } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
+import { resolveAskUserQuestionPart } from '@librechat/chat';
+import { getLiveActivity } from '@librechat/chat/components';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   TAttachment,
   TMessage,
   TMessageContentParts,
   SearchResultData,
 } from 'librechat-data-provider';
-import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import ContentParts from '../ContentParts';
-import { getLiveActivity } from '../live';
 import * as mcpHooks from '~/hooks/MCP';
 import store from '~/store';
 
@@ -396,6 +396,7 @@ describe('live fold parity with the cards it hides', () => {
     const second = toPart({ name: 'create_file', output: '' }, 'second');
     const view = mount([first, second], undefined, true);
 
+    expect(screen.getByTestId('live-phase-combo')).toHaveClass('sr-only');
     expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
     expect(
       within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
@@ -1277,7 +1278,9 @@ describe('live activity hardening transitions', () => {
     const header = screen.getByRole('button');
     expect(header).toHaveAccessibleName('Checking the next file');
     expect(screen.queryByTestId('live-phase-combo')).toBeNull();
-    expect(header.querySelector('.absolute[aria-hidden="true"]')).toBeNull();
+    expect(
+      header.querySelector('.absolute[aria-hidden="true"]:not(.lucide-chevron-down)'),
+    ).toBeNull();
   });
 
   it.each(['error', 'cancelled', 'completed'] as const)(
@@ -1544,10 +1547,7 @@ describe('tool pane identity at finalization', () => {
       const { container, rerender } = render(frame({ content: [undefined, call()] }));
       fireEvent.click(toggles(container)[0]);
       expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
-      await act(async () => {
-        await Promise.resolve();
-      });
-      expect(container.querySelector('code.hljs span')).not.toBeNull();
+      await waitFor(() => expect(container.querySelector('code.hljs span')).not.toBeNull());
       rerender(
         frame({
           messageId: 'server-response',
@@ -1561,10 +1561,8 @@ describe('tool pane identity at finalization', () => {
         }),
       );
       expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
-      await act(async () => {
-        await Promise.resolve();
-      });
-      expect(container.querySelector('code.hljs span')).not.toBeNull();
+      expect(container.querySelector('code.hljs')).toHaveTextContent('printf hello');
+      await waitFor(() => expect(container.querySelector('code.hljs span')).not.toBeNull());
     },
   );
 

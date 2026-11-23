@@ -60,7 +60,7 @@ export default function AutoSendTextSelector() {
           id="autoSendTextToggle"
           checked={isEnabled}
           onCheckedChange={handleToggle}
-          className="ml-4"
+          className="ms-4"
           data-testid="autoSendTextToggle"
           aria-labelledby={labelId}
           disabled={!speechToText}
@@ -86,7 +86,7 @@ export default function AutoSendTextSelector() {
               min={0}
               max={60}
               step={1}
-              className="ml-4 flex h-4 w-24"
+              className="ms-4 flex h-4 w-24"
               disabled={!speechToText || !isEnabled}
               aria-labelledby="auto-send-delay-label"
             />

@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { NEW_CHAT_PATH } from '../helpers';
 import { themeValue } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * A definition written for a newer frontend can name an appearance token this build does not

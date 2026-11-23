@@ -11,7 +11,7 @@ const { compile } = require('tailwindcss');
 const tailwindPreset = require('../../tailwind.preset.cjs');
 const packageConfig = require('../../tailwind.config.js');
 const packageJson = require('../../package.json');
-const { defaultAppearance, themeAppearanceProperties } = require('./registry');
+const { defaultAppearance, themeAppearanceProperties } = require('librechat-data-provider');
 
 const packageRoot = path.resolve(__dirname, '../..');
 
@@ -87,11 +87,68 @@ function tailwindDefault(variable) {
 }
 
 describe('LibreChat Tailwind preset', () => {
+  it('ships the phase ticker animation properties without changing transition easing', async () => {
+    const css = await generate([
+      'animation-ease-fold',
+      'animation-fill-forwards',
+      'fill-mode-forwards',
+    ]);
+
+    expect(rule(css, 'animation-ease-fold')).toBe(
+      'animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);',
+    );
+    expect(rule(css, 'animation-fill-forwards')).toBe('animation-fill-mode: forwards;');
+    expect(rule(css, 'animation-fill-forwards')).toBe(rule(css, 'fill-mode-forwards'));
+  });
+
   it('owns the loading-dot delay with a zero-delay fallback for plain preset consumers', async () => {
     const css = await generate(['animate-loading-dot']);
 
     expect(rule(css, 'animate-loading-dot')).toContain('var(--loading-dot-delay, 0ms)');
     expect(rule(css, 'animate-loading-dot')).toContain('1.2s ease-in-out');
+  });
+
+  it('negates the switch thumb travel so an RTL track can mirror it', async () => {
+    const css = await generate(['-translate-x-theme-switch-travel']);
+
+    expect(rule(css, '-translate-x-theme-switch-travel')).toContain('--theme-switch-width');
+    expect(rule(css, '-translate-x-theme-switch-travel')).toContain('* -1)');
+  });
+
+  it('mirrors the switch thumb by the element direction, not any RTL ancestor', async () => {
+    const candidate = 'dir-rtl:data-[state=checked]:-translate-x-theme-switch-travel';
+    const css = await generate([candidate]);
+    const [modern, fallback] = css.split('@supports not selector(:dir(rtl))');
+
+    /** Tailwind's `rtl:` also matches `[dir="rtl"] *`, which reaches into an LTR island. */
+    expect(modern).toContain(':dir(rtl)');
+    expect(modern).toContain('--theme-switch-width');
+    expect(modern).not.toContain("[dir='rtl']");
+    /** Only a browser without `:dir()` falls back to the attribute. */
+    expect(fallback).toContain('@container style(--dir-fallback: rtl)');
+    expect(fallback).toContain('--theme-switch-width');
+  });
+
+  it('publishes the chat motion roles the package components write', async () => {
+    const css = await generate([
+      'transition-reveal',
+      'transition-crossfade',
+      'transition-max-width',
+      'transition-stroke-dashoffset',
+      'blur-crossfade',
+    ]);
+
+    expect(rule(css, 'transition-reveal')).toContain(
+      'transition-property: opacity, color, background-color',
+    );
+    expect(rule(css, 'transition-crossfade')).toContain(
+      'transition-property: opacity, transform, filter',
+    );
+    expect(rule(css, 'transition-max-width')).toContain('transition-property: max-width');
+    expect(rule(css, 'transition-stroke-dashoffset')).toContain(
+      'transition-property: stroke-dashoffset',
+    );
+    expect(rule(css, 'blur-crossfade')).toContain('blur(2px)');
   });
 
   it('generates every component animation and its keyframes together', async () => {
@@ -226,9 +283,7 @@ describe('LibreChat Tailwind preset', () => {
       expect(css).toContain(`var(${property}, ${fallback})`);
     });
 
-    expect(rule(css, 'max-h-theme-list')).toContain(
-      'var(--radix-select-content-available-height, 100dvh)',
-    );
+    expect(rule(css, 'max-h-theme-list')).toContain('var(--popover-available-height, 100dvh)');
 
     /** The tap-target floor is the role's reason to exist, so the floor itself is asserted
      *  rather than only the control-height variable it is built from. */

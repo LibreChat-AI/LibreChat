@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
-import { useFormContext, useWatch } from 'react-hook-form';
 import { Label, Radio } from '@librechat/client';
-import { useLocalize } from '~/hooks';
+import { useFormContext, useWatch } from 'react-hook-form';
 import type { MCPServerFormData } from '../hooks/useMCPServerForm';
+import { useLocalize } from '~/hooks';
 
 export default function TransportSection() {
   const localize = useLocalize();
@@ -36,6 +36,7 @@ export default function TransportSection() {
         value={transportType}
         onChange={handleTransportChange}
         fullWidth
+        wrap
         aria-labelledby="transport-label"
       />
     </fieldset>

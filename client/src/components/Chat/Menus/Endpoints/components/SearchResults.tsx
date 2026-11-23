@@ -245,7 +245,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
                   </div>
                 )}
                 <div className="flex min-w-0 flex-col gap-1">
-                  <span className="truncate text-left">{spec.label}</span>
+                  <span className="truncate text-start">{spec.label}</span>
                   <SpecDescription description={spec.description} />
                 </div>
               </div>
@@ -279,7 +279,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
               </div>
               {showMarketplace && (
                 <MarketplaceItem
-                  className="px-3 py-2 pl-6"
+                  className="px-3 py-2 ps-6"
                   label={localize('com_agents_marketplace')}
                   posInSet={resultOffset + 1}
                   setSize={listboxSetSize}

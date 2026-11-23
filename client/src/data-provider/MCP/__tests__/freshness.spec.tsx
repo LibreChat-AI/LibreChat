@@ -85,6 +85,48 @@ describe('MCP cache freshness', () => {
     unmount();
   });
 
+  it('stamps the start of a successful status read and retains it after a failed read', async () => {
+    let complete!: (value: MCPConnectionStatusResponse) => void;
+    const pending = new Promise<MCPConnectionStatusResponse>((resolve) => {
+      complete = resolve;
+    });
+    jest.mocked(dataService.getMCPConnectionStatus).mockReturnValueOnce(pending);
+    const { result, unmount } = renderHook(() => useMCPConnectionStatusQuery({ enabled: false }), {
+      wrapper,
+    });
+    const readStartedAt = performance.now();
+    let request: ReturnType<typeof result.current.refetch>;
+    act(() => {
+      request = result.current.refetch();
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(10);
+      complete(disconnected);
+      await request;
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toMatchObject({
+      ...disconnected,
+      readStartedAt,
+    });
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      jest.mocked(dataService.getMCPConnectionStatus).mockRejectedValueOnce(new Error('offline'));
+      await act(async () => {
+        jest.advanceTimersByTime(10);
+        const failed = await result.current.refetch();
+        expect(failed.isError).toBe(true);
+      });
+      expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toMatchObject({
+        ...disconnected,
+        readStartedAt,
+      });
+    } finally {
+      consoleError.mockRestore();
+      unmount();
+    }
+  });
+
   it('starts polling when a surface opens and stops when it closes', async () => {
     const { rerender, unmount } = renderHook(
       ({ visible }) => {
@@ -185,7 +227,10 @@ describe('MCP cache freshness', () => {
       jest.advanceTimersByTime(30_000);
     });
     expect(dataService.getMCPConnectionStatus).toHaveBeenCalledTimes(1);
-    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual(disconnected);
+    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual({
+      ...disconnected,
+      readStartedAt: expect.any(Number),
+    });
     expect(dataService.getMCPTools).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -225,7 +270,10 @@ describe('MCP cache freshness', () => {
     expect(dataService.getMCPTools).toHaveBeenCalledTimes(1);
     expect(dataService.getMCPConnectionStatus).toHaveBeenCalledTimes(1);
     expect(client.getQueryData([QueryKeys.mcpTools])).toEqual(changedCatalog);
-    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual(disconnected);
+    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual({
+      ...disconnected,
+      readStartedAt: expect.any(Number),
+    });
     unmount();
   });
 

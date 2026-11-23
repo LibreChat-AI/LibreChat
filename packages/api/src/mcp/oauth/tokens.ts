@@ -11,7 +11,9 @@ import type {
 import type { OAuthTokens, OAuthClientInformation } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { MCPOAuthTokens, ExtendedOAuthTokens, OAuthStoredClientMetadata } from './types';
 import type { FlowLease, FlowStateManager } from '~/flow/manager';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { isInvalidClientMessage } from '~/mcp/utils';
+import { getSafeOAuthError } from './errors';
 import { isSystemUserId } from '~/mcp/enum';
 
 export class ReauthenticationRequiredError extends Error {
@@ -1836,7 +1838,7 @@ export class MCPTokenStorage {
       logger.info(`${logPrefix} Successfully refreshed and stored OAuth tokens`);
       return storedTokens;
     } catch (refreshError) {
-      logger.error(`${logPrefix} Failed to refresh tokens`, refreshError);
+      logger.error(`${logPrefix} Failed to refresh tokens`, getSafeErrorMetadata(refreshError));
       if (
         refreshError instanceof ReauthenticationRequiredError ||
         refreshError instanceof MCPTokenRefreshUnavailableError
@@ -1898,7 +1900,10 @@ export class MCPTokenStorage {
         );
         return null;
       }
-      throw new MCPTokenRefreshUnavailableError(serverName, refreshError);
+      throw new MCPTokenRefreshUnavailableError(
+        serverName,
+        getSafeOAuthError(refreshError, 'OAuth token refresh failed'),
+      );
     }
   }
 

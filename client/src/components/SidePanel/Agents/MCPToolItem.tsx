@@ -68,14 +68,14 @@ export default function MCPToolItem({
 
   return (
     <div className="overflow-hidden rounded-lg">
-      <div className="hover:bg-surface-secondary flex items-center gap-1 rounded-lg pr-1 transition-colors">
+      <div className="hover:bg-surface-secondary flex items-center gap-1 rounded-lg pe-1 transition-colors">
         <button
           type="button"
           onClick={onToggleSelect}
           aria-pressed={isSelected}
           aria-label={tool.metadata.name}
           className={cn(
-            'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-2 text-left',
+            'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-2 text-start',
             'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:ring-2',
           )}
         >

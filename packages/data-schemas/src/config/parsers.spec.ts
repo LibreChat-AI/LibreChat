@@ -63,6 +63,9 @@ describe('redactMessage', () => {
     expect(redactMessage('https://example.test/?api_key=secretvalue&next=true')).toBe(
       'https://example.test/?api_key=[REDACTED]&next=true',
     );
+    expect(redactMessage('https://example.test/?input=x&appid=secretvalue&limit=1')).toBe(
+      'https://example.test/?input=x&appid=[REDACTED]&limit=1',
+    );
   });
 
   it('masks email addresses in messages', () => {
@@ -75,6 +78,29 @@ describe('redactMessage', () => {
     expect(redactMessage('user user@bücher.de ok')).toBe('user [REDACTED_EMAIL] ok');
     expect(redactMessage('a@b and user@localhost')).toBe('a@b and user@localhost');
     expect(redactMessage('mention @handle and v1.2.3')).toBe('mention @handle and v1.2.3');
+  });
+
+  it('keeps scoped package paths in stack frames and still masks addresses beside them', () => {
+    const frames = [
+      '    at Run.processStream (/app/node_modules/@librechat/agents/dist/cjs/run.cjs:120:5)',
+      '    at async KeyvMongo.get (/app/node_modules/@keyv/mongo/dist/index.cjs:10:3)',
+      '    at /app/node_modules/@langchain/core/dist/runnables/base.cjs:1:2',
+      '    at file:///app/node_modules/@scope/pkg/index.mjs:1:1',
+      '    at load (C:\\app\\node_modules\\@scope\\pkg\\index.js:1:1)',
+      '{"stack":"at f (C:\\\\app\\\\node_modules\\\\@scope\\\\pkg\\\\x.js:1:2)"}',
+    ];
+    for (const frame of frames) {
+      expect(redactMessage(frame)).toBe(frame);
+    }
+
+    expect(
+      redactMessage('Error: no user jane@example.com\n    at f (/app/node_modules/@a/b/c.js:1:2)'),
+    ).toBe('Error: no user [REDACTED_EMAIL]\n    at f (/app/node_modules/@a/b/c.js:1:2)');
+    expect(redactMessage('user jane/@example.com ok')).toBe('user [REDACTED_EMAIL] ok');
+    expect(redactMessage('/home/jane@example.com/file.js')).toBe('[REDACTED_EMAIL]');
+    expect(redactMessage('see https://social.example/@jane.doe ok')).toBe(
+      'see [REDACTED_EMAIL] ok',
+    );
   });
 
   it('masks the whole token for apostrophes, long local parts and combining-mark domains', () => {
@@ -811,6 +837,20 @@ describe('redactFormat', () => {
     expect(info.nested).toEqual({ '[REDACTED_EMAIL]': 1, '[REDACTED_EMAIL]#2': 2, other: 3 });
   });
 
+  it('keeps scoped package frame locations in a redacted Error stack', () => {
+    const error = new Error('lookup failed for jane@example.com');
+    error.stack = [
+      'Error: lookup failed for jane@example.com',
+      '    at KeyvMongo.get (/app/node_modules/@keyv/mongo/dist/index.cjs:10:3)',
+      '    at retryWithBackoff (/app/packages/api/dist/index.cjs:5:7)',
+    ].join('\n');
+    const info = runRedactFormat({ level: 'error', message: 'cache read', error });
+    const stack = String((info.error as Error).stack);
+    expect(stack).not.toContain('jane');
+    expect(stack).toContain('(/app/node_modules/@keyv/mongo/dist/index.cjs:10:3)');
+    expect(stack).toContain('(/app/packages/api/dist/index.cjs:5:7)');
+  });
+
   it.each(['error', 'warn', 'info', 'debug'])('redacts info.message for %s level', (level) => {
     const info = runRedactFormat({ level, message: 'Bearer secretvalue' });
     expect(info.message).toBe('Bearer [REDACTED]');
@@ -857,6 +897,7 @@ describe('redactFormat', () => {
   it('redacts values under sensitive splat metadata keys', () => {
     const metadata = {
       apiKey: 'secretvalue',
+      appid: 'secretvalue',
       authorization: 'secretvalue',
       nested: { token: 'secretvalue' },
       safe: 'secretvalue',
@@ -873,6 +914,7 @@ describe('redactFormat', () => {
     const splat = info[SPLAT_SYMBOL] as Array<typeof metadata>;
 
     expect(splat[0].apiKey).toBe('[REDACTED]');
+    expect(splat[0].appid).toBe('[REDACTED]');
     expect(splat[0].authorization).toBe('[REDACTED]');
     expect(splat[0].nested.token).toBe('[REDACTED]');
     expect(splat[0]['x-api-key']).toBe('[REDACTED]');
@@ -1160,5 +1202,88 @@ describe('jsonTruncateFormat structured events', () => {
       recovery_classification: 'terminal_rejection',
       response_status: 401,
     });
+  });
+
+  it('preserves transport symbols in a single enumeration of the log record', () => {
+    const LEVEL = Symbol.for('level');
+    const format = jsonTruncateFormat();
+    const message = 'x'.repeat(300);
+    const splat = [{ requestId: 'request-123' }];
+    const ownKeys = jest.fn(Reflect.ownKeys);
+    const info = new Proxy<winston.Logform.TransformableInfo>(
+      {
+        level: 'error',
+        message,
+        [LEVEL]: 'error',
+        [MESSAGE_SYMBOL]: message,
+        [SPLAT_SYMBOL]: splat,
+      },
+      { ownKeys },
+    );
+
+    const output = format.transform(info, format.options);
+    if (typeof output !== 'object') {
+      throw new Error('Expected jsonTruncateFormat to preserve the log record');
+    }
+
+    expect(ownKeys).toHaveBeenCalledTimes(1);
+    expect(output[LEVEL]).toBe('error');
+    expect(output[MESSAGE_SYMBOL]).toBe(message);
+    expect(output[SPLAT_SYMBOL]).toBe(splat);
+    expect(output.level).toBe('error');
+    expect(output.message).toBe(`${message.slice(0, 255)}...`);
+    expect(info.message).toBe(message);
+  });
+
+  it('preserves non-enumerable symbols without reading non-enumerable string fields', () => {
+    const LEVEL = Symbol.for('level');
+    const format = jsonTruncateFormat();
+    const info = { level: 'error', message: 'request failed' };
+    const readHidden = jest.fn(() => {
+      throw new Error('Hidden string fields must not be read');
+    });
+    Object.defineProperties(info, {
+      [LEVEL]: { value: 'error', enumerable: false },
+      hidden: { get: readHidden, enumerable: false },
+    });
+
+    const output = format.transform(info, format.options);
+    if (typeof output !== 'object') {
+      throw new Error('Expected jsonTruncateFormat to preserve the log record');
+    }
+
+    expect(output[LEVEL]).toBe('error');
+    expect(output).not.toHaveProperty('hidden');
+    expect(readHidden).not.toHaveBeenCalled();
+  });
+
+  it('keeps nested values JSON-shaped while truncating strings and handling cycles', () => {
+    const format = jsonTruncateFormat();
+    const message = 'x'.repeat(300);
+    const nested: Record<string | symbol, unknown> = {
+      detail: message,
+      items: [{ detail: message }],
+      [SPLAT_SYMBOL]: [{ detail: message }],
+    };
+    nested.self = nested;
+    const readHidden = jest.fn(() => {
+      throw new Error('Hidden string fields must not be read');
+    });
+    Object.defineProperty(nested, 'hidden', { get: readHidden, enumerable: false });
+    const info = { level: 'info', message: 'event', metadata: nested };
+
+    const output = format.transform(info, format.options);
+    if (typeof output !== 'object') {
+      throw new Error('Expected jsonTruncateFormat to preserve the log record');
+    }
+
+    expect(output.metadata).toEqual({
+      detail: `${message.slice(0, 255)}...`,
+      items: [{ detail: `${message.slice(0, 255)}...` }],
+      self: '[Circular]',
+    });
+    expect(nested.detail).toBe(message);
+    expect(nested.self).toBe(nested);
+    expect(readHidden).not.toHaveBeenCalled();
   });
 });

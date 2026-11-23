@@ -117,3 +117,30 @@ describe('useSettingsContext connected accounts', () => {
     expect(hasConnect()).toBe(false);
   });
 });
+
+describe('useSettingsContext session rail auto-open', () => {
+  afterEach(() => {
+    mockStartup = undefined;
+  });
+
+  const allowed = (): boolean =>
+    renderHook(() => useSettingsContext(), { wrapper }).result.current.sessionRailAutoOpenAllowed;
+
+  it('withholds the switch until the deployment has answered', () => {
+    mockStartup = undefined;
+    expect(allowed()).toBe(false);
+  });
+
+  it('offers the switch by default', () => {
+    mockStartup = { interface: {} } as Partial<TStartupConfig>;
+    expect(allowed()).toBe(true);
+  });
+
+  it.each([{ sessionRail: false }, { sessionRailAutoOpen: false }])(
+    'withholds the switch when the deployment sets %o',
+    (ui) => {
+      mockStartup = { interface: ui } as Partial<TStartupConfig>;
+      expect(allowed()).toBe(false);
+    },
+  );
+});

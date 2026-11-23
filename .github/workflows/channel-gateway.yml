@@ -1,0 +1,201 @@
+name: Channel Gateway
+
+on:
+  pull_request:
+    paths:
+      - 'packages/channel-gateway/**'
+      - 'packages/data-provider/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/typecheck.mts'
+      - '.dockerignore'
+      - 'docker-compose.yml'
+      - 'docker-compose.channels.yml'
+      - 'docker-compose.slack-workspaces.yml'
+      - 'docker-compose.channels-build.yml'
+      - '.github/scripts/test-channel-compose.mjs'
+      - '.github/scripts/test-channel-release.mjs'
+      - '.github/workflows/tag-images.yml'
+      - '.github/workflows/main-image-workflow.yml'
+      - '.github/workflows/retry-docker-builds.yml'
+      - '.github/workflows/docker-publish.yml'
+      - 'helm/librechat/**'
+      - 'docker-compose.mongo-replica.yml'
+      - 'utils/docker/init-replica.js'
+      - '.env.example'
+      - '.github/workflows/channel-gateway.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'packages/channel-gateway/**'
+      - 'packages/data-provider/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/typecheck.mts'
+      - '.dockerignore'
+      - 'docker-compose.yml'
+      - 'docker-compose.channels.yml'
+      - 'docker-compose.slack-workspaces.yml'
+      - 'docker-compose.channels-build.yml'
+      - '.github/scripts/test-channel-compose.mjs'
+      - '.github/scripts/test-channel-release.mjs'
+      - '.github/workflows/tag-images.yml'
+      - '.github/workflows/main-image-workflow.yml'
+      - '.github/workflows/retry-docker-builds.yml'
+      - '.github/workflows/docker-publish.yml'
+      - 'helm/librechat/**'
+      - 'docker-compose.mongo-replica.yml'
+      - 'utils/docker/init-replica.js'
+      - '.env.example'
+      - '.github/workflows/channel-gateway.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SCARF_ANALYTICS: 'false'
+      HUSKY: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - name: Install gateway and shared contracts
+        run: npm ci --ignore-scripts --no-audit --workspace @librechat/channel-gateway --workspace librechat-data-provider --include-workspace-root=false
+      - name: Build shared contracts
+        run: npm run build --workspace librechat-data-provider
+      - name: Typecheck gateway
+        run: npm run typecheck --workspace @librechat/channel-gateway
+      - name: Test gateway
+        run: npm run test:ci --workspace @librechat/channel-gateway
+      - name: Build gateway
+        run: npm run build --workspace @librechat/channel-gateway
+      - name: Verify release image provenance
+        run: node .github/scripts/test-channel-release.mjs
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+      - name: Verify gateway Helm configuration
+        run: node helm/librechat/tests/channel_gateway_render_test.mjs
+      - name: Verify release and source Compose configuration
+        run: node .github/scripts/test-channel-compose.mjs
+      - name: Verify local replica conversion and restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          fixture=$(mktemp)
+          cat > "$fixture" <<'YAML'
+          services:
+            mongodb:
+              container_name: channel-replica-ci-mongodb
+              user: "0:0"
+              healthcheck:
+                test: ['CMD', 'mongosh', '--quiet', '--eval', 'quit(db.adminCommand({ping:1}).ok ? 0 : 1)']
+                interval: 5s
+                timeout: 5s
+                retries: 12
+              volumes:
+                - channel-replica-ci:/data/db
+          volumes:
+            channel-replica-ci:
+          YAML
+          compose() {
+            env UID="$(id -u)" GID="$(id -g)" docker compose -p channel-replica-ci -f docker-compose.yml "$@"
+          }
+          trap 'compose -f docker-compose.mongo-replica.yml -f "$fixture" down -v --remove-orphans' EXIT
+          compose -f "$fixture" up -d --wait mongodb
+          compose -f "$fixture" exec -T mongodb mongosh --quiet --eval '
+            db.getSiblingDB("replica_test").canary.insertOne({_id:"before-conversion"});'
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" up -d mongodb
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" run --rm mongodb-init
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" exec -T mongodb mongosh --quiet --eval '
+            const d=db.getSiblingDB("replica_test");
+            if(!d.canary.findOne({_id:"before-conversion"}))throw new Error("Conversion lost data");
+            const s=db.getMongo().startSession();
+            s.startTransaction();
+            s.getDatabase("replica_test").canary.insertOne({_id:"committed"});
+            s.commitTransaction();s.endSession();'
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" restart mongodb
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" run --rm mongodb-init
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" exec -T mongodb mongosh --quiet --eval '
+            if(db.getSiblingDB("replica_test").canary.countDocuments()!==2)throw new Error("Restart lost data");'
+      - name: Build standalone image
+        run: docker build -f packages/channel-gateway/Dockerfile -t channel-gateway:ci .
+      - name: Verify standalone image and fail-closed startup
+        shell: bash
+        run: |
+          docker run --rm --entrypoint node channel-gateway:ci -e "const fs=require('node:fs');if(process.getuid()===0||!fs.existsSync('/app/main.cjs')||fs.existsSync('/app/node_modules'))process.exit(1)"
+          set +e
+          output=$(docker run --rm channel-gateway:ci 2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo 'Gateway unexpectedly started without a channel binding.'
+            exit 1
+          fi
+          if ! grep -q 'channel_gateway_startup_failed' <<< "$output"; then
+            echo 'Gateway did not report its expected safe startup failure.'
+            exit 1
+          fi
+      - name: Smoke-test isolated webhook process
+        run: |
+          docker run --rm -i --read-only --entrypoint node channel-gateway:ci - <<'NODE'
+          const http = require('node:http');
+          const { spawn } = require('node:child_process');
+          const { createHmac } = require('node:crypto');
+          const { setTimeout: delay } = require('node:timers/promises');
+          const bundle = {
+            delivery: { maxDeliveryParts: 100 },
+            channel: { channelId: 'fixture', tenantId: 'fixture', agentId: 'agent_fixture', createdBy: 'owner', type: 'slack', status: 'active', revision: 'fixture', slack: { teamId: 'T1', appId: 'A1', botUserId: 'U1' } },
+            gateway: { version: 1, transport: 'webhook', nativeSessions: false, lifecycleReactions: false, signatureToleranceSeconds: 300, socketReconnectDelayMs: 5000 },
+            credentials: { botToken: 'fixture', signingSecret: 'fixture-signing' }, agent: { id: 'agent_fixture' },
+          };
+          const backend = http.createServer((req, res) => {
+            if (req.url.endsWith('/runs/claim')) { req.resume(); res.writeHead(204); res.end(); return; }
+            res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(bundle));
+          });
+          backend.listen(0, '127.0.0.1', async () => {
+            const child = spawn(process.execPath, ['/app/main.cjs'], {
+              env: { ...process.env, LIBRECHAT_INTERNAL_URL: `http://127.0.0.1:${backend.address().port}`, CHANNEL_SERVICE_TOKEN: 'fixture', CHANNEL_TENANT_ID: 'fixture', CHANNEL_ID: 'fixture' },
+              stdio: 'ignore',
+            });
+            const exited = new Promise(resolve => child.once('exit', resolve));
+            const deadline = setTimeout(() => child.kill('SIGKILL'), 10000);
+            try {
+              let ready = false;
+              for (let attempt = 0; attempt < 50; attempt++) {
+                try { ready = (await fetch('http://127.0.0.1:8080/healthz', { signal: AbortSignal.timeout(500) })).ok; } catch {}
+                if (ready) break;
+                await delay(100);
+              }
+              if (!ready) throw new Error('Gateway did not become healthy');
+              const body = JSON.stringify({ type: 'url_verification', challenge: 'verified' });
+              const url = 'http://127.0.0.1:8080/slack/events/fixture/fixture';
+              const unsigned = await fetch(url, { method: 'POST', body });
+              if (unsigned.status !== 401) throw new Error('Unsigned challenge accepted');
+              const timestamp = String(Math.floor(Date.now() / 1000));
+              const signature = 'v0=' + createHmac('sha256', 'fixture-signing').update(`v0:${timestamp}:${body}`).digest('hex');
+              const signed = await fetch(url, { method: 'POST', body, headers: { 'x-slack-request-timestamp': timestamp, 'x-slack-signature': signature } });
+              if (signed.status !== 200 || (await signed.json()).challenge !== 'verified') throw new Error('Signed challenge rejected');
+
+              child.kill('SIGTERM');
+              if (await exited !== 0) throw new Error('Gateway did not exit cleanly');
+              console.log('Standalone gateway became healthy and stopped cleanly.');
+          } catch (error) {
+            console.error(error.message);
+              child.kill('SIGKILL'); process.exitCode = 1;
+            } finally {
+              clearTimeout(deadline); backend.closeAllConnections(); backend.close();
+            }
+          });
+          NODE

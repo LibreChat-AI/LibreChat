@@ -59,7 +59,7 @@ const RecoilToggle: React.FC<
         checked={switchState}
         onCheckedChange={handleCheckedChange}
         disabled={disabled}
-        className="ml-4"
+        className="ms-4"
         data-testid={switchId}
         aria-labelledby={labelId}
       />
@@ -103,7 +103,7 @@ const JotaiToggle: React.FC<
         checked={switchState}
         onCheckedChange={handleCheckedChange}
         disabled={disabled}
-        className="ml-4"
+        className="ms-4"
         data-testid={switchId}
         aria-labelledby={labelId}
       />

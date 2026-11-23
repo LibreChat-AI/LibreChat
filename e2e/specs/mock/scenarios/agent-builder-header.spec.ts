@@ -1,7 +1,8 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { installCodeMocks, openCodeChat, singleMachine } from './codeWorkspaceMocks';
 import { openAgentBuilder } from '../agents.helpers';
+import { probeStyle } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 const RIGHT_EDGE_TOLERANCE = 6;
 
@@ -39,38 +40,78 @@ test.describe('agent builder header', () => {
     await expect(inline).toBeChecked();
     await expect(prompt).not.toBeChecked();
 
-    /** The editor's actions share its header row with the hidden label and stay on the right. */
     const editor = form.locator('#instructions');
     await expect(editor).toBeVisible();
-    const editorRight = await rightEdge(editor);
-    const actions = form
-      .getByTestId('instructions-inline-panel')
-      .getByRole('button')
-      .filter({ hasNot: page.locator('textarea') });
-    const count = await actions.count();
-    expect(count).toBeGreaterThan(0);
-    const lastAction = actions.nth(count - 1);
-    expect(Math.abs((await rightEdge(lastAction)) - editorRight)).toBeLessThanOrEqual(
-      RIGHT_EDGE_TOLERANCE,
-    );
-    for (let index = 0; index < count; index += 1) {
-      const box = await actions.nth(index).boundingBox();
-      const editorBox = await editor.boundingBox();
-      expect((box?.x ?? 0) + (box?.width ?? 0) / 2).toBeGreaterThan(
-        (editorBox?.x ?? 0) + (editorBox?.width ?? 0) / 2,
-      );
+    const heading = form.getByTestId('instructions-heading');
+    const variables = form.getByRole('button', { name: 'Variables', exact: true });
+    const expand = form.getByRole('button', { name: 'Expand editor', exact: true });
+    for (const action of [variables, expand]) {
+      await expect(action).toBeVisible();
+      const box = await action.boundingBox();
+      const headingBox = await heading.boundingBox();
+      expect(box).not.toBeNull();
+      expect(headingBox).not.toBeNull();
+      expect(
+        Math.abs(box!.y + box!.height / 2 - headingBox!.y - headingBox!.height / 2),
+      ).toBeLessThanOrEqual(RIGHT_EDGE_TOLERANCE);
     }
+    expect(await rightEdge(heading)).toBeLessThanOrEqual((await variables.boundingBox())!.x);
+    expect(await rightEdge(variables)).toBeLessThanOrEqual((await expand.boundingBox())!.x);
+    expect(await rightEdge(expand)).toBeLessThanOrEqual((await group.boundingBox())!.x);
+
+    await editor.fill('Instructions with Unicode: café');
+    await variables.focus();
+    await page.keyboard.press('Tab');
+    await expect(expand).toBeFocused();
+    await page.keyboard.press('Enter');
+    const dialog = page.getByRole('dialog', { name: 'Instructions', exact: true });
+    await expect(dialog).toBeVisible();
+    await dialog
+      .getByRole('textbox', { name: 'Instructions', exact: true })
+      .fill('Edited instructions');
+    await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(expand).toBeFocused();
+    await expect(editor).toHaveValue('Edited instructions');
+    await page.keyboard.press('Enter');
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(expand).toBeFocused();
 
     await inline.focus();
     await page.keyboard.press('ArrowRight');
     await expect(prompt).toBeChecked();
     await expect(inline).not.toBeChecked();
+    await expect(variables).toBeHidden();
+    await expect(expand).toBeHidden();
     await page.keyboard.press('ArrowLeft');
     await expect(inline).toBeChecked();
     await prompt.click();
     await expect(prompt).toBeChecked();
     await inline.click();
     await expect(inline).toBeChecked();
+    await expect(variables).toBeVisible();
+    await expect(expand).toBeVisible();
+    await expect(editor).toHaveValue('Edited instructions');
+  });
+
+  test('ownership icon follows theme ink @scenario:agent-ownership-icon-theme', async ({
+    page,
+  }) => {
+    const form = await openAgentBuilder(page);
+    await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
+    const selector = page.getByRole('dialog', { name: 'Agent', exact: true });
+    const toggle = selector.getByRole('button', { name: 'My agents', exact: true });
+    await expect(toggle).toBeVisible();
+    const secondaryInk = await probeStyle(page, 'text-text-secondary', 'color');
+    for (const pressed of ['false', 'true']) {
+      await page.mouse.move(0, 0);
+      await expect(toggle).toHaveAttribute('aria-pressed', pressed);
+      await expect(toggle).toHaveCSS('color', secondaryInk);
+      await expect(toggle.locator('svg')).toHaveCSS('color', secondaryInk);
+      await toggle.click();
+    }
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   });
 
   test('orchestration dialogs open without their info card @scenario:agent-item-dialog-opens-without-info-card', async ({

@@ -55,6 +55,8 @@ interface InitializeParamsBase {
   endpoint: string;
   /** Model parameters from the request (includes model, temperature, topP, etc.) */
   model_parameters?: Record<string, unknown>;
+  /** Validated extra inference wire fields, separate from SDK constructor options. */
+  inferenceParameters?: Record<string, unknown>;
   /** Database methods for user key operations */
   db: EndpointDbMethods;
   /**

@@ -4,6 +4,11 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
 let mockIsSmallScreen = true;
+let mockRouteConversationId = 'other-convo';
+let mockActiveConversationId: string | null = null;
+const mockNavigate = jest.fn();
+const mockToggleNav = jest.fn();
+const mockSetDocumentTitle = jest.fn();
 let mockOwnershipEnabled = true;
 let mockOwnershipVersion: number | undefined = 1;
 const mockRename = jest.fn().mockResolvedValue({});
@@ -22,7 +27,7 @@ jest.mock('@librechat/client', () => ({
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
-  useNavigateToConvo: () => ({ navigateToConvo: jest.fn() }),
+  useNavigateToConvo: () => ({ navigateToConvo: mockNavigate }),
   useShiftKey: () => false,
 }));
 
@@ -39,11 +44,11 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('react-router-dom', () => ({
-  useParams: () => ({ conversationId: 'other-convo' }),
+  useParams: () => ({ conversationId: mockRouteConversationId }),
 }));
 
 jest.mock('recoil', () => ({
-  useRecoilValue: () => [],
+  useRecoilValue: () => mockActiveConversationId,
 }));
 
 jest.mock('~/store', () => ({
@@ -55,6 +60,7 @@ jest.mock('~/utils', () => ({
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { error: jest.fn() },
   isConversationUnseen: () => false,
+  setDocumentTitle: (...args: unknown[]) => mockSetDocumentTitle(...args),
   hasRealTitle: (title: string) => !!title && title !== 'New Chat',
 }));
 
@@ -116,7 +122,7 @@ const renderRow = (isGenerating = false, row = conversation) =>
         conversation={row}
         isGenerating={isGenerating}
         retainView={jest.fn()}
-        toggleNav={jest.fn()}
+        toggleNav={mockToggleNav}
       />
     </DndProvider>,
   );
@@ -283,4 +289,85 @@ describe('Conversation title ownership rollout', () => {
     await act(async () => fireEvent.click(screen.getByTestId('rename-form')));
     expect(mockRename).not.toHaveBeenCalled();
   });
+});
+
+describe('Conversation row activation', () => {
+  beforeEach(() => {
+    mockIsSmallScreen = true;
+    mockRouteConversationId = 'convo-1';
+    mockActiveConversationId = 'convo-1';
+    mockToggleNav.mockReset();
+    mockNavigate.mockReset();
+    mockSetDocumentTitle.mockReset();
+  });
+
+  afterEach(() => {
+    mockRouteConversationId = 'other-convo';
+    mockActiveConversationId = null;
+  });
+
+  it.each([false, true])(
+    'dismisses the current mobile chat without navigating (running=%s)',
+    (running) => {
+      renderRow(running);
+      fireEvent.click(screen.getByText(conversation.title!));
+
+      expect(mockToggleNav).toHaveBeenCalledTimes(1);
+      expect(mockToggleNav).toHaveBeenCalledWith();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(mockSetDocumentTitle).not.toHaveBeenCalled();
+    },
+  );
+
+  it('dismisses the current chat while its new-chat route still has the draft ID', () => {
+    mockRouteConversationId = 'new';
+    renderRow(true);
+    fireEvent.click(screen.getByText(conversation.title!));
+
+    expect(mockToggleNav).toHaveBeenCalledWith();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('leaves the desktop sidebar open for the current chat', () => {
+    mockIsSmallScreen = false;
+    renderRow();
+    fireEvent.click(screen.getByText(conversation.title!));
+
+    expect(mockToggleNav).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('does not dismiss the drawer from the current chat overflow menu', () => {
+    renderRow();
+    fireEvent.contextMenu(screen.getByTestId('convo-item'));
+    expect(screen.getByTestId('convo-options')).toHaveAttribute('data-open', 'true');
+    fireEvent.click(screen.getByText(conversation.title!));
+
+    expect(mockToggleNav).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps navigation to another chat deferred until the drawer slide', () => {
+    mockRouteConversationId = 'other-convo';
+    renderRow();
+    fireEvent.click(screen.getByText(conversation.title!));
+
+    expect(mockToggleNav).toHaveBeenCalledWith(expect.any(Function));
+    expect(mockNavigate).not.toHaveBeenCalled();
+    mockToggleNav.mock.calls[0][0]();
+    expect(mockNavigate).toHaveBeenCalledWith(conversation, { currentConvoId: 'other-convo' });
+  });
+
+  it.each(['ctrlKey', 'metaKey'])(
+    'preserves opening the current chat in a new tab with %s',
+    (modifier) => {
+      const open = jest.spyOn(window, 'open').mockImplementation(() => null);
+      renderRow();
+      fireEvent.click(screen.getByText(conversation.title!), { [modifier]: true });
+
+      expect(open).toHaveBeenCalledWith(`${window.location.origin}/c/convo-1`, '_blank');
+      expect(mockToggleNav).toHaveBeenCalledWith();
+      expect(mockNavigate).not.toHaveBeenCalled();
+    },
+  );
 });

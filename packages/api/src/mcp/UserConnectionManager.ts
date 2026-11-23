@@ -7,6 +7,7 @@ import {
   canUseAppConnection,
   canBackfillSharedServerInstructions,
   getMissingRuntimeBodyPlaceholderFields,
+  getMCPAgentConnectionKey,
   hasRuntimeUrlPlaceholders,
   isUserSourced,
   requiresEphemeralUserConnection,
@@ -199,14 +200,33 @@ export abstract class UserConnectionManager {
     return undefined;
   }
 
+  /**
+   * A principal-scoped registry lookup for the acting user. The role and `idOnTheSource` the
+   * request already loaded go along, so deciding which servers the user's config hides needs no
+   * user read.
+   */
+  protected getPrincipalServerConfig(
+    serverName: string,
+    user?: t.MCPLookupUser,
+    configServers?: Record<string, t.ParsedServerConfig>,
+  ): Promise<t.ParsedServerConfig | undefined> {
+    return MCPServersRegistry.getInstance().getServerConfig(
+      serverName,
+      user?.id,
+      configServers,
+      user?.role,
+      { idOnTheSource: user?.idOnTheSource },
+    );
+  }
+
   protected async resolveConnectionTarget({
     serverName,
     user,
   }: {
     serverName: string;
-    user?: { id?: string };
+    user?: t.MCPLookupUser;
   }): Promise<t.MCPConnectionTarget | undefined> {
-    const config = await MCPServersRegistry.getInstance().getServerConfig(serverName, user?.id);
+    const config = await this.getPrincipalServerConfig(serverName, user);
     if (!config) {
       return undefined;
     }
@@ -494,7 +514,12 @@ export abstract class UserConnectionManager {
         ? getMCPRequestSignal(requestScopedConnections)
         : opts.signal;
       opts.signal?.throwIfAborted();
-      const requestConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const baseConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
+      const requestConnectionKey = getMCPAgentConnectionKey(
+        baseConnectionKey,
+        config,
+        opts.requestBody,
+      );
       const existing = requestScopedConnections.connections.get(requestConnectionKey) as
         | MCPConnection
         | undefined;
@@ -555,7 +580,7 @@ export abstract class UserConnectionManager {
         logPrefix: `[MCP][User: ${userId}][${serverName}]`,
       });
       const creationGuard: ConnectionCreationGuard = { cancelledBy: null };
-      this.registerConnectionCreation(requestConnectionKey, creationGuard);
+      this.registerConnectionCreation(baseConnectionKey, creationGuard);
       const connectionPromise = this.createUserConnectionWithLifecycleRestarts(
         {
           ...opts,
@@ -589,7 +614,7 @@ export abstract class UserConnectionManager {
           return connection;
         })
         .finally(() => {
-          this.unregisterConnectionCreation(requestConnectionKey, creationGuard);
+          this.unregisterConnectionCreation(baseConnectionKey, creationGuard);
           if (requestScopedConnections.pending.get(requestConnectionKey) === connectionPromise)
             requestScopedConnections.pending.delete(requestConnectionKey);
         });

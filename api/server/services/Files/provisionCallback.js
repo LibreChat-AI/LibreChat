@@ -1,6 +1,11 @@
 const { createProvisionFilesCallback: createCallback } = require('@librechat/api');
-const { provisionToCodeEnv, provisionToVectorDB } = require('~/server/services/Files/provision');
+const {
+  provisionToCodeEnv,
+  provisionBatchToCodeEnv,
+  provisionToVectorDB,
+} = require('~/server/services/Files/provision');
 const db = require('~/models');
+const { getFileStorage } = require('~/server/services/Files/operations');
 
 /* Wiring only: binds this workspace's provisioning service and file model to the
  * ON_TOOL_EXECUTE callback implemented in packages/api. */
@@ -15,7 +20,9 @@ function createProvisionFilesCallback({
     agentToolContexts,
     resolvePrimaryAgentId,
     resolveExecutionContext,
+    fileStorage: getFileStorage(),
     provisionToCodeEnv,
+    provisionBatchToCodeEnv,
     provisionToVectorDB,
     updateFile: db.updateFile,
     updateCodeEnvRef: db.updateFileCodeEnvRef,

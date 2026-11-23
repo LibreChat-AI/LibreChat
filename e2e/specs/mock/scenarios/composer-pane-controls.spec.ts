@@ -1,6 +1,11 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpers';
+import {
+  cleanupAgent,
+  closeMobileDrawer,
+  openAgentBuilder,
+  uniqueAgentName,
+} from '../agents.helpers';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -161,12 +166,9 @@ test('resumes a pending tool approval with the composer usable @scenario:pending
     const agent = await createApprovalAgent(page, agentName);
     agentId = agent.id;
     await selectAgent(page, agentName);
-    if ((page.viewportSize()?.width ?? 0) <= 768) {
-      /* Agent Builder lives in the mobile drawer; close it before returning to
-       * the full-bleed composer so the drawer cannot intercept composer input. */
-      await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
-      await expect(page.locator('#mobile-drawer')).toHaveAttribute('inert', /.*/);
-    }
+    /* Agent Builder lives in the mobile drawer; close it before returning to the full-bleed
+     * composer so the drawer cannot intercept composer input. */
+    await closeMobileDrawer(page);
     const response = await sendMessage(page, `E2E_TOOL_APPROVAL:${label}`);
     expect(response.ok()).toBeTruthy();
     await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });

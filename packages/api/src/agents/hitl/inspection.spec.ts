@@ -1,6 +1,6 @@
-import { Constants } from 'librechat-data-provider';
+import { Constants, MAX_SUBAGENT_GRAPH_NODES } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import { getResumeContentInspection } from './inspection';
+import { getResumeAgentSnapshot, getResumeContentInspection } from './inspection';
 
 const strictExtractedTextConfig = {
   filters: {
@@ -160,5 +160,48 @@ describe('resume file inspection trust boundary', () => {
 
     expect(result.storedMessages).toEqual([]);
     expect(getMessages).not.toHaveBeenCalled();
+  });
+});
+
+describe('getResumeAgentSnapshot', () => {
+  it('stops fetching references once the node budget is exceeded', async () => {
+    const total = MAX_SUBAGENT_GRAPH_NODES * 20;
+    const edges = Array.from({ length: total }, (_, index) => ({
+      from: 'primary',
+      to: `child-${index}`,
+      edgeType: 'handoff' as const,
+    }));
+    const getAgent = jest.fn(async ({ id }: { id: string }) => ({ id }) as never);
+
+    await expect(
+      getResumeAgentSnapshot({
+        primaryAgent: { id: 'primary', edges } as never,
+        subagentsEnabled: false,
+        getAgent,
+      }),
+    ).rejects.toThrow();
+    expect(getAgent.mock.calls.length).toBeLessThan(MAX_SUBAGENT_GRAPH_NODES + 10);
+  });
+
+  it('rejects on a failed lookup without waiting for a stalled sibling', async () => {
+    const edges = ['slow', 'fails'].map((to) => ({
+      from: 'primary',
+      to,
+      edgeType: 'handoff' as const,
+    }));
+    const getAgent = jest.fn(async ({ id }: { id: string }) => {
+      if (id === 'slow') {
+        return new Promise<never>(() => undefined);
+      }
+      throw new Error('lookup failed');
+    });
+
+    await expect(
+      getResumeAgentSnapshot({
+        primaryAgent: { id: 'primary', edges } as never,
+        subagentsEnabled: false,
+        getAgent,
+      }),
+    ).rejects.toThrow();
   });
 });

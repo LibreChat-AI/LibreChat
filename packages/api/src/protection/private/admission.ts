@@ -120,6 +120,7 @@ export function createPrivateTextInitialAdmissionCallback(
   };
   return Object.freeze({
     name: 'librechat-initial-model-bound-admission',
+    isAdmitted: () => state === 'admitted',
     raiseError: true,
     awaitHandlers: true,
     requiredConcurrency: pending.size,

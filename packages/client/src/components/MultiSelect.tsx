@@ -159,12 +159,12 @@ export default function MultiSelect<T extends string>({
           onChange={(e) => e.stopPropagation()}
         >
           {selectIcon && <span>{selectIcon as React.JSX.Element}</span>}
-          <span className={cn('mr-auto truncate', !showSelectedValues && 'hidden md:block')}>
+          <span className={cn('me-auto truncate', !showSelectedValues && 'hidden md:block')}>
             {renderSelectedValues(selectedValues, placeholder, items)}
           </span>
           <SelectArrow
             className={cn(
-              'ml-1 stroke-1 text-base opacity-75 transition-transform duration-300',
+              'ms-1 stroke-1 text-base opacity-75 transition-transform duration-300',
               !showSelectedValues && 'hidden md:block',
               isPopoverOpen && 'rotate-180',
             )}
@@ -221,7 +221,7 @@ export default function MultiSelect<T extends string>({
                       {isCurrentItemSelected && <Check className="size-3.5" strokeWidth={2} />}
                     </span>
                   ) : (
-                    <SelectItemCheck className="text-text-primary mr-0.5" />
+                    <SelectItemCheck className="text-text-primary me-0.5" />
                   )}
                   <span className="truncate">{label}</span>
                 </>

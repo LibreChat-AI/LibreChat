@@ -1,9 +1,10 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { useAtomValue, getDefaultStore } from 'jotai';
 import { RetentionMode } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, type MutableSnapshot } from 'recoil';
 import type { TStartupConfig, TUser } from 'librechat-data-provider';
+import type { MutableSnapshot } from 'recoil';
 import { defaultChatSettings, useChatSettings } from '~/Providers/ChatSettingsContext';
 import { duringRunActionAtom } from '~/store/duringRun';
 import ChatSettingsProvider from '../ChatSettings';
@@ -13,11 +14,15 @@ let mockStartupConfig: Partial<TStartupConfig> | undefined;
 let mockUser: TUser | undefined;
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: mockStartupConfig }),
+  useGetStartupConfig: () => ({ data: mockStartupConfig, isFetched: mockStartupConfig != null }),
 }));
 
 jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ user: mockUser }),
+  useAuthContext: () => ({
+    user: mockUser,
+    token: mockUser ? 'token-1' : undefined,
+    isAuthenticated: mockUser != null,
+  }),
 }));
 
 const renderSettings = (initialize?: (snapshot: MutableSnapshot) => void) =>
@@ -25,7 +30,7 @@ const renderSettings = (initialize?: (snapshot: MutableSnapshot) => void) =>
     () => ({
       settings: useChatSettings(),
       storedAction: useAtomValue(duringRunActionAtom),
-      visibleArtifacts: useRecoilValue(store.visibleArtifacts),
+      visibleArtifacts: useAtomValue(store.visibleArtifacts),
     }),
     {
       wrapper: ({ children }: { children: React.ReactNode }) => (
@@ -62,9 +67,8 @@ describe('ChatSettingsProvider', () => {
   });
 
   it('closes the artifacts panel through the host', () => {
-    const { result } = renderSettings(({ set }) => {
-      set(store.visibleArtifacts, { a1: undefined });
-    });
+    getDefaultStore().set(store.visibleArtifacts, { a1: undefined });
+    const { result } = renderSettings();
 
     act(() => result.current.settings.resetVisibleArtifacts());
 
@@ -93,6 +97,9 @@ describe('ChatSettingsProvider', () => {
     expect(result.current.settings.config).toEqual({
       feedbackEnabled: false,
       canRenameRunningChat: false,
+      loaded: false,
+      balanceEnabled: false,
+      sideChat: false,
     });
   });
 
@@ -101,6 +108,7 @@ describe('ChatSettingsProvider', () => {
     mockStartupConfig = {
       conversationTitleOwnershipVersion: 1,
       modelSpecs: { list: modelSpecs },
+      balance: { enabled: true },
       interface: {
         retentionMode: RetentionMode.EPHEMERAL,
         runningChatRename: true,
@@ -120,6 +128,9 @@ describe('ChatSettingsProvider', () => {
       queuedSendLockTimeoutMs: 1_000,
       queuedTurnReconciliationTimeoutMs: 2_000,
       steerArmConfirmationTimeoutMs: 3_000,
+      loaded: true,
+      balanceEnabled: true,
+      sideChat: true,
     });
   });
 
@@ -136,7 +147,11 @@ describe('ChatSettingsProvider', () => {
 
     const { result } = renderSettings();
 
-    expect(result.current.settings.auth.user).toBe(mockUser);
+    expect(result.current.settings.auth).toEqual({
+      user: mockUser,
+      token: 'token-1',
+      isAuthenticated: true,
+    });
   });
 
   it('falls back to the stock defaults without a host', () => {

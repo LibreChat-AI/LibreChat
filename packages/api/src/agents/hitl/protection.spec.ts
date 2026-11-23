@@ -798,6 +798,36 @@ describe('assertResumeRuntimeContentAllowed', () => {
       ).resolves.toBeUndefined();
     });
 
+    it('excludes the stored inline instructions from the same scan when the agent has a valid Langfuse instructionsPrompt link', async () => {
+      const input = {
+        appConfig: agentInstructionsPolicy,
+        endpointOption: {
+          agent: Promise.resolve({
+            id: 'agent-1',
+            provider: 'openai',
+            model: 'test-model',
+            instructions: 'Contains PRIVATE-INSTRUCTION marker',
+            instructionsPrompt: {
+              source: 'langfuse',
+              groupId: 'group-1',
+              selection: { type: 'production' },
+            },
+          }),
+        },
+        conversationId: 'conversation-1',
+        targetMessageId: null,
+        user,
+        storedMessages: [],
+        seedContent: [],
+        liveFiles: [],
+        isTemporary: true,
+      } as unknown as Parameters<typeof assertResumeContentAllowed>[0];
+
+      await expect(
+        assertResumeContentAllowed(input, basePolicyDependencies()),
+      ).resolves.toBeUndefined();
+    });
+
     it('still inspects a restricted-stub link as no link — the stub carries no groupId to trust', async () => {
       const input = {
         appConfig: agentInstructionsPolicy,

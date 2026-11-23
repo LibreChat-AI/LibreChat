@@ -55,6 +55,8 @@ export type AnthropicModelOptions = Partial<Omit<AnthropicParameters, 'thinking'
  * Configuration options for the getLLMConfig function
  */
 export interface AnthropicConfigOptions {
+  /** Validated extra inference wire fields. */
+  inferenceParameters?: Record<string, unknown>;
   modelOptions?: AnthropicModelOptions;
   /** Proxy server URL */
   proxy?: string | null;

@@ -24,7 +24,7 @@ const ROW_CLASS = cn(
 
 function Kbd({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <kbd className="bg-surface-tertiary text-text-secondary ml-auto rounded-md px-1.5 py-0.5 font-sans text-xs">
+    <kbd className="bg-surface-tertiary text-text-secondary ms-auto rounded-md px-1.5 py-0.5 font-sans text-xs">
       {children}
     </kbd>
   );

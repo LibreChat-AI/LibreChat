@@ -1,8 +1,8 @@
-const path = require('path');
 const { logger } = require('@librechat/data-schemas');
 const { getCodeBaseURL } = require('@librechat/agents');
 const {
   withTimeout,
+  withFileProvisioning,
   getBasePath,
   logAxiosError,
   hasOfficeHtmlPath,
@@ -36,10 +36,12 @@ const {
   getCodeFileInfo,
   getCodeFileContextLine,
   appendCodeFileContextLine,
-  getUploadedCodeEnvFilename,
+  createCodeReuploadFailures,
+  openCodeFileSource,
+  createCodeFileUploadRef,
   checkCodeFileActive: checkIfActive,
-  CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
-  CODE_OUTPUT_PREFLIGHT_MAX_COUNT,
+  getPreparedCodeOutputBuffer,
+  cachePreparedCodeOutputBuffer,
   normalizeArtifactDeliveryFailure,
   processCodeOutput: processCodeOutputWithDeps,
   resolveDownloadPath,
@@ -57,141 +59,12 @@ const {
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { getFiles, updateFile, claimCodeFile, commitCodeFile } = require('~/models');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+const { getFileStorage } = require('~/server/services/Files/operations');
 const { convertImage } = require('~/server/services/Files/images/convert');
 const { getRetentionExpiry } = require('~/server/services/Files/retention');
 const { determineFileType } = require('~/server/utils');
 
 const axios = createAxiosInstance();
-
-/** Request-scoped references to buffers already fetched by artifact preflight.
- * The request object is the ownership boundary, and WeakMap keeps completed
- * requests from retaining generated-file bytes. */
-const preparedCodeOutputBuffers = new WeakMap();
-
-const codeOutputBufferKey = (routeKey, sessionId, fileId) => `${routeKey}\0${sessionId}\0${fileId}`;
-
-const getCodeOutputRouteKey = ({ executionRouteKey, codeApiBaseUrl, executionProfile }) =>
-  executionRouteKey ?? codeApiBaseUrl ?? executionProfile ?? 'default';
-
-const normalizeSandboxArtifactName = (filePath) => {
-  if (typeof filePath !== 'string' || filePath.length === 0) {
-    return null;
-  }
-  if (filePath.includes('\\')) {
-    return null;
-  }
-  const posixPath = filePath;
-  let relativePath = posixPath;
-  if (posixPath.startsWith('/mnt/data/')) {
-    relativePath = posixPath.slice('/mnt/data/'.length);
-  } else if (posixPath.startsWith('/')) {
-    return null;
-  }
-  if (relativePath.split('/').some((segment) => segment === '.' || segment === '..')) {
-    return null;
-  }
-  const normalized = path.posix.normalize(relativePath).replace(/^\.\//, '');
-  if (
-    normalized.length === 0 ||
-    normalized === '.' ||
-    normalized === '..' ||
-    normalized.startsWith('../')
-  ) {
-    return null;
-  }
-  return normalized;
-};
-
-const cachePreparedCodeOutputBuffer = ({
-  req,
-  id,
-  name,
-  session_id,
-  buffer,
-  codeApiBaseUrl,
-  executionProfile,
-  executionRouteKey,
-}) => {
-  if (
-    !req ||
-    (typeof req !== 'object' && typeof req !== 'function') ||
-    typeof id !== 'string' ||
-    typeof session_id !== 'string' ||
-    !Buffer.isBuffer(buffer)
-  ) {
-    return;
-  }
-  let cache = preparedCodeOutputBuffers.get(req);
-  if (!cache) {
-    cache = { buffers: new Map(), totalBytes: 0 };
-    preparedCodeOutputBuffers.set(req, cache);
-  }
-  const routeKey = getCodeOutputRouteKey({ executionRouteKey, codeApiBaseUrl, executionProfile });
-  const key = codeOutputBufferKey(routeKey, session_id, id);
-  const existing = cache.buffers.get(key);
-  if (existing) {
-    cache.totalBytes -= existing.buffer.length;
-    cache.buffers.delete(key);
-  }
-  if (buffer.length > CODE_OUTPUT_PREFLIGHT_MAX_BYTES) {
-    return;
-  }
-  while (
-    cache.buffers.size >= CODE_OUTPUT_PREFLIGHT_MAX_COUNT ||
-    cache.totalBytes + buffer.length > CODE_OUTPUT_PREFLIGHT_MAX_BYTES
-  ) {
-    const oldestKey = cache.buffers.keys().next().value;
-    if (oldestKey == null) {
-      break;
-    }
-    const oldest = cache.buffers.get(oldestKey);
-    cache.buffers.delete(oldestKey);
-    cache.totalBytes -= oldest.buffer.length;
-  }
-  cache.buffers.set(key, { name, buffer });
-  cache.totalBytes += buffer.length;
-};
-
-const getPreparedCodeOutputBuffer = ({
-  req,
-  file_path,
-  session_id,
-  files,
-  codeApiBaseUrl,
-  executionProfile,
-  executionRouteKey,
-}) => {
-  if (!req || (typeof req !== 'object' && typeof req !== 'function') || !Array.isArray(files)) {
-    return null;
-  }
-  const cache = preparedCodeOutputBuffers.get(req);
-  const requestedName = normalizeSandboxArtifactName(file_path);
-  if (!cache || !requestedName) {
-    return null;
-  }
-
-  const routeKey = getCodeOutputRouteKey({ executionRouteKey, codeApiBaseUrl, executionProfile });
-  for (const file of files) {
-    if (!file || typeof file.id !== 'string' || typeof file.name !== 'string') {
-      continue;
-    }
-    if (normalizeSandboxArtifactName(file.name) !== requestedName) {
-      continue;
-    }
-    const storageSessionId = file.storage_session_id ?? file.session_id ?? session_id;
-    if (typeof storageSessionId !== 'string') {
-      continue;
-    }
-    const key = codeOutputBufferKey(routeKey, storageSessionId, file.id);
-    const cached = cache.buffers.get(key);
-    if (cached && normalizeSandboxArtifactName(cached.name) === requestedName) {
-      cache.buffers.delete(key);
-      cache.totalBytes -= cached.buffer.length;
-      return cached.buffer;
-    }
-  }
-  return null;
-};
 
 class CodeOutputDownloadLimitError extends Error {
   constructor(maxBytes) {
@@ -596,6 +469,7 @@ const processCodeOutput = (params) =>
     determineFileType,
     claimCodeFile,
     commitCodeFile,
+    fileStorage: getFileStorage(),
     finalizePreview,
     hasOfficeHtmlPath,
     sanitizeArtifactPath,
@@ -686,6 +560,8 @@ const getReuploadFailureCategory = (error) => {
  * @returns {Promise<{
  * files: Array<{ id: string; session_id: string; name: string }>,
  * toolContext: string,
+ * missingFilesContext?: string,
+ * contextFiles?: import('@librechat/api').CodeContextEntry[],
  * }>}
  */
 const primeFiles = async (options) => {
@@ -745,18 +621,20 @@ const primeFiles = async (options) => {
   /** All stale-file reuploads in this prime share one live-turn wait cap. */
   const uploadRateLimitBudget = createCodeApiRateLimitBudget(uploadOptions.retryWaitMs);
   let toolContext = '';
+  /** An attached workspace rebuilds this note once attachments are copied in. */
+  const contextFiles = codeFileLocation === 'programmatic' ? [] : undefined;
 
   const { selected, skippedNoRef, skippedSuperseded } = await selectCodeFiles({
     files: dbFiles,
     privateFileIds: agentResourceIds,
     routeKey: executionRouteKey,
+    identity: { userId: req?.user?.id, agentId, agentResources: tool_resources },
     getFileInfo: (ref) => getSessionFileInfo(ref, req, codeApiRoute, signal),
     concurrency: uploadOptions.concurrency,
     signal,
   });
-  let reuploadFailures = 0;
   let requiredCodeFiles = 0;
-  const reuploadFailureCategories = new Set();
+  const reuploadFailures = createCodeReuploadFailures();
 
   for (const { file, ref, sourceRef, sandboxName, isActive, getUploadTime } of selected) {
     requiredCodeFiles += 1;
@@ -782,11 +660,24 @@ const primeFiles = async (options) => {
     const pushFile = (overrideSessionId, overrideId, destination = sandboxName) => {
       /* The sandbox holds the converted name, not the record's, so the mount path has
        * to follow the same rule provisioning uploaded under. */
-      toolContext = appendCodeFileContextLine(
-        toolContext,
-        getCodeFileContextLine(file, agentResourceIds, destination, codeFileLocation),
+      const contextLine = getCodeFileContextLine(
+        file,
+        agentResourceIds,
+        destination,
         codeFileLocation,
       );
+      toolContext = appendCodeFileContextLine(toolContext, contextLine, codeFileLocation);
+      if (contextFiles && contextLine) {
+        contextFiles.push({
+          file,
+          destination,
+          agentScoped: agentResourceIds.has(file.file_id),
+          source: {
+            storage_session_id: overrideSessionId ?? session_id,
+            file_id: overrideId ?? id,
+          },
+        });
+      }
       /* `id` is the storage file_id (drives codeapi's upload-key
        * existence check), `resource_id` is the entity that owns
        * the storage session (drives sessionKey re-derivation). For
@@ -805,90 +696,108 @@ const primeFiles = async (options) => {
 
     const reuploadFile = async () => {
       try {
-        const { getDownloadStream } = getStrategyFunctions(file.source);
-        const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(
-          FileSources.execute_code,
-        );
-        /* Reupload preserves the resource identity from the existing
-         * ref so codeapi re-buckets under the same sessionKey shape
-         * (skill stays skill, user stays user). Without this, a
-         * skill-cache-miss reupload would land in the user bucket
-         * and never re-shareable cross-user. */
-        const uploaded = await withCodeApiUploadRecovery({
-          registry: req.app?.locals?.codeApiUploadRegistry,
-          scope: uploadOptions.scope,
-          concurrency: uploadOptions.concurrency,
-          label: `re-uploading file ${file.file_id} to the code environment`,
-          budget: uploadRateLimitBudget,
-          signal,
-          onWait: (waitMs) =>
-            logger.warn(
-              `[primeCodeFiles] Rate-limited reupload requestId=${getPrimingCorrelation(req).requestId} ` +
-                `runId=${getPrimingCorrelation(req).runId}; retrying in ${waitMs}ms`,
-            ),
-          openSource: async () => {
-            signal?.throwIfAborted();
-            return getDownloadStream(options.req, resolveDownloadPath(file), { signal });
-          },
-          upload: (stream) =>
-            uploadCodeEnvFile({
-              req: options.req,
-              stream,
-              filename: sandboxName,
-              kind: sourceRef.kind,
-              id: sourceRef.id,
-              ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
-              codeApiBaseUrl,
-              executionProfile,
-              bridgeWorkerId,
+        const newRef = await withFileProvisioning({
+          file,
+          userId: req.user.id,
+          storage: getFileStorage(),
+          destination: JSON.stringify([
+            'code',
+            executionRouteKey,
+            sourceRef.kind,
+            sourceRef.id,
+            sourceRef.kind === 'skill' ? sourceRef.version : null,
+            sandboxName,
+          ]),
+          operation: async (_claim, onUploadStart) => {
+            const { getDownloadStream } = getStrategyFunctions(file.source);
+            const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(
+              FileSources.execute_code,
+            );
+            /* Reupload preserves the resource identity from the existing
+             * ref so codeapi re-buckets under the same sessionKey shape
+             * (skill stays skill, user stays user). Without this, a
+             * skill-cache-miss reupload would land in the user bucket
+             * and never re-shareable cross-user. */
+            const uploaded = await withCodeApiUploadRecovery({
+              registry: req.app?.locals?.codeApiUploadRegistry,
+              scope: uploadOptions.scope,
+              concurrency: uploadOptions.concurrency,
+              label: `re-uploading file ${file.file_id} to the code environment`,
+              budget: uploadRateLimitBudget,
               signal,
-            }),
+              onWait: (waitMs) =>
+                logger.warn(
+                  `[primeCodeFiles] Rate-limited reupload requestId=${getPrimingCorrelation(req).requestId} ` +
+                    `runId=${getPrimingCorrelation(req).runId}; retrying in ${waitMs}ms`,
+                ),
+              openSource: async () => {
+                signal?.throwIfAborted();
+                return openCodeFileSource(
+                  () => getDownloadStream(options.req, resolveDownloadPath(file), { signal }),
+                  signal,
+                );
+              },
+              upload: (stream) =>
+                uploadCodeEnvFile({
+                  req: options.req,
+                  stream,
+                  filename: sandboxName,
+                  kind: sourceRef.kind,
+                  id: sourceRef.id,
+                  ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
+                  codeApiBaseUrl,
+                  executionProfile,
+                  bridgeWorkerId,
+                  signal,
+                  onUploadStart,
+                }),
+            });
+
+            /**
+             * Use the FRESH `(storage_session_id, file_id)` from the
+             * reupload response and route it through the persisted record
+             * and the in-memory `files` list. The
+             * original ref captured at the top of this iteration refers
+             * to the old, expired/missing sandbox object — using it here
+             * would silently re-introduce the bug `Graph.sessions`
+             * seeding is supposed to fix.
+             *
+             * `kind`, `id`, `version` survive the round-trip: the
+             * upload preserves the resource identity, only the storage
+             * pointer changes.
+             */
+            const newRef = createCodeFileUploadRef({
+              sourceRef,
+              uploaded,
+              sandboxFilename: sandboxName,
+              executionProfile,
+              executionRouteKey,
+            });
+
+            const updatedRefs = mergeCodeEnvRef(file.metadata, newRef);
+
+            return {
+              value: newRef,
+              commit: {
+                code: {
+                  routeKey: executionRouteKey,
+                  ref: newRef,
+                  legacyRef: updatedRefs.codeEnvRef,
+                },
+              },
+            };
+          },
         });
-
-        /**
-         * Use the FRESH `(storage_session_id, file_id)` from the
-         * reupload response and route it through the persisted record
-         * and the in-memory `files` list. The
-         * original ref captured at the top of this iteration refers
-         * to the old, expired/missing sandbox object — using it here
-         * would silently re-introduce the bug `Graph.sessions`
-         * seeding is supposed to fix.
-         *
-         * `kind`, `id`, `version` survive the round-trip: the
-         * upload preserves the resource identity, only the storage
-         * pointer changes.
-         */
-        const newRef = {
-          kind: sourceRef.kind,
-          id: sourceRef.id,
-          storage_session_id: uploaded.storage_session_id,
-          file_id: uploaded.file_id,
-          sandboxFilename: getUploadedCodeEnvFilename(uploaded, sandboxName),
-          executionProfile,
-          ...(executionRouteKey !== executionProfile ? { executionRouteKey } : {}),
-          ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
-        };
-
-        const updatedRefs = mergeCodeEnvRef(file.metadata, newRef);
-
-        await updateFile({
-          file_id: file.file_id,
-          'metadata.codeEnvRef': updatedRefs.codeEnvRef,
-          [`metadata.codeEnvRefs.${executionRouteKey}`]: newRef,
-        });
+        file.metadata = { ...file.metadata, ...mergeCodeEnvRef(file.metadata, newRef) };
         pushFile(newRef.storage_session_id, newRef.file_id, newRef.sandboxFilename);
-        logger.debug(
-          `[primeCodeFiles] file=${file.file_id} path=reupload-success ` +
-            `oldSession=${session_id} newSession=${newRef.storage_session_id} newFileId=${newRef.file_id}`,
-        );
+        logger.debug(`[primeCodeFiles] file=${file.file_id} path=reupload-success`);
       } catch (error) {
         /* Cancellation is an operation outcome, not a recoverable per-file
          * miss. Swallowing it here would keep walking and could dispatch more
          * uploads after the foreground run has ended. */
         signal?.throwIfAborted();
-        reuploadFailures += 1;
         const failureCategory = getReuploadFailureCategory(error);
-        reuploadFailureCategories.add(failureCategory);
+        reuploadFailures.add(error, failureCategory, file);
         const { requestId, runId } = getPrimingCorrelation(req);
         logger.error(
           `[primeCodeFiles] reupload-failed requestId=${requestId} runId=${runId} ` +
@@ -932,33 +841,39 @@ const primeFiles = async (options) => {
    * `[primeCodeFiles] out` always shows the final state, not only
    * the per-path trail leading up to it. */
   const primedCodeFiles = files.length;
-  const allRequiredResourcesFailed =
-    requiredCodeFiles > 0 && primedCodeFiles === 0 && reuploadFailures === requiredCodeFiles;
+  const allRequiredResourcesFailed = reuploadFailures.requiresRecovery(
+    requiredCodeFiles,
+    primedCodeFiles,
+  );
   const { requestId, runId } = getPrimingCorrelation(req);
   logger.debug(
     `[primeCodeFiles] out: returned=${files.length} ` +
       `required=${requiredCodeFiles} skippedNoRef=${skippedNoRef} ` +
-      `skippedSuperseded=${skippedSuperseded} reuploadFailures=${reuploadFailures}`,
+      `skippedSuperseded=${skippedSuperseded} reuploadFailures=${reuploadFailures.count} ` +
+      `missing=${reuploadFailures.missingCount}`,
   );
 
   if (allRequiredResourcesFailed) {
-    const failureCategory =
-      reuploadFailureCategories.size === 1
-        ? Array.from(reuploadFailureCategories)[0]
-        : 'mixed_reupload_failure';
+    const failureCategory = reuploadFailures.recoveryCategory();
     logger.warn(
       `[primeCodeFiles] resource-recovery-required requestId=${requestId} runId=${runId} ` +
-        `required=${requiredCodeFiles} primed=${primedCodeFiles} failed=${reuploadFailures} ` +
+        `required=${requiredCodeFiles} primed=${primedCodeFiles} failed=${reuploadFailures.count} ` +
         `category=${failureCategory}`,
     );
     throw new CodeResourceRecoveryError({
       required: requiredCodeFiles,
       primed: primedCodeFiles,
-      failed: reuploadFailures,
+      failed: reuploadFailures.count,
     });
   }
 
-  return { files, toolContext };
+  const missingFilesContext = reuploadFailures.missingFilesContext();
+  return {
+    files,
+    toolContext,
+    ...(missingFilesContext ? { missingFilesContext } : {}),
+    ...(contextFiles?.length ? { contextFiles } : {}),
+  };
 };
 
 /**

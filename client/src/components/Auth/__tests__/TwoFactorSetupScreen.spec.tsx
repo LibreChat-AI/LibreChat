@@ -18,19 +18,59 @@ const mockEnableMutate = jest.fn();
 const mockConfirmMutate = jest.fn();
 const mockAcknowledgeMutate = jest.fn();
 const mockFinalizeMutate = jest.fn();
+const mockCancelMutate = jest.fn();
 const mockCompleteAuthentication = jest.fn();
+const mockShowToast = jest.fn();
+const mockLoading = {
+  enable: false,
+  confirm: false,
+  acknowledge: false,
+  finalize: false,
+  cancel: false,
+};
+/** The screen is a memo with no props, so a flag that flips mid-test has to notify it like a real mutation. */
+const mockCancelListeners = new Set<() => void>();
+const mockSetCancelling = (cancelling: boolean) => {
+  mockLoading.cancel = cancelling;
+  act(() => mockCancelListeners.forEach((notify) => notify()));
+};
 let mockCompleteAuthenticationImpl: (token: string, user: TUser) => void =
   mockCompleteAuthentication;
 
 jest.mock('~/data-provider', () => ({
-  useEnableTwoFactorSetupMutation: () => ({ mutate: mockEnableMutate, isLoading: false }),
-  useConfirmTwoFactorSetupMutation: () => ({ mutate: mockConfirmMutate, isLoading: false }),
+  useEnableTwoFactorSetupMutation: () => ({
+    mutate: mockEnableMutate,
+    isLoading: mockLoading.enable,
+  }),
+  useConfirmTwoFactorSetupMutation: () => ({
+    mutate: mockConfirmMutate,
+    isLoading: mockLoading.confirm,
+  }),
   useAcknowledgeTwoFactorSetupMutation: () => ({
     mutate: mockAcknowledgeMutate,
-    isLoading: false,
+    isLoading: mockLoading.acknowledge,
   }),
-  useFinalizeTwoFactorSetupMutation: () => ({ mutate: mockFinalizeMutate, isLoading: false }),
+  useFinalizeTwoFactorSetupMutation: () => ({
+    mutate: mockFinalizeMutate,
+    isLoading: mockLoading.finalize,
+  }),
+  useCancelTwoFactorSetupMutation: function useCancelTwoFactorSetupMutation() {
+    const { useEffect, useReducer } = jest.requireActual('react');
+    const [, notify] = useReducer((count: number) => count + 1, 0);
+    useEffect(() => {
+      mockCancelListeners.add(notify);
+      return () => {
+        mockCancelListeners.delete(notify);
+      };
+    }, []);
+    return { mutate: mockCancelMutate, isLoading: mockLoading.cancel };
+  },
   useGetStartupConfig: () => ({ data: null, isFetching: false, error: null }),
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -111,6 +151,13 @@ describe('TwoFactorSetupScreen', () => {
     jest.clearAllMocks();
     sessionStorage.clear();
     clearTwoFactorSetupToken();
+    Object.assign(mockLoading, {
+      enable: false,
+      confirm: false,
+      acknowledge: false,
+      finalize: false,
+      cancel: false,
+    });
     mockCompleteAuthenticationImpl = mockCompleteAuthentication;
     URL.createObjectURL = jest.fn(() => 'blob:backup-codes');
     URL.revokeObjectURL = jest.fn();
@@ -190,8 +237,200 @@ describe('TwoFactorSetupScreen', () => {
      * way out or a reload only replays the same empty state. */
     fireEvent.click(screen.getByRole('button', { name: 'com_auth_back_to_login' }));
 
+    /** With no credential there is nothing for the server to authorize, so it is a plain navigation. */
+    expect(mockCancelMutate).not.toHaveBeenCalled();
     expect(router.state.location.pathname).toBe('/login');
     expect(screen.getByTestId('login-page')).toBeInTheDocument();
+  });
+
+  describe('leaving required enrollment', () => {
+    const backToLogin = () => screen.getByRole('button', { name: 'com_auth_back_to_login' });
+
+    function renderWithLogin(initialEntry = '/login/2fa/setup') {
+      persistTwoFactorSetupToken('setup-token');
+      const router = createMemoryRouter(
+        [
+          { path: '/login/2fa/setup', element: <TwoFactorSetupScreen /> },
+          { path: '/login', element: <div data-testid="login-page" /> },
+        ],
+        { initialEntries: [initialEntry] },
+      );
+      render(<RouterProvider router={router} />);
+      return router;
+    }
+
+    it('keeps a way back to sign-in on screen through every phase', () => {
+      renderScreen();
+
+      expect(screen.getByTestId('generate')).toBeInTheDocument();
+      expect(backToLogin()).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('generate'));
+      act(() => {
+        mockEnableMutate.mock.calls[0][1].onSuccess({
+          otpauthUrl: 'otpauth://totp/LibreChat:user?secret=ABC123',
+          backupCodes: ['backup01'],
+        });
+      });
+      expect(screen.getByTestId('qr-next')).toBeInTheDocument();
+      expect(backToLogin()).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('qr-next'));
+      expect(screen.getByTestId('verify')).toBeInTheDocument();
+      expect(backToLogin()).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('enter-code'));
+      fireEvent.click(screen.getByTestId('verify'));
+      act(() => {
+        mockConfirmMutate.mock.calls[0][1].onSuccess({
+          backupCodes: ['confirmed-backup01'],
+          acknowledgementToken: 'acknowledgement-token',
+        });
+      });
+      expect(screen.getByTestId('complete')).toBeInTheDocument();
+      expect(backToLogin()).toBeInTheDocument();
+    });
+
+    it('ends the server session with the setup credential before it navigates away', () => {
+      const router = renderWithLogin();
+
+      fireEvent.click(backToLogin());
+
+      expect(mockCancelMutate).toHaveBeenCalledWith(
+        { tempToken: 'setup-token' },
+        expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+      );
+      /** Leaving before the cookie is gone would let the next silent refresh re-enter setup. */
+      expect(router.state.location.pathname).toBe('/login/2fa/setup');
+      expect(readTwoFactorSetupToken()).toBe('setup-token');
+
+      act(() => mockCancelMutate.mock.calls[0][1].onSuccess({ message: 'cancelled' }));
+
+      expect(readTwoFactorSetupToken()).toBe('');
+      expect(router.state.location.pathname).toBe('/login');
+      expect(screen.getByTestId('login-page')).toBeInTheDocument();
+    });
+
+    it('signs out of a staged enrollment from the backup phase', () => {
+      const router = renderWithLogin();
+      reachBackupPhase();
+
+      fireEvent.click(backToLogin());
+
+      expect(mockCancelMutate).toHaveBeenCalledWith(
+        { tempToken: 'setup-token' },
+        expect.any(Object),
+      );
+      act(() => mockCancelMutate.mock.calls[0][1].onSuccess({ message: 'cancelled' }));
+      expect(router.state.location.pathname).toBe('/login');
+      expect(readTwoFactorSetupToken()).toBe('');
+    });
+
+    it('carries a safe redirect destination back to the login page', () => {
+      const router = renderWithLogin('/login/2fa/setup?redirect_to=%2Fc%2Fabc');
+
+      fireEvent.click(backToLogin());
+      act(() => mockCancelMutate.mock.calls[0][1].onSuccess({ message: 'cancelled' }));
+
+      expect(router.state.location.pathname).toBe('/login');
+      expect(router.state.location.search).toBe('?redirect_to=%2Fc%2Fabc');
+    });
+
+    it('stays on the screen with an actionable error when the sign-out fails', () => {
+      const router = renderWithLogin();
+
+      fireEvent.click(backToLogin());
+      act(() => mockCancelMutate.mock.calls[0][1].onError(new Error('network error')));
+
+      /** The session is still alive, so leaving would only bounce the user back into setup. */
+      expect(screen.getByRole('alert')).toHaveTextContent('com_auth_two_factor_setup_cancel_error');
+      expect(router.state.location.pathname).toBe('/login/2fa/setup');
+      expect(readTwoFactorSetupToken()).toBe('setup-token');
+      expect(backToLogin()).toBeEnabled();
+    });
+
+    it.each([401, 403])(
+      'leaves when the server no longer accepts the setup credential (%s)',
+      (status) => {
+        const router = renderWithLogin();
+
+        fireEvent.click(backToLogin());
+        act(() => mockCancelMutate.mock.calls[0][1].onError({ response: { status } }));
+
+        expect(readTwoFactorSetupToken()).toBe('');
+        expect(router.state.location.pathname).toBe('/login');
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      },
+    );
+
+    it('keeps a rate-limited sign-out on the screen so it can be retried', () => {
+      const router = renderWithLogin();
+
+      fireEvent.click(backToLogin());
+      act(() => mockCancelMutate.mock.calls[0][1].onError({ response: { status: 429 } }));
+
+      expect(screen.getByRole('alert')).toHaveTextContent('com_auth_two_factor_setup_cancel_error');
+      expect(router.state.location.pathname).toBe('/login/2fa/setup');
+    });
+
+    it('disables the control while the sign-out is in flight', () => {
+      mockLoading.cancel = true;
+      renderScreen();
+
+      expect(backToLogin()).toBeDisabled();
+    });
+
+    it.each(['enable', 'confirm', 'acknowledge', 'finalize'] as const)(
+      'disables the control while the %s setup request is in flight',
+      (request) => {
+        mockLoading[request] = true;
+        renderScreen();
+
+        /** A commit racing a sign-out could hand back a session after the cookies were cleared. */
+        expect(backToLogin()).toBeDisabled();
+      },
+    );
+
+    it('ignores setup actions while the sign-out is in flight and resumes once it fails', () => {
+      renderScreen();
+
+      mockSetCancelling(true);
+      fireEvent.click(screen.getByTestId('generate'));
+      expect(mockEnableMutate).not.toHaveBeenCalled();
+
+      mockSetCancelling(false);
+      fireEvent.click(screen.getByTestId('generate'));
+      act(() => {
+        mockEnableMutate.mock.calls[0][1].onSuccess({
+          otpauthUrl: 'otpauth://totp/LibreChat:user?secret=ABC123',
+          backupCodes: ['backup01'],
+        });
+      });
+      fireEvent.click(screen.getByTestId('qr-next'));
+      fireEvent.click(screen.getByTestId('enter-code'));
+
+      mockSetCancelling(true);
+      fireEvent.click(screen.getByTestId('verify'));
+      expect(mockConfirmMutate).not.toHaveBeenCalled();
+
+      mockSetCancelling(false);
+      fireEvent.click(screen.getByTestId('verify'));
+      act(() => {
+        mockConfirmMutate.mock.calls[0][1].onSuccess({
+          backupCodes: ['confirmed-backup01'],
+          acknowledgementToken: 'acknowledgement-token',
+        });
+      });
+      fireEvent.click(screen.getByTestId('download'));
+
+      mockSetCancelling(true);
+      fireEvent.click(screen.getByTestId('complete'));
+      expect(mockAcknowledgeMutate).not.toHaveBeenCalled();
+
+      mockSetCancelling(false);
+      fireEvent.click(screen.getByTestId('complete'));
+      expect(mockAcknowledgeMutate).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('enrolls, confirms, and requires backup-code download before completion', () => {
@@ -518,6 +757,30 @@ describe('TwoFactorSetupScreen', () => {
 
     act(() => mockFinalizeMutate.mock.calls[0][1].onError(retiredFlowError));
 
+    expect(readTwoFactorSetupToken()).toBe('');
+    expect(mockCompleteAuthentication).not.toHaveBeenCalled();
+  });
+
+  it('tells the user sessions may remain, then restarts sign-in, when finalization retires none', () => {
+    renderScreen();
+    reachBackupPhase();
+    fireEvent.click(screen.getByTestId('download'));
+    fireEvent.click(screen.getByTestId('complete'));
+    act(() => {
+      mockAcknowledgeMutate.mock.calls[0][1].onSuccess({ finalizationToken: 'finalization-token' });
+    });
+
+    act(() =>
+      mockFinalizeMutate.mock.calls[0][1].onError({
+        isAxiosError: true,
+        response: { status: 500, data: { code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' } },
+      }),
+    );
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_auth_two_factor_setup_sessions_incomplete',
+      status: 'warning',
+    });
     expect(readTwoFactorSetupToken()).toBe('');
     expect(mockCompleteAuthentication).not.toHaveBeenCalled();
   });

@@ -1,14 +1,14 @@
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
 import { parseSessionHint, formatSessionHint, SESSION_HINT_COOKIE } from 'librechat-data-provider';
-import type { SessionHint } from 'librechat-data-provider';
+import type { SessionHint, ThemeDefinition } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
 import {
   readBundledThemeBoot,
   injectDeploymentThemeBoot,
 } from '../../../../packages/api/src/html/theme';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { resolveTheme } from '../../../../packages/client/src/theme/registry';
+import { resolveTheme } from '../../../../packages/data-provider/src/themes/registry';
+import { expect, test } from '../fixtures';
 
 /**
  * `interface.theme` exists only in the `/api/config` answer, so before this
@@ -26,7 +26,35 @@ import { resolveTheme } from '../../../../packages/client/src/theme/registry';
  * before the frame paints.
  */
 
+// Use full Chromium locally, matching CI's Chrome, without trace or video capture
+// competing with protocol calls under CPU throttling. Failure screenshots remain enabled.
+test.use({ channel: process.env.E2E_CHROMIUM_CHANNEL ?? 'chromium', trace: 'off', video: 'off' });
+
 type Mode = 'light' | 'dark';
+
+/** An operator's own `interface.theme`, written inline in librechat.yaml rather than named. */
+const inlineTheme = {
+  version: 1 as const,
+  name: 'acme',
+  modes: {
+    light: {
+      colors: {
+        'rgb-surface-primary': '250 238 220',
+        'rgb-surface-primary-alt': '244 228 204',
+        'rgb-surface-canvas': '252 244 232',
+      },
+    },
+    dark: {
+      colors: {
+        'rgb-surface-primary': '28 36 52',
+        'rgb-surface-primary-alt': '20 26 40',
+        'rgb-surface-canvas': '16 22 34',
+      },
+    },
+  },
+} satisfies ThemeDefinition;
+
+type ThemeSource = 'clickhouse' | typeof inlineTheme;
 
 type Frame = {
   at: number;
@@ -54,7 +82,7 @@ const CACHE_KEY = 'deployment-theme';
  */
 async function serveTheme(
   page: Page,
-  theme: () => string | null,
+  theme: () => ThemeSource | null,
   held: () => boolean,
   signedInOnly = true,
 ) {
@@ -131,6 +159,10 @@ async function framesBeforeAnswer(page: Page, answeredAt: number[], reloadedAt: 
   const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
     (frame) => frame.at < answered,
   );
+  await test.info().attach('cached-theme-frames', {
+    body: Buffer.from(JSON.stringify(frames, null, 2)),
+    contentType: 'application/json',
+  });
   expect(frames.find((frame) => frame.shell !== null || frame.app)?.shell).toBeTruthy();
   expect(frames.some((frame) => frame.app)).toBe(true);
   return frames;
@@ -232,7 +264,7 @@ test('a deployment theme removed since the last visit wins once the config answe
   page,
 }) => {
   test.setTimeout(90000);
-  let theme: string | null = 'clickhouse';
+  let theme: ThemeSource | null = 'clickhouse';
   await serveTheme(
     page,
     () => theme,
@@ -444,40 +476,49 @@ test('a session refresh keeps the readable session hint on the refresh session e
  * injection, with the `theme-boot.json` this build emitted, as a server configured with
  * `interface.theme: clickhouse` serves it.
  */
-async function serveThemedShell(page: Page) {
+async function serveThemedShell(page: Page, source: ThemeSource) {
   const bundled = readBundledThemeBoot(resolve(__dirname, '../../../../client/dist'));
   expect(bundled.clickhouse).toBeDefined();
   await page.route(
     () => true,
     async (route) => {
-      if (route.request().resourceType() !== 'document') {
+      // The hidden audio iframe is a binary document, not an app shell.
+      if (
+        route.request().resourceType() !== 'document' ||
+        route.request().frame() !== page.mainFrame()
+      ) {
         return route.fallback();
       }
       const response = await route.fetch();
-      const html = injectDeploymentThemeBoot(await response.text(), 'clickhouse', bundled);
+      const html = injectDeploymentThemeBoot(await response.text(), source, bundled);
       await route.fulfill({ response, body: html });
     },
   );
 }
 
 /** Every `/api/config` answer, signed in or not, held until the app paints: the first one ends the window under test. */
-function holdConfig(page: Page) {
+function holdConfig(page: Page, source: ThemeSource) {
   return serveTheme(
     page,
-    () => 'clickhouse',
+    () => source,
     () => true,
     false,
   );
 }
 
 /** Opens `path` in a browser that has never cached a deployment theme, throttled, and returns the frames before the config answers. */
-async function firstVisitFrames(page: Page, path: string, ready: () => Promise<void>) {
+async function firstVisitFrames(
+  page: Page,
+  path: string,
+  ready: () => Promise<void>,
+  source: ThemeSource = 'clickhouse',
+) {
   await page.addInitScript((key) => {
     localStorage.removeItem(key);
     sessionStorage.clear();
   }, CACHE_KEY);
-  await serveThemedShell(page);
-  const answeredAt = await holdConfig(page);
+  await serveThemedShell(page, source);
+  const answeredAt = await holdConfig(page, source);
   await sampleFrames(page);
   await throttle(page);
   await page.goto(path);
@@ -485,16 +526,25 @@ async function firstVisitFrames(page: Page, path: string, ready: () => Promise<v
   await expect.poll(() => answeredAt.length).toBeGreaterThan(0);
 
   const answered = Math.min(...answeredAt);
-  return (await page.evaluate(() => window.__themeFrames ?? [])).filter(
+  const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
     (frame) => frame.at < answered,
   );
+  await test.info().attach('first-visit-theme-frames', {
+    body: Buffer.from(JSON.stringify(frames, null, 2)),
+    contentType: 'application/json',
+  });
+  return frames;
 }
 
 /** A signed-in first visit: every frame before the answer, shell and app alike, wears the theme. */
-async function expectFirstVisit(page: Page, mode: Mode) {
-  const { colors } = resolveTheme(clickHouseTheme, mode);
-  const frames = await firstVisitFrames(page, '/c/new', () =>
-    expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 }),
+async function expectFirstVisit(page: Page, mode: Mode, source: ThemeSource = 'clickhouse') {
+  const definition = typeof source === 'string' ? clickHouseTheme : source;
+  const { colors } = resolveTheme(definition, mode);
+  const frames = await firstVisitFrames(
+    page,
+    '/c/new',
+    () => expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 }),
+    source,
   );
 
   /** Frames of both the shell and the first render landed before the answer. */
@@ -502,13 +552,13 @@ async function expectFirstVisit(page: Page, mode: Mode) {
   expect(frames[0].shell).not.toBeNull();
   expect(frames.some((frame) => frame.app)).toBe(true);
   for (const frame of frames) {
-    expect(frame.theme).toBe('clickhouse');
+    expect(frame.theme).toBe(definition.name);
     expect(frame.surface).toBe(colors['rgb-surface-primary']);
     if (frame.shell !== null) {
       expect(frame.shell).toBe(rgb(colors['rgb-surface-canvas']));
     }
   }
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', definition.name);
   await expect(page.locator('html')).not.toHaveAttribute('data-theme-boot');
 }
 
@@ -541,6 +591,13 @@ test.describe('deployment theme first-ever visit (light)', () => {
     await expectFirstVisit(page, 'light');
   });
 
+  test('a first-ever signed-in visit paints an inline operator theme from the first frame in light @scenario:deployment-theme-first-visit-inline-light', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstVisit(page, 'light', inlineTheme);
+  });
+
   test.describe('signed out', () => {
     test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -561,6 +618,13 @@ test.describe('deployment theme first-ever visit (dark)', () => {
   }) => {
     test.setTimeout(120000);
     await expectFirstVisit(page, 'dark');
+  });
+
+  test('a first-ever signed-in visit paints an inline operator theme from the first frame in dark @scenario:deployment-theme-first-visit-inline-dark', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstVisit(page, 'dark', inlineTheme);
   });
 
   test.describe('signed out', () => {

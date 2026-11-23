@@ -2,14 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import '@testing-library/jest-dom';
 import { render, waitFor } from '@testing-library/react';
-import type { ThemeMode, IThemeRGB } from '../types';
 import {
   defaultAppearance,
   libreChatTheme,
   resolveTheme,
   themeColorTokens,
   validateThemeDefinition,
-} from '../registry';
+} from 'librechat-data-provider';
+import type { ThemeMode, IThemeRGB } from 'librechat-data-provider';
 import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './clickhouse';
 import { ThemeProvider } from '../context/ThemeProvider';
 
@@ -341,16 +341,9 @@ function measure(theme: IThemeRGB, checks: FloorCheck[]): string[] {
  */
 const clickUiBelowFloor: Record<ThemeMode, string[]> = {
   light: [
-    'rgb-text-secondary on rgb-status-info-subtle: 4.42:1 (needs 4.5:1)',
-    'rgb-text-secondary on rgb-status-warning-subtle: 4.15:1 (needs 4.5:1)',
-    'rgb-text-secondary on rgb-status-error-subtle: 4.05:1 (needs 4.5:1)',
-    'rgb-text-secondary-alt on rgb-status-info-subtle: 4.42:1 (needs 4.5:1)',
-    'rgb-text-secondary-alt on rgb-status-warning-subtle: 4.15:1 (needs 4.5:1)',
-    'rgb-text-secondary-alt on rgb-status-error-subtle: 4.05:1 (needs 4.5:1)',
     'rgb-text-tertiary on rgb-status-info-subtle: 4.42:1 (needs 4.5:1)',
     'rgb-text-tertiary on rgb-status-warning-subtle: 4.15:1 (needs 4.5:1)',
     'rgb-text-tertiary on rgb-status-error-subtle: 4.05:1 (needs 4.5:1)',
-    'rgb-status-success on rgb-status-success-subtle: 4.27:1 (needs 4.5:1)',
     'rgb-status-info on rgb-status-info-subtle: 3.32:1 (needs 4.5:1)',
     'rgb-link on rgb-surface-primary: 3.84:1 (needs 4.5:1)',
     'rgb-link on rgb-surface-secondary: 3.58:1 (needs 4.5:1)',
@@ -566,7 +559,7 @@ describe('clickhouse theme definition', () => {
       controlRadius: '0.25rem',
       surfaceRadius: '0.5rem',
       largeSurfaceRadius: '0.75rem',
-      roundControlRadius: '9999px',
+      roundControlRadius: '0.25rem',
     });
     expect(resolved.appearance.fontFamily).toMatch(/^"Inter", "SF Pro Display"/);
     expect(resolved.appearance.monoFontFamily).toBe(

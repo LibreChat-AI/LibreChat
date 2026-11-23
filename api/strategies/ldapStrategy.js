@@ -8,6 +8,7 @@ const {
   getBalanceConfig,
   provisionLdapUser,
   isEmailDomainAllowed,
+  resolvePreAuthAppConfig,
   resolveAppConfigForUser,
 } = require('@librechat/api');
 const {
@@ -128,7 +129,7 @@ const ldapLogin = new LdapStrategy(ldapOptions, async (userinfo, done) => {
     // Domain check before findUser for two-phase fast-fail (consistent with SAML/OpenID/social).
     // This means cross-provider users from blocked domains get 'Email domain not allowed'
     // instead of AUTH_FAILED — both deny access.
-    const baseConfig = await getAppConfig({ baseOnly: true });
+    const baseConfig = await resolvePreAuthAppConfig(getAppConfig);
     if (!isEmailDomainAllowed(mail, baseConfig?.registration?.allowedDomains)) {
       logger.error(`[LDAP Strategy] Authentication blocked - email domain not allowed`);
       return done(null, false, { message: 'Email domain not allowed' });
@@ -139,7 +140,7 @@ const ldapLogin = new LdapStrategy(ldapOptions, async (userinfo, done) => {
       return done(null, false, { message: ErrorTypes.AUTH_FAILED });
     }
 
-    const appConfig = found.user?.tenantId
+    const appConfig = found.user
       ? await resolveAppConfigForUser(getAppConfig, found.user)
       : baseConfig;
 

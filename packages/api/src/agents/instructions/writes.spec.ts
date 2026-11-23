@@ -127,6 +127,21 @@ describe('checkInstructionsPromptWrite', () => {
     expect(validateLinkWrite).toHaveBeenCalledWith(expect.objectContaining({ req }));
   });
 
+  it('forwards linkedInstructions to validateLinkWrite unexamined', async () => {
+    const validateLinkWrite = jest.fn(async () => ({ ok: true as const }));
+    const linkedInstructions = { langfuse: { enabled: true } };
+    await checkInstructionsPromptWrite({
+      access: { validateLinkWrite },
+      operation: 'create',
+      user,
+      previous: undefined,
+      next: link,
+      linkedInstructions,
+      logger,
+    });
+    expect(validateLinkWrite).toHaveBeenCalledWith(expect.objectContaining({ linkedInstructions }));
+  });
+
   describe('an unexpected check failure', () => {
     it.each(['create', 'update'] as const)(
       'returns the fixed 500 and logs safely when validateLinkWrite throws on %s',

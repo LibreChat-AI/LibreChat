@@ -5,7 +5,7 @@ import * as React from 'react';
 import RCInputNumber from 'rc-input-number';
 import * as InputNumberPrimitive from 'rc-input-number';
 import type { ValueType } from '@rc-component/mini-decimal';
-import { cn, disabledWithinFillClasses } from '~/utils';
+import { cn, disabledWithinFillClasses, disabledWithinPartsClasses } from '~/utils';
 import './InputNumber.css';
 
 // TODO help needed
@@ -18,7 +18,7 @@ import './InputNumber.css';
 const INPUT_NUMBER_VARIANTS: Record<'default' | 'option', string> = {
   default: '',
   option:
-    'h-auto border-0 border-transparent p-0 pr-1 text-right shadow-none outline-hidden transition-colors hover:not-focus-within:bg-surface-hover focus-within:bg-surface-secondary [&_input]:placeholder:text-text-secondary [&_input:focus]:placeholder:text-text-primary group-hover/temp:border-border-light reset-rc-number-input reset-rc-number-input-text-right',
+    'h-auto border-0 border-transparent p-0 pe-1 text-end shadow-none outline-hidden transition-colors hover:not-focus-within:bg-surface-hover focus-within:bg-surface-secondary [&_input]:placeholder:text-text-secondary [&_input:focus]:placeholder:text-text-primary group-hover/temp:border-border-light reset-rc-number-input reset-rc-number-input-text-right',
 };
 
 export type InputNumberProps = InputNumberPrimitive.InputNumberProps<ValueType> & {
@@ -34,6 +34,7 @@ const InputNumber: React.ForwardRefExoticComponent<
         className={cn(
           'border-border-control text-text-primary placeholder:text-text-tertiary flex max-h-5 w-full rounded-md border bg-transparent px-3 py-2 text-sm focus:outline-hidden has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50',
           disabledWithinFillClasses,
+          props.disabled === true && disabledWithinPartsClasses,
           INPUT_NUMBER_VARIANTS[variant],
           className ?? '',
         )}

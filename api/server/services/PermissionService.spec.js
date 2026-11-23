@@ -32,6 +32,7 @@ jest.mock('@librechat/data-schemas', () => ({
 // Mock GraphApiService to prevent config loading issues
 jest.mock('~/server/services/GraphApiService', () => ({
   entraIdPrincipalFeatureEnabled: jest.fn().mockReturnValue(false),
+  createGraphClient: jest.fn(),
   getUserOwnedEntraGroups: jest.fn().mockResolvedValue([]),
   getUserEntraGroups: jest.fn().mockResolvedValue([]),
   getEntraGroupDetailsBatch: jest.fn().mockResolvedValue([]),
@@ -73,7 +74,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -303,13 +304,33 @@ describe('PermissionService', () => {
         idOnTheSource: 'directory-user-id',
       });
 
-      const principalId = await ensurePrincipalExists({
-        type: PrincipalType.USER,
-        name: directoryUser.name,
-        email: directoryUser.email,
-        source: 'entra',
-        idOnTheSource: directoryUser.idOnTheSource,
+      require('~/server/services/GraphApiService').createGraphClient.mockResolvedValue({
+        api: () => ({
+          options() {
+            return this;
+          },
+          middlewareOptions() {
+            return this;
+          },
+          select: () => ({
+            get: async () => ({
+              id: 'directory-user-id',
+              displayName: 'Trusted User',
+              mail: 'acl-principal-directory-user@example.com',
+            }),
+          }),
+        }),
       });
+      const principalId = await ensurePrincipalExists(
+        {
+          type: PrincipalType.USER,
+          name: directoryUser.name,
+          email: directoryUser.email,
+          source: 'entra',
+          idOnTheSource: directoryUser.idOnTheSource,
+        },
+        { accessToken: 'test-token', sub: 'test-subject' },
+      );
 
       expect(principalId).toBe(directoryUser._id.toString());
     });
@@ -321,13 +342,33 @@ describe('PermissionService', () => {
         provider: 'local',
       });
 
-      const principalId = await ensurePrincipalExists({
-        type: PrincipalType.USER,
-        name: existingUser.name,
-        email: existingUser.email,
-        source: 'entra',
-        idOnTheSource: 'unlinked-directory-id',
+      require('~/server/services/GraphApiService').createGraphClient.mockResolvedValue({
+        api: () => ({
+          options() {
+            return this;
+          },
+          middlewareOptions() {
+            return this;
+          },
+          select: () => ({
+            get: async () => ({
+              id: 'unlinked-directory-id',
+              displayName: 'Trusted User',
+              mail: 'acl-principal-existing-user@example.com',
+            }),
+          }),
+        }),
       });
+      const principalId = await ensurePrincipalExists(
+        {
+          type: PrincipalType.USER,
+          name: existingUser.name,
+          email: existingUser.email,
+          source: 'entra',
+          idOnTheSource: 'unlinked-directory-id',
+        },
+        { accessToken: 'test-token', sub: 'test-subject' },
+      );
 
       const unchangedUser = await User.findById(existingUser._id).lean();
       expect(principalId).toBe(existingUser._id.toString());

@@ -1,9 +1,6 @@
 import { createContext, useContext } from 'react';
 import type {
-  TMessage,
   TConversation,
-  CodeApprovalMode,
-  CodeEnvironmentMode,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
@@ -18,7 +15,9 @@ import type {
   ChatTransportError,
   ChatCancelSteerResult,
 } from '../../core/types';
+import type { StreamStatusResponse } from '../../core/resumable/host';
 import type { FileDeliveryMetadataMap } from '../../core/files';
+import type { CodeApprovalModeInputs } from '../../core/code';
 
 /** Callbacks of a fire-and-forget request, called once it settles. */
 export type SteerRequestCallbacks<Result> = {
@@ -39,7 +38,15 @@ export type SteerMessageKey =
   | 'com_ui_steer_arm_unconfirmed'
   | 'com_ui_steer_cancel_failed'
   | 'com_ui_steer_paused_queued'
-  | 'com_ui_steer_preempt_unsupported';
+  | 'com_ui_steer_preempt_unsupported'
+  | 'com_ui_pasted_text_wait_upload';
+
+/** One mounted chat pane and the conversation it shows. */
+export type SteerPane = {
+  /** The pane key, as the app keys its panes (`0` for the main chat). */
+  index: string | number;
+  conversationId: string | null;
+};
 
 /** The app-global preferences and deployment limits the steer hooks read. */
 export type SteerSettings = {
@@ -48,11 +55,27 @@ export type SteerSettings = {
   queuedSendLockTimeoutMs?: number;
   queuedTurnReconciliationTimeoutMs?: number;
   steerArmConfirmationTimeoutMs?: number;
+  /** The conversation each mounted chat pane shows, read when called rather than at render:
+   *  steer recovery asks whether any pane holding a conversation is still running. */
+  getPaneConversations: () => ReadonlyArray<SteerPane>;
+};
+
+/** What the host's caches already hold about a conversation's queued-turn handoff. */
+export type QueuedTurnSnapshot = {
+  receipts?: TAgentQueuedTurnReceipt[];
+  status?: StreamStatusResponse;
+};
+
+/** Reads the cached handoff of one conversation without fetching it, and subscribes to changes
+ *  of it. Both functions keep their identity while the conversation does. */
+export type QueuedTurnCache = {
+  read: () => QueuedTurnSnapshot;
+  subscribe: (notify: () => void) => () => void;
 };
 
 /**
- * What the steer and queue hooks need from the app that hosts them. Every member is a hook,
- * called by a steer hook exactly where it needs the service, so the host can back each one with
+ * What the steer and queue hooks need from the app that hosts them. Members named `use*` are
+ * hooks, called unconditionally where needed, so the host can back each one with
  * its own query cache, router or store without the package reaching into any of them.
  */
 export interface SteerHost {
@@ -61,6 +84,9 @@ export interface SteerHost {
     request: ChatSteerRequest,
     callbacks?: SteerRequestCallbacks<ChatSteerResult>,
   ) => void;
+  /** Posts a steer and settles with the server's answer even after the caller unmounts, which a
+   *  retry from the thread needs: its row unmounts when the user navigates away mid-request. */
+  useSteerMessageAsync(): (request: ChatSteerRequest) => Promise<ChatSteerResult>;
   /** Withdraws a steer that has not been injected yet. */
   useCancelSteer(): (
     request: ChatSteerTarget & { clientSteerId?: string },
@@ -87,22 +113,27 @@ export interface SteerHost {
     reconcileUntil: number | undefined,
     expectsReceipts: boolean,
   ): TAgentQueuedTurnReceipt[] | undefined;
+  /** The queued-turn receipts and stream status the host has cached for a conversation, observed
+   *  without registering a competing fetcher. */
+  useQueuedTurnCache(conversationId: string): QueuedTurnCache;
   /** Reads a conversation's generation state, including steers it could not deliver. */
   useFetchStreamStatus(): (conversationId: string) => Promise<ChatStreamStatus>;
-  /** The latest message of the pane, on the branch on screen. */
-  useLatestMessage(index: number, conversationId: string | null): TMessage | null;
-  /** The code approval mode a new turn would run under. */
-  useCodeApprovalMode(
+  /** The conversation id in the route, when the route names one. */
+  useRouteConversationId(): string | undefined;
+  /** Storage read: the raw values a new turn's code approval mode is computed from, as the app
+   *  holds them. The package derives the mode; see `resolveCodeApprovalModes`. */
+  useCodeApprovalInputs(
     conversation: TConversation | null,
     addedConversation?: TConversation | null,
-    codeEnvironmentMode?: CodeEnvironmentMode,
-  ): CodeApprovalMode | undefined;
+  ): Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
   useLocalize(): (key: SteerMessageKey) => string;
   useNotify(): (notification: SteerNotification) => void;
   /** Delivery metadata of the files the user owns, by id. */
   useFileMap(): FileDeliveryMetadataMap | undefined;
   /** Drops the composer's pending file deletions once its attachments ride a message. */
   useClearFilesToDelete(): () => void;
+  /** Cancels uploads whose exact local paste was accepted inline, without marking them submitted. */
+  cancelUploads?: (fileIds: string[]) => void;
   useSettings(): SteerSettings;
 }
 
@@ -118,8 +149,14 @@ export function SteerHostProvider({
   return <SteerHostContext.Provider value={host}>{children}</SteerHostContext.Provider>;
 }
 
+/** The nearest steer host, or null when this tree has none. A surface that can render without
+ *  steering, such as a shared conversation, uses this and leaves the pending rows unmounted. */
+export function useOptionalSteerHost(): SteerHost | null {
+  return useContext(SteerHostContext);
+}
+
 export function useSteerHost(): SteerHost {
-  const host = useContext(SteerHostContext);
+  const host = useOptionalSteerHost();
   if (host == null) {
     throw new Error('The steer hooks need a SteerHostProvider above them.');
   }

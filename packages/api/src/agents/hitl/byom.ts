@@ -177,17 +177,26 @@ export class AttachedCodeEnvironmentApprovalError extends Error {
   }
 }
 
-/** Prevent an approval-gated BYOM tool from running on an ingress that cannot resume it. */
+/**
+ * Prevent an approval-gated BYOM tool from running on an ingress that cannot resume it.
+ *
+ * `refuses` is the one exception: a caller that knows it cannot wait for an approval and
+ * runs anyway, refusing each call that needs one. That is a scheduled run on a deployment
+ * that cannot hold its pause. The attached-machine policy hook then denies where it would
+ * ask, so the machine's own policy still decides every call and nothing runs unapproved.
+ */
 export function assertAttachedCodeEnvironmentApprovalSupported({
   hasAttachedCodeEnvironment,
   hitlCapable,
   approvalExplicitlyDisabled,
+  refuses = false,
 }: {
   hasAttachedCodeEnvironment: boolean;
   hitlCapable: boolean;
   approvalExplicitlyDisabled: boolean;
+  refuses?: boolean;
 }): void {
-  if (hasAttachedCodeEnvironment && !hitlCapable && !approvalExplicitlyDisabled) {
+  if (hasAttachedCodeEnvironment && !hitlCapable && !approvalExplicitlyDisabled && !refuses) {
     throw new AttachedCodeEnvironmentApprovalError();
   }
 }
@@ -273,6 +282,16 @@ function permissionDecision(
     ? mode
     : undefined;
   return resolveCodePermissionDecision({ mode: effectiveMode, category, decision });
+}
+
+/**
+ * Whether this machine denies file writes outright, before any turn mode applies. A chat
+ * upload is the user's consent where the policy only asks, never where it denies.
+ */
+export function isAttachedFileWriteDenied(
+  policy: AttachedCodeEnvironmentPolicySettings | undefined,
+): boolean {
+  return permissionDecision(policy, 'fileWrite') === 'deny';
 }
 
 function isCodeApprovalMode(value: unknown): value is CodeApprovalMode {
@@ -431,10 +450,33 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
  * Safe default for user-operated code environments. Read-only file and search
  * operations fall through to the run-wide policy; actions that can execute code
  * or modify the workspace require approval for the agent that owns the BYOM route.
+ *
+ * With `canAsk` off the run has nobody to ask, so a call that needs approval is denied
+ * here instead of left for the SDK to block: `allow` and `deny` are unchanged, and an
+ * `ask` can only become a `deny`.
  */
 export function createAttachedCodeEnvironmentPolicyHook(
   attachedAgentIds: ReadonlySet<string>,
   settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
+  mode?: CodeApprovalMode,
+  canAsk = true,
+): HookCallback<'PreToolUse'> {
+  const hook = attachedCodeEnvironmentPolicyHook(attachedAgentIds, settingsByAgentId, mode);
+  if (canAsk) return hook;
+  return async (input, signal) => {
+    const output = await hook(input, signal);
+    if (output.decision !== 'ask') return output;
+    return {
+      ...output,
+      decision: 'deny',
+      reason: `${input.toolName} needs approval, and this run cannot wait for one`,
+    };
+  };
+}
+
+function attachedCodeEnvironmentPolicyHook(
+  attachedAgentIds: ReadonlySet<string>,
+  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
   mode?: CodeApprovalMode,
 ): HookCallback<'PreToolUse'> {
   return async (input) => {

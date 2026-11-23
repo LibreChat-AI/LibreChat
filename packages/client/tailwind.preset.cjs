@@ -53,14 +53,14 @@ module.exports = {
         'theme-target': '24px',
         /** The narrowest a tab trigger draws. */
         'theme-tab': 'var(--theme-tab-min-width, 100px)',
-        /** The narrowest a Select's list draws. */
+        /** The narrowest a field Dropdown's list draws. */
         'theme-list': 'var(--theme-list-min-width, 8rem)',
       },
       maxHeight: {
-        /** The tallest a Select's list draws before it scrolls, never past the room the popper
-         *  leaves between its trigger and the viewport's edge. */
+        /** The tallest a field Dropdown's list draws before it scrolls, never past the room the
+         *  popover leaves between its trigger and the viewport's edge. */
         'theme-list':
-          'min(var(--theme-list-max-height, 24rem), var(--radix-select-content-available-height, 100dvh))',
+          'min(var(--theme-list-max-height, 24rem), var(--popover-available-height, 100dvh))',
       },
       inset: {
         /** Where a sign-in label rests in its field: centered 2px low, as on the stock 44px field,
@@ -127,6 +127,13 @@ module.exports = {
           '0%, 70%, 100%': { opacity: '0.35', transform: 'translateY(0)' },
           '35%': { opacity: '1', transform: 'translateY(-2px)' },
         },
+        /** A conversation starter fading in, staggered by position through `--starter-delay`.
+         *  Lives in the preset, like `loading-dot`, because the `starter` Button variant ships
+         *  from this package. */
+        'starter-in': {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
+        },
         'accordion-down': {
           from: { height: '0' },
           to: { height: 'var(--radix-accordion-content-height)' },
@@ -139,12 +146,38 @@ module.exports = {
           '0%,70%,100%': { opacity: '1' },
           '20%,50%': { opacity: '0' },
         },
+        /** Radix Collapsible exposes its own height variable, not the accordion one. Lives in
+         *  the preset because chat components that ship from @librechat/chat animate with it.
+         *  The fade rides along so the rows dissolve instead of squashing. Opening
+         *  decelerates into place; closing accelerates away, because a decelerating
+         *  close stalls over its final pixels before the unmount. */
+        'collapsible-down': {
+          from: { height: 0, opacity: 0 },
+          to: { height: 'var(--radix-collapsible-content-height)', opacity: 1 },
+        },
+        'collapsible-up': {
+          from: { height: 'var(--radix-collapsible-content-height)', opacity: 1 },
+          to: { height: 0, opacity: 0 },
+        },
+        /** Pins a panel at `--hold-width` while its container resizes around it, then
+         *  releases it to the container. Lasts as long as `collapsible-down`. */
+        'hold-width': {
+          'from, to': { width: 'var(--hold-width)' },
+        },
       },
       animation: {
         'loading-dot': 'loading-dot 1.2s ease-in-out var(--loading-dot-delay, 0ms) infinite',
+        'starter-in': 'starter-in 0.3s ease-in-out var(--starter-delay, 0ms) backwards',
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         'caret-blink': 'caret-blink 1.25s ease-out infinite',
+        /** Two panels trading places set one `--collapsible-duration` and `--collapsible-ease`
+         *  for both rolls; paced apart, their combined height overshoots. */
+        'collapsible-down':
+          'collapsible-down var(--collapsible-duration, 0.3s) var(--collapsible-ease, cubic-bezier(0, 0, 0.2, 1))',
+        'collapsible-up':
+          'collapsible-up var(--collapsible-duration, 0.2s) var(--collapsible-ease, cubic-bezier(0.4, 0, 1, 1))',
+        'hold-width': 'hold-width 0.3s',
       },
       /**
        * `rounded-sm` through `rounded-3xl` are not restated here: `@librechat/client/theme.css`
@@ -180,6 +213,23 @@ module.exports = {
         'theme-fast': 'var(--theme-motion-fast, 150ms)',
         'theme-normal': 'var(--theme-motion-normal, 200ms)',
       },
+      transitionProperty: {
+        /** A control that fades in with its row and keeps a hover tint: naming opacity alone
+         *  would drop the color fade a `Button` brings. */
+        reveal: 'opacity, color, background-color',
+        /** Two labels sharing one slot that swap by fading, sliding and blurring. */
+        crossfade: 'opacity, transform, filter',
+        /** A column that widens or narrows with the chat-width preference. */
+        'max-width': 'max-width',
+        /** A progress ring filling as its dash offset falls. */
+        'stroke-dashoffset': 'stroke-dashoffset',
+        /** A card that widens or narrows as a panel inside it opens or closes. */
+        width: 'width',
+      },
+      blur: {
+        /** The soft blur a crossfading label passes through on its way out or in. */
+        crossfade: '2px',
+      },
     },
   },
   plugins: [
@@ -192,6 +242,18 @@ module.exports = {
      * Declared as a peer dependency so the consumer's install provides it.
      */
     require('tailwindcss-animate'),
+    /** The fold's animation properties need distinct names: `ease-*` also controls transitions,
+     *  and the design parser reads the plugin's `fill-mode-*` utilities as SVG fill colors. */
+    {
+      handler: ({ addUtilities }) => {
+        addUtilities({
+          '.animation-ease-fold': {
+            animationTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
+          },
+          '.animation-fill-forwards': { animationFillMode: 'forwards' },
+        });
+      },
+    },
     /**
      * A bare function rather than `plugin()` from `tailwindcss/plugin`, because
      * this preset ships as a raw file through the `./tailwind-preset` export and

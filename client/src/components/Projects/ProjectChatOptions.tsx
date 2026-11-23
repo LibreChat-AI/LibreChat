@@ -60,7 +60,7 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
         setIsOpen={setIsMenuOpen}
         className="z-[125]"
         minWidth="11rem"
-        iconClassName="mr-2 text-text-secondary"
+        iconClassName="me-2 text-text-secondary"
         trigger={
           <Ariakit.MenuButton
             ref={menuButtonRef}

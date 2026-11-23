@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import TimePicker, { MinutePicker } from './TimePicker';
 
 const LABELS = { hour: 'Hour', minute: 'Minute', meridiem: 'AM or PM', am: 'AM', pm: 'PM' };
@@ -171,5 +171,23 @@ describe('MinutePicker', () => {
 
     await user.click(within(minutes).getByRole('radio', { name: '30' }));
     expect(screen.getByTestId('minute')).toHaveTextContent('30');
+  });
+
+  it('keeps ArrowRight advancing like ArrowDown in an RTL document, since the column is vertical', async () => {
+    const user = userEvent.setup();
+    document.documentElement.setAttribute('dir', 'rtl');
+    try {
+      render(<MinuteHarness />);
+      await user.click(screen.getByRole('button', { name: 'Minutes past the hour 00' }));
+      const minutes = screen.getByRole('radiogroup', { name: 'Minute' });
+      const options = within(minutes).getAllByRole('radio');
+
+      fireEvent.keyDown(options[0], { key: 'ArrowRight' });
+      expect(screen.getByTestId('minute')).toHaveTextContent(
+        options[1].getAttribute('data-value') ?? '',
+      );
+    } finally {
+      document.documentElement.removeAttribute('dir');
+    }
   });
 });

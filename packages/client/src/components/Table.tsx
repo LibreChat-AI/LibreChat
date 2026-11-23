@@ -135,7 +135,7 @@ const TableHead: React.ForwardRefExoticComponent<
     ref={ref}
     className={cn(
       tableCellRule,
-      'text-table-header-text h-theme-table-head px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
+      'text-table-header-text h-theme-table-head px-4 text-start align-middle font-medium [&:has([role=checkbox])]:pe-0',
       tableHeadVariants({ size }),
       className,
     )}
@@ -173,7 +173,7 @@ const TableCell: React.ForwardRefExoticComponent<
     ref={ref}
     className={cn(
       tableCellRule,
-      'px-4 align-middle [&:has([role=checkbox])]:pr-0',
+      'px-4 align-middle [&:has([role=checkbox])]:pe-0',
       tableCellVariants({ size }),
       className,
     )}
@@ -194,7 +194,7 @@ const TableRowHeader: React.ForwardRefExoticComponent<
     scope="row"
     className={cn(
       tableCellRule,
-      'px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
+      'px-4 text-start align-middle font-medium [&:has([role=checkbox])]:pe-0',
       tableCellVariants({ size }),
       className,
     )}

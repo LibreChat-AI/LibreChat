@@ -9,8 +9,8 @@ import type {
 import type { TResData } from '~/common';
 import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import { stripStreamedIndexStamps, getPartKeyIndex } from '~/utils';
-import { resolveErrorTurn } from '~/hooks/SSE/useEventHandlers';
 import buildDefaultConvo from '~/utils/buildDefaultConvo';
+import { resolveErrorTurn } from '~/hooks/SSE/turns';
 
 describe('resolveErrorTurn', () => {
   const userMessage = {

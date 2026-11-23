@@ -10,8 +10,8 @@ import {
   useRemScale,
   DIALOG_SCRIM_CLASS,
 } from '@librechat/client';
+import type { SectionId, SettingsTab } from './types';
 import type { TDialogProps } from '~/common';
-import type { SettingsTab } from './types';
 import { useSettingsContext } from './context';
 import { useLocalize } from '~/hooks';
 import Sidebar from './Sidebar';
@@ -19,7 +19,12 @@ import Content from './Content';
 import { TABS } from './types';
 import { cn } from '~/utils';
 
-export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
+export default function SettingsDialog({
+  open,
+  onOpenChange,
+  initialTab,
+  initialSection,
+}: TDialogProps & { initialTab?: SettingsTab; initialSection?: SectionId }) {
   const localize = useLocalize();
   const ctx = useSettingsContext();
   /** The panel is laid out in rem, so the two-column switch has to compare the
@@ -27,9 +32,9 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
    *  layout at scales where the scaled sidebar leaves the content pane too narrow. */
   const remScale = useRemScale();
   const isSmallScreen = useMediaQuery(`(max-width: ${767 * remScale}px)`);
-  const [activeTab, setActiveTab] = useState<SettingsTab>(SettingsTabValues.GENERAL);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? SettingsTabValues.GENERAL);
   const [query, setQuery] = useState('');
-  const [mobileDetail, setMobileDetail] = useState(!isSmallScreen);
+  const [mobileDetail, setMobileDetail] = useState(initialTab != null || !isSmallScreen);
 
   const searching = query.trim().length > 0;
   const inDetail = isSmallScreen && mobileDetail && !searching;
@@ -86,10 +91,10 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                   <button
                     type="button"
                     onClick={() => setMobileDetail(false)}
-                    className="text-text-primary hover:bg-surface-hover focus:ring-border-xheavy -ml-1 flex items-center gap-1 rounded-lg p-1 transition-colors focus:ring-2 focus:outline-hidden"
+                    className="text-text-primary hover:bg-surface-hover focus:ring-border-xheavy -ms-1 flex items-center gap-1 rounded-lg p-1 transition-colors focus:ring-2 focus:outline-hidden"
                     aria-label={localize('com_ui_back')}
                   >
-                    <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+                    <ChevronLeft className="h-5 w-5 rtl:-scale-x-100" aria-hidden="true" />
                     <span className="text-lg font-medium">
                       {activeMeta ? localize(activeMeta.labelKey) : localize('com_nav_settings')}
                     </span>
@@ -133,7 +138,7 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                     />
                   )}
                   {showContent && (
-                    <div className={cn('flex-1 overflow-y-auto', !isSmallScreen && 'pr-1')}>
+                    <div className={cn('flex-1 overflow-y-auto', !isSmallScreen && 'pe-1')}>
                       {searching ? (
                         <Content activeTab={effectiveTab} query={query} ctx={ctx} />
                       ) : (
@@ -142,7 +147,12 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                           tabIndex={-1}
                           className="focus:outline-hidden"
                         >
-                          <Content activeTab={effectiveTab} query={query} ctx={ctx} />
+                          <Content
+                            activeTab={effectiveTab}
+                            query={query}
+                            ctx={ctx}
+                            initialSection={activeTab === initialTab ? initialSection : undefined}
+                          />
                         </Tabs.Content>
                       )}
                     </div>

@@ -43,9 +43,6 @@ export function LangSetting() {
     (value: string) => {
       const userLang =
         value === 'auto' ? navigator.language || navigator.languages?.[0] || 'en-US' : value;
-      requestAnimationFrame(() => {
-        document.documentElement.lang = userLang;
-      });
       setLangcode(userLang);
       Cookies.set('lang', userLang, { expires: 365 });
     },

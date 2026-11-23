@@ -22,9 +22,22 @@ import {
 import { MCPAuthenticationRejectedError, MCPAuthenticationRefreshError } from '~/mcp/errors';
 import { createTerminalRunErrorObserver } from './failures/terminal';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
+import { assertToolOptionsWithinLimits } from './options';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 
 describe('isFatalAgentInitializationError', () => {
+  it('never downgrades a persisted option-limit violation to optional-tool fallback', () => {
+    let error;
+    try {
+      assertToolOptionsWithinLimits({ ['q' + '_mcp_z'.repeat(4000)]: {} });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(RangeError);
+    expect(isFatalAgentInitializationError(error)).toBe(true);
+    expect(isFatalAgentInitializationError(error, { allowExpectedMCPFallback: true })).toBe(true);
+  });
+
   it.each([
     new OpenIDReauthRequiredError('Please sign in again'),
     new MCPAuthenticationRejectedError('private-mcp', false),
@@ -120,6 +133,44 @@ describe('LangChain provider error text', () => {
     ])('maps %s to the typed payload the client localizes', (code, type) => {
       const error = Object.assign(new Error('failed'), { lc_error_code: code });
       expect(resolveLangChainError(error)).toBe(JSON.stringify({ type }));
+    });
+
+    it('carries the provider message as info when the caller allows it', () => {
+      const error = Object.assign(
+        new Error(
+          `429 Budget exhausted, ask the service desk${troubleshooting('MODEL_RATE_LIMIT')}`,
+        ),
+        { lc_error_code: 'MODEL_RATE_LIMIT' },
+      );
+      expect(resolveLangChainError(error, { includeProviderMessage: true })).toBe(
+        JSON.stringify({
+          type: ErrorTypes.MODEL_RATE_LIMIT,
+          info: 'Budget exhausted, ask the service desk',
+        }),
+      );
+      expect(resolveLangChainError(error)).toBe(
+        JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }),
+      );
+    });
+
+    it('applies the caller formatter and omits info that ends up empty', () => {
+      const error = Object.assign(new Error('429 secret'), { lc_error_code: 'MODEL_RATE_LIMIT' });
+      expect(
+        resolveLangChainError(error, {
+          includeProviderMessage: true,
+          formatProviderMessage: (text) => text.toUpperCase(),
+        }),
+      ).toBe(JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT, info: 'SECRET' }));
+      expect(
+        resolveLangChainError(error, {
+          includeProviderMessage: true,
+          formatProviderMessage: () => ' ',
+        }),
+      ).toBe(JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }));
+      const bare = Object.assign(new Error('429 '), { lc_error_code: 'MODEL_RATE_LIMIT' });
+      expect(resolveLangChainError(bare, { includeProviderMessage: true })).toBe(
+        JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }),
+      );
     });
 
     it('leaves codes without localized copy to the provider message', () => {

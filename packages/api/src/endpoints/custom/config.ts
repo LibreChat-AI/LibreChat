@@ -23,18 +23,15 @@ type CustomParams = NonNullable<TEndpoint['customParams']>;
  * Whether an endpoint is OpenRouter's, from its resolved base URL host or from the administrator
  * marking its parameter set as OpenRouter's (a proxy in front of OpenRouter has another host). A
  * name or icon says nothing about what the server behind it accepts, so neither counts. Anything
- * the administrator stated wins: a native `provider`, another params endpoint, or disabled
- * reasoning. Only OpenRouter takes an effort for every model it serves: OpenAI and xAI depend on the
- * model (gpt-4o takes no effort, grok-4.6 and grok-4.7 take different sets, GPT-5.6 with tools
- * needs a Responses route a custom endpoint does not get), and this is decided per endpoint, before
- * a model is chosen.
+ * the administrator stated wins: a native `provider` or another params endpoint. Disabling
+ * reasoning does not change the endpoint's identity or caching controls.
  */
 export function isOpenRouterEndpoint(
   endpoint: Pick<TEndpoint, 'provider' | 'customParams'>,
   resolvedBaseURL: string,
 ): boolean {
   const params = endpoint.customParams as Partial<CustomParams> | undefined;
-  if (endpoint.provider != null || params?.reasoningFormat === ReasoningParameterFormat.disabled) {
+  if (endpoint.provider != null) {
     return false;
   }
   const paramsEndpoint = params?.defaultParamsEndpoint;
@@ -58,41 +55,92 @@ export function usesOpenRouterCatalog(
 ): boolean {
   return (
     isOpenRouterEndpoint(endpoint, resolvedBaseURL) &&
+    endpoint.customParams?.reasoningFormat !== ReasoningParameterFormat.disabled &&
     !hasExplicitReasoningEffort(endpoint.customParams?.paramDefinitions) &&
     endpoint.dropParams?.some((param) => reasoningDropParams.has(param)) !== true
   );
 }
 
 /**
- * Declares reasoning support for an OpenRouter endpoint so the effort control appears without
- * per-endpoint config, and marks the endpoint's parameter set as OpenRouter's so the client knows to
- * read the catalog. The marking comes from the resolved host: the config loader only sees the
- * unresolved name and URL. A `reasoningFormat` the administrator set is kept, and reasoning
- * parameter definitions suppress only the format. An endpoint that drops the effort is left alone.
+ * Preserve the OpenRouter parameter profile independently of its reasoning capability.
+ * Drops disable reasoning advertisement, not caching; explicit formats and definitions otherwise win.
  */
 function withOpenRouterReasoning(
   endpoint: Pick<TEndpoint, 'provider' | 'customParams' | 'dropParams'>,
   resolvedBaseURL: string,
 ): TEndpoint['customParams'] {
   const customParams = endpoint.customParams;
-  if (
-    !isOpenRouterEndpoint(endpoint, resolvedBaseURL) ||
-    endpoint.dropParams?.some((param) => reasoningDropParams.has(param)) === true
-  ) {
+  if (!isOpenRouterEndpoint(endpoint, resolvedBaseURL)) {
     return customParams;
   }
   const params = (customParams ?? {}) as Partial<CustomParams>;
+  const dropsReasoning = endpoint.dropParams?.some((param) => reasoningDropParams.has(param));
   const declaresReasoning = params.paramDefinitions?.some((setting) =>
     reasoningSettingKeys.some((key) => key === setting.key),
   );
   return {
     ...params,
     defaultParamsEndpoint: ProviderId.openrouter,
-    ...(params.reasoningFormat == null &&
+    ...(dropsReasoning === true && { reasoningFormat: ReasoningParameterFormat.disabled }),
+    ...(dropsReasoning !== true &&
+      params.reasoningFormat == null &&
       declaresReasoning !== true && {
         reasoningFormat: ReasoningParameterFormat.reasoningEffort,
       }),
   } as TEndpoint['customParams'];
+}
+
+/** The trusted parameter profile shared by discovery, write validation, and execution. */
+export function resolveCustomEndpointParameters(
+  endpoint: Pick<TEndpoint, 'provider' | 'customParams' | 'dropParams'>,
+  resolvedBaseURL: string,
+): TEndpoint['customParams'] {
+  const { provider, customParams } = endpoint;
+  if (
+    provider != null &&
+    (customParams?.defaultParamsEndpoint == null ||
+      customParams.defaultParamsEndpoint === EModelEndpoint.custom)
+  ) {
+    return { ...customParams, defaultParamsEndpoint: provider };
+  }
+  return withOpenRouterReasoning(endpoint, resolvedBaseURL);
+}
+
+/** A custom endpoint definition the endpoint and model loaders serve. */
+export type ServedCustomEndpoint = Partial<TEndpoint> &
+  Pick<TEndpoint, 'name' | 'apiKey' | 'baseURL'>;
+
+/**
+ * Whether the endpoint and model loaders serve a custom endpoint definition: it names its base
+ * URL and API key, and a model list or a fetch.
+ */
+export function isServedCustomEndpoint(
+  endpoint: Partial<TEndpoint>,
+): endpoint is ServedCustomEndpoint {
+  return Boolean(
+    endpoint.baseURL &&
+      endpoint.apiKey &&
+      endpoint.name &&
+      endpoint.models &&
+      (endpoint.models.fetch || endpoint.models.default),
+  );
+}
+
+/**
+ * The definition each served custom endpoint name resolves to, by served name (`Ollama` is served
+ * as `ollama`): the last served definition of that name, which is the one `/api/endpoints` reports.
+ * Names keep the order they are first served in.
+ */
+export function resolveServedCustomEndpoints(
+  endpoints: readonly Partial<TEndpoint>[],
+): Map<string, ServedCustomEndpoint> {
+  const served = new Map<string, ServedCustomEndpoint>();
+  for (const endpoint of endpoints) {
+    if (isServedCustomEndpoint(endpoint)) {
+      served.set(normalizeEndpointName(endpoint.name), endpoint);
+    }
+  }
+  return served;
 }
 
 /**
@@ -109,31 +157,12 @@ export function loadCustomEndpointsConfig(
   const customEndpointsConfig: TCustomEndpointsConfig = {};
 
   if (Array.isArray(customEndpoints)) {
-    const filteredEndpoints = customEndpoints.filter(
-      (endpoint) =>
-        endpoint.baseURL &&
-        endpoint.apiKey &&
-        endpoint.name &&
-        endpoint.models &&
-        (endpoint.models.fetch || endpoint.models.default),
-    );
+    for (const [name, endpoint] of resolveServedCustomEndpoints(customEndpoints)) {
+      const { baseURL, apiKey, iconURL, modelDisplayLabel, customParams, provider, dropParams } =
+        endpoint;
 
-    for (let i = 0; i < filteredEndpoints.length; i++) {
-      const endpoint = filteredEndpoints[i] as TEndpoint;
-      const {
-        baseURL,
-        apiKey,
-        name: configName,
-        iconURL,
-        modelDisplayLabel,
-        customParams,
-        provider,
-        dropParams,
-      } = endpoint;
-      const name = normalizeEndpointName(configName);
-
-      const resolvedApiKey = extractEnvVariable(apiKey ?? '');
-      const resolvedBaseURL = extractEnvVariable(baseURL ?? '');
+      const resolvedApiKey = extractEnvVariable(apiKey);
+      const resolvedBaseURL = extractEnvVariable(baseURL);
       const userProvideURL = isUserProvided(resolvedBaseURL);
 
       /**
@@ -142,12 +171,10 @@ export function loadCustomEndpointsConfig(
        * (e.g. `maxOutputTokens`/`thinking` for Anthropic, not OpenAI `max_tokens`),
        * unless an admin explicitly chose a non-default `defaultParamsEndpoint`.
        */
-      const resolvedCustomParams =
-        provider != null &&
-        (customParams?.defaultParamsEndpoint == null ||
-          customParams.defaultParamsEndpoint === EModelEndpoint.custom)
-          ? { ...customParams, defaultParamsEndpoint: provider }
-          : withOpenRouterReasoning({ provider, customParams, dropParams }, resolvedBaseURL);
+      const resolvedCustomParams = resolveCustomEndpointParameters(
+        { provider, customParams, dropParams },
+        resolvedBaseURL,
+      );
 
       customEndpointsConfig[name] = {
         type: EModelEndpoint.custom,

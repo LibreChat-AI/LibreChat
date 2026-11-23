@@ -32,7 +32,7 @@ export function CustomGroup({ groupName, specs, groupIcon }: CustomGroupProps) {
                 <GroupIcon iconURL={groupIcon} groupName={groupName} />
               </div>
             )}
-            <span className="truncate text-left">{groupName}</span>
+            <span className="truncate text-start">{groupName}</span>
           </div>
         </div>
       }

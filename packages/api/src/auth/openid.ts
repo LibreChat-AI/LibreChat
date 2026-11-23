@@ -1,5 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import { ErrorTypes } from 'librechat-data-provider';
+import { ErrorTypes, SystemRoles } from 'librechat-data-provider';
 import type { IUser, AppConfig, UserMethods, UserRecord } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
 import type {
@@ -337,17 +337,19 @@ export function applyOpenIDProfile<T extends UserRecord>(user: T, profile: OpenI
 }
 
 /**
- * Creates a first-login OpenID user through `createUserOnce`, which recovers a concurrent first
- * login by repeating `findOpenIDUser`, with its provider and issuer checks, once the winner
- * finished provisioning the account, and admits that account exactly as a found one (tenant
- * config and email-domain policy). The recovered account is refreshed with this callback's
- * claims like any account the lookup finds. Returns the account with the config the login
- * continues under (`appConfig` for a user this request created).
+ * Creates a first-login OpenID user, in the USER role, through `createUserOnce`, which admits it
+ * under the USER role's config and under `claimedRole`'s, the role this login's claims move it
+ * into, before creating it. It recovers a concurrent first login by repeating `findOpenIDUser`,
+ * with its provider and issuer checks, once the winner finished provisioning the account,
+ * admitting that account exactly as a found one (its own config and email-domain policy). The
+ * recovered account is refreshed with this callback's claims like any account the lookup finds.
+ * Returns the account with the config the login continues under, and whether this call
+ * created it.
  */
 export async function createOpenIDUser({
   lookup,
   profile,
-  appConfig,
+  claimedRole,
   getAppConfig,
   getBalanceConfig,
   createUserIfAbsent,
@@ -355,16 +357,17 @@ export async function createOpenIDUser({
 }: {
   lookup: Parameters<typeof findOpenIDUser>[0];
   profile: OpenIDProfile;
-  appConfig: AppConfig;
+  claimedRole?: string;
   getAppConfig: GetAppConfig;
   getBalanceConfig: GetBalanceConfig;
   createUserIfAbsent: CreateUserIfAbsent;
   findBalanceByUser: FindBalanceByUser;
-}): Promise<{ user: UserRecord; appConfig: AppConfig }> {
+}): Promise<{ user: UserRecord; appConfig: AppConfig; created: boolean }> {
   const result = await createUserOnce({
     strategyName: lookup.strategyName ?? 'openid',
     newUser: {
       provider: 'openid',
+      role: SystemRoles.USER,
       openidId: profile.openidId,
       username: profile.username,
       email: profile.email || '',
@@ -374,7 +377,7 @@ export async function createOpenIDUser({
       openidIssuer: profile.openidIssuer,
     },
     email: profile.email ?? '',
-    appConfig,
+    claimedRole,
     getAppConfig,
     getBalanceConfig,
     lookup: () => findOpenIDUser(lookup),
@@ -385,5 +388,6 @@ export async function createOpenIDUser({
   return {
     user: result.created ? result.user : applyOpenIDProfile(result.user, profile),
     appConfig: result.appConfig,
+    created: result.created,
   };
 }

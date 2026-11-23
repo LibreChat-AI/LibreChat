@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import filenamify from 'filenamify';
-import exportFromJSON from 'export-from-json';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { QueryKeys } from 'librechat-data-provider';
 import { presetFamily } from '@librechat/chat/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilState, useSetRecoilState, useRecoilValue } from 'recoil';
-import { useCreatePresetMutation, useGetModelsQuery } from 'librechat-data-provider/react-query';
+import { useCreatePresetMutation } from 'librechat-data-provider/react-query';
 import type { TPreset, TEndpointsConfig } from 'librechat-data-provider';
 import {
   normalizeExportFilename,
@@ -22,6 +21,7 @@ import {
 } from '~/data-provider';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDefaultConvo from '~/hooks/Conversations/useDefaultConvo';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { NotificationSeverity } from '~/common';
 import useNewConvo from '~/hooks/useNewConvo';
@@ -45,15 +45,10 @@ export default function usePresets(index = 0) {
   const presetsQuery = useGetPresetsQuery({ enabled: !!user && isAuthenticated });
   const preset = useAtomValue(presetFamily(index));
   const setPreset = useSetAtom(presetFamily(index));
-  const conversationId = useRecoilValue(store.conversationIdByIndex(index));
-  const { data: modelsData } = useGetModelsQuery();
+
   const { newConversation } = useNewConvo(index);
 
   useEffect(() => {
-    if (modelsData?.initial) {
-      return;
-    }
-
     const { data: presets } = presetsQuery;
     if (_defaultPreset || !presets || hasLoaded.current) {
       return;
@@ -70,13 +65,10 @@ export default function usePresets(index = 0) {
       return;
     }
     setDefaultPreset(defaultPreset);
-    if (!conversationId || conversationId === 'new') {
-      newConversation({ preset: defaultPreset, modelsData, disableParams: true });
-    }
     hasLoaded.current = true;
     // dependencies are stable and only needed once
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetsQuery.data, user, modelsData, conversationId]);
+  }, [presetsQuery.data, user]);
 
   const setPresets = useCallback(
     (presets: TPreset[]) => {
@@ -267,11 +259,24 @@ export default function usePresets(index = 0) {
     updatePreset.mutate({ ...preset, defaultPreset: !remove });
   };
 
-  const exportPreset = () => {
+  const exportPreset = async () => {
     if (!preset) {
       return;
     }
     const fileName = normalizeExportFilename(filenamify(preset.title || 'preset'));
+    const exportFromJSON = await importWithRecovery(() => import('export-from-json'))
+      .then((m) => m.default)
+      .catch((error: unknown) => {
+        console.error('Error loading the preset exporter:', error);
+        showToast({
+          message: localize('com_endpoint_preset_export_error'),
+          severity: NotificationSeverity.ERROR,
+        });
+        return null;
+      });
+    if (!exportFromJSON) {
+      return;
+    }
     exportFromJSON({
       data: cleanupPreset({ preset }),
       fileName,

@@ -504,6 +504,13 @@ describe('CloudFront CRUD', () => {
       expect(mockDeleteFileFromS3).toHaveBeenCalledWith(mockReq, mockFile);
     });
 
+    it('forwards the primary mutation observer to the S3 adapter', async () => {
+      const { deleteFileFromCloudFront } = await import('~/storage/cloudfront/crud');
+      const onDelete = jest.fn();
+      await deleteFileFromCloudFront(mockReq, mockFile, undefined, onDelete);
+      expect(mockDeleteFileFromS3).toHaveBeenCalledWith(mockReq, mockFile, undefined, onDelete);
+    });
+
     it('does not create invalidation when invalidateOnDelete is false', async () => {
       mockGetCloudFrontConfig.mockReturnValue(
         makeConfig({ invalidateOnDelete: false, distributionId: 'E123' }),

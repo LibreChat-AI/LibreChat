@@ -1,0 +1,10 @@
+version: 1.3.17
+cache: true
+interface:
+  modelSelect: true
+  privacyPolicy:
+    externalUrl: 'javascript:alert(document.domain)'
+    openNewTab: true
+  termsOfService:
+    externalUrl: 'htps://example.com/terms'
+    modalAcceptance: true

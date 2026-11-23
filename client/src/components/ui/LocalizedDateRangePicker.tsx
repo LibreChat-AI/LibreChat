@@ -152,7 +152,7 @@ export default function LocalizedDateRangePicker({
       <Popover.Trigger asChild>
         <Button variant="outline" className="w-full min-w-0 justify-start px-3">
           <CalendarDays className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate text-left">{formattedRange}</span>
+          <span className="min-w-0 flex-1 truncate text-start">{formattedRange}</span>
           <ChevronDown className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         </Button>
       </Popover.Trigger>

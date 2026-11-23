@@ -1,5 +1,4 @@
 import { useEffect } from 'react';
-import { ChevronLeft } from 'lucide-react';
 import { useForm, FormProvider } from 'react-hook-form';
 import {
   AuthTypeEnum,
@@ -15,6 +14,7 @@ import {
   TrashIcon,
 } from '@librechat/client';
 import type { AssistantPanelProps, ActionAuthForm } from '~/common';
+import BackButton from '~/components/SidePanel/BackButton';
 import { useAssistantsMapContext } from '~/Providers';
 import { useDeleteAction } from '~/data-provider';
 import ActionsInput from './ActionsInput';
@@ -97,17 +97,12 @@ export default function ActionsPanel({
         <div className="h-full overflow-auto px-2 pb-12 text-sm">
           <div className="flex flex-col py-3">
             <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 pt-1">
-              <button
-                type="button"
+              <BackButton
                 onClick={() => {
                   setActivePanel(Panel.builder);
                   setAction(undefined);
                 }}
-                aria-label={localize('com_ui_back_to_builder')}
-                className="border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary rounded-theme-control inline-flex h-10 w-10 shrink-0 items-center justify-center border transition-colors focus:outline-hidden focus-visible:ring-2"
-              >
-                <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
-              </button>
+              />
               <h2 className="text-text-primary text-center text-base font-semibold">
                 {localize(action ? 'com_assistants_edit_actions' : 'com_assistants_add_actions')}
               </h2>
@@ -128,7 +123,7 @@ export default function ActionsPanel({
                     title={localize('com_ui_delete_action')}
                     className="max-w-[28.125rem]"
                     main={
-                      <Label className="text-left text-sm font-medium">
+                      <Label className="text-start text-sm font-medium">
                         {localize('com_ui_delete_action_confirm')}
                       </Label>
                     }

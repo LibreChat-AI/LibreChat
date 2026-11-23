@@ -1,5 +1,6 @@
-import type { IThemeRGB } from '../types';
 import {
+  highContrastDarkTheme,
+  highContrastLightTheme,
   HIGH_CONTRAST_THEME_NAME,
   defaultBrands,
   highContrastTheme,
@@ -7,8 +8,8 @@ import {
   themeBrandTokens,
   themeColorTokens,
   validateThemeDefinition,
-} from '../registry';
-import { highContrastDarkTheme, highContrastLightTheme } from './highContrast';
+} from 'librechat-data-provider';
+import type { IThemeRGB } from 'librechat-data-provider';
 
 type Rgb = [number, number, number];
 

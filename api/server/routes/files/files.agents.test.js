@@ -73,7 +73,11 @@ jest.mock('fs', () => {
 });
 
 const { processAgentFileUpload } = require('~/server/services/Files/process');
-const { UninspectableFileError } = require('@librechat/api');
+const {
+  UninspectableFileError,
+  SpreadsheetBusyError,
+  SpreadsheetLimitError,
+} = require('@librechat/api');
 
 // Import the router
 const router = require('~/server/routes/files/files');
@@ -1263,6 +1267,49 @@ describe('File Routes - Agent Files Endpoint', () => {
       expect(response.status).toBe(200);
       expect(processAgentFileUpload).toHaveBeenCalled();
     });
+
+    it('returns a retryable 503 for spreadsheet admission pressure and cleans up the upload', async () => {
+      processAgentFileUpload.mockRejectedValueOnce(new SpreadsheetBusyError());
+      const testApp = createAppWithUser(otherUserId);
+      const response = await request(testApp).post('/files').send({
+        endpoint: 'agents',
+        file_id: uuidv4(),
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers['retry-after']).toBe('1');
+      expect(response.body).toEqual({
+        error: 'SPREADSHEET_BUSY',
+        message: 'Spreadsheet processing is busy; retry later.',
+        retryable: true,
+        retry_after: 1,
+      });
+      expect(fs.unlink).toHaveBeenCalled();
+    });
+
+    it.each([
+      undefined,
+      {
+        filters: { files: { pii: { fields: ['name'] } } },
+      },
+    ])(
+      'returns a stable spreadsheet limit rejection and cleans up the upload, config=%p',
+      async (config) => {
+        processAgentFileUpload.mockRejectedValueOnce(new SpreadsheetLimitError());
+        const testApp = createAppWithUser(otherUserId, SystemRoles.USER, config);
+        const response = await request(testApp).post('/files').send({
+          endpoint: 'agents',
+          file_id: uuidv4(),
+        });
+        expect(response.status).toBe(413);
+        expect(response.body).toEqual({
+          error: 'SPREADSHEET_LIMIT',
+          message: 'Spreadsheet exceeds the safe processing limits.',
+          retryable: false,
+        });
+        expect(response.headers['retry-after']).toBeUndefined();
+        expect(fs.unlink).toHaveBeenCalled();
+      },
+    );
 
     it('uses a normalized upload error when file protection is active', async () => {
       const rawProviderDetail = 'PRIVATE-UPLOAD echoed in provider failure';

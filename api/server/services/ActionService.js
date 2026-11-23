@@ -9,6 +9,7 @@ const {
   logAxiosError,
   detachOnAbort,
   getTokenExpiresAt,
+  getSafeErrorMetadata,
   getOAuthCallbackUrl,
   refreshAccessToken,
   GenerationJobManager,
@@ -16,6 +17,7 @@ const {
   encryptSensitiveValue,
   decryptSensitiveValue,
   validateActionOAuthMetadata,
+  assertActionSignInAttended,
 } = require('@librechat/api');
 const {
   Time,
@@ -179,8 +181,10 @@ async function loadActionSets(query) {
  * @param {{ oauth_client_id?: string; oauth_client_secret?: string; }} params.encrypted - The encrypted values for the action.
  * @param {string | null} [params.streamId] - The stream ID for resumable streams.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
+ * @param {boolean} [params.unattended] - Nobody can follow a sign-in prompt for this run; refuse to ask for one.
  * @param {boolean} [params.useSSRFProtection] - When true, uses SSRF-safe HTTP agents that validate resolved IPs at connect time.
  * @param {string[] | null} [params.allowedAddresses] - Optional admin exemption list of host:port pairs that bypass the SSRF private-IP block.
+ * @param {number} [params.timeoutMs] - Milliseconds before an action HTTP call is abandoned.
  * @returns { Promise<typeof tool | { _call: (toolInput: Object | string) => unknown}> } An object with `_call` method to execute the tool input.
  */
 async function createActionTool({
@@ -194,8 +198,10 @@ async function createActionTool({
   encrypted,
   streamId = null,
   jobCreatedAt,
+  unattended,
   useSSRFProtection = false,
   allowedAddresses,
+  timeoutMs,
 }) {
   const ssrfAgents = useSSRFProtection ? createSSRFSafeAgents(allowedAddresses) : undefined;
   /** @type {(toolInput: Object | string, config: GraphRunnableConfig) => Promise<unknown>} */
@@ -214,6 +220,7 @@ async function createActionTool({
             const action_id = action.action_id;
             const identifier = `${userId}:${action.action_id}`;
             const requestLogin = async () => {
+              assertActionSignInAttended(unattended);
               const { args: _args, stepId, ...toolCall } = config.toolCall ?? {};
               if (!stepId) {
                 throw new Error('Tool call is missing stepId');
@@ -287,6 +294,7 @@ async function createActionTool({
                     redirect_uri: redirectUri,
                     token_exchange_method: metadata.auth.token_exchange_method,
                     allowedAddresses,
+                    timeout: timeoutMs,
                     /** Encrypted values */
                     encrypted_oauth_client_id: encrypted.oauth_client_id,
                     encrypted_oauth_client_secret: encrypted.oauth_client_secret,
@@ -317,7 +325,7 @@ async function createActionTool({
                   throw error;
                 }
                 const errorMessage = 'Failed to authenticate OAuth tool';
-                logger.error(errorMessage, error);
+                logger.error(errorMessage, getSafeErrorMetadata(error));
                 throw new Error(errorMessage);
               }
             };
@@ -358,6 +366,7 @@ async function createActionTool({
                       token_exchange_method: metadata.auth.token_exchange_method,
                       encrypted_oauth_client_secret: encrypted.oauth_client_secret,
                       allowedAddresses,
+                      timeout: timeoutMs,
                     },
                     {
                       findToken,
@@ -391,7 +400,10 @@ async function createActionTool({
                 if (isAbortError(error)) {
                   throw error;
                 }
-                logger.error('Failed to refresh token, requesting new login:', error);
+                logger.error(
+                  'Failed to refresh token, requesting new login:',
+                  getSafeErrorMetadata(error),
+                );
                 await requestLogin();
               }
             } else {
@@ -412,7 +424,11 @@ async function createActionTool({
         }
       }
 
-      const response = await preparedExecutor.execute(ssrfAgents);
+      const response = await preparedExecutor.execute({
+        ...ssrfAgents,
+        timeout: timeoutMs,
+        signal: config?.signal,
+      });
 
       if (typeof response.data === 'object') {
         return JSON.stringify(response.data);

@@ -1,9 +1,8 @@
 import React, { memo, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
-import { pxToRem, ProviderIcon } from '@librechat/client';
 import { resolveProviderId } from 'librechat-data-provider';
+import { pxToRem, ProviderIcon, CustomIcon } from '@librechat/client';
 import { EntityEndpointMark, isEntityEndpoint } from '~/components/Endpoints/EntityEndpointMark';
-import CustomIcon from '~/components/ui/CustomIcon';
 import { isImageURL } from '~/utils/icons';
 
 interface GroupIconProps {
@@ -37,8 +36,8 @@ const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
         <ProviderIcon provider={provider} size={20} className="icon-md shrink-0" />
         {imageError && (
           <div
-            className="bg-surface-destructive absolute flex items-center justify-center rounded-full"
-            style={{ width: pxToRem(14), height: pxToRem(14), top: 0, right: 0 }}
+            className="bg-surface-destructive absolute inset-e-0 top-0 flex items-center justify-center rounded-full"
+            style={{ width: pxToRem(14), height: pxToRem(14) }}
           >
             <AlertCircle className="text-text-on-status size-2.5" />
           </div>
