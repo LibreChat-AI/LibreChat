@@ -76,7 +76,12 @@ ${body}
     await mongoose.models.User.deleteMany({ _id: { $in: created } });
     await mongoose.disconnect();
   }
-})().catch((e) => { console.error(e); process.exit(1); });`;
+})().then(
+  /* @librechat/api opens a Redis client on import under the harness env, which keeps the
+   * process alive after the probe finishes. */
+  () => process.exit(0),
+  (e) => { console.error(e); process.exit(1); },
+);`;
   const result = run('node', ['-e', script], { cwd: resolve(repoRoot, 'api') });
   expect(result.status, result.output).toBe(0);
   return JSON.parse(result.stdout.slice(result.stdout.indexOf('RESULT') + 'RESULT'.length));
