@@ -75,6 +75,11 @@ function isActiveRunConflict(error: unknown): boolean {
   return matchesRunDuplicate(error, ['scheduleId'], 'scheduleId_1');
 }
 
+/** A duplicate-key error whose conflict is the one-row-per-delivery partial index. */
+function isDeliveryDuplicate(error: unknown): boolean {
+  return matchesRunDuplicate(error, ['deliveryKey'], 'deliveryKey_1');
+}
+
 /** A duplicate-key error whose conflict is the GLOBAL {capacitySlot} cap index. */
 function isCapacitySlotConflict(error: unknown): boolean {
   return matchesRunDuplicate(error, ['capacitySlot'], 'capacitySlot_1');
@@ -103,8 +108,17 @@ const columns: Record<Field, string> = {
   abortPersistedAt: 'abortPersistedAt',
 };
 
+/**
+ * Where a subscription's row holds its subject. Its `scheduleId` is the delivery's key, so
+ * the subject is read from the two columns a row of that kind is given instead.
+ */
+const delivered: Partial<Record<Field, string>> = { subject: 'kind subject' };
+
 const read: { [K in Field]: (row: Row) => TriggerRun[K] | undefined } = {
-  subject: (row) => ({ kind: 'schedule', id: row.scheduleId }),
+  subject: (row) =>
+    row.kind === 'subscription' && row.subject != null
+      ? { kind: 'subscription', id: row.subject }
+      : { kind: 'schedule', id: row.scheduleId },
   delivery: (row) => ({
     at: row.scheduledFor,
     ...(row.deliveryKey != null && { key: row.deliveryKey }),
@@ -137,14 +151,44 @@ function view<K extends Field>(row: Row, fields: readonly K[]): Pick<TriggerRun,
   return run as Pick<TriggerRun, K>;
 }
 
-const project = (fields: readonly Field[]): string =>
-  fields.map((field) => columns[field]).join(' ');
+const project = (fields: readonly Field[], at: object): string =>
+  fields.map((field) => ('kind' in at && delivered[field]) || columns[field]).join(' ');
 
-/** The two columns that name a run's row. */
-const where = (ref: TriggerRunRef): Pick<IScheduleRun, 'scheduleId' | 'scheduledFor'> => ({
-  scheduleId: ref.subject.id,
-  scheduledFor: new Date(ref.delivery.event.occurredAt),
-});
+/** The two columns that name a schedule's row. */
+type Occurrence = Pick<IScheduleRun, 'scheduleId' | 'scheduledFor'>;
+/** The columns a subscription's row is found by: its kind, its subject and its delivery. */
+type Delivered = Required<Pick<IScheduleRun, 'kind' | 'subject' | 'deliveryKey'>>;
+type Place = Occurrence | Delivered;
+
+/**
+ * The columns a run's row is found by, or nothing for a ref no row is kept under. A
+ * schedule's run is its schedule and the time of its event. A subscription's is its delivery,
+ * since two of its deliveries can carry one event time: the kind is named so the lookup stays
+ * inside the index that holds one row per delivery, and the subject so a key filed under
+ * another subscription never answers.
+ */
+function where(ref: TriggerRunRef): Place | null {
+  if (ref.subject.kind === 'schedule') {
+    return { scheduleId: ref.subject.id, scheduledFor: new Date(ref.delivery.event.occurredAt) };
+  }
+  if (ref.subject.kind !== 'subscription' || !ref.delivery.key) return null;
+  return { kind: 'subscription', subject: ref.subject.id, deliveryKey: ref.delivery.key };
+}
+
+/**
+ * The columns a new row is given. A subscription's row also takes the two a schedule's is
+ * found by, which every row must hold: its delivery's key stands as `scheduleId`, so the row
+ * is alone under the index that allows a schedule one active run, and other runs of its
+ * subscription are free to overlap it.
+ */
+function named(ref: TriggerRunRef, at: Place): Place & Occurrence {
+  if (!('kind' in at)) return at;
+  return {
+    ...at,
+    scheduleId: at.deliveryKey,
+    scheduledFor: new Date(ref.delivery.event.occurredAt),
+  };
+}
 
 /**
  * What on a row refuses its run: a tool that found no authorization it could use unattended,
@@ -179,11 +223,13 @@ const unclaimed = (staleBefore?: Date): Record<string, unknown> =>
  * started it. A read takes the fields to return and reads no other column. A write changes
  * the run's own row and nothing else: what a run's outcome means to its subject is not here.
  *
- * The record lives in the schedule run collection, where a row holds its subject's id as
- * `scheduleId` and the time of its delivery's event as `scheduledFor`. A schedule's delivery
- * carries both, so the pair names one row and the unique index on it answers the read. Only
- * schedules record runs: for a subject of any other kind there is no row to find, and a
- * write sends nothing and answers as it would for a run that is not on record.
+ * The record lives in the schedule run collection. A schedule's row holds its schedule's id
+ * as `scheduleId` and the time of its delivery's event as `scheduledFor`; its delivery
+ * carries both, so the pair names one row and the unique index on it answers the read. A
+ * subscription's row holds `kind`, its subscription's id as `subject` and its delivery's key,
+ * and the unique index on that key answers for it. Schedules and subscriptions record runs:
+ * for a subject of any other kind, or a subscription's delivery with no key, there is no row
+ * to find, and a write sends nothing and answers as it would for a run that is not on record.
  */
 export type TriggerRuns = {
   /** The run a delivery started; `null` when none is on record. */
@@ -201,9 +247,9 @@ export type TriggerRuns = {
     fields: readonly K[],
   ) => Promise<Pick<TriggerRun, K> | null>;
   /**
-   * Inserts the row of a run that is starting, which takes its subject's single active place
-   * and, when the row names one, a capacity slot. The database decides every conflict in the
-   * insert itself; nothing is read first.
+   * Inserts the row of a run that is starting, which takes, when the row names one, a
+   * capacity slot, and for a schedule its single active place. The database decides every
+   * conflict in the insert itself; nothing is read first.
    */
   reserve: {
     (ref: RecordedRunRef, row: TriggerRunRow): Promise<TriggerRunReservation>;
@@ -267,8 +313,9 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     ref: TriggerRunRef,
     fields: readonly K[],
   ): Promise<Pick<TriggerRun, K> | null> {
-    if (ref.subject.kind !== 'schedule') return null;
-    const row = await Run().findOne(where(ref)).select(project(fields)).lean<Row | null>();
+    const at = where(ref);
+    if (at == null) return null;
+    const row = await Run().findOne(at).select(project(fields, at)).lean<Row | null>();
     return row == null ? null : view(row, fields);
   }
 
@@ -277,16 +324,14 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     conversationId: string,
     fields: readonly K[],
   ): Promise<Pick<TriggerRun, K> | null> {
-    if (scope.subject.kind !== 'schedule') return null;
+    const { kind, id } = scope.subject;
+    if (kind !== 'schedule' && kind !== 'subscription') return null;
+    const of: Pick<IScheduleRun, 'scheduleId'> | Pick<Delivered, 'kind' | 'subject'> =
+      kind === 'schedule' ? { scheduleId: id } : { kind, subject: id };
     const row = await Run()
-      .findOne({
-        user: scope.owner,
-        tenantId: scope.tenantId,
-        conversationId,
-        scheduleId: scope.subject.id,
-      })
+      .findOne({ user: scope.owner, tenantId: scope.tenantId, conversationId, ...of })
       .sort({ firedAt: -1 })
-      .select(project(fields))
+      .select(project(fields, of))
       .lean<Row | null>();
     return row == null ? null : view(row, fields);
   }
@@ -300,17 +345,22 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     ref: TriggerRunRef,
     row: TriggerRunRow,
   ): Promise<TriggerRunReservation | TriggerRunUnrecorded> {
-    if (ref.subject.kind !== 'schedule') return { conflict: 'unrecorded' };
+    const at = where(ref);
+    if (at == null) return { conflict: 'unrecorded' };
     try {
-      const doc = await Run().create({ ...row, ...where(ref), status: 'started' });
+      const doc = await Run().create({ ...row, ...named(ref, at), status: 'started' });
       return { run: doc.toObject() };
     } catch (error) {
-      if (isOccurrenceDuplicate(error)) {
+      // A subscription's row holds its delivery's key under every index that names a row, so
+      // whichever of them refuses a second insert of that delivery, it is the same answer:
+      // the active-run index included, which for a schedule means another occurrence.
+      const again = 'kind' in at && (isDeliveryDuplicate(error) || isActiveRunConflict(error));
+      if (isOccurrenceDuplicate(error) || again) {
         // Report the EXISTING row's status. A duplicate means another fire owns this
         // occurrence — but "owns" and "already finished" need opposite handling, and the
         // caller cannot distinguish them without this.
         const existing = await Run()
-          .findOne(where(ref))
+          .findOne(at)
           .select('status')
           .lean<Pick<IScheduleRun, 'status'>>();
         return { conflict: 'duplicate', existingStatus: existing?.status };
@@ -329,9 +379,10 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
   }
 
   async function detail(ref: TriggerRunRef, details: TriggerRunDetails): Promise<void> {
-    if (ref.subject.kind !== 'schedule') return;
+    const at = where(ref);
+    if (at == null) return;
     await Run().updateOne(
-      { ...where(ref), conversationId: details.conversationId },
+      { ...at, conversationId: details.conversationId },
       {
         $set: {
           conversationId: details.conversationId,
@@ -362,7 +413,8 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     ref: TriggerRunRef,
     source?: IScheduleRun['abortSource'],
   ): Promise<boolean | 'in_progress'> {
-    if (ref.subject.kind !== 'schedule') return false;
+    const at = where(ref);
+    if (at == null) return false;
     const now = new Date();
     if (source === 'stop') {
       // SERIALIZED per run: only one unresolved fresh stop attempt may exist. A second
@@ -375,7 +427,7 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
       const staleCutoff = new Date(now.getTime() - ABORT_STAMP_STALE_MS);
       const stamped = await Run().updateOne(
         {
-          ...where(ref),
+          ...at,
           status: { $in: ACTIVE_RUN_STATUSES },
           $nor: [
             {
@@ -391,14 +443,14 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
         return true;
       }
       const holder = await Run()
-        .findOne({ ...where(ref), status: { $in: ACTIVE_RUN_STATUSES } })
+        .findOne({ ...at, status: { $in: ACTIVE_RUN_STATUSES } })
         .select('_id')
         .lean();
       return holder != null ? 'in_progress' : false;
     }
     const claimed = await Run().updateOne(
       {
-        ...where(ref),
+        ...at,
         status: { $in: ACTIVE_RUN_STATUSES },
         $or: [{ abortSource: { $ne: 'stop' } }, { abortPersistedAt: { $exists: true } }],
       },
@@ -409,7 +461,7 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     }
     // An unresolved stop attempt holds the source; renew freshness only.
     const renewed = await Run().updateOne(
-      { ...where(ref), status: { $in: ACTIVE_RUN_STATUSES } },
+      { ...at, status: { $in: ACTIVE_RUN_STATUSES } },
       { $set: { abortRequestedAt: now } },
     );
     return (renewed.matchedCount ?? 0) > 0;
@@ -417,12 +469,9 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
 
   /** Bookkeeping only: never touches `updatedAt`. */
   async function abortSaved(ref: TriggerRunRef): Promise<void> {
-    if (ref.subject.kind !== 'schedule') return;
-    await Run().updateOne(
-      where(ref),
-      { $set: { abortPersistedAt: new Date() } },
-      { timestamps: false },
-    );
+    const at = where(ref);
+    if (at == null) return;
+    await Run().updateOne(at, { $set: { abortPersistedAt: new Date() } }, { timestamps: false });
   }
 
   /**
@@ -433,10 +482,11 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
    * age out on the caller's staleness bound.
    */
   async function claim(ref: TriggerRunRef, capacitySlot: number): Promise<TriggerRunClaim> {
-    if (ref.subject.kind !== 'schedule') return { conflict: 'not-paused' };
+    const at = where(ref);
+    if (at == null) return { conflict: 'not-paused' };
     try {
       const claimed = await Run().findOneAndUpdate(
-        { ...where(ref), status: 'requires_action' },
+        { ...at, status: 'requires_action' },
         {
           $set: {
             status: 'started',
@@ -463,9 +513,10 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
    * run, so a committed or racing resume never has its capacity released by a losing request.
    */
   async function release(ref: TriggerRunRef, capacitySlot: number): Promise<boolean> {
-    if (ref.subject.kind !== 'schedule') return false;
+    const at = where(ref);
+    if (at == null) return false;
     const released = await Run().updateOne(
-      { ...where(ref), status: 'started', capacitySlot },
+      { ...at, status: 'started', capacitySlot },
       {
         $set: { status: 'requires_action' },
         $unset: { capacitySlot: 1, resumeClaimedAt: 1 },
@@ -480,9 +531,10 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     { conversationId, tenantId }: TriggerRunBinding,
     receipts: ScheduleMCPOutcome[],
   ): Promise<boolean> {
-    if (ref.subject.kind !== 'schedule') return false;
+    const at = where(ref);
+    if (at == null) return false;
     const binding = {
-      ...where(ref),
+      ...at,
       conversationId,
       ...(tenantId ? { tenantId } : { tenantId: { $exists: false } }),
     };
@@ -512,8 +564,9 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
    * the reservation it inserted.
    */
   async function remove(ref: TriggerRunRef, expected: TriggerRunExpectation = {}): Promise<void> {
-    if (ref.subject.kind !== 'schedule') return;
-    const filter: Record<string, unknown> = where(ref);
+    const at = where(ref);
+    if (at == null) return;
+    const filter: Record<string, unknown> = at;
     if (expected.status !== undefined) {
       filter.status = expected.status;
     }
@@ -533,11 +586,12 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     ref: TriggerRunRef,
     hold: TriggerRunPause,
   ): Promise<TriggerRunOrigin | null> {
-    if (ref.subject.kind !== 'schedule') return null;
+    const at = where(ref);
+    if (at == null) return null;
     const now = new Date();
     const paused = await Run().findOneAndUpdate(
       {
-        ...where(ref),
+        ...at,
         status: { $in: ACTIVE_RUN_STATUSES },
         $nor: refusals(),
         ...unclaimed(hold.resumeClaimStaleBefore),
@@ -569,10 +623,11 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     ref: TriggerRunRef,
     outcome: TriggerRunOutcome,
   ): Promise<TriggerRunSettlement | null> {
-    if (ref.subject.kind !== 'schedule') return null;
+    const at = where(ref);
+    if (at == null) return null;
     const now = new Date();
     const live = {
-      ...where(ref),
+      ...at,
       status: { $in: ACTIVE_RUN_STATUSES },
       ...unclaimed(outcome.resumeClaimStaleBefore),
     };
@@ -639,12 +694,13 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
    * fire time, since anything else is a run that started and must not be read as a skip.
    */
   async function skip(ref: TriggerRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null> {
-    if (ref.subject.kind !== 'schedule') return null;
+    const at = where(ref);
+    if (at == null) return null;
     const now = new Date();
     try {
       const doc = await Run().create({
         ...row,
-        ...where(ref),
+        ...named(ref, at),
         firedAt: now,
         settledAt: now,
         bookkept: false,
@@ -654,7 +710,7 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
       if ((error as DuplicateKeyError)?.code !== DUPLICATE_KEY) throw error;
     }
     const existing = await Run()
-      .findOne(where(ref))
+      .findOne(at)
       .select('status configRevision firedAt')
       .lean<Pick<IScheduleRun, 'status' | 'configRevision' | 'firedAt'>>();
     if (existing == null || existing.status !== row.status) return null;
@@ -662,8 +718,9 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
   }
 
   async function settled(ref: TriggerRunRef): Promise<void> {
-    if (ref.subject.kind !== 'schedule') return;
-    await Run().updateOne(where(ref), { $set: { bookkept: true } });
+    const at = where(ref);
+    if (at == null) return;
+    await Run().updateOne(at, { $set: { bookkept: true } });
   }
 
   return {

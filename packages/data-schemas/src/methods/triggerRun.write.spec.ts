@@ -1184,7 +1184,7 @@ describe('a run reserved by what names it', () => {
 });
 
 describe('a subject whose runs are not on record', () => {
-  it.each(['key', 'subscription'])('writes nothing for a %s', async (kind) => {
+  it.each(['key', 'subscription'])('writes nothing for a %s with no delivery key', async (kind) => {
     const paused = row({ status: 'requires_action', capacitySlot: 0 });
     await seed(paused);
     const other = ref('sched_a', at, kind);
