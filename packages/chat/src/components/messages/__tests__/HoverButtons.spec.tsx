@@ -137,4 +137,77 @@ describe('HoverButtons', () => {
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeInTheDocument();
   });
+  /**
+   * A send replaces the pane's chat contract several times, as the tail moves, and each
+   * replacement reaches every mounted toolbar in the thread.
+   */
+  describe('when the pane replaces its chat contract', () => {
+    function mount() {
+      /** Called once in each render of the toolbar. */
+      const useHasPendingTurn = jest.fn(() => false);
+      const host = createMessagesHost({
+        useGetMessages: () => () => [question, answer],
+        useHasPendingTurn,
+      });
+      /** One row's props, held across renders the way a memoized row holds them. */
+      const row = {
+        index: 0,
+        isLast: true,
+        isEditing: false,
+        message: answer,
+        conversation,
+        enterEdit: jest.fn(),
+        regenerate: jest.fn(),
+        handleContinue: jest.fn(),
+        copyToClipboard: jest.fn(),
+        getCanCopy: () => true,
+        latestMessageId: answer.messageId,
+      };
+      const under = (chat: Partial<ChatContract>) => (
+        <ChatContext.Provider
+          value={{ index: 0, isSubmitting: false, readOnly: false, ...chat } as ChatContract}
+        >
+          <MessagesHostProvider host={host}>
+            <HoverButtons {...row} />
+          </MessagesHostProvider>
+        </ChatContext.Provider>
+      );
+      const view = render(under({}));
+      return {
+        renders: useHasPendingTurn,
+        replace: (chat: Partial<ChatContract>) => view.rerender(under(chat)),
+      };
+    }
+
+    it('does not render the toolbar again while the fields it reads are the same', () => {
+      const { renders, replace } = mount();
+
+      replace({ latestMessageId: 'user-2' });
+      replace({ latestMessageId: 'assistant-2', latestMessageDepth: 3 });
+
+      expect(renders).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('regenerate-generation-button')).toBeInTheDocument();
+    });
+
+    it('renders the toolbar again when a run starts and when it ends', () => {
+      const { renders, replace } = mount();
+
+      replace({ isSubmitting: true });
+      expect(renders).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
+
+      replace({ isSubmitting: false });
+      expect(renders).toHaveBeenCalledTimes(3);
+      expect(screen.getByTestId('regenerate-generation-button')).toBeInTheDocument();
+    });
+
+    it('renders the toolbar again when the reader stops taking turns', () => {
+      const { renders, replace } = mount();
+
+      replace({ readOnly: true });
+
+      expect(renders).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
+    });
+  });
 });
