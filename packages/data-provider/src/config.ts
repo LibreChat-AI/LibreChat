@@ -3226,9 +3226,12 @@ export type TResolvedInsightsConfig = {
   adminAutoSelectAllAgents: boolean;
 };
 
-export function resolveInsightsConfig(config?: TInsightsConfig | null): TResolvedInsightsConfig {
+export function resolveInsightsConfig(
+  config?: TInsightsConfig | null,
+  legacyEnabled = false,
+): TResolvedInsightsConfig {
   return {
-    enabled: config?.enabled ?? false,
+    enabled: config?.enabled ?? legacyEnabled,
     showDetails: config?.showDetails ?? false,
     adminAutoSelectAllAgents: config?.adminAutoSelectAllAgents ?? false,
   };

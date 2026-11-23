@@ -342,7 +342,10 @@ router.get('/', async function (req, res) {
       langfuseFanoutEnabled,
       ...getLangfuseSettingsAccess(canManageLangfuse),
       langfusePromptManageAccess,
-      insightsEnabled: resolveInsightsConfig(appConfig?.interfaceConfig?.insights).enabled,
+      insightsEnabled: resolveInsightsConfig(
+        appConfig?.interfaceConfig?.insights,
+        isEnabled(process.env.ENABLE_INSIGHTS),
+      ).enabled,
       /** Lets the client skip the pull request lookup entirely when the feature is off. */
       ...resolvePullRequestCapabilities(appConfig, process.env),
       compactionEnabled: appConfig?.summarization?.enabled !== false,

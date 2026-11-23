@@ -49,6 +49,7 @@ const resolveAccess = async (user: { role?: string }) => ({
   ...(user.role === 'ADMIN' && { tenantWide: true as const }),
 });
 const getInsightsAccess = jest.fn(resolveAccess);
+const isLegacyInsightsEnabled = jest.fn(() => false);
 
 const createResponse = () => {
   const status = jest.fn();
@@ -73,12 +74,13 @@ const createRequest = (
 
 const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyInsights)) => ({
   getInsights,
-  handler: createInsightsHandler({ getInsightsAccess, getInsights }),
+  handler: createInsightsHandler({ getInsightsAccess, getInsights, isLegacyInsightsEnabled }),
 });
 
 describe('Insights handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    isLegacyInsightsEnabled.mockReturnValue(false);
     getInsightsAccess.mockImplementation(resolveAccess);
   });
 
@@ -93,7 +95,7 @@ describe('Insights handlers', () => {
   });
 
   it('returns access when at least one agent is accessible', async () => {
-    const handler = createInsightsAccessHandler({ getInsightsAccess });
+    const handler = createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled });
     const { response, json } = createResponse();
 
     await handler(createRequest(), response);
@@ -103,7 +105,7 @@ describe('Insights handlers', () => {
 
   it('returns 403 from the access endpoint when no agent is accessible', async () => {
     getInsightsAccess.mockResolvedValueOnce({ agents: [], detailAgentIds: [] });
-    const handler = createInsightsAccessHandler({ getInsightsAccess });
+    const handler = createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled });
     const { response, status } = createResponse();
 
     await handler(createRequest(), response);
@@ -112,7 +114,7 @@ describe('Insights handlers', () => {
   });
 
   it('returns 404 from the access endpoint when Insights is disabled', async () => {
-    const handler = createInsightsAccessHandler({ getInsightsAccess });
+    const handler = createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled });
     const { response, status, json } = createResponse();
 
     await handler(createRequest({}, { enabled: false }), response);
@@ -124,7 +126,11 @@ describe('Insights handlers', () => {
 
   it('returns 404 without resolving access when Insights is disabled', async () => {
     const getInsights = jest.fn();
-    const handler = createInsightsHandler({ getInsightsAccess, getInsights });
+    const handler = createInsightsHandler({
+      getInsightsAccess,
+      getInsights,
+      isLegacyInsightsEnabled,
+    });
     const { response, status } = createResponse();
 
     await handler(createRequest({}, { enabled: false }), response);
@@ -133,6 +139,32 @@ describe('Insights handlers', () => {
     expect(getInsightsAccess).not.toHaveBeenCalled();
     expect(getInsights).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [true, {}, true],
+    [true, { enabled: false }, false],
+    [false, { enabled: true }, true],
+    [false, {}, false],
+  ])(
+    'applies YAML precedence to both endpoints (legacy=%s, config=%p)',
+    async (legacy, config, enabled) => {
+      isLegacyInsightsEnabled.mockReturnValue(legacy);
+      const access = createResponse();
+      const dashboard = createResponse();
+      await createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled })(
+        createRequest({}, config),
+        access.response,
+      );
+      await createDashboardHandler().handler(createRequest({}, config), dashboard.response);
+      if (enabled) {
+        expect(access.json).toHaveBeenCalledWith({ access: true });
+        expect(dashboard.json).toHaveBeenCalledWith(emptyInsights);
+      } else {
+        expect(access.status).toHaveBeenCalledWith(404);
+        expect(dashboard.status).toHaveBeenCalledWith(404);
+      }
+    },
+  );
 
   it('loads all accessible agents for the authenticated tenant', async () => {
     const { handler, getInsights } = createDashboardHandler();
@@ -263,12 +295,12 @@ describe('Insights handlers', () => {
   it.each([
     [
       'access check',
-      createInsightsAccessHandler({ getInsightsAccess }),
+      createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled }),
       'Failed to load insights access',
     ],
     [
       'dashboard',
-      createInsightsHandler({ getInsightsAccess, getInsights: jest.fn() }),
+      createInsightsHandler({ getInsightsAccess, getInsights: jest.fn(), isLegacyInsightsEnabled }),
       'Failed to load insights',
     ],
   ] as const)(

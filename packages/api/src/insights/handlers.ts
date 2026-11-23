@@ -13,11 +13,15 @@ import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 type InsightsHandlerDeps = {
+  isLegacyInsightsEnabled: () => boolean;
   getInsights: InsightsMethods['getInsights'];
   getInsightsAccess: (user: NonNullable<ServerRequest['user']>) => Promise<InsightsAccess>;
 };
 
-type InsightsAccessHandlerDeps = Pick<InsightsHandlerDeps, 'getInsightsAccess'>;
+type InsightsAccessHandlerDeps = Pick<
+  InsightsHandlerDeps,
+  'getInsightsAccess' | 'isLegacyInsightsEnabled'
+>;
 
 const firstQueryValue = (value: unknown): string | undefined => {
   if (Array.isArray(value)) {
@@ -63,10 +67,16 @@ const timeZoneValue = (value: unknown): string | undefined => {
   }
 };
 
-export function createInsightsAccessHandler({ getInsightsAccess }: InsightsAccessHandlerDeps) {
+export function createInsightsAccessHandler({
+  getInsightsAccess,
+  isLegacyInsightsEnabled,
+}: InsightsAccessHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
-      if (!resolveInsightsConfig(req.config?.interfaceConfig?.insights).enabled) {
+      if (
+        !resolveInsightsConfig(req.config?.interfaceConfig?.insights, isLegacyInsightsEnabled())
+          .enabled
+      ) {
         res.status(404).json({ message: 'Not found' });
         return;
       }
@@ -89,14 +99,18 @@ export function createInsightsAccessHandler({ getInsightsAccess }: InsightsAcces
   };
 }
 
-export function createInsightsHandler({ getInsights, getInsightsAccess }: InsightsHandlerDeps) {
+export function createInsightsHandler({
+  getInsights,
+  getInsightsAccess,
+  isLegacyInsightsEnabled,
+}: InsightsHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
       const {
         enabled,
         showDetails: configuredShowDetails,
         adminAutoSelectAllAgents,
-      } = resolveInsightsConfig(req.config?.interfaceConfig?.insights);
+      } = resolveInsightsConfig(req.config?.interfaceConfig?.insights, isLegacyInsightsEnabled());
       if (!enabled) {
         res.status(404).json({ message: 'Not found' });
         return;

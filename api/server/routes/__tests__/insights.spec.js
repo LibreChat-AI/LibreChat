@@ -11,6 +11,7 @@ let mockDashboardHandlerDeps;
 let mockUser = { id: 'user-id', role: 'USER' };
 
 jest.mock('@librechat/api', () => ({
+  isEnabled: jest.fn((value) => value === 'true'),
   createInsightsAccessHandler: (...args) => {
     [mockAccessHandlerDeps] = args;
     return mockCreateInsightsAccessHandler(...args);

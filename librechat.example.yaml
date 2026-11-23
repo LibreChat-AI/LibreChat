@@ -201,7 +201,8 @@ projects:
 
 # Custom interface configuration
 interface:
-  # Agent statistics in Insights (default: disabled).
+  # Agent statistics in Insights (default: disabled). The legacy ENABLE_INSIGHTS environment
+  # variable is used only when enabled is omitted; this YAML setting takes precedence.
   # showDetails also shows user names, emails and message content (default: false).
   # insights:
   #   enabled: false
