@@ -1,10 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import {
-  getScheduleMCPDisabledReason,
-  isScheduleMCPAuthorizationFailure,
-  runGrantFailureReasonSchema,
-  projectScheduleMCPReceipt,
-} from 'librechat-data-provider';
+import { getScheduleMCPDisabledReason, projectScheduleMCPReceipt } from 'librechat-data-provider';
 import type { ScheduleRunStatus, ScheduleDisabledReason } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Model, Types, AnyBulkWriteOperation } from 'mongoose';
@@ -1346,65 +1341,24 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * streak — the owner's credits, not the schedule, are at fault.
    */
   async function recordRunOutcome(params: RecordRunOutcomeParams): Promise<void> {
-    const firedAt = new Date();
     params = {
       ...params,
       ...projectScheduleMCPReceipt({ status: params.status, error: params.error, mcp: params.mcp }),
     };
+    const ref = occurrence(params.scheduleId, params.scheduledFor);
     if (params.status === 'requires_action') {
       // PAUSE (HITL): win the ROW transition first, then project the card. A read-then-
       // write guard let a concurrent resume terminalize the run between the two, after
       // which the card was pinned to "Needs approval" forever — the row update no-op'd
-      // (already terminal) while the card write had landed. Matching `requires_action`
-      // too keeps a retried pause re-affirming the card, and keeps the transition
-      // crash-recoverable: the reconciler re-invokes this for a row in either state.
-      // The match is also the anti-spoof guard a bare scheduleId would bypass.
-      const paused = await ScheduleRun().findOneAndUpdate(
-        {
-          scheduleId: params.scheduleId,
-          scheduledFor: params.scheduledFor,
-          status: { $in: ['started', 'requires_action'] },
-          $nor: [
-            { 'mcp.detail': 'unattended_auth_required' },
-            {
-              mcp: {
-                $elemMatch: {
-                  reason: { $in: runGrantFailureReasonSchema.options },
-                  status: { $ne: 'ready' },
-                  automaticReplay: false,
-                },
-              },
-            },
-          ],
-          // See resumeClaimStaleBefore: fences a stale-snapshot recovery replay against a
-          // resume that claimed the row after the snapshot was taken, while still letting
-          // an ABANDONED claim (its worker died mid-hand-off) be recovered.
-          ...(params.resumeClaimStaleBefore != null
-            ? {
-                $or: [
-                  { resumeClaimedAt: { $exists: false } },
-                  { resumeClaimedAt: { $lt: params.resumeClaimStaleBefore } },
-                ],
-              }
-            : {}),
-        },
-        {
-          $set: {
-            status: 'requires_action',
-            ...(params.conversationId ? { conversationId: params.conversationId } : {}),
-            ...(params.checkpointNamespace != null
-              ? { checkpointNamespace: params.checkpointNamespace }
-              : {}),
-          },
-          // Leaving `started` frees the global capacity slot; the resume claims a
-          // fresh one from the allocator rather than re-adopting a possibly-taken slot.
-          // The pause record is also the resume hand-off's COMPLETION signal: the
-          // re-pause branch persists its segment before recording, so clearing the
-          // claim stamp here re-opens the run to quiesce settling.
-          $unset: { capacitySlot: 1, resumeClaimedAt: 1 },
-        },
-        { new: false },
-      );
+      // (already terminal) while the card write had landed. The row write matches
+      // `requires_action` too, which keeps a retried pause re-affirming the card, and keeps
+      // the transition crash-recoverable: the reconciler re-invokes this for a row in
+      // either state. The match is also the anti-spoof guard a bare scheduleId would bypass.
+      const paused = await runs.pause(ref, {
+        conversationId: params.conversationId,
+        checkpointNamespace: params.checkpointNamespace,
+        resumeClaimStaleBefore: params.resumeClaimStaleBefore,
+      });
       if (paused == null) {
         // A resume/denial fence is not authority to terminalize. The generation-aware
         // service owns denied-pause abort, provider drain and steer recovery.
@@ -1422,135 +1376,56 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         {
           conversationId: params.conversationId,
           status: params.status,
-          firedAt: paused.firedAt ?? firedAt,
+          firedAt: paused.firedAt,
         },
         params.scheduledFor,
-        paused.configRevision != null ? { configRevision: paused.configRevision } : {},
+        paused.revision != null ? { configRevision: paused.revision } : {},
       );
       return;
     }
-    // TERMINAL: flip the run row (match-guarded), then apply bookkeeping. `bookkept` is
-    // set false at the flip and true only after bookkeeping lands, so a crash between is
-    // re-applied by the reconciler (getUnbookkeptRuns) while countedFor keeps counters idempotent.
-    const runFilter = {
-      scheduleId: params.scheduleId,
-      scheduledFor: params.scheduledFor,
-      status: { $in: ['started', 'requires_action'] },
-      ...(params.resumeClaimStaleBefore != null
-        ? {
-            $or: [
-              { resumeClaimedAt: { $exists: false } },
-              { resumeClaimedAt: { $lt: params.resumeClaimStaleBefore } },
-            ],
-          }
-        : {}),
-    };
-    const canOverride =
-      params.status === 'success' ||
-      params.status === 'error' ||
-      params.status === 'skipped_balance' ||
-      params.status === 'interrupted';
-    const incomingFailure = canOverride && params.mcp?.some(isScheduleMCPAuthorizationFailure);
-    const receiptPredicates = [
-      { 'mcp.detail': 'unattended_auth_required' },
-      {
-        mcp: {
-          $elemMatch: {
-            reason: { $in: runGrantFailureReasonSchema.options },
-            status: { $ne: 'ready' },
-            automaticReplay: false,
-          },
-        },
-      },
-    ];
-    const authError =
-      params.status === 'error' && params.error
-        ? params.error
-        : 'MCP unattended authorization unavailable';
-    const terminalUpdate = (
-      status: RecordRunOutcomeParams['status'],
-      error: string | undefined,
-    ) => ({
-      $set: {
-        status,
-        bookkept: false,
-        settledAt: firedAt,
-        ...(params.conversationId && !params.clearConversationId
-          ? { conversationId: params.conversationId }
-          : {}),
-        ...(error ? { error } : {}),
-        ...(params.durationMs != null ? { durationMs: params.durationMs } : {}),
-      },
-      // Merge in the same transition; neither a receipt race nor a crash can lose a source.
-      ...(params.mcp?.length && { $addToSet: { mcp: { $each: params.mcp } } }),
-      // Only terminal settlement releases the global capacity slot, not an abort request.
-      $unset: {
-        capacitySlot: 1,
-        admissionOnly: 1,
-        ...(params.clearConversationId ? { conversationId: 1 } : {}),
-      },
+    // TERMINAL: flip the run row (match-guarded), then apply bookkeeping. The row write
+    // leaves `bookkept` false and it turns true only after bookkeeping lands, so a crash
+    // between is re-applied by the reconciler (getUnbookkeptRuns) while countedFor keeps
+    // counters idempotent.
+    const settled = await runs.finish(ref, {
+      status: params.status,
+      error: params.error,
+      mcp: params.mcp,
+      conversationId: params.conversationId,
+      clearConversationId: params.clearConversationId,
+      durationMs: params.durationMs,
+      resumeClaimStaleBefore: params.resumeClaimStaleBefore,
     });
-    // The absence check is part of the row update, not a stale read. A concurrent
-    // receipt either wins first (the fallback below records an error) or loses to
-    // terminalization (and can no longer stamp this run).
-    let settled = await ScheduleRun()
-      .findOneAndUpdate(
-        {
-          ...runFilter,
-          ...(canOverride ? { $nor: receiptPredicates } : {}),
-        },
-        terminalUpdate(
-          incomingFailure ? 'error' : params.status,
-          incomingFailure ? authError : params.error,
-        ),
-        { new: true },
-      )
-      .lean<IScheduleRun>();
-    let effectiveParams = incomingFailure
-      ? { ...params, status: 'error' as const, error: authError }
-      : params;
-    if (settled == null && canOverride) {
-      settled = await ScheduleRun()
-        .findOneAndUpdate(
-          { $and: [runFilter, { $or: receiptPredicates }] },
-          terminalUpdate('error', authError),
-          { new: true },
-        )
-        .lean<IScheduleRun>();
-      if (settled != null) {
-        effectiveParams = { ...params, status: 'error', error: authError, mcp: settled.mcp };
-      }
-    }
     // No-match guard: never touch schedule bookkeeping without a matching run.
     if (settled == null) {
       return;
     }
-    // The post-image is the authoritative union, including receipts admitted just before this CAS.
-    effectiveParams = { ...effectiveParams, mcp: settled.mcp };
     // SINGLE SEAM: the config fence is DERIVED here from the row being settled, not
     // passed in by each caller. Callers only say "this occurrence reached status X" and
     // structurally cannot forget a token — which is exactly how the reconcile and
     // balance-skip paths previously shipped unfenced.
-    if (effectiveParams.status === 'skipped_balance') {
+    if (settled.status === 'skipped_balance') {
       await applyBalanceSkipBookkeeping({
         scheduleId: params.scheduleId,
         scheduledFor: params.scheduledFor,
-        firedAt: settled.firedAt ?? firedAt,
+        firedAt: settled.firedAt,
         conversationId: params.conversationId,
-        rowRevision: settled.configRevision,
+        rowRevision: settled.revision,
         balanceSkipDisableThreshold: params.balanceSkipDisableThreshold,
       });
     } else {
+      // The row's post-image is the authoritative union of receipts, including any
+      // admitted just before the write, and its status is the one the write settled on.
       await applyTerminalBookkeeping({
-        ...effectiveParams,
-        firedAt: settled.firedAt ?? firedAt,
-        expectConfigRevision: settled.configRevision,
+        ...params,
+        status: settled.status,
+        error: settled.error,
+        mcp: settled.mcp,
+        firedAt: settled.firedAt,
+        expectConfigRevision: settled.revision,
       });
     }
-    await ScheduleRun().updateOne(
-      { scheduleId: params.scheduleId, scheduledFor: params.scheduledFor },
-      { $set: { bookkept: true } },
-    );
+    await runs.settled(ref);
   }
 
   async function recordSkippedRun(
@@ -1561,37 +1436,22 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     },
     balanceSkipDisableThreshold?: number,
   ): Promise<void> {
-    const firedAt = new Date();
+    const ref = occurrence(data.scheduleId, data.scheduledFor);
     // A duplicate {scheduleId, scheduledFor} row means a prior attempt inserted it.
-    // Proceed as a retry ONLY when that row is the SAME skip — otherwise this claim
-    // is a retry of an occurrence that actually started/terminalized (e.g. the POST
+    // The row write answers a retry ONLY when that row is the SAME skip — otherwise this
+    // claim is a retry of an occurrence that actually started/terminalized (e.g. the POST
     // was accepted but advanceSchedule failed before releasing the lease), and
     // rewriting lastRun/counters would mislabel a real run as a skip (and could
     // walk it toward auto-disable). The streak $inc is separately guarded per
     // occurrence by `countedFor`, so a genuine same-skip retry can't double-count.
-    // `bookkept: false` until the schedule-side writes land: a crash in between is
-    // replayed by the reconciler (getUnbookkeptRuns), exactly like a terminal run —
-    // a duplicate claim of this occurrence advances past the terminal row without
+    // The row stays `bookkept: false` until the schedule-side writes land: a crash in
+    // between is replayed by the reconciler (getUnbookkeptRuns), exactly like a terminal
+    // run — a duplicate claim of this occurrence advances past the terminal row without
     // re-running bookkeeping, so nothing else would ever repair a half-applied skip.
-    const inserted = await insertScheduleRun({
-      ...data,
-      firedAt,
-      settledAt: firedAt,
-      bookkept: false,
-    });
-    let rowRevision = inserted?.configRevision;
-    let rowFiredAt = firedAt;
-    if (inserted == null) {
-      const existing = await ScheduleRun()
-        .findOne({ scheduleId: data.scheduleId, scheduledFor: data.scheduledFor })
-        .select('status configRevision firedAt')
-        .lean<Pick<IScheduleRun, 'status' | 'configRevision' | 'firedAt'>>();
-      if (existing == null || existing.status !== data.status) {
-        return;
-      }
-      rowRevision = existing.configRevision;
-      // A retry re-projects the ORIGINAL occurrence, not the retry moment.
-      rowFiredAt = existing.firedAt ?? firedAt;
+    // A retry re-projects the ORIGINAL occurrence's fire time, not the retry moment.
+    const skipped = await runs.skip(ref, data);
+    if (skipped == null) {
+      return;
     }
     // Same single seam as recordRunOutcome: the config fence is DERIVED from the row,
     // never passed by the caller. A skip decided under an older owner config must not
@@ -1601,22 +1461,19 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       await applyBalanceSkipBookkeeping({
         scheduleId: data.scheduleId,
         scheduledFor: data.scheduledFor,
-        firedAt: rowFiredAt,
-        rowRevision,
+        firedAt: skipped.firedAt,
+        rowRevision: skipped.revision,
         balanceSkipDisableThreshold,
       });
     } else {
       await applyOverlapSkipBookkeeping({
         scheduleId: data.scheduleId,
         scheduledFor: data.scheduledFor,
-        firedAt: rowFiredAt,
-        rowRevision,
+        firedAt: skipped.firedAt,
+        rowRevision: skipped.revision,
       });
     }
-    await ScheduleRun().updateOne(
-      { scheduleId: data.scheduleId, scheduledFor: data.scheduledFor },
-      { $set: { bookkept: true } },
-    );
+    await runs.settled(ref);
   }
 
   async function setRunFireDetails(
@@ -1700,10 +1557,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     // The row's ORIGINAL firedAt is reused too: this replay runs minutes (or many
     // retries) after the fact, and stamping the replay time onto lastRun would keep
     // walking the card's timestamp forward every time the recovery path fires.
-    const run = await ScheduleRun()
-      .findOne({ scheduleId: params.scheduleId, scheduledFor: params.scheduledFor })
-      .select('configRevision firedAt')
-      .lean<Pick<IScheduleRun, 'configRevision' | 'firedAt'>>();
+    const ref = occurrence(params.scheduleId, params.scheduledFor);
+    const run = await runs.get(ref, ['revision', 'firedAt']);
     const firedAt = run?.firedAt ?? new Date();
     if (params.status === 'skipped_balance') {
       await applyBalanceSkipBookkeeping({
@@ -1711,7 +1566,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         scheduledFor: params.scheduledFor,
         firedAt,
         conversationId: params.conversationId,
-        rowRevision: run?.configRevision,
+        rowRevision: run?.revision,
         balanceSkipDisableThreshold: params.balanceSkipDisableThreshold,
       });
     } else if (params.status === 'skipped_overlap') {
@@ -1719,19 +1574,16 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         scheduleId: params.scheduleId,
         scheduledFor: params.scheduledFor,
         firedAt,
-        rowRevision: run?.configRevision,
+        rowRevision: run?.revision,
       });
     } else {
       await applyTerminalBookkeeping({
         ...params,
         firedAt,
-        expectConfigRevision: run?.configRevision,
+        expectConfigRevision: run?.revision,
       });
     }
-    await ScheduleRun().updateOne(
-      { scheduleId: params.scheduleId, scheduledFor: params.scheduledFor },
-      { $set: { bookkept: true } },
-    );
+    await runs.settled(ref);
   }
 
   /**

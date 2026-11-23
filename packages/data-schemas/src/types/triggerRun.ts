@@ -28,6 +28,8 @@ export type TriggerRun = {
   error?: string;
   firedAt?: Date;
   settledAt?: Date;
+  /** The subject's revision the run started under, on a row that holds one. */
+  revision?: number;
   abortRequestedAt?: Date;
   abortSource?: 'stop' | 'deletion';
   abortPersistedAt?: Date;
@@ -82,6 +84,61 @@ export type TriggerRunDetails = {
 export type TriggerRunBinding = {
   conversationId: string;
   tenantId?: string;
+};
+
+/** A status a run ends in. */
+export type TriggerRunEnd = Extract<
+  ScheduleRunStatus,
+  'success' | 'error' | 'interrupted' | 'skipped_balance' | 'skipped_overlap'
+>;
+
+/**
+ * The cutoff a recovery replay passes when it acts on a snapshot that may be stale: the write
+ * applies only while no resume claimed the run at or after it. A claim older than the cutoff
+ * is taken as abandoned, so its run can still be recovered.
+ */
+type Replay = { resumeClaimStaleBefore?: Date };
+
+/** What a run ended as, as it is written onto the row of a run still active. */
+export type TriggerRunOutcome = Replay & {
+  status: TriggerRunEnd;
+  error?: string;
+  mcp?: ScheduleMCPOutcome[];
+  conversationId?: string;
+  /** Erases the conversation the row reserved, in the same write: it was never created. */
+  clearConversationId?: boolean;
+  durationMs?: number;
+};
+
+/** What the row of a run takes when the run pauses for its owner. */
+export type TriggerRunPause = Replay & {
+  conversationId?: string;
+  checkpointNamespace?: string;
+};
+
+/** The row of a run that never starts: its columns as given, with the skip it is recorded as. */
+export type TriggerRunSkip = TriggerRunRow & {
+  status: Extract<ScheduleRunStatus, 'skipped_overlap' | 'skipped_balance'>;
+};
+
+/**
+ * What a row write hands the run's subject for the subject's own step: when the run fired,
+ * or the time of the write for a row that holds none, and the revision it started under.
+ */
+export type TriggerRunOrigin = {
+  firedAt: Date;
+  revision?: number;
+};
+
+/**
+ * A run's outcome as its row now holds it. The status and error are the ones written, which
+ * differ from the ones asked for when a receipt on the row refuses the run; `mcp` is every
+ * receipt on the row after the write.
+ */
+export type TriggerRunSettlement = TriggerRunOrigin & {
+  status: TriggerRunEnd;
+  error?: string;
+  mcp?: ScheduleMCPOutcome[];
 };
 
 /** What a row must still hold for a rollback to delete it. */

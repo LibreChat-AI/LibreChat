@@ -1,15 +1,24 @@
-import { mergeScheduleMCPReceipts } from 'librechat-data-provider';
+import {
+  isScheduleMCPAuthorizationFailure,
+  runGrantFailureReasonSchema,
+  mergeScheduleMCPReceipts,
+} from 'librechat-data-provider';
 import type { ScheduleMCPOutcome, ScheduleRunStatus } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type {
   TriggerRun,
   TriggerRunRef,
   TriggerRunRow,
+  TriggerRunSkip,
   TriggerRunScope,
   TriggerRunClaim,
+  TriggerRunPause,
   RecordedRunRef,
+  TriggerRunOrigin,
   TriggerRunBinding,
   TriggerRunDetails,
+  TriggerRunOutcome,
+  TriggerRunSettlement,
   TriggerRunUnrecorded,
   TriggerRunExpectation,
   TriggerRunReservation,
@@ -88,6 +97,7 @@ const columns: Record<Field, string> = {
   error: 'error',
   firedAt: 'firedAt',
   settledAt: 'settledAt',
+  revision: 'configRevision',
   abortRequestedAt: 'abortRequestedAt',
   abortSource: 'abortSource',
   abortPersistedAt: 'abortPersistedAt',
@@ -108,6 +118,7 @@ const read: { [K in Field]: (row: Row) => TriggerRun[K] | undefined } = {
   error: (row) => row.error,
   firedAt: (row) => row.firedAt,
   settledAt: (row) => row.settledAt,
+  revision: (row) => row.configRevision,
   abortRequestedAt: (row) => row.abortRequestedAt,
   abortSource: (row) => row.abortSource,
   abortPersistedAt: (row) => row.abortPersistedAt,
@@ -134,6 +145,34 @@ const where = (ref: TriggerRunRef): Pick<IScheduleRun, 'scheduleId' | 'scheduled
   scheduleId: ref.subject.id,
   scheduledFor: new Date(ref.delivery.event.occurredAt),
 });
+
+/**
+ * What on a row refuses its run: a tool that found no authorization it could use unattended,
+ * or a grant failure that is not replayed.
+ */
+const refusals = (): Record<string, unknown>[] => [
+  { 'mcp.detail': 'unattended_auth_required' },
+  {
+    mcp: {
+      $elemMatch: {
+        reason: { $in: runGrantFailureReasonSchema.options },
+        status: { $ne: 'ready' },
+        automaticReplay: false,
+      },
+    },
+  },
+];
+
+/**
+ * Holds a recovery replay off a run a resume claimed after the replay's snapshot was taken,
+ * while a claim older than the cutoff, left by a worker that died, can still be recovered.
+ */
+const unclaimed = (staleBefore?: Date): Record<string, unknown> =>
+  staleBefore != null
+    ? {
+        $or: [{ resumeClaimedAt: { $exists: false } }, { resumeClaimedAt: { $lt: staleBefore } }],
+      }
+    : {};
 
 /**
  * The record a triggered run leaves, found by who the run acts for and the delivery that
@@ -198,6 +237,27 @@ export type TriggerRuns = {
   ) => Promise<boolean>;
   /** Deletes a run's row, only while it still holds what is expected of it. */
   remove: (ref: TriggerRunRef, expected?: TriggerRunExpectation) => Promise<void>;
+  /**
+   * Moves an active run to paused and frees its capacity slot. `null` when no active run is
+   * on record, when a receipt on the row refuses the run, or when a resume holds the row.
+   */
+  pause: (ref: TriggerRunRef, hold: TriggerRunPause) => Promise<TriggerRunOrigin | null>;
+  /**
+   * Writes what an active run ended as, with its receipts, and frees its capacity slot. A
+   * receipt that refuses the run, given here or already on the row, ends it as an error
+   * whatever was asked. The row is left marked as not yet settled with its subject: `settled`
+   * clears the mark once the subject's own step has landed. `null` when no active run is on
+   * record, or a resume holds the row.
+   */
+  finish: (ref: TriggerRunRef, outcome: TriggerRunOutcome) => Promise<TriggerRunSettlement | null>;
+  /**
+   * Inserts the row of a run that never starts, marked as not yet settled with its subject.
+   * A delivery that already has a row is answered from that row while it is the same skip,
+   * so a retry repeats the subject's step; `null` when the row is anything else.
+   */
+  skip: (ref: TriggerRunRef, row: TriggerRunSkip) => Promise<TriggerRunOrigin | null>;
+  /** Marks a run as settled with its subject, once the subject's own step has landed. */
+  settled: (ref: TriggerRunRef) => Promise<void>;
 };
 
 export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerRuns {
@@ -463,6 +523,149 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     await Run().deleteOne(filter);
   }
 
+  /**
+   * The row transition is won before anything is projected from it, and an already paused
+   * row matches too: a retried pause is answered again, and a sweep can repeat one whose
+   * owner died after this write. Leaving `started` frees the capacity slot, and clearing the
+   * claim stamp is what tells a resume hand-off that its re-pause is complete.
+   */
+  async function pause(
+    ref: TriggerRunRef,
+    hold: TriggerRunPause,
+  ): Promise<TriggerRunOrigin | null> {
+    if (ref.subject.kind !== 'schedule') return null;
+    const now = new Date();
+    const paused = await Run().findOneAndUpdate(
+      {
+        ...where(ref),
+        status: { $in: ACTIVE_RUN_STATUSES },
+        $nor: refusals(),
+        ...unclaimed(hold.resumeClaimStaleBefore),
+      },
+      {
+        $set: {
+          status: 'requires_action',
+          ...(hold.conversationId ? { conversationId: hold.conversationId } : {}),
+          ...(hold.checkpointNamespace != null
+            ? { checkpointNamespace: hold.checkpointNamespace }
+            : {}),
+        },
+        $unset: { capacitySlot: 1, resumeClaimedAt: 1 },
+      },
+      { new: false },
+    );
+    if (paused == null) return null;
+    // The row's own fire time: a pause is repeated every sweep for as long as it waits.
+    return { firedAt: paused.firedAt ?? now, revision: paused.configRevision };
+  }
+
+  /**
+   * Receipts are merged in the same transition, so neither a receipt race nor a crash can
+   * lose one. That no refusal is on the row is part of the update's own filter, not a read
+   * before it: a receipt written first sends this to the second update, which ends the run as
+   * an error, and one written after finds the run no longer live.
+   */
+  async function finish(
+    ref: TriggerRunRef,
+    outcome: TriggerRunOutcome,
+  ): Promise<TriggerRunSettlement | null> {
+    if (ref.subject.kind !== 'schedule') return null;
+    const now = new Date();
+    const live = {
+      ...where(ref),
+      status: { $in: ACTIVE_RUN_STATUSES },
+      ...unclaimed(outcome.resumeClaimStaleBefore),
+    };
+    const overridable =
+      outcome.status === 'success' ||
+      outcome.status === 'error' ||
+      outcome.status === 'skipped_balance' ||
+      outcome.status === 'interrupted';
+    const refused = overridable && outcome.mcp?.some(isScheduleMCPAuthorizationFailure) === true;
+    const refusal =
+      outcome.status === 'error' && outcome.error
+        ? outcome.error
+        : 'MCP unattended authorization unavailable';
+    const update = (status: TriggerRunOutcome['status'], error: string | undefined) => ({
+      $set: {
+        status,
+        bookkept: false,
+        settledAt: now,
+        ...(outcome.conversationId && !outcome.clearConversationId
+          ? { conversationId: outcome.conversationId }
+          : {}),
+        ...(error ? { error } : {}),
+        ...(outcome.durationMs != null ? { durationMs: outcome.durationMs } : {}),
+      },
+      ...(outcome.mcp?.length && { $addToSet: { mcp: { $each: outcome.mcp } } }),
+      // Only a terminal outcome releases the capacity slot, never an abort request.
+      $unset: {
+        capacitySlot: 1,
+        admissionOnly: 1,
+        ...(outcome.clearConversationId ? { conversationId: 1 } : {}),
+      },
+    });
+    let status: TriggerRunOutcome['status'] = refused ? 'error' : outcome.status;
+    let error = refused ? refusal : outcome.error;
+    let row = await Run()
+      .findOneAndUpdate(
+        { ...live, ...(overridable ? { $nor: refusals() } : {}) },
+        update(status, error),
+        { new: true },
+      )
+      .lean<Row>();
+    if (row == null && overridable) {
+      row = await Run()
+        .findOneAndUpdate({ $and: [live, { $or: refusals() }] }, update('error', refusal), {
+          new: true,
+        })
+        .lean<Row>();
+      status = 'error';
+      error = refusal;
+    }
+    if (row == null) return null;
+    return {
+      status,
+      error,
+      mcp: row.mcp,
+      firedAt: row.firedAt ?? now,
+      revision: row.configRevision,
+    };
+  }
+
+  /**
+   * The unique index on a delivery makes the insert the claim: a duplicate means an earlier
+   * attempt holds the delivery. Only a row that is the same skip is answered, with its own
+   * fire time, since anything else is a run that started and must not be read as a skip.
+   */
+  async function skip(ref: TriggerRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null> {
+    if (ref.subject.kind !== 'schedule') return null;
+    const now = new Date();
+    try {
+      const doc = await Run().create({
+        ...row,
+        ...where(ref),
+        firedAt: now,
+        settledAt: now,
+        bookkept: false,
+      });
+      return { firedAt: now, revision: doc.toObject().configRevision };
+    } catch (error) {
+      if ((error as DuplicateKeyError)?.code !== DUPLICATE_KEY) throw error;
+    }
+    const existing = await Run()
+      .findOne(where(ref))
+      .select('status configRevision firedAt')
+      .lean<Pick<IScheduleRun, 'status' | 'configRevision' | 'firedAt'>>();
+    if (existing == null || existing.status !== row.status) return null;
+    return { firedAt: existing.firedAt ?? now, revision: existing.configRevision };
+  }
+
+  async function settled(ref: TriggerRunRef): Promise<void> {
+    if (ref.subject.kind !== 'schedule') return;
+    await Run().updateOne(where(ref), { $set: { bookkept: true } });
+  }
+
   return {
     get,
     byConversation,
@@ -474,5 +677,9 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     release,
     receipt,
     remove,
+    pause,
+    finish,
+    skip,
+    settled,
   };
 }
