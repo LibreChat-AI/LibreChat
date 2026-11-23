@@ -5,6 +5,7 @@ import { isSubagentGraphsEnabled } from 'librechat-data-provider';
 import type { ControllerRenderProps } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import { StaticAgentRow, AddAgentSelect, ListMeta, useSelectableAgents } from './AgentList';
+import { setSubagentsEnabled } from '../Tools/items/orchestration';
 import OrchestrationPattern from './OrchestrationPattern';
 import { useLocalize } from '~/hooks';
 import { ToggleSetting } from './ui';
@@ -44,14 +45,9 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
        * undefined would leave the server copy enabled. An explicit
        * `enabled: false` flows through as a real update.
        */
-      field.onChange({
-        ...value,
-        enabled: next,
-        allowSelf: value.allowSelf ?? true,
-        agent_ids: value.agent_ids ?? [],
-      });
+      field.onChange(setSubagentsEnabled(value, next, capabilities));
     },
-    [field, value],
+    [field, value, capabilities],
   );
 
   const setAllowSelf = useCallback(

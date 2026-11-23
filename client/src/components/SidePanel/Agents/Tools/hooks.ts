@@ -269,7 +269,7 @@ export function useAgentItems({
       codeFiles,
       catalog,
       agentActions,
-      agentsConfig,
+      agentsConfig?.capabilities,
     ],
   );
 

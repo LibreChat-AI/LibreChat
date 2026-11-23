@@ -181,6 +181,33 @@ test('ordinary Subagents toggles do not migrate the capability gate of legacy te
   expect(restored.graphsEnabled).toBeUndefined();
 });
 
+test.each([
+  { was: true, now: false },
+  { was: false, now: true },
+])(
+  'legacy graph teams keep their state when ordinary Subagents goes from $was to $now beside a Subagent Graphs tool',
+  ({ was, now }) => {
+    const capabilities = [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs];
+    const team = {
+      type: 'team',
+      name: 'Team',
+      description: 'Work',
+      agent_ids: ['child'],
+      entry_agent_id: 'child',
+      result_agent_id: 'child',
+      edges: [],
+    };
+    const legacy = { enabled: was, allowSelf: false, agent_ids: [], graphs: [team] };
+    const before = resolveSubagents(legacy, capabilities)?.graphs ?? [];
+
+    const toggled = setSubagentsEnabled(legacy, now, capabilities);
+
+    expect(toggled.enabled).toBe(now);
+    expect(toggled.graphsEnabled).toBe(was);
+    expect(resolveSubagents(toggled, capabilities)?.graphs ?? []).toEqual(before);
+  },
+);
+
 test('ordinary Subagents toggles retain an explicit independent graph choice', () => {
   const config = {
     enabled: true,
