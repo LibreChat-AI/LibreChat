@@ -432,7 +432,12 @@ const AuthContextProvider = ({
         if (request.getAuthGeneration() !== refreshGeneration) {
           return;
         }
-        if (request.classifyRefreshFailure(error) === 'unavailable') {
+        /** A refresh 401 can reach here marked unavailable when the interceptor's own retry
+         * refresh could not run the check; the status alone would read it as a denial. */
+        if (
+          request.isAuthSessionUnavailableError(error) ||
+          request.classifyRefreshFailure(error) === 'unavailable'
+        ) {
           console.log('refreshToken mutation error (session check unavailable):', error);
           setAuthSessionUnavailable(true);
           if (authConfig?.optional === true) {

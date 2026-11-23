@@ -1653,6 +1653,29 @@ describe('AuthContextProvider — session check unavailable', () => {
     ).toBeInTheDocument();
   });
 
+  it('shows Retry and keeps session state when the interceptor marks a refresh 401 unavailable', () => {
+    const generation = request.getAuthGeneration();
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: unknown) => void },
+    ];
+
+    act(() =>
+      refreshOptions.onError({
+        response: { status: 401, data: {} },
+        __authSessionUnavailable: true,
+      }),
+    );
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(request.getAuthGeneration()).toBe(generation);
+    expect(getDefaultStore().get(authSessionUnavailableAtom)).toBe(true);
+    expect(
+      screen.getByRole('heading', { name: "We couldn't verify your session" }),
+    ).toBeInTheDocument();
+  });
+
   it('still redirects to login for a confirmed denial', () => {
     renderProviderLive();
     const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
