@@ -2,7 +2,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { logger, escapeRegExp } from '@librechat/data-schemas';
 import { Constants, ContentTypes, AnnotationTypes } from 'librechat-data-provider';
-import type { AppConfig, ConversationMethods, MessageMethods } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
 import { settleAll, settleStarted } from '~/utils/promises';
 import { announceReply } from '~/conversations/announce';
 
@@ -59,10 +59,31 @@ export interface ThreadSyncClient {
   };
 }
 
+/** Who a write belongs to and how long it is kept. */
+export interface ThreadWriteContext {
+  userId: string;
+  isTemporary?: boolean;
+  expiredAt?: Date;
+  interfaceConfig?: AppConfig['interfaceConfig'];
+}
+
 export interface ThreadSyncDeps {
-  saveMessage: MessageMethods['saveMessage'];
-  saveConvo: ConversationMethods['saveConvo'];
-  stampConvoLastResponse: ConversationMethods['stampConvoLastResponse'];
+  /** Upserts a message; resolves with the stored row, or empty when nothing was written. */
+  saveMessage: (
+    ctx: ThreadWriteContext,
+    message: SyncedMessage & { user: string },
+  ) => Promise<Record<string, unknown> | null | undefined>;
+  /** Merges `update` into the conversation; resolves with the stored conversation, if any. */
+  saveConvo: (
+    ctx: ThreadWriteContext,
+    update: { conversationId: string; file_ids: string[] },
+    options: { context: string },
+  ) => Promise<Record<string, unknown> | null | undefined>;
+  stampConvoLastResponse: (
+    user: string,
+    conversationId: string,
+    messageId: string,
+  ) => Promise<unknown>;
   /** Tags every provider message an aggregated reply was built from with its LibreChat id. */
   addThreadMetadata: (params: {
     openai: ThreadSyncClient;
@@ -108,7 +129,7 @@ export async function syncMessages(
 
   const modifyPromises: Promise<unknown>[] = [];
   const recordPromises: Promise<unknown>[] = [];
-  const ctx = {
+  const ctx: ThreadWriteContext = {
     userId: openai.req.user.id,
     isTemporary: openai.req.resolvedConversation?.isTemporary ?? openai.req.body?.isTemporary,
     expiredAt: openai.req.resolvedConversation?.expiredAt,
@@ -116,14 +137,11 @@ export async function syncMessages(
   };
   /** The assistant writes this synchronization performed. Their results decide whether a reply
    *  is actually in the history: a write that resolved empty must not raise an indicator. */
-  const assistantRecordPromises: Promise<unknown>[] = [];
+  const assistantRecordPromises: Promise<Record<string, unknown> | null | undefined>[] = [];
 
   /** Saves `dbMessage` and tags its thread message with the LibreChat id. */
   const processNewMessage = (dbMessage: SyncedMessage, apiMessage: ThreadMessage) => {
-    const recorded = deps.saveMessage(ctx, {
-      ...dbMessage,
-      user: openai.req.user.id,
-    } as Parameters<MessageMethods['saveMessage']>[1]);
+    const recorded = deps.saveMessage(ctx, { ...dbMessage, user: openai.req.user.id });
     recordPromises.push(recorded);
     if (dbMessage.role === 'assistant') {
       assistantRecordPromises.push(recorded);
@@ -252,9 +270,7 @@ export async function syncMessages(
     return acc;
   }, []);
 
-  const recordedAssistantReplies = (await Promise.all(assistantRecordPromises)) as Array<
-    Record<string, unknown> | null | undefined
-  >;
+  const recordedAssistantReplies = await Promise.all(assistantRecordPromises);
 
   const savedConvo = await deps.saveConvo(
     ctx,
