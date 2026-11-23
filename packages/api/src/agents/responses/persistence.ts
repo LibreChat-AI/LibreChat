@@ -5,7 +5,13 @@ import type { Response } from './types';
 
 const rootParent = String(Constants.NO_PARENT);
 
-/** Retain completed server tool pairs for browser rendering and later model turns. */
+/**
+ * Retain completed server tool pairs for browser rendering and later model turns.
+ *
+ * A retained pair is a call whose output the response holds, so its run step
+ * closed as completed. Stamp that verdict: without it a reloaded message has no
+ * terminal status and the browser infers a stop from the absent progress.
+ */
 export function projectResponseMessage(
   response: Pick<Response, 'output'> & Partial<Pick<Response, 'status'>>,
 ): {
@@ -27,6 +33,7 @@ export function projectResponseMessage(
           name: item.name,
           args: item.arguments,
           output: results.get(item.call_id)!,
+          runStepStatus: 'completed',
         },
       });
     }

@@ -63,12 +63,19 @@ describe('Responses assistant history projection', () => {
             name: 'lookup',
             args: '{"key":"a"}',
             output: '{"result":"server-only-result"}',
+            runStepStatus: 'completed',
           },
         },
         { type: ContentTypes.TEXT, text: 'Done.' },
       ],
     });
     expect(JSON.stringify(projected)).not.toContain('client_action');
+  });
+  it('stamps a retained call as a completed run step so a reload does not infer cancellation', () => {
+    const projected = projectResponseMessage(response);
+    const part = projected.content.find((item) => item.type === ContentTypes.TOOL_CALL);
+    if (part == null || !('tool_call' in part)) throw new Error('missing tool call part');
+    expect(part.tool_call).toMatchObject({ runStepStatus: 'completed' });
   });
   it('round-trips stored content into an actual SDK ToolMessage on continuation', () => {
     const projected = projectResponseMessage(response);
