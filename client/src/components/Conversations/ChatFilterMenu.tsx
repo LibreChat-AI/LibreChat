@@ -401,14 +401,17 @@ const EndpointFacet = memo(() => {
   const toggleEndpoint = useSetAtom(toggleEndpointFilterAtom);
   const {
     data: endpointsConfig,
-    isError,
+    errorUpdatedAt,
     isFetching,
     isInitialLoading,
     refetch,
   } = useGetEndpointsQuery();
   const { limit, maxNameLength, atLimit } = useEndpointFilterLimit(selected.length);
-  /** Cached endpoints are listed even when a later refetch failed. */
-  const pending = endpointsConfig == null && (isError || isInitialLoading);
+  /** A refetch without data puts the query back to `loading` and clears its error, so
+   *  whether a load failed is read from when it last did. Cached endpoints are listed
+   *  even when a later refetch failed. */
+  const failed = errorUpdatedAt > 0;
+  const pending = endpointsConfig == null && (failed || isInitialLoading);
 
   const endpoints = useMemo(
     () =>
@@ -459,7 +462,7 @@ const EndpointFacet = memo(() => {
           />
         ))}
         {pending && (
-          <EndpointsStatus failed={isError} fetching={isFetching} onRetry={() => refetch()} />
+          <EndpointsStatus failed={failed} fetching={isFetching} onRetry={() => refetch()} />
         )}
         {atLimit && limit != null && <EndpointLimitNote limit={limit} />}
       </Ariakit.MenuGroup>
