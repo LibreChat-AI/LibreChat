@@ -70,4 +70,32 @@ describe('Effort', () => {
 
     expect(onChange).toHaveBeenCalledWith({ key: 'reasoning_effort', value: 'medium' });
   });
+  it('draws the stops on the rail in the separate mode, so it is not an empty track', () => {
+    render(
+      <Effort
+        setting={setting}
+        conversation={conversation}
+        value={{ key: 'reasoning_effort', value: ReasoningEffort.unset }}
+        onChange={jest.fn()}
+      />,
+    );
+
+    expect(screen.getAllByTestId('composer-thinking-stop')).toHaveLength(3);
+    expect(screen.queryByRole('radio', { checked: true })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('names the level for assistive technology without a visible label', () => {
+    render(
+      <Effort
+        setting={setting}
+        conversation={conversation}
+        value={{ key: 'reasoning_effort', value: ReasoningEffort.medium }}
+        onChange={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('radio', { checked: true })).toHaveAccessibleName('Medium');
+    expect(screen.queryByText('Medium')).not.toBeInTheDocument();
+  });
 });
