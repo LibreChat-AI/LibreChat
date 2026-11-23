@@ -1,6 +1,6 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
-import { Constants, ContentTypes, Tools, imageGenTools } from 'librechat-data-provider';
+import { ContentTypes, imageGenTools } from 'librechat-data-provider';
 import {
   Container,
   blocksLiveFold,
@@ -8,44 +8,52 @@ import {
   HiddenAttachmentsContext,
 } from '@librechat/chat/components';
 import {
-  hasParallelLanes,
-  parallelLaneGroups,
-  hasPendingApprovalInPart,
-  groupActivityPhases,
-  lastCursorContentIdx,
-  getActivityLabelText,
-} from '@librechat/chat';
-import {
   ReasoningDisclosureContext,
   reasoningDisclosure,
   ToolDisclosureContext,
   ToolDisclosureKeyContext,
   SoleToolContext,
-  assignNestedAttachments,
+  routeNestedAttachments,
   useLiveSubagentToolCalls,
   SubagentAttachmentsContext,
-  selectExactlyNestedAttachments,
-  selectUnclaimedAttachments,
 } from '@librechat/chat/react';
+import {
+  toolGroupId,
+  toolGroupAnchor,
+  partAgentId,
+  isFileOutput,
+  partToolCallId,
+  isEmptyTextPart,
+  attachmentScopes,
+  hasParallelLanes,
+  toolCallStepOwners,
+  parallelLaneGroups,
+  acceptedAttachments,
+  groupActivityPhases,
+  lastCursorContentIdx,
+  getActivityLabelText,
+  toolGroupOccurrences,
+  advanceRenderIdentity,
+  collectMessageContent,
+  collectPartAttachments,
+  hasPendingApprovalInPart,
+} from '@librechat/chat';
 import type {
-  SubagentAttachmentFile,
-  TMessageContentParts,
-  SearchResultData,
-  TAttachment,
-  Agents,
-} from 'librechat-data-provider';
-import type { ReasoningDisclosures, ToolDisclosures, NestedCall } from '@librechat/chat/react';
-import type { ActivityPhaseSegment } from '@librechat/chat';
+  ToolCallStepOwners,
+  ActivityPhaseSegment,
+  MCPAppResourceOccurrence,
+  RenderIdentity,
+} from '@librechat/chat';
+import type { TMessageContentParts, SearchResultData, TAttachment } from 'librechat-data-provider';
+import type { ReasoningDisclosures, ToolDisclosures } from '@librechat/chat/react';
 import type { ReactNode, ReactElement } from 'react';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
-import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import type { PartWithIndex } from './ParallelContent';
 import {
   mapAttachments,
   getPartKeyIndex,
   attachmentRenderKey,
   buildAttachmentsByName,
-  filterAttachmentsForPart,
   groupSequentialToolCalls,
 } from '~/utils';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
@@ -66,165 +74,6 @@ import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
 import Part from './Part';
 
-/** An empty TEXT part — the placeholder some endpoints seed in
- * `initialResponse.content` before the model produces anything. */
-const isEmptyTextPart = (part: TMessageContentParts | undefined): boolean => {
-  if (part == null || part.type !== ContentTypes.TEXT) {
-    return false;
-  }
-  const text = typeof part.text === 'string' ? part.text : (part.text?.value ?? '');
-  return text.length === 0;
-};
-
-const getToolCallId = (part: TMessageContentParts): string =>
-  (part?.[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined)?.id ?? '';
-
-const isFileOutput = (file: TAttachment): boolean =>
-  Boolean(file.filepath) && file.type !== Tools.ui_resources && file.type !== Tools.web_search;
-
-const getPartAgentId = (part: TMessageContentParts): string | undefined =>
-  (part as { agentId?: string })?.agentId ??
-  (part?.[ContentTypes.TOOL_CALL] as { agentId?: string } | undefined)?.agentId;
-
-const getPartStepId = (part: TMessageContentParts): string | undefined =>
-  (part?.[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined)?.stepId;
-
-const getToolGroupAnchorIndex = (parts: PartWithIndex[]): number => {
-  for (const { part, idx } of parts) {
-    if (getToolCallId(part) || part?.type === ContentTypes.TOOL_CALL) {
-      return idx;
-    }
-  }
-  return parts[0]?.idx ?? -1;
-};
-
-type ToolCallStepOwner = { agentId?: string; stepId: string };
-
-const getSiblingStepIds = (
-  part: TMessageContentParts,
-  ownersByToolCallId: ReadonlyMap<string, readonly ToolCallStepOwner[]>,
-): ReadonlySet<string> | undefined => {
-  if (getPartStepId(part) != null) {
-    return;
-  }
-  const toolCallId = getToolCallId(part);
-  const owners = ownersByToolCallId.get(toolCallId);
-  if (toolCallId === '' || owners == null) {
-    return;
-  }
-  const agentId = getPartAgentId(part);
-  const siblingStepIds = new Set<string>();
-  for (const owner of owners) {
-    if (agentId == null || owner.agentId == null || owner.agentId === agentId) {
-      siblingStepIds.add(owner.stepId);
-    }
-  }
-  return siblingStepIds.size === 0 ? undefined : siblingStepIds;
-};
-
-const buildToolCallStepOwners = (
-  content: Array<TMessageContentParts | undefined> | undefined,
-): ReadonlyMap<string, readonly ToolCallStepOwner[]> => {
-  const owners = new Map<string, ToolCallStepOwner[]>();
-  for (const part of content ?? []) {
-    if (part == null) {
-      continue;
-    }
-    const toolCallId = getToolCallId(part);
-    const stepId = getPartStepId(part);
-    if (toolCallId === '' || stepId == null) {
-      continue;
-    }
-    const entries = owners.get(toolCallId) ?? [];
-    entries.push({ stepId, agentId: getPartAgentId(part) });
-    owners.set(toolCallId, entries);
-  }
-  return owners;
-};
-
-const collectMessageContent = (
-  content: Array<TMessageContentParts | undefined> | undefined,
-  attachments: TAttachment[] | undefined,
-  nested: Pick<ReadonlyMap<TMessageContentParts, TAttachment[]>, 'get'>,
-  contentIndexOffset = 0,
-  contentIndices?: ReadonlyArray<number>,
-): {
-  attachments: TAttachment[];
-  atIndex: Map<number, TAttachment[]>;
-  resumeAuthors: ReadonlyMap<number, string | undefined>;
-} => {
-  const resumeAuthors = new Map<number, string | undefined>();
-  let prevType: string | undefined;
-  let activeAgentId: string | undefined;
-  const atIndex = new Map<number, TAttachment[]>();
-  const attachmentMap = mapAttachments(attachments ?? []);
-  const ownersByToolCallId = buildToolCallStepOwners(content);
-  const collected = new Set<TAttachment>();
-  (content ?? []).forEach((part, index) => {
-    if (part == null) return;
-    // Attribute the resume point before applying a handoff on that same part.
-    if (prevType === ContentTypes.STEER && part.type !== ContentTypes.STEER) {
-      resumeAuthors.set(contentIndices?.[index] ?? index + contentIndexOffset, activeAgentId);
-    }
-    if (part.type === ContentTypes.AGENT_UPDATE) {
-      activeAgentId = part[ContentTypes.AGENT_UPDATE]?.agentId || undefined;
-    }
-    prevType = part.type;
-    const routed = filterAttachmentsForPart(
-      attachmentMap[getToolCallId(part)],
-      getPartAgentId(part),
-      getPartStepId(part),
-      getSiblingStepIds(part, ownersByToolCallId),
-    );
-    /** A subagent's child-call Apps render beside the subagent row, like its
-     *  own, so regrouping the row while it streams never remounts them. */
-    const owned = nested.get(part);
-    for (const attachment of owned == null ? (routed ?? []) : [...(routed ?? []), ...owned]) {
-      if (
-        attachment.type === Tools.ui_resources &&
-        !collected.has(attachment) &&
-        selectToolCallUIResources([attachment]).length > 0
-      ) {
-        collected.add(attachment);
-        const entries = atIndex.get(index) ?? [];
-        entries.push(attachment);
-        atIndex.set(index, entries);
-      }
-    }
-  });
-  return { attachments: Array.from(collected), atIndex, resumeAuthors };
-};
-
-const getToolGroupId = (parts: PartWithIndex[], fallbackScope: number): string => {
-  const firstPart = parts[0];
-  if (!firstPart) {
-    return 'empty';
-  }
-  /** Keyed on the first TOOL CALL, not the first part. An activity label
-   *  absorbs the block's leading THINK part when its text lands, so keying on
-   *  `parts[0]` would flip the key mid-run — remounting the group and losing
-   *  whatever the user had expanded. The tool calls themselves do not move. */
-  let firstToolKeyIdx: number | undefined;
-  for (const { part, idx } of parts) {
-    const toolCallId = getToolCallId(part);
-    if (toolCallId) {
-      const agentId = getPartAgentId(part);
-      /** `stepId` is stamped only when a tool finishes, so it cannot be part
-       * of the render identity without remounting a live group at completion.
-       * Agent + provider id are available from the first render; message-wide
-       * occurrence numbering below distinguishes later reuse in the same row. */
-      return agentId == null ? `tool:${toolCallId}` : `tool:${toolCallId}:${agentId}`;
-    }
-    if (firstToolKeyIdx === undefined && part?.type === ContentTypes.TOOL_CALL) {
-      firstToolKeyIdx = getPartKeyIndex(part, idx);
-    }
-  }
-  /** Same reasoning for id-less tool calls: anchor to the first TOOL entry's
-   *  index rather than the block's first part, which shifts when reasoning is
-   *  absorbed. Only a block with no tool call at all falls back to `parts[0]`. */
-  return `fallback:${fallbackScope}:${firstToolKeyIdx ?? getPartKeyIndex(firstPart.part, firstPart.idx)}`;
-};
-
 type PartWithContextProps = {
   part: TMessageContentParts;
   idx: number;
@@ -239,77 +88,6 @@ type PartWithContextProps = {
   partAttachments: TAttachment[] | undefined;
   hideAttachments?: boolean;
   onToolExpand?: () => void;
-};
-
-/**
- * Attachments a top-level part accepts under the ownership rules its own row
- * applies. A file a subagent child call owns under its full scope (`reserved`)
- * goes to a top-level part only when that part carries the same scope, so an
- * unscoped call reusing the child's id cannot take it first.
- */
-const collectClaimedAttachments = (
-  content: Array<TMessageContentParts | undefined> | undefined,
-  attachments: TAttachment[],
-  reserved: ReadonlySet<TAttachment>,
-): { claimed: ReadonlySet<TAttachment>; exact: ReadonlySet<TAttachment> } => {
-  const claimed = new Set<TAttachment>();
-  /** Claimed by a part carrying the file's full scope, not only by a part missing some of it. */
-  const exact = new Set<TAttachment>();
-  const attachmentMap = mapAttachments(attachments);
-  const owners = buildToolCallStepOwners(content);
-  for (const part of content ?? []) {
-    if (part == null) {
-      continue;
-    }
-    const accepted = filterAttachmentsForPart(
-      attachmentMap[getToolCallId(part)],
-      getPartAgentId(part),
-      getPartStepId(part),
-      getSiblingStepIds(part, owners),
-    );
-    for (const attachment of accepted ?? []) {
-      const scoped = carriesScopeOf(part, attachment);
-      if (reserved.has(attachment) && !scoped) {
-        continue;
-      }
-      claimed.add(attachment);
-      if (scoped) {
-        exact.add(attachment);
-      }
-    }
-  }
-  return { claimed, exact };
-};
-
-/** Whether the part carries every agent and step scope the attachment does. */
-const carriesScopeOf = (part: TMessageContentParts, attachment: TAttachment): boolean => {
-  const { agentId, stepId } = attachment as { agentId?: string; stepId?: string };
-  return (
-    (agentId == null || getPartAgentId(part) === agentId) &&
-    (stepId == null || getPartStepId(part) === stepId)
-  );
-};
-
-/**
- * The subagent call part each tool attachment no top-level part accepts goes to, given the child
- * calls each subagent part holds outside its stored transcript. `inDoubt` lists the files no call
- * owns under their full scope, top-level or nested: one taken only by a call missing some of its
- * scope may belong to a child call of a transcript the preview left out.
- */
-const routeNestedAttachments = (
-  content: Array<TMessageContentParts | undefined> | undefined,
-  attachments: TAttachment[],
-  calls: ReadonlyMap<number, NestedCall[]>,
-) => {
-  const reserved = selectExactlyNestedAttachments(content, attachments, calls);
-  const { claimed, exact } = collectClaimedAttachments(content, attachments, reserved);
-  const unclaimed = selectUnclaimedAttachments(attachments, claimed);
-  const nested = assignNestedAttachments(content, unclaimed, calls);
-  const inDoubt = attachments.filter(
-    (attachment) =>
-      attachment.toolCallId != null && !exact.has(attachment) && !reserved.has(attachment),
-  );
-  return { nested, inDoubt };
 };
 
 const PartWithContext = memo(function PartWithContext({
@@ -350,11 +128,7 @@ const PartWithContext = memo(function PartWithContext({
    *  final-only stepId nor messageId belongs in the card's disclosure identity. */
   const toolDisclosureKey =
     part.type === ContentTypes.TOOL_CALL
-      ? JSON.stringify([
-          getPartAgentId(part) ?? '',
-          getToolCallId(part),
-          getPartKeyIndex(part, idx),
-        ])
+      ? JSON.stringify([partAgentId(part) ?? '', partToolCallId(part), getPartKeyIndex(part, idx)])
       : undefined;
 
   const renderPart = (renderedPart: TMessageContentParts) => (
@@ -461,7 +235,7 @@ type ContentPartsProps = {
   /** Message-wide occurrence number for each grouped tool block's first tool. */
   toolGroupOccurrenceByIndex?: ReadonlyMap<number, number>;
   /** Completed step owners used to keep older attachments off a live repeated call. */
-  toolCallStepOwnersById?: ReadonlyMap<string, readonly ToolCallStepOwner[]>;
+  toolCallStepOwnersById?: ToolCallStepOwners;
 };
 
 /**
@@ -513,12 +287,10 @@ const ContentPartsBody = memo(function ContentPartsBody({
     [attachments, workspaceAttachmentsPartitioned],
   );
   const attachmentMap = useMemo(() => mapAttachments(inlineAttachments), [inlineAttachments]);
-  const resolvedToolCallStepOwners = useMemo(() => {
-    if (toolCallStepOwnersById != null) {
-      return toolCallStepOwnersById;
-    }
-    return buildToolCallStepOwners(content);
-  }, [toolCallStepOwnersById, content]);
+  const resolvedToolCallStepOwners = useMemo(
+    () => toolCallStepOwnersById ?? toolCallStepOwners(content),
+    [toolCallStepOwnersById, content],
+  );
   const nestedAttachments = useContext(SubagentAttachmentsContext);
   /** Files the message gave to a subagent run; a top-level call that matches
    *  one only by a reused id does not render it as its own. */
@@ -528,12 +300,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
   );
   const attachmentsForPart = useCallback(
     (part: TMessageContentParts): TAttachment[] | undefined => {
-      const matched = filterAttachmentsForPart(
-        attachmentMap[getToolCallId(part)],
-        getPartAgentId(part),
-        getPartStepId(part),
-        getSiblingStepIds(part, resolvedToolCallStepOwners),
-      );
+      const matched = acceptedAttachments(part, attachmentMap, resolvedToolCallStepOwners);
       /** A tool run inside a subagent saves its files under the child tool
        *  call id, which only the subagent call's transcript carries. */
       const nested = nestedAttachments.get(part);
@@ -603,43 +370,10 @@ const ContentPartsBody = memo(function ContentPartsBody({
         : groupActivityPhases(content, messageLaneGroups, foldsLiveTail),
     [nestedActivityPhase, content, messageLaneGroups, foldsLiveTail],
   );
-  /** Every file a phase's parts produced, in transcript order, deduplicated
-   *  across parts that share a tool call. */
+  /** Every file a phase's parts produced; hoisting makes its row the only surface for them. */
   const collectPhaseAttachments = useCallback(
-    (parts: ReadonlyArray<TMessageContentParts | undefined>): TAttachment[] | undefined => {
-      const collected: TAttachment[] = [];
-      /** Position of each identity already collected, so a repeat REPLACES it
-       *  in place. A tool that writes the same file twice emits two records
-       *  and the later one carries the fresher lifecycle fields — status,
-       *  preview text, generated contents — which is why the attachment
-       *  renderer gives duplicates distinct keys and lets the latest win.
-       *  Hoisting makes this row the only surface for those files, so keeping
-       *  the first-seen record would pin a stale one on screen. */
-      const positionOf = new Map<string, number>();
-      for (const part of parts) {
-        if (part == null) {
-          continue;
-        }
-        for (const attachment of attachmentsForPart(part) ?? []) {
-          /** No identity means nothing to compare against — two rows that
-           *  cannot be told apart are two rows, so both are kept rather than
-           *  silently collapsed onto whichever arrived first. */
-          const identity = attachmentRenderKey(attachment);
-          if (identity == null) {
-            collected.push(attachment);
-            continue;
-          }
-          const at = positionOf.get(identity);
-          if (at != null) {
-            collected[at] = attachment;
-            continue;
-          }
-          positionOf.set(identity, collected.length);
-          collected.push(attachment);
-        }
-      }
-      return collected.length > 0 ? collected : undefined;
-    },
+    (parts: ReadonlyArray<TMessageContentParts | undefined>) =>
+      collectPartAttachments(parts, attachmentsForPart),
     [attachmentsForPart],
   );
   const inheritedHiddenFiles = useContext(HiddenAttachmentsContext);
@@ -668,7 +402,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       );
       if (!files?.length) continue;
       const row: FileRow = {
-        key: `files-${mediaScope}-${getToolCallId(part)}-${getPartKeyIndex(part, absoluteIndexAt(index))}`,
+        key: `files-${mediaScope}-${partToolCallId(part)}-${getPartKeyIndex(part, absoluteIndexAt(index))}`,
         files: [],
         source: attachmentsForPart(part) ?? files,
       };
@@ -948,23 +682,12 @@ const ContentPartsBody = memo(function ContentPartsBody({
     return parts;
   }, [absoluteIndexAt, content]);
 
-  const resolvedToolGroupOccurrences = useMemo(() => {
-    if (toolGroupOccurrenceByIndex != null) {
-      return toolGroupOccurrenceByIndex;
-    }
-    const occurrences = new Map<number, number>();
-    const counts = new Map<string, number>();
-    for (const group of groupSequentialToolCalls(sequentialParts)) {
-      if (group.type === 'single') {
-        continue;
-      }
-      const baseGroupId = getToolGroupId(group.parts, fallbackScope);
-      const occurrence = (counts.get(baseGroupId) ?? 0) + 1;
-      counts.set(baseGroupId, occurrence);
-      occurrences.set(getToolGroupAnchorIndex(group.parts), occurrence);
-    }
-    return occurrences;
-  }, [toolGroupOccurrenceByIndex, sequentialParts, fallbackScope]);
+  const resolvedToolGroupOccurrences = useMemo(
+    () =>
+      toolGroupOccurrenceByIndex ??
+      toolGroupOccurrences(groupSequentialToolCalls(sequentialParts), fallbackScope),
+    [toolGroupOccurrenceByIndex, sequentialParts, fallbackScope],
+  );
 
   const groupParts = useCallback(
     (parts: PartWithIndex[]) => {
@@ -972,9 +695,8 @@ const ContentPartsBody = memo(function ContentPartsBody({
         if (group.type === 'single') {
           return group;
         }
-        const baseGroupId = getToolGroupId(group.parts, fallbackScope);
-        const occurrence =
-          resolvedToolGroupOccurrences.get(getToolGroupAnchorIndex(group.parts)) ?? 1;
+        const baseGroupId = toolGroupId(group.parts, fallbackScope);
+        const occurrence = resolvedToolGroupOccurrences.get(toolGroupAnchor(group.parts)) ?? 1;
         const groupId = occurrence === 1 ? baseGroupId : `${baseGroupId}:occurrence:${occurrence}`;
         /** Collected even when a parent phase hoists the files: the header still
          *  reads them for the sites a web search visited. */
@@ -1140,14 +862,14 @@ const ContentPartsBody = memo(function ContentPartsBody({
     /** Stable render identity for a phase card. See the key comment below.
      *
      *  Anchored to the first TOOL CALL, not the span's first part, for the
-     *  reason `getToolGroupId` gives: an empty leading TEXT or THINK is
+     *  reason `toolGroupId` gives: an empty leading TEXT or THINK is
      *  DROPPED by `preserveStreamedContentIdentity` at settle, which would
      *  move a first-part anchor and remount the card exactly when the run
      *  finishes. The tool calls themselves do not move. */
     const phaseCardKey = (segment: Extract<ActivityPhaseSegment, { type: 'phase' }>): string => {
       for (let position = 0; position < segment.content.length; position += 1) {
         const part = segment.content[position];
-        const toolCallId = part == null ? '' : getToolCallId(part);
+        const toolCallId = part == null ? '' : partToolCallId(part);
         if (toolCallId) {
           const anchor = getPartKeyIndex(part, absoluteIndexAt(segment.contentIndices[position]));
           return `${toolCallId}:${anchor}`;
@@ -1157,7 +879,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
        *  reasoning-only, or children compacted away. A bare position cannot
        *  separate two siblings whose cards start at the same index, so this
        *  branch carries the message-change counter, exactly as
-       *  `getToolGroupId` does for its own id-less fallback. The tradeoff is
+       *  `toolGroupId` does for its own id-less fallback. The tradeoff is
        *  the same one accepted there: the counter also advances at settle, so
        *  these cards remount then. */
       const position = segment.hasContent
@@ -1282,7 +1004,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
        *  content-derived, and the provider id is what separates two
        *  siblings whose cards start at the same index. Pairing them also
        *  keeps repeated provider ids in one message apart, the way
-       *  `getToolGroupId` uses an occurrence counter. */
+       *  `toolGroupId` uses an occurrence counter. */
       const cardKey = stableCardKey(segment);
       const labelText = getActivityLabelText(segment.labelPart);
       const segmentIndices = segment.contentIndices.map(absoluteIndexAt);
@@ -1481,79 +1203,17 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
     isSubmitting,
     renderOwnerId,
   } = props;
-  const appRenderIdentity = useRef<{
-    messageId: string;
-    conversationId: string | null | undefined;
-    ownerId: string | undefined;
-    isLatestMessage: boolean;
-    isSubmitting: boolean;
-    scope: number;
-  } | null>(null);
-  const previousIdentity = appRenderIdentity.current;
-  const nextIsLatest = isLatestMessage === true;
-  /** `clientQueueParentMessageId` follows one response through the local-user → created-user
-   *  re-key and disappears when `finalHandler` installs the durable response. It is not unique
-   *  across regenerations, so only an already-active latest response may use it to retain scope. */
-  const startsAnotherRun = previousIdentity?.isSubmitting === false && isSubmitting;
-  const continuesConversation =
-    previousIdentity?.conversationId === conversationId ||
-    (previousIdentity?.conversationId === Constants.NEW_CONVO &&
-      conversationId != null &&
-      conversationId !== Constants.NEW_CONVO);
-  const exactIdentity =
-    previousIdentity?.messageId === messageId &&
-    previousIdentity.conversationId === conversationId &&
-    (previousIdentity.ownerId === renderOwnerId ||
-      previousIdentity.ownerId == null ||
-      renderOwnerId == null);
-  const createdIdentityHydration =
-    !isCreatedByUser &&
-    previousIdentity?.isSubmitting === true &&
-    isSubmitting &&
-    previousIdentity.isLatestMessage &&
-    nextIsLatest &&
-    continuesConversation &&
-    previousIdentity.ownerId != null &&
-    previousIdentity.ownerId === renderOwnerId &&
-    previousIdentity.messageId.endsWith('_');
-  const durableIdentityHydration =
-    !isCreatedByUser &&
-    previousIdentity?.isSubmitting === true &&
-    !isSubmitting &&
-    previousIdentity.isLatestMessage &&
-    nextIsLatest &&
-    continuesConversation &&
-    previousIdentity.ownerId != null &&
-    (renderOwnerId == null || renderOwnerId === previousIdentity.ownerId) &&
-    !messageId.endsWith('_');
-  const continuesResponse =
-    !startsAnotherRun && (exactIdentity || createdIdentityHydration || durableIdentityHydration);
-  if (previousIdentity == null) {
-    appRenderIdentity.current = {
-      messageId,
-      conversationId,
-      ownerId: renderOwnerId,
-      isLatestMessage: nextIsLatest,
-      isSubmitting,
-      scope: 0,
-    };
-  } else if (!continuesResponse) {
-    appRenderIdentity.current = {
-      messageId,
-      conversationId,
-      ownerId: renderOwnerId,
-      isLatestMessage: nextIsLatest,
-      isSubmitting,
-      scope: previousIdentity.scope + 1,
-    };
-  } else {
-    previousIdentity.messageId = messageId;
-    previousIdentity.conversationId = conversationId;
-    previousIdentity.ownerId = renderOwnerId ?? previousIdentity.ownerId;
-    previousIdentity.isLatestMessage = nextIsLatest;
-    previousIdentity.isSubmitting = isSubmitting;
-  }
-  const appRenderScope = appRenderIdentity.current!.scope;
+  /** One mounted response, retained across its optimistic and durable message ids. */
+  const appRenderIdentity = useRef<RenderIdentity | null>(null);
+  appRenderIdentity.current = advanceRenderIdentity(appRenderIdentity.current, {
+    messageId,
+    conversationId,
+    ownerId: renderOwnerId,
+    isLatestMessage: isLatestMessage === true,
+    isSubmitting,
+    isCreatedByUser,
+  });
+  const appRenderScope = appRenderIdentity.current.scope;
   const liveSubagentToolCalls = useLiveSubagentToolCalls(
     props.content,
     attachments,
@@ -1565,25 +1225,24 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
     () => partitionWorkspaceChanges(attachments).inlineAttachments,
     [attachments],
   );
+  /** Built once for the message: every body it splits into, and each routing pass below, reads
+   *  the same owners instead of walking the content again. */
+  const owners = useMemo(() => toolCallStepOwners(props.content), [props.content]);
+  const inlineByToolCall = useMemo(() => mapAttachments(inlineAttachments), [inlineAttachments]);
   const liveRouting = useMemo(
-    () => routeNestedAttachments(props.content, inlineAttachments, liveSubagentToolCalls),
-    [props.content, inlineAttachments, liveSubagentToolCalls],
+    () =>
+      routeNestedAttachments(
+        props.content,
+        inlineAttachments,
+        liveSubagentToolCalls,
+        inlineByToolCall,
+        owners,
+      ),
+    [props.content, inlineAttachments, liveSubagentToolCalls, inlineByToolCall, owners],
   );
   /** A file no part owns under its full scope may belong to a child call of a previewed subagent
    *  run whose transcript was left out, such as one a background task delivered after this load. */
-  const filesInDoubt = useMemo(() => {
-    const files = new Map<string, SubagentAttachmentFile>();
-    for (const file of liveRouting.inDoubt) {
-      const { toolCallId, agentId, stepId } = file as SubagentAttachmentFile;
-      const entry = {
-        toolCallId,
-        ...(agentId != null ? { agentId } : {}),
-        ...(stepId != null ? { stepId } : {}),
-      };
-      files.set(JSON.stringify(entry), entry);
-    }
-    return [...files.keys()].sort().map((key) => files.get(key) as SubagentAttachmentFile);
-  }, [liveRouting]);
+  const filesInDoubt = useMemo(() => attachmentScopes(liveRouting.inDoubt), [liveRouting]);
   const storedSubagentHints = useStoredSubagentHints(
     props.content,
     filesInDoubt,
@@ -1600,18 +1259,36 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
     for (const [index, stored] of storedSubagentHints) {
       calls.set(index, [...(calls.get(index) ?? []), ...stored]);
     }
-    return routeNestedAttachments(props.content, inlineAttachments, calls).nested;
-  }, [props.content, inlineAttachments, liveRouting, liveSubagentToolCalls, storedSubagentHints]);
+    return routeNestedAttachments(props.content, inlineAttachments, calls, inlineByToolCall, owners)
+      .nested;
+  }, [
+    props.content,
+    inlineAttachments,
+    liveRouting,
+    liveSubagentToolCalls,
+    storedSubagentHints,
+    inlineByToolCall,
+    owners,
+  ]);
+  const byToolCall = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
   const messageContent = useMemo(
     () =>
       collectMessageContent(
         props.content,
-        attachments,
+        byToolCall,
+        owners,
         nestedAttachments,
         props.contentIndexOffset,
         props.contentIndices,
       ),
-    [props.content, attachments, nestedAttachments, props.contentIndexOffset, props.contentIndices],
+    [
+      props.content,
+      byToolCall,
+      owners,
+      nestedAttachments,
+      props.contentIndexOffset,
+      props.contentIndices,
+    ],
   );
   const suppressedAppAttachments = useMemo<ReadonlySet<TAttachment>>(
     () => new Set(messageContent.attachments),
@@ -1659,7 +1336,6 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
   const reasoningDisclosures = reasoningState.current.disclosures;
   const appContent = useMemo(() => {
     if (!appsEnabled || messageContent.atIndex.size === 0 || props.edit) return null;
-    const owners = buildToolCallStepOwners(props.content);
     const lanes = parallelLaneGroups(props.content);
     const { inlineAttachments, workspaceChanges } = partitionWorkspaceChanges(attachments);
     const resourcesByAttachment = new Map<
@@ -1719,7 +1395,15 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
     renderSlice(props.content?.length ?? 0);
     rows.push(<WorkspaceChanges key="workspace" attachments={workspaceChanges} />);
     return rows;
-  }, [props, attachments, messageContent, suppressedAppAttachments, appRenderScope, appsEnabled]);
+  }, [
+    props,
+    attachments,
+    messageContent,
+    suppressedAppAttachments,
+    appRenderScope,
+    appsEnabled,
+    owners,
+  ]);
   /** Published once for the whole message so every markdown block below —
    *  including the ones nested inside phase cards — resolves a bare
    *  `![DTI](5_dti.png)` against the files this turn actually produced.
@@ -1753,6 +1437,7 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
                       {...props}
                       mediaScope={appRenderScope}
                       resumeAuthors={props.resumeAuthors ?? messageContent.resumeAuthors}
+                      toolCallStepOwnersById={owners}
                     />
                   </SoleToolContext.Provider>
                 </MCPAppSuppressionContext.Provider>
