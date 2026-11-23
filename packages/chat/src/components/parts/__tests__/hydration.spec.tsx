@@ -1,33 +1,66 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { ContentTypes, dataService } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ContentTypes } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import type {
+  ToolCallPartParams,
+  TMessageContentParts,
+  ToolCallPartResponse,
+} from 'librechat-data-provider';
+import type { ToolDisclosures } from '../../../react/parts/disclosure';
+import type { ToolContentQuery } from '../../../react/host';
 import {
   SoleToolContext,
-  ToolContentQueryContext,
   useToolExpansion,
-  useToolContentPending,
   ToolDisclosureContext,
+  useToolContentPending,
+  ToolContentQueryContext,
   ToolDisclosureKeyContext,
-} from '@librechat/chat/react';
-import type { TMessageContentParts, ToolCallPartResponse } from 'librechat-data-provider';
-import type { ToolContentQuery, ToolDisclosures } from '@librechat/chat/react';
+} from '../../../react/parts/disclosure';
 import { isPreviewedToolCallPart, PreviewedToolCallPart, withFullToolCall } from '../hydration';
-import { MessageContext } from '~/Providers';
-
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('librechat-data-provider', () => {
-  const actual = jest.requireActual('librechat-data-provider');
-  return { ...actual, dataService: { ...actual.dataService, getToolCallPart: jest.fn() } };
-});
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { MessagePartsHostProvider } from '../../../react/host';
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
   Spinner: (props: React.HTMLAttributes<HTMLSpanElement>) => <span {...props} />,
 }));
+
+/** The host's request for one stored tool call. */
+const getToolCallPart = jest.fn<Promise<ToolCallPartResponse>, [ToolCallPartParams]>();
+
+/** A host's query for it, keyed the way LibreChat's is: by the call's identity and its revision. */
+const useToolCallPart: ToolContentQuery = (params, config, revision = '') =>
+  useQuery<ToolCallPartResponse>(
+    [
+      'toolCallPart',
+      params.conversationId,
+      params.messageId,
+      params.toolCallId ?? '',
+      params.stepId ?? '',
+      params.agentId ?? '',
+      revision,
+    ],
+    () => getToolCallPart(params),
+    { staleTime: Infinity, retry: 1, refetchOnMount: false, ...config },
+  );
+
+/** The message a part is drawn in, with a host that can load stored tool calls. */
+function InMessage({ partIndex, children }: { partIndex: number; children: React.ReactNode }) {
+  const host = React.useMemo(
+    () =>
+      createMessagePartsHost({
+        useToolCallPart,
+        useMessage: () => ({ messageId: 'msg-1', conversationId: 'convo-1', partIndex }),
+      }),
+    [partIndex],
+  );
+  return <MessagePartsHostProvider host={host}>{children}</MessagePartsHostProvider>;
+}
 
 const fullOutput = `stdout:\n${'full line\n'.repeat(200)}[exit code: 0]`;
 const fullArgs = JSON.stringify({ command: 'make', pad: 'p'.repeat(2_000) });
@@ -98,35 +131,29 @@ function renderPart(
   const disclosures: ToolDisclosures = new Map();
   const tree = (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot>
-        <MessageContext.Provider
-          value={{ messageId: 'msg-1', conversationId: 'convo-1', partIndex, isExpanded: true }}
-        >
-          <ToolDisclosureContext.Provider value={disclosures}>
-            <ToolDisclosureKeyContext.Provider value="call_1">
-              <SoleToolContext.Provider value={options.sole}>
-                <ToolContentQueryContext.Provider value={options.contentQuery}>
-                  {isPreviewedToolCallPart(part) ? (
-                    <PreviewedToolCallPart part={part}>
-                      {(rendered) => <Card part={rendered} />}
-                    </PreviewedToolCallPart>
-                  ) : (
-                    <Card part={part} />
-                  )}
-                </ToolContentQueryContext.Provider>
-              </SoleToolContext.Provider>
-            </ToolDisclosureKeyContext.Provider>
-          </ToolDisclosureContext.Provider>
-        </MessageContext.Provider>
-      </RecoilRoot>
+      <InMessage partIndex={partIndex}>
+        <ToolDisclosureContext.Provider value={disclosures}>
+          <ToolDisclosureKeyContext.Provider value="call_1">
+            <SoleToolContext.Provider value={options.sole}>
+              <ToolContentQueryContext.Provider value={options.contentQuery}>
+                {isPreviewedToolCallPart(part) ? (
+                  <PreviewedToolCallPart part={part}>
+                    {(rendered) => <Card part={rendered} />}
+                  </PreviewedToolCallPart>
+                ) : (
+                  <Card part={part} />
+                )}
+              </ToolContentQueryContext.Provider>
+            </SoleToolContext.Provider>
+          </ToolDisclosureKeyContext.Provider>
+        </ToolDisclosureContext.Provider>
+      </InMessage>
     </QueryClientProvider>
   );
   return { ...render(tree), queryClient };
 }
 
 describe('previewed tool-call parts', () => {
-  const getToolCallPart = dataService.getToolCallPart as jest.Mock;
-
   beforeEach(() => {
     getToolCallPart.mockReset();
   });
@@ -212,8 +239,6 @@ describe('previewed tool-call parts', () => {
 });
 
 describe('previewed tool-call parts after the stored call changes', () => {
-  const getToolCallPart = dataService.getToolCallPart as jest.Mock;
-
   beforeEach(() => {
     getToolCallPart.mockReset();
   });
@@ -226,26 +251,17 @@ describe('previewed tool-call parts after the stored call changes', () => {
     const disclosures: ToolDisclosures = new Map();
     const tree = (part: TMessageContentParts) => (
       <QueryClientProvider client={queryClient}>
-        <RecoilRoot>
-          <MessageContext.Provider
-            value={{
-              messageId: 'msg-1',
-              conversationId: 'convo-1',
-              partIndex: 2,
-              isExpanded: true,
-            }}
-          >
-            <ToolDisclosureContext.Provider value={disclosures}>
-              <ToolDisclosureKeyContext.Provider value="call_1">
-                <SoleToolContext.Provider value={true}>
-                  <PreviewedToolCallPart part={part as never}>
-                    {(rendered) => <Card part={rendered} />}
-                  </PreviewedToolCallPart>
-                </SoleToolContext.Provider>
-              </ToolDisclosureKeyContext.Provider>
-            </ToolDisclosureContext.Provider>
-          </MessageContext.Provider>
-        </RecoilRoot>
+        <InMessage partIndex={2}>
+          <ToolDisclosureContext.Provider value={disclosures}>
+            <ToolDisclosureKeyContext.Provider value="call_1">
+              <SoleToolContext.Provider value={true}>
+                <PreviewedToolCallPart part={part as never}>
+                  {(rendered) => <Card part={rendered} />}
+                </PreviewedToolCallPart>
+              </SoleToolContext.Provider>
+            </ToolDisclosureKeyContext.Provider>
+          </ToolDisclosureContext.Provider>
+        </InMessage>
       </QueryClientProvider>
     );
     const { rerender } = render(tree(previewPart()));
@@ -294,8 +310,6 @@ describe('withFullToolCall', () => {
 });
 
 describe('task-authorized tool preview loading', () => {
-  const getToolCallPart = dataService.getToolCallPart as jest.Mock;
-
   beforeEach(() => getToolCallPart.mockReset());
 
   it('keeps a view-only nested preview from requesting private child messages', async () => {
@@ -321,5 +335,37 @@ describe('task-authorized tool preview loading', () => {
       expect.objectContaining({ enabled: false }),
       expect.any(String),
     );
+  });
+});
+
+describe('a previewed tool call under a host that cannot load stored calls', () => {
+  beforeEach(() => getToolCallPart.mockReset());
+
+  it('says the content could not be loaded, with nothing to retry', () => {
+    const disclosures: ToolDisclosures = new Map();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MessagePartsHostProvider
+          host={createMessagePartsHost({
+            useMessage: () => ({ messageId: 'msg-1', conversationId: 'convo-1', partIndex: 2 }),
+          })}
+        >
+          <ToolDisclosureContext.Provider value={disclosures}>
+            <ToolDisclosureKeyContext.Provider value="call_1">
+              <PreviewedToolCallPart part={previewPart() as never}>
+                {(rendered) => <Card part={rendered} />}
+              </PreviewedToolCallPart>
+            </ToolDisclosureKeyContext.Provider>
+          </ToolDisclosureContext.Provider>
+        </MessagePartsHostProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('toggle'));
+    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_tool_content_error');
+    expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('output')).toHaveTextContent('…');
+    expect(getToolCallPart).not.toHaveBeenCalled();
   });
 });

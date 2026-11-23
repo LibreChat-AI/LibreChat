@@ -42,6 +42,7 @@ import {
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
+import { useToolCallPartQuery } from '~/data-provider/Messages/queries';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
@@ -218,6 +219,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   useFileDownload: useAppFileDownload,
   onBoundaryError: (boundary, error) => reportBoundaryError(boundary, error),
   markdownExtensions: getAppMarkdownExtensions,
+  useToolCallPart: useToolCallPartQuery,
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

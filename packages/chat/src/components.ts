@@ -2,6 +2,11 @@
 export { Part } from './components/Part';
 export { partRenderers, extendPartRenderers } from './components/partRenderers';
 export { ParallelColumns, ParallelContentRenderer } from './components/Parallel';
+export {
+  withFullToolCall,
+  PreviewedToolCallPart,
+  isPreviewedToolCallPart,
+} from './components/parts/hydration';
 export type {
   ParallelColumnsProps,
   ParallelColumnHeaderProps,
