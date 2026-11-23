@@ -35,6 +35,7 @@ const server = config.webServer.find(({ command }) =>
 assert.ok(server, 'LibreChat webServer must exist');
 assert.equal(server.url, ${JSON.stringify(new URL('/readyz', address).href)});
 assert.equal(server.reuseExistingServer, false);
+assert.equal(server.env.E2E_BASE_URL, ${JSON.stringify(address)});
 assert.equal(config.use.baseURL, ${JSON.stringify(address)});
 assert.notEqual(new URL(config.use.baseURL).port, '3080');
 assert.equal(process.env.PORT, ${JSON.stringify(new URL(address).port)});

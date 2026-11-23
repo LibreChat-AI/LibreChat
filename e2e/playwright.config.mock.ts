@@ -721,8 +721,10 @@ export default defineConfig({
       cwd: rootPath,
       // Only the one-replica harness may assert the scheduler's single-process topology.
       // The two-replica MCP suite must leave scheduled writes disabled.
+      // The replica proxy reads the address itself, so it gets the resolved one.
       env: {
         ...process.env,
+        E2E_BASE_URL: baseURL,
         ...(replicaCount === 1 ? { SCHEDULES_SINGLE_PROCESS: 'true' } : {}),
       },
       url: new URL('/readyz', baseURL).href,
