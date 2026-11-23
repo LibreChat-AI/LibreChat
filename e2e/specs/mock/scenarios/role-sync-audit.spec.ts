@@ -30,17 +30,20 @@ type Sync = Parameters<typeof updateInterfacePermissions>[0];
 const tenantId = `e2e-role-sync-${randomUUID()}`;
 let methods: AllMethods;
 
-/** A role cache whose writes can be made to fail, as a Redis outage would. */
+/** A serializing role cache, as Redis is, whose writes can be made to fail. */
 function createRoleCache() {
-  const entries = new Map<string, unknown>();
+  const entries = new Map<string, string>();
   const state = { failWrites: false };
   const store: CacheStore = {
-    get: async (key) => structuredClone(entries.get(key)),
+    get: async (key) => {
+      const entry = entries.get(key);
+      return entry === undefined ? undefined : JSON.parse(entry);
+    },
     set: async (key, value) => {
       if (state.failWrites) {
         throw new Error('role cache unavailable');
       }
-      entries.set(key, structuredClone(value));
+      entries.set(key, JSON.stringify(value));
       return true;
     },
   };
