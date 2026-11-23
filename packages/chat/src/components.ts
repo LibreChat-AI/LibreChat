@@ -1,6 +1,7 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
 export { ContentParts } from './components/ContentParts';
+export { contentPartsRenderer } from './components/contentRenderer';
 export type {
   ContentEditProps,
   ContentPartsProps,

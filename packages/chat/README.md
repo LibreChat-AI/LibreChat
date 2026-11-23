@@ -306,6 +306,16 @@ same for the life of the tree (two of its members are hooks):
 | `renderColumnHeader`         | The header of one column                                           | Columns have no header                      |
 | `useSubagentAttachmentCalls` | A hook that asks which subagent transcript holds a late file       | The file stays with the call matching by id |
 
+The package's own surfaces that nest a message, such as a subagent's transcript, draw it through
+the host's `renderContentParts`. A host that leaves it out gets `ContentParts` with no slots
+there. To give those surfaces the same slots, build the member from them:
+
+```tsx
+import { contentPartsRenderer } from '@librechat/chat/components';
+
+const host = { ...rest, renderContentParts: contentPartsRenderer(slots) };
+```
+
 ## What the app supplies
 
 - **The renderers the package does not have.** A part asks the host providers in

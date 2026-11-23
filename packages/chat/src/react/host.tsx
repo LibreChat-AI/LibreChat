@@ -231,8 +231,12 @@ export interface MessagePartsHost {
   useSmoothStreaming: () => boolean;
   /** An agent the viewer can see, by id. */
   useAgent: (agentId: string) => AgentDisplay | undefined;
-  /** Draws a message's content parts with the app's renderer. */
-  renderContentParts: (props: ContentPartsSlotProps) => ReactNode;
+  /**
+   * Draws a message's content parts, for a host that adds to the package's `ContentParts`; build
+   * it with `contentPartsRenderer(slots)`. Without it the package's renderer draws them with no
+   * slots.
+   */
+  renderContentParts?: (props: ContentPartsSlotProps) => ReactNode;
   /** Renders an agent's avatar; `undefined` when the agent is unknown. */
   renderAgentIcon: (agent: AgentDisplay | undefined) => ReactNode;
   /** Renders an agent's bare inline avatar, without the message icon around it. */
