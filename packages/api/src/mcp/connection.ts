@@ -34,7 +34,9 @@ import {
   isMCPTransportAuthenticationError,
   MCPTransportAuthenticationError,
   isStandaloneSseConflict,
+  isAuthorizationRequired,
   isMCPInitializationError,
+  MCPOAuthDeferredError,
 } from './errors';
 import {
   withMCPRequestSignal,
@@ -2448,10 +2450,12 @@ export class MCPConnection extends EventEmitter {
               `${this.getLogPrefix()} OAuth handled successfully, connection will be retried`,
             );
             return;
-          } catch {
+          } catch (handlingError) {
             // OAuth failed or timed out
             this.oauthRequired = false;
-            logger.error(`${this.getLogPrefix()} OAuth handling failed`);
+            logger[handlingError instanceof MCPOAuthDeferredError ? 'warn' : 'error'](
+              `${this.getLogPrefix()} OAuth handling failed`,
+            );
             // Re-throw the original authentication error
             throw error;
           }
@@ -2568,7 +2572,9 @@ export class MCPConnection extends EventEmitter {
         throw new Error('Connection not established');
       }
     } catch (error) {
-      logger.error(`${this.getLogPrefix()} Connection failed`);
+      logger[isAuthorizationRequired(error) ? 'warn' : 'error'](
+        `${this.getLogPrefix()} Connection failed`,
+      );
       throw error;
     }
   }
