@@ -1,74 +1,53 @@
-import { useEffect, useCallback, useSyncExternalStore } from 'react';
+import { useEffect } from 'react';
+import { atom, useAtomValue, useStore } from 'jotai';
 
 /**
  * Whether shift is held, tracked once for the page however many components ask: three window
- * listeners while any of them is mounted, in place of three per component.
+ * listeners for as long as anything keeps the atom mounted, in place of three per component.
  */
-let held = false;
-let users = 0;
-const readers = new Set<() => void>();
+const shiftAtom = atom(false);
 
-function set(next: boolean): void {
-  if (held === next) {
-    return;
-  }
-  held = next;
-  for (const notify of readers) {
-    notify();
-  }
-}
-
-function handleKeyDown(e: KeyboardEvent): void {
-  // Only set shift if Alt is not pressed (Alt+Shift is used for a11y)
-  if (e.key === 'Shift' && !e.altKey) {
-    set(true);
-  }
-  // If Alt is pressed while shift is held, reset shift state
-  if (e.key === 'Alt' && e.shiftKey) {
-    set(false);
-  }
-}
-
-function handleKeyUp(e: KeyboardEvent): void {
-  if (e.key === 'Shift') {
-    set(false);
-  }
-}
-
-// Reset shift state when window loses focus
-function handleBlur(): void {
+shiftAtom.onMount = (set) => {
+  /** The key may have been released while nothing listened. */
   set(false);
-}
 
-function track(): () => void {
-  users += 1;
-  if (users === 1) {
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('blur', handleBlur);
-  }
-  return () => {
-    users -= 1;
-    if (users === 0) {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('blur', handleBlur);
-      /** The key may be released while nothing listens. */
-      held = false;
+  const handleKeyDown = (e: KeyboardEvent) => {
+    // Only set shift if Alt is not pressed (Alt+Shift is used for a11y)
+    if (e.key === 'Shift' && !e.altKey) {
+      set(true);
+    }
+    // If Alt is pressed while shift is held, reset shift state
+    if (e.key === 'Alt' && e.shiftKey) {
+      set(false);
     }
   };
-}
 
-const up = (): boolean => false;
-const read = (): boolean => held;
-const none = (): void => {};
-
-function subscribe(notify: () => void): () => void {
-  readers.add(notify);
-  return () => {
-    readers.delete(notify);
+  const handleKeyUp = (e: KeyboardEvent) => {
+    if (e.key === 'Shift') {
+      set(false);
+    }
   };
-}
+
+  // Reset shift state when window loses focus
+  const handleBlur = () => {
+    set(false);
+  };
+
+  window.addEventListener('keydown', handleKeyDown);
+  window.addEventListener('keyup', handleKeyUp);
+  window.addEventListener('blur', handleBlur);
+
+  return () => {
+    window.removeEventListener('keydown', handleKeyDown);
+    window.removeEventListener('keyup', handleKeyUp);
+    window.removeEventListener('blur', handleBlur);
+  };
+};
+
+/** What a caller that is not enabled reads: the key up, and never a change. */
+const upAtom = atom(() => false);
+
+const ignore = (): void => {};
 
 /**
  * Hook to track whether the shift key is currently being held down.
@@ -82,11 +61,8 @@ function subscribe(notify: () => void): () => void {
  * @returns boolean indicating if shift key is pressed (without Alt)
  */
 export default function useShiftKey(enabled = true): boolean {
-  useEffect(track, []);
-  const isShiftHeld = useSyncExternalStore(
-    useCallback((notify: () => void) => (enabled ? subscribe(notify) : none), [enabled]),
-    enabled ? read : up,
-    up,
-  );
-  return isShiftHeld;
+  const store = useStore();
+  /** Every caller keeps the key tracked, enabled or not; only an enabled one reads it. */
+  useEffect(() => store.sub(shiftAtom, ignore), [store]);
+  return useAtomValue(enabled ? shiftAtom : upAtom);
 }
