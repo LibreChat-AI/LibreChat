@@ -83,6 +83,7 @@ const { connectDb, indexSync } = require('~/db');
 const {
   updateAccessPermissions,
   sweepOrphanedPreviews,
+  getPartitionRole,
   getRoleByName,
   seedDatabase,
   initializeFavorites,
@@ -327,6 +328,7 @@ const startServer = async () => {
       getRoleByName,
       updateAccessPermissions,
       recordAuditEntry,
+      getPartitionRole,
     });
   });
 
