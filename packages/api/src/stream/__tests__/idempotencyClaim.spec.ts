@@ -1033,6 +1033,46 @@ describe('GenerationJobManager start-generation claim', () => {
     },
   );
 
+  it('keeps the request a duplicate when the claim of a retired generation cannot be released', async () => {
+    await manager.destroy();
+    store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const transport = new InMemoryEventTransport() as InMemoryEventTransport & IEventTransport;
+    transport.emitReplacedDoneConfirmed = jest
+      .fn()
+      .mockRejectedValue(new Error('simulated Redis terminal publication failure'));
+    manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+    manager.initialize();
+
+    const streamId = 'stream-unexposed-release-failure';
+    const clientRequestId = 'req-unexposed-release-failure';
+    await manager.createJob(streamId, 'user-1', streamId, {
+      initialMetadata: { generationProtocolVersion: 2 },
+    });
+    const claim = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+    const releaseSpy = jest
+      .spyOn(store, 'releaseIdempotencyKey')
+      .mockRejectedValueOnce(new Error('simulated claim release failure'));
+
+    await expect(
+      manager.createJob(streamId, 'user-1', streamId, {
+        idempotencyClientRequestId: clientRequestId,
+        idempotencyClaimToken: claim.existing!.claimToken,
+        initialMetadata: { generationProtocolVersion: 2 },
+      }),
+    ).rejects.toThrow('predecessor handoff could not be confirmed');
+
+    // The legacy key is left alone once the primary one could not be released.
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    const retired = await store.getJob(streamId);
+    expect(retired).toMatchObject({ status: 'error', idempotencyClientRequestId: clientRequestId });
+    const retry = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+    expect(retry).toMatchObject({
+      claimed: false,
+      existing: { claimToken: claim.existing!.claimToken, startedAt: retired!.createdAt },
+    });
+  });
+
   it('self-fences a provider when a missed replacement abort makes its Redis append stale', async () => {
     await manager.destroy();
     store = new InMemoryJobStore({ ttlAfterComplete: 0 });
