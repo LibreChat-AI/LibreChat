@@ -213,7 +213,7 @@ const baseEnv = {
     ? {
         E2E_MCP_APPS: 'true',
         MCP_SANDBOX_FRAME_ANCESTORS:
-          process.env.MCP_SANDBOX_FRAME_ANCESTORS ?? 'http://127.0.0.1:3080',
+          process.env.MCP_SANDBOX_FRAME_ANCESTORS ?? 'http://127.0.0.1:3180',
       }
     : {}),
   /** The Assistants runtime uses the OpenAI SDK directly, outside the agents run hook. */
@@ -260,10 +260,36 @@ const preservedCredentialEnvKeys = new Set([
  */
 function writeRuntimeMockConfig() {
   const template = fs.readFileSync(configTemplatePath, 'utf8');
+  // Keep this URL out of the other substitutions when the override uses another fixture's default port.
+  const httpMcpPlaceholder = '__E2E_HTTP_MCP_URL__';
   let config =
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  config = config.replace('http://127.0.0.1:8765/mcp', httpMcpPlaceholder);
+  if (process.env.E2E_MCP_CONNECTION_STATUS === 'true') {
+    config = config.replace(
+      '  allowedDomains:\n',
+      '  allowedDomains:\n    - http://127.0.0.1:28769\n',
+    );
+    config = config.replace(
+      'mcpServers:\n',
+      `mcpServers:
+  e2e-status:
+    type: streamable-http
+    url: http://127.0.0.1:28769/mcp
+    requiresOAuth: false
+    startup: false
+    initTimeout: 1000
+    timeout: 1000
+    headers:
+      Authorization: 'Bearer e2e-status-token'
+      X-E2E-User: '{{LIBRECHAT_USER_ID}}'
+    title: E2E Connection State
+    description: Controlled MCP connection-attempt fixture.
+`,
+    );
+  }
   config = config.replace(
     '  agents:\n',
     `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,
@@ -408,6 +434,7 @@ function writeRuntimeMockConfig() {
   if (MCP_OAUTH_PORT !== '8767') {
     config = config.split('127.0.0.1:8767').join(`127.0.0.1:${MCP_OAUTH_PORT}`);
   }
+  config = config.replace(httpMcpPlaceholder, `http://127.0.0.1:${MCP_HTTP_PORT}/mcp`);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, config);
   if (enableDynamicMcp) {
@@ -694,11 +721,13 @@ export default defineConfig({
       cwd: rootPath,
       // Only the one-replica harness may assert the scheduler's single-process topology.
       // The two-replica MCP suite must leave scheduled writes disabled.
+      // The replica proxy reads the address itself, so it gets the resolved one.
       env: {
         ...process.env,
+        E2E_BASE_URL: baseURL,
         ...(replicaCount === 1 ? { SCHEDULES_SINGLE_PROCESS: 'true' } : {}),
       },
-      url: baseURL,
+      url: new URL('/readyz', baseURL).href,
       stdout: 'pipe',
       ignoreHTTPSErrors: true,
       timeout: 120_000,

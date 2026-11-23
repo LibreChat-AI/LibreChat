@@ -49,10 +49,13 @@ Enable the opt-in recovery configuration below to reattach the same live Run and
 events without repeating execution. Approval resumes rebuild a
 fresh worker Run against host-owned checkpoints, without sharing database credentials.
 
-Remote runtimes execute their own operator-installed tools. The bridge deliberately does not
-forward host provider credentials, MCP tokens, tool registries, or arbitrary host tool-execution
-requests. Configure domain data access inside the trusted worker and authorize it using the
-signed caller identity. Host policy hooks still gate SDK tool execution.
+Remote runtimes can execute their own operator-installed tools and the saved root agent's
+authorized host schema tools. Install `input.hostTools.toolDefinitions` on the SDK agent as the
+examples do; the supplied SDK handler dispatches those tools on the host. Provider credentials
+and MCP tokens remain host-owned. Configure worker-owned domain access separately and authorize
+it using the signed caller identity. Host policy hooks still gate SDK tool execution.
+Host-tool capability 2 requires matching host and worker upgrades and propagates per-invocation
+cancellation without closing the run's socket; older versions fail before host-tool execution.
 
 ## Measuring transport overhead
 
@@ -67,9 +70,9 @@ Its test attachment also records send-to-approval and approval-to-visible-output
 
 This example validates the initial transport. It does **not** establish all main-chat features.
 Read the [parity matrix and rollout gates](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
-before enabling a product workflow. In particular, host model/PII protection blocks remote
-execution, and model/tool builder settings, files/artifacts, steering, nested usage/billing, and
-host tracing policies are not automatically inherited by the worker.
+before enabling a product workflow. Protected execution requires the opt-in host model and policy
+adapters. File transport is programmatic; native file/artifact activation, steering, nested
+usage/billing, and host tracing policies are not automatically inherited by the worker.
 
 ## Recovering a dropped host-worker connection
 
@@ -78,9 +81,9 @@ Enable `remote.recovery: {}` in the host registration, then start the example wi
 Both sides must run the new bridge version. The worker owns this Redis connection; it never
 receives the LibreChat database credentials. `SDK_RUNTIME_JOURNAL_PREFIX` separates deployments.
 
-The production API is `createRemoteSdkServer({recovery:{journal,maxDisconnectMs}, ...})`.
+The production API is `createRemoteSdkServer({recovery:{journal,maxDisconnectMs,ownerId}, ...})`.
 `createRedisRuntimeJournal(redis, limits)` accepts an operator-owned Redis-compatible `eval`
-client and explicit prefix, retention, lease, frame, byte and batch limits. The example values
+client (optionally `evalsha` to avoid resending Lua on every operation) and explicit prefix, retention, lease, frame, byte and batch limits. The example values
 are illustrative: choose retention and Redis persistence/replication for your data policy.
 The host YAML defaults are a 15-second disconnect window, 250-ms retry delay and 64-MiB
 request-local outgoing journal. Keep both sides' disconnect windows aligned and shorter than
@@ -92,8 +95,29 @@ A completed/paused terminal result is committed atomically with its terminal jou
 then published. It can replay after a worker restart. A restart of an **in-flight** graph instead
 replays committed output and fails safely once the old lease expires: arbitrary side effects
 cannot be resumed safely by retrying execution. Live reconnect requires routing to the same
-worker process. Host process restart adoption and cross-worker live execution migration are
+worker process. For a worker pool, set each worker's stable `SDK_RUNTIME_OWNER_ID` and configure
+operator-owned direct routes on the host:
+
+```yaml
+recovery:
+  routes:
+    worker-a: wss://worker-a.internal/sdk
+    worker-b: wss://worker-b.internal/sdk
+```
+
+The initial connection may use the pool URL. After its authenticated ready handshake, the host
+reconnects directly to that allowlisted owner, binding the owner ID in the signed reconnect claim.
+A worker cannot supply an arbitrary destination; missing routes, missing owner identities with a
+route map, and mismatched owners fail closed. Owner identities and routes must remain stable for
+the lifetime of a session. A route must identify one worker, not another balanced pool. Single-worker
+deployments can omit both the identity and map. Host process restart adoption and cross-worker live execution migration are
 not supported. The existing host checkpointer still supports explicit approval continuation.
+
+Recovery batches queued frames within the configured journal byte/frame limits, persists cumulative
+ACKs separately from control-frame dispatch, and uses EVALSHA with a NOSCRIPT-only fallback when
+supported. Writes still commit before publication; cancellation does not wait behind ACK writes.
+Final snapshots use bounded ordered chunks and an atomic terminal receipt, including offline
+completion/replay. The host's `maxBufferedBytes` bounds snapshot reassembly as well as queued traffic.
 
 Journal keys retain sensitive event/checkpoint data until their TTL; delivery acknowledgements
 do not delete history. Operators must restrict and encrypt Redis access, configure durability,
@@ -106,3 +130,65 @@ Run `npm run test:cache-integration:sdk --workspace=@librechat/api` against loca
 fault-injection tests, and the Redis Playwright lane's `remote-sdk-recovery.spec.ts` for a real
 LibreChat custom-graph approval, wire outage, reconnection and saved-history test. Set
 `SDK_RUNTIME_RECOVERY=true` for `benchmark.cjs` to include Redis journal overhead.
+
+## Protected provider-text benchmark
+
+With SDK 4.2.7 and this bridge on both sides, run
+`SDK_BENCHMARK_PROTECTION=true node examples/sdk-runtime/benchmark.cjs` against the
+example worker. Add `SDK_RUNTIME_RECOVERY=true` to include Redis recovery. Both
+local and remote executions use the same deterministic pass-through output policy;
+the remote path adds host inspection through the SDK contract. This benchmark does
+not implement a production PII detector or enable protected saved-agent chat.
+
+See [host provider-text services](../../docs/sdk/agents.md#host-provider-text-service)
+for admission ownership, encrypted journal payloads, and the remaining model/input
+policy guards. The existing factories retain `input.config`, including the new
+provider-text protection adapter, for both the minimal and custom-graph examples.
+
+## Host-owned model benchmark
+
+With SDK 4.2.8 and this bridge on both sides, start the example worker as above, then run:
+
+```bash
+SDK_BENCHMARK_HOST_MODEL=true node examples/sdk-runtime/benchmark.cjs
+```
+
+The model now executes in the host benchmark process. The separate worker still owns the custom
+plan/inspect/review/refine graph and its example tool. Both the local and remote runs use the same
+SDK host-model facade and deterministic model. Add `SDK_BENCHMARK_PROTECTION=true` for the existing
+text-policy path, and `SDK_RUNTIME_RECOVERY=true` for Redis recovery. These are benchmark options,
+not saved-agent rollout toggles. The minimal and complex factories both retain `input.hostModel`
+when supplied; neither needs a provider credential for a host-owned model.
+
+See [host model transport](../../docs/sdk/agents.md#host-model-transport) for streaming credit,
+encryption, cancellation, callback ownership, and the remaining builder/policy rollout gates.
+
+### Use the saved agent's host model
+
+Enable `endpoints.agents.sdkHostModels: {}` and `remote.hostModel: true` on the operator's
+runtime registration to select the saved agent's primary model and parameters. Both examples
+consume `input.agent.model` and retain `input.hostModel`; model credentials stay in LibreChat.
+The custom graph keeps its plan/review/refine nodes and uses the host-authorized tool schemas.
+This mode requires updated workers with `builderModel: 1` and, for initial persistence admission,
+`modelAdmission: 1`. Chat, Responses and OpenAI-compatible callers use native host input callbacks.
+Direct programmatic callers must supply those callbacks; local graph tools and provider fallbacks
+remain gated. Combining initial admission with explicit provider-text output protection requires
+`modelAdmissionWithProviderText: 1`, advertised
+only with SDK 4.2.9 invocation-context support. Upgrade separately deployed workers to SDK 4.2.9
+and this bridge version; older workers stay gated. See [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
+and [configuration](../../docs/sdk/agents.md#saved-agent-builder-models) before enabling it.
+
+## File transport example
+
+After building `@librechat/api`, run `node examples/sdk-runtime/files.cjs`. It launches its own
+separate worker process and runs a custom graph that reads an authorized host file, streams an
+uppercase transform into private staging, publishes it, and produces a normal SDK chat reply.
+The script verifies the digest and single publication, reports elapsed loopback time and SDK
+message events, then removes its temporary files. No model credentials are needed.
+
+The example explicitly supplies `createRemoteSdkRun({ hostServices: { files } })` with an SDK
+`createHostFileService` binding and authorized source descriptors. It does not activate files for
+stock Console/chat callers. Its temporary filesystem and in-memory receipts are test fixtures;
+production adapters still need native ACL/policy checks, durable retry reconciliation, attachment
+events, previews, retention, and authorized browser downloads. See the
+[host file transport contract](../../docs/sdk/agents.md#host-file-transport-sdk-4210).

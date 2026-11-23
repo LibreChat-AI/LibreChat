@@ -158,6 +158,7 @@ export type LegacyStreamServices = {
 
 /** The pane a set of event services writes for. */
 export type EventServicesParams = {
+  runIndex: number;
   setConversation?: ChatContract['setConversation'];
 };
 

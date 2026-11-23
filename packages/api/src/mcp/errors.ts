@@ -1,5 +1,5 @@
-import type { ScheduledMCPFailure } from '~/schedules/authorization/contract';
-import { failureFixtures } from '~/schedules/authorization/failures';
+import type { RunGrantFailure } from '~/agents/authority/contract';
+import { failureFixtures } from '~/agents/authority/failures';
 /**
  * MCP-specific error classes
  */
@@ -99,6 +99,23 @@ export function isOAuthAuthenticationError(error: unknown): boolean {
     message.includes('insufficient_scope') ||
     message.includes('authentication required') ||
     MISSING_AUTHORIZATION_PATTERN.test(message)
+  );
+}
+
+/** OAuth handling stopped on purpose: the user has to authorize, and the connection returns early. */
+export class MCPOAuthDeferredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MCPOAuthDeferredError';
+  }
+}
+
+/** A connection that ended waiting on the user's authorization rather than on a server failure. */
+export function isAuthorizationRequired(error: unknown): boolean {
+  return (
+    error instanceof MCPOAuthDeferredError ||
+    isOAuthAuthenticationError(error) ||
+    isMCPTransportAuthenticationError(error)
   );
 }
 
@@ -480,15 +497,15 @@ export function getMCPErrorResponse(error: unknown): MCPErrorResponse | null {
 }
 
 export class ScheduledMCPBearerError extends Error {
-  readonly failure: ScheduledMCPFailure;
+  readonly failure: RunGrantFailure;
   readonly outcomes: Array<
-    ScheduledMCPFailure & { server: string; detail: 'unattended_auth_required'; agentId?: string }
+    RunGrantFailure & { server: string; detail: 'unattended_auth_required'; agentId?: string }
   >;
 
-  readonly code: ScheduledMCPFailure['status'];
+  readonly code: RunGrantFailure['status'];
   readonly retryable: boolean;
 
-  constructor(reason: ScheduledMCPFailure['reason'], server: string, agentId?: string) {
+  constructor(reason: RunGrantFailure['reason'], server: string, agentId?: string) {
     const failure = failureFixtures[reason];
     super('Scheduled MCP resource credential unavailable.');
     this.name = 'ScheduledMCPBearerError';

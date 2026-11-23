@@ -17,6 +17,8 @@ export interface IAgentApiKey extends Document {
   createdAt: Date;
   updatedAt: Date;
   tenantId?: string;
+  /** MCP grants the owner made for this key, by the agent each one covers. */
+  mcpGrants?: Record<string, unknown>;
 }
 
 export interface AgentApiKeyCreateData {
@@ -37,6 +39,8 @@ export interface AgentApiKeyCreateResult {
 
 export interface AgentApiKeyListItem {
   binding?: AgentApiKeyBinding;
+  /** In a list: the key was issued to an integration. The binding itself is not listed. */
+  bound?: boolean;
   id: string;
   name: string;
   keyPrefix: string;

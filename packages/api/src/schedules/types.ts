@@ -4,6 +4,7 @@ import type {
   AgentTriggerDeliveryStatus,
   AgentTriggerDeliveryFailure,
 } from '@librechat/data-schemas';
+import type { ScheduledMCPEnrollment } from 'librechat-data-provider';
 import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
@@ -13,7 +14,12 @@ import type { SlotClaimResult } from './capacity';
 export interface ScheduleLimits {
   /** Feature-level switch: when false the engine claims/fires nothing. */
   enabled: boolean;
-  mcpConsent?: { enabled: boolean; maxLifetimeHours: number };
+  mcpConsent?: {
+    enabled: boolean;
+    maxLifetimeHours: number;
+    /** From then on a never-authorized schedule can no longer use MCP tools. */
+    requireAfterMs?: number;
+  };
   maxPerUser: number;
   minIntervalMinutes: number;
   autoDisableAfterFailures: number;
@@ -358,6 +364,12 @@ export type ScheduleMCPPreflight = (
     stage?: 'activation' | 'invoke' | 'resume';
     /** Trusted fire host provenance, never a body-provided permission. */
     manual?: boolean;
+    /**
+     * The grant a schedule is being created or edited with. It is not stored yet, so it is
+     * handed over: readiness then covers the MCP tools it allows, as for a stored grant, and
+     * the grant the edit replaces is not consulted.
+     */
+    grant?: Pick<ScheduledMCPEnrollment, 'consents' | 'everything' | 'tools'>;
   },
 ) => Promise<ScheduleMCPOutcome[]>;
 

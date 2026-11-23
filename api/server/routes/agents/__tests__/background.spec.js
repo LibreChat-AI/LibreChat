@@ -21,16 +21,27 @@ jest.mock('~/server/services/Responses', () => ({
   }),
   authenticateBackgroundResponses: (ordinaryAuth) => ordinaryAuth,
 }));
-jest.mock('~/server/middleware', () => ({
-  requireTermsAcceptance: (_req, _res, next) => {
-    mockOrder.push('terms');
-    next();
-  },
-  configMiddleware: (_req, _res, next) => {
-    mockOrder.push('config');
-    next();
-  },
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    requireTermsAcceptance: (_req, _res, next) => {
+      mockOrder.push('terms');
+      next();
+    },
+    configMiddleware: (_req, _res, next) => {
+      mockOrder.push('config');
+      next();
+    },
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 jest.mock('../middleware', () => ({
   preAuthTenantMiddleware: (_req, _res, next) => {
     mockOrder.push('tenant');

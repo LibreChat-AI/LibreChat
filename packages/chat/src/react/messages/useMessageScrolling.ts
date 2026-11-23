@@ -35,6 +35,8 @@ export type MessageScrolling = {
   debouncedHandleScroll: () => void;
   /** Reports whether the end marker is in view. */
   handleNearBottomChange: (isNearBottom: boolean) => void;
+  /** Reports content added above the reader, by its height. */
+  handleInsertAbove: (height: number) => void;
 };
 
 const resizeFollowThreshold = 120;
@@ -85,6 +87,17 @@ export default function useMessageScrolling({
   const lastScrollTopRef = useRef(-1);
   const wasSubmittingRef = useRef(false);
   const suppressNextResizeFollowRef = useRef(false);
+  /** The width the thread was last laid out at; it outlives the observer, which is rebuilt
+   *  whenever a run starts or ends. */
+  const contentWidthRef = useRef<number | null>(null);
+  /**
+   * Where the reader stood the last time the thread's layout was at rest: how far from the end,
+   * and the content height that was measured against. A re-wrap moves the end before anything
+   * here hears of it, and the scroll event the browser sends for it arrives ahead of the resize
+   * observer, so by then "near the end" already describes the thread after the change. This is
+   * the answer from before it.
+   */
+  const restingRef = useRef<{ distance: number; scrollHeight: number } | null>(null);
   /** The conversation whose newest message has already been landed on, so the
    *  stream deltas that follow cannot re-take a reader who scrolled away. */
   const landedConversationRef = useRef<string | null>(null);
@@ -119,6 +132,17 @@ export default function useMessageScrolling({
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
   }, []);
 
+  const rememberResting = useCallback(() => {
+    const scrollEl = scrollableRef.current;
+    if (!scrollEl) {
+      return;
+    }
+    restingRef.current = {
+      distance: scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight,
+      scrollHeight: scrollEl.scrollHeight,
+    };
+  }, []);
+
   /** Direction is judged against the last sample, so anything that moves the thread
    *  on the reader's behalf has to leave one behind. A thread opening at its end, or
    *  ridden down by the stream, is placed without the reader touching it; with no
@@ -132,11 +156,31 @@ export default function useMessageScrolling({
     lastScrollTopRef.current = scrollEl.scrollTop;
   }, []);
 
+  /**
+   * Rows mounting above the reader move the scroll position down by their height, held in
+   * place by the browser or by the mount itself, while the reader has not moved at all. The
+   * last sample moves with them, so the scroll that follows is judged by what the reader did.
+   * Left as it was, a reader scrolling up while a long thread mounted beside a reply read as
+   * heading down towards the end, each step adding more than their wheel had taken away, and
+   * was handed straight back to the stream they had just left.
+   */
+  const handleInsertAbove = useCallback((height: number) => {
+    if (lastScrollTopRef.current >= 0) {
+      lastScrollTopRef.current += height;
+    }
+  }, []);
+
   const debouncedHandleScroll = useCallback(() => {
     const scrollEl = scrollableRef.current;
     isNearBottomRef.current = getIsNearBottom();
     if (!scrollEl) {
       return;
+    }
+    /** A scroll over content of the height last measured is the reader's, or a move made for
+     *  them. One over content that has since changed height was sent for a layout change the
+     *  resize observer has yet to report, and says nothing of where the reader chose to be. */
+    if (restingRef.current == null || restingRef.current.scrollHeight === scrollEl.scrollHeight) {
+      rememberResting();
     }
 
     /** Direction comes from where the thread actually moved, which covers the
@@ -180,7 +224,7 @@ export default function useMessageScrolling({
       isStuckRef.current = false;
       glideInterruptedRef.current = true;
     }
-  }, [distanceFromEnd, getIsNearBottom, setAbortScroll]);
+  }, [distanceFromEnd, getIsNearBottom, rememberResting, setAbortScroll]);
 
   const scrollCallback = () => {
     reconcileMessageContentLayout(scrollableRef.current);
@@ -283,8 +327,23 @@ export default function useMessageScrolling({
   }, [getIsNearBottom]);
 
   const reconcileContentResize = useCallback(
-    (shouldFollowResize = true) => {
+    (shouldFollowResize = true, widthChanged = false) => {
+      const resting = restingRef.current;
+      const wasOnEnd = resting != null && resting.distance <= detachThreshold;
       if (clampScrollToContent()) {
+        return;
+      }
+
+      /** A panel opening beside the thread, or the window being dragged, changes the width
+       *  the thread is laid out in: every row wraps again and the end moves, though the
+       *  reader did nothing and no run is under way. One who was on the end is kept on it,
+       *  where they would otherwise be left some way above the newest message with a button
+       *  offering to take them back. Decided before the press that may have opened the panel
+       *  is weighed: that press was not the reader leaving. Anyone further up is left to the
+       *  browser's scroll anchoring, which holds what they are reading in place. "Was on the
+       *  end" is read from before the change: by now the end has already moved away. */
+      if (widthChanged && isStuckRef.current && wasOnEnd && !isGlidingRef.current) {
+        followBottom();
         return;
       }
 
@@ -328,10 +387,18 @@ export default function useMessageScrolling({
       return;
     }
 
-    const observer = new ResizeObserver(() => reconcileContentResize());
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[entries.length - 1]?.contentRect.width;
+      const previous = contentWidthRef.current;
+      if (width != null) {
+        contentWidthRef.current = width;
+      }
+      reconcileContentResize(true, width != null && previous != null && width !== previous);
+      rememberResting();
+    });
     observer.observe(contentEl);
     return () => observer.disconnect();
-  }, [reconcileContentResize]);
+  }, [reconcileContentResize, rememberResting]);
 
   useEffect(() => {
     const contentEl = contentRef.current;
@@ -511,5 +578,6 @@ export default function useMessageScrolling({
     handleSmoothToRef,
     debouncedHandleScroll,
     handleNearBottomChange,
+    handleInsertAbove,
   };
 }

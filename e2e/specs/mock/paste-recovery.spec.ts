@@ -1,8 +1,11 @@
 import { test, expect } from '@playwright/test';
+import type { TMessage } from 'librechat-data-provider';
 import {
   MOCK_ENDPOINTS,
   messagesView,
   NEW_CHAT_PATH,
+  getAccessToken,
+  fetchJson,
   selectMockEndpoint,
   sendMessage,
   sendMessageAndWaitForCompletion,
@@ -108,20 +111,21 @@ test('sent paste previews survive a reload without full text in the file list', 
   }, paste);
   await upload;
   await expect(page.getByTestId('send-button')).toBeEnabled();
-  await sendMessageAndWaitForCompletion(page, 'E2E_REPLY:paste preview persisted');
+  const response = await sendMessageAndWaitForCompletion(page, 'E2E_REPLY:paste preview persisted');
+  const { conversationId } = await response.json();
   const sentFile = page.getByRole('button', { name: 'pasted-text.txt', exact: true });
   await expect(sentFile).toContainText('Persisted preview of the exact clipboard content.');
-  const history = page.waitForResponse(
-    (response) => response.url().includes('/api/messages/') && response.ok(),
+  const messages = await fetchJson<TMessage[]>(
+    page,
+    `/api/messages/${conversationId}`,
+    await getAccessToken(page),
   );
+  const file = messages.find((message) => message.isCreatedByUser && message.files?.length)
+    ?.files?.[0];
+  expect(file).toBeDefined();
+  expect(file?.text).toBeUndefined();
+  expect(file?.textPreview).toBe(paste.slice(0, 240));
   await page.reload();
-  const messages = await (await history).json();
-  const user = messages.find(
-    (message: { isCreatedByUser?: boolean; files?: unknown[] }) =>
-      message.isCreatedByUser && message.files?.length,
-  );
-  expect(user.files[0].text).toBeUndefined();
-  expect(user.files[0].textPreview).toBe(paste.slice(0, 240));
   await expect(sentFile).toContainText('Persisted preview of the exact clipboard content.');
 });
 

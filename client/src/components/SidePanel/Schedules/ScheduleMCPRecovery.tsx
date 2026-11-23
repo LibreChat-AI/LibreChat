@@ -16,9 +16,14 @@ export default function ScheduleMCPRecovery({
   const localize = useLocalize();
   const failures = outcomes.filter((item) => item.status !== 'ready');
   if (failures.length === 0) return null;
+  /** The run went ahead without these: a note for the owner, not a failure to announce. */
+  const skipped = failures.every((item) => item.skipped === true);
 
   return (
-    <div className="space-y-1" role="alert">
+    <div className="space-y-1" role={skipped ? 'status' : 'alert'}>
+      {skipped && (
+        <p className="text-text-secondary text-xs">{localize('com_ui_schedule_mcp_skipped')}</p>
+      )}
       {failures.map((item, index) => {
         const ownerId = item.agentId ?? fallbackAgentId;
         const ownerLabel = agentNames?.[ownerId] ?? ownerId;

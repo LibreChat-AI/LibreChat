@@ -26,6 +26,9 @@ const {
   checkAndIncrementPendingRequest,
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
+  createTriggerExecutionContext,
+  toMessageTrigger,
+  stampMessageTrigger,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -71,6 +74,7 @@ const {
   createDisconnectSnapshotQueue,
   isTemporaryTurn,
   getPreliminaryResponseMessageId,
+  describeCreatedTurn,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -443,7 +447,10 @@ async function saveErrorTurn(
                   alwaysAppliedSkills: req.body.alwaysAppliedSkills,
                 }),
             }
-          : getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection);
+          : stampMessageTrigger(
+              req,
+              getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection),
+            );
       if (!userMessage) {
         return;
       }
@@ -1668,14 +1675,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
+    const executionContext = createTriggerExecutionContext(req);
+    req._messageTrigger = toMessageTrigger(executionContext);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
-      : stampPreliminaryPrivateTextMessage(
+      : stampMessageTrigger(
           req,
-          getPreliminaryUserMessage(
-            { ...req.body, messageId: preallocatedUserMessageId },
-            conversationId,
-            req._agentEventTriggerProjection,
+          stampPreliminaryPrivateTextMessage(
+            req,
+            getPreliminaryUserMessage(
+              { ...req.body, messageId: preallocatedUserMessageId },
+              conversationId,
+              req._agentEventTriggerProjection,
+            ),
           ),
         );
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
@@ -1744,6 +1756,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               ...(req._isManualScheduledFire === true && { scheduleManual: true }),
             }
           : {}),
+        trigger: executionContext?.source,
         responseMessageId: preallocatedResponseMessageId,
         mcpRequestBody,
         userMessage: preliminaryUserMessage,
@@ -2054,6 +2067,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       req,
       res,
       endpointOption,
+      executionContext,
       // Use the job's abort controller signal - allows abort via GenerationJobManager.abortJob()
       signal: job.abortController.signal,
       jobCreatedAt,
@@ -2422,6 +2436,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 quotes: userMsg.quotes,
                 privacyRevision: userMsg.privacyRevision,
                 reasoningOverride: userMsg.reasoningOverride,
+                trigger: userMsg.trigger,
                 // Persist the turn's uploaded files here (authoritative job metadata) so a
                 // HITL resume sources them from the job, not the user DB row — which the
                 // approval prompt can race (the row save may still be in flight when a fast
@@ -2450,6 +2465,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                   req.body.files.length > 0 && { files: req.body.files }),
               },
               streamId,
+              turn: describeCreatedTurn({
+                responseMessageId: respMsgId,
+                sourceMessageId: editedResponseMessageId,
+                isRegenerate,
+                isCompaction,
+                isContinued,
+                editedContent,
+              }),
             },
             { expectedCreatedAt: jobCreatedAt },
           ).catch((err) => {

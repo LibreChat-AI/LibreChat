@@ -71,6 +71,40 @@ describe('initializeGoogle', () => {
     process.env = originalEnv;
   });
 
+  it.each([EModelEndpoint.google, Providers.VERTEXAI])(
+    'carries configured rates into %s chat and Agent initialization',
+    async (endpoint) => {
+      process.env.GOOGLE_KEY = 'test-key';
+      process.env.VERTEX_PROJECT_ID = 'test-project';
+      mockLoadServiceKey.mockResolvedValue(null);
+      mockGetGoogleConfig.mockImplementationOnce((credentials, options) =>
+        jest.requireActual('./llm').getGoogleConfig(credentials, options),
+      );
+      const req = createReq();
+      if (!req.config) throw new Error('Expected initialized test config');
+      req.config.endpoints = {
+        google: {
+          tokenConfig: {
+            'gemini-2.5-flash': { prompt: 0, completion: 0, cacheRead: 0 },
+          },
+        },
+      };
+      const result = await initializeGoogle({
+        runtime: { appConfig: req.config, user: req.user, requestBody: {} },
+        endpoint,
+        model_parameters: { model: 'models/gemini-2.5-flash' },
+        db: createDb(),
+      });
+      expect(result.endpointTokenConfig).toEqual({
+        'models/gemini-2.5-flash': { prompt: 0, completion: 0, cacheRead: 0, read: 0 },
+        'gemini-2.5-flash': { prompt: 0, completion: 0, cacheRead: 0, read: 0 },
+      });
+      expect(result.provider).toBe(
+        endpoint === EModelEndpoint.google ? Providers.GOOGLE : Providers.VERTEXAI,
+      );
+    },
+  );
+
   it.each(['google', 'all'])(
     'resolves %s agent headers after initialization without touching provider auth',
     async (endpoint) => {

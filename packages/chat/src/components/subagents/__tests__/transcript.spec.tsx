@@ -611,6 +611,46 @@ describe('SubagentActivity', () => {
     window.ResizeObserver = original;
   });
 
+  it('does not follow a resize after scrolling away before React commits', () => {
+    let resize!: ResizeObserverCallback;
+    const original = window.ResizeObserver;
+    window.ResizeObserver = jest.fn((callback: ResizeObserverCallback) => {
+      resize = callback;
+      return { observe: jest.fn(), disconnect: jest.fn(), unobserve: jest.fn() };
+    }) as unknown as typeof ResizeObserver;
+
+    const { container, unmount } = render(
+      <SubagentActivityScrollSurface padded={false}>
+        <div>Growing timeline</div>
+      </SubagentActivityScrollSurface>,
+    );
+    const surface = container.querySelector<HTMLElement>(
+      '[data-subagent-activity-scroll-surface]',
+    )!;
+    Object.defineProperty(surface, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(surface, 'clientHeight', { configurable: true, value: 200 });
+    surface.scrollTop = 100;
+
+    try {
+      act(() => {
+        fireEvent.scroll(surface);
+        resize([], {} as ResizeObserver);
+      });
+      expect(surface.scrollTop).toBe(100);
+
+      surface.scrollTop = 800;
+      act(() => {
+        fireEvent.scroll(surface);
+        Object.defineProperty(surface, 'scrollHeight', { configurable: true, value: 1200 });
+        resize([], {} as ResizeObserver);
+      });
+      expect(surface.scrollTop).toBe(1200);
+    } finally {
+      unmount();
+      window.ResizeObserver = original;
+    }
+  });
+
   it('renders a sanitized reasoning marker through regular ContentParts', () => {
     render(
       <SubagentActivity

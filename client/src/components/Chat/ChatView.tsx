@@ -9,14 +9,16 @@ import {
   submissionByIndex,
   ChatSessionProvider,
   useScrollbarGutterSeed,
+  useChatSessionMessages,
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
-import type { TChatProject, TMessage } from 'librechat-data-provider';
+import type { TChatProject, TSubmission } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
 import { AgentsMapContext, useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { ComposerPreferencesContext } from '~/Providers/ComposerPreferencesContext';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
@@ -65,22 +67,109 @@ function warmMessages() {
   preloadMessages().catch(() => undefined);
 }
 
+type ChatViewScreenProps = Required<Pick<ChatViewProps, 'index' | 'routePending'>> &
+  Pick<ChatViewProps, 'project'> & {
+    conversationId?: string;
+    fileMap: ReturnType<typeof useFileMapContext>;
+    isSubmitting: boolean;
+    enterToSend: boolean;
+    autoSendText: number;
+    speechSettingsInitialized: boolean;
+    centerFormOnLanding: boolean;
+    landingFooter: ReturnType<typeof useLandingFooter>;
+    configuredFooter: ReturnType<typeof useConfiguredFooter>;
+    submission: TSubmission | null;
+  };
+
+/**
+ * The pane's screen, which is what the session's messages are drawn in. It subscribes to them
+ * itself and is the one thing under the pane's providers that does, so while a reply streams it
+ * re-renders with every frame and the providers around it do not.
+ */
+function ChatViewScreen({
+  index,
+  project,
+  routePending,
+  conversationId,
+  fileMap,
+  isSubmitting,
+  enterToSend,
+  autoSendText,
+  speechSettingsInitialized,
+  centerFormOnLanding,
+  landingFooter,
+  configuredFooter,
+  submission,
+}: ChatViewScreenProps) {
+  const { messages, isLoading } = useChatSessionMessages(conversationId, index);
+  return (
+    <ChatScreen
+      index={index}
+      conversationId={conversationId}
+      messages={messages}
+      fileMap={fileMap}
+      isLoading={isLoading}
+      project={project}
+      landingFooter={landingFooter}
+      configuredFooter={configuredFooter}
+      renderHeader={({ parentConversationId, readOnly }) => (
+        <Header parentConversationId={parentConversationId} readOnly={readOnly} />
+      )}
+      renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
+      renderMessages={renderMessages}
+      landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
+      renderColumn={(column, { isLanding }) => (
+        <OwnerTextProvider
+          messages={messages}
+          conversationId={conversationId}
+          isSubmitting={isSubmitting}
+        >
+          {/* The welcome screen only, behind its column: a theme's backdrop covers the
+              greeting and the composer together and goes with them on the first message. It
+              paints nothing unless the theme asks and the build registers one. */}
+          {isLanding && <WelcomeBackdrop />}
+          {column}
+        </OwnerTextProvider>
+      )}
+      starters={<ConversationStarters />}
+      renderComposer={({ isLanding, footerBelow, project: composerProject, placeholder }) => (
+        /* Typing a first message is the cue that the list is next. */
+        <div className="contents" onFocusCapture={warmMessages}>
+          <ChatForm
+            index={index}
+            routePending={routePending}
+            placeholder={placeholder}
+            project={composerProject}
+            isLandingPage={isLanding}
+            enterToSend={enterToSend}
+            autoSendText={autoSendText}
+            speechSettingsInitialized={speechSettingsInitialized}
+            footerBelow={footerBelow}
+            centerFormOnLanding={centerFormOnLanding}
+          />
+        </div>
+      )}
+      renderFooter={renderFooter}
+      renderMascot={(bandRef, landing) => (
+        <Lia bandRef={bandRef} landing={landing} submission={submission} />
+      )}
+    />
+  );
+}
+
 function ChatViewPane({
   index = 0,
   project,
   routePending = false,
   conversationId,
-  messages,
-  isLoading,
 }: ChatViewProps & {
   conversationId?: string;
-  messages: TMessage[] | null;
-  isLoading: boolean;
 }) {
   const rootSubmission = useAtomValue(submissionByIndex(index));
   const { saveDrafts } = useChatSettings();
   const enterToSend = useRecoilValue(store.enterToSend);
   const autoSendText = useRecoilValue(store.autoSendText);
+  const modularChat = useRecoilValue(store.modularChat);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const pendingAction = useAtomValue(
@@ -109,6 +198,10 @@ function ChatViewPane({
   const methods = useForm<ChatFormValues>({
     defaultValues: { text: '' },
   });
+  const composerPreferences = useMemo(
+    () => ({ enterToSend, autoSendText, speechSettingsInitialized, modularChat }),
+    [enterToSend, autoSendText, speechSettingsInitialized, modularChat],
+  );
 
   const fileMap = useFileMapContext();
   const chat = useChatContext();
@@ -157,69 +250,27 @@ function ChatViewPane({
                 <QueuedTurnPortalProvider>
                   <AddedChatContext.Provider value={addedChatHelpers}>
                     <ApprovalProvider pendingAction={pendingAction}>
-                      <Presentation routePending={routePending}>
-                        <TraceSurface conversationId={conversationId}>
-                          <ChatScreen
-                            index={index}
-                            conversationId={conversationId}
-                            messages={messages}
-                            fileMap={fileMap}
-                            isLoading={isLoading}
-                            project={project}
-                            landingFooter={landingFooter}
-                            configuredFooter={configuredFooter}
-                            renderHeader={({ parentConversationId, readOnly }) => (
-                              <Header
-                                parentConversationId={parentConversationId}
-                                readOnly={readOnly}
-                              />
-                            )}
-                            renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
-                            renderMessages={renderMessages}
-                            landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                            renderColumn={(column, { isLanding }) => (
-                              <OwnerTextProvider
-                                messages={messages}
-                                conversationId={conversationId}
-                                isSubmitting={chat.isSubmitting}
-                              >
-                                {/* The welcome screen only, behind its column: a theme's
-                                backdrop covers the greeting and the composer together and
-                                goes with them on the first message. It paints nothing unless
-                                the theme asks and the build registers one. */}
-                                {isLanding && <WelcomeBackdrop />}
-                                {column}
-                              </OwnerTextProvider>
-                            )}
-                            starters={<ConversationStarters />}
-                            renderComposer={({ isLanding, footerBelow, project, placeholder }) => (
-                              /* Typing a first message is the cue that the list is next. */
-                              <div className="contents" onFocusCapture={warmMessages}>
-                                <ChatForm
-                                  index={index}
-                                  routePending={routePending}
-                                  placeholder={placeholder}
-                                  project={project}
-                                  isLandingPage={isLanding}
-                                  enterToSend={enterToSend}
-                                  autoSendText={autoSendText}
-                                  speechSettingsInitialized={speechSettingsInitialized}
-                                  footerBelow={footerBelow}
-                                  centerFormOnLanding={centerFormOnLanding}
-                                />
-                              </div>
-                            )}
-                            renderFooter={renderFooter}
-                            renderMascot={(bandRef, landing) => (
-                              <Lia
-                                bandRef={bandRef}
-                                landing={landing}
-                                submission={rootSubmission}
-                              />
-                            )}
-                          />
-                        </TraceSurface>
-                      </Presentation>
+                      <ComposerPreferencesContext.Provider value={composerPreferences}>
+                        <Presentation routePending={routePending}>
+                          <TraceSurface conversationId={conversationId}>
+                            <ChatViewScreen
+                              index={index}
+                              project={project}
+                              routePending={routePending}
+                              conversationId={conversationId}
+                              fileMap={fileMap}
+                              isSubmitting={chat.isSubmitting}
+                              enterToSend={enterToSend}
+                              autoSendText={autoSendText}
+                              speechSettingsInitialized={speechSettingsInitialized}
+                              centerFormOnLanding={centerFormOnLanding}
+                              landingFooter={landingFooter}
+                              configuredFooter={configuredFooter}
+                              submission={rootSubmission}
+                            />
+                          </TraceSurface>
+                        </Presentation>
+                      </ComposerPreferencesContext.Provider>
                     </ApprovalProvider>
                   </AddedChatContext.Provider>
                 </QueuedTurnPortalProvider>
@@ -238,14 +289,7 @@ function ChatView(props: ChatViewProps) {
 
   return (
     <ChatSessionProvider index={index} conversationId={conversationId} historyReady={historyReady}>
-      {({ messages, isLoading }) => (
-        <ChatViewPane
-          {...props}
-          conversationId={conversationId}
-          messages={messages}
-          isLoading={isLoading}
-        />
-      )}
+      <ChatViewPane {...props} conversationId={conversationId} />
     </ChatSessionProvider>
   );
 }

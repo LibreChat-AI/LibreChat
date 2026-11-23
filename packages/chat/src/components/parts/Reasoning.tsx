@@ -167,7 +167,11 @@ const Reasoning: NamedExoticComponent<ReasoningProps> = memo((props: ReasoningPr
   const isExpanded = expansionOverride ?? defaultExpanded;
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
+  const {
+    ref: headerRef,
+    inViewport: headerInViewport,
+    recheck: recheckHeader,
+  } = useInViewport(isBarVisible && isExpanded);
   const { ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
   const { isSubmitting, isLatestMessage, nextType } = useMessage();
@@ -330,7 +334,7 @@ export const ReasoningCompact: NamedExoticComponent<ReasoningCompactProps> = mem
       ref: headerRef,
       inViewport: headerInViewport,
       recheck: recheckHeader,
-    } = useInViewport();
+    } = useInViewport(isBarVisible && isExpanded);
     const { ref: expandRef } = useExpandCollapse(isExpanded);
     /** Collapsed is the default whenever thoughts are hidden, and a streaming
      *  THINK part re-renders on every delta. Keeping the full text mounted

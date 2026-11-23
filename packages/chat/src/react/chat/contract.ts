@@ -43,6 +43,12 @@ export type ChatConversationContract = {
   setConversation: Dispatch<SetStateAction<TConversation | null>>;
   /** Starts a fresh conversation in this pane from a template and/or preset. */
   newConversation: (options?: NewConversationOptions) => void;
+  /**
+   * Whether the composer may offer a change of model, endpoint or agent though the pane is not
+   * main chat's: `newConversation` then changes the conversation the pane holds, in place, and
+   * takes nothing that would start another. Main chat's pane offers every choice without it.
+   */
+  retargets?: boolean;
   /** The preset applied to this pane, if any. */
   preset: TPreset | null;
   /** Replaces the preset applied to this pane. */
@@ -112,12 +118,31 @@ export type ChatSubmissionContract = {
   handleRegenerate: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Button handler that continues the latest response from where it stopped. */
   handleContinue: (e: MouseEvent<HTMLButtonElement>) => void;
+  /**
+   * The reader takes no turn in this conversation, as in one they follow rather than drive: its
+   * rows offer no rerun, edit or continue, and a recovery prompt is explained rather than offered.
+   * Absent for a chat the reader drives.
+   */
+  readOnly?: boolean;
 };
 
 /** Stopping an in-flight turn. AI SDK: `stop`. */
 export type ChatAbortContract = {
   /** Aborts the in-flight generation for this pane's conversation. AI SDK: `stop`. */
   stopGenerating: () => Promise<void>;
+  /**
+   * Whether a stop is taken whenever a reply is on its way. A pane's stream session can only
+   * stop a generation once its start has named it, so its composer waits for that; a chat that
+   * stops through a core `Chat` finds the generation itself and needs no such wait. Absent for
+   * the former.
+   */
+  stopsUnnamed?: boolean;
+  /**
+   * Whether the chat runs what the composer does to a run in flight: it publishes the generation
+   * a steer addresses and each run's end, and sends what was queued behind it. Main chat's pane
+   * does by being the pane with the stream session; another chat says so here.
+   */
+  steers?: boolean;
   /** Button handler around `stopGenerating`. AI SDK: `stop`. */
   handleStopGenerating: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Whether a stop just happened and the view should hold its scroll position. */

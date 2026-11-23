@@ -1,6 +1,7 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
 import type { MCPServerDefinition } from '~/hooks/MCP/useMCPServerManager';
 import type { MCPServerStatusIconProps } from './MCPServerStatusIcon';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
 
 export type { MCPServerStatus };
 
@@ -12,6 +13,38 @@ export interface SelectedIconInfo {
 }
 
 export type ConnectionStatusMap = Record<string, MCPServerStatus>;
+
+/** Show the established transport states without turning readiness into live health. */
+export function getMCPDisplayStatus(
+  status: MCPServerStatus | undefined,
+  view?: MCPConnectionView,
+): MCPServerStatus | undefined {
+  switch (view?.state) {
+    case 'failed':
+      return {
+        ...status,
+        requiresOAuth: status?.requiresOAuth ?? false,
+        requestScoped: false,
+        connectionState: 'error',
+      };
+    case 'succeeded':
+    case 'unknown':
+    case 'authorized':
+      return undefined;
+    default:
+      return status?.connectionStateSource === 'unavailable' ? undefined : status;
+  }
+}
+
+/** Existing connection actions stay available after a confirmed Connect. */
+export function getMCPControlState(
+  status: MCPServerStatus | undefined,
+  view?: MCPConnectionView,
+): MCPServerStatus['connectionState'] | undefined {
+  if (view?.state === 'succeeded') return 'connected';
+  if (view?.state === 'failed') return 'error';
+  return status?.connectionState;
+}
 
 /**
  * Generates a list of icons to display for selected MCP servers.
@@ -76,13 +109,19 @@ export function getStatusColor(
   serverName: string,
   connectionStatus?: ConnectionStatusMap,
   isInitializing?: (serverName: string) => boolean,
+  view?: MCPConnectionView,
 ): string {
-  // In-progress states: blue
-  if (isInitializing?.(serverName)) {
+  return getMCPStatusColor(
+    getMCPDisplayStatus(connectionStatus?.[serverName], view),
+    isInitializing?.(serverName),
+  );
+}
+
+export function getMCPStatusColor(status?: MCPServerStatus, isInitializing?: boolean): string {
+  if (isInitializing) {
     return 'bg-status-info';
   }
 
-  const status = connectionStatus?.[serverName];
   if (!status) {
     return 'bg-status-neutral';
   }
@@ -121,43 +160,23 @@ export function getStatusColor(
   return 'bg-status-neutral';
 }
 
-export function getStatusTextKey(
-  serverName: string,
-  connectionStatus?: ConnectionStatusMap,
-  isInitializing?: (serverName: string) => boolean,
-): string {
-  if (isInitializing?.(serverName)) {
-    return 'com_nav_mcp_status_initializing';
+export function getMCPStatusLabelKey(
+  status?: MCPServerStatus,
+  isInitializing?: boolean,
+  view?: MCPConnectionView,
+) {
+  if (isInitializing) return 'com_nav_mcp_status_initializing';
+  const displayStatus = getMCPDisplayStatus(status, view);
+  if (!displayStatus) return;
+
+  const { connectionState, requiresOAuth, requestScoped } = displayStatus;
+  if (connectionState === 'connecting') return 'com_nav_mcp_status_connecting';
+  if (requestScoped) return 'com_nav_mcp_status_on_demand';
+  if (connectionState === 'connected') return 'com_nav_mcp_status_connected';
+  if (connectionState === 'error') return 'com_nav_mcp_status_error';
+  if (connectionState === 'disconnected') {
+    return requiresOAuth ? 'com_nav_mcp_status_needs_auth' : 'com_nav_mcp_status_disconnected';
   }
-
-  const status = connectionStatus?.[serverName];
-  if (!status) {
-    return 'com_nav_mcp_status_unknown';
-  }
-
-  const { connectionState, requiresOAuth, requestScoped } = status;
-
-  if (connectionState === 'connecting') {
-    return 'com_nav_mcp_status_connecting';
-  }
-
-  if (requestScoped) {
-    return 'com_nav_mcp_status_on_demand';
-  }
-
-  // Special case: disconnected but needs OAuth shows different text
-  if (connectionState === 'disconnected' && requiresOAuth) {
-    return 'com_nav_mcp_status_needs_auth';
-  }
-
-  const keyMap: Record<string, string> = {
-    connected: 'com_nav_mcp_status_connected',
-    connecting: 'com_nav_mcp_status_connecting',
-    disconnected: 'com_nav_mcp_status_disconnected',
-    error: 'com_nav_mcp_status_error',
-  };
-
-  return keyMap[connectionState] || 'com_nav_mcp_status_unknown';
 }
 
 /**
@@ -170,7 +189,10 @@ export function isMCPServerReadyForAgent(
   status: MCPServerStatus | undefined,
   requestScoped: boolean,
   hasCustomUserVars = false,
+  view?: MCPConnectionView,
 ): boolean {
+  if (view) return view.canUse;
+  if (status?.configurationState === 'needs_configuration') return false;
   if (requestScoped && hasCustomUserVars && status?.configurationState !== 'configured') {
     return false;
   }
@@ -185,37 +207,25 @@ export function isMCPServerReadyForAgent(
   );
 }
 
-/**
- * Determines if an action button should be shown for a server status.
- * Returns true only when the button would be actionable (not just informational).
- */
-export function shouldShowActionButton(statusIconProps?: MCPServerStatusIconProps | null): boolean {
-  if (!statusIconProps) return false;
-
-  const { serverStatus, canCancel, hasCustomUserVars, isInitializing } = statusIconProps;
-
-  // Show cancel button during OAuth flow
-  if (isInitializing && canCancel) return true;
-  // Don't show spinner-only state (no action available)
-  if (isInitializing) return false;
-
-  if (!serverStatus) return false;
-  const { connectionState, requiresOAuth, requestScoped } = serverStatus;
-
-  // Request-scoped servers can only be initialized with an active MCP request context,
-  // but their per-user variables must remain configurable while idle.
-  if ((connectionState === 'disconnected' || connectionState === 'error') && requestScoped) {
-    return hasCustomUserVars === true;
+/** Both the menu slot and the icon use the same actionable state. */
+export function getMCPServerAction({
+  serverStatus,
+  view,
+  canCancel,
+  hasCustomUserVars,
+  isInitializing,
+}: MCPServerStatusIconProps): 'cancel' | 'configure' | 'connect' | undefined {
+  const connectionState = getMCPControlState(serverStatus, view);
+  if (isInitializing || connectionState === 'connecting') {
+    return canCancel ? 'cancel' : undefined;
   }
-  if (connectionState === 'connected' && requestScoped) return hasCustomUserVars === true;
-  // Show for disconnected/error (can reconnect/configure)
-  if (connectionState === 'disconnected' || connectionState === 'error') return true;
-  // Show a cancel action for pending OAuth connections.
-  if (connectionState === 'connecting' && requiresOAuth && canCancel) return true;
-  // Don't show connecting spinner when no action is available.
-  if (connectionState === 'connecting') return false;
-  // Connected: only show if there's config to manage
-  if (connectionState === 'connected') return hasCustomUserVars || requiresOAuth;
+  const requestScoped = view?.requestScoped ?? serverStatus?.requestScoped;
+  if (connectionState === 'connected' || requestScoped) {
+    return hasCustomUserVars ? 'configure' : undefined;
+  }
+  if (connectionState === 'disconnected' || connectionState === 'error') return 'connect';
+}
 
-  return false;
+export function shouldShowActionButton(statusIconProps?: MCPServerStatusIconProps | null): boolean {
+  return statusIconProps != null && getMCPServerAction(statusIconProps) != null;
 }

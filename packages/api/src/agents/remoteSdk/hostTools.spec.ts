@@ -1,5 +1,14 @@
-import type { HostToolRequest, HostToolSessionUpdate } from '@librechat/agents';
+import { once } from 'node:events';
+import WebSocket, { WebSocketServer } from 'ws';
+import { createHostToolBindings, GraphEvents } from '@librechat/agents';
+import type {
+  HostToolRequest,
+  HostToolSessionUpdate,
+  ToolExecuteBatchRequest,
+} from '@librechat/agents';
+import type { AddressInfo } from 'node:net';
 import { createHostToolService, createWorkerToolService } from './hostTools';
+import { createSdkPeer } from './peer';
 
 const identity = {
   runtimeId: 'runtime',
@@ -109,3 +118,124 @@ it('delivers refreshed host session state before propagating an execution failur
   ).rejects.toThrow('execution failed');
   expect(updates[0].context.codeSessionContext?.session_id).toBe('refreshed');
 });
+
+it.each([true, false])(
+  'propagates worker cancellation with a cooperative=%s handler and preserves sessions',
+  async (cooperative) => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await once(server, 'listening');
+    const connected = once(server, 'connection');
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    await once(socket, 'open');
+    const [hostSocket] = (await connected) as [WebSocket];
+    const limits = {
+      maxFrameBytes: 65536,
+      maxBufferedBytes: 131072,
+      timeoutMs: 2000,
+      onClose: () => undefined,
+      onFrame: async () => undefined,
+    };
+    const hostRun = new AbortController();
+    const workerCall = new AbortController();
+    let begin!: () => void;
+    const started = new Promise<void>((resolve) => {
+      begin = resolve;
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let hostSignal: AbortSignal | undefined;
+    let effects = 0;
+    let resolveFinished!: () => void;
+    const handlerFinished = new Promise<void>((resolve) => {
+      resolveFinished = resolve;
+    });
+    const host = createHostToolService({
+      identity,
+      tools,
+      configurable: {},
+      signal: hostRun.signal,
+      peer: { call: (...args) => hostPeer.call(...args) },
+      handler: {
+        handle: async (_event, data) => {
+          const batch = data as ToolExecuteBatchRequest;
+          hostSignal = batch.signal;
+          batch.toolCalls[0].codeSessionContext = { session_id: 'provisioned' };
+          begin();
+          if (cooperative) {
+            await new Promise<void>((resolve) =>
+              batch.signal!.addEventListener('abort', () => resolve(), { once: true }),
+            );
+            await held;
+            batch.toolCalls[0].runtimeSessionHint = 'cancelled-session';
+            batch.reject(new Error('cancelled'));
+          } else {
+            await held;
+            if (!batch.signal?.aborted) effects++;
+            batch.onResult?.({ toolCallId: 'call', status: 'success', content: 'late' });
+            batch.resolve([{ toolCallId: 'call', status: 'success', content: 'late' }]);
+          }
+          resolveFinished();
+        },
+      },
+    });
+    const hostPeer = createSdkPeer(hostSocket, {
+      ...limits,
+      onCall: (method, data, _timeout, signal) =>
+        method === 'tools' ? host(data, signal) : Promise.resolve('alive'),
+    });
+    const worker = createWorkerToolService({ call: (...args) => workerPeer.call(...args) });
+    const workerPeer = createSdkPeer(socket, {
+      ...limits,
+      onCall: async (method, data) =>
+        worker.accept(data, method === 'tool.session' ? 'session' : 'result'),
+    });
+    const bindings = createHostToolBindings({ identity, tools, service: worker.service });
+    const resolve = jest.fn();
+    const reject = jest.fn();
+    const onResult = jest.fn();
+    const call = { id: 'call', name: 'inspect', args: {} };
+    try {
+      const operation = bindings.customHandlers[GraphEvents.ON_TOOL_EXECUTE].handle(
+        GraphEvents.ON_TOOL_EXECUTE,
+        {
+          toolCalls: [call],
+          signal: workerCall.signal,
+          agentId: identity.agentId,
+          resolve,
+          reject,
+          onResult,
+        },
+      );
+      await started;
+      workerCall.abort();
+      let settled = false;
+      void Promise.resolve(operation).then(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(settled).toBe(false);
+      expect(hostSignal?.aborted).toBe(true);
+      release();
+      await operation;
+      expect(hostSignal?.aborted).toBe(true);
+      expect(hostRun.signal.aborted).toBe(false);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(reject).toHaveBeenCalledTimes(1);
+      expect(call).toMatchObject({ codeSessionContext: { session_id: 'provisioned' } });
+      if (cooperative) expect(call).toMatchObject({ runtimeSessionHint: 'cancelled-session' });
+      release();
+      await handlerFinished;
+      expect(effects).toBe(0);
+      expect(onResult).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      await expect(workerPeer.call('probe', null)).resolves.toBe('alive');
+    } finally {
+      release();
+      hostSocket.terminate();
+      socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);

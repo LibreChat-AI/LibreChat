@@ -173,6 +173,43 @@ test('a date cutoff lists only conversations active since it @scenario:list-date
   expect(await listIds(page, `endpoints=${endpoint}&createdAfter=${cutoff}`)).toEqual([recent]);
 });
 
+test('a cutoff with an hour-only or colonless offset filters like the same instant in UTC @scenario:list-date-cutoff-short-offset', async ({
+  page,
+}) => {
+  const endpoint = uniqueEndpoint();
+  const after = randomUUID();
+  const before = randomUUID();
+  const cutoff = new Date(Date.now() - 7 * DAY);
+  cutoff.setUTCMinutes(0, 0, 0);
+  await seedRows(endpoint, [
+    { conversationId: after, updatedAt: new Date(cutoff.getTime() + 60 * 1000) },
+    { conversationId: before, updatedAt: new Date(cutoff.getTime() - 60 * 1000) },
+  ]);
+  /* The same instant written at +02: wall-clock two hours past the UTC cutoff. */
+  const local = new Date(cutoff.getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 19);
+
+  for (const zone of ['+02', '+0200', '+02:00']) {
+    const query = `endpoints=${endpoint}&updatedAfter=${encodeURIComponent(`${local}${zone}`)}`;
+    expect(await listIds(page, query), zone).toEqual([after]);
+  }
+});
+
+test('an endpoint name with surrounding whitespace matches the conversations stored under it @scenario:list-endpoint-facet-matches-padded-name', async ({
+  page,
+}) => {
+  const name = uniqueEndpoint();
+  const padded = ` ${name} `;
+  const onPadded = randomUUID();
+  const onPlain = randomUUID();
+  await seedRows(padded, [
+    { conversationId: onPadded },
+    { conversationId: onPlain, endpoint: name },
+  ]);
+
+  expect(await listIds(page, `endpoints=${encodeURIComponent(padded)}`)).toEqual([onPadded]);
+  expect(await listIds(page, `endpoints=${name}`)).toEqual([onPlain]);
+});
+
 test('an endpoint facet lists only conversations that ran on the named endpoints @scenario:list-endpoint-facet-matches-any', async ({
   page,
 }) => {

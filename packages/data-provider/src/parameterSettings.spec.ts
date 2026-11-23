@@ -29,6 +29,24 @@ const hasSetting = (params: SettingDefinition[], key: string) =>
   params.some((param) => param.key === key);
 
 describe('applyModelAwareDefaults', () => {
+  it.each([[googleParams], [agentParamSettings[EModelEndpoint.google] as SettingDefinition[]]])(
+    'offers Hydrogen controls in chat and Agents',
+    (settings) => {
+      const result = applyModelAwareDefaults(settings, EModelEndpoint.google, 'gemini-4-hydrogen');
+      expect(maxOut(result)?.default).toBe(65536);
+      expect(maxOut(result)?.range?.max).toBe(65536);
+      expect(result.find((setting) => setting.key === 'thinkingLevel')?.options).toEqual([
+        '',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+      ]);
+      for (const key of ['temperature', 'topP', 'topK', 'thinkingBudget']) {
+        expect(hasSetting(result, key)).toBe(false);
+      }
+    },
+  );
   it('resolves the Google maxOutputTokens default for current Gemini models', () => {
     const result = applyModelAwareDefaults(googleParams, EModelEndpoint.google, 'gemini-2.5-pro');
     expect(maxOut(result)?.default).toBe(65535);

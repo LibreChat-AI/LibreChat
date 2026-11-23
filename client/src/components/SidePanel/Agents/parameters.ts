@@ -7,6 +7,7 @@ import {
   getEndpointField,
   getSettingsKeys,
   normalizeEndpointName,
+  resolveModelCatalogKey,
   resolveDropParamsUIKeys,
   ReasoningParameterFormat,
 } from 'librechat-data-provider';
@@ -65,13 +66,16 @@ export function resolveAgentParameterSettings({
   modelReasoning?: TModelReasoning | null;
 }): ResolvedAgentParameterSettings {
   const resolvedEndpointsConfig = endpointsConfig ?? {};
-  const endpointType = getEndpointField(resolvedEndpointsConfig, provider, 'type');
-  const customParams = resolvedEndpointsConfig[provider]?.customParams;
-  const [combinedKey, endpointKey] = getSettingsKeys(endpointType ?? provider, model);
+  const parameterEndpoint = resolveModelCatalogKey(provider, resolvedEndpointsConfig);
+  const endpointType = getEndpointField(resolvedEndpointsConfig, parameterEndpoint, 'type');
+  const customParams = resolvedEndpointsConfig[parameterEndpoint]?.customParams;
+  const [combinedKey, endpointKey] = getSettingsKeys(endpointType ?? parameterEndpoint, model);
   const overriddenEndpointKey = customParams?.defaultParamsEndpoint ?? endpointKey;
   const dropParamsMap = startupConfig?.endpointsDropParamsMap;
   const dropParamsEntry =
-    dropParamsMap?.[provider] ?? dropParamsMap?.[normalizeEndpointName(provider)];
+    dropParamsMap?.[provider] ??
+    dropParamsMap?.[normalizeEndpointName(provider)] ??
+    dropParamsMap?.[parameterEndpoint];
   const resolvedDropParams = Array.isArray(dropParamsEntry)
     ? dropParamsEntry
     : dropParamsEntry?.[model];
@@ -109,7 +113,7 @@ export function resolveAgentParameterSettings({
     endpointParams,
     overriddenEndpointKey,
     model,
-    resolvedEndpointsConfig[provider]?.responsesApiRouting,
+    resolvedEndpointsConfig[parameterEndpoint]?.responsesApiRouting,
     modelReasoning,
   )
     .map(applyOverride)

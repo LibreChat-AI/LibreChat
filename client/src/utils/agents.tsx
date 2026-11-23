@@ -9,7 +9,7 @@ export { resolveAgentTarget } from '@librechat/chat';
  * Extracts the avatar URL from an agent's avatar property
  * Handles both string and object formats
  */
-export const getAgentAvatarUrl = (agent: t.Agent | null | undefined): string | null => {
+export const getAgentAvatarUrl = (agent: t.AgentDisplay | null | undefined): string | null => {
   if (!agent?.avatar) {
     return null;
   }
@@ -66,7 +66,7 @@ const LazyAgentAvatar = ({
  * dominating the row it shares with the agent name.
  */
 export const renderAgentAvatar = (
-  agent: t.Agent | null | undefined,
+  agent: t.AgentDisplay | null | undefined,
   options: {
     size?: 'icon' | 'xs' | 'sm' | 'md' | 'lg' | 'xl';
     className?: string;

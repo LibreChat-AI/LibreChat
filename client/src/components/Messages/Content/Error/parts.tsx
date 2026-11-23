@@ -13,14 +13,16 @@ import {
 } from 'librechat-data-provider';
 import type {
   Agent,
+  AgentDisplay,
   TConfig,
-  TAgentsMap,
   EModelEndpoint,
   TEndpointsConfig,
 } from 'librechat-data-provider';
+import type { TranscriptAgentsMap } from '~/hooks/Agents/useTranscriptAgent';
 import type { ErrorSource } from './source';
 import { isUserProvidedEndpointConfig } from '~/components/Nav/SettingsTabs/ProviderKeys/utils';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useTranscriptAgentsMap } from '~/hooks/Agents/useTranscriptAgent';
 import { supportsCompaction } from '~/hooks/Chat/useCompactConversation';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { ChatContext } from '~/Providers/ChatContext';
@@ -106,18 +108,22 @@ export type ErrorEndpoint = {
 };
 
 /** What an agent ran against: its provider (an endpoint id) and model, and the saved agent if any. */
-type AgentIdentity = { agent?: Agent; endpoint?: string; model?: string };
+type AgentIdentity = { agent?: AgentDisplay; endpoint?: string; model?: string };
 
 /**
  * Resolves an agent id the way the transcript's sibling headers do: a saved agent through the
  * agents map (without the `____N` suffix parallel runs append), an ephemeral agent through the
  * endpoint and model its id encodes.
  */
-function resolveAgentId(agentsMap: TAgentsMap | undefined, agentId: string): AgentIdentity {
+function resolveAgentId(
+  agentsMap: TranscriptAgentsMap | undefined,
+  agentId: string,
+): AgentIdentity {
   const agent = agentsMap?.[stripAgentIdSuffix(agentId)];
   if (agent != null) {
     return { agent, endpoint: agent.provider || undefined, model: agent.model ?? undefined };
   }
+  if (stripAgentIdSuffix(agentId).startsWith(Constants.MODEL_SPEC_AGENT_PREFIX)) return {};
   const ephemeral = isEphemeralAgentId(agentId) ? parseEphemeralAgentId(agentId) : undefined;
   return ephemeral == null ? {} : { endpoint: ephemeral.endpoint, model: ephemeral.model };
 }
@@ -131,7 +137,7 @@ function resolveAgentId(agentsMap: TAgentsMap | undefined, agentId: string): Age
  * nor a placeholder is ever shown as a model, while a plain model name is kept.
  */
 function resolveAgentRow(
-  agentsMap: TAgentsMap | undefined,
+  agentsMap: TranscriptAgentsMap | undefined,
   {
     partAgentId,
     rowModel,
@@ -146,7 +152,11 @@ function resolveAgentRow(
     return {};
   }
   const resolved = resolveAgentId(agentsMap, rowModel);
-  if (resolved.endpoint != null || !isEphemeralAgentId(rowModel)) {
+  if (
+    resolved.endpoint != null ||
+    !isEphemeralAgentId(rowModel) ||
+    stripAgentIdSuffix(rowModel).startsWith(Constants.MODEL_SPEC_AGENT_PREFIX)
+  ) {
     return resolved;
   }
   return { model: rowModel };
@@ -189,7 +199,7 @@ function resolveCredentialOwnership(
  */
 export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string): ErrorEndpoint {
   const chat = useContext(ChatContext);
-  const agentsMap = useAgentsMapContext();
+  const savedAgents = useAgentsMapContext();
   const inChat = chat != null;
   const { data: endpointsConfig } = useGetEndpointsQuery({ enabled: inChat });
   const { data: startupConfig } = useGetStartupConfig({ enabled: inChat });
@@ -207,6 +217,7 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
       ? (chat?.conversation?.agent_id ?? undefined)
       : undefined;
   const partAgentId = source?.partAgentId;
+  const agentsMap = useTranscriptAgentsMap(partAgentId ?? rowModel ?? conversationAgentId ?? '');
 
   return useMemo(() => {
     const agentRow = partAgentId != null || isAgentsEndpoint(rowEndpoint);
@@ -223,7 +234,9 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
       endpointType,
       provider: endpoint ? getProviderName(endpoint) : undefined,
       model: agentRow ? agentIdentity?.model : rowModel,
-      agent: agentIdentity?.agent,
+      agent: agentIdentity?.agent
+        ? savedAgents?.[stripAgentIdSuffix(agentIdentity.agent.id)]
+        : undefined,
       userProvidesCredentials: resolveCredentialOwnership(endpointsConfig, endpoint),
       compactionAvailable:
         inChat &&
@@ -240,6 +253,7 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
     partAgentId,
     payloadEndpoint,
     agentsMap,
+    savedAgents,
     endpointsConfig,
     startupConfig?.compactionEnabled,
     startupConfig?.interface?.contextUsage,

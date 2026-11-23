@@ -124,6 +124,7 @@ jest.mock('@librechat/api', () => {
     ...jest.requireActual('../../../../packages/api/src/files/storage'),
     ...jest.requireActual('../../../../packages/api/src/files/operations'),
     ...jest.requireActual('../../../../packages/api/src/files/finalize'),
+    ...jest.requireActual('../../../../packages/api/src/storage/discard'),
     sanitizeFilename: jest.fn((n) => n),
     /** Grants both; these specs vary the capability set, not the role. */
     resolveToolRoleGrants: jest.fn(async () => ({ runCode: true, fileSearch: true })),
@@ -2423,6 +2424,50 @@ describe('processImageFile', () => {
 describe('processFileURL', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('deletes the stored object and throws when no file URL can be resolved', async () => {
+    const saveURL = jest.fn().mockResolvedValue({ bytes: 10, type: 'image/png' });
+    const getFileURL = jest.fn().mockResolvedValue(null);
+    const deleteByPath = jest.fn().mockResolvedValue(undefined);
+    getStrategyFunctions.mockReturnValue({ saveURL, getFileURL, deleteByPath });
+
+    await expect(
+      processFileURL({
+        fileStrategy: FileSources.firebase,
+        userId: 'user-123',
+        URL: 'https://example.com/image.png',
+        fileName: 'image.png',
+        basePath: 'images',
+        context: FileContext.image_generation,
+      }),
+    ).rejects.toThrow('Strategy "firebase" did not return a file URL for "image.png"');
+
+    expect(deleteByPath).toHaveBeenCalledWith({
+      userId: 'user-123',
+      fileName: 'image.png',
+      basePath: 'images',
+    });
+    expect(db.createFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the missing URL error when deleting the stored object fails', async () => {
+    const saveURL = jest.fn().mockResolvedValue({ bytes: 10, type: 'image/png' });
+    const getFileURL = jest.fn().mockResolvedValue(null);
+    const deleteByPath = jest.fn().mockRejectedValue(new Error('delete denied'));
+    getStrategyFunctions.mockReturnValue({ saveURL, getFileURL, deleteByPath });
+
+    await expect(
+      processFileURL({
+        fileStrategy: FileSources.firebase,
+        userId: 'user-123',
+        URL: 'https://example.com/image.png',
+        fileName: 'image.png',
+        basePath: 'images',
+        context: FileContext.image_generation,
+      }),
+    ).rejects.toThrow('Strategy "firebase" did not return a file URL for "image.png"');
+    expect(deleteByPath).toHaveBeenCalledTimes(1);
   });
 
   it('throws and skips DB persistence when saveURL returns null', async () => {

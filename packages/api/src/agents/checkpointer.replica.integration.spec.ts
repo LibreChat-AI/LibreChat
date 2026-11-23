@@ -33,10 +33,32 @@ function config(checkpointId?: string, checkpointNs = ''): RunnableConfig {
   };
 }
 
+/**
+ * Returns once the secondary serves every write made so far. A majority write is acknowledged
+ * when the secondary has the oplog entry, which is before it has applied it, so the marker is
+ * read back from the secondary at the write's own cluster time.
+ */
+async function awaitSecondary(): Promise<void> {
+  const written = mongoose.connection.getClient().startSession();
+  const applied = secondary.startSession();
+  try {
+    const { insertedId } = await mongoose.connection
+      .db!.collection('replication_barrier')
+      .insertOne({}, { session: written, writeConcern: { w: 'majority' } });
+    applied.advanceClusterTime(written.clusterTime!);
+    applied.advanceOperationTime(written.operationTime!);
+    const marker = await secondary
+      .db('active_checkpoints')
+      .collection('replication_barrier')
+      .findOne({ _id: insertedId }, { session: applied, maxTimeMS: 10000 });
+    if (!marker) throw new Error('Secondary did not apply the replication barrier');
+  } finally {
+    await Promise.all([written.endSession(), applied.endSession()]);
+  }
+}
+
 async function withReplicationPaused(work: () => Promise<void>): Promise<void> {
-  await mongoose.connection
-    .db!.collection('replication_barrier')
-    .insertOne({}, { writeConcern: { w: 'majority' } });
+  await awaitSecondary();
   const admin = secondary.db('admin');
   const configured = await admin.command({
     configureFailPoint: 'stopReplProducer',
@@ -180,6 +202,39 @@ it.each(['checkpoint and interrupt', 'interrupt only'])(
     });
   },
 );
+
+it('holds the barrier until a secondary has applied the writes it acknowledged', async () => {
+  const saver = (await getAgentCheckpointer(cfg))!;
+  const checkpoint = emptyCheckpoint();
+  const admin = secondary.db('admin');
+  const earlier = () =>
+    secondary
+      .db('active_checkpoints')
+      .collection('agent_checkpoint_writes')
+      .findOne({ thread_id: threadId, checkpoint_id: checkpoint.id });
+  const applying = (mode: 'alwaysOn' | 'off') =>
+    admin.command({ configureFailPoint: 'pauseBatchApplicationBeforeCompletion', mode });
+  let served = false;
+  let barrier: Promise<void>;
+  await applying('alwaysOn');
+  try {
+    await saver.putWrites(config(checkpoint.id), [[INTERRUPT, { id: 'earlier' }]], 'task');
+    await saver.put(config(), checkpoint, metadata);
+    barrier = awaitSecondary().then(() => {
+      served = true;
+    });
+    /** A majority acknowledgement on its own leaves the earlier rows unreadable. */
+    await mongoose.connection
+      .db!.collection('replication_barrier')
+      .insertOne({}, { writeConcern: { w: 'majority' } });
+    await expect(earlier()).resolves.toBeNull();
+    expect(served).toBe(false);
+  } finally {
+    await applying('off');
+  }
+  await barrier;
+  await expect(earlier()).resolves.not.toBeNull();
+});
 
 it('parks and resumes a rebuilt approval graph while its secondary has no checkpoint', async () => {
   let effects = 0;
@@ -331,9 +386,7 @@ it('does not fall back to a readable secondary when no primary is available', as
   const checkpoint = emptyCheckpoint();
   await saver.putWrites(config(checkpoint.id), [[INTERRUPT, { id: 'outage' }]], 'task');
   await saver.put(config(), checkpoint, metadata);
-  await mongoose.connection
-    .db!.collection('replication_barrier')
-    .insertOne({}, { writeConcern: { w: 'majority' } });
+  await awaitSecondary();
   await mongoose.connection
     .db!.admin()
     .command({ replSetStepDown: 60, force: true }, { readPreference: 'primary' });

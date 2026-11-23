@@ -52,7 +52,9 @@ const {
   rejectChangedResumeProjectContext,
   PROJECT_CONTEXT_CHANGED_REASON,
   PROJECT_CONTEXT_CHANGED_RESPONSE,
-  restoreScheduledTokenContext,
+  restoreExecutionContext,
+  collectApprovedToolCalls,
+  asksEveryUse,
   recoverTurnMessageReference,
   applyForcedRetention,
   applyForcedTemporaryRequest,
@@ -496,6 +498,7 @@ async function finalizeResumedTurn({
     iconURL: meta.iconURL,
     model: meta.model,
     unfinished: preemptIncomplete || stepLimitReached,
+    ...client?.metadata,
     ...(stepLimitReached && { finish_reason: Constants.TOOL_CALL_LIMIT_FINISH_REASON }),
     error: false,
     isCreatedByUser: false,
@@ -1953,8 +1956,9 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           parentMessageId: job.metadata.userMessage?.messageId ?? Constants.NO_PARENT,
         });
       const result = await initializeClient({
-        scheduledTokenContext: restoreScheduledTokenContext(req, job.metadata),
+        executionContext: restoreExecutionContext(req, job.metadata),
         scheduleJobIdentity: job.metadata,
+        approvedToolCalls: collectApprovedToolCalls(mapped.resumeValue),
         req,
         res,
         endpointOption: req.body.endpointOption,
@@ -2040,6 +2044,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           appConfig: req.config,
         },
         pluginHookSource: getPluginHookSource(),
+        asksEveryUse: asksEveryUse(req),
         request: req,
         addConvoToolApprovalAllows,
       });

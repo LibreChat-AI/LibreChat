@@ -6,10 +6,12 @@ import {
   buildMessages,
   cleanOutput,
   definitions,
+  describe,
   hash,
   isSwitcher,
   localizeAnchors,
   needsTranslation,
+  punctuate,
   renderSwitcher,
   reusable,
   splitChunks,
@@ -23,6 +25,7 @@ const CONCURRENCY = 4;
 
 const args = process.argv.slice(2);
 const force = args.includes('--force');
+const summary = args.find((arg) => arg.startsWith('--summary='))?.slice('--summary='.length);
 const langsArg = args.find((arg) => arg.startsWith('--langs='))?.slice('--langs='.length);
 const langs = (langsArg || Object.keys(LANGUAGES).join(','))
   .split(',')
@@ -63,7 +66,7 @@ async function complete(code, chunk) {
   const data = await response.json();
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== 'string' || content.trim() === '') throw new Error('empty completion');
-  return cleanOutput(content);
+  return punctuate(cleanOutput(content), code, chunk);
 }
 
 async function translate(code, chunk, context) {
@@ -101,6 +104,7 @@ const context = definitions(source);
 const stored = JSON.parse((await readIfExists(CACHE)) ?? '{}');
 const cache = { version: 1 };
 const outputs = {};
+const runs = [];
 const available = await Promise.all(
   Object.entries(LANGUAGES).map(async ([code, { file }]) =>
     langs.includes(code) || (await readIfExists(file)) !== null ? code : null,
@@ -116,12 +120,12 @@ for (const code of langs) {
     if (isSwitcher(chunk) || !needsTranslation(chunk, context)) continue;
     const key = hash(chunk);
     const cached = reusable(previous[key], chunk, code, context);
-    if (cached !== undefined) next[key] = cached;
+    if (cached !== undefined) next[key] = punctuate(cached, code, chunk);
     else if (!pending.some((item) => item.key === key)) pending.push({ key, chunk });
   }
-  console.log(
-    `${code}: ${pending.length} chunk(s) to translate, ${Object.keys(next).length} cached`,
-  );
+  const run = { code, translated: pending.length, cached: Object.keys(next).length };
+  runs.push(run);
+  console.log(`${code}: ${run.translated} chunk(s) to translate, ${run.cached} cached`);
   await pool(pending, async ({ key, chunk }) => {
     next[key] = await translate(code, chunk, context);
   });
@@ -162,3 +166,4 @@ if (switcher && switcher !== renderSwitcher('en', available)) {
 
 for (const [file, content] of Object.entries(outputs)) await writeFile(file, content);
 await writeFile(CACHE, `${JSON.stringify(cache, null, 2)}\n`);
+if (summary) await writeFile(summary, describe(runs, force));

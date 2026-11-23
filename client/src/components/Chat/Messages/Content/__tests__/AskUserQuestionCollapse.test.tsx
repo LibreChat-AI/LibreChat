@@ -61,12 +61,12 @@ function ComposerProbe() {
   );
 }
 
-const renderPause = () =>
+const renderPause = (pane?: number) =>
   render(
     <Provider store={createStore()}>
       <RecoilRoot>
         <ChatContext.Provider
-          value={{ conversation: { conversationId: 'conversation-1' } } as never}
+          value={{ conversation: { conversationId: 'conversation-1' }, index: pane } as never}
         >
           <ComposerProbe />
           <AskUserQuestion
@@ -91,6 +91,15 @@ describe('a live ask_user_question between the chat and the composer', () => {
         questions: mockBatch,
         messageId: 'message-1',
       };
+    });
+
+    it('stays in its card in a pane that is not the main chat, which has no composer to take it', () => {
+      renderPause(3);
+
+      expect(screen.queryByLabelText('Answer from the message box')).not.toBeInTheDocument();
+      expect(
+        screen.getByText('North star or full funnel?').closest('[aria-hidden="true"]'),
+      ).toBeNull();
     });
 
     it('starts in the chat card and leaves the composer free', () => {

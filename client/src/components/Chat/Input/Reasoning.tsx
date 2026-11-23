@@ -139,6 +139,7 @@ export function useComposerReasoning({
       paramDefinitions: getReasoningParamDefinitions(endpointsConfig[provider], model),
       blockedReasoningKeys,
       modelReasoning,
+      responsesApiRouting: endpointsConfig[provider]?.responsesApiRouting,
     });
   }, [
     blockedReasoningKeys,

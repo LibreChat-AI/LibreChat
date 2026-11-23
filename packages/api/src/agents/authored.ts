@@ -55,6 +55,21 @@ export class AuthoredSkillState {
     });
   }
 
+  /** Restored bindings stay pending until permission checks confirm them. */
+  recorded(scope: Scope): AuthoredSkillBinding[] {
+    const bindings: AuthoredSkillBinding[] = [];
+    for (const [key, binding] of this.bindings) {
+      if (
+        !this.pending.has(key) &&
+        binding.agentId === scope.agentId &&
+        (binding.executionId ?? null) === (scope.executionId ?? null)
+      ) {
+        bindings.push(binding);
+      }
+    }
+    return bindings;
+  }
+
   snapshot(): AuthoredSkillBinding[] {
     return [...this.bindings.values()].map((binding) => ({ ...binding }));
   }

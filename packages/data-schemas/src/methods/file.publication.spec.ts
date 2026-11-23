@@ -52,6 +52,32 @@ describe('Run artifact persistence', () => {
     },
   });
 
+  it('projects storage authorization without fetching extracted content', async () => {
+    const file = await methods.publishRunArtifactFile({
+      scope,
+      provenance: provenance(),
+      file: content(),
+    });
+    const [metadata] = await methods.getRunFileCandidates([file.file_id], scope.tenantId, {
+      storageOnly: true,
+    });
+    expect(metadata).toMatchObject({
+      file_id: file.file_id,
+      user: scope.userId,
+      filepath: file.filepath,
+      bytes: file.bytes,
+      updatedAt: file.updatedAt,
+    });
+    expect(metadata).not.toHaveProperty('text');
+    expect(metadata).not.toHaveProperty('metadata');
+    expect((await methods.getRunFileCandidates([file.file_id], scope.tenantId))[0].text).toBe(
+      content().text,
+    );
+    expect(
+      await methods.getRunFileCandidates([file.file_id], 'foreign', { storageOnly: true }),
+    ).toEqual([]);
+  });
+
   beforeAll(async () => {
     mongo = await MongoMemoryServer.create();
     await mongoose.connect(mongo.getUri());

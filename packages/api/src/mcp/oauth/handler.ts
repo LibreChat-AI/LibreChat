@@ -64,6 +64,14 @@ type PreconfiguredOAuthDiscoveryResult = {
 const PRECONFIGURED_DISCOVERY_TIMEOUT_MS = 5_000;
 const OAUTH_REVOCATION_TIMEOUT_MS = 5_000;
 
+/** The token endpoint refused the refresh grant without an outage status; a new authorization can recover. */
+class MCPTokenRefreshRejectedError extends Error {
+  constructor(status: number, statusText: string, body: string) {
+    super(`Token refresh failed: ${status} ${statusText} - ${body}`);
+    this.name = 'MCPTokenRefreshRejectedError';
+  }
+}
+
 export class MCPOAuthHandler {
   private static readonly FLOW_TYPE = 'mcp_oauth';
 
@@ -1790,9 +1798,7 @@ export class MCPOAuthHandler {
     /** Body is consumed here, so this branch must either retry or throw — never fall through. */
     const errorText = await response.text();
     if (!this.isScopeParameterRejection(response.status, errorText)) {
-      throw new Error(
-        `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-      );
+      throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
     }
 
     logger.warn(
@@ -2066,9 +2072,7 @@ export class MCPOAuthHandler {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(
-            `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-          );
+          throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
         }
 
         const tokens = await response.json();
@@ -2155,9 +2159,7 @@ export class MCPOAuthHandler {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(
-            `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-          );
+          throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
         }
 
         const tokens = await response.json();
@@ -2226,15 +2228,14 @@ export class MCPOAuthHandler {
       await this.assertRefreshEndpointAvailable(response, metadata.serverName);
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(
-          `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-        );
+        throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
       }
 
       const tokens = await response.json();
       return this.processRefreshResponse(tokens, metadata.serverName, 'auto-discovered OAuth');
     } catch (error) {
-      logger.error(
+      /** A rejected grant sends the user back through authorization; outages stay errors. */
+      logger[error instanceof MCPTokenRefreshRejectedError ? 'warn' : 'error'](
         `[MCPOAuth] Failed to refresh tokens for ${metadata.serverName}`,
         getSafeErrorMetadata(error),
       );

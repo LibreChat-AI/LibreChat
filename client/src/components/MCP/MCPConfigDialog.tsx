@@ -8,9 +8,11 @@ import {
   OGDialogContent,
 } from '@librechat/client';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
 import type { ConfigFieldDetail } from '~/common';
 import ServerInitializationSection from './ServerInitializationSection';
 import CustomUserVarsSection from './CustomUserVarsSection';
+import { getMCPDisplayStatus } from './mcpServerUtils';
 import { useLocalize } from '~/hooks';
 
 interface MCPConfigDialogProps {
@@ -23,6 +25,7 @@ interface MCPConfigDialogProps {
   onRevoke?: () => void;
   serverName: string;
   serverStatus?: MCPServerStatus;
+  view?: MCPConnectionView;
   conversationId?: string | null;
   storageContextKey?: string;
 }
@@ -36,10 +39,12 @@ export default function MCPConfigDialog({
   onRevoke,
   serverName,
   serverStatus,
+  view,
   conversationId,
   storageContextKey,
 }: MCPConfigDialogProps) {
   const localize = useLocalize();
+  const displayStatus = getMCPDisplayStatus(serverStatus, view);
 
   const hasFields = Object.keys(fieldsSchema).length > 0;
   const dialogTitle = hasFields
@@ -47,14 +52,14 @@ export default function MCPConfigDialog({
     : `${serverName} MCP Server`;
 
   const fullTitle = useMemo(() => {
-    if (!serverStatus) {
+    if (!displayStatus) {
       return localize('com_ui_mcp_dialog_title', {
         serverName,
         status: '',
       });
     }
 
-    const { connectionState, requiresOAuth } = serverStatus;
+    const { connectionState, requiresOAuth } = displayStatus;
     let statusText = '';
 
     if (connectionState === 'connecting') {
@@ -71,7 +76,7 @@ export default function MCPConfigDialog({
       serverName,
       status: statusText,
     });
-  }, [serverStatus, serverName, localize]);
+  }, [displayStatus, serverName, localize]);
 
   /**
    * Render status badge with unified color system:
@@ -82,11 +87,11 @@ export default function MCPConfigDialog({
    * - Red: Error
    */
   const renderStatusBadge = () => {
-    if (!serverStatus) {
+    if (!displayStatus) {
       return null;
     }
 
-    const { connectionState, requiresOAuth } = serverStatus;
+    const { connectionState, requiresOAuth } = displayStatus;
 
     // Connecting: blue (in progress)
     if (connectionState === 'connecting') {

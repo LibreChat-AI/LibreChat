@@ -8,6 +8,7 @@ import {
   messagesView,
   requestJson,
   sendMessage,
+  uploadViaUnifiedButton,
 } from './helpers';
 import { cleanupAgent, openAgentBuilder, uniqueAgentName } from './agents.helpers';
 import { approvalCards, collapseComposerApproval } from './approvals.helpers';
@@ -17,21 +18,25 @@ let workerOutput = '';
 test.describe.configure({ mode: 'serial' });
 async function startWorker(graph = 'complex') {
   const outputStart = workerOutput.length;
-  worker = spawn(process.execPath, ['examples/sdk-runtime/server.cjs'], {
-    cwd: process.cwd(),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      SDK_RUNTIME_ID: 'remote-example',
-      SDK_RUNTIME_PORT: '8804',
-      SDK_RUNTIME_SECRET: 'e2e-remote-sdk-fixture-secret-not-a-production-key',
-      SDK_EXAMPLE_GRAPH: graph,
-      SDK_EXAMPLE_LIVE_MODEL: 'false',
-      SDK_EXAMPLE_STEP_DELAY_MS: '10000',
-      SDK_RUNTIME_AGENT_IDS: '',
-      OPENAI_API_KEY: '',
+  worker = spawn(
+    process.execPath,
+    [graph === 'files' ? 'e2e/setup/remote-sdk-files.cjs' : 'examples/sdk-runtime/server.cjs'],
+    {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        SDK_RUNTIME_ID: 'remote-example',
+        SDK_RUNTIME_PORT: '8804',
+        SDK_RUNTIME_SECRET: 'e2e-remote-sdk-fixture-secret-not-a-production-key',
+        SDK_EXAMPLE_GRAPH: graph,
+        SDK_EXAMPLE_LIVE_MODEL: 'false',
+        SDK_EXAMPLE_STEP_DELAY_MS: '10000',
+        SDK_RUNTIME_AGENT_IDS: '',
+        OPENAI_API_KEY: '',
+      },
     },
-  });
+  );
   worker.stdout?.on('data', (data) => {
     workerOutput += data.toString();
   });
@@ -194,5 +199,61 @@ test('runs the minimal SDK example through the real native UI', async ({ page },
     await page.screenshot({ path: info.outputPath('remote-sdk-minimal.png'), fullPage: true });
   } finally {
     await cleanupAgent(page, agentId);
+  }
+});
+
+test('reads an uploaded native attachment in a separate SDK process and saves the reply', async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await stopWorker();
+  await startWorker('files');
+  let agentId: string | undefined;
+  try {
+    await page.goto(NEW_CHAT_PATH);
+    const token = await getAccessToken(page);
+    const agent = await requestJson<{ id: string; name: string }>(page, {
+      path: '/api/agents',
+      token,
+      method: 'POST',
+      body: {
+        name: uniqueAgentName('SDK native attachment'),
+        provider: MOCK_ENDPOINTS[1].label,
+        model: MOCK_ENDPOINTS[1].model,
+        sdk_runtime: { id: 'remote-example', protocolVersion: 1 },
+      },
+    });
+    agentId = agent.id;
+    const builder = await openAgentBuilder(page);
+    await builder.getByRole('combobox', { name: 'Agent', exact: true }).click();
+    await page.getByRole('option', { name: agent.name }).click();
+    await builder.getByRole('button', { name: 'Select Agent' }).click();
+    const content = 'sdk-native-attachment-proof,42';
+    const uploaded = await uploadViaUnifiedButton(page, {
+      name: 'sdk-native.csv',
+      mimeType: 'text/csv',
+      content,
+    });
+    expect(uploaded.ok()).toBe(true);
+    await sendMessage(page, 'Read the attached file through the host file service.');
+    await expect(approvalCards(page).first(), workerOutput).toBeVisible({ timeout: 30000 });
+    await stopWorker();
+    await startWorker('files');
+    await page.reload();
+    const card = approvalCards(page).first();
+    await expect(card).toBeVisible();
+    await collapseComposerApproval(page);
+    await card.getByRole('button', { name: 'Approve', exact: true }).click();
+    await card.getByRole('button', { name: 'Submit', exact: true }).click();
+    const reply = `Remote attachment bytes: ${content}`;
+    await expect(messagesView(page).getByText(reply).last(), workerOutput).toBeVisible({
+      timeout: 30000,
+    });
+    await page.reload();
+    await expect(messagesView(page).getByText(reply).last()).toBeVisible();
+  } finally {
+    await cleanupAgent(page, agentId);
+    await stopWorker();
+    await startWorker();
   }
 });

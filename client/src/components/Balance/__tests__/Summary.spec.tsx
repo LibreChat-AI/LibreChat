@@ -84,6 +84,26 @@ describe('balance Summary', () => {
     );
   });
 
+  it('names the reset date instead of a countdown for anchored periods', () => {
+    render(
+      <Summary
+        state={success('percent', {
+          refillMode: 'reset',
+          refillAnchor: '2026-01-05T00:00:00Z',
+          lastRefill: '2026-07-01T00:00:00.000Z',
+        })}
+      />,
+    );
+    const expected = new Intl.DateTimeFormat('en', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date('2026-07-06T00:00:00.000Z'));
+    expect(screen.getByTestId('balance-refill')).toHaveTextContent(`Usage resets on ${expected}`);
+  });
+
   it('shows the reset target in currency mode', () => {
     render(<Summary state={success('currency', { refillMode: 'reset' })} />);
     expect(screen.getByTestId('balance-refill')).toHaveTextContent('Resets to $5.00 in 3 days');

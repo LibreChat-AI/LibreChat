@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { Constants } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import type {
@@ -43,6 +44,7 @@ import {
 import { transferFileSearchPreference, withFileSearchPreference } from '~/hooks/Files/search';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
+import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { updateAttachmentCaches } from './useAttachmentHandler';
@@ -91,8 +93,12 @@ export const appDraftServices: DraftServices = {
 
 /** The app's services behind the stream event handlers. Each group keeps its identity until
  *  what it reads changes, so the handlers built on it do too. */
-export default function useEventServices({ setConversation }: EventServicesParams): EventServices {
+export default function useEventServices({
+  runIndex,
+  setConversation,
+}: EventServicesParams): EventServices {
   const queryClient = useQueryClient();
+  const getConversation = useGetConversation(runIndex);
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { conversationId } = useParams();
@@ -120,20 +126,30 @@ export default function useEventServices({ setConversation }: EventServicesParam
   );
   const templates = useMemo<TemplateServices>(
     () => ({
-      apply: ({ targetId, sourceId, ephemeralAgent, specName }) =>
+      apply: ({ targetId, sourceId, ephemeralAgent, specName }) => {
+        const current = getConversation();
+        if (
+          current?.endpoint &&
+          (current.conversationId === targetId ||
+            current.conversationId === (sourceId ?? Constants.NEW_CONVO)) &&
+          (current.spec ?? '') !== (specName ?? '')
+        ) {
+          return;
+        }
         applyAgentTemplate({
           targetId,
           sourceId,
           ephemeralAgent: withFileSearchPreference(targetId, ephemeralAgent),
           specName,
           startupConfig: queryClient.getQueryData<TStartupConfig>(startupConfigKey(true)),
-        }),
+        });
+      },
       reconcileFailedCode: (submission, failedConversationId) => {
         const request = getFailedCodeDecisionRequest(submission, failedConversationId);
         if (request != null) reconcileCodeDecision(request);
       },
     }),
-    [applyAgentTemplate, reconcileCodeDecision, queryClient],
+    [applyAgentTemplate, getConversation, reconcileCodeDecision, queryClient],
   );
   const files = useMemo<FileServices>(
     () => ({

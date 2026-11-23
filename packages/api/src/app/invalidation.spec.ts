@@ -183,6 +183,75 @@ describe('createConfigCacheInvalidation', () => {
     expect(second.clearOverrides).not.toHaveBeenCalled();
   });
 
+  it('releases borrowed listeners without waiting for an unavailable unsubscribe acknowledgement', async () => {
+    const broker = createBroker();
+    const subscriber = broker.subscriber();
+    jest.spyOn(subscriber, 'unsubscribe').mockImplementation(() => new Promise(() => undefined));
+    const invalidation = createConfigCacheInvalidation({
+      clears: [],
+      pubsub: { publisher: broker.publisher(), subscriber },
+    });
+    let closed = false;
+
+    void invalidation.close().then(() => {
+      closed = true;
+    });
+    await flush();
+
+    expect(closed).toBe(true);
+    expect(subscriber.events.listenerCount('message')).toBe(0);
+    expect(subscriber.events.listenerCount('ready')).toBe(0);
+  });
+
+  it('releases an owned pub/sub pair once instead of awaiting unsubscribe', async () => {
+    const broker = createBroker();
+    const subscriber = broker.subscriber();
+    const unsubscribe = jest.spyOn(subscriber, 'unsubscribe');
+    const close = jest.fn();
+    const invalidation = createConfigCacheInvalidation({
+      clears: [],
+      pubsub: { publisher: broker.publisher(), subscriber, close },
+    });
+    await flush();
+
+    await invalidation.close();
+    await invalidation.close();
+    subscriber.events.emit('ready');
+    await flush();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(subscriber.subscribe).toHaveBeenCalledTimes(1);
+    expect(subscriber.events.listenerCount('ready')).toBe(0);
+    expect(subscriber.events.listenerCount('message')).toBe(0);
+  });
+
+  it('does not report a pending subscription rejected by intentional close as an outage', async () => {
+    const error = jest.spyOn(logger, 'error').mockReturnValue(logger);
+    const broker = createBroker();
+    const subscriber = broker.subscriber();
+    let rejectSubscribe: (error: Error) => void = () => undefined;
+    subscriber.subscribe.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectSubscribe = reject;
+        }),
+    );
+    const invalidation = createConfigCacheInvalidation({
+      clears: [],
+      pubsub: {
+        publisher: broker.publisher(),
+        subscriber,
+        close: () => rejectSubscribe(new Error('Connection is closed.')),
+      },
+    });
+
+    await invalidation.close();
+    await flush();
+
+    expect(error).not.toHaveBeenCalled();
+  });
+
   it('subscribes again when the subscriber becomes ready after a failed SUBSCRIBE', async () => {
     const error = jest.spyOn(logger, 'error').mockReturnValue(logger);
     const broker = createBroker();

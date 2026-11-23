@@ -207,3 +207,22 @@ describe('persistent runtime journal', () => {
     expect(value(await journal.read(id, 0, 10))).toMatchObject({ state: 'completed', head: 1 });
   });
 });
+
+it('uses EVALSHA and falls back only when Redis guarantees the script was not run', async () => {
+  const eval_ = jest.fn((script: string, keys: number, ...args: Array<string | number>) =>
+    redis.eval(script, keys, ...args),
+  );
+  const evalsha = jest.fn((sha: string, keys: number, ...args: Array<string | number>) =>
+    redis.evalsha(sha, keys, ...args),
+  );
+  evalsha.mockRejectedValueOnce(new Error('NOSCRIPT No matching script'));
+  const journal = createRedisRuntimeJournal({ eval: eval_, evalsha }, limits);
+  const id = session();
+  const lease = value(await journal.create(id, randomUUID()));
+  value(await journal.renew(id, lease));
+  expect(eval_).toHaveBeenCalledTimes(1);
+  expect(evalsha).toHaveBeenCalledTimes(2);
+  evalsha.mockRejectedValueOnce(new Error('connection lost after execution'));
+  await expect(journal.renew(id, lease)).rejects.toThrow('connection lost');
+  expect(eval_).toHaveBeenCalledTimes(1);
+});

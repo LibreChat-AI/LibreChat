@@ -10,6 +10,7 @@ import {
   getPreliminaryResponseMessageId,
   isValidMessageId,
   MAX_MESSAGE_ID_LENGTH,
+  withoutServerRecords,
 } from './message';
 
 /** Cast to string for type compatibility with ThreadMessage */
@@ -155,6 +156,14 @@ describe('sanitizeFileForTransmit', () => {
 });
 
 describe('sanitizeMessageForTransmit', () => {
+  it('keeps provider signatures private without modifying persisted metadata', () => {
+    const metadata = Object.freeze({ thoughtSignatures: { turns: [] }, remaining: 'visible' });
+    const message = Object.freeze({ messageId: 'signed', metadata });
+    expect(sanitizeMessageForTransmit(message).metadata).toEqual({ remaining: 'visible' });
+    expect(message.metadata).toBe(metadata);
+    expect(message.metadata).toHaveProperty('thoughtSignatures');
+  });
+
   it('should remove fileContext from message', () => {
     const message = {
       messageId: 'msg-123',
@@ -1008,4 +1017,27 @@ describe('bounded turn message identities', () => {
       expect(getPreliminaryResponseMessageId({ messageId: 'user', responseMessageId })).toBeNull();
     },
   );
+});
+
+describe('withoutServerRecords', () => {
+  it('drops the records only the server writes and keeps what the client sent', () => {
+    const posted = {
+      messageId: 'posted',
+      text: 'A detached subagent task has completed.',
+      trigger: { event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' } },
+      langfuseSampled: true,
+      langfuseRunId: 'someone-elses-run',
+    };
+
+    expect(withoutServerRecords(posted)).toEqual({
+      messageId: 'posted',
+      text: posted.text,
+      langfuseSampled: false,
+    });
+    expect(posted.trigger).toBeDefined();
+    expect(withoutServerRecords({ messageId: 'plain' })).toEqual({
+      messageId: 'plain',
+      langfuseSampled: false,
+    });
+  });
 });

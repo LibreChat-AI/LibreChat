@@ -84,47 +84,73 @@ describe('ResponsePatcher', () => {
   it('places a steer, settles its chip and marks the draw-in once', () => {
     const { host, patcher, run } = setup();
     host.messages.set([submission.userMessage, response]);
-    const placed = { ...response, content: [] } as TMessage;
     (host.steers.resolve as jest.Mock).mockReturnValue(['steer-1']);
-    (host.parts.findSteerTarget as jest.Mock).mockReturnValue(1);
-    (host.parts.applySteer as jest.Mock).mockReturnValue(placed);
+    const part = {
+      type: ContentTypes.STEER,
+      [ContentTypes.STEER]: 'Go deeper',
+      steerId: 'steer-1',
+    };
     const event = {
       conversationId: 'c-1',
       steerId: 'steer-1',
       index: 1,
-      part: { steerId: 'steer-1' },
+      part,
     } as unknown as TSteerAppliedEvent;
     patcher.applySteer(event);
     expect(host.steers.resolve).toHaveBeenCalledWith('c-1', 'steer-1', undefined, undefined);
     expect(host.steers.markLiveApplied).toHaveBeenCalledWith('steer-1');
-    expect(host.messages.get()?.[1]).toBe(placed);
+    const placed = host.messages.get()?.[1];
+    expect(placed?.content?.[1]).toEqual(part);
+    expect(placed?.content?.[0]).toBe(response.content?.[0]);
     expect(run.submission?.initialResponse).toBe(placed);
+    expect(host.events.syncStepMessage).toHaveBeenCalledWith(placed);
   });
 
   it('shifts an activity label past an edited response prefix', () => {
     const { host, patcher } = setup({ editedContent: {}, editPrefixLength: 2 } as TSubmission);
     host.messages.set([submission.userMessage, response]);
-    (host.parts.findActivityLabelTarget as jest.Mock).mockReturnValue(1);
     const event = {
       index: 3,
-      part: { type: 'activity_label', activity_label_type: 'phase', activity_start_index: 1 },
+      part: {
+        type: ContentTypes.ACTIVITY_LABEL,
+        [ContentTypes.ACTIVITY_LABEL]: 'Searching',
+        activity_label_type: 'phase',
+        activity_start_index: 1,
+      },
     } as unknown as TActivityLabelEvent;
     patcher.applyActivityLabel(event);
-    expect(host.parts.applyActivityLabel).toHaveBeenCalledWith(
-      response,
-      expect.objectContaining({
-        index: 5,
-        part: expect.objectContaining({ activity_start_index: 3 }),
-      }),
-    );
+    const content = host.messages.get()?.[1]?.content;
+    expect(content?.[3]).toBeUndefined();
+    expect(content?.[5]).toMatchObject({
+      type: ContentTypes.ACTIVITY_LABEL,
+      activity_start_index: 3,
+    });
   });
 
   it('retries a reasoning label until its think part exists', () => {
     const { clock, host, patcher } = setup();
     host.messages.set([submission.userMessage, response]);
-    (host.parts.findReasoningLabelTarget as jest.Mock).mockReturnValue(1);
-    patcher.applyReasoningLabel({ index: 0 } as TReasoningLabelEvent);
+    const event = {
+      index: 0,
+      stepId: 'reasoning-1',
+      revision: 1,
+      label: 'Weighing sources',
+      status: 'streaming',
+    } as TReasoningLabelEvent;
+    patcher.applyReasoningLabel(event);
     expect(clock.frames()).toBe(1);
+    expect(host.messages.get()?.[1]).toBe(response);
+
+    const thinking = {
+      ...response,
+      content: [{ type: ContentTypes.THINK, think: 'Comparing the two reports' }],
+    } as TMessage;
+    host.messages.set([submission.userMessage, thinking]);
+    clock.flushFrames();
+    expect(host.messages.get()?.[1]?.content?.[0]).toMatchObject({
+      reasoning_label: 'Weighing sources',
+      reasoning_label_step_id: 'reasoning-1',
+    });
   });
 
   it('replays the step events that arrived before created', () => {

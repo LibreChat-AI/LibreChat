@@ -28,16 +28,29 @@ export type FrameCost = {
   rasterMs: number;
 };
 
-const CATEGORIES = [
-  'devtools.timeline',
-  'disabled-by-default-devtools.timeline',
-  'disabled-by-default-devtools.timeline.frame',
-  /** Call stacks on forced layout and style, so a dump names who asked. */
-  'disabled-by-default-devtools.timeline.stack',
-  'cc',
-  'blink',
-  '__metadata',
-];
+/**
+ * `FADE_PERF_LIGHT=1` records the timeline alone. The stack category captures a call stack for
+ * every timer set or cleared and every forced layout, which is what names the caller in a dump
+ * and also what a page that sets thousands of timers pays for in the measurement itself.
+ */
+const CATEGORIES =
+  process.env.FADE_PERF_LIGHT === '1'
+    ? [
+        'devtools.timeline',
+        'disabled-by-default-devtools.timeline',
+        'disabled-by-default-devtools.timeline.frame',
+        '__metadata',
+      ]
+    : [
+        'devtools.timeline',
+        'disabled-by-default-devtools.timeline',
+        'disabled-by-default-devtools.timeline.frame',
+        /** Call stacks on forced layout and style, so a dump names who asked. */
+        'disabled-by-default-devtools.timeline.stack',
+        'cc',
+        'blink',
+        '__metadata',
+      ];
 
 /** More trace categories for a dump, comma-separated: invalidation tracking, for one, names
  *  the nodes a layout was scheduled for and why. */

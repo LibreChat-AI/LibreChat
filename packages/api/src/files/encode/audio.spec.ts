@@ -66,6 +66,22 @@ describe('encodeAndFormatAudios - provider formatting', () => {
     });
   });
 
+  it.each([
+    ['the default', {}, 300_000],
+    ['the configured value', { timeouts: { fileFetchMs: 1_234 } }, 1_234],
+  ])('reads the stored file under timeouts.fileFetchMs, using %s', async (_name, config, ms) => {
+    await encodeAndFormatAudios(
+      { config } as unknown as ServerRequest,
+      [createMockFile()],
+      { provider: Providers.GOOGLE },
+      getStrategyFunctions,
+    );
+    expect(mockedGetFileStream.mock.calls[0][4]).toMatchObject({
+      timeout: ms,
+      timeoutErrorMessage: expect.stringContaining(`timeouts.fileFetchMs (${ms} ms)`),
+    });
+  });
+
   it('emits a Google media block for google', async () => {
     const result = await encodeAndFormatAudios(
       req,

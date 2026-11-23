@@ -8,8 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       chart_tag:
-        description: "Existing chart tag to release, for example chart-2.0.5"
+        description: "Chart tag to release, for example chart-2.0.5"
         required: true
+        type: string
+      chart_sha:
+        description: "Commit on main to release from when the tag could not be created"
+        required: false
         type: string
 
 jobs:
@@ -23,6 +27,7 @@ jobs:
         id: chart-version
         env:
           EVENT_NAME: ${{ github.event_name }}
+          INPUT_CHART_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.chart_sha || '' }}
           INPUT_CHART_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.chart_tag || '' }}
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -39,10 +44,23 @@ jobs:
             exit 1
           fi
 
+          # GitHub refuses some chart tags from the tag sync's token, which then names the commit.
+          CHART_REF="refs/tags/${CHART_TAG}"
+          CHART_SHA=""
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_CHART_SHA" ]; then
+            if [[ ! "$INPUT_CHART_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::chart_sha must be a full commit SHA"
+              exit 1
+            fi
+            CHART_REF="$INPUT_CHART_SHA"
+            CHART_SHA="$INPUT_CHART_SHA"
+          fi
+
           # OCI repository names must be lowercase, and the repository owner is not guaranteed to be.
           {
             printf 'CHART_REPOSITORY=%s/librechat-chart\n' "${GITHUB_REPOSITORY_OWNER,,}"
-            printf 'CHART_REF=refs/tags/%s\n' "$CHART_TAG"
+            printf 'CHART_REF=%s\n' "$CHART_REF"
+            printf 'CHART_SHA=%s\n' "$CHART_SHA"
             printf 'CHART_TAG=%s\n' "$CHART_TAG"
             printf 'CHART_VERSION=%s\n' "$CHART_VERSION"
           } >> "$GITHUB_OUTPUT"
@@ -64,6 +82,25 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
       
+      # A tag names its own commit. A bare SHA has to earn the version it is released under.
+      - name: Verify the commit carries this chart version on main
+        if: steps.chart-version.outputs.CHART_SHA != ''
+        env:
+          CHART_SHA: ${{ steps.chart-version.outputs.CHART_SHA }}
+          CHART_VERSION: ${{ steps.chart-version.outputs.CHART_VERSION }}
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "$CHART_SHA" refs/remotes/origin/main; then
+            echo "::error::${CHART_SHA} is not on main"
+            exit 1
+          fi
+
+          FOUND_VERSION="$(helm show chart helm/librechat | sed -n 's/^version: //p')"
+          if [ "$FOUND_VERSION" != "$CHART_VERSION" ]; then
+            echo "::error::helm/librechat/Chart.yaml at ${CHART_SHA} is version '${FOUND_VERSION}', not ${CHART_VERSION}"
+            exit 1
+          fi
+
       - name: Build Subchart Deps
         run: |
           cd helm/librechat-rag-api
@@ -79,9 +116,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A chart released from its commit must not be replaced when a maintainer pushes its tag
+      # later, or when two tag syncs dispatch the same commit. Dispatching a tag by hand still
+      # releases it again.
+      - name: Find already released charts
+        id: released
+        if: github.event_name == 'push' || steps.chart-version.outputs.CHART_SHA != ''
+        env:
+          CHART_REPOSITORY: ${{ steps.chart-version.outputs.CHART_REPOSITORY }}
+          CHART_VERSION: ${{ steps.chart-version.outputs.CHART_VERSION }}
+        run: |
+          set -euo pipefail
+          for chart in librechat librechat-rag-api; do
+            released=false
+            if helm show chart "oci://ghcr.io/${CHART_REPOSITORY}/${chart}" --version "$CHART_VERSION" >/dev/null 2>&1; then
+              released=true
+              echo "::notice::${chart} ${CHART_VERSION} is already released; leaving it untouched."
+            fi
+            printf '%s=%s\n' "$chart" "$released" >> "$GITHUB_OUTPUT"
+          done
+
       # Run Helm OCI Charts Releaser
       # This is for the librechat chart
       - name: Release Helm OCI Charts for librechat
+        if: steps.released.outputs.librechat != 'true'
         uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: librechat
@@ -94,6 +152,7 @@ jobs:
       
       # this is for the librechat-rag-api chart
       - name: Release Helm OCI Charts for librechat-rag-api
+        if: steps.released.outputs.librechat-rag-api != 'true'
         uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: librechat-rag-api

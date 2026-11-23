@@ -18,6 +18,7 @@ import {
   resolveHeaders,
   deriveBaseURL,
   logAxiosError,
+  getSafeErrorMetadata,
   inputSchema,
   applyAxiosProxyConfig,
 } from '~/utils';
@@ -150,6 +151,21 @@ async function fetchOllamaModels(
   return response.data.models.map((tag) => tag.name);
 }
 
+async function cacheModelList(
+  cache: ReturnType<typeof standardCache> | null,
+  cacheKey: string,
+  models: string[],
+): Promise<void> {
+  if (!cache || !cacheKey || models.length === 0) {
+    return;
+  }
+  try {
+    await cache.set(cacheKey, models, Time.TWO_MINUTES);
+  } catch (error) {
+    logger.warn('[fetchModels] Failed to cache models:', getSafeErrorMetadata(error));
+  }
+}
+
 async function backfillTokenConfigFromModelCache(
   cacheKey: string,
   tokenKey: string,
@@ -238,18 +254,22 @@ export async function fetchModels({
   const cacheKey = shouldCache ? modelsCacheKey(baseURL ?? '', apiKey, provider) : '';
   const modelsCache = shouldCache ? standardCache(CacheKeys.MODEL_QUERIES) : null;
   if (modelsCache && cacheKey) {
-    const cachedModels = await modelsCache.get(cacheKey);
-    if (cachedModels) {
-      if (createTokenConfig && tokenKey) {
-        const tokenConfigBackfilled = await backfillTokenConfigFromModelCache(cacheKey, tokenKey);
-        if (!tokenConfigBackfilled && isScopedTokenConfigKey(tokenKey)) {
-          models = cachedModels as string[];
+    try {
+      const cachedModels = await modelsCache.get(cacheKey);
+      if (cachedModels) {
+        if (createTokenConfig && tokenKey) {
+          const tokenConfigBackfilled = await backfillTokenConfigFromModelCache(cacheKey, tokenKey);
+          if (!tokenConfigBackfilled && isScopedTokenConfigKey(tokenKey)) {
+            models = cachedModels as string[];
+          } else {
+            return cachedModels as string[];
+          }
         } else {
           return cachedModels as string[];
         }
-      } else {
-        return cachedModels as string[];
       }
+    } catch (error) {
+      logger.warn('[fetchModels] Failed to read cached models:', getSafeErrorMetadata(error));
     }
   }
 
@@ -271,9 +291,7 @@ export async function fetchModels({
       });
     }
     if (ollamaModels !== null) {
-      if (modelsCache && cacheKey && ollamaModels.length > 0) {
-        await modelsCache.set(cacheKey, ollamaModels, Time.TWO_MINUTES);
-      }
+      await cacheModelList(modelsCache, cacheKey, ollamaModels);
       return ollamaModels;
     }
   }
@@ -339,10 +357,14 @@ export async function fetchModels({
     const validationResult = inputSchema.safeParse(input);
     if (validationResult.success && createTokenConfig) {
       const endpointTokenConfig = processModelData(input);
-      const cache = tokenConfigCache();
-      await cache.set(tokenKey ?? name, endpointTokenConfig);
-      if (modelsCache && cacheKey) {
-        await cache.set(getModelCacheTokenConfigKey(cacheKey), endpointTokenConfig);
+      try {
+        const cache = tokenConfigCache();
+        await cache.set(tokenKey ?? name, endpointTokenConfig);
+        if (modelsCache && cacheKey) {
+          await cache.set(getModelCacheTokenConfigKey(cacheKey), endpointTokenConfig);
+        }
+      } catch (error) {
+        logger.warn('[fetchModels] Failed to cache token config:', getSafeErrorMetadata(error));
       }
     }
     models = input.data.map((item: { id: string }) => item.id);
@@ -351,9 +373,7 @@ export async function fetchModels({
     logAxiosError({ message: logMessage, error: error as Error });
   }
 
-  if (modelsCache && cacheKey && models.length > 0) {
-    await modelsCache.set(cacheKey, models, Time.TWO_MINUTES);
-  }
+  await cacheModelList(modelsCache, cacheKey, models);
 
   return models;
 }

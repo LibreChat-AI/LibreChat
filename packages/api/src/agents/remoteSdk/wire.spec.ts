@@ -9,6 +9,12 @@ describe('SDK wire data', () => {
         new HumanMessage('hello'),
         new AIMessage({
           content: '',
+          response_metadata: {
+            bytes: new Uint8Array([1, 255]),
+            date: new Date('2026-01-01'),
+            counter: BigInt(2),
+            map: new Map([['data', new Set([1])]]),
+          },
           tool_calls: [
             {
               id: 'call',

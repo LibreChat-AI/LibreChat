@@ -8,6 +8,7 @@ export const DEFAULT_OUTBOUND_TIMEOUTS_MS = {
   actionsMs: 300_000,
   moderationMs: 10_000,
   imageFetchMs: 30_000,
+  fileFetchMs: 300_000,
   toolsMs: 60_000,
   speechMs: 300_000,
   imageGenerationMs: 300_000,

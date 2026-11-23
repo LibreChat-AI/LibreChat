@@ -82,6 +82,7 @@ export type ChatPreparedRequest = {
 
 /** The message list as an event handler reads and writes it. */
 export type ChatEventContext = {
+  /** The list as it stands when read, so a write made earlier in the same event is seen. */
   readonly messages: TMessage[];
   write(messages: TMessage[]): void;
 };
@@ -609,7 +610,8 @@ const mergeById = (
   return next;
 };
 
-const mergeFinal = (data: ChatFinalFrame, context: ChatEventContext) => {
+/** Merges a final frame's request and response onto the rows they name; what `Chat` does alone. */
+export const mergeFinalFrame = (data: ChatFinalFrame, context: ChatEventContext): void => {
   const next = mergeById(context.messages, [data.requestMessage, data.responseMessage]);
   if (next) {
     context.write(next);
@@ -618,9 +620,19 @@ const mergeFinal = (data: ChatFinalFrame, context: ChatEventContext) => {
 
 const defaultApplyEvent = (event: ChatEvent, context: ChatEventContext) => {
   if (event.type === 'final') {
-    mergeFinal(event.data, context);
+    mergeFinalFrame(event.data, context);
   }
 };
+
+const createEventContext = (
+  read: () => TMessage[],
+  write: (messages: TMessage[]) => void,
+): ChatEventContext => ({
+  get messages() {
+    return read();
+  },
+  write,
+});
 
 /** A tool call that may hold a subagent's own tool calls, where a paused tool can live. */
 type NestedToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] };
@@ -833,6 +845,10 @@ export class Chat {
   readonly id: string;
   private readonly init: ChatInit;
   private readonly executor = new SerialJobExecutor();
+  private readonly eventContext = createEventContext(
+    () => this.messages,
+    (messages) => this.write(messages),
+  );
   private readonly listeners = new Set<() => void>();
   private releaseState?: () => void;
   private active?: ActiveRequest;
@@ -2365,10 +2381,7 @@ export class Chat {
     this.reconcilePause(event, older, disconnect);
     if (folded && !this.disposed) {
       const applyEvent = this.init.applyEvent ?? defaultApplyEvent;
-      applyEvent(folded, {
-        messages: this.messages,
-        write: (messages) => this.write(messages),
-      });
+      applyEvent(folded, this.eventContext);
     }
     /** A listener told of that write may have disposed the chat, which then owns no more state. */
     if (this.disposed) {

@@ -1,4 +1,3 @@
-import { RefObject } from 'react';
 import { isEphemeralAgentId } from 'librechat-data-provider';
 import type {
   TOptions,
@@ -27,15 +26,6 @@ export interface ConfigFieldDetail {
   /** Whether the field holds a secret and should be masked (defaults to masked when omitted). */
   sensitive?: boolean;
 }
-
-export type CodeBarProps = {
-  lang: string;
-  error?: boolean;
-  plugin?: boolean;
-  blockIndex?: number;
-  allowExecution?: boolean;
-  codeRef: RefObject<HTMLElement>;
-};
 
 export enum PromptsEditorMode {
   SIMPLE = 'simple',
@@ -70,7 +60,7 @@ export type LocalizeFunction = (
 
 export type ChatFormValues = { text: string };
 
-export { mainTextareaId } from '@librechat/chat';
+export { mainTextareaId, composerTextareaId } from '@librechat/chat';
 export const globalAudioId = 'global-audio';
 
 export type NavLink = {

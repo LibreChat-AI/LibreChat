@@ -159,16 +159,20 @@ export function validateResponseRequest(body: unknown): RequestValidationResult 
     return { valid: false, error: 'background responses require store: true' };
   }
 
-  if (request.temperature !== undefined) {
-    const temp = request.temperature as number;
-    if (typeof temp !== 'number' || temp < 0 || temp > 2) {
+  if (request.temperature != null) {
+    const temp = request.temperature;
+    if (typeof temp !== 'number' || !Number.isFinite(temp) || temp < 0 || temp > 2) {
       return { valid: false, error: 'temperature must be a number between 0 and 2' };
     }
   }
 
-  if (request.max_output_tokens !== undefined) {
-    if (typeof request.max_output_tokens !== 'number' || request.max_output_tokens < 1) {
-      return { valid: false, error: 'max_output_tokens must be a positive number' };
+  if (request.max_output_tokens != null) {
+    if (
+      typeof request.max_output_tokens !== 'number' ||
+      !Number.isInteger(request.max_output_tokens) ||
+      request.max_output_tokens < 1
+    ) {
+      return { valid: false, error: 'max_output_tokens must be a positive integer or null' };
     }
   }
 

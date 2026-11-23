@@ -174,7 +174,17 @@ jest.mock('@librechat/agents', () => ({
   }),
 }));
 
+const mockPrepareKeyGrant = jest.fn(async () => undefined);
+jest.mock('~/server/services/ApiKeys/grants', () => ({
+  prepare: (...args) => mockPrepareKeyGrant(...args),
+}));
+
 jest.mock('@librechat/api', () => ({
+  createChatCompletionToolProjection: (...args) =>
+    jest.requireActual('@librechat/api').createChatCompletionToolProjection(...args),
+  getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
+  createApiModelCallbacks: (...args) =>
+    jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
@@ -232,6 +242,10 @@ jest.mock('@librechat/api', () => ({
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
+  createRemoteExecutionContext: jest.fn((...args) =>
+    jest.requireActual('@librechat/api').createRemoteExecutionContext(...args),
+  ),
+  getRemoteRunKeyId: (...args) => jest.requireActual('@librechat/api').getRemoteRunKeyId(...args),
   resolveAdmittedCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   createMCPRuntimeRequestBody: ({
@@ -524,6 +538,87 @@ describe('OpenAIChatCompletionController', () => {
     };
   });
 
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'enforces native input policy through the remote bridge: stream=%s blocked=%s',
+    async (stream, blocked) => {
+      const { createRemotePolicyFixture } = require('~/test/helpers/remotePolicy');
+      const fixture = await createRemotePolicyFixture({
+        blocked,
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      const names = [
+        'createRun',
+        'recordCollectedUsage',
+        'createSafeUser',
+        'createChunk',
+        'writeSSE',
+        'sendFinalChunk',
+        'buildNonStreamingResponse',
+        'createOpenAIStreamTracker',
+        'createOpenAIContentAggregator',
+      ];
+      const originals = names.map((name) => [name, api[name].getMockImplementation()]);
+      for (const name of names) api[name].mockImplementation(actual[name]);
+      fixture.configure(req);
+      req.body.stream = stream;
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+      api.initializeAgent.mockResolvedValueOnce(fixture.agent);
+      require('@librechat/agents').formatAgentMessages.mockImplementationOnce(
+        jest.requireActual('@librechat/agents').formatAgentMessages,
+      );
+      try {
+        await OpenAIChatCompletionController(req, res);
+        // The controller tracks accounting asynchronously; observe completed writes,
+        // including any recorder invoked during execution settlement.
+        await Promise.all(mockRecordCollectedUsage.mock.results.map(({ value }) => value));
+        expect(fixture.factory).toHaveBeenCalledTimes(1);
+        expect(fixture.provider).toHaveBeenCalledTimes(blocked ? 0 : 1);
+        if (blocked) {
+          // Calling the real recorder with empty usage is also a valid no-charge path.
+          for (const [, { collectedUsage }] of mockRecordCollectedUsage.mock.calls) {
+            expect(collectedUsage).toEqual([]);
+          }
+          expect(mockSpendTokens).not.toHaveBeenCalled();
+          expect(mockSpendStructuredTokens).not.toHaveBeenCalled();
+          expect(mockUpdateBalance).not.toHaveBeenCalled();
+          expect(mockBulkInsertTransactions).not.toHaveBeenCalled();
+          expect(JSON.stringify([res.json.mock.calls, res.write.mock.calls])).not.toContain(
+            'RUNTIME-PRIVATE-CANARY',
+          );
+        } else {
+          expect(fixture.errors.map((error) => error.stack)).toEqual([]);
+          expect(res.status).not.toHaveBeenCalled();
+          // Positive control: real provider usage must reach the real recorder and
+          // debit these same storage spies, so the blocked assertions are not vacuous.
+          expect(mockRecordCollectedUsage).toHaveBeenCalled();
+          expect(mockBulkInsertTransactions).toHaveBeenCalledTimes(1);
+          expect(mockBulkInsertTransactions).toHaveBeenCalledWith([
+            expect.objectContaining({ user: 'user-123', tokenType: 'prompt', rawAmount: -100 }),
+            expect.objectContaining({ user: 'user-123', tokenType: 'completion', rawAmount: -50 }),
+          ]);
+          expect(mockUpdateBalance).toHaveBeenCalledTimes(1);
+          expect(mockUpdateBalance).toHaveBeenCalledWith({
+            user: 'user-123',
+            incrementValue: -150,
+            balanceConfig: { enabled: true },
+          });
+        }
+        expect(fixture.sdkModelHost.snapshot().calls).toBe(0);
+      } finally {
+        for (const [name, implementation] of originals)
+          api[name].mockImplementation(implementation);
+        await fixture.close();
+      }
+    },
+  );
+
   it.each([true, false])(
     'keeps SDK- and provider-executed calls out of the mounted endpoint (stream=%s)',
     async (streaming) => {
@@ -542,7 +637,10 @@ describe('OpenAIChatCompletionController', () => {
       req.body.stream = streaming;
       api.validateRequest.mockReturnValueOnce({ request: req.body });
       mockProcessStream.mockImplementationOnce(async () => {
-        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
         expect(handlers.on_run_step).toBeUndefined();
         expect(handlers.on_run_step_delta).toBeUndefined();
         expect(handlers.on_run_step_completed).toBeUndefined();
@@ -587,6 +685,91 @@ describe('OpenAIChatCompletionController', () => {
   );
 
   it.each([true, false])(
+    'includes completed server results without advertising execution requests (stream=%s)',
+    async (streaming) => {
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      const names = [
+        'createChunk',
+        'writeSSE',
+        'sendFinalChunk',
+        'buildNonStreamingResponse',
+        'createOpenAIStreamTracker',
+        'createOpenAIContentAggregator',
+      ];
+      const originals = names.map((name) => [name, api[name].getMockImplementation()]);
+      for (const name of names) api[name].mockImplementation(actual[name]);
+      req.body.stream = streaming;
+      req.body.include = ['server_tool_results'];
+      let completion;
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+      mockProcessStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-server',
+          agentId: 'agent-123',
+          toolCalls: [{ id: 'lookup-1', name: 'lookup', args: { city: 'Madrid' } }],
+          toolCallDispositions: ['sdk'],
+          invalidToolCalls: [],
+        });
+        completion = handlers.on_run_step_completed;
+        await completion?.handle(
+          'on_run_step_completed',
+          {
+            result: {
+              id: 'step-1',
+              type: 'tool_call',
+              tool_call: {
+                id: 'lookup-1',
+                name: 'lookup',
+                args: '{"city":"Madrid"}',
+                output: 'Sunny',
+              },
+            },
+          },
+          { agentId: 'agent-123' },
+        );
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'It is sunny.' }] },
+        });
+      });
+      try {
+        await OpenAIChatCompletionController(req, res);
+        expect(completion).toBeDefined();
+        const expected = {
+          call_id: 'lookup-1',
+          name: 'lookup',
+          arguments: '{"city":"Madrid"}',
+          output: 'Sunny',
+        };
+        if (streaming) {
+          const frames = res.write.mock.calls
+            .map(([frame]) => frame)
+            .filter((frame) => frame !== 'data: [DONE]\n\n')
+            .map((frame) => JSON.parse(frame.slice(6)));
+          expect(frames.flatMap((frame) => frame.choices[0].delta.tool_results ?? [])).toEqual([
+            { index: 0, ...expected },
+          ]);
+          expect(frames.flatMap((frame) => frame.choices[0].delta.tool_calls ?? [])).toEqual([]);
+          expect(frames.at(-1).choices[0].finish_reason).toBe('stop');
+        } else {
+          const choice = res.json.mock.calls[0][0].choices[0];
+          expect(choice.message.tool_results).toEqual([expected]);
+          expect(choice.message.tool_calls).toBeUndefined();
+          expect(choice.finish_reason).toBe('stop');
+        }
+      } finally {
+        for (const [name, implementation] of originals)
+          api[name].mockImplementation(implementation);
+      }
+    },
+  );
+
+  it.each([true, false])(
     'publishes accepted client calls after text and a model claim (stream=%s)',
     async (streaming) => {
       const api = require('@librechat/api');
@@ -604,7 +787,10 @@ describe('OpenAIChatCompletionController', () => {
       req.body.stream = streaming;
       api.validateRequest.mockReturnValueOnce({ request: req.body });
       mockProcessStream.mockImplementationOnce(async () => {
-        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        const { customHandlers: handlers, eagerToolExecution } = api.createRun.mock.calls.at(-1)[0];
+        expect(eagerToolExecution).toBe(
+          req.body.include?.includes('server_tool_results') ? false : undefined,
+        );
         await handlers.on_model_response.handle('on_model_response', {
           type: 'model_response',
           id: 'discarded',
@@ -937,6 +1123,7 @@ describe('OpenAIChatCompletionController', () => {
       expect.anything(),
       mockCompletionUsage,
       true,
+      undefined,
     );
   });
 
@@ -1737,6 +1924,84 @@ describe('OpenAIChatCompletionController', () => {
   });
 
   describe('remote-agent file authorization', () => {
+    it('passes on what the execution context says about attendance, not an answer of its own', async () => {
+      const { initializeAgent, createRemoteExecutionContext } = require('@librechat/api');
+      const { loadAgentTools } = require('~/server/services/ToolService');
+      createRemoteExecutionContext.mockReturnValueOnce({
+        principal: { userId: 'user-123' },
+        agentId: 'agent-123',
+        source: { type: 'remote_api', protocol: 'chat.completions', background: true },
+        unattended: false,
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      const [initializeParams] = initializeAgent.mock.calls.at(-1);
+      await initializeParams.loadTools({
+        agentId: 'agent-123',
+        tools: ['file_search'],
+        provider: 'openAI',
+        model: 'gpt-4',
+      });
+      expect(loadAgentTools).toHaveBeenLastCalledWith(
+        expect.objectContaining({ unattended: false }),
+      );
+    });
+
+    it('puts a personal key run under its grant before any tool is loaded', async () => {
+      const { initializeAgent } = require('@librechat/api');
+      req.apiKeyId = 'key-1';
+      let initialized = false;
+      mockPrepareKeyGrant.mockImplementationOnce(async () => {
+        initialized = initializeAgent.mock.calls.length > 0;
+      });
+      initializeAgent.mockClear();
+      mockPrepareKeyGrant.mockClear();
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockPrepareKeyGrant).toHaveBeenCalledTimes(1);
+      expect(mockPrepareKeyGrant).toHaveBeenCalledWith({
+        req,
+        res,
+        signal: expect.any(AbortSignal),
+        executionContext: {
+          principal: { userId: 'user-123' },
+          agentId: 'agent-123',
+          source: {
+            type: 'remote_api',
+            protocol: 'chat.completions',
+            background: false,
+            keyId: 'key-1',
+          },
+          unattended: true,
+        },
+      });
+      expect(initialized).toBe(false);
+      expect(initializeAgent).toHaveBeenCalled();
+    });
+
+    it('names no key for a key issued to an integration, and loads nothing when the grant check fails', async () => {
+      const { initializeAgent } = require('@librechat/api');
+      req.apiKeyId = 'key-1';
+      req.apiKeyBound = true;
+      initializeAgent.mockClear();
+      mockPrepareKeyGrant.mockClear();
+      mockPrepareKeyGrant.mockRejectedValueOnce(
+        Object.assign(new Error('mcp_reauth_required'), {
+          statusCode: 403,
+          code: 'mcp_reauth_required',
+        }),
+      );
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockPrepareKeyGrant.mock.calls[0][0].executionContext.source).not.toHaveProperty(
+        'keyId',
+      );
+      expect(initializeAgent).not.toHaveBeenCalled();
+    });
+
     it('threads the remote-agent permission boundary through initialization and tool loading', async () => {
       const { initializeAgent, createToolExecuteHandler } = require('@librechat/api');
       const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
@@ -1768,8 +2033,9 @@ describe('OpenAIChatCompletionController', () => {
         model: 'gpt-4',
         tool_resources: { file_search: { file_ids: ['owner-file'] } },
       });
+      /** Nobody reads a chat-completions response in a browser, so tool loading must not prompt. */
       expect(loadAgentTools).toHaveBeenLastCalledWith(
-        expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT }),
+        expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT, unattended: true }),
       );
 
       const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
@@ -1790,6 +2056,7 @@ describe('OpenAIChatCompletionController', () => {
           agentResourceType: ResourceType.REMOTE_AGENT,
           requestBody: initializeParams.requestBody,
           signal: effectiveSignal,
+          unattended: true,
         }),
       );
       mockExecution.abort();

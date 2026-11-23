@@ -8,6 +8,7 @@ import type {
   ParentSubagentSummary,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import { ThreadFollowsProvider, useThreadFollows } from './follows';
 import { useStreamHost } from '../stream/host';
 
 export type ParentSubagentsContextValue = {
@@ -15,6 +16,12 @@ export type ParentSubagentsContextValue = {
   byMessageId: ReadonlyMap<string, ParentSubagentSummary[]>;
   byThreadId: ReadonlyMap<string, ParentSubagentSummary>;
   refresh: () => Promise<ParentSubagentIndex | undefined>;
+  /**
+   * Says the page shows a child this index does not list, as one dispatched after the index was
+   * last read is. The index is read again, once per child and once for every child named in the
+   * same commit.
+   */
+  discover: (threadId: string) => void;
   isError: boolean;
   discoveryEnabled: boolean;
 };
@@ -26,6 +33,7 @@ const defaultValue: ParentSubagentsContextValue = {
   byMessageId: emptyMap,
   byThreadId: emptyThreadMap,
   refresh: async () => undefined,
+  discover: () => undefined,
   isError: false,
   discoveryEnabled: false,
 };
@@ -46,6 +54,7 @@ export function ParentSubagentsProvider({
   const queryClient = useQueryClient();
   const { useParentSubagentIndex } = useStreamHost();
   const parent = useContext(ParentSubagentsContext);
+  const sharedFollows = useThreadFollows();
   const inherited =
     parent.conversationId === conversationId && parent.discoveryEnabled ? parent : null;
   // Observe already-loaded history without fetching it or rerendering on streamed text.
@@ -82,6 +91,24 @@ export function ParentSubagentsProvider({
     const result = await refetch();
     return result.data;
   }, [refetch]);
+  /** Children already asked about under this conversation, and whether a read is scheduled. */
+  const asks = useMemo(
+    () => ({ conversationId, asked: new Set<string>(), scheduled: false }),
+    [conversationId],
+  );
+  const discover = useCallback(
+    (threadId: string) => {
+      if (!discoveryEnabled || asks.asked.has(threadId)) return;
+      asks.asked.add(threadId);
+      if (asks.scheduled) return;
+      asks.scheduled = true;
+      queueMicrotask(() => {
+        asks.scheduled = false;
+        void refetch();
+      });
+    },
+    [discoveryEnabled, asks, refetch],
+  );
   const value = useMemo<ParentSubagentsContextValue>(() => {
     if (inherited != null) return inherited;
     const byMessageId = new Map<string, ParentSubagentSummary[]>();
@@ -99,11 +126,28 @@ export function ParentSubagentsProvider({
         return updated === 0 ? left.threadId.localeCompare(right.threadId) : updated;
       });
     }
-    return { conversationId, byMessageId, byThreadId, refresh, isError, discoveryEnabled };
-  }, [conversationId, data, refresh, isError, discoveryEnabled, inherited]);
+    return {
+      conversationId,
+      byMessageId,
+      byThreadId,
+      refresh,
+      discover,
+      isError,
+      discoveryEnabled,
+    };
+  }, [conversationId, data, refresh, discover, isError, discoveryEnabled, inherited]);
 
+  /** A provider nested under one for the same conversation shares that one's followers. */
+  const followers =
+    inherited != null && sharedFollows != null ? (
+      children
+    ) : (
+      <ThreadFollowsProvider parentConversationId={conversationId}>
+        {children}
+      </ThreadFollowsProvider>
+    );
   return (
-    <ParentSubagentsContext.Provider value={value}>{children}</ParentSubagentsContext.Provider>
+    <ParentSubagentsContext.Provider value={value}>{followers}</ParentSubagentsContext.Provider>
   );
 }
 

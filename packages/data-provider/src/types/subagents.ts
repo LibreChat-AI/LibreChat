@@ -1,6 +1,7 @@
 import type { StepEvents, SteerEvents, TSteerAppliedEvent } from './runs';
 import type { TMessageContentParts } from './content';
 import type { ChatStepFrame } from './transport';
+import type { TMessage } from '../schemas';
 import type { Agents } from './agents';
 
 export type SubagentThreadStatus =
@@ -14,7 +15,11 @@ export type SubagentThreadStatus =
 export type ParentSubagentTaskSummary = {
   taskId: string;
   status: SubagentThreadStatus;
+  /** ISO-8601 time of the task's newest record: its dispatch while it runs, its end after. */
   createdAt?: string;
+  /** ISO-8601 dispatch time. Absent from a server that predates it, and for a task whose
+   *  dispatch record was not among those the index read. */
+  startedAt?: string;
 };
 
 /**
@@ -171,6 +176,13 @@ export type SubagentThreadTurn = {
   controlReceipts?: SubagentControlReceipt[];
   controlReceiptsTruncated?: boolean;
   messages: SubagentThreadMessage[];
+};
+
+/** One page of a child thread's messages, oldest first. */
+export type SubagentThreadMessagesPage = {
+  messages: TMessage[];
+  /** The cursor that reads the page before this one; `null` when this page holds the first row. */
+  earlier: string | null;
 };
 
 export type SubagentThreadView = {
