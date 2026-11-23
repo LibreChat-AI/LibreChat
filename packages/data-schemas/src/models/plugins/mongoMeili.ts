@@ -87,6 +87,7 @@ export interface SchemaWithMeiliMethods extends Model<DocumentWithMeiliIndex> {
     batchSize: number,
     delayMs: number,
   ): Promise<void>;
+  cleanupOwnerlessMeiliIndex(): Promise<void>;
   setMeiliIndexSettings(settings: Record<string, unknown>): Promise<unknown>;
   meiliSearch(
     q: string,
@@ -128,6 +129,8 @@ const meiliRequestTimeoutMs = 10_000;
 const meiliWriteMaxAttempts = 3;
 const meiliRetryBaseDelayMs = 250;
 const meiliVersionReconcileMaxAttempts = 3;
+/** Matches documents indexed before `user` joined the projection. */
+const ownerlessFilter = 'user NOT EXISTS OR user IS NULL OR user IS EMPTY';
 const completeDetachedOperation: CallbackWithoutResultAndOptionalError = () => undefined;
 
 const retryDetachedMeiliWrite = async (
@@ -741,6 +744,99 @@ const createMeiliMongooseModel = ({
         }
       } catch (error) {
         logger.error('[cleanupMeiliIndex] Error during cleanup:', error);
+      }
+    }
+
+    /**
+     * Reconciles documents indexed before `user` joined the projection, which no
+     * user-scoped search can return. One whose MongoDB record is still indexable and
+     * owned is queued for reindexing rather than deleted, so the next sync replaces it
+     * with its owner and a concurrent save cannot lose it; the rest are deleted.
+     * Skipped until `user` is filterable, which the filter needs. Best effort: a
+     * failure is logged and the remainder is retried on the next start.
+     */
+    static async cleanupOwnerlessMeiliIndex(this: SchemaWithMeiliMethods): Promise<void> {
+      const { batchSize, delayMs } = syncConfig;
+      let offset = 0;
+      let deleted = 0;
+      let requeued = 0;
+      let previousPage: string | undefined;
+
+      try {
+        const { filterableAttributes } = await index.getSettings();
+        if (!filterableAttributes?.includes('user')) {
+          return;
+        }
+
+        while (true) {
+          const batch = await index.getDocuments({
+            filter: ownerlessFilter,
+            fields: [primaryKey],
+            limit: batchSize,
+            offset,
+          });
+          if (batch.results.length === 0) {
+            break;
+          }
+
+          const ids = batch.results.map((doc) => String(doc[primaryKey]));
+          const page = `${offset}:${ids.join(',')}`;
+          if (page === previousPage) {
+            throw new Error(`Ownerless cleanup of ${index.uid} made no progress`);
+          }
+          previousPage = page;
+
+          const owned = await this.find({
+            $and: [getIndexableQuery(), { [primaryKey]: { $in: ids }, user: { $nin: [null, ''] } }],
+          })
+            .select(primaryKey)
+            .lean();
+          const ownedIds = new Set(
+            owned.map((doc: Record<string, unknown>) => String(doc[primaryKey])),
+          );
+          const orphans = ids.filter((id) => !ownedIds.has(id));
+
+          if (ownedIds.size > 0) {
+            await this.updateMany(
+              { _id: { $in: owned.map((doc: Record<string, unknown>) => doc._id) } },
+              { $set: { _meiliIndex: false, _meiliIndexAttempted: true } },
+              { timestamps: false },
+            );
+            requeued += ownedIds.size;
+          }
+
+          if (orphans.length > 0) {
+            const deletion = await index.deleteDocuments(orphans);
+            const deletionTask = await client.waitForTask(deletion.taskUid, {
+              timeOutMs: meiliRequestTimeoutMs,
+              intervalMs: 100,
+            });
+            if (deletionTask.status !== 'succeeded') {
+              throw new Error(
+                `Meili cleanup task ${deletion.taskUid} ended with ${deletionTask.status}`,
+              );
+            }
+            deleted += orphans.length;
+          }
+
+          if (batch.results.length < batchSize) {
+            break;
+          }
+          offset += ownedIds.size;
+          if (delayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+        }
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'index_not_found') {
+          logger.error(`[cleanupOwnerlessMeiliIndex] Error cleaning ${index.uid}:`, error);
+        }
+      }
+
+      if (deleted > 0 || requeued > 0) {
+        logger.info(
+          `[cleanupOwnerlessMeiliIndex] ${index.uid}: deleted ${deleted} orphaned and queued ${requeued} owned documents for reindexing`,
+        );
       }
     }
 
