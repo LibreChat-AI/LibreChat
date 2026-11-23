@@ -111,6 +111,7 @@ export * from './code/approval';
 export * from './code/workspace';
 
 export * from './types/runGrant';
+export * from './types/dead';
 
 export * from './approval';
 export * from './types/channels';
