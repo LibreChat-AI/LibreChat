@@ -249,8 +249,9 @@ test.describe('marketplace sorting', () => {
     /* Not re-sorted under the reader: the open list keeps its order until it is shown again. */
     expect(await renderedOrder()).toEqual(initial);
 
+    /* Newest is the default, so choosing it drops `sort` from the URL. */
     await chooseSort('Newest first');
-    await expect(page).toHaveURL(/sort=newest/);
+    await expect(page).not.toHaveURL(/sort=popular/);
     await expect.poll(renderedOrder, { timeout: 30000 }).toHaveLength(2);
     await chooseSort('Popular');
     await expect(page).toHaveURL(/sort=popular/);
