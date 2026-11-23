@@ -73,6 +73,8 @@ describe('Shared-link directory principal provisioning', () => {
     await mongoose.connect(mongoServer.getUri());
     createModels(mongoose);
     ({ User, Group, AclEntry } = mongoose.models);
+    /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+    await mongoose.models.ResourceLock.createIndexes();
     await db.seedDefaultRoles();
     app = express();
     app.use(express.json());

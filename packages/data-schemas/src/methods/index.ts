@@ -17,11 +17,9 @@ export type {
   SubagentContentAppendResult,
 } from './subagentContent';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from './runGrant';
 import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
-import { createScheduleMCPConsentStorage } from './runGrant';
 export { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
 export type {
   RunGrantStorage,
@@ -366,7 +364,6 @@ export type AllMethods = PermissionPrincipalStorage &
   SkillLifecycleMethods &
   AgentTriggerDeliveryMethods &
   AgentQueuedTurnMethods &
-  ScheduleMCPConsentStorage &
   ScheduleMethods &
   AgentMethods &
   ConfigMethods &
@@ -393,6 +390,8 @@ export interface CreateMethodsDeps {
   getMCPAppMessageBudget?: () => Promise<number | undefined>;
   /** Recognizes agent skill IDs supplied by an external, non-database registry. */
   isExternalSkillId?: AgentDeps['isExternalSkillId'];
+  /** Whether the deployment serves shared links; omitted means enabled. */
+  allowSharedLinks?: boolean;
 }
 
 /**
@@ -437,6 +436,7 @@ export function createMethods(
   });
 
   const conversationMethods = createConversationMethods(mongoose, {
+    allowSharedLinks: deps.allowSharedLinks,
     getMessages: messageMethods.getMessages,
     deleteMessages: messageMethods.deleteMessages,
     searchMessages: messageMethods.searchMessages,
@@ -625,7 +625,6 @@ export function createMethods(
     ...agentTriggerDeliveryMethods,
     ...agentQueuedTurnMethods,
     ...createScheduleMethods(mongoose),
-    ...createScheduleMCPConsentStorage(mongoose),
     /* Tier 5 */
     ...agentMethods,
     /* Config */

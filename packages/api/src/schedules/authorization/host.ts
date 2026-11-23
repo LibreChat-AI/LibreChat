@@ -55,7 +55,9 @@ export function createMCPUseCheck(
 }
 
 export function createScheduleMCPConsentHost(deps: {
-  methods: ScheduleMCPConsentStorage & Pick<SchedulesHandlersDeps['methods'], 'getScheduleById'>;
+  /** Where a schedule's grant is kept: its own object, as an API key's is. */
+  storage: ScheduleMCPConsentStorage;
+  methods: Pick<SchedulesHandlersDeps['methods'], 'getScheduleById'>;
   getLimits: SchedulesHandlersDeps['getLimits'];
   findUser: (id: string) => Promise<IUser | null>;
   getRoleByName: CheckAccessParams['getRoleByName'];
@@ -86,7 +88,7 @@ export function createScheduleMCPConsentHost(deps: {
   };
   const canUseMCP = createMCPUseCheck(deps.getRoleByName);
   const service = createRunGrantService({
-    storage: deps.methods,
+    storage: deps.storage,
     getLimits: async (identity) => {
       const user = await loadPrincipal(identity);
       if (!user) return { enabled: false, maxLifetimeHours: DEFAULT_RUN_GRANT_LIFETIME_HOURS };

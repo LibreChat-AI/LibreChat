@@ -191,7 +191,16 @@ jest.mock('../Parts', () => ({
   Reasoning: () => <div data-testid="reasoning" />,
   Summary: () => <div data-testid="summary" />,
   SteerPart: () => <div data-testid="steer" />,
-  Text: jest.fn(({ text }: { text?: string }) => <div data-testid="text">{text}</div>),
+  Text: jest.fn(function MockText({ text }: { text?: string }) {
+    const { nextType } = jest
+      .requireActual<typeof import('~/Providers/MessageContext')>('~/Providers/MessageContext')
+      .useMessageContext();
+    return (
+      <div data-testid="text" data-next-type={nextType}>
+        {text}
+      </div>
+    );
+  }),
   MemoryCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="memory-call" data-count={attachments?.length ?? 0} />
   ),
@@ -212,6 +221,71 @@ jest.mock('../Parts', () => ({
       </div>
     );
   },
+}));
+
+/**
+ * The chat package routes parts to its own cards, which it imports by module and not through
+ * `../Parts`. These stand the same stubs in for those modules, so a part draws the stub whichever
+ * side routes it.
+ */
+function mockCards() {
+  return jest.requireMock<Record<string, React.ComponentType>>('../Parts');
+}
+jest.mock('@librechat/chat/dist/components/Text.cjs', () => ({
+  __esModule: true,
+  default: mockCards().Text,
+}));
+jest.mock('@librechat/chat/dist/components/Summary.cjs', () => ({
+  __esModule: true,
+  default: mockCards().Summary,
+}));
+jest.mock('@librechat/chat/dist/components/EmptyText.cjs', () => ({
+  __esModule: true,
+  default: mockCards().EmptyText,
+}));
+jest.mock('@librechat/chat/dist/components/AgentUpdate.cjs', () => ({
+  __esModule: true,
+  default: mockCards().AgentUpdate,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Reasoning.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/Reasoning.cjs'),
+  default: mockCards().Reasoning,
+}));
+jest.mock('@librechat/chat/dist/components/parts/SteerPart.cjs', () => ({
+  __esModule: true,
+  default: mockCards().SteerPart,
+}));
+jest.mock('@librechat/chat/dist/components/parts/ExecuteCode.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/ExecuteCode.cjs'),
+  default: mockCards().ExecuteCode,
+}));
+jest.mock('@librechat/chat/dist/components/parts/ImageGen.cjs', () => ({
+  __esModule: true,
+  default: mockCards().ImageGen,
+}));
+jest.mock('@librechat/chat/dist/components/parts/MemoryCall.cjs', () => ({
+  __esModule: true,
+  default: mockCards().MemoryCall,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Retrieval.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="retrieval-call" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/AgentHandoff.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="agent-handoff" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/CodeAnalyze.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="code-analyze" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Image.cjs', () => ({
+  __esModule: true,
+  default: () => <div data-testid="image" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Container.cjs', () => ({
+  __esModule: true,
+  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
 
 jest.mock('~/components/Web/Sources', () => ({
@@ -241,21 +315,6 @@ jest.mock('../WebSearch', () => ({
   default: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="web-search" data-count={attachments?.length ?? 0} />
   ),
-}));
-
-jest.mock('../RetrievalCall', () => ({
-  __esModule: true,
-  default: () => <div data-testid="retrieval-call" />,
-}));
-
-jest.mock('../AgentHandoff', () => ({
-  __esModule: true,
-  default: () => <div data-testid="agent-handoff" />,
-}));
-
-jest.mock('../CodeAnalyze', () => ({
-  __esModule: true,
-  default: () => <div data-testid="code-analyze" />,
 }));
 
 jest.mock('../Image', () => ({
@@ -2083,6 +2142,23 @@ describe('ContentParts integration: lane groups backed by one agent', () => {
       'agent_a',
       'agent_b____1',
     ]);
+  });
+
+  it('only lets a later part in the same lane settle an artifact text part', () => {
+    const artifact = ':::artifact{identifier="report" title="Report" type="text/html"}';
+    const frame = (parts: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={parts} />
+      </RecoilRoot>
+    );
+    const primary = inLane(makeTextPart(artifact), 'agent_a');
+    const other = inLane(makeTextPart('Other model text'), 'agent_b____1');
+    const { rerender } = render(frame([primary, other]));
+    expect(screen.getByText(artifact)).not.toHaveAttribute('data-next-type');
+
+    rerender(frame([primary, other, inLane(makeTextPart('Same model text'), 'agent_a')]));
+    expect(screen.getByText(artifact)).toHaveAttribute('data-next-type', ContentTypes.TEXT);
+    expect(screen.getByText('Other model text')).not.toHaveAttribute('data-next-type');
   });
 
   it('keeps lane attribution when a phase marker leaves one agent per slice', () => {

@@ -2,22 +2,22 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { Button } from '@librechat/client';
 import { getToolDisplayLabel } from '@librechat/chat';
 import {
-  SystemEventHeader,
-  SystemEventIcon,
-  systemEventHeaderClasses,
-  useExpandCollapse,
-} from '@librechat/chat/components';
-import {
   useSubagentTaskPanel,
   subagentStatusIcon,
   subagentStatusLabelKey,
   useLazyCollapseBody,
 } from '@librechat/chat/react';
+import {
+  SystemEventHeader,
+  SystemEventIcon,
+  BackgroundTaskCard,
+  systemEventHeaderClasses,
+  useExpandCollapse,
+} from '@librechat/chat/components';
 import type { WakeupDisplay, WakeupTask } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import BackgroundTaskCard from './BackgroundTaskCard';
 import { StackedToolIcons } from './ToolOutput';
 import MarkdownLite from './MarkdownLite';
 import { useLocalize } from '~/hooks';

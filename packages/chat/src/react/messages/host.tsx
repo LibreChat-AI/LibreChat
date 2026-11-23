@@ -1,4 +1,4 @@
-import { useRef, createContext, useContext } from 'react';
+import { memo, useRef, createContext, useContext } from 'react';
 import type {
   Agent,
   AgentDisplay,
@@ -12,7 +12,14 @@ import type {
   TUpdateFeedbackRequest,
   TUpdateFeedbackResponse,
 } from 'librechat-data-provider';
-import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
+import type {
+  Dispatch,
+  ReactNode,
+  MouseEvent,
+  RefObject,
+  SetStateAction,
+  NamedExoticComponent,
+} from 'react';
 import type { WakeupDisplay } from '../../core/parts/wakeup';
 import type { TAskFunction } from '../../core';
 
@@ -177,7 +184,13 @@ export type MessageAudioProps = {
   renderButton?: (props: MessageAudioButtonProps) => ReactNode;
 };
 
-/** A model response's usage control, rendered with the host's config and accounting data. */
+/**
+ * A model response's usage control, rendered with the host's config and accounting data.
+ *
+ * `message` names the response and carries the usage recorded for it. The control is rendered
+ * again when either changes, not for each frame of the response's text, so the rest of the
+ * object may be a frame behind.
+ */
 export type MessageUsageProps = {
   message: TMessage;
   conversationId?: string;
@@ -358,7 +371,27 @@ export function MessageAudioSlot(props: MessageAudioProps): ReactNode {
   return useMessagesHost().renderMessageAudio(props);
 }
 
-/** A response's token details, when the host enables usage reporting. */
-export function MessageUsageSlot(props: MessageUsageProps): ReactNode {
-  return useMessagesHost().renderMessageUsage?.(props) ?? null;
+/** Whether two renders of the usage control are for the same response with the same usage. */
+function isSameUsage(prev: MessageUsageProps, next: MessageUsageProps): boolean {
+  return (
+    prev.isLast === next.isLast &&
+    prev.conversationId === next.conversationId &&
+    prev.message.messageId === next.message.messageId &&
+    prev.message.conversationId === next.message.conversationId &&
+    prev.message.metadata?.usage === next.message.metadata?.usage
+  );
 }
+
+/**
+ * A response's token details, when the host enables usage reporting.
+ *
+ * The toolbar this sits in renders on every streamed frame of its response, each time with a new
+ * message object. The control shows nothing of the text, so it waits for the response or its
+ * usage to change: left to follow the toolbar, it rendered its popover again on every frame.
+ */
+export const MessageUsageSlot: NamedExoticComponent<MessageUsageProps> = memo(
+  function MessageUsageSlot(props: MessageUsageProps): ReactNode {
+    return useMessagesHost().renderMessageUsage?.(props) ?? null;
+  },
+  isSameUsage,
+);

@@ -115,7 +115,9 @@ export interface CheckpointCandidate {
  * the summary and keeps the parts that follow, exactly as it does when the full
  * history is sent. A sliced row drops its stored token count, which still covers
  * the parts before the summary, so the prompt is charged for what it sends. A
- * legacy `summary` field replaces the whole row.
+ * legacy `summary` field replaces the whole row and is charged its
+ * `summaryTokenCount`; without one, the stored count still covers the original
+ * response, so it is dropped and the summary is recounted.
  */
 export function resolveCheckpointMessage<T extends CheckpointCandidate>(
   message: T,
@@ -134,7 +136,7 @@ export function resolveCheckpointMessage<T extends CheckpointCandidate>(
     ...message,
     role: 'system',
     content: [{ type: ContentTypes.TEXT, text: message.summary }],
-    tokenCount: message.summaryTokenCount ?? message.tokenCount,
+    tokenCount: message.summaryTokenCount ?? undefined,
   };
 }
 

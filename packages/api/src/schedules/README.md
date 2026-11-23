@@ -49,12 +49,14 @@ unavailable, is not configured or may not be used does not refuse the schedule:
 - At each occurrence the readiness check still runs. The servers that are not ready are
   recorded on the run, each with its status and marked `skipped`, and named in the trigger
   the run is started from (`metadata.skip`, beside `metadata.servers`: every server the check
-  covered). The run loads no tool on them (`withoutSkippedMCPServers`, through
-  `narrowGrantedTools`), so it does not stop to ask for a sign-in nobody is there to
-  give, and the rest of the agent runs. A tool key is resolved to its server among the
-  servers the check covered, longest name first, as tool loading resolves it.
+  covered). The run host hands both lists to the grant execution it attaches to the request
+  (`without`, read off the request by `readSkippedMCPServers`), and the run loads no tool on
+  those servers (`narrowGrantedTools`), with a grant or with none, so it does not stop to ask
+  for a sign-in nobody is there to give, and the rest of the agent runs. A tool key is
+  resolved to its server among the servers the check covered, longest name first, as tool
+  loading resolves it.
 - A run that pauses and is resumed rebuilds its tools on a request that is not a trigger. The
-  run host (`prepare` in `authorization/runtime.ts`) reads the same two lists back from the
+  run host (`restore` in `authorization/runtime.ts`) reads the same two lists back from the
   occurrence's run row before any tool is loaded, so a resumed run goes without the same
   servers. The outcomes are written with the run's reservation, before its trigger is
   enqueued, so they are there whatever happens to the bookkeeping that follows.
@@ -281,6 +283,13 @@ pause (the ask-user tool, a tool under an approval rule, an approval hook) is bu
 the pause wiring, as a remote API run is (`resolveScheduledPause`): the ask-user tool is left
 out, a call whose policy asks is refused for that call, and every other tool runs. Nothing
 runs unapproved, and nothing waits for an answer that could not be delivered.
+
+The same holds for an agent whose code runs on a machine its owner attached. Any other caller
+with no resume path is refused such an agent before it starts; the scheduled run names what it
+is missing (`pauseGap`) and starts. The machine's own policy still decides each call: one it
+permits runs, one it denies is denied, and one it would ask about is denied, since there is
+nobody to ask. A machine set to ask about every command therefore runs none of them on that
+deployment: the model is told each call was refused and the run goes on to its answer.
 
 ### A schedule its owner never authorized
 

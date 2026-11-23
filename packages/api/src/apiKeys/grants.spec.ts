@@ -23,11 +23,17 @@ import {
   createRemoteExecutionContext,
   createTriggerExecutionContext,
 } from '~/agents/authority/context';
+import {
+  bindRunGrantInvocation,
+  grantExecution,
+  approvalHooks,
+} from '~/agents/authority/execution';
 import { pinStorage, untouchedSince, admitsDefinitions } from '~/agents/authority/execution.helper';
-import { getScheduleMCPExecution, bindRunGrantInvocation } from '~/agents/authority/execution';
-import { createAgentKeyMCPGrantHost, getRemoteRunKeyId } from './grants';
+import { createAgentKeyMCPGrantHost, getRemoteRunKeyId, keySubject } from './grants';
+import { scheduleExecution } from '~/schedules/authorization/subject';
 import { initializeWithAuthority } from '~/agents/authority/host';
 import { captureTrigger } from '~/agents/authority/trigger';
+import { createRunPolicy } from '~/agents/authority/run';
 import { sanitizeJobMetadata } from '~/stream/metadata';
 import { getMCPRequestContext } from '~/mcp/request';
 
@@ -224,7 +230,7 @@ function setup(
     });
     await initializeWithAuthority(
       { req, executionContext },
-      () => ({ schedule: { prepare: async () => undefined }, key: host }),
+      [keySubject(() => host)],
       async () => undefined,
     );
     return started(req, agentId);
@@ -278,8 +284,8 @@ function setup(
       ? restoreExecutionContext(req, { userId: 'owner', tenantId: 'tenant', ...job })
       : first;
     await initializeWithAuthority(
-      { req, executionContext },
-      () => ({ schedule: { prepare: async () => undefined }, key: host }),
+      { req, context: getMCPRequestContext(req), executionContext },
+      [keySubject(() => host)],
       async () => undefined,
     );
     return started(req, agentId);
@@ -576,8 +582,44 @@ it('limits only MCP tools: an agent with other tools can still be granted, and t
   expect(await s.allow('agent_a', ['query'])).toMatchObject({ state: 'active' });
   const { context, call } = await s.run();
   await expect(call()).resolves.toBe('authorized');
-  // No schedule policy hook is built for it, so the agent's other tools are untouched.
-  expect(getScheduleMCPExecution(context)).toBeUndefined();
+  // Nothing that writes or reads a schedule's own records finds a schedule here.
+  expect(scheduleExecution(context)).toBeUndefined();
+  // The run's policy is built over the key's grant like over any subject's, and decides
+  // nothing under it: the agent's other tools are untouched, an MCP call is checked where it
+  // is made, work may go to the background, and the run is never one that could pause.
+  const grant = grantExecution(context);
+  expect(grant).toMatchObject({
+    identity: { keyId: expect.any(String), agentId: 'agent_a' },
+    enrolled: true,
+    coversTools: false,
+    detaches: true,
+    mayAsk: false,
+  });
+  const policy = createRunPolicy(grant!, [
+    {
+      id: 'agent_a',
+      backgroundToolNames: ['execute_code'],
+      toolDefinitions: [
+        { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+        { name: 'export_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+      ],
+    },
+  ]);
+  const signal = new AbortController().signal;
+  for (const [toolName, toolInput] of [
+    ['execute_code', {}],
+    ['execute_code', { run_in_background: true }],
+    ['web_search', {}],
+    ['query_mcp_warehouse', {}],
+    ['export_mcp_warehouse', {}],
+  ] as const) {
+    const input = { toolName, toolInput, executingAgentId: 'agent_a' } as Parameters<
+      typeof policy.hook
+    >[0];
+    expect(await policy.hook(input, signal)).toEqual({});
+    expect(await policy.receipt(input, signal)).toEqual({});
+  }
+  expect(approvalHooks(grant)).toEqual([]);
 });
 
 it('offers only servers the operator declared for key grants, and never an approval pause', async () => {

@@ -1407,7 +1407,14 @@ describe('share fork route', () => {
     forkSharedConversation.mockResolvedValue(forkResult);
 
     const response = await request(
-      buildApp({ user: { id: 'user-123', role: 'USER', tenantId: 'tenant-viewer' } }),
+      buildApp({
+        user: {
+          id: 'user-123',
+          role: 'USER',
+          tenantId: 'tenant-viewer',
+          idOnTheSource: 'viewer-source-id',
+        },
+      }),
     )
       .post('/api/share/share-123/fork')
       .send({ targetMessageIndex: 3, shareRevision: '2026-01-01T00:00:00.000Z' });
@@ -1419,6 +1426,7 @@ describe('share fork route', () => {
       shareResourceId: 'resource-123',
       requestUserId: 'user-123',
       userRole: 'USER',
+      idOnTheSource: 'viewer-source-id',
       userTenantId: 'tenant-viewer',
       targetMessageIndex: 3,
       shareRevision: '2026-01-01T00:00:00.000Z',

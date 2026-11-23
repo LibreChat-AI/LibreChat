@@ -30,6 +30,7 @@ const {
   clearToolApprovalHooks,
   getPluginHookSource,
   setPluginHookSource,
+  ATTACHMENT_ONLY_TEXT,
 } = require('@librechat/api');
 const BaseClient = require('~/app/clients/BaseClient');
 const AgentClient = require('./client');
@@ -2495,6 +2496,59 @@ describe('AgentClient - startup telemetry', () => {
     }
   });
 
+  it('tells the run what a scheduled run that cannot pause is missing, and nothing where it can', async () => {
+    mockIsHITLEnabled.mockReturnValue(false);
+    const asker = (id) => {
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: { endpoints: { [EModelEndpoint.agents]: {} } },
+          _isScheduledFire: true,
+          _resumableStreamId: id,
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          tools: [{ name: 'ask_user_question' }],
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = id;
+      client.responseMessageId = `${id}-response`;
+      client.parentMessageId = `${id}-parent`;
+      return client;
+    };
+
+    expect(await startScheduledRun(asker('scheduled-gap-store'))).toMatchObject({
+      hitlCapable: false,
+      pauseGap: 'shared_store',
+    });
+
+    const isRedisSpy = jest.spyOn(GenerationJobManager, 'isRedis', 'get').mockReturnValue(true);
+    try {
+      mockGetAgentCheckpointer.mockResolvedValueOnce(null);
+      expect(await startScheduledRun(asker('scheduled-gap-checkpointer'))).toMatchObject({
+        hitlCapable: false,
+        pauseGap: 'durable_checkpointer',
+      });
+
+      mockGetAgentCheckpointer.mockResolvedValueOnce({});
+      const capable = await startScheduledRun(asker('scheduled-gap-none'));
+      expect(capable.hitlCapable).toBe(true);
+      expect(capable.pauseGap).toBeUndefined();
+    } finally {
+      isRedisSpy.mockRestore();
+    }
+  });
+
   it('includes host-generated background tools in scheduled pause admission', async () => {
     const client = new AgentClient({
       req: {
@@ -3386,6 +3440,79 @@ describe('AgentClient - startup telemetry', () => {
     expect(client.contentParts).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: ContentTypes.ERROR })]),
     );
+  });
+
+  describe('settles a Gemini output-budget truncation into the response', () => {
+    const think = { type: ContentTypes.THINK, [ContentTypes.THINK]: 'Reasoning so far' };
+    const code = JSON.stringify({ type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED });
+
+    const runTruncatedTurn = async ({ contentParts, ending, continued = false }) => {
+      jest.clearAllMocks();
+      mockCreateRun.mockResolvedValue({
+        Graph: null,
+        processStream: jest.fn().mockResolvedValue(undefined),
+        getCalibrationRatio: jest.fn(() => 0),
+      });
+      mockIsHITLEnabled.mockReturnValue(false);
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: { isContinued: continued },
+          /** A content policy withholds thrown error text; the settled part is code only. */
+          config: {
+            endpoints: { [EModelEndpoint.agents]: {} },
+            messageFilter: { pii: { enabled: true } },
+          },
+          _resumableStreamId: 'conversation-output-budget',
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.google,
+          provider: EModelEndpoint.google,
+          model_parameters: { model: 'gemini-3-pro' },
+          hide_sequential_outputs: false,
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts,
+        collectedUsage: [],
+        artifactPromises: [],
+        truncationSink: { calls: { 'agent=agent-123': ending } },
+      });
+      client.conversationId = 'conversation-output-budget';
+      client.responseMessageId = 'response-output-budget';
+      client.parentMessageId = 'parent-output-budget';
+      client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+      await client.chatCompletion({ payload: [] });
+      return client;
+    };
+
+    it('keeps the reasoning and adds the code when the model answered with nothing', async () => {
+      const client = await runTruncatedTurn({ contentParts: [think], ending: 'exhausted' });
+
+      expect(client.contentParts).toEqual([think, { type: ContentTypes.ERROR, error: code }]);
+      expect(client.metadata).toBeUndefined();
+    });
+
+    it('keeps a partial answer and finishes it as length so Continue is offered', async () => {
+      const answer = { type: ContentTypes.TEXT, text: 'The first half' };
+      const client = await runTruncatedTurn({ contentParts: [think, answer], ending: 'partial' });
+
+      expect(client.contentParts).toEqual([think, answer]);
+      expect(client.metadata).toEqual({ finish_reason: 'length' });
+    });
+
+    it('finishes a completed continuation as stop', async () => {
+      const client = await runTruncatedTurn({
+        contentParts: [{ type: ContentTypes.TEXT, text: 'The rest' }],
+        ending: 'complete',
+        continued: true,
+      });
+
+      expect(client.metadata).toEqual({ finish_reason: 'stop' });
+    });
   });
 
   it('records collected usage as an abort when the run is stopped', async () => {
@@ -5813,6 +5940,47 @@ describe('AgentClient - titleConvo', () => {
         'new-user': 30,
       });
       expect(built.prompt).toHaveLength(3);
+    });
+
+    it.each([
+      ['the endpoint does not resend files', { resendFiles: false }],
+      ['every file of the turn is left out', { excludedFiles: ['upload-1'] }],
+    ])('keeps the stand-in for an attachment-only turn when %s', async (_case, fileOptions) => {
+      Object.assign(client.options, fileOptions);
+      const messages = [
+        {
+          messageId: 'upload-turn',
+          parentMessageId: Constants.NO_PARENT,
+          text: '',
+          isCreatedByUser: true,
+          files: [{ file_id: 'upload-1', filename: 'report.xlsx' }],
+        },
+        {
+          messageId: 'upload-answer',
+          parentMessageId: 'upload-turn',
+          text: 'The sheet lists three regions.',
+          isCreatedByUser: false,
+        },
+        {
+          messageId: 'follow-up',
+          parentMessageId: 'upload-answer',
+          text: 'Which region grew most?',
+          isCreatedByUser: true,
+        },
+      ];
+
+      const built = await client.buildMessages(
+        BaseClient.prototype.getModelBoundStoredMessages.call(client, messages),
+        'follow-up',
+        {},
+      );
+
+      expect(built.prompt.map((message) => message.content)).toEqual([
+        ATTACHMENT_ONLY_TEXT,
+        'The sheet lists three regions.',
+        'Which region grew most?',
+      ]);
+      expect(messages[0].text).toBe('');
     });
 
     it('loads RAG, memory, attachment, and MCP context without serial waits', async () => {
@@ -10199,6 +10367,63 @@ describe('AgentClient - finalizeSubagentContent', () => {
       expect(buffer.size).toBe(0);
     },
   );
+
+  it('keeps the child of a call made from inside a subagent, with who it ran as', async () => {
+    const nested = (phase, data) => ({
+      ...event(phase, data, 'call_nested'),
+      subagentRunId: 'grandchild-run',
+      subagentType: 'agent_ledger',
+      subagentKind: 'agent',
+      subagentAgentId: 'agent_ledger',
+    });
+    const buffer = await runSubagentEvents([
+      event('run_step', {
+        id: 'step_delegate',
+        index: 0,
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'call_nested', name: Constants.SUBAGENT, args: '{}' }],
+        },
+      }),
+      nested('run_step', {
+        id: 'step_answer',
+        index: 0,
+        stepDetails: { type: 'message_creation' },
+      }),
+      nested('message_delta', {
+        id: 'step_answer',
+        delta: { content: [{ type: 'text', text: 'The total is 4217.' }] },
+      }),
+      event('run_step_completed', {
+        id: 'step_delegate',
+        index: 0,
+        result: {
+          id: 'step_delegate',
+          type: 'tool_call',
+          tool_call: {
+            id: 'call_nested',
+            name: Constants.SUBAGENT,
+            output: 'The total is 4217.',
+            progress: 1,
+          },
+        },
+      }),
+    ]);
+
+    const client = makeClient(buffer);
+    client.contentParts = [
+      { type: 'tool_call', tool_call: { id: 'call_sub', name: Constants.SUBAGENT, args: '{}' } },
+    ];
+    client.finalizeSubagentContent();
+
+    const [delegated] = client.contentParts[0].tool_call.subagent_content;
+    expect(delegated.tool_call).toMatchObject({
+      id: 'call_nested',
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_ledger' },
+      subagent_content: [expect.objectContaining({ type: 'text', text: 'The total is 4217.' })],
+    });
+    expect(buffer.size).toBe(0);
+  });
 
   it('attaches aggregated subagent_content to the matching subagent tool_call part', async () => {
     const buffer = await runSubagentEvents([

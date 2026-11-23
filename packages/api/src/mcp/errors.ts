@@ -102,6 +102,23 @@ export function isOAuthAuthenticationError(error: unknown): boolean {
   );
 }
 
+/** OAuth handling stopped on purpose: the user has to authorize, and the connection returns early. */
+export class MCPOAuthDeferredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MCPOAuthDeferredError';
+  }
+}
+
+/** A connection that ended waiting on the user's authorization rather than on a server failure. */
+export function isAuthorizationRequired(error: unknown): boolean {
+  return (
+    error instanceof MCPOAuthDeferredError ||
+    isOAuthAuthenticationError(error) ||
+    isMCPTransportAuthenticationError(error)
+  );
+}
+
 /** The SDK's wording when the standalone `GET` SSE stream could not be opened. */
 const SDK_SSE_OPEN_FAILED = 'Failed to open SSE stream';
 

@@ -96,7 +96,11 @@ export const PAUSE_PERSISTENCE_TIMEOUT_ERROR = 'Paused response persistence time
 /** Maximum time a terminal provider owner may remain undrained before its
  * process is treated as lost. Terminal host settlement retains the last
  * durable evidence through this grace period, then releases the lane from a
- * crashed owner instead of refreshing its fence forever. */
+ * crashed owner instead of refreshing its fence forever. A replacement
+ * generation gives a terminal predecessor's drain the same period, counted
+ * from the predecessor's `completedAt` when its receipt carries one and from
+ * the start of the handoff otherwise, then starts. Neither applies to a
+ * schedule-owned generation, which waits for a confirmed owner termination. */
 export const PROVIDER_DRAIN_TIMEOUT_MS = 30_000;
 
 /**
@@ -428,11 +432,14 @@ export type ActiveJobFilter = (job: SerializableJobData) => boolean;
 /** Exact active hash replaced by one atomic job creation. Built-in stores keep
  * this as non-enumerable transaction metadata; Redis also retains a private
  * receipt in the replacement hash so a committed create with a lost reply can
- * reconstruct it without exposing it through normal job serialization. */
+ * reconstruct it without exposing it through normal job serialization.
+ * `completedAt` is absent for a predecessor that was not terminal and on
+ * receipts written before the field existed. */
 export type ReplacedGeneration = Pick<
   SerializableJobData,
   | 'createdAt'
   | 'status'
+  | 'completedAt'
   | 'conversationId'
   | 'providerAbortReady'
   | 'providerExecutionId'

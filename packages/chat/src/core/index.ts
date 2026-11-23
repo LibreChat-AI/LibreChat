@@ -33,4 +33,24 @@ export * from './thread';
 export * from './lanes';
 export * from './activity';
 export * from './code';
+export * from './markdown';
+export {
+  resolveInlineMedia,
+  toAbsoluteFilePath,
+  attachmentRenderKey,
+  buildAttachmentsByName,
+} from './media';
+export {
+  triggerDownload,
+  getDownloadFilename,
+  getCodeBlockFilename,
+  isHttpDownloadTarget,
+  registerDownloadFilename,
+  unregisterDownloadFilename,
+} from './download';
+export { selectContents } from './selection';
+export { scaleImage } from './scaleImage';
+export { groupParallelContent, lastParallelColumnCursorIdx } from './parallel';
+export type { ParallelColumn, ParallelSection } from './parallel';
+export { cachePreview, deletePreview, getCachedPreview, removePreviewEntry } from './previewCache';
 export * from './url';

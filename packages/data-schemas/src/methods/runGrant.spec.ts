@@ -2,9 +2,10 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { ScheduledMCPIdentity, ScheduledMCPEnrollment } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage } from './runGrant';
-import { createScheduleMCPConsentStorage } from './runGrant';
+import { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
 import { createScheduleMethods } from './schedule';
 import { createModels } from '../models';
+import { createMethods } from './index';
 
 let mongo: MongoMemoryServer;
 let storage: ScheduleMCPConsentStorage;
@@ -567,4 +568,13 @@ describe('definition pins', () => {
     ]);
     update.mockRestore();
   });
+});
+
+it('keeps every grant storage out of the shared method bag', () => {
+  // Each subject's storage answers to the same names. Spread into the bag, a second one
+  // would replace the first, and a schedule's grant would be read from another document.
+  const names = Object.keys(storage);
+  expect(names).toEqual(Object.keys(createAgentKeyMCPConsentStorage(mongoose)));
+  const bag = createMethods(mongoose);
+  expect(names.filter((name) => name in bag)).toEqual([]);
 });

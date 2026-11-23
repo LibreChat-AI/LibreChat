@@ -4,7 +4,7 @@ import type { Response } from 'express';
 import type { SchedulesHandlersDeps } from './handlers';
 import type { ServerRequest } from '~/types';
 import { createSchedulesHandlers, toWireSchedule, computeCreateDigest } from './handlers';
-import { ScheduleMCPError } from './mcp';
+import { PreflightError } from '~/agents/authority/preflight';
 
 /** A lean schedule doc carrying both public fields and internal bookkeeping. */
 function fullScheduleDoc(overrides: Partial<ISchedule> = {}): ISchedule {
@@ -1299,7 +1299,7 @@ describe('unattended MCP admission', () => {
     async (status) => {
       const deps = makeCreateDeps({
         preflightMCP: async () => {
-          throw new ScheduleMCPError([{ server: 'Notion', status }]);
+          throw new PreflightError([{ server: 'Notion', status }]);
         },
       });
       const req = makeCreateReq();
@@ -1323,7 +1323,7 @@ describe('unattended MCP admission', () => {
       const deps = makeCreateDeps({
         isUserDeleting: async () => false,
         preflightMCP: async () => {
-          throw new ScheduleMCPError([{ server: 'Notion', status }]);
+          throw new PreflightError([{ server: 'Notion', status }]);
         },
       });
       const { res, captured } = makeRes();
@@ -1335,7 +1335,7 @@ describe('unattended MCP admission', () => {
   );
 
   it('still refuses a create when the check names no server to leave out, or could not be made', async () => {
-    for (const failure of [new ScheduleMCPError([]), new Error('registry down')]) {
+    for (const failure of [new PreflightError([]), new Error('registry down')]) {
       const deps = makeCreateDeps({
         preflightMCP: async () => {
           throw failure;
@@ -1489,7 +1489,7 @@ it.each([{ enabled: true }, { prompt: 'Updated prompt' }, { agent_id: 'replaceme
     const deps = makeCreateDeps({
       isUserDeleting: async () => false,
       preflightMCP: async () => {
-        throw new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+        throw new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
       },
     });
     jest
@@ -1511,7 +1511,7 @@ it.each([{ enabled: true }, { prompt: 'Updated prompt' }, { agent_id: 'replaceme
     const deps = makeCreateDeps({
       isUserDeleting: async () => false,
       preflightMCP: async () => {
-        throw new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+        throw new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
       },
     });
     jest.mocked(deps.methods.getScheduleById).mockResolvedValue(fullScheduleDoc());
@@ -1529,7 +1529,7 @@ it('refuses an edit that asks for every server while one is not ready', async ()
   const deps = makeCreateDeps({
     isUserDeleting: async () => false,
     preflightMCP: async () => {
-      throw new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+      throw new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
     },
   });
   jest.mocked(deps.methods.getScheduleById).mockResolvedValue(fullScheduleDoc());

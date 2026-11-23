@@ -495,6 +495,94 @@ test.describe('core chat loop', () => {
     await rail.getByRole('button', { name: 'Close session' }).click();
   });
 
+  test('resizes the session rail from its handle and keeps the width @scenario:session-rail-resize', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const response = await sendMessageAndWaitForCompletion(page, 'ping for the rail');
+    expect(response.ok()).toBeTruthy();
+
+    await page.getByTestId('header-background-tasks-button').click();
+    const rail = page.getByRole('complementary', { name: 'Session' });
+    await expect(rail).toBeVisible();
+    const handle = page.getByRole('separator', { name: 'Resize the session panel' });
+    const thread = messagesView(page);
+    const widthOf = async (target: typeof rail) => (await target.boundingBox())?.width ?? 0;
+    const viewport = page.viewportSize()?.width ?? 0;
+
+    /** It opens at its default width, against the window's edge. */
+    expect(await widthOf(rail)).toBeCloseTo(320, -1);
+    const railBox = await rail.boundingBox();
+    expect((railBox?.x ?? 0) + (railBox?.width ?? 0)).toBeCloseTo(viewport, 0);
+    const threadBefore = await widthOf(thread);
+
+    /** Dragging the handle toward the conversation widens the rail and narrows the thread. */
+    const grip = await handle.boundingBox();
+    const startX = (grip?.x ?? 0) + (grip?.width ?? 0) / 2;
+    const y = (grip?.y ?? 0) + (grip?.height ?? 0) / 2;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX - 120, y, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(() => widthOf(rail)).toBeGreaterThan(420);
+    const dragged = await widthOf(rail);
+    expect(await widthOf(thread)).toBeLessThan(threadBefore - 100);
+
+    /** The handle takes the keyboard too. */
+    await handle.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => widthOf(rail)).toBeLessThan(dragged);
+    const keyed = await widthOf(rail);
+
+    /** The width is the reader's, so it is there after a reload and in a narrower window. */
+    await page.reload({ timeout: 10000 });
+    await expect(rail).toBeVisible();
+    await expect.poll(() => widthOf(rail)).toBeCloseTo(keyed, -1);
+    /** A much narrower window squeezes it to its share of the room, and it does not shrink in
+     *  step with the window before that; given the room back, it returns to the reader's width. */
+    const height = page.viewportSize()?.height ?? 720;
+    await page.setViewportSize({ width: viewport - 300, height });
+    await expect.poll(() => widthOf(rail)).toBeLessThan(keyed - 40);
+    const squeezed = await widthOf(rail);
+    const column = await page
+      .locator('#chat-column')
+      .evaluate((element) => element.parentElement?.getBoundingClientRect().width ?? 0);
+    expect(squeezed).toBeCloseTo(column / 2, -1);
+    await page.setViewportSize({ width: viewport, height });
+    await expect.poll(() => widthOf(rail)).toBeCloseTo(keyed, -1);
+
+    /** A press on the handle that changes nothing is not a choice of width: after a key that
+     *  does not resize, and after a click that does not drag, a squeeze is still not kept. */
+    const squeezeAndRestore = async (chosen: number) => {
+      await page.setViewportSize({ width: viewport - 300, height });
+      await expect.poll(() => widthOf(rail)).toBeLessThan(chosen - 40);
+      await page.setViewportSize({ width: viewport, height });
+      await expect.poll(() => widthOf(rail)).toBeCloseTo(chosen, -1);
+    };
+    await handle.focus();
+    await page.keyboard.press('Tab');
+    await squeezeAndRestore(keyed);
+    const idle = await handle.boundingBox();
+    await page.mouse.click((idle?.x ?? 0) + (idle?.width ?? 0) / 2, y);
+    await squeezeAndRestore(keyed);
+    /** Nor is a resizing key with nowhere to go: Home takes the rail to its widest, and a
+     *  second Home changes nothing. */
+    await handle.focus();
+    await page.keyboard.press('Home');
+    await expect.poll(() => widthOf(rail)).toBeGreaterThan(keyed + 40);
+    const widest = await widthOf(rail);
+    await page.keyboard.press('Home');
+    await squeezeAndRestore(widest);
+
+    /** Closed, the column and its handle are gone and the thread has the room back. */
+    await rail.getByRole('button', { name: 'Close session' }).click();
+    await expect(rail).toHaveCount(0);
+    await expect(handle).toHaveCount(0);
+    await expect.poll(() => widthOf(thread)).toBeGreaterThan(threadBefore);
+  });
+
   test('supports attaching, removing, and sending provider files from the composer', async ({
     page,
   }) => {

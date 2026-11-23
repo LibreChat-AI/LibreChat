@@ -1332,9 +1332,28 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
   };
 }
 
+/** The boolean flags of a permission object; `undefined` when there are none. */
+function booleanFlags(
+  permissions: Record<string, boolean | undefined> | undefined,
+): Record<string, boolean> | undefined {
+  const flags: Record<string, boolean> = {};
+  for (const [flag, value] of Object.entries(permissions ?? {})) {
+    if (typeof value === 'boolean') {
+      flags[flag] = value;
+    }
+  }
+  return Object.keys(flags).length ? flags : undefined;
+}
+
 export interface RolePermissionsUpdateDeps {
   getRoleByName: (name: string, fields?: string | string[] | null) => Promise<IRole | null>;
-  updateRoleByName: (name: string, updates: Partial<IRole>) => Promise<IRole | null>;
+  /** Sets each flag by its own path, so a concurrent update to another type or flag is kept. */
+  setRolePermissions: (
+    name: string,
+    permissionType: string,
+    flags: Record<string, boolean>,
+    options?: { id?: string; seed?: Record<string, boolean> },
+  ) => Promise<IRole | null>;
   recordAuditEntry?: RecordAuditEntry;
   /** When true, a failed audit write surfaces as a 5xx after the update has
    * been persisted. Defaults to fail-open. */
@@ -1350,14 +1369,15 @@ export interface RolePermissionsUpdateConfig {
 
 /**
  * Builds the `PUT /api/roles/:roleName/<type>` handler for one permission type:
- * merges the validated partial update into the role's permissions and records
- * a `role.permissions_updated` audit entry when a flag actually changed.
+ * writes only the submitted flags of the role that was read, answers 404 when that
+ * role no longer exists, and records a `role.permissions_updated` audit entry when
+ * a flag actually changed.
  */
 export function createRolePermissionsUpdateHandler(
   deps: RolePermissionsUpdateDeps,
   config: RolePermissionsUpdateConfig,
 ): (req: ServerRequest, res: Response) => Promise<Response> {
-  const { getRoleByName, updateRoleByName, recordAuditEntry, auditFailClosed } = deps;
+  const { getRoleByName, setRolePermissions, recordAuditEntry, auditFailClosed } = deps;
   const emitAudit = createAdminAuditEmitter({
     recordAuditEntry,
     failClosed: auditFailClosed,
@@ -1386,20 +1406,24 @@ export function createRolePermissionsUpdateHandler(
         config.permissionType
       ] as Record<string, boolean | undefined> | undefined;
       const currentPermissions = permissions[config.permissionType] || legacyPermissions || {};
-
-      const mergedPermissions = {
-        ...permissions,
-        [config.permissionType]: { ...currentPermissions, ...parsedUpdates },
-      };
-      const updatedRole = await updateRoleByName(roleName, {
-        permissions: mergedPermissions as IRole['permissions'],
-      });
+      const nextPermissions = { ...currentPermissions, ...parsedUpdates };
+      /** A type still stored only at the legacy top level seeds `permissions` with its flags. */
+      const seed = permissions[config.permissionType] ? undefined : booleanFlags(legacyPermissions);
+      const updatedRole = await setRolePermissions(
+        roleName,
+        config.permissionType,
+        booleanFlags(parsedUpdates) ?? {},
+        { ...roleIdentity(role), ...(seed ? { seed } : {}) },
+      );
+      if (!updatedRole) {
+        return res.status(404).send({ message: 'Role not found' });
+      }
 
       const changes = diffRolePermissions(
         { [config.permissionType]: currentPermissions },
-        { [config.permissionType]: mergedPermissions[config.permissionType] },
+        { [config.permissionType]: nextPermissions },
       );
-      if (updatedRole && changes.length > 0) {
+      if (changes.length > 0) {
         await emitAudit(req, {
           action: 'role.permissions_updated',
           severity: 'warning',

@@ -15,7 +15,7 @@ const {
 } = require('librechat-data-provider');
 const { createRolePermissionsUpdateHandler } = require('@librechat/api');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
-const { updateRoleByName, getRoleByName, recordAuditEntry } = require('~/models');
+const { setRolePermissions, getRoleByName, recordAuditEntry } = require('~/models');
 const { requireJwtAuth } = require('~/server/middleware');
 
 const router = express.Router();
@@ -78,7 +78,7 @@ const createPermissionUpdateHandler = (permissionKey) =>
   createRolePermissionsUpdateHandler(
     {
       getRoleByName,
-      updateRoleByName,
+      setRolePermissions,
       recordAuditEntry,
       auditFailClosed: process.env.AUDIT_LOG_FAIL_CLOSED === 'true',
     },

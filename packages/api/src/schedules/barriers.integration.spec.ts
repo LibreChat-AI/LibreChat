@@ -8,8 +8,12 @@ import { ToolNode } from '@librechat/agents';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { AIMessage } from '@librechat/agents/langchain/messages';
-import { createModels, createMethods } from '@librechat/data-schemas';
 import { DEFAULT_MCP_APP_OPERATION_LIMITS } from 'librechat-data-provider';
+import {
+  createModels,
+  createMethods,
+  createScheduleMCPConsentStorage,
+} from '@librechat/data-schemas';
 import type { IScheduleRun, IUser } from '@librechat/data-schemas';
 import type { RunGrantTarget } from 'librechat-data-provider';
 import type { IJobStoreV2, ScheduleProviderOwner } from '~/stream/interfaces/IJobStore';
@@ -54,6 +58,7 @@ async function fixture(
   await database.connect(mongo.getUri(), { autoIndex: false });
   createModels(database);
   const methods = createMethods(database);
+  const storage = createScheduleMCPConsentStorage(database);
   const principal = new database.Types.ObjectId();
   const owner = principal.toString();
   const scheduledFor = new Date('2026-10-04T00:00:00Z');
@@ -135,6 +140,7 @@ async function fixture(
   return {
     database,
     methods,
+    storage,
     owner,
     schedule,
     scheduledFor,
@@ -1020,7 +1026,7 @@ it.each(['root', 'child'])(
             : target,
         ]);
       const consent = createRunGrantService({
-        storage: f.methods,
+        storage: f.storage,
         resolveEnrollment,
         getLimits: async () => ({ enabled: true, maxLifetimeHours: 24 }),
         canUse: async () => true,
@@ -1052,7 +1058,7 @@ it.each(['root', 'child'])(
         }),
       );
       await createRunGrantExecution({
-        storage: f.methods,
+        storage: f.storage,
         /** Only the per-call check sees the change, after the bearer host has accepted. */
         loadAuthorization: async () => ({
           authority: {

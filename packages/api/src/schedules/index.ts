@@ -5,6 +5,7 @@ export * from './engine';
 export * from './erasure';
 export * from './fire';
 export * from './handlers';
+export * from './outcome';
 export * from './readiness';
 export * from './trigger';
 export * from './types';
@@ -14,5 +15,6 @@ export * from './authorization/host';
 
 export * from './bearer';
 export * from './authorization/runtime';
+export * from './authorization/subject';
 
 export * from './authorization/continuation';

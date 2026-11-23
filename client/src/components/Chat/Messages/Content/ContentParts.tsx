@@ -39,6 +39,7 @@ import type { ActivityPhaseSegment } from '@librechat/chat';
 import type { ReactNode, ReactElement } from 'react';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
+import type { PartWithIndex } from './ParallelContent';
 import {
   mapAttachments,
   getPartKeyIndex,
@@ -50,7 +51,7 @@ import {
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
 import { useStoredSubagentHints } from '~/components/Chat/Subagents/attachments';
-import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
+import { ParallelContentRenderer, renderSiblingHeader } from './ParallelContent';
 import { isPreviewedToolCallPart, PreviewedToolCallPart } from './hydration';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
@@ -859,8 +860,15 @@ const ContentPartsBody = memo(function ContentPartsBody({
     ));
 
   const renderPart = useCallback(
-    (part: TMessageContentParts, idx: number, isLastPart: boolean) => {
+    (
+      part: TMessageContentParts,
+      idx: number,
+      isLastPart: boolean,
+      nextInLane?: TMessageContentParts['type'] | null,
+    ) => {
       const localIdx = localIndexByAbsolute?.get(idx) ?? idx - contentIndexOffset;
+      // A lane tail reports null rather than falling through to another lane's part.
+      const nextType = nextInLane === undefined ? content?.[localIdx + 1]?.type : nextInLane;
       return (
         <PartWithContext
           key={`provider-${messageId}-${getPartKeyIndex(part, idx)}`}
@@ -872,7 +880,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           conversationId={conversationId}
           isLatestMessage={isLatestMessage}
           isCreatedByUser={isCreatedByUser}
-          nextType={content?.[localIdx + 1]?.type}
+          nextType={nextType ?? undefined}
           isSubmitting={effectiveIsSubmitting}
           partAttachments={attachmentsForPart(part)}
           hideAttachments={hideAttachments}
@@ -1417,6 +1425,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           searchResults={searchResults}
           isSubmitting={effectiveIsSubmitting}
           renderPart={renderPart}
+          renderColumnHeader={renderSiblingHeader}
           renderResumeAttribution={renderResumeAttribution}
           showDecorations={!nestedActivityPhase && !continuation}
           contentIndexOffset={contentIndexOffset}

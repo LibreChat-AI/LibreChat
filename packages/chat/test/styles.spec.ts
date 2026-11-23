@@ -58,7 +58,6 @@ const APP_STYLED = [
   'high-contrast',
   'message-content',
   'nav',
-  'overflow-y-auto',
   'tooltip',
   'whitespace-pre-wrap',
 ];
@@ -81,6 +80,8 @@ describe('the stylesheets behind the package’s classes', () => {
       'composer-label-in-up',
       'scrollbar-gutter-spacer',
       'azure-bg-color',
+      'code-analyze-block',
+      'chat-image-sized',
     ]) {
       expect(classesIn(read(require.resolve('@librechat/chat/style.css')))).toContain(name);
       expect(app).not.toContain(name);

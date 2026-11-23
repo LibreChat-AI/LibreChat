@@ -453,7 +453,7 @@ describe('initializeClient — processAgent ACL gate', () => {
     const req = makeReq();
     req._isScheduledFire = true;
     const host = require('~/server/services/Schedules/consent');
-    const prepare = jest.spyOn(host, 'prepare').mockResolvedValue(undefined);
+    const prepare = jest.spyOn(host, 'resolve').mockResolvedValue(undefined);
     mockInitializeAgent.mockImplementationOnce(async () => makePrimaryConfig([]));
     try {
       await initializeClient({
@@ -3276,6 +3276,125 @@ describe('initializeClient — subagent loading', () => {
       }
     });
 
+    describe('a graph member whose machine was down when the run was built', () => {
+      const HAL = 'code-hal';
+      const team = (memberId) => ({
+        enabled: true,
+        allowSelf: false,
+        agent_ids: [],
+        graphs: [
+          {
+            type: 'review_team',
+            name: 'Review team',
+            description: 'Reviews together.',
+            agent_ids: [memberId],
+            edges: [],
+            entry_agent_id: memberId,
+            result_agent_id: memberId,
+          },
+        ],
+      });
+      /** HAL's worker is offline until `machine.down` clears; the others are always ready. */
+      const mockRecoveringWorker = (machine) => {
+        const ready = mockWorkerStatus().getMockImplementation();
+        return jest.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+          if (machine.down && String(url).includes(encodeURIComponent(`${HAL}-worker`))) {
+            return new Response('offline', { status: 503 });
+          }
+          return ready(url);
+        });
+      };
+      const build = async (memberRoutes) => {
+        const member = await createAgent({
+          id: 'agent_recovering_member',
+          name: 'Recovering member',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: new mongoose.Types.ObjectId(),
+          tools: ['execute_code'],
+          stateful_code_sessions: true,
+          stateful_code_environment: 'user',
+          code_environment_id: HAL,
+          code_environment_ids: memberRoutes,
+        });
+        await grantView(member);
+        const req = await setup({
+          reviewer: { subagents: team(member.id) },
+          environments: [SKYNET, LIA_RAG, HAL],
+        });
+        req.body.codeWorkspaces.push({ environmentId: HAL, workspaceId: 'agents' });
+        const machine = { down: true };
+        const fetchSpy = mockRecoveringWorker(machine);
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+        expect(descriptor.subagentGraphMemberMetadata).toEqual([
+          expect.objectContaining({
+            id: member.id,
+            codeEnvAvailable: false,
+            codeWorkspaceUnavailable: 'worker_unavailable',
+          }),
+        ]);
+        const initialized = [];
+        mockInitializeAgent.mockImplementation(async (params) => {
+          initialized.push([params.agent.id, params.agent.code_environment_id]);
+          return {
+            ...makeSubagentConfig(params.agent.id),
+            subagents: params.agent.subagents,
+            codeExecutionContext: {
+              environmentId: params.agent.code_environment_id,
+              environmentType: 'attached',
+            },
+          };
+        });
+        /** The machine is ready by the time the parent is selected. */
+        machine.down = false;
+        return { member, descriptor, initialized, fetchSpy };
+      };
+
+      it('keeps the member unavailable and runs its parent without the graph', async () => {
+        const { member, descriptor, initialized, fetchSpy } = await build([]);
+        try {
+          const config = await descriptor.resolve({ signal: new AbortController().signal });
+
+          expect(config.id).toBe(SUBAGENT_ID);
+          expect(config.subagentGraphConfigs).toEqual([]);
+          expect(initialized).toEqual([[SUBAGENT_ID, SKYNET]]);
+          expect(logger.error).toHaveBeenCalledWith(
+            `[initializeClient] Error initializing graph member ${member.id}:`,
+            expect.objectContaining({
+              message: `Graph member ${member.id} has no usable code workspace in this run (worker_unavailable).`,
+            }),
+          );
+        } finally {
+          fetchSpy.mockRestore();
+        }
+      });
+
+      it("still follows its routed parent's machine when it listed that machine", async () => {
+        const { member, descriptor, initialized, fetchSpy } = await build([SKYNET]);
+        try {
+          const config = await descriptor.resolve({
+            signal: new AbortController().signal,
+            executionId: 'run-recovering-graph',
+            hostArgs: { machine: SKYNET },
+          });
+
+          expect(initialized).toEqual([
+            [SUBAGENT_ID, SKYNET],
+            [member.id, SKYNET],
+          ]);
+          expect(config.subagentGraphConfigs?.[0]?.memberConfigs?.[0]?.id).toBe(member.id);
+        } finally {
+          fetchSpy.mockRestore();
+        }
+      });
+    });
+
     it('gives back the machine of a failed initialization so a retry may name another', async () => {
       const req = await setup();
       const fetchSpy = mockWorkerStatus();
@@ -4208,6 +4327,71 @@ describe('initializeClient — subagent loading', () => {
       },
     ]);
     expect(userMCPAuthMap).toEqual(memberMCPAuthMap);
+  });
+
+  it("skips a lazy parent's graph when a member changed after the run was built", async () => {
+    const childId = 'agent_lazy_pinned_parent';
+    const memberId = 'agent_lazy_pinned_member';
+    const definition = {
+      type: 'pinned_team',
+      name: 'Pinned team',
+      description: 'Holds its member to the run it was built for',
+      agent_ids: [memberId],
+      edges: [],
+      entry_agent_id: memberId,
+      result_agent_id: memberId,
+    };
+    await createViewableAgent(childId, {
+      enabled: true,
+      allowSelf: false,
+      graphs: [definition],
+    });
+    await createViewableAgent(memberId);
+    const primaryConfig = makePrimaryConfig({
+      subagents: { enabled: true, allowSelf: false, agent_ids: [childId] },
+    });
+    mockInitializeAgent.mockImplementation(({ agent }) =>
+      Promise.resolve(
+        agent.id === PRIMARY_ID
+          ? primaryConfig
+          : { ...makeSubagentConfig(agent.id), subagents: agent.subagents },
+      ),
+    );
+
+    await initializeClient({
+      req: makeSubagentReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+    const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+    expect(descriptor.subagentGraphMemberMetadata).toEqual([
+      expect.objectContaining({ id: memberId }),
+    ]);
+    await updateAgent({ id: memberId }, { instructions: 'Changed after the run was built.' });
+
+    const resolved = await descriptor.resolve({ signal: new AbortController().signal });
+
+    expect(resolved.id).toBe(childId);
+    expect(resolved.subagentGraphConfigs).toEqual([]);
+    expect(mockInitializeAgent.mock.calls.map(([params]) => params.agent.id)).toEqual([
+      PRIMARY_ID,
+      childId,
+    ]);
+    expect(logger.error).toHaveBeenCalledWith(
+      `[initializeClient] Error initializing graph member ${memberId}:`,
+      expect.objectContaining({
+        message: `Subagent ${memberId} changed before it could be initialized.`,
+      }),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[initializeClient] Skipping incomplete graph subagent',
+      expect.objectContaining({
+        parentAgentId: childId,
+        graphType: 'pinned_team',
+        resolvedMemberCount: 0,
+      }),
+    );
   });
 
   it('aborts lazy graph member initialization with the descriptor signal', async () => {

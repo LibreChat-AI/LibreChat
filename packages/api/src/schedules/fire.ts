@@ -12,9 +12,9 @@ import {
 import { AgentTriggerServiceUnavailableError } from '../agents/triggers/service';
 import { AgentTriggerDeliveryError } from '../agents/triggers/delivery';
 import { computeNextRunAt, cadenceIntervalMinutes } from './cadence';
+import { PreflightError } from '~/agents/authority/preflight';
 import { resolveScheduleProjectId } from './types';
 import { skippedMCPServers } from './trigger';
-import { ScheduleMCPError } from './mcp';
 
 /** Consecutive balance skips (pre-fire or mid-generation) before auto-disable. */
 export const BALANCE_SKIP_DISABLE_THRESHOLD: number = 5;
@@ -487,7 +487,7 @@ export async function fireSchedule(
     // durable started row or a global generation slot so a slow MCP endpoint cannot
     // consume the capacity healthy ready schedules need to dispatch.
     let mcp: Awaited<ReturnType<ScheduleEngineDeps['preflightMCP']>> = [];
-    let mcpFailure: { error: ScheduleMCPError | null; message: string } | null = null;
+    let mcpFailure: { error: PreflightError | null; message: string } | null = null;
     try {
       const leaseDeadline = schedule.leaseUntil?.getTime() ?? Number.POSITIVE_INFINITY;
       const preflightDeadline =
@@ -513,7 +513,7 @@ export async function fireSchedule(
       ) {
         return stepAsideSuperseded();
       }
-      const failure = error instanceof ScheduleMCPError ? error : null;
+      const failure = error instanceof PreflightError ? error : null;
       // Unless its owner asked for every server to be ready, a schedule runs without the
       // ones that are not: each is marked as skipped, which records why without failing the
       // run or suspending the schedule. With no outcome there is no server to leave out, and

@@ -324,6 +324,11 @@ function isRecoverableTakeoverSplit(
   );
 }
 
+/** Statuses no provider run can leave: only trailing owner work may still be pending. */
+function isTerminalStatus(status: SerializableJobData['status']): boolean {
+  return status === 'complete' || status === 'error' || status === 'aborted';
+}
+
 /**
  * Name the reason a terminal-state CAS was lost, off the job that now holds the
  * conversation. Losing to natural completion IS a stop; losing to a replacement, or to
@@ -2150,7 +2155,20 @@ class GenerationJobManagerClass {
   /** Deliver every transaction-time predecessor receipt retained by the
    * current creation attempt, then epoch/attempt-fenced acknowledge only the
    * receipts whose provider/client handoff completed. A replacement racing the
-   * acknowledgement inherits the still-unacknowledged chain and retries it. */
+   * acknowledgement inherits the still-unacknowledged chain and retries it.
+   *
+   * A terminal predecessor that stays undrained through `PROVIDER_DRAIN_TIMEOUT_MS`
+   * is acknowledged as lost: a process killed between the terminal status and
+   * the drain mark can never record that drain. The bound runs from the
+   * predecessor's `completedAt`, as terminal host settlement counts it, so an
+   * owner lost longer ago than the bound costs one drain read and no wait. A
+   * receipt without `completedAt` (an older replica wrote it) is bounded from
+   * the start of this handoff. The bound cannot tell a killed process from a
+   * live owner whose trailing work is this slow, which is then no longer waited
+   * for. A running predecessor and a wait that could not read the stores still
+   * fail closed. Schedule-owned generations never reach this
+   * path while undrained; the store refuses to replace a job preserved for
+   * schedule reconciliation. */
   private async processDurableReplacementReceipts(
     streamId: string,
     job: CreatedJobData,
@@ -2186,14 +2204,31 @@ class GenerationJobManagerClass {
           delivered = false;
         } else {
           try {
-            await this.waitForProviderExecutionDrain(
+            const terminal = isTerminalStatus(receipt.status);
+            const bound = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
+            const deadline =
+              terminal && receipt.completedAt != null
+                ? Math.min(bound, receipt.completedAt + PROVIDER_DRAIN_TIMEOUT_MS)
+                : bound;
+            const drained = await this.waitForProviderExecutionDrain(
               streamId,
               receipt.createdAt,
               receipt.providerExecutionId,
+              deadline,
             );
+            if (!drained && terminal) {
+              logger.warn(
+                `[GenerationJobManager] Terminal provider owner treated as lost after ${PROVIDER_DRAIN_TIMEOUT_MS}ms undrained: ${streamId}/${receipt.createdAt}`,
+              );
+            } else if (!drained) {
+              logger.error(
+                `[GenerationJobManager] Replaced provider did not drain: ${streamId}/${receipt.createdAt}`,
+              );
+              delivered = false;
+            }
           } catch (error) {
             logger.error(
-              `[GenerationJobManager] Replaced provider did not drain: ${streamId}/${receipt.createdAt}`,
+              `[GenerationJobManager] Failed to confirm replaced provider drain: ${streamId}/${receipt.createdAt}`,
               error,
             );
             delivered = false;
@@ -2334,11 +2369,14 @@ class GenerationJobManagerClass {
         ownsCommittedCreate,
       );
       if (ownsCommittedCreate && !predecessorsDelivered) {
-        await this.terminalizeUnexposedGeneration(
+        const retired = await this.terminalizeUnexposedGeneration(
           streamId,
           currentCommittedJob,
           'Generation predecessor handoff could not be confirmed',
         );
+        if (retired) {
+          await this.releaseUnexposedClaim(streamId, userId, conversationId, options);
+        }
         return null;
       }
     }
@@ -2465,6 +2503,46 @@ class GenerationJobManagerClass {
       'Generation membership could not be recovered after an ambiguous create',
     );
     return null;
+  }
+
+  /** A generation retired because its predecessor handoff failed never left
+   * `createJob`, so no provider began for it. Its started tombstone would still
+   * answer every retry of the same request as an admitted generation, and a
+   * durable delivery retrying its own key would record a turn that never ran.
+   * Release both keys by token, after the job is terminal, so the retry is a
+   * real second start. A key left behind by a failed release keeps the request
+   * a duplicate, which is the outcome this replaces. */
+  private async releaseUnexposedClaim(
+    streamId: string,
+    userId: string,
+    conversationId: string | undefined,
+    options: CreateGenerationJobOptions,
+  ): Promise<void> {
+    const clientRequestId = options.idempotencyClientRequestId;
+    const claimToken = options.idempotencyClaimToken;
+    if (clientRequestId == null || claimToken == null) {
+      return;
+    }
+    const claim: IdempotencyClaimValue = {
+      streamId,
+      conversationId: conversationId ?? streamId,
+      claimToken,
+    };
+    try {
+      await this.jobStore.releaseIdempotencyKey(
+        this.generationClaimKey(userId, clientRequestId, streamId),
+        claim,
+      );
+      await this.jobStore.releaseIdempotencyKey(
+        this.legacyGenerationClaimKey(userId, clientRequestId),
+        claim,
+      );
+    } catch (error) {
+      logger.error(
+        `[GenerationJobManager] Failed to release the claim of unexposed generation ${streamId}:`,
+        getSafeErrorMetadata(error),
+      );
+    }
   }
 
   /** Persist a conservative FINAL for a job whose generation was never exposed
@@ -2858,12 +2936,15 @@ class GenerationJobManagerClass {
     }
 
     if (!(await this.processDurableReplacementReceipts(streamId, jobData, conversationId))) {
-      await this.terminalizeUnexposedGeneration(
+      const retired = await this.terminalizeUnexposedGeneration(
         streamId,
         jobData,
         'Generation predecessor handoff could not be confirmed',
       );
       this.retireStoppedPredecessorRuntime(streamId, jobData.createdAt);
+      if (retired) {
+        await this.releaseUnexposedClaim(streamId, userId, conversationId, options);
+      }
       throw new Error('Generation predecessor handoff could not be confirmed');
     }
 
@@ -8759,19 +8840,28 @@ class GenerationJobManagerClass {
     this.openProviderExecutions.clear();
   }
 
+  /** Resolves true once the exact provider segment recorded its drain and false
+   * when `deadline` passes without one. The drain is read at least once, even
+   * when the deadline has already passed. A read failure is not evidence about
+   * the owner: a job store failure rejects at once, and a drain record that is
+   * still unreadable at the deadline rejects instead of reporting a timeout. An
+   * earlier failed poll is retried by the next one. */
   private async waitForProviderExecutionDrain(
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
-  ): Promise<void> {
-    const deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
+    deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS,
+  ): Promise<boolean> {
     for (;;) {
-      if (
-        (await this.eventTransport
-          .hasProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId)
-          .catch(() => false)) === true
-      ) {
-        return;
+      let unreadable: { error: unknown } | undefined;
+      const recorded = await this.eventTransport
+        .hasProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId)
+        .catch((error: unknown) => {
+          unreadable = { error };
+          return false;
+        });
+      if (recorded === true) {
+        return true;
       }
       const job = await this.jobStore.getJob(streamId);
       if (
@@ -8779,10 +8869,13 @@ class GenerationJobManagerClass {
         job.providerExecutionId === providerExecutionId &&
         job.providerDrained === true
       ) {
-        return;
+        return true;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for provider execution to drain: ${streamId}`);
+        if (unreadable != null) {
+          throw unreadable.error;
+        }
+        return false;
       }
       await new Promise<void>((resolve) => {
         setTimeout(resolve, PROVIDER_DRAIN_POLL_MS);
@@ -8804,7 +8897,11 @@ class GenerationJobManagerClass {
     // provider can win its exact begin CAS after that read but before the
     // terminal CAS. Re-read the exact segment only after terminal ownership is
     // committed, when no not-yet-started provider can begin anymore.
-    await this.waitForProviderExecutionDrain(streamId, job.createdAt, job.providerExecutionId);
+    if (
+      !(await this.waitForProviderExecutionDrain(streamId, job.createdAt, job.providerExecutionId))
+    ) {
+      throw new Error(`Timed out waiting for provider execution to drain: ${streamId}`);
+    }
   }
 
   /**

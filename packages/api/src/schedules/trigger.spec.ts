@@ -5,8 +5,8 @@ import {
   isScheduleFireRequest,
   readScheduleFireContext,
   restoreSkippedMCPServers,
+  readSkippedMCPServers,
   skippedMCPServers,
-  withoutSkippedMCPServers,
 } from './trigger';
 
 function request(manual = false) {
@@ -147,51 +147,18 @@ describe('servers a scheduled run is started without', () => {
     expect(req._scheduleCheckedServers).toBeUndefined();
   });
 
-  it('drops every key on a skipped server, by its name and by its normalized name', () => {
-    const req = {
-      _scheduleSkippedServers: ['Notion', 'Sales Force'],
-      _scheduleCheckedServers: ['Notion', 'Sales Force', 'Linear'],
-    };
-    const keys = [
-      'search_mcp_Notion',
-      'sys__all__sys_mcp_Notion',
-      'sys__server__sys_mcp_Notion',
-      'query_mcp_Sales_Force',
-      'list_mcp_Linear',
-      'execute_code',
-      'web_search',
-    ];
-    expect(withoutSkippedMCPServers(req, keys)).toEqual([
-      'list_mcp_Linear',
-      'execute_code',
-      'web_search',
-    ]);
-  });
-
-  it('leaves a ready server alone when its name ends with a skipped one', () => {
-    const req = {
-      _scheduleSkippedServers: ['bar'],
-      _scheduleCheckedServers: ['bar', 'foo_mcp_bar'],
-    };
-    expect(
-      withoutSkippedMCPServers(req, ['query_mcp_bar', 'query_mcp_foo_mcp_bar', 'web_search']),
-    ).toEqual(['query_mcp_foo_mcp_bar', 'web_search']);
-    // And the other way round: the longer name skipped, the shorter one ready.
-    expect(
-      withoutSkippedMCPServers(
-        {
-          _scheduleSkippedServers: ['foo_mcp_bar'],
-          _scheduleCheckedServers: ['bar', 'foo_mcp_bar'],
-        },
-        ['query_mcp_bar', 'query_mcp_foo_mcp_bar'],
-      ),
-    ).toEqual(['query_mcp_bar']);
-  });
-
-  it('hands back the same list when nothing is left out', () => {
-    const keys = ['list_mcp_Linear', 'execute_code'];
-    expect(withoutSkippedMCPServers({ _scheduleSkippedServers: ['Notion'] }, keys)).toBe(keys);
-    expect(withoutSkippedMCPServers({}, keys)).toBe(keys);
-    expect(withoutSkippedMCPServers(undefined, keys)).toBe(keys);
+  it('hands the run host what the request carries, and nothing where no server was skipped', () => {
+    const req: Marked = {};
+    restoreSkippedMCPServers(req, [{ server: 'Notion', skipped: true }, { server: 'Linear' }]);
+    expect(readSkippedMCPServers(req)).toEqual({ skip: ['Notion'], servers: ['Notion', 'Linear'] });
+    restoreSkippedMCPServers(req, [{ server: 'Linear' }]);
+    expect(readSkippedMCPServers(req)).toBeUndefined();
+    // A list with no record of what the check covered is still a list of what to go without.
+    expect(readSkippedMCPServers({ _scheduleSkippedServers: ['Notion'] })).toEqual({
+      skip: ['Notion'],
+      servers: [],
+    });
+    expect(readSkippedMCPServers({ _scheduleCheckedServers: ['Notion'] })).toBeUndefined();
+    expect(readSkippedMCPServers(undefined)).toBeUndefined();
   });
 });

@@ -13,8 +13,8 @@ import { collectApprovedToolCalls } from '~/agents/authority/execution';
 import { getToolApprovalTransportCallId } from '~/tools/approval';
 import { resolveToolApprovalPolicy } from '~/agents/hitl/policy';
 import { createToolExecuteHandler } from '~/agents/handlers';
+import { createRunPolicy } from '~/agents/authority/run';
 import { createMCPStructuredTool } from '~/mcp/tools';
-import { createScheduledMCPRunPolicy } from './run';
 import { formatToolContent } from '~/mcp/parsers';
 
 /**
@@ -94,7 +94,7 @@ async function scenario(choice: Parameters<typeof executionFixture>[3] = { ask: 
       [],
       [{ hook: session.hook }],
     );
-    const policy = createScheduledMCPRunPolicy(execution, [agent]);
+    const policy = createRunPolicy(execution, [agent]);
     // Also as `createRun` does: with no approval wiring the schedule hook gets its own registry.
     const hooks = wiring?.hooks ?? new HookRegistry();
     if (scheduleHook) hooks.register('PreToolUse', { hooks: [policy.hook, policy.receipt] });

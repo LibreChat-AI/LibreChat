@@ -42,6 +42,7 @@ let updateUsersRoleByIds: ReturnType<typeof createRoleMethods>['updateUsersRoleB
 let listUsersByRole: ReturnType<typeof createRoleMethods>['listUsersByRole'];
 let countUsersByRole: ReturnType<typeof createRoleMethods>['countUsersByRole'];
 let updateRoleByName: ReturnType<typeof createRoleMethods>['updateRoleByName'];
+let setRolePermissions: ReturnType<typeof createRoleMethods>['setRolePermissions'];
 let listRoles: ReturnType<typeof createRoleMethods>['listRoles'];
 let countRoles: ReturnType<typeof createRoleMethods>['countRoles'];
 let getPartitionRole: ReturnType<typeof createRoleMethods>['getPartitionRole'];
@@ -63,6 +64,7 @@ beforeAll(async () => {
   createRoleByName = methods.createRoleByName;
   deleteRoleByName = methods.deleteRoleByName;
   updateRoleByName = methods.updateRoleByName;
+  setRolePermissions = methods.setRolePermissions;
   updateUsersByRole = methods.updateUsersByRole;
   updateUsersRoleByIds = methods.updateUsersRoleByIds;
   listUsersByRole = methods.listUsersByRole;
@@ -1461,6 +1463,113 @@ describe('updateRoleByName - cache on rename', () => {
       expect.objectContaining({ name: 'editor', description: 'Updated desc' }),
     );
     expect(mockCache.set).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setRolePermissions', () => {
+  it('keeps concurrent updates to different permission types of the same role', async () => {
+    await createRoleByName({
+      name: 'editor',
+      permissions: {
+        [PermissionTypes.PROMPTS]: { [Permissions.USE]: true, [Permissions.CREATE]: true },
+        [PermissionTypes.AGENTS]: { [Permissions.USE]: true, [Permissions.CREATE]: true },
+      },
+    });
+
+    await Promise.all([
+      setRolePermissions('editor', PermissionTypes.PROMPTS, { [Permissions.CREATE]: false }),
+      setRolePermissions('editor', PermissionTypes.AGENTS, { [Permissions.USE]: false }),
+    ]);
+
+    const stored = await Role.findOne({ name: 'editor' }).lean();
+    expect(stored?.permissions?.[PermissionTypes.PROMPTS]).toEqual({
+      [Permissions.USE]: true,
+      [Permissions.CREATE]: false,
+    });
+    expect(stored?.permissions?.[PermissionTypes.AGENTS]).toEqual({
+      [Permissions.USE]: false,
+      [Permissions.CREATE]: true,
+    });
+  });
+
+  it('keeps concurrent flag updates of a type seeded from legacy top-level flags', async () => {
+    const legacy = { [Permissions.USE]: true, [Permissions.CREATE]: true };
+    await Role.collection.insertOne({
+      name: 'editor',
+      permissions: {},
+      [PermissionTypes.PROMPTS]: legacy,
+    });
+
+    await Promise.all([
+      setRolePermissions(
+        'editor',
+        PermissionTypes.PROMPTS,
+        { [Permissions.CREATE]: false },
+        { seed: legacy },
+      ),
+      setRolePermissions(
+        'editor',
+        PermissionTypes.PROMPTS,
+        { [Permissions.USE]: false },
+        { seed: legacy },
+      ),
+    ]);
+
+    const stored = await Role.findOne({ name: 'editor' }).lean();
+    expect(stored?.permissions?.[PermissionTypes.PROMPTS]).toEqual({
+      [Permissions.USE]: false,
+      [Permissions.CREATE]: false,
+    });
+  });
+
+  it('returns the updated role and invalidates the cached one', async () => {
+    await createRoleByName({ name: 'editor' });
+    mockCache.set.mockClear();
+
+    const updated = await setRolePermissions('editor', PermissionTypes.PROMPTS, {
+      [Permissions.USE]: true,
+    });
+
+    expect(updated?.permissions?.[PermissionTypes.PROMPTS]).toEqual({ [Permissions.USE]: true });
+    expect(mockCache.set).toHaveBeenCalledWith('editor', null);
+    expect(mockCache.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null when no role matches the name or the id', async () => {
+    const role = await createRoleByName({ name: 'editor' });
+
+    const missing = await setRolePermissions('ghost', PermissionTypes.PROMPTS, {
+      [Permissions.USE]: true,
+    });
+    const otherId = await setRolePermissions(
+      'editor',
+      PermissionTypes.PROMPTS,
+      { [Permissions.USE]: true },
+      { id: new mongoose.Types.ObjectId().toString() },
+    );
+    const sameId = await setRolePermissions(
+      'editor',
+      PermissionTypes.PROMPTS,
+      { [Permissions.USE]: true },
+      { id: String(role._id) },
+    );
+
+    expect(missing).toBeNull();
+    expect(otherId).toBeNull();
+    expect(sameId?.permissions?.[PermissionTypes.PROMPTS]).toEqual({ [Permissions.USE]: true });
+    expect(await Role.countDocuments({ name: 'ghost' })).toBe(0);
+  });
+
+  it('returns the stored role unchanged when no flag is given', async () => {
+    await createRoleByName({
+      name: 'editor',
+      permissions: { [PermissionTypes.PROMPTS]: { [Permissions.USE]: true } },
+    });
+
+    const role = await setRolePermissions('editor', PermissionTypes.PROMPTS, {});
+
+    expect(role?.permissions?.[PermissionTypes.PROMPTS]).toEqual({ [Permissions.USE]: true });
+    expect(await setRolePermissions('ghost', PermissionTypes.PROMPTS, {})).toBeNull();
   });
 });
 

@@ -37,6 +37,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: { type: String, index: true },
+        spec: { type: String, select: false },
         user: { type: String, index: true },
         messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
         shareId: { type: String, index: true },
@@ -113,6 +114,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: String,
+        spec: String,
         user: String,
         endpoint: String,
         endpointType: String,
@@ -523,6 +525,33 @@ describe('Share Methods', () => {
 
       expect(preflight).toHaveBeenCalledTimes(1);
       expect(storedShare?.messages).toHaveLength(4);
+    });
+  });
+
+  it('reads the published spec only for a fork and refreshes it on republish', async () => {
+    const key = { user: 'owner', conversationId: 'spec-chat' };
+    await Conversation.create({ ...key, title: 'Spec chat', spec: 'specialist' });
+    await Message.create({ ...key, messageId: 'root', text: 'Published message' });
+
+    const { shareId, _id } = await shareMethods.createSharedLink(key.user, key.conversationId);
+    const preflight = jest.fn();
+    const fork = await shareMethods.getSharedForkSnapshot(shareId, _id, { preflight });
+    expect(fork).toMatchObject({ spec: 'specialist', share: { shareId } });
+    expect(fork?.share).not.toHaveProperty('spec');
+    expect(preflight.mock.calls[0][0]).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedMessages(shareId)).not.toHaveProperty('spec');
+
+    await Conversation.updateOne(key, { $set: { spec: 'replacement' } });
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'specialist');
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'replacement');
+
+    await Conversation.updateOne(key, { $unset: { spec: 1 } });
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await SharedLink.findOne({ shareId }).select('+spec').lean()).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toMatchObject({
+      spec: undefined,
+      share: { shareId },
     });
   });
 

@@ -3158,7 +3158,12 @@ describe('updateInterfacePermissions - role.synced audit', () => {
         }
       },
     );
-    return { getRoleByName, updateAccessPermissions };
+    /** The uncached read of the stored role, as `getPartitionRole` reads it. */
+    const getPartitionRole = jest.fn(async (name: string) => {
+      const role = roles.get(name);
+      return role ? (structuredClone(role) as unknown as IRole) : null;
+    });
+    return { getRoleByName, getPartitionRole, updateAccessPermissions };
   }
 
   async function run(
@@ -3174,6 +3179,7 @@ describe('updateInterfacePermissions - role.synced audit', () => {
       getRoleByName: store.getRoleByName,
       updateAccessPermissions: store.updateAccessPermissions,
       recordAuditEntry,
+      getPartitionRole: store.getPartitionRole,
     });
   }
 
@@ -3263,6 +3269,38 @@ describe('updateInterfacePermissions - role.synced audit', () => {
     expect(recordAuditEntry).not.toHaveBeenCalled();
   });
 
+  it('records the committed change when the role cache still holds the pre-write role', async () => {
+    const user = fullPermissions(SystemRoles.USER);
+    user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: true };
+    const store = createRoleStore({
+      [SystemRoles.USER]: user,
+      [SystemRoles.ADMIN]: fullPermissions(SystemRoles.ADMIN),
+    });
+    /** The update committed, but its cache write failed, so cached reads stay pre-write. */
+    const stale = new Map<string, IRole | null>();
+    const read = store.getRoleByName.getMockImplementation()!;
+    store.getRoleByName.mockImplementation(async (name: string) => {
+      if (!stale.has(name)) {
+        stale.set(name, await read(name));
+      }
+      return structuredClone(stale.get(name) ?? null);
+    });
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await run({ interface: { bookmarks: false } }, store, recordAuditEntry);
+
+    expect(store.getPartitionRole).toHaveBeenCalledWith(SystemRoles.USER);
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'role.synced',
+        target: { type: 'role', id: SystemRoles.USER, name: SystemRoles.USER },
+        metadata: expect.objectContaining({
+          changes: expect.stringContaining('BOOKMARKS.USE=false'),
+        }),
+      }),
+    );
+  });
+
   it('does not fail startup when the verification read fails', async () => {
     const user = fullPermissions(SystemRoles.USER);
     user[PermissionTypes.BOOKMARKS] = { [Permissions.USE]: true };
@@ -3270,16 +3308,7 @@ describe('updateInterfacePermissions - role.synced audit', () => {
       [SystemRoles.USER]: user,
       [SystemRoles.ADMIN]: fullPermissions(SystemRoles.ADMIN),
     });
-    const read = store.getRoleByName.getMockImplementation()!;
-    let calls = 0;
-    store.getRoleByName.mockImplementation(async (name: string) => {
-      calls += 1;
-      /** The first read per role loads it; the second is the post-sync verification. */
-      if (calls === 2) {
-        throw new Error('mongo unavailable');
-      }
-      return read(name);
-    });
+    store.getPartitionRole.mockRejectedValueOnce(new Error('mongo unavailable'));
     const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
 
     await expect(

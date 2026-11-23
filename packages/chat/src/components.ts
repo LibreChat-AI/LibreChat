@@ -1,5 +1,17 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export { partRenderers, extendPartRenderers } from './components/partRenderers';
+export { ParallelColumns, ParallelContentRenderer } from './components/Parallel';
+export {
+  withFullToolCall,
+  PreviewedToolCallPart,
+  isPreviewedToolCallPart,
+} from './components/parts/hydration';
+export type {
+  ParallelColumnsProps,
+  ParallelColumnHeaderProps,
+  ParallelContentRendererProps,
+} from './components/Parallel';
 export { default as Text } from './components/Text';
 export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';
@@ -14,7 +26,7 @@ export type {
   PartRenderers,
   PartRenderProps,
   ToolRenderProps,
-} from './components/Part';
+} from './components/partTypes';
 
 export {
   AnimatedText,
@@ -186,6 +198,35 @@ export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/D
 export { default as Container } from './components/parts/Container';
 export { default as MemoryInfo } from './components/parts/MemoryInfo';
 export { default as DialogImage } from './components/parts/DialogImage';
+export { default as Image } from './components/parts/Image';
+export { default as CodeAnalyze } from './components/parts/CodeAnalyze';
+export { default as ImageGen } from './components/parts/ImageGen';
+export type { ImageGenProps } from './components/parts/ImageGen';
+export type { CodeAnalyzeProps } from './components/parts/CodeAnalyze';
+export { default as CodeBlock } from './components/parts/CodeBlock';
+export { default as CodeBar } from './components/parts/CodeBar';
+export { default as DownloadButton } from './components/parts/DownloadButton';
+export { default as useCopyCode } from './components/parts/useCopyCode';
+export { default as useDownloadCode } from './components/parts/useDownloadCode';
+export type { CodeBlockProps } from './components/parts/CodeBlock';
+export type { CodeBarProps, RunCodeProps } from './components/parts/CodeBar';
+export { markdownElements, markdownPreviewElements } from './components/markdown/elements';
+export { default as MarkdownBlocks } from './components/markdown/Blocks';
+export { default as MarkdownLite } from './components/markdown/Lite';
+export { default as MarkdownErrorBoundary } from './components/markdown/Boundary';
+export { default as Markdown } from './components/markdown/Markdown';
+export {
+  BASE_REMARK,
+  MATH_REMARK,
+  rehypeList,
+  replyRemark,
+  remarkSupersub,
+} from './components/markdown/plugins';
+export type { MarkdownProps } from './components/markdown/Markdown';
+export type { MarkdownBlocksProps } from './components/markdown/Blocks';
+export type { MarkdownLiteProps } from './components/markdown/Lite';
+export type { MarkdownErrorBoundaryProps } from './components/markdown/Boundary';
+export type { ImageProps } from './components/parts/Image';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
 export { default as ToolCall } from './components/parts/ToolCall';
@@ -341,6 +382,26 @@ export { default as CommandTime, useCommandClock } from './components/parts/Comm
 export { default as CodeWindowHeader } from './components/parts/CodeWindowHeader';
 export type { CodeWindowHeaderProps } from './components/parts/CodeWindowHeader';
 export { default as MemoryCall } from './components/parts/MemoryCall';
+export { default as MemoryArtifacts, hasMemoryArtifacts } from './components/parts/MemoryArtifacts';
+export { default as SkillCall } from './components/parts/SkillCall';
+export { default as AgentHandoff } from './components/parts/AgentHandoff';
+export { default as ReadFileCall, langFromPath } from './components/parts/ReadFileCall';
+export { default as FileAuthoringCall } from './components/parts/FileAuthoringCall';
+export { default as PtcToolTrace } from './components/parts/PtcToolTrace';
+export { default as BashCall } from './components/parts/BashCall';
+export { default as BackgroundTaskCard } from './components/parts/BackgroundTaskCard';
+export { default as BackgroundTaskCall } from './components/parts/BackgroundTaskCall';
+export {
+  default as ExecuteCode,
+  useParseArgs,
+  ERROR_PATTERNS,
+} from './components/parts/ExecuteCode';
+export {
+  default as useLazyHighlight,
+  HIGHLIGHT_THROTTLE_MS,
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from './components/parts/useLazyHighlight';
 export { default as useToolCallState } from './components/parts/useToolCallState';
 export type { ToolCallState, UseToolCallStateInput } from './components/parts/useToolCallState';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
