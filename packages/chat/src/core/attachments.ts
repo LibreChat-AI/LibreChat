@@ -1,4 +1,4 @@
-import type { TAttachment, TFile } from 'librechat-data-provider';
+import type { TAttachment, TFile, WorkspaceChange } from 'librechat-data-provider';
 
 /** The file an attachment stands for: its `file_id`, else its `filepath`. */
 export function attachmentFileKey(attachment: TAttachment): string | undefined {
@@ -202,4 +202,35 @@ export function mapAttachments(
   }
 
   return attachmentMap;
+}
+
+/** An attachment recording a file an agent changed in a workspace that keeps its state. */
+export type WorkspaceChangeAttachment = TAttachment & { workspaceChange: WorkspaceChange };
+
+/**
+ * Splits a message's attachments into the ones drawn beside its parts and the files changed in a
+ * stateful workspace, which are summarized once for the message. The latest record of a file wins
+ * and takes the position of its latest change.
+ */
+export function partitionWorkspaceChanges(attachments?: TAttachment[]): {
+  inlineAttachments: TAttachment[];
+  workspaceChanges: WorkspaceChangeAttachment[];
+} {
+  const inlineAttachments: TAttachment[] = [];
+  const changesByFile = new Map<string, WorkspaceChangeAttachment>();
+
+  for (const attachment of attachments ?? []) {
+    const change = attachment.workspaceChange;
+    if (change?.profile !== 'stateful' || !attachment.filepath) {
+      inlineAttachments.push(attachment);
+      continue;
+    }
+
+    const file = attachment as Partial<TFile> & { agentId?: string };
+    const key = file.file_id ?? `${file.agentId ?? ''}:${change.path}`;
+    changesByFile.delete(key);
+    changesByFile.set(key, attachment as WorkspaceChangeAttachment);
+  }
+
+  return { inlineAttachments, workspaceChanges: Array.from(changesByFile.values()) };
 }

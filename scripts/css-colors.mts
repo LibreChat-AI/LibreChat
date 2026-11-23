@@ -32,7 +32,7 @@ export interface AllowedRule {
 }
 
 export const CSS_COLOR_ALLOWED_RULES: Record<string, AllowedRule[]> = {
-  'client/src/mobile.css': [{ selector: '.azure-bg-color' }],
+  'packages/chat/src/style.css': [{ selector: '.azure-bg-color' }],
   'client/src/style.css': [{ selector: 'select', property: 'background-image' }],
 };
 
@@ -61,16 +61,26 @@ const INNERMOST = /(?<![\w-])([a-z][\w-]*)?\(([^()]*)\)/gi;
 const MATH = new Set(
   MATH_FUNCTIONS.split('|').flatMap((name) => (name === 'atan2?' ? ['atan', 'atan2'] : [name])),
 );
-/** Functions whose result kind does not follow their arguments. */
-const FIXED_RESULT = new Map([
-  ...['sin', 'cos', 'tan', 'sign'].map((name) => [name, 'number'] as const),
-  ...['asin', 'acos', 'atan', 'atan2'].map((name) => [name, 'angle'] as const),
+/** The type of a math value: the exponent of each unit family it carries, so `10px / 2px`
+ *  cancels to a number. An empty type is a number. */
+type MathType = Map<string, number>;
+const ANGLE_TYPE: MathType = new Map([['angle', 1]]);
+/** Functions whose result type does not follow their arguments. */
+const FIXED_RESULT = new Map<string, MathType>([
+  ...['sin', 'cos', 'tan', 'sign'].map((name) => [name, new Map()] as const),
+  ...['asin', 'acos', 'atan', 'atan2'].map((name) => [name, ANGLE_TYPE] as const),
 ]);
-/** A math body token: a number with its unit, an identifier (a constant such as `pi` or a
- *  rounding strategy such as `to-zero`), or an operator or separator. */
+/** Units that are not lengths; any other unit is read as a length. */
+const UNIT_FAMILY = new Map([
+  ...['deg', 'grad', 'rad', 'turn'].map((unit) => [unit, 'angle'] as const),
+  ...['s', 'ms'].map((unit) => [unit, 'time'] as const),
+  ...['hz', 'khz'].map((unit) => [unit, 'frequency'] as const),
+  ...['dpi', 'dpcm', 'dppx', 'x'].map((unit) => [unit, 'resolution'] as const),
+]);
+/** A math body token: a number with its unit, a collapsed inner value (`[length1]`), an identifier
+ *  (a constant such as `pi` or a rounding strategy such as `to-zero`), or an operator or separator. */
 const MATH_TOKEN =
-  /\s*(?:([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%|[a-z]+)?|(-?[a-z][\w-]*)|([+*/,-]))/iy;
-const ANGLE_UNITS = new Set(['deg', 'grad', 'rad', 'turn']);
+  /\s*(?:([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%|[a-z]+)?|\[([a-z\d -]*)\]|(-?[a-z][\w-]*)|([+*/,-]))/iy;
 const SEPARATOR = '(?:\\s*,\\s*|\\s+)';
 const BARE_TRIPLET = `(?:${CHANNEL}|${ANGLE})${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\\s*/\\s*(?:${CHANNEL}|var\\([^)]*\\)))?`;
 /** The whole value is three bare channels, or one is the fallback of a `var()`. */
@@ -86,38 +96,82 @@ const NON_COLOR_PROPERTY =
 
 const blank = (match: string): string => match.replace(/[^\n]/g, ' ');
 
-/** What a math body yields: a number, an angle, a length or other dimension, or `undefined` when
- *  it is not math. Any identifier is a keyword, so a new rounding strategy or constant still reads
- *  as a channel and is reported rather than skipped. */
-function mathKind(body: string): 'number' | 'angle' | 'dimension' | undefined {
-  let kind: 'number' | 'angle' | 'dimension' = 'number';
+const isAngle = (type: MathType): boolean => type.size === 1 && type.get('angle') === 1;
+
+/** Reads a collapsed inner value back into its type; `undefined` when the text is not one. */
+function placeholderType(text: string): MathType | undefined {
+  const type: MathType = new Map();
+  for (const entry of text.trim().split(/\s+/).filter(Boolean)) {
+    const match = /^([a-z]+)(-?\d+)$/.exec(entry);
+    if (!match) return undefined;
+    type.set(match[1], Number(match[2]));
+  }
+  return type;
+}
+
+/** A collapsed value keeps its type: `0` for a number, `0deg` for an angle, which a triplet reads
+ *  as its leading hue, and `[length1]` for anything else, which a triplet never reads. */
+function placeholder(type: MathType): string {
+  if (type.size === 0) return '0';
+  if (isAngle(type)) return '0deg';
+  return `[${Array.from(type, ([family, exponent]) => `${family}${exponent}`).join(' ')}]`;
+}
+
+/** What a math body yields, or `undefined` when it is not math. Multiplying adds the exponents
+ *  of each unit family and dividing subtracts them, so `10px / 2px` is a number; terms and
+ *  arguments of different types resolve to a dimension over an angle over a number, the order
+ *  that keeps an invalid sum from reading as a channel. Any identifier is a keyword, so a new
+ *  rounding strategy or constant still reads as a channel and is reported rather than skipped. */
+function mathType(body: string): MathType | undefined {
+  const terms: MathType[] = [];
+  let term: MathType = new Map();
+  let exponent = 1;
   MATH_TOKEN.lastIndex = 0;
   while (MATH_TOKEN.lastIndex < body.trimEnd().length) {
     const token = MATH_TOKEN.exec(body);
     if (!token) return undefined;
+    const operator = token[5];
+    if (operator === '*' || operator === '/') {
+      exponent = operator === '/' ? -1 : 1;
+      continue;
+    }
+    if (operator) {
+      terms.push(term);
+      term = new Map();
+      exponent = 1;
+      continue;
+    }
     const unit = token[2]?.toLowerCase();
-    if (!unit || unit === '%' || kind === 'dimension') continue;
-    kind = ANGLE_UNITS.has(unit) ? 'angle' : 'dimension';
+    const factor =
+      token[3] !== undefined
+        ? placeholderType(token[3])
+        : new Map(unit && unit !== '%' ? [[UNIT_FAMILY.get(unit) ?? 'length', 1]] : []);
+    if (!factor) return undefined;
+    factor.forEach((power, family) => {
+      const total = (term.get(family) ?? 0) + power * exponent;
+      if (total === 0) term.delete(family);
+      else term.set(family, total);
+    });
+    exponent = 1;
   }
-  return kind;
+  terms.push(term);
+  return terms.find((type) => type.size > 0 && !isAngle(type)) ?? terms.find(isAngle) ?? new Map();
 }
 
-/** A math function over numbers (`calc(255)`, `round(to-zero, 255, 1)`) is a fixed channel, and one
- *  over an angle is an angle (`0deg`), which a triplet reads only as its leading hue. Trigonometric
- *  functions and `sign` return a number and inverse trigonometric ones an angle whatever they are
- *  given; any other function over a length is a length (`0px`), which an enclosing trigonometric
- *  function still reads and a triplet does not. */
+/** A math function over numbers (`calc(255)`, `round(to-zero, 255, 1)`, `calc(10px / 2px)`) is a
+ *  fixed channel, and one over an angle is an angle (`0deg`), which a triplet reads only as its
+ *  leading hue. Trigonometric functions and `sign` return a number and inverse trigonometric ones
+ *  an angle whatever they are given; any other function over a length is a length, which an
+ *  enclosing trigonometric function or division still reads and a triplet does not. */
 function collapseMath(text: string): string {
   const collapsed = text.replace(
     INNERMOST,
     (match: string, name: string | undefined, body: string) => {
       const fn = name?.toLowerCase();
       if (fn !== undefined && !MATH.has(fn)) return match;
-      const kind = mathKind(body);
-      if (kind === undefined) return match;
-      const result = (fn === undefined ? undefined : FIXED_RESULT.get(fn)) ?? kind;
-      if (result === 'dimension') return '0px';
-      return result === 'angle' ? '0deg' : '0';
+      const type = mathType(body);
+      if (type === undefined) return match;
+      return placeholder((fn === undefined ? undefined : FIXED_RESULT.get(fn)) ?? type);
     },
   );
   return collapsed === text ? text : collapseMath(collapsed);

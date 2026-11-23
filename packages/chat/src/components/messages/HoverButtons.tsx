@@ -12,7 +12,7 @@ import {
 } from '@librechat/client';
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
 import type { NamedExoticComponent, ReactNode } from 'react';
-import { MessageAudioSlot, useMessagesHost } from '../../react/messages/host';
+import { MessageAudioSlot, MessageUsageSlot, useMessagesHost } from '../../react/messages/host';
 import useGenerationsByLatest from '../../react/messages/generations';
 import { hasEditablePart } from '../../core/parts/editableParts';
 import { ChatContext } from '../../react/chat/context';
@@ -133,7 +133,10 @@ function getToolbarIcons(): ToolbarIcons {
   return toolbarIcons;
 }
 
-const HoverButtons = ({
+/** What the toolbar takes from the pane's chat contract, beside what its row passes it. */
+type ToolbarProps = THoverButtons & { isSubmitting: boolean; readOnly: boolean };
+
+const Toolbar: NamedExoticComponent<ToolbarProps> = memo(function Toolbar({
   index,
   isEditing,
   enterEdit,
@@ -147,13 +150,10 @@ const HoverButtons = ({
   getLatestMessageId,
   isLast,
   handleFeedback,
-}: THoverButtons): ReactNode => {
+  isSubmitting,
+  readOnly,
+}: ToolbarProps): ReactNode {
   const localize = useLocalize();
-  /** Read from the pane's chat contract here rather than passed down: a send toggles the
-   *  rerun controls on every row, and only this toolbar has to re-render for it. */
-  const chat = useContext(ChatContext);
-  const isSubmitting = chat?.isSubmitting === true;
-  const readOnly = chat?.readOnly === true;
   const [isCopied, setIsCopied] = useState(false);
   const { useGetMessages, useHasPendingTurn } = useMessagesHost();
   const getMessages = useGetMessages();
@@ -337,7 +337,33 @@ const HoverButtons = ({
           dataTestId={isLast ? 'continue-generation-button' : undefined}
         />
       )}
+      {!isCreatedByUser && (
+        <MessageUsageSlot
+          message={message}
+          conversationId={conversation.conversationId ?? undefined}
+          isLast={isLast}
+        />
+      )}
     </div>
+  );
+});
+
+/**
+ * Reads the pane's chat contract here rather than have it passed down: a send toggles the rerun
+ * controls on every row, and only the toolbar has to render for it.
+ *
+ * The contract is one object, replaced several times in a send as the tail moves, and the
+ * toolbar reads two of its fields. This component renders for each replacement and hands those
+ * two on; the toolbar under it, with its buttons and tooltips, renders when one of them changed.
+ */
+const HoverButtons = (props: THoverButtons): ReactNode => {
+  const chat = useContext(ChatContext);
+  return (
+    <Toolbar
+      {...props}
+      isSubmitting={chat?.isSubmitting === true}
+      readOnly={chat?.readOnly === true}
+    />
   );
 };
 

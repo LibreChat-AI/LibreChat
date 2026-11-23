@@ -33,8 +33,12 @@ const ASSERT_SKILLS_MARKER = 'E2E_ASSERT_SKILLS:';
 const ASSERT_MANUAL_SKILL_MARKER = 'E2E_ASSERT_MANUAL_SKILL:';
 const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
+/** `E2E_LIST_PROVIDER_FILES:<label>` names every provider file in the request, earlier turns'
+ *  included; `E2E_ASSERT_PROVIDER_FILE` looks only at the latest user message. */
+const LIST_PROVIDER_FILES_MARKER = 'E2E_LIST_PROVIDER_FILES:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
+const REPORT_TOOLS_MARKER = 'E2E_REPORT_TOOLS';
 const REPORT_CONTEXT_TOKENS_MARKER = 'E2E_REPORT_CONTEXT_TOKENS';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
@@ -45,6 +49,12 @@ const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
 const LONG_THINK_REPLY_MARKER = 'E2E_LONG_THINK_REPLY:';
 const LONG_THINK_WORDS = 400;
 const SLOW_THINK_REPLY_MARKER = 'E2E_SLOW_THINK_REPLY:';
+/** `E2E_OUTPUT_BUDGET:<label>`: a Gemini call that spends its whole output budget on reasoning,
+ *  ending with the raw `MAX_TOKENS` finish reason and no answer text. */
+const OUTPUT_BUDGET_MARKER = 'E2E_OUTPUT_BUDGET:';
+/** `E2E_OUTPUT_BUDGET_PARTIAL:<label>`: the first call is cut off at `MAX_TOKENS` mid-answer;
+ *  a later call for the same label (a Continue) finishes the answer. */
+const OUTPUT_BUDGET_PARTIAL_MARKER = 'E2E_OUTPUT_BUDGET_PARTIAL:';
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
@@ -58,6 +68,11 @@ const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
 const INTERRUPT_TOOL_REPLY_MARKER = 'E2E_INTERRUPT_TOOL_REPLY:';
 const MCP_APP_MARKER = 'E2E_MCP_APP:';
 const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
+/** `E2E_TOOL_LIMIT_PADDED:<spaces>`: call `padded_echo` on every model step, so the
+ *  turn ends at the agent's tool-call limit holding a result padded with that many
+ *  spaces in one unbroken run. */
+const TOOL_LIMIT_PADDED_MARKER = 'E2E_TOOL_LIMIT_PADDED:';
+const PADDED_ECHO_TOOL_NAME = 'padded_echo_mcp_e2e-memory';
 const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
 const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
 const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
@@ -111,9 +126,11 @@ const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 /** `<CODE>:<label>`: throws mid-stream the way LangChain classifies a provider failure, with a
- *  gateway's explanation after the status code (the `BARE` variant carries the status alone). */
+ *  gateway's explanation after the status code (the `BARE` variant carries the status alone, the
+ *  `LONG` one a multi-line explanation with a link, past a sentence's length). */
 const GATEWAY_ERROR_MARKER = 'E2E_GATEWAY_ERROR:';
 const BARE_GATEWAY_ERROR_MARKER = 'E2E_BARE_GATEWAY_ERROR:';
+const LONG_GATEWAY_ERROR_MARKER = 'E2E_LONG_GATEWAY_ERROR:';
 const GATEWAY_ERROR_STATUS = { MODEL_RATE_LIMIT: 429, MODEL_NOT_FOUND: 404 };
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
 /** Display and inline math, so a spec can tell KaTeX rendered (it loads on first need). */
@@ -142,6 +159,8 @@ const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
+const SUBAGENT_CHAIN_MARKER = 'E2E_SUBAGENT_CHAIN:';
+const SUBAGENT_RELAY_MARKER = 'E2E_SUBAGENT_RELAY:';
 const SUBAGENT_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
 const SUBAGENT_ACTIVITY_CHILD_MARKER = 'E2E_SUBAGENT_ACTIVITY_CHILD:';
 const RUN_FILES_MARKER = 'E2E_RUN_FILES:';
@@ -240,6 +259,7 @@ const SKILL_DESCRIPTION =
 const EDITED_SKILL_DESCRIPTION =
   'Use this edited skill to verify LibreChat skill file authoring in mock end-to-end tests.';
 const countedReplies = new Map();
+const outputBudgetPartialReplies = new Map();
 const slowCountedReplies = new Map();
 
 function messageType(message) {
@@ -490,6 +510,24 @@ function collectProviderFileNames(value, names = new Set()) {
   }
 
   return names;
+}
+
+function providerFileListResponses({ messages, text }) {
+  const label = getMarkerValue(text, LIST_PROVIDER_FILES_MARKER);
+  if (!label) {
+    return null;
+  }
+
+  const names = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const type = message ? messageType(message) : '';
+    if (type === 'human' || type === 'user') {
+      collectProviderFileNames(message.content, names);
+    }
+  }
+  return {
+    responses: [`E2E provider files (${label}): ${Array.from(names).sort().join(', ') || 'none'}`],
+  };
 }
 
 function providerFileAssertionResponses({ messages, text }) {
@@ -821,12 +859,17 @@ function replyResponses(text) {
   }
 
   const gatewayError =
-    getMarkerValue(text, GATEWAY_ERROR_MARKER) || getMarkerValue(text, BARE_GATEWAY_ERROR_MARKER);
+    getMarkerValue(text, GATEWAY_ERROR_MARKER) ||
+    getMarkerValue(text, BARE_GATEWAY_ERROR_MARKER) ||
+    getMarkerValue(text, LONG_GATEWAY_ERROR_MARKER);
   if (gatewayError) {
     const [code, label = ''] = gatewayError.split(':');
-    const explanation = text.includes(BARE_GATEWAY_ERROR_MARKER)
-      ? ''
-      : ` Gateway budget for ${label} is spent. Waiting will not help; ask an administrator for more.`;
+    let explanation = ` Gateway budget for ${label} is spent. Waiting will not help; ask an administrator for more.`;
+    if (text.includes(BARE_GATEWAY_ERROR_MARKER)) {
+      explanation = '';
+    } else if (text.includes(LONG_GATEWAY_ERROR_MARKER)) {
+      explanation = ` Gateway budget for ${label} is spent for this month and resets on the first day of the next one.\nWaiting a few minutes will not help. To keep working now, open a request for a higher budget at https://service.example.com/ai/budget and include your user id, the model you were using and the reason you need more.`;
+    }
     return {
       responses: [`E2E gateway error prelude ${label}`],
       thrownError: `${GATEWAY_ERROR_STATUS[code] ?? 400}${explanation}\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/${code}/\n`,
@@ -850,6 +893,28 @@ function replyResponses(text) {
           `Finally I decide how to answer it.</think>\n\nE2E slow think reply done ${slowThinkName}`,
       ],
       sleep: 120,
+    };
+  }
+
+  const budgetPartialName = getMarkerValue(text, OUTPUT_BUDGET_PARTIAL_MARKER);
+  if (budgetPartialName) {
+    const count = (outputBudgetPartialReplies.get(budgetPartialName) ?? 0) + 1;
+    outputBudgetPartialReplies.set(budgetPartialName, count);
+    return count === 1
+      ? {
+          responses: [`E2E partial answer ${budgetPartialName}`],
+          reasoning: `E2E reasoning ${budgetPartialName}`,
+          finishReason: 'MAX_TOKENS',
+        }
+      : { responses: [`E2E rest of the answer ${budgetPartialName}`] };
+  }
+
+  const budgetName = getMarkerValue(text, OUTPUT_BUDGET_MARKER);
+  if (budgetName) {
+    return {
+      responses: [''],
+      reasoning: `E2E reasoning ${budgetName}`,
+      finishReason: 'MAX_TOKENS',
     };
   }
 
@@ -968,9 +1033,23 @@ function replyResponses(text) {
  * instructions included — since the context snapshot calibrates against it.
  */
 class UsageEmittingFakeChatModel extends FakeChatModel {
-  constructor({ graph, resolveInvocation, resolveOnStream, sleep, ...options }) {
+  constructor({
+    graph,
+    resolveInvocation,
+    resolveOnStream,
+    sleep,
+    reasoning,
+    finishReason,
+    ...options
+  }) {
     super({ ...options, sleep });
     this.graph = graph;
+    /** Thoughts streamed ahead of the answer as a `reasoning` content block, the shape Gemini's
+     *  thought parts take on Vertex AI, so they stay out of the call's answer text. */
+    this.reasoning = reasoning;
+    /** A provider's raw finish reason, carried as generation info on the final chunk the way
+     *  Gemini's stream adapter reports it. */
+    this.finishReason = finishReason;
     this.resolveInvocation = resolveInvocation;
     this.resolveOnStream = resolveOnStream;
     this.streamSleep = sleep ?? CHUNK_DELAY_MS;
@@ -1072,6 +1151,14 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       ? null
       : await this.resolveOnStream?.(messages, options, runManager);
     let chunkStream;
+    if (this.reasoning) {
+      yield new ChatGenerationChunk({
+        text: '',
+        message: new AIMessageChunk({
+          content: [{ type: 'reasoning', reasoning: this.reasoning }],
+        }),
+      });
+    }
     if (scriptedResponse) {
       chunkStream = this.streamScriptedResponseChunks({
         response: scriptedResponse.response ?? '',
@@ -1119,6 +1206,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
         content: '',
         ...cacheUsageFields(messages, input_tokens, output_tokens),
       }),
+      ...(this.finishReason != null && { generationInfo: { finishReason: this.finishReason } }),
     });
   }
 }
@@ -1127,6 +1215,8 @@ function overrideModel({
   graph,
   responses,
   sleep,
+  reasoning,
+  finishReason,
   toolCalls,
   thrownError,
   overrideSubagentModel,
@@ -1160,6 +1250,8 @@ function overrideModel({
     const model = new UsageEmittingFakeChatModel({
       graph,
       responses,
+      reasoning,
+      finishReason,
       sleep: sleep ?? CHUNK_DELAY_MS,
       emitCustomEvent: true,
       toolCalls,
@@ -1543,6 +1635,35 @@ function mcpAppResponses(label, toolNames) {
         type: 'tool_call',
       },
     ],
+  };
+}
+
+/** Never answers in text: each model step calls `padded_echo` again, so only the
+ *  agent's `recursion_limit` ends the turn, and the final step's result is the one
+ *  the save path counts as retained past the last context snapshot. */
+function toolLimitPaddedResponses(padSpaces, toolNames) {
+  if (!toolNames.has(PADDED_ECHO_TOOL_NAME)) {
+    return {
+      responses: [`E2E tool limit unavailable: ${PADDED_ECHO_TOOL_NAME} was not advertised.`],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      return {
+        response: '',
+        toolCalls: [
+          {
+            id: `call_e2e_tool_limit_padded_${invocation}`,
+            name: PADDED_ECHO_TOOL_NAME,
+            args: { text: `step ${invocation}`, pad_spaces: padSpaces },
+            type: 'tool_call',
+          },
+        ],
+      };
+    },
   };
 }
 
@@ -2244,6 +2365,52 @@ function subagentResultResponses(text) {
             args: {
               description: childPrompt,
               subagent_type: marker.childId,
+            },
+            type: 'tool_call',
+          },
+        ],
+      };
+    },
+  };
+}
+
+/**
+ * `E2E_SUBAGENT_CHAIN:<relayId>:<childId>:<label>`: the parent calls the relay agent, the relay
+ * calls the child from inside its own run, and the child's streamed answer comes back through both.
+ */
+function subagentChainResponses(text) {
+  const [relayId, childId, label] = getMarkerValue(text, SUBAGENT_CHAIN_MARKER).split(':');
+  if (!relayId || !childId || !label) {
+    return null;
+  }
+
+  const relayPrompt = `${SUBAGENT_RELAY_MARKER}${label}`;
+  const childPrompt = `${SUBAGENT_CHILD_MARKER}${label}`;
+  const expectedResult = `E2E subagent streamed result ${label}`;
+  return {
+    responses: [''],
+    overrideSubagentModel: true,
+    resolveInvocation: (messages) => {
+      const toolResult = findLastToolMessageText(messages, expectedResult);
+      if (toolResult) {
+        return { response: toolResult };
+      }
+
+      const task = getLatestUserText(messages);
+      if (task.includes(childPrompt)) {
+        return { response: expectedResult, textDeltaBlocks: true };
+      }
+
+      const relays = task.includes(relayPrompt);
+      return {
+        response: '',
+        toolCalls: [
+          {
+            id: `call_e2e_${relays ? 'child' : 'relay'}_${label}`,
+            name: 'subagent',
+            args: {
+              description: relays ? childPrompt : relayPrompt,
+              subagent_type: relays ? childId : relayId,
             },
             type: 'tool_call',
           },
@@ -3794,6 +3961,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return subagentActivity;
   }
 
+  const subagentChain = subagentChainResponses(text);
+  if (subagentChain) {
+    return subagentChain;
+  }
+
   const subagentResult = subagentResultResponses(text);
   if (subagentResult) {
     return subagentResult;
@@ -3859,6 +4031,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
   if (mcpAppLabel) {
     return mcpAppResponses(mcpAppLabel, toolNames);
+  }
+
+  const toolLimitPadded = getMarkerValue(text, TOOL_LIMIT_PADDED_MARKER);
+  if (toolLimitPadded) {
+    return toolLimitPaddedResponses(Number(toolLimitPadded) || 0, toolNames);
   }
 
   const mcpAppPhaseLabel = getMarkerValue(text, MCP_APP_PHASE_MARKER);
@@ -3973,6 +4150,12 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return llmConfigReportResponses(graph);
   }
 
+  if (text.includes(REPORT_TOOLS_MARKER)) {
+    const agent = graph?.agentContexts?.values().next().value;
+    const names = [...collectToolDefinitions(agent ? [agent] : []).keys()];
+    return { responses: [`E2E tools: ${JSON.stringify(names)}`] };
+  }
+
   if (text.includes(REPORT_CONTEXT_TOKENS_MARKER)) {
     return contextTokensReportResponses(graph);
   }
@@ -3996,6 +4179,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const providerFileAssertion = providerFileAssertionResponses({ messages, text });
   if (providerFileAssertion) {
     return providerFileAssertion;
+  }
+
+  const providerFileList = providerFileListResponses({ messages, text });
+  if (providerFileList) {
+    return providerFileList;
   }
 
   const quoteAssertion = quoteAssertionResponses({ messages, text });
@@ -4119,6 +4307,8 @@ module.exports = function fakeModelHook(run, context) {
   const {
     responses,
     sleep,
+    reasoning,
+    finishReason,
     toolCalls,
     thrownError,
     overrideSubagentModel,
@@ -4137,6 +4327,8 @@ module.exports = function fakeModelHook(run, context) {
     graph,
     responses,
     sleep,
+    reasoning,
+    finishReason,
     toolCalls,
     thrownError,
     overrideSubagentModel:

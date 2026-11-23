@@ -13,9 +13,9 @@ import {
   subagentProgressKey,
   useSubagentProgress,
 } from '../../react/subagents/state';
+import { isSelfSpawn as isSelfSpawnType, useSubagentCaller } from '../../react/subagents/author';
 import { isLiveSubagentStatus, subagentStatusLabelKey } from '../../react/subagents/status';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
-import { isSelfSpawn as isSelfSpawnType } from '../../react/subagents/author';
 import { pickTailIndex, pickTailPart } from '../../react/subagents/tail';
 import { parseSubagentBackgroundHandle } from '../../core/parts/handle';
 import { lastVisibleContentIdx } from '../../core/parts/activityLabels';
@@ -28,6 +28,7 @@ import { PartsPreviewContext } from '../../react/parts/preview';
 import { FailedRevealContext, useFailedReveal } from './reveal';
 import { useToolCallIntent } from '../../react/parts/intent';
 import { useBranchTailSelect } from '../../react/latest';
+import { renderContentParts } from '../contentRenderer';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
 import { FOLD_GLYPH_CLASS } from './rows';
@@ -317,6 +318,7 @@ export default function SubagentCall({
     persistedContent,
   ]);
 
+  const caller = useSubagentCaller();
   const panelSelection = useMemo(
     () => ({
       host: isSharedConvo === true ? ('share' as const) : ('conversation' as const),
@@ -335,6 +337,7 @@ export default function SubagentCall({
       initialProgress,
       isSubmitting,
       ...(runStepStatus == null ? {} : { runStepStatus }),
+      ...(caller == null ? {} : { caller }),
       ...(backgroundHandle != null && canOpenDurablePanel
         ? {
             durable: {
@@ -347,6 +350,7 @@ export default function SubagentCall({
     [
       attachments,
       backgroundHandle,
+      caller,
       canOpenDurablePanel,
       contentPreview,
       initialProgress,
@@ -659,7 +663,7 @@ function SubagentPreview({
       aria-hidden="true"
       data-subagent-preview
       className={cn(
-        'pointer-events-none absolute inset-x-[calc(0.75rem+1px)] bottom-[calc(0.5rem+1px)] overflow-hidden',
+        'pointer-events-none absolute inset-x-[calc(0.75rem+1px)] bottom-[calc(0.25rem+1px)] overflow-hidden',
         PREVIEW_ROW_HEIGHT,
         PREVIEW_FADE,
       )}
@@ -671,7 +675,7 @@ function SubagentPreview({
         <PartsPreviewContext.Provider value={true}>
           <FailedRevealContext.Provider value={NO_REVEAL}>
             <MessagePartsHostProvider host={pictureHost}>
-              {host.renderContentParts({
+              {(host.renderContentParts ?? renderContentParts)({
                 content,
                 messageId,
                 conversationId: null,

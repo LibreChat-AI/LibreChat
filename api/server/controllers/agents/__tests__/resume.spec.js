@@ -1156,6 +1156,32 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
   });
 
+  it('restores the trigger a paused run was started by, whatever the approval request says', async () => {
+    const trigger = {
+      subject: { kind: 'key', id: 'key-1' },
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1000 },
+      },
+    };
+    mockGenerationJobManager.getJob.mockResolvedValue(
+      makeToolApprovalJob({ metadata: { trigger } }),
+    );
+    const res = await post(
+      approveBody({ trigger: { subject: { kind: 'key', id: 'forged-key' } }, agentTrigger: {} }),
+    );
+    expect(res.status).toBe(200);
+    await settled;
+    expect(mockInitializeClient.mock.calls[0][0].executionContext).toEqual({
+      principal: { userId: USER_ID, tenantId: TENANT_ID },
+      agentId: AGENT_ID,
+      source: { type: 'trigger', ...trigger, manual: false, resumed: true },
+      unattended: false,
+    });
+    expect(capturedInit.isScheduledFire).not.toBe(true);
+    expect(mockClaimScheduleResume).not.toHaveBeenCalled();
+  });
+
   describe('scheduled occurrence lifecycle', () => {
     const scheduledFor = '2026-08-17T12:00:00.000Z';
     const makeScheduledJob = () =>
@@ -1396,7 +1422,12 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockInitializeClient.mock.calls[0][0].executionContext).toEqual({
         principal: { userId: USER_ID, tenantId: TENANT_ID },
         agentId: AGENT_ID,
-        source: { type: 'schedule', id: 'schedule-1', manual: false, resumed: true },
+        source: {
+          type: 'trigger',
+          subject: { kind: 'schedule', id: 'schedule-1' },
+          manual: false,
+          resumed: true,
+        },
         unattended: false,
       });
       // The owner's validated decisions, not the request body, name what may now run.
@@ -1424,6 +1455,37 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockRecordScheduleOutcome.mock.invocationCallOrder[0]).toBeLessThan(
         mockGenerationJobManager.publishTerminalClaim.mock.invocationCallOrder[0],
       );
+    });
+
+    it('records an error when the resumed run ended in an error part', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeScheduledJob());
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({
+          contentParts: [
+            { type: 'text', text: 'resumed answer' },
+            {
+              type: 'error',
+              error: '{"type":"model_rate_limit","info":"PRIVATE gateway wording"}',
+            },
+          ],
+        }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+
+      expect(mockRecordScheduleOutcome).toHaveBeenCalledWith({
+        scheduleId: 'schedule-1',
+        scheduledFor,
+        streamId: CONVO_ID,
+        jobCreatedAt: 1000,
+        status: 'error',
+        conversationId: CONVO_ID,
+        error: 'Scheduled run ended with an error response',
+      });
+      expect(JSON.stringify(mockRecordScheduleOutcome.mock.calls)).not.toContain('PRIVATE');
     });
 
     it('keeps the approval paused when global scheduled-run capacity is full', async () => {
@@ -3106,6 +3168,25 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
   });
 
   describe('happy path: approve -> reconstruct -> resume -> finalize', () => {
+    it('persists the length finish reason of a resumed answer cut off at the output limit', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({ metadata: { finish_reason: 'length' } }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockSaveMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ finish_reason: 'length', unfinished: false }),
+        expect.anything(),
+      );
+    });
+
     const statefulCodeAgent = (bridgeWorkerId) => ({
       id: AGENT_ID,
       codeExecutionContext: {

@@ -320,16 +320,19 @@ const INLINE_DETAIL_LENGTH = 240;
 /**
  * A headline plus the failure's own words, the way every provider-produced error reads: what is
  * known first, the reported text second. A single sentence stays in place, where a reader gets it
- * without acting; a body of text collapses under `label`.
+ * without acting; a body of text collapses under `label` unless `inline` says the detail is the
+ * instruction the reader needs, as a gateway's explanation of a spent budget is.
  */
 export function ErrorWithDetail({
   headline,
   detail,
   label,
+  inline = false,
 }: {
   headline: string;
   detail?: string;
   label: string;
+  inline?: boolean;
 }) {
   if (detail == null) {
     return <>{headline}</>;
@@ -338,8 +341,8 @@ export function ErrorWithDetail({
   return (
     <ErrorBody>
       <div>{headline}</div>
-      {detail.length <= INLINE_DETAIL_LENGTH && !/[\r\n]/.test(detail) ? (
-        <div className="text-text-secondary">{detail}</div>
+      {inline || (detail.length <= INLINE_DETAIL_LENGTH && !/[\r\n]/.test(detail)) ? (
+        <div className="text-text-secondary break-words whitespace-pre-wrap">{detail}</div>
       ) : (
         <ErrorDetails label={label}>{detail}</ErrorDetails>
       )}

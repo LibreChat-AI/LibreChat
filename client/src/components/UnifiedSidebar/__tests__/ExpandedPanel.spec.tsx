@@ -1,40 +1,15 @@
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
 import '@testing-library/jest-dom/extend-expect';
 import { MemoryRouter } from 'react-router-dom';
 import { MessagesSquare, NotebookPen } from 'lucide-react';
-import { render, fireEvent, screen } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, render, fireEvent, screen, within } from '@testing-library/react';
 import type { NavLink } from '~/common';
 import { ActivePanelProvider, DEFAULT_PANEL, activePanelAtom } from '~/Providers';
+import { createBalanceTestHarness } from 'test/balance';
 
 const mockNewConversation = jest.fn();
 const mockClearMessagesCache = jest.fn();
-
-jest.mock('~/store', () => {
-  const { atom } = jest.requireActual('recoil');
-  let counter = 0;
-  const customShortcutsAtom = atom({
-    key: 'mock-customShortcuts',
-    default: {},
-  });
-  const shortcutsEnabledAtom = atom({
-    key: 'mock-shortcutsEnabled',
-    default: true,
-  });
-  return {
-    __esModule: true,
-    default: {
-      conversationByIndex: () =>
-        atom({ key: `mock-conversationByIndex-${counter++}`, default: null }),
-      conversationIdByIndex: () =>
-        atom({ key: `mock-conversationIdByIndex-${counter++}`, default: null }),
-      customShortcuts: customShortcutsAtom,
-      shortcutsEnabled: shortcutsEnabledAtom,
-    },
-  };
-});
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -67,11 +42,6 @@ jest.mock('~/hooks/Conversations/useNewChat', () => ({
   }),
 }));
 
-jest.mock('~/utils', () => ({
-  clearMessagesCache: (...args: unknown[]) => mockClearMessagesCache(...args),
-  cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
-}));
-
 jest.mock('~/components/Chat/Menus/OpenSidebar', () => ({
   CLOSE_SIDEBAR_ID: 'close-sidebar',
 }));
@@ -96,7 +66,7 @@ const createLinks = (): NavLink[] => [
   },
 ];
 
-const createQueryClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+let harness: ReturnType<typeof createBalanceTestHarness>;
 
 function renderPanel({
   expanded = true,
@@ -119,20 +89,18 @@ function renderPanel({
 
   const result = render(
     <MemoryRouter>
-      <QueryClientProvider client={createQueryClient()}>
-        <RecoilRoot>
-          <ActivePanelProvider>
-            <ExpandedPanel
-              links={links}
-              expanded={expanded}
-              onCollapse={onCollapse}
-              onExpand={onExpand}
-              onNavigate={onNavigate}
-              switchToHistory={switchToHistory}
-            />
-          </ActivePanelProvider>
-        </RecoilRoot>
-      </QueryClientProvider>
+      <harness.Wrapper>
+        <ActivePanelProvider>
+          <ExpandedPanel
+            links={links}
+            expanded={expanded}
+            onCollapse={onCollapse}
+            onExpand={onExpand}
+            onNavigate={onNavigate}
+            switchToHistory={switchToHistory}
+          />
+        </ActivePanelProvider>
+      </harness.Wrapper>
     </MemoryRouter>,
   );
 
@@ -143,6 +111,19 @@ describe('ExpandedPanel', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.clear();
+    harness = createBalanceTestHarness({ jotaiStore: getDefaultStore() });
+  });
+  afterEach(() => {
+    cleanup();
+    harness.client.clear();
+  });
+
+  it.each([true, false])('renders account usage when expanded=%s', async (expanded) => {
+    renderPanel({ expanded });
+    fireEvent.click(await screen.findByRole('button', { name: 'Account usage' }));
+    const card = await screen.findByRole('dialog', { name: 'Account usage' });
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+    expect(harness.getBalance).toHaveBeenCalledTimes(1);
   });
 
   describe('sidebar toggle button', () => {

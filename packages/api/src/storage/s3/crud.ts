@@ -54,6 +54,7 @@ import {
 } from '~/storage/validation';
 import { dispatchFileDeletion } from '~/files/dispatch';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { getInlineImageType } from '~/files/mime';
 import { initializeS3 } from '~/cdn/s3';
 import { deleteRagFile } from '~/files';
 import { s3Config } from './s3Config';
@@ -303,8 +304,9 @@ async function getS3URLForKey({
     const safeFilename = sanitizeContentDispositionFilename(customFilename);
     params.ResponseContentDisposition = `attachment; filename="${safeFilename}"`;
   }
-  if (contentType) {
-    params.ResponseContentType = contentType;
+  const responseType = contentType || getInlineImageType(key);
+  if (responseType) {
+    params.ResponseContentType = responseType;
   }
 
   try {
@@ -353,7 +355,8 @@ export async function saveBufferToS3({
   includeRegionInPath = false,
   useInlinePath,
   urlBuilder,
-}: SaveBufferParams & { urlBuilder?: UrlBuilder }): Promise<string> {
+  type,
+}: SaveBufferParams & { urlBuilder?: UrlBuilder; type?: string | null }): Promise<string> {
   const key = getS3Key({
     basePath,
     userId,
@@ -363,7 +366,12 @@ export async function saveBufferToS3({
     includeRegionInPath,
     useInlinePath,
   });
-  const params = { Bucket: bucketName, Key: key, Body: buffer };
+  const params: PutObjectCommandInput = {
+    Bucket: bucketName,
+    Key: key,
+    Body: buffer,
+    ContentType: getInlineImageType(fileName, type),
+  };
 
   try {
     const s3 = initializeS3();
@@ -435,9 +443,11 @@ async function saveReadableToS3({
   includeRegionInPath = false,
   useInlinePath,
   urlBuilder,
+  type,
 }: Omit<SaveBufferParams, 'buffer'> & {
   body: Readable;
   urlBuilder?: UrlBuilder;
+  type?: string | null;
 }): Promise<{ filepath: string; bytes: number; storageKey?: string; storageRegion?: string }> {
   const key = getS3Key({
     basePath,
@@ -448,6 +458,7 @@ async function saveReadableToS3({
     includeRegionInPath,
     useInlinePath,
   });
+  const ContentType = getInlineImageType(fileName, type);
   const pending: PendingUploadBuffers = { buffers: [], bytes: 0 };
   const completedParts: CompletedPart[] = [];
   let totalBytes = 0;
@@ -465,7 +476,7 @@ async function saveReadableToS3({
         return uploadId;
       }
       const response = await s3.send(
-        new CreateMultipartUploadCommand({ Bucket: bucketName, Key: key }),
+        new CreateMultipartUploadCommand({ Bucket: bucketName, Key: key, ContentType }),
       );
       if (!response.UploadId) {
         throw new Error('[saveReadableToS3] S3 did not return an upload ID');
@@ -503,7 +514,12 @@ async function saveReadableToS3({
     if (!uploadId) {
       const bodyBuffer =
         pending.bytes > 0 ? takePendingBytes(pending, pending.bytes) : Buffer.alloc(0);
-      const params: PutObjectCommandInput = { Bucket: bucketName, Key: key, Body: bodyBuffer };
+      const params: PutObjectCommandInput = {
+        Bucket: bucketName,
+        Key: key,
+        Body: bodyBuffer,
+        ContentType,
+      };
       await s3.send(new PutObjectCommand(params));
     } else {
       if (pending.bytes > 0) {
@@ -589,6 +605,7 @@ export async function saveURLToS3WithMetadata({
         includeRegionInPath,
         useInlinePath,
         urlBuilder,
+        type: contentType,
       });
       return {
         filepath: result.filepath,
@@ -615,6 +632,7 @@ export async function saveURLToS3WithMetadata({
       includeRegionInPath,
       useInlinePath,
       urlBuilder,
+      type: contentType,
     });
     const key = getS3Key({
       basePath,
@@ -840,10 +858,11 @@ export async function uploadFileToS3({
       throw new Error('[uploadFileToS3] S3 not initialized');
     }
 
-    const uploadParams = {
+    const uploadParams: PutObjectCommandInput = {
       Bucket: bucketName,
       Key: key,
       Body: fileStream,
+      ContentType: getInlineImageType(fileName, file.mimetype),
     };
 
     await s3.send(new PutObjectCommand(uploadParams));

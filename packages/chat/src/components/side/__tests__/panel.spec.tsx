@@ -4,7 +4,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { atom, useAtom, useAtomValue, Provider, createStore } from 'jotai';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { Constants, ContentTypes, EModelEndpoint } from 'librechat-data-provider';
+import {
+  Constants,
+  StepTypes,
+  StepEvents,
+  ContentTypes,
+  EModelEndpoint,
+} from 'librechat-data-provider';
 import type { TMessage, ChatEvent, TConversation } from 'librechat-data-provider';
 import type { ChatStream, ChatTransport, QueuedMessage, ChatSendRequest } from '../../../core';
 import type { SideChatHost, SideChatSurfaceProps } from '../../../react/side/host';
@@ -40,6 +46,19 @@ import { SIDE_CHAT_PANE } from '../../../react/side/state';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import { useFollowChat } from '../../../react/follow';
 import SideChatPanel from '../panel';
+
+/** The header's own icon, counted: the header is drawn when its title is, not with the thread. */
+const mockHeaderIcon = jest.fn();
+jest.mock('lucide-react', () => {
+  const actual = jest.requireActual('lucide-react');
+  return {
+    ...actual,
+    ArrowUpRight: (props: object) => {
+      mockHeaderIcon();
+      return <actual.ArrowUpRight {...props} />;
+    },
+  };
+});
 
 beforeAll(initEnglish);
 
@@ -123,6 +142,7 @@ function UserRow({ text }: { text: string }) {
 }
 
 const steerHost = createSteerHost();
+const startNothing = () => undefined;
 
 /** The page's read state, which a list asks for when reading it can mark a conversation seen. */
 const pageSeenSource = jest.fn(() => inertSeenSource);
@@ -227,7 +247,11 @@ function setup({
         settlesLost: true,
         ...options,
       }),
-    useOpenConversation: () => openConversation,
+    /** A new function on every render, as a host's may be: nothing is to be redrawn for it. */
+    useOpenConversation:
+      () =>
+      (...args: Parameters<typeof openConversation>) =>
+        openConversation(...args),
     useSheetLayout: () => false,
     useClearsFooter: () => false,
     Surface,
@@ -239,7 +263,8 @@ function setup({
       const [held, setConversation] = useAtom(paneAtom);
       return { conversation: held, setConversation };
     },
-    useNewConversation: () => () => undefined,
+    /** One function for the pane's life, as an app's is: the contract is made of it. */
+    useNewConversation: () => startNothing,
     useTurnServices: () => createTurnServices({ canSubmit }),
     useAbortStream: () => () => Promise.reject(new Error('unused')),
     useMessageCache: () => {
@@ -967,6 +992,73 @@ describe('SideChatPanel', () => {
         conversationId,
         text: 'From the host',
       });
+    });
+
+    it('redraws it for the words written in it, and not for each word of a reply', async () => {
+      type Drawn = Pick<SideChatSurfaceProps, 'children' | 'contract' | 'draft'>;
+      const drawn: Drawn[] = [];
+      function Watched(props: SideChatSurfaceProps) {
+        drawn.push({ children: props.children, contract: props.contract, draft: props.draft });
+        return <HostSurface {...props} />;
+      }
+      const { streams, sendMessages } = setup({ Surface: Watched });
+      await waitFor(() => expect(rows()).toHaveLength(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Host send' }));
+      await waitFor(() => expect(streams).toHaveLength(1));
+      const asked: TMessage = {
+        ...user,
+        messageId: sendMessages.mock.calls[0][0].payload.messageId as string,
+        parentMessageId: 'response-1',
+        text: 'From the host',
+      };
+      const step = {
+        id: 's0',
+        runId: 'response-2',
+        index: 0,
+        type: StepTypes.MESSAGE_CREATION,
+        stepDetails: { type: StepTypes.MESSAGE_CREATION, message_creation: { message_id: 's0' } },
+        usage: null,
+      };
+      const word = (text: string): ChatEvent =>
+        ({
+          type: 'step',
+          data: {
+            event: StepEvents.ON_MESSAGE_DELTA,
+            data: { id: 's0', delta: { content: [{ type: ContentTypes.TEXT, text }] } },
+          },
+        }) as ChatEvent;
+      act(() => {
+        streams[0].push({
+          type: 'created',
+          data: { created: true, message: asked, turn: { responseMessageId: 'response-2' } },
+        } as ChatEvent);
+        streams[0].push({
+          type: 'step',
+          data: { event: StepEvents.ON_RUN_STEP, data: step },
+        } as ChatEvent);
+        streams[0].push(word('Two'));
+      });
+      await waitFor(() => expect(rows().slice(-1)[0]).toBe('reply=Two'));
+      await settle();
+
+      /** The reply goes on being written: the list shows it, and the rest is left alone. */
+      const before = drawn.length;
+      const headers = mockHeaderIcon.mock.calls.length;
+      for (const text of [' fixes', ' so', ' far.']) {
+        act(() => streams[0].push(word(text)));
+        await settle();
+      }
+      expect(rows().slice(-1)[0]).toBe('reply=Two fixes so far.');
+      expect(drawn).toHaveLength(before);
+      expect(mockHeaderIcon.mock.calls.length).toBe(headers);
+
+      /** A key pressed in it redraws it, around the same list and on the same contract. */
+      const held = drawn[drawn.length - 1];
+      fireEvent.click(screen.getByRole('button', { name: 'Host types' }));
+      await waitFor(() => expect(drawn[drawn.length - 1].draft).toBe('Half a thought'));
+      expect(drawn[drawn.length - 1].children).toBe(held.children);
+      expect(drawn[drawn.length - 1].contract).toBe(held.contract);
+      expect(mockHeaderIcon.mock.calls.length).toBe(headers);
     });
 
     it('starts with the words handed over as its draft, and lets go of them once they are sent', async () => {

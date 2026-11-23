@@ -176,6 +176,19 @@ test.describe('detached subagent activity', () => {
       await expect(rows).toHaveCount(2, { timeout: 30_000 });
       await expect(rows.first()).toContainText(/child-1-phase-\d+/);
       await expect(rows.nth(1)).toContainText(/child-2-phase-\d+/);
+      const { gap, extraHeight, rem } = await rows.first().evaluate((row) => {
+        const card = row.previousElementSibling;
+        const header = card?.firstElementChild;
+        if (card == null || header == null) throw new Error('Missing subagent card header');
+        const headerRect = header.getBoundingClientRect();
+        return {
+          gap: row.getBoundingClientRect().top - headerRect.bottom,
+          extraHeight: card.getBoundingClientRect().height - headerRect.height,
+          rem: parseFloat(getComputedStyle(document.documentElement).fontSize),
+        };
+      });
+      expect(gap).toBeCloseTo(rem / 2, 1);
+      expect(extraHeight).toBeCloseTo(3.25 * rem + 2, 1);
       await expect(cards.first()).toContainText('Running');
       await expect.poll(() => messageReads).toContain(firstThreadId);
       /** A collapsed group shows no cards and follows nothing, so the count so far depends on
@@ -253,15 +266,8 @@ test.describe('detached subagent activity', () => {
 
     try {
       await page.goto('/c/new');
-      /** The control is offered before the chat has anything to list, and says so. */
       const toggle = page.getByTestId('header-background-tasks-button');
       const rail = page.getByRole('complementary', { name: 'Session' });
-      await expect(toggle).toHaveAccessibleName('Session');
-      await toggle.click();
-      await expect(rail).toContainText('will show up here');
-      await rail.getByRole('button', { name: 'Close session' }).click();
-      await expect(rail).toHaveCount(0);
-      await expect(toggle).toBeFocused();
 
       const token = await getAccessToken(page);
       const children: AgentDetail[] = [];
@@ -278,6 +284,8 @@ test.describe('detached subagent activity', () => {
       createdAgentIds.push(parent.id);
 
       await selectAgent(page, parentName);
+      /** A chat nothing has been sent in has no session to show, so it offers no control. */
+      await expect(toggle).toHaveCount(0);
       const response = await sendMessageAndWaitForCompletion(
         page,
         `${DETACHED_ACTIVITY_MARKER}${children.map((child) => child.id).join(',')}:${label}`,
@@ -285,7 +293,7 @@ test.describe('detached subagent activity', () => {
       expect(response.ok()).toBeTruthy();
 
       /** The children outlive the parent's turn. The control counts them from the header, and
-       *  the rail shows itself for them: it was closed above, but for the unsaved chat. */
+       *  the rail shows itself for them. */
       await expect(toggle).toHaveAccessibleName(/^Session, 2 running/, { timeout: 30_000 });
       await expect(rail).toBeVisible();
       await expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -339,6 +347,8 @@ test.describe('detached subagent activity', () => {
       await expect(rail).toBeVisible();
       await expect(rows).toHaveCount(2);
       await rail.getByRole('button', { name: 'Close session' }).click();
+      await expect(rail).toHaveCount(0);
+      await expect(toggle).toBeFocused();
     } finally {
       for (const agentId of createdAgentIds.reverse()) {
         await cleanupAgent(page, agentId);

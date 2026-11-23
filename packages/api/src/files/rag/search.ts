@@ -5,7 +5,7 @@ import type { FileCitationSelectionConfig, selectFileCitationSources } from '../
 import type { logAxiosError } from '~/utils/axios';
 import { getOutboundTimeoutMs, outboundRequestBudget } from '~/utils/timeouts';
 
-type SearchFile = { file_id: string; fromAgent?: boolean };
+type SearchFile = { file_id: string; filename?: string; fromAgent?: boolean };
 type FileSearchResult = [
   string,
   { file_search: { sources: FileSearchSource[]; fileCitations: boolean } } | undefined,
@@ -44,6 +44,32 @@ interface SearchOptions {
   logAxiosError: typeof logAxiosError;
   selectFileCitationSources: typeof selectFileCitationSources;
   logger: Pick<typeof logger, 'debug'>;
+}
+
+/** Mirrors the client's attachment matching, which links a source to a file by this key. */
+const nameKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9.]/g, '');
+
+/**
+ * Names each searched file after its record. RAG's `source` is the path the file was embedded
+ * from, which for a provisioned file is a temp copy, so it stays only as the fallback for a file
+ * without a name or one whose name another searched file shares.
+ */
+function resolveNames(files: readonly SearchFile[]): Map<string, string> {
+  const owners = new Map<string, Set<string>>();
+  for (const file of files) {
+    if (!file.filename) {
+      continue;
+    }
+    const key = nameKey(file.filename);
+    owners.set(key, (owners.get(key) ?? new Set()).add(file.file_id));
+  }
+  const names = new Map<string, string>();
+  for (const file of files) {
+    if (file.filename && owners.get(nameKey(file.filename))?.size === 1) {
+      names.set(file.file_id, file.filename);
+    }
+  }
+  return names;
 }
 
 /** Executes a file-search tool call without sending malformed queries to RAG API. */
@@ -114,10 +140,11 @@ export async function executeFileSearchQuery({
     return ['No results found or errors occurred while searching the files.', undefined];
   }
 
+  const names = resolveNames(files);
   const formattedResults = validResults
     .flatMap((result) =>
       result.data.map(([docInfo, distance]) => ({
-        filename: docInfo.metadata.source.split('/').pop(),
+        filename: names.get(result.file_id) ?? docInfo.metadata.source.split('/').pop(),
         content: docInfo.page_content,
         distance,
         file_id: result.file_id,

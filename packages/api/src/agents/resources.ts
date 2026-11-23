@@ -18,12 +18,15 @@ import type {
 import type { IMongoFile, AppConfig, IUser } from '@librechat/data-schemas';
 import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
 import type { CodeExecutionContext } from './execution';
+import type { CodeEnvScope } from '~/files/code/scope';
 import type { ServerRequest } from '~/types';
 import {
   getCodeFileDestination,
   selectCodeFileGenerations,
   planCodeSnapshotMounts,
 } from '~/files/code/destinations';
+import { getCodeEnvScope, isCodeRefInScope } from '~/files/code/scope';
+import { getSnapshotReceipt } from '~/files/code/receipt';
 import { allowsFileResource } from '~/files/consumers';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
@@ -261,14 +264,6 @@ const isUnrecordedSearchFile = (
   file.file_id != null &&
   membership?.get(EToolResources.file_search)?.has(file.file_id) === true;
 
-/** The scope a code upload would be filed under this turn, mirroring what
- *  provisionToCodeEnv records: an agent's own resource file belongs to the agent, and
- *  everything else to the requesting user. */
-interface CodeEnvScope {
-  kind: 'agent' | 'user';
-  id?: string;
-}
-
 /**
  * Whether this file already has a sandbox reference for the route the agent will execute
  * on, under the identity this turn would use. A reference for another deployment does not
@@ -279,11 +274,7 @@ interface CodeEnvScope {
  */
 const hasCodeRefForRoute = (file: TFile, routeKey: string, scope: CodeEnvScope): boolean =>
   getCodeEnvRefs(file.metadata).some(
-    ([key, ref]) =>
-      key === routeKey &&
-      (ref.kind !== 'agent' && ref.kind !== 'user'
-        ? true
-        : ref.kind === scope.kind && ref.id === scope.id),
+    ([key, ref]) => key === routeKey && isCodeRefInScope(ref, scope),
   );
 
 /** Mirrors the lazy provisioning writer: agent-scoped search files live in
@@ -599,9 +590,10 @@ const computeProvisionState = async ({
     needsCodeEnv && checkSessionsAlive && canProbeRoute
       ? provisionable.filter(
           (f) =>
-            f.context !== FileContext.execute_code_snapshot &&
             codeFileIds.has(f.file_id) &&
-            codeEnvRefForRoute(f, activeCodeRouteKey),
+            (f.context === FileContext.execute_code_snapshot
+              ? getSnapshotReceipt(f, activeCodeRouteKey)
+              : codeEnvRefForRoute(f, activeCodeRouteKey)),
         )
       : [];
 
@@ -665,9 +657,11 @@ const computeProvisionState = async ({
      * asks about the scope the upload will actually write under. */
     const isAgentScoped = scopedIds.has(file.file_id);
     const namespaceId = isAgentScoped ? agentId : resourcePrincipal?.id;
-    const codeScope: CodeEnvScope = isAgentScoped
-      ? { kind: 'agent', id: agentId }
-      : { kind: 'user', id: resourcePrincipal?.id };
+    const codeScope = getCodeEnvScope({
+      agentScoped: isAgentScoped,
+      agentId,
+      userId: resourcePrincipal?.id,
+    });
 
     /** Text-source records keep their content in the database with no backing object
      *  to stream, so provisioning them would fail and, for code, abort the turn.
@@ -702,7 +696,18 @@ const computeProvisionState = async ({
           (routeRef.sandboxFilename ?? getCodeFileDestination(file, activeCodeRouteKey)) ||
           (file.context === FileContext.execute_code &&
             plannedName !== getCodeFileDestination(file, activeCodeRouteKey)));
-      if (file.context === FileContext.execute_code_snapshot || displaced) {
+      /* A snapshot mounts from its stored bytes. It skips the upload only while a receipt
+       * for this content version, under this turn's identity, still answers for its object;
+       * priming matches that object's bytes again before the reference is used. */
+      const reusesSnapshotUpload =
+        file.context === FileContext.execute_code_snapshot &&
+        aliveFileIds?.has(file.file_id) === true &&
+        getSnapshotReceipt(file, activeCodeRouteKey) != null &&
+        hasCodeRefForRoute(file, activeCodeRouteKey, codeScope);
+      if (
+        (file.context === FileContext.execute_code_snapshot && !reusesSnapshotUpload) ||
+        displaced
+      ) {
         codeEnvFiles.push(file);
         if (displaced) displacedCodeFileIds.add(file.file_id);
       } else if (isStale) {

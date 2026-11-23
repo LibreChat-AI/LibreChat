@@ -15,6 +15,7 @@ const {
   buildMessageFiles,
   getReferencedQuotes,
   resolveTitleTiming,
+  completedOutcome,
   GenerationJobManager,
   getTrustedNewConversationId,
   buildGenerationStartedResponse,
@@ -26,7 +27,9 @@ const {
   checkAndIncrementPendingRequest,
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
-  createScheduleExecutionContext,
+  createTriggerExecutionContext,
+  toMessageTrigger,
+  stampMessageTrigger,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -445,7 +448,10 @@ async function saveErrorTurn(
                   alwaysAppliedSkills: req.body.alwaysAppliedSkills,
                 }),
             }
-          : getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection);
+          : stampMessageTrigger(
+              req,
+              getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection),
+            );
       if (!userMessage) {
         return;
       }
@@ -1670,14 +1676,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
+    const executionContext = createTriggerExecutionContext(req);
+    req._messageTrigger = toMessageTrigger(executionContext);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
-      : stampPreliminaryPrivateTextMessage(
+      : stampMessageTrigger(
           req,
-          getPreliminaryUserMessage(
-            { ...req.body, messageId: preallocatedUserMessageId },
-            conversationId,
-            req._agentEventTriggerProjection,
+          stampPreliminaryPrivateTextMessage(
+            req,
+            getPreliminaryUserMessage(
+              { ...req.body, messageId: preallocatedUserMessageId },
+              conversationId,
+              req._agentEventTriggerProjection,
+            ),
           ),
         );
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
@@ -1746,6 +1757,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               ...(req._isManualScheduledFire === true && { scheduleManual: true }),
             }
           : {}),
+        trigger: executionContext?.source,
         responseMessageId: preallocatedResponseMessageId,
         mcpRequestBody,
         userMessage: preliminaryUserMessage,
@@ -2056,7 +2068,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       req,
       res,
       endpointOption,
-      executionContext: createScheduleExecutionContext(req),
+      executionContext,
       // Use the job's abort controller signal - allows abort via GenerationJobManager.abortJob()
       signal: job.abortController.signal,
       jobCreatedAt,
@@ -2425,6 +2437,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 quotes: userMsg.quotes,
                 privacyRevision: userMsg.privacyRevision,
                 reasoningOverride: userMsg.reasoningOverride,
+                trigger: userMsg.trigger,
                 // Persist the turn's uploaded files here (authoritative job metadata) so a
                 // HITL resume sources them from the job, not the user DB row — which the
                 // approval prompt can race (the row save may still be in flight when a fast
@@ -3237,18 +3250,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           await titleEventPromise;
         }
 
-        let scheduleCompletionError;
-        if (terminalWasAborted) {
-          scheduleCompletionError = 'Scheduled run was stopped';
-        } else if (preemptIncomplete) {
-          scheduleCompletionError = 'Scheduled run was interrupted before completion';
-        } else if (stepLimitReached) {
-          scheduleCompletionError = 'Scheduled run reached its tool call limit before completion';
-        }
-        await settleScheduledRun({
-          status: responseIsUnfinished ? 'interrupted' : 'success',
-          ...(scheduleCompletionError != null && { error: scheduleCompletionError }),
-        });
+        await settleScheduledRun(
+          completedOutcome({
+            stopped: terminalWasAborted,
+            preempted: preemptIncomplete,
+            stepLimit: stepLimitReached,
+            content: response.content,
+          }),
+        );
 
         let terminalPublicationStarted = false;
         try {

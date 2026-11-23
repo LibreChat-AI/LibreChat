@@ -1,15 +1,31 @@
 import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-provider';
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
+import type { ScheduleInput, ScheduleHost } from './subject';
 import {
+  getScheduleSource,
   restoreExecutionContext,
+  createTriggerExecutionContext,
   createScheduleExecutionContext,
 } from '~/agents/authority/context';
-import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
-import { bindScheduledMCPInvocation, getScheduleMCPExecution } from './execution';
-import { executionFixture, allowOffered, readTool } from './execution.helper';
-import { createMCPRequestContext } from '~/mcp/request';
+import { executionFixture, allowOffered, readTool } from '~/agents/authority/execution.helper';
+import { bindRunGrantInvocation, narrowGrantedTools } from '~/agents/authority/execution';
+import { createMCPRequestContext, getMCPRequestContext } from '~/mcp/request';
+import { initializeWithAuthority } from '~/agents/authority/host';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
+import { scheduleSubject, scheduleExecution } from './subject';
+import { captureTrigger } from '~/agents/authority/trigger';
+import { createScheduleMCPRuntimeHost } from './runtime';
+import { captureScheduleFireContext } from '../trigger';
 import { createScheduleMCPPreflight } from '../mcp';
-import { ScheduledMCPPolicyError } from './policy';
+
+/** Initializes a request under the schedule subject alone, as the chat route does. */
+const underSchedule = <T>(
+  input: ScheduleInput,
+  getHost: () => ScheduleHost,
+  initialize: () => Promise<T>,
+  retain?: Parameters<typeof scheduleSubject>[1],
+): Promise<T> => initializeWithAuthority(input, [scheduleSubject(getHost, retain)], initialize);
 
 async function setup() {
   const fixture = await executionFixture();
@@ -79,6 +95,17 @@ async function setup() {
   const getServers = jest.fn(async () => servers);
   const resolveGraphAccess = jest.fn(async () => ({}) as AgentGraphAccessContext);
   const getScheduleById = jest.fn(async () => row);
+  /** What the occurrence's run row holds: its readiness outcomes. None unless a test sets some. */
+  const getScheduleRunMCP = jest.fn(
+    async (_scheduleId: string, _scheduledFor: string | Date): Promise<ScheduleMCPOutcome[]> => [],
+  );
+  /** The same, found by the conversation an occurrence started. */
+  const getScheduleConversationMCP = jest.fn(
+    async (
+      _scope: Pick<typeof fixture.identity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+      _conversationId: string,
+    ): Promise<ScheduleMCPOutcome[]> => [],
+  );
   const getScheduleMCPCompletionState = jest.fn(async () => ({
     identity: fixture.identity,
     enrolled: false,
@@ -87,7 +114,12 @@ async function setup() {
   const host = createScheduleMCPRuntimeHost({
     canPauseRuns: async () => pausable,
     getScheduleMCPCompletionState,
-    methods: { ...fixture.storage, getScheduleById },
+    storage: fixture.storage,
+    methods: {
+      getScheduleById,
+      getScheduleRunMCP,
+      getScheduleConversationMCP,
+    },
     findUser,
     getRoleByName,
     canViewAgent: async () => true,
@@ -95,6 +127,7 @@ async function setup() {
       findUser,
       getAppConfig,
       getModelsConfig,
+      ensureConfigServers: async () => ({}),
       getServers,
       getNodes,
       resolveGraphAccess,
@@ -128,9 +161,13 @@ async function setup() {
     execution: host.execution,
   });
   /** As the chat controller does, build the context once from the verified trigger. */
-  const prepare = host.prepare;
-  host.prepare = (input) =>
-    prepare({ executionContext: createScheduleExecutionContext(input.req), ...input });
+  const { resolve, restore } = host;
+  const verified = (input: ScheduleInput): ScheduleInput => ({
+    executionContext: createScheduleExecutionContext(input.req),
+    ...input,
+  });
+  host.resolve = (input) => resolve(verified(input));
+  host.restore = (input, found) => restore(verified(input), found);
   const context = createMCPRequestContext();
   const req = {
     user: fixture.user,
@@ -162,6 +199,8 @@ async function setup() {
     findUser,
     getAppConfig,
     getScheduleById,
+    getScheduleRunMCP,
+    getScheduleConversationMCP,
     getScheduleMCPCompletionState,
     servers,
     setCandidates: (names: string[]) => {
@@ -185,10 +224,10 @@ it('uses the same real enrollment policy at readiness, root, and child invocatio
   const f = await setup();
   await expect(f.check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
   await f.host.prepare({ req: f.req, context: f.context });
-  expect(getScheduleMCPExecution(f.context)?.identity).toEqual(f.identity);
+  expect(scheduleExecution(f.context)?.identity).toEqual(f.identity);
   for (const agentId of ['root', 'child']) {
     await expect(
-      bindScheduledMCPInvocation(f.context, agentId, 'query')!.authorize({
+      bindRunGrantInvocation(f.context, agentId, 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -225,6 +264,246 @@ it('returns a structured unsupported-version denial and never probes the provide
   expect(f.connect).not.toHaveBeenCalled();
 });
 
+it("refuses a resumed run whose saved job was restored for someone other than the request's user", async () => {
+  const f = await setup();
+  const other = { id: 'intruder', tenantId: 'tenant' };
+  const req = { user: f.user, _isScheduledFire: true, body: {} };
+  jest.mocked(f.storage.readRunGrant).mockClear();
+  await expect(
+    f.host.prepare({
+      req,
+      context: f.context,
+      restoredJob: { scheduleId: 'schedule' },
+      // A context restored from a job another user owns, on a request the owner authenticated.
+      executionContext: restoreExecutionContext(
+        { user: other },
+        { userId: 'intruder', tenantId: 'tenant', scheduleId: 'schedule', agent_id: 'root' },
+      ),
+    }),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(f.storage.readRunGrant).not.toHaveBeenCalled();
+});
+
+it('puts back on a resumed run the servers its occurrence went without, read from its run row', async () => {
+  const f = await setup();
+  f.getScheduleRunMCP.mockResolvedValue([
+    { server: 'notes', status: 'mcp_reauth_required', skipped: true },
+    { server: 'warehouse', status: 'ready' },
+  ]);
+  const scheduledFor = '2026-09-09T12:00:00.000Z';
+  const req: {
+    user: typeof f.user;
+    _isScheduledFire: boolean;
+    body: Record<string, unknown>;
+    _scheduleSkippedServers?: string[];
+    _scheduleCheckedServers?: string[];
+  } = { user: f.user, _isScheduledFire: true, body: {} };
+  await f.host.prepare({
+    req,
+    // The request's own context, as the chat route passes it: tools are narrowed through it.
+    context: getMCPRequestContext(req)!,
+    restoredJob: { scheduleId: 'schedule', scheduledFor },
+    executionContext: restoreExecutionContext(req, {
+      userId: 'owner',
+      tenantId: 'tenant',
+      scheduleId: 'schedule',
+      agent_id: 'root',
+    }),
+  });
+  expect(f.getScheduleRunMCP).toHaveBeenCalledWith('schedule', scheduledFor);
+  expect(req._scheduleSkippedServers).toEqual(['notes']);
+  expect(req._scheduleCheckedServers).toEqual(['notes', 'warehouse']);
+  // The resumed run then loads nothing on that server.
+  expect(narrowGrantedTools(req, 'root', ['search_mcp_notes', 'query_mcp_warehouse'])).toEqual([
+    'query_mcp_warehouse',
+  ]);
+});
+
+it('reads no run row for a fresh occurrence, whose trigger already says what it goes without', async () => {
+  const f = await setup();
+  await f.host.prepare({ req: f.req, context: f.context });
+  expect(f.getScheduleRunMCP).not.toHaveBeenCalled();
+});
+
+describe('a server the grant allows and the occurrence went without', () => {
+  const keys = ['query_mcp_warehouse', 'web_search'];
+
+  it('is not loaded by a fresh occurrence, which hands its trigger’s lists to the grant', async () => {
+    const f = await setup();
+    // With nothing skipped the grant loads the tool: what follows is the skip list alone.
+    const ready = { ...f.req };
+    await f.host.prepare({ req: ready, context: getMCPRequestContext(ready)! });
+    expect(narrowGrantedTools(ready, 'root', keys)).toEqual(['query_mcp_warehouse']);
+    const req = { ...f.req, body: structuredClone(f.req.body) };
+    Object.assign(req.body.agentTrigger, {
+      metadata: { skip: ['warehouse'], servers: ['warehouse', 'notes'] },
+    });
+    // As the chat route does before the run host is asked.
+    captureScheduleFireContext(req);
+    await f.host.prepare({ req, context: getMCPRequestContext(req)! });
+    expect(narrowGrantedTools(req, 'root', keys)).toEqual([]);
+  });
+
+  it('is not loaded by the resumed run either, which reads the lists from its run row', async () => {
+    const f = await setup();
+    f.getScheduleRunMCP.mockResolvedValue([
+      { server: 'warehouse', status: 'mcp_reauth_required', skipped: true },
+      { server: 'notes', status: 'ready' },
+    ]);
+    const req = { user: f.user, _isScheduledFire: true, body: {} };
+    await f.host.prepare({
+      req,
+      context: getMCPRequestContext(req)!,
+      restoredJob: { scheduleId: 'schedule', scheduledFor: '2026-09-09T12:00:00.000Z' },
+      executionContext: restoreExecutionContext(req, {
+        userId: 'owner',
+        tenantId: 'tenant',
+        scheduleId: 'schedule',
+        agent_id: 'root',
+      }),
+    });
+    expect(narrowGrantedTools(req, 'root', keys)).toEqual([]);
+  });
+});
+
+describe('a turn that reports on a task a scheduled run started', () => {
+  type Marked = { _scheduleSkippedServers?: string[]; _scheduleCheckedServers?: string[] };
+  /** As the signed host delivers it: in the conversation the occurrence started. */
+  const completionRequest = (f: Awaited<ReturnType<typeof setup>>, origin = true) => ({
+    ...f.req,
+    _isScheduledFire: false,
+    body: {
+      conversationId: 'occurrence-conversation',
+      agent_id: 'root',
+      agentCompletion: {
+        version: 1,
+        sourceId: 'background-tool-completion',
+        ...(origin && { scheduleMCPIdentity: f.identity }),
+      },
+    },
+  });
+  const wentWithout = (server: string): ScheduleMCPOutcome[] => [
+    { server, status: 'mcp_reauth_required', skipped: true },
+    { server: 'ledger', status: 'ready' },
+  ];
+
+  it.each([
+    { name: 'under the grant its schedule holds', grant: true },
+    { name: 'with no grant', grant: false },
+  ])('goes without the servers its occurrence went without, $name', async ({ grant }) => {
+    const f = await setup();
+    if (!grant) {
+      f.snapshot.enrollment = null;
+      f.row.mcpConsent = undefined;
+    }
+    f.getScheduleConversationMCP.mockResolvedValue(wentWithout('warehouse'));
+    const req: ReturnType<typeof completionRequest> & Marked = completionRequest(f);
+    const keys = ['query_mcp_warehouse', 'post_mcp_ledger'];
+    await f.host.prepare({ req, context: getMCPRequestContext(req)! });
+    expect(f.getScheduleConversationMCP).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduleId: f.identity.scheduleId,
+        ownerId: f.identity.ownerId,
+        tenantId: f.identity.tenantId,
+      }),
+      'occurrence-conversation',
+    );
+    expect(req._scheduleSkippedServers).toEqual(['warehouse']);
+    expect(req._scheduleCheckedServers).toEqual(['warehouse', 'ledger']);
+    expect(narrowGrantedTools(req, 'root', keys)).not.toContain('query_mcp_warehouse');
+  });
+
+  it('loads what it would have without that record: the grant alone decides', async () => {
+    const f = await setup();
+    const req: ReturnType<typeof completionRequest> & Marked = completionRequest(f);
+    await f.host.prepare({ req, context: f.context });
+    expect(req._scheduleSkippedServers).toBeUndefined();
+    expect(narrowGrantedTools(req, 'root', ['query_mcp_warehouse'])).toEqual([
+      'query_mcp_warehouse',
+    ]);
+  });
+
+  it('reads the conversation from the saved job when the turn is resumed, not from the request', async () => {
+    const f = await setup();
+    f.getScheduleConversationMCP.mockResolvedValue(wentWithout('warehouse'));
+    const req: Marked & { user: typeof f.user; body: Record<string, unknown> } = {
+      user: f.user,
+      body: { conversationId: 'another-conversation' },
+    };
+    await f.host.prepare({
+      req,
+      context: f.context,
+      restoredJob: { scheduleMCPCompletion: f.identity, conversationId: 'occurrence-conversation' },
+    });
+    expect(f.getScheduleConversationMCP).toHaveBeenCalledTimes(1);
+    expect(f.getScheduleConversationMCP).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduleId: f.identity.scheduleId }),
+      'occurrence-conversation',
+    );
+    expect(req._scheduleSkippedServers).toEqual(['warehouse']);
+  });
+
+  it('is prepared as it always was when its context also names the schedule and where the task began', async () => {
+    const prepared = async (kept: boolean) => {
+      const f = await setup();
+      const req = completionRequest(f);
+      Object.assign(req.body, {
+        clientRequestId: 'trigger_wake',
+        agentEvent: {
+          id: 'task-1',
+          type: 'background_tool.completed',
+          occurredAt: 2_000,
+          source: { type: 'internal', id: 'background-tool-completion' },
+        },
+      });
+      // What the task kept of the occurrence that started it, handed back by the trigger host.
+      if (kept)
+        Object.assign(req.body.agentCompletion, {
+          trigger: captureTrigger(createTriggerExecutionContext(f.req)),
+        });
+      const executionContext = createTriggerExecutionContext(req);
+      await f.host.prepare({ req, context: f.context, executionContext });
+      const execution = scheduleExecution(f.context);
+      return {
+        executionContext,
+        execution: {
+          identity: execution?.identity,
+          stage: execution?.stage,
+          enrolled: execution?.enrolled,
+          completion: execution?.completion,
+          manual: execution?.manual,
+        },
+        loaded: narrowGrantedTools(req, 'root', ['query_mcp_warehouse', 'post_mcp_ledger']),
+        lookups: f.getScheduleMCPCompletionState.mock.calls,
+      };
+    };
+    const before = await prepared(false);
+    const after = await prepared(true);
+
+    expect(after.execution).toEqual(before.execution);
+    expect(after.execution).toMatchObject({
+      identity: { scheduleId: 'schedule', agentId: 'root' },
+      stage: 'invoke',
+      completion: true,
+    });
+    expect(after.loaded).toEqual(before.loaded);
+    expect(after.lookups).toEqual(before.lookups);
+    expect(before.executionContext?.source).not.toHaveProperty('subject');
+    expect(after.executionContext?.source).toMatchObject({
+      subject: { kind: 'schedule', id: 'schedule' },
+      origin: { agentId: 'root' },
+    });
+    // The turn acts for the schedule and is still not its occurrence.
+    expect(getScheduleSource(after.executionContext)).toBeUndefined();
+  });
+
+  it('reads no run for a turn whose task no schedule started', async () => {
+    const f = await setup();
+    await f.host.prepare({ req: completionRequest(f, false), context: f.context });
+    expect(f.getScheduleConversationMCP).not.toHaveBeenCalled();
+  });
+});
+
 it('rebuilds the protected root on resume and refuses revoked consent even after approval', async () => {
   const f = await setup();
   const req = { user: f.user, _isScheduledFire: true, body: {} };
@@ -238,10 +517,10 @@ it('rebuilds the protected root on resume and refuses revoked consent even after
       agent_id: 'root',
     }),
   });
-  expect(getScheduleMCPExecution(f.context)?.stage).toBe('resume');
+  expect(scheduleExecution(f.context)?.stage).toBe('resume');
   await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
   await expect(
-    bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'child', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: { type: 'streamable-http', url: 'https://resource.example/mcp' },
@@ -269,7 +548,7 @@ it('never grants enrolled legacy resumes lacking trusted root metadata', async (
       restoredJob: { scheduleId: 'schedule' },
     }),
   ).resolves.toBeUndefined();
-  expect(getScheduleMCPExecution(f.context)).toMatchObject({ enrolled: false });
+  expect(scheduleExecution(f.context)).toMatchObject({ enrolled: false });
 });
 
 it('ignores spoofed body fields on ordinary chat and refuses cross-tenant triggers', async () => {
@@ -278,7 +557,7 @@ it('ignores spoofed body fields on ordinary chat and refuses cross-tenant trigge
     req: { ...f.req, _isScheduledFire: false, _isAgentTrigger: false },
     context: f.context,
   });
-  expect(getScheduleMCPExecution(f.context)).toBeUndefined();
+  expect(scheduleExecution(f.context)).toBeUndefined();
   const user = Object.assign(structuredClone(f.user), { tenantId: 'other' });
   await expect(
     f.host.prepare({ req: { ...f.req, user }, context: f.context }),
@@ -295,7 +574,7 @@ it('does not construct the host for ordinary chats', async () => {
   const f = await setup();
   const getHost = jest.fn(() => f.host);
   const initialize = jest.fn().mockResolvedValue(undefined);
-  await initializeWithScheduleMCPExecution(
+  await underSchedule(
     { req: { ...f.req, _isScheduledFire: false, _isAgentTrigger: false }, context: f.context },
     getHost,
     initialize,
@@ -322,7 +601,7 @@ it.each([null, false, 0, ''])(
     await expect(f.host.prepare({ req: f.req, context: f.context })).rejects.toMatchObject({
       failure: { reason: 'binding_mismatch' },
     });
-    expect(getScheduleMCPExecution(f.context)).toBeUndefined();
+    expect(scheduleExecution(f.context)).toBeUndefined();
   },
 );
 
@@ -330,7 +609,7 @@ it('loads one fresh principal and configuration pair per authorization, not per 
   const f = await setup();
   await f.host.prepare({ req: f.req, context: f.context });
   const call = () =>
-    bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -356,7 +635,7 @@ it('reuses the captured configuration and preserves the global stop on later cal
   const f = await setup();
   await f.host.prepare({ req: f.req, context: f.context });
   const call = () =>
-    bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'child', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -378,7 +657,7 @@ it('does not share an authority snapshot across concurrent attempts', async () =
   f.findUser.mockClear();
   f.getAppConfig.mockClear();
   const call = (agentId: string) =>
-    bindScheduledMCPInvocation(f.context, agentId, 'query')!.authorize({
+    bindRunGrantInvocation(f.context, agentId, 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -426,7 +705,7 @@ it.each([false, true])(
         : { req: manualReq, context: f.context },
     );
     const call = () =>
-      bindScheduledMCPInvocation(f.context, 'child', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'child', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -434,7 +713,7 @@ it.each([false, true])(
         loadTools: async () => ({ tools: [readTool], complete: true }),
       });
     await expect(call()).resolves.toBeUndefined();
-    expect(f.storage.admitScheduleMCPConsent).toHaveBeenLastCalledWith(
+    expect(f.storage.admitRunGrant).toHaveBeenLastCalledWith(
       expect.objectContaining({ requireEnabled: false }),
     );
     await f.host.consent.service.revoke(f.identity, f.snapshot.enrollment!.revision);
@@ -454,7 +733,7 @@ it('does not elevate automatic paused runs from body or mutable request flags', 
   };
   await f.host.prepare({ req, context: f.context });
   await expect(
-    bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+    bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
       user: f.user,
       serverName: 'warehouse',
       serverConfig: f.serverConfig,
@@ -487,9 +766,9 @@ it('attaches a legacy monitor without minting a grant and fences its next tool a
   f.snapshot.enrollment = null;
   f.row.mcpConsent = undefined;
   await f.host.prepare({ req: f.req, context: f.context });
-  const execution = getScheduleMCPExecution(f.context)!;
+  const execution = scheduleExecution(f.context)!;
   expect(execution.enrolled).toBe(false);
-  const guard = bindScheduledMCPInvocation(f.context, 'root', 'write')!;
+  const guard = bindRunGrantInvocation(f.context, 'root', 'write')!;
   const call = () =>
     guard.authorize({
       user: f.user,
@@ -515,8 +794,7 @@ it.each(['schedule', 'consent', 'completion'] as const)(
     const f = await setup();
     const privateError = new Error('PRIVATE database authorization query');
     if (phase === 'schedule') f.getScheduleById.mockRejectedValue(privateError);
-    if (phase === 'consent')
-      jest.mocked(f.storage.readScheduleMCPConsent).mockRejectedValue(privateError);
+    if (phase === 'consent') jest.mocked(f.storage.readRunGrant).mockRejectedValue(privateError);
     if (phase === 'completion') f.getScheduleMCPCompletionState.mockRejectedValue(privateError);
     const req =
       phase === 'completion'
@@ -537,8 +815,7 @@ it.each(['schedule', 'consent', 'completion'] as const)(
     const initialize = jest.fn();
     for (const call of [
       () => f.host.prepare({ req, context: f.context }),
-      () =>
-        initializeWithScheduleMCPExecution({ req, context: f.context }, () => f.host, initialize),
+      () => underSchedule({ req, context: f.context }, () => f.host, initialize),
     ]) {
       let failure: unknown;
       try {
@@ -546,7 +823,7 @@ it.each(['schedule', 'consent', 'completion'] as const)(
       } catch (error) {
         failure = error;
       }
-      expect(failure).toBeInstanceOf(ScheduledMCPPolicyError);
+      expect(failure).toBeInstanceOf(RunGrantPolicyError);
       expect(failure).toMatchObject({
         failure: {
           reason: 'dependency_unavailable',
@@ -563,12 +840,10 @@ it.each(['schedule', 'consent', 'completion'] as const)(
 
 it('sanitizes consent attachment failures on authenticated completion approval resumes', async () => {
   const f = await setup();
-  jest
-    .mocked(f.storage.readScheduleMCPConsent)
-    .mockRejectedValue(new Error('PRIVATE consent query'));
+  jest.mocked(f.storage.readRunGrant).mockRejectedValue(new Error('PRIVATE consent query'));
   const initialize = jest.fn();
   await expect(
-    initializeWithScheduleMCPExecution(
+    underSchedule(
       {
         req: { ...f.req, _isAgentTrigger: false, _isScheduledFire: false },
         context: f.context,
@@ -589,7 +864,7 @@ it('sanitizes host construction and lineage-retention failures without masking p
     throw privateError;
   };
   await expect(
-    initializeWithScheduleMCPExecution({ req: f.req, context: f.context }, getHost, initialize),
+    underSchedule({ req: f.req, context: f.context }, getHost, initialize),
   ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
   f.snapshot.enrollment = null;
   f.row.mcpConsent = undefined;
@@ -607,7 +882,7 @@ it('sanitizes host construction and lineage-retention failures without masking p
     },
   };
   await expect(
-    initializeWithScheduleMCPExecution(
+    underSchedule(
       { req, context: f.context },
       () => f.host,
       initialize,
@@ -618,7 +893,7 @@ it('sanitizes host construction and lineage-retention failures without masking p
   ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
   expect(initialize).not.toHaveBeenCalled();
   await expect(
-    initializeWithScheduleMCPExecution(
+    underSchedule(
       { req, context: f.context },
       () => f.host,
       async () => {
@@ -632,7 +907,7 @@ it('sanitizes host construction and lineage-retention failures without masking p
 it('preserves typed denials and owned cancellation at the preparation boundary', async () => {
   const f = await setup();
   const controller = new AbortController();
-  const typed = new ScheduledMCPPolicyError('rbac_denied', 'warehouse', 'root');
+  const typed = new RunGrantPolicyError('rbac_denied', 'warehouse', 'root');
   f.getScheduleById.mockRejectedValue(typed);
   await expect(f.host.prepare({ req: f.req, context: f.context })).rejects.toBe(typed);
   const stop = new Error('Owner stopped');
@@ -641,7 +916,7 @@ it('preserves typed denials and owned cancellation at the preparation boundary',
     throw stop;
   });
   await expect(
-    initializeWithScheduleMCPExecution(
+    underSchedule(
       { req: f.req, context: f.context, signal: controller.signal },
       () => f.host,
       jest.fn(),
@@ -654,7 +929,7 @@ it('preserves typed denials and owned cancellation at the preparation boundary',
     throw other;
   });
   await expect(
-    initializeWithScheduleMCPExecution(
+    underSchedule(
       { req: f.req, context: f.context, signal: otherController.signal },
       () => f.host,
       jest.fn(),
@@ -683,7 +958,7 @@ describe('a grant for only some of what the agents select', () => {
     await expect(f.check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
     await f.host.prepare({ req: f.req, context: f.context });
     const call = (tool: string) =>
-      bindScheduledMCPInvocation(f.context, 'root', tool)!.authorize({
+      bindRunGrantInvocation(f.context, 'root', tool)!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -740,7 +1015,7 @@ describe('a grant for only some of what the agents select', () => {
     // The tool left out is still refused where it is called.
     await f.host.prepare({ req: f.req, context: f.context });
     await expect(
-      bindScheduledMCPInvocation(f.context, 'root', 'export')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'export')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -810,7 +1085,7 @@ describe('an owner whose role may not use MCP servers', () => {
     const f = await setup();
     await f.host.prepare({ req: f.req, context: f.context });
     const call = () =>
-      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -871,7 +1146,7 @@ describe('a schedule authorized for the whole agent', () => {
   it('is ready on both while it is being created, with nothing stored yet', async () => {
     const f = await whole();
     const grant = f.snapshot.enrollment!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     await expect(
       f.preflight('root', f.user, {
         scheduleId: 'sched_new',
@@ -927,9 +1202,9 @@ describe('a schedule authorized for the whole agent', () => {
     const f = await whole();
     await f.host.prepare({ req: f.req, context: f.context });
     const keys = ['query_mcp_warehouse', 'query_mcp_archive', 'web_search', 'execute_code'];
-    expect(getScheduleMCPExecution(f.context)!.narrow('root', keys)).toEqual(keys);
+    expect(scheduleExecution(f.context)!.narrow('root', keys)).toEqual(keys);
     const call = (serverName: string, tool: string, serverConfig: object) =>
-      bindScheduledMCPInvocation(f.context, 'root', tool)!.authorize({
+      bindRunGrantInvocation(f.context, 'root', tool)!.authorize({
         user: f.user,
         serverName,
         serverConfig: serverConfig as typeof f.serverConfig,
@@ -1009,13 +1284,10 @@ describe('a grant that lists a tool on a server the operator did not declare', (
     );
     await f.host.prepare({ req: f.req, context: f.context });
     expect(
-      getScheduleMCPExecution(f.context)!.narrow('root', [
-        'query_mcp_warehouse',
-        'query_mcp_archive',
-      ]),
+      scheduleExecution(f.context)!.narrow('root', ['query_mcp_warehouse', 'query_mcp_archive']),
     ).toEqual(['query_mcp_archive']);
     const call = (serverName: string, serverConfig: object) =>
-      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
         user: f.user,
         serverName,
         serverConfig: serverConfig as typeof f.serverConfig,
@@ -1029,8 +1301,8 @@ describe('a grant that lists a tool on a server the operator did not declare', (
     // A schedule being created with such a grant has nothing stored yet: readiness is
     // handed the grant, and still reaches the listed server, so one that is down is reported.
     const grant = f.snapshot.enrollment!;
-    const stored = jest.mocked(f.storage.readScheduleMCPConsent).getMockImplementation()!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    const stored = jest.mocked(f.storage.readRunGrant).getMockImplementation()!;
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     const creating = () =>
       f.preflight('root', f.user, {
         scheduleId: 'sched_new',
@@ -1048,7 +1320,7 @@ describe('a grant that lists a tool on a server the operator did not declare', (
     );
     f.connect.mockRejectedValueOnce(new Error('down'));
     await expect(creating()).rejects.toMatchObject({ code: 'mcp_unavailable' });
-    jest.mocked(f.storage.readScheduleMCPConsent).mockImplementation(stored);
+    jest.mocked(f.storage.readRunGrant).mockImplementation(stored);
     // The owner loses the right to use MCP servers: the listed tool goes with it.
     f.getRoleByName.mockResolvedValue({
       permissions: {
@@ -1087,11 +1359,11 @@ describe('a grant that lists the whole of a declared server', () => {
     await f.host.prepare({ req: f.req, context: f.context });
     const keys = ['sys__all__sys_mcp_warehouse', 'web_search'];
     // The server's tools load. The other tool was not ticked.
-    expect(getScheduleMCPExecution(f.context)!.narrow('root', keys)).toEqual([
+    expect(scheduleExecution(f.context)!.narrow('root', keys)).toEqual([
       'sys__all__sys_mcp_warehouse',
     ]);
     await expect(
-      bindScheduledMCPInvocation(f.context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(f.context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -1119,7 +1391,7 @@ describe('a schedule being created with its grant', () => {
       ...choice,
     });
     const grant = f.snapshot.enrollment!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     f.connect.mockClear();
     const check = (withGrant = true) =>
       f.preflight('root', f.user, {
@@ -1157,7 +1429,7 @@ describe('a schedule being created with its grant', () => {
       allow: { warehouse: ['query'] },
     });
     const grant = f.snapshot.enrollment!;
-    jest.mocked(f.storage.readScheduleMCPConsent).mockResolvedValue(null);
+    jest.mocked(f.storage.readRunGrant).mockResolvedValue(null);
     f.connect.mockClear();
     const options = { scheduleId: 'sched_new', stage: 'activation' as const, concurrency: 3 };
     await expect(f.preflight('root', f.user, { ...options, grant })).resolves.toEqual([
@@ -1196,7 +1468,7 @@ describe('a schedule its owner never authorized', () => {
     const call = async () => {
       const context = createMCPRequestContext();
       await f.host.prepare({ req: f.req, context });
-      return bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+      return bindRunGrantInvocation(context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -1303,7 +1575,7 @@ describe('a schedule its owner never authorized', () => {
     await f.host.prepare({ req: f.req, context });
     expect(f.getAppConfig).not.toHaveBeenCalled();
     expect(f.findUser).not.toHaveBeenCalled();
-    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const guard = bindRunGrantInvocation(context, 'root', 'query')!;
     const use = () =>
       guard.authorize({
         user: f.user,
@@ -1325,7 +1597,7 @@ describe('a schedule its owner never authorized', () => {
     const context = createMCPRequestContext();
     await f.host.prepare({ req: f.req, context });
     f.getAppConfig.mockRejectedValueOnce(new Error('PRIVATE config store'));
-    const guard = bindScheduledMCPInvocation(context, 'root', 'query')!;
+    const guard = bindRunGrantInvocation(context, 'root', 'query')!;
     const use = () =>
       guard.authorize({
         user: f.user,
@@ -1357,7 +1629,7 @@ describe('a tool the owner approves call by call', () => {
     });
     f.row.mcpConsent = f.snapshot.enrollment!;
     const use = (context: ReturnType<typeof createMCPRequestContext>, toolCallId?: string) =>
-      bindScheduledMCPInvocation(context, 'root', 'query')!.authorize({
+      bindRunGrantInvocation(context, 'root', 'query')!.authorize({
         user: f.user,
         serverName: 'warehouse',
         serverConfig: f.serverConfig,
@@ -1373,7 +1645,7 @@ describe('a tool the owner approves call by call', () => {
     const f = await asking();
     const fresh = createMCPRequestContext();
     await f.host.prepare({ req: f.req, context: fresh, approvedToolCalls: ['call-1'] });
-    expect(getScheduleMCPExecution(fresh)?.mayAsk).toBe(true);
+    expect(scheduleExecution(fresh)?.mayAsk).toBe(true);
     await expect(f.use(fresh, 'call-1')).rejects.toMatchObject(refused);
 
     const req = { user: f.user, _isScheduledFire: true, body: {} };
@@ -1417,7 +1689,7 @@ describe('a tool the owner approves call by call', () => {
     };
     // The turn that picks the result up runs under the schedule's grant: it asks like any run.
     const fresh = await completion(false);
-    expect(getScheduleMCPExecution(fresh)).toMatchObject({
+    expect(scheduleExecution(fresh)).toMatchObject({
       enrolled: true,
       stage: 'invoke',
       // A schedule is found again by its identity, so its runs may send work off.
@@ -1428,7 +1700,7 @@ describe('a tool the owner approves call by call', () => {
     await expect(f.use(fresh, 'call-1')).rejects.toMatchObject(refused);
     // Paused for the owner and resumed: the call they approved goes through, and only that one.
     const resumed = await completion(true);
-    expect(getScheduleMCPExecution(resumed)).toMatchObject({ enrolled: true, stage: 'resume' });
+    expect(scheduleExecution(resumed)).toMatchObject({ enrolled: true, stage: 'resume' });
     await expect(f.use(resumed, 'call-1')).resolves.toBeUndefined();
     await expect(f.use(resumed, 'call-2')).rejects.toMatchObject(refused);
   });

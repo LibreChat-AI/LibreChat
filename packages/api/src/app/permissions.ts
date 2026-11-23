@@ -101,40 +101,45 @@ function warnNativeWebSearchDenied(
   );
 }
 
-export async function updateInterfacePermissions({
-  appConfig,
-  getRoleByName,
-  updateAccessPermissions,
-  recordAuditEntry,
-  tenantId,
-}: {
-  appConfig: AppConfig;
-  getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
-  updateAccessPermissions: (
-    roleName: string,
-    permissionsUpdate: Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>,
+/** Auditing verifies each sync against the stored role, so it takes an uncached read. */
+type RoleSyncAudit =
+  | { recordAuditEntry?: undefined; getPartitionRole?: undefined }
+  | {
+      /** Records a `role.synced` entry for each role whose stored permissions changed. */
+      recordAuditEntry: RecordAuditEntry;
+      /**
+       * Reads the role as committed, bypassing the role cache, which can still hold the
+       * pre-write role when the update's cache write fails after the database write.
+       */
+      getPartitionRole: (roleName: string) => Promise<IRole | null>;
+    };
 
-    roleData?: IRole | null,
-  ) => Promise<void>;
-  /** Records a `role.synced` entry for each role whose stored permissions changed. */
-  recordAuditEntry?: RecordAuditEntry;
-  /**
-   * Optional tenant ID for scoping role updates to a specific tenant.
-   * When provided (and not SYSTEM_TENANT_ID), runs inside `tenantStorage.run({ tenantId })`.
-   * When omitted or SYSTEM_TENANT_ID, uses the caller's existing ALS context.
-   */
-  tenantId?: string;
-}): Promise<void> {
+export async function updateInterfacePermissions(
+  params: {
+    appConfig: AppConfig;
+    getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
+    updateAccessPermissions: (
+      roleName: string,
+      permissionsUpdate: Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>,
+
+      roleData?: IRole | null,
+    ) => Promise<void>;
+    /**
+     * Optional tenant ID for scoping role updates to a specific tenant.
+     * When provided (and not SYSTEM_TENANT_ID), runs inside `tenantStorage.run({ tenantId })`.
+     * When omitted or SYSTEM_TENANT_ID, uses the caller's existing ALS context.
+     */
+    tenantId?: string;
+  } & RoleSyncAudit,
+): Promise<void> {
+  const { tenantId } = params;
   if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
     return tenantStorage.run({ tenantId }, async () =>
-      updateInterfacePermissions({
-        appConfig,
-        getRoleByName,
-        updateAccessPermissions,
-        recordAuditEntry,
-      }),
+      updateInterfacePermissions({ ...params, tenantId: undefined }),
     );
   }
+  const { appConfig, getRoleByName, updateAccessPermissions, recordAuditEntry, getPartitionRole } =
+    params;
 
   const loadedInterface = appConfig?.interfaceConfig;
   if (!loadedInterface) {
@@ -169,14 +174,19 @@ export async function updateInterfacePermissions({
   const webSearchDeniedRoles: string[] = [];
 
   /**
-   * Re-reads the role so the entry lists what was persisted rather than what was
+   * Re-reads the stored role so the entry lists what was persisted rather than what was
    * requested (`updateAccessPermissions` logs and swallows its own failures).
    */
-  const recordRoleSync = async (roleName: string, before: RolePermissions | undefined) => {
+  const recordRoleSync = async (
+    record: RecordAuditEntry,
+    read: (roleName: string) => Promise<IRole | null>,
+    roleName: string,
+    before: RolePermissions | undefined,
+  ) => {
     let after: IRole | null;
     let changes: string[];
     try {
-      after = await getRoleByName(roleName);
+      after = await read(roleName);
       changes = diffRolePermissions(before, after?.permissions as RolePermissions | undefined);
     } catch (err) {
       /** The verification read is part of auditing, which must not fail startup. */
@@ -191,7 +201,7 @@ export async function updateInterfacePermissions({
     }
     const tenantId = getTenantId();
     await recordSystemAuditEntry(
-      recordAuditEntry,
+      record,
       {
         action: 'role.synced',
         severity: 'warning',
@@ -856,8 +866,8 @@ export async function updateInterfacePermissions({
     // Update permissions if any need updating
     if (Object.keys(permissionsToUpdate).length > 0) {
       await updateAccessPermissions(roleName, permissionsToUpdate, existingRole);
-      if (recordAuditEntry) {
-        await recordRoleSync(roleName, existingPermissions);
+      if (recordAuditEntry && getPartitionRole) {
+        await recordRoleSync(recordAuditEntry, getPartitionRole, roleName, existingPermissions);
       }
     }
   }

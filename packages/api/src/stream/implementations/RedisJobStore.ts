@@ -68,6 +68,7 @@ import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
 import { parseTerminalPersistenceOwner } from '~/stream/metadata';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
+import { parseRunTrigger } from '~/agents/authority/trigger';
 import { evalScript } from '~/cache/redisScript';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
@@ -380,7 +381,7 @@ const REPLACEMENT_RECEIPT_ACK_LUA =
  *   Returns: [previousUserId | "", previousTenantId | "", createdAt, "",
  *             replacedCreatedAt | "", replacedStatus | "", replacedConversationId | "",
  *             replacedProviderAbortReady | "", replacedProviderExecutionId | "",
- *             replacedProviderDrained | ""]
+ *             replacedProviderDrained | "", replacedCompletedAt | ""]
  *   Predecessor mismatch returns the latest retained epoch in the replaced
  *   position plus an eighth active flag and ninth verified flag ("1" | "0").
  *   Job-only metadata is empty when that epoch has outlived its hash. When all
@@ -405,6 +406,7 @@ const JOB_CREATE_LUA =
   'local replacedProviderAbortReady = redis.call("HGET", KEYS[1], "providerAbortReady") ' +
   'local replacedProviderExecutionId = redis.call("HGET", KEYS[1], "providerExecutionId") ' +
   'local replacedProviderDrained = redis.call("HGET", KEYS[1], "providerDrained") ' +
+  'local replacedCompletedAt = redis.call("HGET", KEYS[1], "completedAt") ' +
   'local replacedTerminalPersistencePending = redis.call("HGET", KEYS[1], "terminalPersistencePending") ' +
   'local replacedTerminalHostActionPending = redis.call("HGET", KEYS[1], "terminalHostActionPending") ' +
   'local replacedDetachedTerminalHostActionPending = redis.call("HGET", KEYS[1], "detachedAgentEventTerminalHostActionPending") ' +
@@ -483,6 +485,7 @@ const JOB_CREATE_LUA =
   'or item.providerExecutionId == "" or string.len(item.providerExecutionId) > 128)) ' +
   'or (item.providerDrained ~= nil and type(item.providerDrained) ~= "boolean") ' +
   'or ((item.providerExecutionId ~= nil) ~= (item.providerDrained ~= nil)) ' +
+  'or (item.completedAt ~= nil and not isSafeEpoch(item.completedAt)) ' +
   'or replacementSeen[tostring(item.createdAt)] then ' +
   'return { "", "", "0", "replacement_receipt_corrupt" } end ' +
   'lastReplacementEpoch = item.createdAt replacementSeen[tostring(item.createdAt)] = true ' +
@@ -509,6 +512,11 @@ const JOB_CREATE_LUA =
   'if replacedProviderAbortReady then replaced.providerAbortReady = replacedProviderAbortReady == "1" end ' +
   'if replacedProviderExecutionId then replaced.providerExecutionId = replacedProviderExecutionId end ' +
   'if replacedProviderDrained then replaced.providerDrained = replacedProviderDrained == "1" end ' +
+  // The handoff counts its drain bound from this. An unusable value is left
+  // out, which only costs the replacement the full wait.
+  'local replacedCompletedEpoch = tonumber(replacedCompletedAt or "") ' +
+  'if isSafeEpoch(replacedCompletedEpoch) then replaced.completedAt = replacedCompletedEpoch ' +
+  'else replacedCompletedAt = nil end ' +
   'replacementChain[#replacementChain + 1] = replaced replacementSeen[tostring(replacedEpoch)] = true end ' +
   'local recoveredSteerId = ARGV[5] local expectedRecovery = nil ' +
   'if recoveredSteerId ~= "" and ARGV[10] ~= "2" then return { "", "", "0", "recovery_protocol_mismatch" } end ' +
@@ -625,7 +633,7 @@ const JOB_CREATE_LUA =
   'return { previousUserId or "", previousTenantId or "", tostring(createdAt), "", ' +
   'replacedCreatedAt or "", replacedStatus or "", replacedConversationId or "", ' +
   'replacedProviderAbortReady or "", replacedProviderExecutionId or "", ' +
-  'replacedProviderDrained or "" }';
+  'replacedProviderDrained or "", previousJobExists == 1 and replacedCompletedAt or "" }';
 
 /**
  * Epoch-guarded field update. Terminal writes reclaim same-slot content in the
@@ -2382,6 +2390,12 @@ export class RedisJobStore implements IJobStoreV2 {
       previousOwner[9] !== ''
         ? previousOwner[9] === '1'
         : undefined;
+    const replacedCompletedAt =
+      Array.isArray(previousOwner) &&
+      typeof previousOwner[10] === 'string' &&
+      previousOwner[10] !== ''
+        ? Number(previousOwner[10])
+        : undefined;
     const replacedJob =
       replacedCreatedAt != null && Number.isFinite(replacedCreatedAt) && replacedStatus != null
         ? {
@@ -2408,6 +2422,12 @@ export class RedisJobStore implements IJobStoreV2 {
           value: replacedProviderDrained,
           enumerable: false,
         },
+      });
+    }
+    if (replacedJob != null && Number.isSafeInteger(replacedCompletedAt)) {
+      Object.defineProperty(replacedJob, 'completedAt', {
+        value: replacedCompletedAt,
+        enumerable: false,
       });
     }
     const previousUserKeys =
@@ -5885,6 +5905,7 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventSuspension)
         : undefined,
       agentEventLegacyTurnToken: data.agentEventLegacyTurnToken || undefined,
+      trigger: data.trigger === undefined ? undefined : parseRunTrigger(data.trigger, true),
       scheduleMCPCompletion:
         data.scheduleMCPCompletion === undefined
           ? undefined
@@ -6024,6 +6045,9 @@ export class RedisJobStore implements IJobStoreV2 {
               candidate.providerExecutionId.length > 128)) ||
           (candidate.providerDrained != null && typeof candidate.providerDrained !== 'boolean') ||
           (candidate.providerExecutionId != null) !== (candidate.providerDrained != null) ||
+          (candidate.completedAt != null &&
+            (!Number.isSafeInteger(candidate.completedAt) ||
+              (candidate.completedAt as number) < 0)) ||
           seen.has(candidate.createdAt as number)
         ) {
           throw new Error('Invalid generation replacement receipt');
@@ -6050,6 +6074,12 @@ export class RedisJobStore implements IJobStoreV2 {
           });
           Object.defineProperty(receipt, 'providerDrained', {
             value: candidate.providerDrained,
+            enumerable: false,
+          });
+        }
+        if (candidate.completedAt != null) {
+          Object.defineProperty(receipt, 'completedAt', {
+            value: candidate.completedAt,
             enumerable: false,
           });
         }

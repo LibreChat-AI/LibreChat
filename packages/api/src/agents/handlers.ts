@@ -53,10 +53,11 @@ import type {
   BackgroundToolWakeupRegistration,
   PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
-import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
+import type { RunGrantExecution } from '~/agents/authority/execution';
 import type { InterruptibleToolBatchRequest } from './steering/tools';
 import type { ToolExecutionIdentity } from '~/telemetry/tools';
+import type { RunContext } from '~/agents/authority/trigger';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
 import type { SandboxTextReader } from '~/files/code/text';
@@ -157,6 +158,7 @@ import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
 import { explainWorkspacePathRejection } from '~/code/paths';
+import { captureTrigger } from '~/agents/authority/trigger';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
 import { observeToolExecution } from '~/telemetry/tools';
@@ -294,8 +296,13 @@ export interface ToolExecuteOptions {
   /** Host observer, called only after authoring has bound an authorized identity. */
   onSkillAuthored?: (binding: Pick<AuthoredSkillBinding, 'name' | 'id' | 'primed'>) => void;
   /** Host-captured authority ceiling, never runnable/model metadata. */
-  scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'> &
-    Partial<Pick<ScheduleMCPExecution, 'detaches'>>;
+  scheduledMCPExecution?: Pick<RunGrantExecution, 'enrolled' | 'identity'> &
+    Partial<Pick<RunGrantExecution, 'detaches'>>;
+  /**
+   * The context the host built for this run, never runnable or model metadata. Work the run
+   * sends to the background keeps the run's trigger from it.
+   */
+  runContext?: RunContext;
   /**
    * Host-owned signal for the foreground run. This is authoritative across
    * graph reconstruction (including approval resume); the SDK event signal is
@@ -5669,6 +5676,7 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
   const resumedSkillConfigurables = new Map<string, Record<string, unknown>>();
   const {
     scheduledMCPExecution,
+    runContext,
     runSignal: hostRunSignal,
     foregroundRunId,
     loadTools,
@@ -5685,6 +5693,8 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
     backgroundCompletionResultMaxChars = AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT,
     provisionFiles,
   } = handlerOptions;
+  /** Kept by each task this run sends to the background, for the turn that reports it. */
+  const trigger = captureTrigger(runContext);
 
   const handler: EventHandler = {
     handle: async (_event: string, data: ToolExecuteBatchRequest) => {
@@ -6205,6 +6215,7 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                   try {
                     const admission = await backgroundToolCompletion.preregister({
                       scheduleMCPIdentity: scheduledMCPExecution?.identity ?? null,
+                      ...(trigger && { trigger }),
                       taskId: task.id,
                       toolCallId: tc.id,
                       toolName: tc.name,

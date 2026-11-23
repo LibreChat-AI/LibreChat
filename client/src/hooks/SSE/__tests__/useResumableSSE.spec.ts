@@ -98,6 +98,7 @@ const mockQueryClient = {
   getQueryCache: () => ({
     findAll: mockFindAll,
     getAll: mockQueryCache.getAll.bind(mockQueryCache),
+    get: mockQueryCache.get.bind(mockQueryCache),
     find: mockQueryCache.find.bind(mockQueryCache),
     subscribe: mockQueryCache.subscribe.bind(mockQueryCache),
   }),

@@ -68,7 +68,7 @@ describe('useMCPSelect', () => {
       });
 
       expect(result.current.mcpValues).toEqual([]);
-      expect(result.current.isPinned).toBe(true); // Default value from mcpPinnedAtom is true
+      expect(result.current.isPinned).toBe(false); // Unpinned until config or the user pins it
       expect(typeof result.current.setMCPValues).toBe('function');
       expect(typeof result.current.setIsPinned).toBe('function');
     });
@@ -137,22 +137,22 @@ describe('useMCPSelect', () => {
         wrapper: Wrapper,
       });
 
-      // Default is true
-      expect(result.current.isPinned).toBe(true);
-
-      // Toggle to false
-      act(() => {
-        result.current.setIsPinned(false);
-      });
-
+      // Default is false
       expect(result.current.isPinned).toBe(false);
 
-      // Toggle back to true
+      // Toggle to true
       act(() => {
         result.current.setIsPinned(true);
       });
 
       expect(result.current.isPinned).toBe(true);
+
+      // Toggle back to false
+      act(() => {
+        result.current.setIsPinned(false);
+      });
+
+      expect(result.current.isPinned).toBe(false);
     });
   });
 
@@ -1162,7 +1162,7 @@ describe('useMCPSelect', () => {
       });
     });
 
-    it('keeps the legacy pinned default when defaultPinnedTools is not configured', async () => {
+    it('stays unpinned when defaultPinnedTools is not configured', async () => {
       mockStartupConfig = { interface: {} };
       const { Wrapper, servers } = createWrapper(['serverA']);
       const { result } = renderHook(() => useMCPSelect({ servers, ownsChatSelection: true }), {
@@ -1170,7 +1170,32 @@ describe('useMCPSelect', () => {
       });
 
       await waitFor(() => {
+        expect(result.current.isPinned).toBe(false);
+      });
+      expect(localStorage.getItem(LocalStorageKeys.PIN_MCP_)).toBeNull();
+    });
+
+    it('persists the seeded pin, so it survives the config later dropping "mcp"', async () => {
+      mockStartupConfig = { interface: { defaultPinnedTools: ['mcp'] } };
+      const first = createWrapper();
+      const { result, unmount } = renderHook(
+        () => useMCPSelect({ servers: first.servers, ownsChatSelection: true }),
+        { wrapper: first.Wrapper },
+      );
+      await waitFor(() => {
         expect(result.current.isPinned).toBe(true);
+      });
+      expect(localStorage.getItem(LocalStorageKeys.PIN_MCP_)).toBe('true');
+      unmount();
+
+      mockStartupConfig = { interface: { defaultPinnedTools: ['artifacts'] } };
+      const second = createWrapper(['serverA']);
+      const { result: next } = renderHook(
+        () => useMCPSelect({ servers: second.servers, ownsChatSelection: true }),
+        { wrapper: second.Wrapper },
+      );
+      await waitFor(() => {
+        expect(next.current.isPinned).toBe(true);
       });
     });
 

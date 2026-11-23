@@ -1,4 +1,4 @@
-import { useRef, createContext, useContext } from 'react';
+import { memo, useRef, createContext, useContext } from 'react';
 import type {
   Agent,
   AgentDisplay,
@@ -12,7 +12,14 @@ import type {
   TUpdateFeedbackRequest,
   TUpdateFeedbackResponse,
 } from 'librechat-data-provider';
-import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
+import type {
+  Dispatch,
+  ReactNode,
+  MouseEvent,
+  RefObject,
+  SetStateAction,
+  NamedExoticComponent,
+} from 'react';
 import type { WakeupDisplay } from '../../core/parts/wakeup';
 import type { TAskFunction } from '../../core';
 
@@ -178,6 +185,19 @@ export type MessageAudioProps = {
 };
 
 /**
+ * A model response's usage control, rendered with the host's config and accounting data.
+ *
+ * `message` names the response and carries the usage recorded for it. The control is rendered
+ * again when either changes, not for each frame of the response's text, so the rest of the
+ * object may be a frame behind.
+ */
+export type MessageUsageProps = {
+  message: TMessage;
+  conversationId?: string;
+  isLast?: boolean;
+};
+
+/**
  * Everything the message list reads from the app: viewer preferences, and render slots for the
  * pieces of a row that have not moved into this package yet. Members are hooks or slots, called
  * unconditionally, and a host stays the same object for the life of the tree it wraps.
@@ -202,6 +222,7 @@ export interface MessagesHost {
   useHasPendingTurn: (conversationId: string) => boolean;
   /** Renders the app's read-aloud control, or `null` while read-aloud is off. */
   renderMessageAudio: (props: MessageAudioProps) => ReactNode;
+  renderMessageUsage?: (props: MessageUsageProps) => ReactNode;
   /** The element the app's conversation screenshot captures; none outside a screenshot provider. */
   useScreenshotTarget: () => RefObject<HTMLDivElement> | undefined;
   /** Whether the viewer asked the thread to follow new content to the bottom. */
@@ -349,3 +370,28 @@ export function MessageIconSlot(props: MessageIconProps): ReactNode {
 export function MessageAudioSlot(props: MessageAudioProps): ReactNode {
   return useMessagesHost().renderMessageAudio(props);
 }
+
+/** Whether two renders of the usage control are for the same response with the same usage. */
+function isSameUsage(prev: MessageUsageProps, next: MessageUsageProps): boolean {
+  return (
+    prev.isLast === next.isLast &&
+    prev.conversationId === next.conversationId &&
+    prev.message.messageId === next.message.messageId &&
+    prev.message.conversationId === next.message.conversationId &&
+    prev.message.metadata?.usage === next.message.metadata?.usage
+  );
+}
+
+/**
+ * A response's token details, when the host enables usage reporting.
+ *
+ * The toolbar this sits in renders on every streamed frame of its response, each time with a new
+ * message object. The control shows nothing of the text, so it waits for the response or its
+ * usage to change: left to follow the toolbar, it rendered its popover again on every frame.
+ */
+export const MessageUsageSlot: NamedExoticComponent<MessageUsageProps> = memo(
+  function MessageUsageSlot(props: MessageUsageProps): ReactNode {
+    return useMessagesHost().renderMessageUsage?.(props) ?? null;
+  },
+  isSameUsage,
+);

@@ -11,18 +11,11 @@ jest.mock('~/hooks', () => ({
     values ? `${key}:${values[0]}` : key,
 }));
 
-jest.mock('~/components/ui/CustomIcon', () => {
-  const React = jest.requireActual<typeof ReactNS>('react');
-  return {
-    __esModule: true,
-    default: ({ src }: { src: string }) =>
-      React.createElement('img', { alt: '', 'data-testid': 'icon-preview', src }),
-  };
-});
-
 jest.mock('@librechat/client', () => {
   const React = jest.requireActual<typeof ReactNS>('react');
   return {
+    CustomIcon: ({ src }: { src: string }) =>
+      React.createElement('img', { alt: '', 'data-testid': 'icon-preview', src }),
     Button: ({ children, ...props }: { children: ReactNode }) =>
       React.createElement('button', { type: 'button', ...props }, children),
     /* `register` hands each field a ref */

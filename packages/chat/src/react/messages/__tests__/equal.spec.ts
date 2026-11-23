@@ -39,6 +39,10 @@ const makeFieldsMsg = (over: Partial<TMessage> = {}): TMessage =>
  * and adding a rendered field should mean adding it in both places.
  */
 const FIELD_MUTATIONS: Array<[string, Partial<TMessage>]> = [
+  [
+    'usage metadata',
+    { metadata: { usage: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0 } } },
+  ],
   ['messageId', { messageId: 'm2' }],
   ['text', { text: 'changed' }],
   ['error', { error: true }],

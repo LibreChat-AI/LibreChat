@@ -1,14 +1,36 @@
-import { useMemo, useSyncExternalStore } from 'react';
+import { createContext, useContext, useMemo, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { EModelEndpoint, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { AgentDisplay, TMessage } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
+import type { Context, ReactNode } from 'react';
 import { findSubagentDispatch, isDocumentId } from '../../core';
 import { MessageIconSlot } from '../messages/host';
 import { useMessagePartsHost } from '../host';
 
 /** Who wrote a turn, in the form main chat's message header shows an author. */
 export type TurnAuthor = { name: string; icon: ReactNode; agent?: AgentDisplay; agentId?: string };
+
+/** Who made a call, kept as plain values so a panel selection can carry it. */
+export type SubagentCaller = { agentId?: string; name: string };
+
+/**
+ * The subagent whose thread a part is drawn in. A call inside that thread was made by this
+ * subagent, and its message is not in the conversation's history for a lookup to find, so the
+ * thread says who it is. Null in main chat, where the history names the caller.
+ */
+export const SubagentCallerContext: Context<SubagentCaller | null> =
+  createContext<SubagentCaller | null>(null);
+export const useSubagentCaller = (): SubagentCaller | null => useContext(SubagentCallerContext);
+
+/** The author a selection's own caller names, else the one found in the history. */
+export function callerAuthor(
+  caller: SubagentCaller | undefined,
+  found: TurnAuthor,
+  agentsMap: Record<string, AgentDisplay | undefined> | undefined,
+): TurnAuthor {
+  if (caller == null) return found;
+  return agentAuthor(caller.agentId == null ? undefined : agentsMap?.[caller.agentId], caller.name);
+}
 
 /** Keep graph and legacy aliases readable. A prefix alone cannot prove a
  *  stored agent identity; suppress known agent IDs and the non-graph self alias. */

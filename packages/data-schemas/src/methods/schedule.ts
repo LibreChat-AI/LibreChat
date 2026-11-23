@@ -1,11 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import {
-  getScheduleMCPDisabledReason,
-  isScheduleMCPAuthorizationFailure,
-  scheduledMCPFailureReasonSchema,
-  projectScheduleMCPReceipt,
-  mergeScheduleMCPReceipts,
-} from 'librechat-data-provider';
+import { getScheduleMCPDisabledReason, projectScheduleMCPReceipt } from 'librechat-data-provider';
 import type { ScheduleRunStatus, ScheduleDisabledReason } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Model, Types, AnyBulkWriteOperation } from 'mongoose';
@@ -15,11 +9,12 @@ import type {
   IScheduleRun,
   IScheduleRunDocument,
 } from '~/types/schedule';
+import type { TriggerRunReservation, TriggerRunClaim, RecordedRunRef } from '~/types/triggerRun';
+import type { DuplicateKeyError } from './triggerRun';
+import { createTriggerRuns, ACTIVE_RUN_STATUSES, DUPLICATE_KEY } from './triggerRun';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
-import { unchangedScheduleGrant } from './scheduleConsent';
 import { createIndexesWithRetry } from '~/utils/retry';
-
-const DUPLICATE_KEY = 11000;
+import { unchangedRunGrant } from './runGrant';
 
 /**
  * Tolerance for inter-replica wall-clock skew on the worker-clock lease
@@ -33,22 +28,12 @@ const DUPLICATE_KEY = 11000;
 const LEASE_SKEW_MARGIN_MS = 30_000;
 
 /**
- * Age past which an unresolved interactive-stop attempt is presumed dead and its
- * per-run serialization claim becomes takeable again. Mirrors the api layer's
- * ABORT_OWNER_PRESUMED_ALIVE_MS — one presumption, two enforcement points.
- */
-const ABORT_STAMP_STALE_MS = 30 * 60_000;
-
-/**
  * Upper bound on the per-schedule `countedFor` idempotency set. Far larger than
  * the number of a single schedule's occurrences that can be terminal (or awaiting
  * reconciliation) at once, so an occurrence's marker is never evicted before any
  * possible crash-replay, while the array stays bounded.
  */
 const COUNTED_FOR_WINDOW = 64;
-
-/** Statuses that occupy a schedule's live capacity / block a concurrent occurrence. */
-const ACTIVE_RUN_STATUSES: ScheduleRunStatus[] = ['started', 'requires_action'];
 
 /** Card statuses that represent a SETTLED occurrence — everything except the pause. */
 const TERMINAL_CARD_STATUSES: ScheduleRunStatus[] = [
@@ -58,49 +43,6 @@ const TERMINAL_CARD_STATUSES: ScheduleRunStatus[] = [
   'skipped_overlap',
   'skipped_balance',
 ];
-
-type DuplicateKeyError = {
-  code?: number;
-  keyPattern?: Record<string, number>;
-  errmsg?: string;
-  message?: string;
-};
-
-/** DocumentDB can omit keyPattern; retain the deployed default index names as a fallback. */
-function matchesRunDuplicate(
-  error: unknown,
-  fields: readonly string[],
-  indexName: string,
-): boolean {
-  const err = error as DuplicateKeyError;
-  if (err?.code !== DUPLICATE_KEY) {
-    return false;
-  }
-  const keyPattern = err.keyPattern;
-  if (keyPattern != null) {
-    return (
-      Object.keys(keyPattern).length === fields.length &&
-      fields.every((field) => Object.prototype.hasOwnProperty.call(keyPattern, field))
-    );
-  }
-  const message = err.errmsg || err.message;
-  return typeof message === 'string' && /\bindex:\s+(\S+)/.exec(message)?.[1] === indexName;
-}
-
-/** A duplicate-key error whose conflict is the {scheduleId, scheduledFor} occurrence index. */
-function isOccurrenceDuplicate(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['scheduleId', 'scheduledFor'], 'scheduleId_1_scheduledFor_1');
-}
-
-/** A duplicate-key error whose conflict is the single-active-run partial index. */
-function isActiveRunConflict(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['scheduleId'], 'scheduleId_1');
-}
-
-/** A duplicate-key error whose conflict is the GLOBAL {capacitySlot} cap index. */
-function isCapacitySlotConflict(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['capacitySlot'], 'capacitySlot_1');
-}
 
 /** A duplicate-key error whose conflict is the per-user {user, slot} cap index. */
 function isSlotConflict(error: unknown): boolean {
@@ -164,24 +106,6 @@ export interface RecordRunOutcomeParams {
    */
   resumeClaimStaleBefore?: Date;
 }
-
-/** Outcome of reserving the single-active-run slot for a fired occurrence. */
-export type StartedRunReservation =
-  | { run: IScheduleRun }
-  | {
-      conflict: 'duplicate' | 'overlap' | 'slot-taken';
-      /** For a `duplicate`, the status of the row that already holds this occurrence.
-       *  A TERMINAL status means the occurrence is finished and merely never advanced
-       *  past; an active one means another worker is still running it. */
-      existingStatus?: ScheduleRunStatus;
-    };
-
-/** Outcome of promoting a paused occurrence back into the capacity-consuming
- * `started` set. Both conflicts are database-arbitrated by the same partial
- * unique indexes used for a first fire. */
-export type ResumedRunReservation =
-  | { capacitySlot: number }
-  | { conflict: 'not-paused' | 'overlap' | 'slot-taken' };
 
 export interface UpdateScheduleOptions {
   expectedConfigRevision?: number;
@@ -275,7 +199,20 @@ export type ScheduleMethods = {
     scheduleId: string,
     scheduledFor: string | Date,
   ) => Promise<{ recorded: boolean; chatProjectId?: string } | null>;
-  reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<StartedRunReservation>;
+  /** The MCP outcomes one occurrence's run holds; empty when the row is absent or holds none. */
+  getScheduleRunMCP: (
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ) => Promise<ScheduleMCPOutcome[]>;
+  /**
+   * The MCP outcomes of the occurrence that started a conversation, for the schedule and
+   * owner named; empty when no such run is on record or it holds none.
+   */
+  getScheduleConversationMCP: (
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ) => Promise<ScheduleMCPOutcome[]>;
+  reserveStartedRun: (data: Partial<IScheduleRun>) => Promise<TriggerRunReservation>;
   getCapacityOccupancy: () => Promise<{ takenSlots: number[]; unslotted: number }>;
   requestRunAbort: (
     scheduleId: string,
@@ -303,7 +240,7 @@ export type ScheduleMethods = {
     scheduleId: string,
     scheduledFor: Date,
     capacitySlot: number,
-  ) => Promise<ResumedRunReservation>;
+  ) => Promise<TriggerRunClaim>;
   releaseRunResumeClaim: (
     scheduleId: string,
     scheduledFor: Date,
@@ -365,6 +302,13 @@ export type ScheduleMethods = {
 export function createScheduleMethods(mongoose: typeof import('mongoose')): ScheduleMethods {
   const Schedule = () => mongoose.models.Schedule as Model<IScheduleDocument>;
   const ScheduleRun = () => mongoose.models.ScheduleRun as Model<IScheduleRunDocument>;
+  const runs = createTriggerRuns(mongoose);
+
+  /** One occurrence of a schedule, as the run it started is found by. */
+  const occurrence = (scheduleId: string, scheduledFor: string | Date): RecordedRunRef => ({
+    subject: { kind: 'schedule', id: scheduleId },
+    delivery: { event: { occurredAt: new Date(scheduledFor).getTime() } },
+  });
 
   /**
    * Explicitly builds the Schedule/ScheduleRun indexes. Required because
@@ -490,7 +434,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         : {}),
       ...(update.mcpConsent != null &&
         options?.replacesMCPConsent !== undefined &&
-        unchangedScheduleGrant(options.replacesMCPConsent)),
+        unchangedRunGrant(options.replacesMCPConsent)),
     };
     const mutation = {
       $set: {
@@ -904,10 +848,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduleId: string,
     scheduledFor: string | Date,
   ): Promise<{ recorded: boolean; chatProjectId?: string } | null> {
-    const run = await ScheduleRun()
-      .findOne({ scheduleId, scheduledFor: new Date(scheduledFor) })
-      .select('chatProjectId')
-      .lean<{ chatProjectId?: string | null } | null>();
+    const run = await runs.get(occurrence(scheduleId, scheduledFor), ['chatProjectId']);
     if (run == null) {
       return null;
     }
@@ -916,6 +857,41 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     return recorded && run.chatProjectId != null
       ? { recorded, chatProjectId: run.chatProjectId }
       : { recorded };
+  }
+
+  /**
+   * What an occurrence's readiness check and any receipt since left on its run row. A resumed
+   * run reads back from it the servers the occurrence was started without.
+   */
+  async function getScheduleRunMCP(
+    scheduleId: string,
+    scheduledFor: string | Date,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await runs.get(occurrence(scheduleId, scheduledFor), ['mcp']);
+    return run?.mcp ?? [];
+  }
+
+  /**
+   * The same outcomes, found by the conversation the occurrence started. Each occurrence
+   * starts a conversation of its own, so a later turn there (a background task or a
+   * subagent reporting back) is tied to its occurrence by where it runs. The schedule and
+   * its owner are part of the match: a conversation alone names no run of theirs. Should a
+   * conversation ever hold more than one run, the latest stands.
+   */
+  async function getScheduleConversationMCP(
+    scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+    conversationId: string,
+  ): Promise<ScheduleMCPOutcome[]> {
+    const run = await runs.byConversation(
+      {
+        subject: { kind: 'schedule', id: scope.scheduleId },
+        owner: scope.ownerId,
+        tenantId: scope.tenantId,
+      },
+      conversationId,
+      ['mcp'],
+    );
+    return run?.mcp ?? [];
   }
 
   async function persistResolvedProject(
@@ -958,32 +934,9 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * single-active partial index means another occurrence of the same schedule is
    * already active ('overlap'). The DB enforces both atomically — no read-then-insert.
    */
-  async function reserveStartedRun(data: Partial<IScheduleRun>): Promise<StartedRunReservation> {
-    try {
-      const doc = await ScheduleRun().create({ ...data, status: 'started' });
-      return { run: doc.toObject() };
-    } catch (error) {
-      if (isOccurrenceDuplicate(error)) {
-        // Report the EXISTING row's status. A duplicate means another fire owns this
-        // occurrence — but "owns" and "already finished" need opposite handling, and the
-        // caller cannot distinguish them without this.
-        const existing = await ScheduleRun()
-          .findOne({ scheduleId: data.scheduleId, scheduledFor: data.scheduledFor })
-          .select('status')
-          .lean<Pick<IScheduleRun, 'status'>>();
-        return { conflict: 'duplicate', existingStatus: existing?.status };
-      }
-      // Checked BEFORE overlap: the global cap index and the per-schedule active
-      // index are different failures and drive different caller behavior (retry the
-      // next slot vs skip the occurrence).
-      if (isCapacitySlotConflict(error)) {
-        return { conflict: 'slot-taken' };
-      }
-      if (isActiveRunConflict(error)) {
-        return { conflict: 'overlap' };
-      }
-      throw error;
-    }
+  async function reserveStartedRun(data: Partial<IScheduleRun>): Promise<TriggerRunReservation> {
+    // A reservation always names its occurrence; the row type leaves both columns optional.
+    return runs.reserve(occurrence(data.scheduleId as string, data.scheduledFor as Date), data);
   }
 
   /** Capacity-slot occupancy for the allocator: which slots are held by generation
@@ -1011,79 +964,13 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * Records that an abort was requested WITHOUT freeing the capacity slot: the run
    * keeps counting against fireConcurrency until its generation owner confirms
    * settlement by writing a terminal outcome.
-   *
-   * The stamp is RENEWED per attempt, not first-wins: the fences read
-   * `abortRequestedAt` for freshness, and a retry abort signalled against a live
-   * generation must re-arm them — a 31-minute-old stamp from a failed first attempt
-   * must not let a drain read the retry's post-abort job state as settled. Callers
-   * therefore only invoke this against a generation they observed LIVE (or unknown);
-   * stamping cleanup aborts of already-terminal jobs would re-fence a dead owner
-   * forever and block the reconciler's recovery.
-   *
-   * Source semantics: a 'stop' attempt takes the source and re-opens the persistence
-   * marker (the Stop route persists writes the owner's barrier must wait on, and each
-   * attempt resolves it anew); a 'deletion' request renews freshness but never steals
-   * the source from an UNRESOLVED stop attempt — the route may still be persisting,
-   * and the owner's barrier keys off `abortSource === 'stop'`.
-   * Classic operators only (DocumentDB).
    */
   async function requestRunAbort(
     scheduleId: string,
     scheduledFor: Date,
     source?: IScheduleRun['abortSource'],
   ): Promise<boolean | 'in_progress'> {
-    const now = new Date();
-    if (source === 'stop') {
-      // SERIALIZED per run: only one unresolved fresh stop attempt may exist. A second
-      // Stop stamping over a live one would re-open the persistence marker, and its
-      // own lost-CAS resolution would then release the settlement barrier while the
-      // FIRST attempt (the terminal-CAS winner) was still pruning and saving. The
-      // guarded update is the arbiter; a loser answers 'in_progress' and must neither
-      // signal the abort nor resolve anything. A stale unresolved attempt (its route
-      // presumed dead) is claimable again.
-      const staleCutoff = new Date(now.getTime() - ABORT_STAMP_STALE_MS);
-      const stamped = await ScheduleRun().updateOne(
-        {
-          scheduleId,
-          scheduledFor,
-          status: { $in: ACTIVE_RUN_STATUSES },
-          $nor: [
-            {
-              abortSource: 'stop',
-              abortPersistedAt: { $exists: false },
-              abortRequestedAt: { $gt: staleCutoff },
-            },
-          ],
-        },
-        { $set: { abortRequestedAt: now, abortSource: 'stop' }, $unset: { abortPersistedAt: 1 } },
-      );
-      if ((stamped.matchedCount ?? 0) > 0) {
-        return true;
-      }
-      const holder = await ScheduleRun()
-        .findOne({ scheduleId, scheduledFor, status: { $in: ACTIVE_RUN_STATUSES } })
-        .select('_id')
-        .lean();
-      return holder != null ? 'in_progress' : false;
-    }
-    const claimed = await ScheduleRun().updateOne(
-      {
-        scheduleId,
-        scheduledFor,
-        status: { $in: ACTIVE_RUN_STATUSES },
-        $or: [{ abortSource: { $ne: 'stop' } }, { abortPersistedAt: { $exists: true } }],
-      },
-      { $set: { abortRequestedAt: now, ...(source ? { abortSource: source } : {}) } },
-    );
-    if ((claimed.matchedCount ?? 0) > 0) {
-      return true;
-    }
-    // An unresolved stop attempt holds the source; renew freshness only.
-    const renewed = await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor, status: { $in: ACTIVE_RUN_STATUSES } },
-      { $set: { abortRequestedAt: now } },
-    );
-    return (renewed.matchedCount ?? 0) > 0;
+    return runs.abort(occurrence(scheduleId, scheduledFor), source);
   }
 
   /** Captured origin cannot adopt a later grant or a different schedule root. */
@@ -1114,49 +1001,22 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     IScheduleRun,
     'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
   > | null> {
-    return ScheduleRun()
-      .findOne({ scheduleId, scheduledFor })
-      .select('status abortRequestedAt abortSource abortPersistedAt mcp')
-      .lean<Pick<
-        IScheduleRun,
-        'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
-      > | null>();
+    return runs.get(occurrence(scheduleId, scheduledFor), [
+      'status',
+      'abortRequestedAt',
+      'abortSource',
+      'abortPersistedAt',
+      'mcp',
+    ]);
   }
 
-  /**
-   * Stamps a paused run as RESUME-CLAIMED: its approval was consumed and a
-   * continuation is running. While fresh, a re-paused job's state is a hand-off in
-   * flight (segment writes still landing), not settleable evidence. The pause
-   * record ($unset below) is the completion signal; a crash leaves the stamp to
-   * age out on the caller's staleness bound.
-   */
+  /** Promotes a paused occurrence back into the capacity-consuming `started` set. */
   async function markRunResumeClaimed(
     scheduleId: string,
     scheduledFor: Date,
     capacitySlot: number,
-  ): Promise<ResumedRunReservation> {
-    try {
-      const claimed = await ScheduleRun().findOneAndUpdate(
-        { scheduleId, scheduledFor, status: 'requires_action' },
-        {
-          $set: {
-            status: 'started',
-            capacitySlot,
-            resumeClaimedAt: new Date(),
-          },
-        },
-        { new: true, timestamps: false },
-      );
-      return claimed == null ? { conflict: 'not-paused' } : { capacitySlot };
-    } catch (error) {
-      if (isCapacitySlotConflict(error)) {
-        return { conflict: 'slot-taken' };
-      }
-      if (isActiveRunConflict(error)) {
-        return { conflict: 'overlap' };
-      }
-      throw error;
-    }
+  ): Promise<TriggerRunClaim> {
+    return runs.claim(occurrence(scheduleId, scheduledFor), capacitySlot);
   }
 
   /** Roll back a resume reservation only while the exact slot this caller claimed
@@ -1168,26 +1028,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduledFor: Date,
     capacitySlot: number,
   ): Promise<boolean> {
-    const released = await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor, status: 'started', capacitySlot },
-      {
-        $set: { status: 'requires_action' },
-        $unset: { capacitySlot: 1, resumeClaimedAt: 1 },
-      },
-      { timestamps: false },
-    );
-    return (released.modifiedCount ?? 0) > 0;
+    return runs.release(occurrence(scheduleId, scheduledFor), capacitySlot);
   }
 
   /** Stamped by the interactive Stop route once ALL its writes (checkpoint prune,
    *  partial-response save) have landed; releases the generation owner's settlement
-   *  barrier. Bookkeeping only: never touches `updatedAt`. */
+   *  barrier. */
   async function markRunAbortPersisted(scheduleId: string, scheduledFor: Date): Promise<void> {
-    await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor },
-      { $set: { abortPersistedAt: new Date() } },
-      { timestamps: false },
-    );
+    await runs.abortSaved(occurrence(scheduleId, scheduledFor));
   }
 
   async function recordMCPToolAuthFailure({
@@ -1199,12 +1047,6 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     outcome,
     outcomes,
   }: Parameters<ScheduleMethods['recordMCPToolAuthFailure']>[0]): Promise<boolean> {
-    const binding = {
-      scheduleId,
-      scheduledFor,
-      conversationId,
-      ...(tenantId ? { tenantId } : { tenantId: { $exists: false } }),
-    };
     const receipts: ScheduleMCPOutcome[] = outcomes ?? [
       outcome ?? {
         server,
@@ -1212,24 +1054,11 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         detail: 'unattended_auth_required',
       },
     ];
-    const updated = await ScheduleRun().updateOne(
-      { ...binding, status: { $in: ['started', 'requires_action'] } },
-      { $addToSet: { mcp: { $each: receipts } } },
-      { timestamps: false },
+    return runs.receipt(
+      occurrence(scheduleId, scheduledFor),
+      { conversationId, tenantId },
+      receipts,
     );
-    if ((updated.matchedCount ?? 0) > 0) return true;
-    if (receipts.length === 0) return false;
-    // A durable replay acknowledges existing evidence, never appends a late diagnosis.
-    const terminal = await ScheduleRun()
-      .findOne({
-        ...binding,
-        status: { $in: ['success', 'error', 'interrupted', 'skipped_balance', 'skipped_overlap'] },
-      })
-      .select('mcp')
-      .lean<Pick<IScheduleRun, 'mcp'>>();
-    if (!terminal) return false;
-    const admitted = mergeScheduleMCPReceipts(terminal.mcp ?? []);
-    return mergeScheduleMCPReceipts(admitted, receipts).length === admitted.length;
   }
 
   /** Count of in-flight scheduled runs (across all schedules) for the fire cap. */
@@ -1512,65 +1341,24 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * streak — the owner's credits, not the schedule, are at fault.
    */
   async function recordRunOutcome(params: RecordRunOutcomeParams): Promise<void> {
-    const firedAt = new Date();
     params = {
       ...params,
       ...projectScheduleMCPReceipt({ status: params.status, error: params.error, mcp: params.mcp }),
     };
+    const ref = occurrence(params.scheduleId, params.scheduledFor);
     if (params.status === 'requires_action') {
       // PAUSE (HITL): win the ROW transition first, then project the card. A read-then-
       // write guard let a concurrent resume terminalize the run between the two, after
       // which the card was pinned to "Needs approval" forever — the row update no-op'd
-      // (already terminal) while the card write had landed. Matching `requires_action`
-      // too keeps a retried pause re-affirming the card, and keeps the transition
-      // crash-recoverable: the reconciler re-invokes this for a row in either state.
-      // The match is also the anti-spoof guard a bare scheduleId would bypass.
-      const paused = await ScheduleRun().findOneAndUpdate(
-        {
-          scheduleId: params.scheduleId,
-          scheduledFor: params.scheduledFor,
-          status: { $in: ['started', 'requires_action'] },
-          $nor: [
-            { 'mcp.detail': 'unattended_auth_required' },
-            {
-              mcp: {
-                $elemMatch: {
-                  reason: { $in: scheduledMCPFailureReasonSchema.options },
-                  status: { $ne: 'ready' },
-                  automaticReplay: false,
-                },
-              },
-            },
-          ],
-          // See resumeClaimStaleBefore: fences a stale-snapshot recovery replay against a
-          // resume that claimed the row after the snapshot was taken, while still letting
-          // an ABANDONED claim (its worker died mid-hand-off) be recovered.
-          ...(params.resumeClaimStaleBefore != null
-            ? {
-                $or: [
-                  { resumeClaimedAt: { $exists: false } },
-                  { resumeClaimedAt: { $lt: params.resumeClaimStaleBefore } },
-                ],
-              }
-            : {}),
-        },
-        {
-          $set: {
-            status: 'requires_action',
-            ...(params.conversationId ? { conversationId: params.conversationId } : {}),
-            ...(params.checkpointNamespace != null
-              ? { checkpointNamespace: params.checkpointNamespace }
-              : {}),
-          },
-          // Leaving `started` frees the global capacity slot; the resume claims a
-          // fresh one from the allocator rather than re-adopting a possibly-taken slot.
-          // The pause record is also the resume hand-off's COMPLETION signal: the
-          // re-pause branch persists its segment before recording, so clearing the
-          // claim stamp here re-opens the run to quiesce settling.
-          $unset: { capacitySlot: 1, resumeClaimedAt: 1 },
-        },
-        { new: false },
-      );
+      // (already terminal) while the card write had landed. The row write matches
+      // `requires_action` too, which keeps a retried pause re-affirming the card, and keeps
+      // the transition crash-recoverable: the reconciler re-invokes this for a row in
+      // either state. The match is also the anti-spoof guard a bare scheduleId would bypass.
+      const paused = await runs.pause(ref, {
+        conversationId: params.conversationId,
+        checkpointNamespace: params.checkpointNamespace,
+        resumeClaimStaleBefore: params.resumeClaimStaleBefore,
+      });
       if (paused == null) {
         // A resume/denial fence is not authority to terminalize. The generation-aware
         // service owns denied-pause abort, provider drain and steer recovery.
@@ -1588,135 +1376,56 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         {
           conversationId: params.conversationId,
           status: params.status,
-          firedAt: paused.firedAt ?? firedAt,
+          firedAt: paused.firedAt,
         },
         params.scheduledFor,
-        paused.configRevision != null ? { configRevision: paused.configRevision } : {},
+        paused.revision != null ? { configRevision: paused.revision } : {},
       );
       return;
     }
-    // TERMINAL: flip the run row (match-guarded), then apply bookkeeping. `bookkept` is
-    // set false at the flip and true only after bookkeeping lands, so a crash between is
-    // re-applied by the reconciler (getUnbookkeptRuns) while countedFor keeps counters idempotent.
-    const runFilter = {
-      scheduleId: params.scheduleId,
-      scheduledFor: params.scheduledFor,
-      status: { $in: ['started', 'requires_action'] },
-      ...(params.resumeClaimStaleBefore != null
-        ? {
-            $or: [
-              { resumeClaimedAt: { $exists: false } },
-              { resumeClaimedAt: { $lt: params.resumeClaimStaleBefore } },
-            ],
-          }
-        : {}),
-    };
-    const canOverride =
-      params.status === 'success' ||
-      params.status === 'error' ||
-      params.status === 'skipped_balance' ||
-      params.status === 'interrupted';
-    const incomingFailure = canOverride && params.mcp?.some(isScheduleMCPAuthorizationFailure);
-    const receiptPredicates = [
-      { 'mcp.detail': 'unattended_auth_required' },
-      {
-        mcp: {
-          $elemMatch: {
-            reason: { $in: scheduledMCPFailureReasonSchema.options },
-            status: { $ne: 'ready' },
-            automaticReplay: false,
-          },
-        },
-      },
-    ];
-    const authError =
-      params.status === 'error' && params.error
-        ? params.error
-        : 'MCP unattended authorization unavailable';
-    const terminalUpdate = (
-      status: RecordRunOutcomeParams['status'],
-      error: string | undefined,
-    ) => ({
-      $set: {
-        status,
-        bookkept: false,
-        settledAt: firedAt,
-        ...(params.conversationId && !params.clearConversationId
-          ? { conversationId: params.conversationId }
-          : {}),
-        ...(error ? { error } : {}),
-        ...(params.durationMs != null ? { durationMs: params.durationMs } : {}),
-      },
-      // Merge in the same transition; neither a receipt race nor a crash can lose a source.
-      ...(params.mcp?.length && { $addToSet: { mcp: { $each: params.mcp } } }),
-      // Only terminal settlement releases the global capacity slot, not an abort request.
-      $unset: {
-        capacitySlot: 1,
-        admissionOnly: 1,
-        ...(params.clearConversationId ? { conversationId: 1 } : {}),
-      },
+    // TERMINAL: flip the run row (match-guarded), then apply bookkeeping. The row write
+    // leaves `bookkept` false and it turns true only after bookkeeping lands, so a crash
+    // between is re-applied by the reconciler (getUnbookkeptRuns) while countedFor keeps
+    // counters idempotent.
+    const settled = await runs.finish(ref, {
+      status: params.status,
+      error: params.error,
+      mcp: params.mcp,
+      conversationId: params.conversationId,
+      clearConversationId: params.clearConversationId,
+      durationMs: params.durationMs,
+      resumeClaimStaleBefore: params.resumeClaimStaleBefore,
     });
-    // The absence check is part of the row update, not a stale read. A concurrent
-    // receipt either wins first (the fallback below records an error) or loses to
-    // terminalization (and can no longer stamp this run).
-    let settled = await ScheduleRun()
-      .findOneAndUpdate(
-        {
-          ...runFilter,
-          ...(canOverride ? { $nor: receiptPredicates } : {}),
-        },
-        terminalUpdate(
-          incomingFailure ? 'error' : params.status,
-          incomingFailure ? authError : params.error,
-        ),
-        { new: true },
-      )
-      .lean<IScheduleRun>();
-    let effectiveParams = incomingFailure
-      ? { ...params, status: 'error' as const, error: authError }
-      : params;
-    if (settled == null && canOverride) {
-      settled = await ScheduleRun()
-        .findOneAndUpdate(
-          { $and: [runFilter, { $or: receiptPredicates }] },
-          terminalUpdate('error', authError),
-          { new: true },
-        )
-        .lean<IScheduleRun>();
-      if (settled != null) {
-        effectiveParams = { ...params, status: 'error', error: authError, mcp: settled.mcp };
-      }
-    }
     // No-match guard: never touch schedule bookkeeping without a matching run.
     if (settled == null) {
       return;
     }
-    // The post-image is the authoritative union, including receipts admitted just before this CAS.
-    effectiveParams = { ...effectiveParams, mcp: settled.mcp };
     // SINGLE SEAM: the config fence is DERIVED here from the row being settled, not
     // passed in by each caller. Callers only say "this occurrence reached status X" and
     // structurally cannot forget a token — which is exactly how the reconcile and
     // balance-skip paths previously shipped unfenced.
-    if (effectiveParams.status === 'skipped_balance') {
+    if (settled.status === 'skipped_balance') {
       await applyBalanceSkipBookkeeping({
         scheduleId: params.scheduleId,
         scheduledFor: params.scheduledFor,
-        firedAt: settled.firedAt ?? firedAt,
+        firedAt: settled.firedAt,
         conversationId: params.conversationId,
-        rowRevision: settled.configRevision,
+        rowRevision: settled.revision,
         balanceSkipDisableThreshold: params.balanceSkipDisableThreshold,
       });
     } else {
+      // The row's post-image is the authoritative union of receipts, including any
+      // admitted just before the write, and its status is the one the write settled on.
       await applyTerminalBookkeeping({
-        ...effectiveParams,
-        firedAt: settled.firedAt ?? firedAt,
-        expectConfigRevision: settled.configRevision,
+        ...params,
+        status: settled.status,
+        error: settled.error,
+        mcp: settled.mcp,
+        firedAt: settled.firedAt,
+        expectConfigRevision: settled.revision,
       });
     }
-    await ScheduleRun().updateOne(
-      { scheduleId: params.scheduleId, scheduledFor: params.scheduledFor },
-      { $set: { bookkept: true } },
-    );
+    await runs.settled(ref);
   }
 
   async function recordSkippedRun(
@@ -1727,37 +1436,22 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     },
     balanceSkipDisableThreshold?: number,
   ): Promise<void> {
-    const firedAt = new Date();
+    const ref = occurrence(data.scheduleId, data.scheduledFor);
     // A duplicate {scheduleId, scheduledFor} row means a prior attempt inserted it.
-    // Proceed as a retry ONLY when that row is the SAME skip — otherwise this claim
-    // is a retry of an occurrence that actually started/terminalized (e.g. the POST
+    // The row write answers a retry ONLY when that row is the SAME skip — otherwise this
+    // claim is a retry of an occurrence that actually started/terminalized (e.g. the POST
     // was accepted but advanceSchedule failed before releasing the lease), and
     // rewriting lastRun/counters would mislabel a real run as a skip (and could
     // walk it toward auto-disable). The streak $inc is separately guarded per
     // occurrence by `countedFor`, so a genuine same-skip retry can't double-count.
-    // `bookkept: false` until the schedule-side writes land: a crash in between is
-    // replayed by the reconciler (getUnbookkeptRuns), exactly like a terminal run —
-    // a duplicate claim of this occurrence advances past the terminal row without
+    // The row stays `bookkept: false` until the schedule-side writes land: a crash in
+    // between is replayed by the reconciler (getUnbookkeptRuns), exactly like a terminal
+    // run — a duplicate claim of this occurrence advances past the terminal row without
     // re-running bookkeeping, so nothing else would ever repair a half-applied skip.
-    const inserted = await insertScheduleRun({
-      ...data,
-      firedAt,
-      settledAt: firedAt,
-      bookkept: false,
-    });
-    let rowRevision = inserted?.configRevision;
-    let rowFiredAt = firedAt;
-    if (inserted == null) {
-      const existing = await ScheduleRun()
-        .findOne({ scheduleId: data.scheduleId, scheduledFor: data.scheduledFor })
-        .select('status configRevision firedAt')
-        .lean<Pick<IScheduleRun, 'status' | 'configRevision' | 'firedAt'>>();
-      if (existing == null || existing.status !== data.status) {
-        return;
-      }
-      rowRevision = existing.configRevision;
-      // A retry re-projects the ORIGINAL occurrence, not the retry moment.
-      rowFiredAt = existing.firedAt ?? firedAt;
+    // A retry re-projects the ORIGINAL occurrence's fire time, not the retry moment.
+    const skipped = await runs.skip(ref, data);
+    if (skipped == null) {
+      return;
     }
     // Same single seam as recordRunOutcome: the config fence is DERIVED from the row,
     // never passed by the caller. A skip decided under an older owner config must not
@@ -1767,22 +1461,19 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       await applyBalanceSkipBookkeeping({
         scheduleId: data.scheduleId,
         scheduledFor: data.scheduledFor,
-        firedAt: rowFiredAt,
-        rowRevision,
+        firedAt: skipped.firedAt,
+        rowRevision: skipped.revision,
         balanceSkipDisableThreshold,
       });
     } else {
       await applyOverlapSkipBookkeeping({
         scheduleId: data.scheduleId,
         scheduledFor: data.scheduledFor,
-        firedAt: rowFiredAt,
-        rowRevision,
+        firedAt: skipped.firedAt,
+        rowRevision: skipped.revision,
       });
     }
-    await ScheduleRun().updateOne(
-      { scheduleId: data.scheduleId, scheduledFor: data.scheduledFor },
-      { $set: { bookkept: true } },
-    );
+    await runs.settled(ref);
   }
 
   async function setRunFireDetails(
@@ -1790,16 +1481,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduledFor: Date,
     details: { conversationId: string; droppedFileIds?: string[]; mcp?: IScheduleRun['mcp'] },
   ): Promise<void> {
-    await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor, conversationId: details.conversationId },
-      {
-        $set: {
-          conversationId: details.conversationId,
-          ...(details.droppedFileIds?.length ? { droppedFileIds: details.droppedFileIds } : {}),
-        },
-        ...(details.mcp?.length ? { $addToSet: { mcp: { $each: details.mcp } } } : {}),
-      },
-    );
+    await runs.detail(occurrence(scheduleId, scheduledFor), details);
   }
 
   /**
@@ -1875,10 +1557,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     // The row's ORIGINAL firedAt is reused too: this replay runs minutes (or many
     // retries) after the fact, and stamping the replay time onto lastRun would keep
     // walking the card's timestamp forward every time the recovery path fires.
-    const run = await ScheduleRun()
-      .findOne({ scheduleId: params.scheduleId, scheduledFor: params.scheduledFor })
-      .select('configRevision firedAt')
-      .lean<Pick<IScheduleRun, 'configRevision' | 'firedAt'>>();
+    const ref = occurrence(params.scheduleId, params.scheduledFor);
+    const run = await runs.get(ref, ['revision', 'firedAt']);
     const firedAt = run?.firedAt ?? new Date();
     if (params.status === 'skipped_balance') {
       await applyBalanceSkipBookkeeping({
@@ -1886,7 +1566,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         scheduledFor: params.scheduledFor,
         firedAt,
         conversationId: params.conversationId,
-        rowRevision: run?.configRevision,
+        rowRevision: run?.revision,
         balanceSkipDisableThreshold: params.balanceSkipDisableThreshold,
       });
     } else if (params.status === 'skipped_overlap') {
@@ -1894,19 +1574,16 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         scheduleId: params.scheduleId,
         scheduledFor: params.scheduledFor,
         firedAt,
-        rowRevision: run?.configRevision,
+        rowRevision: run?.revision,
       });
     } else {
       await applyTerminalBookkeeping({
         ...params,
         firedAt,
-        expectConfigRevision: run?.configRevision,
+        expectConfigRevision: run?.revision,
       });
     }
-    await ScheduleRun().updateOne(
-      { scheduleId: params.scheduleId, scheduledFor: params.scheduledFor },
-      { $set: { bookkept: true } },
-    );
+    await runs.settled(ref);
   }
 
   /**
@@ -1922,14 +1599,10 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     expectedStatus?: ScheduleRunStatus,
     expectedConversationId?: string,
   ): Promise<void> {
-    const filter: Record<string, unknown> = { scheduleId, scheduledFor };
-    if (expectedStatus !== undefined) {
-      filter.status = expectedStatus;
-    }
-    if (expectedConversationId !== undefined) {
-      filter.conversationId = expectedConversationId;
-    }
-    await ScheduleRun().deleteOne(filter);
+    await runs.remove(occurrence(scheduleId, scheduledFor), {
+      status: expectedStatus,
+      conversationId: expectedConversationId,
+    });
   }
 
   /**
@@ -2342,6 +2015,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     requestRunAbort,
     persistResolvedProject,
     getScheduleRunProject,
+    getScheduleRunMCP,
+    getScheduleConversationMCP,
     getScheduleRunAbortState,
     getScheduleMCPCompletionState,
     recordMCPToolAuthFailure,

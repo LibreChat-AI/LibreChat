@@ -33,6 +33,7 @@ const {
   isCodeSessionToolName,
   isCodeArtifactToolOutput,
   getModelRefusalInfo,
+  recordModelTruncation,
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
   captureSubagentIdentity,
@@ -100,14 +101,22 @@ class ModelEndHandler {
    *   Provider replay metadata accumulated across model calls and saved with the assistant row.
    * @param {(data: Record<string, unknown>) => Promise<void> | void} [emitUsage] Optional
    *   callback to stream per-call token usage to the client.
+   * @param {import('@librechat/api').OutputTruncationSink | null} [truncationSink] Whether the
+   *   latest answer call hit its output limit; the client settles it after the run.
    */
-  constructor(collectedUsage, collectedThoughtSignatures = null, emitUsage = null) {
+  constructor(
+    collectedUsage,
+    collectedThoughtSignatures = null,
+    emitUsage = null,
+    truncationSink = null,
+  ) {
     if (!Array.isArray(collectedUsage)) {
       throw new Error('collectedUsage must be an array');
     }
     this.collectedUsage = collectedUsage;
     this.collectedThoughtSignatures = collectedThoughtSignatures;
     this.emitUsage = emitUsage;
+    this.truncationSink = truncationSink;
   }
 
   finalize(errorMessage) {
@@ -147,6 +156,7 @@ class ModelEndHandler {
           conversationId: metadata.thread_id,
         });
       }
+      recordModelTruncation(this.truncationSink, data?.output, metadata);
 
       collectGoogleThoughtSignatures(this.collectedThoughtSignatures, data?.output);
       const usage = getModelEndUsage(data?.output);
@@ -306,6 +316,8 @@ async function maybeEmitSandboxStarting(emitForJob, data, metadata) {
  *   which usage events and which content parts came after it.
  * @param {Array<TTokenUsageEvent>} [options.usageEmitSink] - Array collecting each emitted
  *   `on_token_usage` payload (incl. cost) so the response's usage rollup can be persisted.
+ * @param {import('@librechat/api').OutputTruncationSink} [options.truncationSink] - Whether the
+ *   latest answer call hit its output limit, settled into the response by the client.
  * @param {(toolName: string, agentId?: string) => string | undefined} [options.resolveMcpServerName]
  * @returns {Record<string, t.EventHandler>} The default handlers.
  * @throws {Error} If the request is not found.
@@ -327,6 +339,7 @@ function getDefaultHandlers({
   usageCost = null,
   contextUsageSink = null,
   usageEmitSink = null,
+  truncationSink = null,
   eventChildActivity = null,
   resolveMcpServerName = null,
   toolTimingReplayEvents = [],
@@ -440,6 +453,7 @@ function getDefaultHandlers({
       collectedUsage,
       collectedThoughtSignatures,
       emitTokenUsage,
+      truncationSink,
     ),
     [GraphEvents.TOOL_END]: createOwnedToolEndHandler(toolEndCallback, logger),
     [GraphEvents.ON_RUN_STEP]: {

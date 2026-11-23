@@ -26,6 +26,7 @@ module.exports = createAgentKeyMCPGrantHost({
       }),
     getNodes: methods.getAgentGraphNodes,
     getModelsConfig: (user) => getModelsConfig({ user }),
+    ensureConfigServers: (config) => getMCPServersRegistry().ensureConfigServers(config),
     getServers: (user, config) =>
       getMCPServersRegistry().getAllServerConfigs(user.id, config, user.role),
   },

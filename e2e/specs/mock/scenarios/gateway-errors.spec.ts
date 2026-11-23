@@ -14,12 +14,14 @@ import {
  * The e2e deployment runs without content protection, so the explanation may reach the reader.
  */
 const RATE_LIMIT_COPY =
-  "The provider declined this request for exceeding a rate or spending limit. Wait a moment and try again, or ask an administrator to review the provider's limits.";
+  "The provider declined this request because a rate or spending limit was reached. If trying again later does not help, ask an administrator to review the provider's limits.";
 const MODEL_NOT_FOUND_COPY =
   'The selected model is unavailable from this provider. Select a different model or ask an administrator to verify the provider configuration.';
 
 const explanation = (label: string) =>
   `Gateway budget for ${label} is spent. Waiting will not help; ask an administrator for more.`;
+const longExplanation = (label: string) =>
+  `Gateway budget for ${label} is spent for this month and resets on the first day of the next one.\nWaiting a few minutes will not help. To keep working now, open a request for a higher budget at https://service.example.com/ai/budget and include your user id, the model you were using and the reason you need more.`;
 
 async function failTurn(page: Page, prompt: string) {
   await page.goto(NEW_CHAT_PATH, { timeout: 15_000 });
@@ -52,6 +54,28 @@ test.describe('classified provider failures', () => {
     await page.reload();
     await expect(view.getByText(RATE_LIMIT_COPY)).toBeVisible({ timeout: 30_000 });
     await expect(view.getByText(explanation(label), { exact: true })).toBeVisible();
+  });
+
+  test('a rate limited turn keeps a long, multi-line gateway explanation in view without a disclosure @scenario:gateway-long-rate-limit-detail-inline', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = `long-${Date.now()}`;
+    await failTurn(page, `E2E_LONG_GATEWAY_ERROR:MODEL_RATE_LIMIT:${label}`);
+
+    const view = messagesView(page);
+    const [first, second] = longExplanation(label).split('\n');
+    await expect(view.getByText(RATE_LIMIT_COPY)).toBeVisible({ timeout: 30_000 });
+    await expect(view.getByText(first)).toBeVisible();
+    await expect(view.getByText(second)).toBeVisible();
+    await expect(view.getByRole('button', { name: 'Provider response' })).toHaveCount(0);
+    await expect(view.getByText('Troubleshooting URL')).toHaveCount(0);
+    await expectSettled(page);
+
+    await page.reload();
+    await expect(view.getByText(RATE_LIMIT_COPY)).toBeVisible({ timeout: 30_000 });
+    await expect(view.getByText(second)).toBeVisible();
+    await expect(view.getByRole('button', { name: 'Provider response' })).toHaveCount(0);
   });
 
   test('a rate limited turn without an explanation shows only the limit sentence @scenario:bare-rate-limit-shows-only-the-sentence', async ({

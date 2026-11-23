@@ -32,7 +32,9 @@ transcript, from a Chromium trace of the built client:
 - **`rail.perf.spec.ts`**: the cost of opening and closing the session rail beside the thread,
   with the sidebar's toggle traced in the same run as the yardstick. The rail does not slide, so
   the thread changes width once. `FADE_PERF_WHY=1` counts what renders for each toggle, beside an
-  idle second and the sidebar's: no message row should, at any thread length.
+  idle second and the sidebar's: no message row should, at any thread length. Dragging the
+  rail's handle is traced too: it changes the thread's width on every frame of the drag, as the
+  sidebar's slide does.
   A second test grows the last reply for three seconds with the rail closed and then open and
   listing running work, and prints the page's compositor layer count beside each: a row that
   animates is a layer, and every frame of the thread pays for the layers on the page. For the

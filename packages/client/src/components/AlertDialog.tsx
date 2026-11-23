@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { JSX } from 'react/jsx-runtime';
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
+import { usePortalContainer } from '../Providers/PortalContext';
 import { useDialogDepth } from './OriginalDialog';
 import { cn, disabledFillClasses } from '~/utils';
 
@@ -12,12 +13,17 @@ const AlertDialogTrigger: React.ForwardRefExoticComponent<
 
 type AlertPortalProps = AlertDialogPrimitive.AlertDialogPortalProps & { className?: string };
 
-const AlertDialogPortal = ({ className = '', children, ...props }: AlertPortalProps) => {
+const AlertDialogPortal = ({ className = '', children, container, ...props }: AlertPortalProps) => {
+  const fallback = usePortalContainer();
   const dialogDepth = useDialogDepth();
   const zIndex = dialogDepth > 0 ? 190 + (dialogDepth - 1) * 60 : 50;
 
   return (
-    <AlertDialogPrimitive.Portal className={cn(className)} {...(props as AlertPortalProps)}>
+    <AlertDialogPrimitive.Portal
+      className={cn(className)}
+      container={container ?? fallback}
+      {...(props as AlertPortalProps)}
+    >
       <div
         className="fixed inset-0 z-50 flex items-end justify-center sm:items-center"
         style={{ zIndex }}

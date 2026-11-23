@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 import React from 'react';
+import { PortalProvider } from '@librechat/client';
 import { render, act, fireEvent, screen } from '@testing-library/react';
 
 type RefObject<T> = React.RefObject<T>;
@@ -203,11 +204,14 @@ function buildDom(messages: TestMessage[]): {
   return { scrollable, content };
 }
 
-function renderNav(messages: TestMessage[]) {
+function renderNav(
+  messages: TestMessage[],
+  wrapper?: React.ComponentType<{ children: React.ReactNode }>,
+) {
   mockUseGetMessagesByConvoId.mockReturnValue({ data: messages });
   const { scrollable, content } = buildDom(messages);
   const scrollableRef = { current: scrollable } as RefObject<HTMLDivElement>;
-  const result = render(<MessageNav scrollableRef={scrollableRef} />);
+  const result = render(<MessageNav scrollableRef={scrollableRef} />, { wrapper });
   act(() => {
     jest.advanceTimersByTime(250);
   });
@@ -1276,6 +1280,29 @@ describe('MessageNav', () => {
       column.getBoundingClientRect = () => COLUMN_RECT;
       return { ...result, column };
     }
+
+    it('renders the preview into the element an app names for its surfaces', () => {
+      const scope = document.createElement('div');
+      document.body.appendChild(scope);
+      const messages = [
+        buildMessage({ messageId: 'a', text: 'alpha', isCreatedByUser: true }),
+        buildMessage({ messageId: 'b', text: 'bravo' }),
+        buildMessage({ messageId: 'c', text: 'charlie', isCreatedByUser: true }),
+      ];
+      const { container } = renderNav(messages, ({ children }) => (
+        <PortalProvider container={scope}>{children}</PortalProvider>
+      ));
+      getColumn(container).getBoundingClientRect = () => COLUMN_RECT;
+      const ribA = container.querySelector('[data-msg-id="a"]') as HTMLElement;
+
+      act(() => {
+        ribA.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        jest.advanceTimersByTime(80);
+      });
+
+      expect(scope.querySelector('[role="tooltip"]')).toHaveTextContent('alpha');
+      scope.remove();
+    });
 
     it('highlights and previews a rib when it receives keyboard focus, like hover', () => {
       const { container, column } = setupFocusableNav();

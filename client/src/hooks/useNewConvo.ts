@@ -402,6 +402,7 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
           ? !hasModelSelection(_template)
           : startupConfig?.modelSpecs?.prioritize === true ||
             (startupConfig?.interface?.modelSelect ?? true) !== true ||
+            (result?.default != null && !hasModelSelection(_template)) ||
             (result?.last != null &&
               Object.keys(_template).filter((key) => key !== 'chatProjectId').length === 0);
       if (!preset && startupConfig && shouldApplyModelSpec && defaultModelSpec) {

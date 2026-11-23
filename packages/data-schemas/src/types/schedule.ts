@@ -28,6 +28,8 @@ export interface ISchedule {
   mcpConsentRequired?: boolean;
   cron?: string;
   enabled: boolean;
+  /** Run only while every MCP server the agent uses is ready. Unset, one that is not is left out. */
+  mcpStrict?: boolean;
   disabledReason?: ScheduleDisabledReason;
   nextRunAt?: Date;
   leaseUntil?: Date;

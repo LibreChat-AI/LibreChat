@@ -2,6 +2,7 @@ import path from 'node:path';
 import { CODE_ENV_KINDS } from 'librechat-data-provider';
 import type { CodeEnvKind } from 'librechat-data-provider';
 import type FormData from 'form-data';
+import type { CodeObjectInfo } from './receipt';
 
 /**
  * Resource identity required by codeapi's sessionKey resolver. The
@@ -92,12 +93,29 @@ export function buildCodeEnvDownloadQuery(identity: CodeEnvIdentity): string {
   return `?${params.toString()}`;
 }
 
-/** Summary keys follow Code API's canonicalObjectKey/legacyObjectId storage contract. */
+function readCodeObjectInfo(entry: object): CodeObjectInfo {
+  return {
+    ...('etag' in entry && typeof entry.etag === 'string' ? { etag: entry.etag } : {}),
+    ...('size' in entry && typeof entry.size === 'number' ? { size: entry.size } : {}),
+    ...('lastModified' in entry && typeof entry.lastModified === 'string'
+      ? { lastModified: entry.lastModified }
+      : {}),
+  };
+}
+
 export function getCodeEnvSessionFileIds(
   files: readonly unknown[],
   sessionId: string,
 ): Set<string> {
-  const ids = new Set<string>();
+  return new Set(getCodeEnvSessionObjects(files, sessionId).keys());
+}
+
+/** Summary keys follow Code API's canonicalObjectKey/legacyObjectId storage contract. */
+export function getCodeEnvSessionObjects(
+  files: readonly unknown[],
+  sessionId: string,
+): Map<string, CodeObjectInfo> {
+  const ids = new Map<string, CodeObjectInfo>();
   const prefix = `${sessionId}/`;
   const canonicalDirectory = '.codeapi-objects/';
   for (const file of files) {
@@ -105,7 +123,7 @@ export function getCodeEnvSessionFileIds(
       continue;
     }
     if ('fileId' in file && typeof file.fileId === 'string' && file.fileId !== '') {
-      ids.add(file.fileId);
+      ids.set(file.fileId, readCodeObjectInfo(file));
       continue;
     }
     if (!('name' in file) || typeof file.name !== 'string' || !file.name.startsWith(prefix)) {
@@ -119,7 +137,7 @@ export function getCodeEnvSessionFileIds(
       }
       const id = Buffer.from(encoded, 'base64url').toString('utf8');
       if (id && Buffer.from(id, 'utf8').toString('base64url') === encoded) {
-        ids.add(id);
+        ids.set(id, readCodeObjectInfo(file));
       }
       continue;
     }
@@ -130,7 +148,7 @@ export function getCodeEnvSessionFileIds(
     const extension = path.posix.extname(name);
     const id = extension === '' ? name : name.slice(0, -extension.length);
     if (id) {
-      ids.add(id);
+      ids.set(id, readCodeObjectInfo(file));
     }
   }
   return ids;

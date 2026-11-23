@@ -342,6 +342,35 @@ test('stopping a side chat’s reply leaves what was queued behind it for the re
   await expect(turns.nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30_000 });
 });
 
+/**
+ * Whether the server reports a conversation's run as active, or `null` while it answers 503
+ * `SERVER_NOT_READY`: it does so, with `Retry-After`, whenever it cannot vouch for the run's state
+ * yet, and a caller is meant to ask again.
+ */
+async function runActive(
+  page: Page,
+  token: string,
+  conversationId: string,
+): Promise<boolean | null> {
+  return page.evaluate(
+    async ({ path, accessToken }) => {
+      const response = await fetch(path, {
+        credentials: 'include',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (response.status === 503) {
+        return null;
+      }
+      if (!response.ok) {
+        throw new Error(`Expected GET ${path} to return 2xx, got ${response.status}`);
+      }
+      const status = (await response.json()) as { active?: boolean };
+      return status.active === true;
+    },
+    { path: `/api/agents/chat/status/${conversationId}`, accessToken: token },
+  );
+}
+
 test('a message queued in a side chat is sent when the panel is opened again after its reply ended unseen @scenario:side-chat-queue-survives-a-closed-panel', async ({
   page,
 }) => {
@@ -376,16 +405,7 @@ test('a message queued in a side chat is sent when the panel is opened again aft
   /** It runs to its end on the server, and nothing is sent meanwhile. */
   const token = await getAccessToken(page);
   await expect
-    .poll(
-      async () =>
-        (
-          await requestJson<{ active?: boolean }>(page, {
-            path: `/api/agents/chat/status/${conversationId}`,
-            token,
-          })
-        ).active,
-      { timeout: 90_000, intervals: [1_000] },
-    )
+    .poll(() => runActive(page, token, conversationId), { timeout: 90_000, intervals: [1_000] })
     .toBe(false);
   expect(starts).toHaveLength(1);
 

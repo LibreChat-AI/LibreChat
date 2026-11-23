@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import type { SettingsContextValue, SettingsTab, SettingEntry } from './types';
+import { useLayoutEffect, useMemo, useRef } from 'react';
+import type { SettingsContextValue, SettingsTab, SettingEntry, SectionId } from './types';
 import { filterSettings } from './search';
 import { useLocalize } from '~/hooks';
 import { registry } from './registry';
@@ -10,15 +10,25 @@ interface ContentProps {
   activeTab: SettingsTab;
   query: string;
   ctx: SettingsContextValue;
+  initialSection?: SectionId;
 }
 
 function visible(entry: SettingEntry, ctx: SettingsContextValue): boolean {
   return !entry.show || entry.show(ctx);
 }
 
-export default function Content({ activeTab, query, ctx }: ContentProps) {
+export default function Content({ activeTab, query, ctx, initialSection }: ContentProps) {
   const localize = useLocalize();
   const tab = TABS.find((t) => t.id === activeTab)!;
+  const targetRef = useRef<HTMLElement>(null);
+  const didScroll = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!didScroll.current && targetRef.current != null) {
+      targetRef.current.scrollIntoView({ block: 'start' });
+      didScroll.current = true;
+    }
+  }, [activeTab, initialSection, query, ctx]);
 
   const results = useMemo(
     () => (query.trim() ? filterSettings(registry, query, ctx, localize) : null),
@@ -66,6 +76,7 @@ export default function Content({ activeTab, query, ctx }: ContentProps) {
         return (
           <Section
             key={section.id}
+            sectionRef={section.id === initialSection ? targetRef : undefined}
             heading={localize(section.labelKey)}
             icon={section.icon}
             danger={section.danger}

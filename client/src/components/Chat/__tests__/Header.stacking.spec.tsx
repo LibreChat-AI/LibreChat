@@ -31,6 +31,7 @@ jest.mock('librechat-data-provider', () => ({
   EModelEndpoint: { agents: 'agents' },
   PermissionTypes: { BOOKMARKS: 'bookmarks', MULTI_CONVO: 'multi_convo', TEMPORARY_CHAT: 'temp' },
   Permissions: { USE: 'use' },
+  isAssistantsEndpoint: jest.requireActual('librechat-data-provider').isAssistantsEndpoint,
   isForcedTemporaryRetention:
     jest.requireActual('librechat-data-provider').isForcedTemporaryRetention,
 }));
@@ -139,6 +140,15 @@ describe('Header stacking', () => {
     expect(backgroundTasks).not.toHaveBeenCalled();
   });
 
+  test('has the session control list files, except where the endpoint keeps its own copies', () => {
+    render(<Header />);
+    expect(session.mock.calls[0][0]).toMatchObject({ files: true });
+    session.mockClear();
+    mockConversation.current = { ...codeConversation, endpoint: 'assistants' };
+    render(<Header />);
+    expect(session.mock.calls[0][0]).toMatchObject({ files: false });
+  });
+
   test('lets the rail show itself unless the deployment says otherwise', () => {
     render(<Header />);
     expect(session.mock.calls[0][0]).toMatchObject({ autoOpen: true });
@@ -148,11 +158,15 @@ describe('Header stacking', () => {
     expect(session.mock.calls[0][0]).toMatchObject({ autoOpen: false });
   });
 
-  test('offers the session control on a chat that has not been saved yet', () => {
-    mockRoute.current = undefined;
-    render(<Header />);
-    expect(session.mock.calls[0][0]).toMatchObject({ conversationId: 'new' });
-  });
+  test.each([undefined, 'new'])(
+    'offers no session control on a chat nothing has been sent in (route %s)',
+    (route) => {
+      mockRoute.current = route;
+      render(<Header />);
+      expect(session).not.toHaveBeenCalled();
+      expect(backgroundTasks).not.toHaveBeenCalled();
+    },
+  );
 
   test('keeps the popover when the deployment turns the session rail off', () => {
     mockStartupConfig.current = { interface: { sessionRail: false } };

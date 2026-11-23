@@ -4,11 +4,15 @@ import type {
   TFile,
   TAttachment,
   SearchResultData,
+  ToolCallPartParams,
+  ToolCallPartResponse,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query';
+import type { Dispatch, ElementType, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
-import type { ToolCallPhase } from '../core/parts/toolCallPhase';
+import type { PluggableList } from 'unified';
+import type { PtcTrace } from '../core/ptc';
 
 /** The message a part renders in, as its host reports it. */
 export type MessagePartMessage = {
@@ -74,43 +78,20 @@ export type MessagePartsShare = {
   shareId?: string;
 };
 
+/** A skill a call loaded, as the reader's library holds it now. */
+export type LoadedSkill = {
+  /** The skill's current instructions, which may have changed since the call ran. */
+  instructions: string;
+  /** Opens the skill in the app. */
+  open: () => void;
+};
+
 /** Strings a tool call card asks the host to resolve. Values fill `{0}`-style placeholders. */
 export type ToolCallLocalize = (key: string, values?: Record<string, string | number>) => string;
 
-/** What the app's progress row draws for one tool call. */
-export type ToolCallProgressProps = {
-  phase: ToolCallPhase;
-  onClick: () => void;
-  inProgressText: string;
-  authText?: string;
-  finishedText: string;
-  subtitle?: string;
-  durationMs?: number;
-  toolPreparationDurationMs?: number;
-  toolExecutionDurationMs?: number;
-  phaseStartAt?: number;
-  phaseStepId?: string;
-  icon: ReactNode;
-  hasInput: boolean;
-  isExpanded: boolean;
-};
-
-/** What the app's parameter and output panel draws for one tool call. */
-export type ToolCallInfoProps = {
-  input: string;
-  output?: string | null;
-};
-
-/** What the app's tool icon draws for one tool call. `name` is the raw tool id. */
-export type ToolCallIconProps = {
-  name: string;
-  iconUrl?: string;
-  isAnimating: boolean;
-};
-
 /**
- * App services and renderers for a generic tool call card. The progress row, parameter panel,
- * icon and attachment stack stay in the app because other cards still share them.
+ * App services for a generic tool call card, and its one renderer: the attachment stack stays
+ * in the app because other cards still share it.
  */
 export type ToolCallChrome = {
   localize: ToolCallLocalize;
@@ -123,9 +104,6 @@ export type ToolCallChrome = {
   /** Opens a URL in a new tab. Called synchronously inside the sign-in click. */
   openUrl: (url: string) => void;
   logError: (message: string, error?: unknown) => void;
-  renderProgress: (props: ToolCallProgressProps) => ReactNode;
-  renderInfo: (props: ToolCallInfoProps) => ReactNode;
-  renderIcon: (props: ToolCallIconProps) => ReactNode;
   renderAttachments: (attachments: TAttachment[]) => ReactNode;
 };
 
@@ -137,9 +115,6 @@ const emptyChrome: ToolCallChrome = {
   bindActionOAuth: () => Promise.resolve(undefined),
   openUrl: () => undefined,
   logError: () => undefined,
-  renderProgress: () => null,
-  renderInfo: () => null,
-  renderIcon: () => null,
   renderAttachments: () => null,
 };
 
@@ -147,6 +122,43 @@ const emptyChrome: ToolCallChrome = {
 export function emptyToolCallChrome(): ToolCallChrome {
   return emptyChrome;
 }
+
+/** A fenced code block the markdown elements ask the host to draw. */
+export type MarkdownCodeBlockProps = {
+  lang: string;
+  codeChildren: ReactNode;
+  /** Whether the surface lets its reader run code. A reply does; a prompt or skill preview does not. */
+  executable: boolean;
+  /** The block's position among the reply's executable blocks, in document order. */
+  blockIndex?: number;
+};
+
+/** A `mermaid` fence a reply's markdown asks the host to draw. */
+export type MarkdownMermaidProps = {
+  code: string;
+  /** Stable for the fence's position in a message; absent on a preview surface. */
+  id?: string;
+  /** Whether a diagram that throws while rendering is caught and shown as its source. */
+  guarded: boolean;
+};
+
+/** Loads a stored tool call part; the app's query, or a nested transcript's own. */
+export type ToolContentQuery = (
+  params: ToolCallPartParams,
+  config?: UseQueryOptions<ToolCallPartResponse>,
+  revision?: string,
+) => QueryObserverResult<ToolCallPartResponse>;
+
+/**
+ * What a host adds to the markdown of a reply: syntax of its own and the elements that draw it,
+ * such as citations or embedded resources.
+ */
+export type MarkdownExtensions = {
+  /** remark plugins, run after the package's own in the order given. */
+  remarkPlugins?: PluggableList;
+  /** Elements by node name, for what those plugins produce. One can also replace a package element. */
+  elements?: { [nodeType: string]: ElementType };
+};
 
 /** What a part asks the host's image renderer to draw: an attached image, opened full size on click. */
 export type MessagePartsImageProps = {
@@ -202,23 +214,29 @@ export type MessagePartsMarkdownProps = {
 export interface MessagePartsHost {
   /** The message the calling part renders in. */
   useMessage: () => MessagePartMessage;
-  /** Renders markdown with the app's renderer. */
-  renderMarkdown: (props: MessagePartsMarkdownProps) => ReactNode;
+  /** Renders markdown, for a host with a renderer of its own. Without it a part draws the
+   *  package's `Markdown`, or `MarkdownLite` for the `lite` variant. */
+  renderMarkdown?: (props: MessagePartsMarkdownProps) => ReactNode;
   /**
    * Renders plain text while it is still streaming, so a reasoning stream can fade its words in.
    * Absent, the part shows the text as it is.
    */
   renderStreamingText?: (text: string) => ReactNode;
-  /** Renders an attached image with the app's image viewer. */
-  renderImage: (props: MessagePartsImageProps) => ReactNode;
+  /** Renders an attached image, for a host with a viewer of its own. Without it a part draws the
+   *  package's `Image`. */
+  renderImage?: (props: MessagePartsImageProps) => ReactNode;
   /** Renders the app's preview dialog for an attached file. */
   renderFilePreview: (props: MessagePartsFilePreviewProps) => ReactNode;
   /** Whether streamed text fades in word by word: the viewer's setting, unless motion is reduced. */
   useSmoothStreaming: () => boolean;
   /** An agent the viewer can see, by id. */
   useAgent: (agentId: string) => AgentDisplay | undefined;
-  /** Draws a message's content parts with the app's renderer. */
-  renderContentParts: (props: ContentPartsSlotProps) => ReactNode;
+  /**
+   * Draws a message's content parts, for a host that adds to the package's `ContentParts`; build
+   * it with `contentPartsRenderer(slots)`. Without it the package's renderer draws them with no
+   * slots.
+   */
+  renderContentParts?: (props: ContentPartsSlotProps) => ReactNode;
   /** Renders an agent's avatar; `undefined` when the agent is unknown. */
   renderAgentIcon: (agent: AgentDisplay | undefined) => ReactNode;
   /** Renders an agent's bare inline avatar, without the message icon around it. */
@@ -243,6 +261,8 @@ export interface MessagePartsHost {
   useToast: () => MessagePartsToast;
   /** Whether the sandbox for a code tool call is still starting. */
   useSandboxStarting: (toolCallId: string) => boolean;
+  /** Live inner-call trace of one programmatic tool call in one message. */
+  usePtcTrace: (messageId: string, toolCallId: string) => PtcTrace;
   /**
    * Which mounted card owns the row for a tool artifact, so one file renders once across tool
    * calls and messages. The key is the artifact id.
@@ -261,8 +281,45 @@ export interface MessagePartsHost {
   useLiveAppliedSteer: (steerId: string) => [boolean, (steerId: string) => void];
   /** Whether the calling message renders under a public share link, and which. */
   useShare: () => MessagePartsShare;
+  /**
+   * The skill a call loaded by name, when the reader can open exactly that skill: names are
+   * unique only per author, so a name that matches none, several, or a skill the reader cannot
+   * see resolves to `undefined`. While `enabled` is false the lookup is skipped.
+   */
+  useLoadedSkill: (name: string, enabled: boolean) => LoadedSkill | undefined;
   /** Localization, MCP lookups, OAuth binding and the app's renderers for a generic tool call. */
   useToolCallChrome: () => ToolCallChrome;
+  /**
+   * Draws a fenced code block, for a host that adds to the package's `CodeBlock`: a run button,
+   * the output of its runs. Without it a fence is the package's block, which copies and downloads
+   * and runs nothing.
+   */
+  renderCodeBlock?: (props: MarkdownCodeBlockProps) => ReactNode;
+  /** Draws a `mermaid` fence. Without it the fence is an ordinary code block. */
+  renderMermaid?: (props: MarkdownMermaidProps) => ReactNode;
+  /**
+   * A hook a markdown link calls once per render with the id of the file it points at, or `''`
+   * for any other link. The function it returns resolves to a URL the browser can save, or to
+   * nothing when the file could not be fetched. Without it a file link is an ordinary link.
+   */
+  useFileDownload?: (fileId: string) => () => Promise<string | undefined>;
+  /**
+   * A hook that loads the stored content of one tool call, for a call the server sent as a
+   * preview: its arguments or output shortened, or a subagent's activity left out. It runs once
+   * the reader opens the card. Without it a previewed call says its content could not be loaded.
+   */
+  useToolCallPart?: ToolContentQuery;
+  /**
+   * The host's additions to a reply's markdown, or nothing. Called while rendering, so it must
+   * return the same object until the additions change. The lighter renderer for cards and the
+   * error boundary's fallback do not use them.
+   */
+  markdownExtensions?: () => MarkdownExtensions | null | undefined;
+  /**
+   * Told when an error boundary of the package's caught a render that threw, with the boundary's
+   * name (`'markdown'`). For a host's error reporting; the boundary has already drawn its fallback.
+   */
+  onBoundaryError?: (boundary: string, error: Error) => void;
 }
 
 const MessagePartsHostContext = createContext<MessagePartsHost | null>(null);

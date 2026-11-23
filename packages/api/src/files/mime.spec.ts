@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { resolveImageMimeType, sniffImageMimeType } from './mime';
+import { getInlineImageType, resolveImageMimeType, sniffImageMimeType } from './mime';
 
 const encode = async (format: 'png' | 'jpeg' | 'webp' | 'gif' | 'tiff' | 'avif'): Promise<Buffer> =>
   await sharp({
@@ -116,5 +116,25 @@ describe('sniffImageMimeType', () => {
     expect(sniffImageMimeType(Buffer.alloc(0))).toBeUndefined();
     expect(sniffImageMimeType(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBeUndefined();
     expect(sniffImageMimeType(Buffer.from('RIFF\0\0\0\0WAVE', 'latin1'))).toBeUndefined();
+  });
+});
+
+describe('getInlineImageType', () => {
+  it('prefers a reported raster type, ignoring case and parameters', () => {
+    expect(getInlineImageType('photo.jpg', 'Image/PNG; charset=binary')).toBe('image/png');
+  });
+
+  it('falls back to the raster type of the extension', () => {
+    expect(getInlineImageType('photo.JPEG', 'application/octet-stream')).toBe('image/jpeg');
+    expect(getInlineImageType('images/user/file__a.b.webp')).toBe('image/webp');
+  });
+
+  it('returns undefined for active or unknown types', () => {
+    expect(getInlineImageType('page.html', 'text/html')).toBeUndefined();
+    expect(getInlineImageType('icon.svg', 'image/svg+xml')).toBeUndefined();
+    expect(getInlineImageType('README')).toBeUndefined();
+    expect(getInlineImageType('archive.png.html')).toBeUndefined();
+    expect(getInlineImageType('upload.constructor')).toBeUndefined();
+    expect(getInlineImageType('upload.__proto__')).toBeUndefined();
   });
 });
