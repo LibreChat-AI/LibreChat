@@ -250,7 +250,8 @@ describe('BackgroundTaskCall', () => {
     );
     fireEvent.click(screen.getByTestId('task-header'));
     const card = screen.getByTestId('background-task-card');
-    expect(within(card).getByText('com_ui_background_tasks_result_claimed')).toBeInTheDocument();
+    expect(within(card).getByText('com_ui_subagent_status_finished')).toBeInTheDocument();
+    expect(within(card).queryByText('com_ui_background_tasks_result_claimed')).toBeNull();
     expect(within(card).queryByText('com_ui_background_tasks_result_available')).toBeNull();
   });
 
@@ -518,18 +519,26 @@ describe('BackgroundTaskCall', () => {
     },
   };
 
-  it('renders a running subagent as a folded progress tree with its active branch open', () => {
+  it('renders a running subagent as a timeline with its open step listed call by call', () => {
     renderCall(JSON.stringify(runningReviewer));
     fireEvent.click(screen.getByTestId('task-header'));
+    const card = screen.getByTestId('background-task-card');
+    expect(within(card).getByText('pr-reviewer')).toBeInTheDocument();
     const progress = screen.getByTestId('subagent-progress');
-    expect(within(progress).getByText('com_ui_subagent_progress_counts')).toBeInTheDocument();
-    expect(within(progress).getByText('Code ×2, read_file')).toBeInTheDocument();
-    const active = within(progress).getByText('Running the jest suite');
-    expect(active.closest('details')).toHaveAttribute('open');
-    expect(within(progress).getByText('read_file').closest('details')).toBeNull();
+    expect(within(progress).getByText('com_ui_subagent_progress_tool_calls')).toBeInTheDocument();
+    expect(within(progress).getByText('com_ui_subagent_progress_failed')).toBeInTheDocument();
+    const rows = within(progress).getAllByRole('listitem');
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent('com_ui_subagent_progress_steps_range');
+    expect(within(rows[0]).getByText('Code')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('2')).toBeInTheDocument();
+    expect(within(rows[0]).getByRole('img', { name: 'com_ui_failed' })).toBeInTheDocument();
+    expect(rows[1]).toHaveTextContent('read_file');
+    expect(rows[2]).toHaveTextContent('Running the jest suite');
+    expect(progress.querySelector('details')).toBeNull();
     expect(
       within(progress).getAllByRole('img', { name: 'com_ui_background_tasks_running' }),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       within(screen.getByTestId('background-task-card')).getByText(
         'com_ui_background_tasks_subagent_wakeup_guidance',

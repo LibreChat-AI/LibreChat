@@ -7,6 +7,8 @@ export type SubagentDispatch = {
   subagentType: string;
   identity?: SubagentIdentity;
   agentId?: string;
+  /** The dispatching call's arguments, as stored, for its model-authored intent. */
+  args?: string | Record<string, unknown>;
 };
 
 const indexes = new WeakMap<TMessage[], Map<string, SubagentDispatch>>();
@@ -46,6 +48,7 @@ export function findSubagentDispatch(
           subagentType: handle.subagent_type,
           identity: call.subagentIdentity,
           agentId: part.agentId,
+          args,
         });
       }
     }

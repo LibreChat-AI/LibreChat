@@ -46,6 +46,7 @@ it.each([false, true])(
       message,
       identity,
       subagentType: 'self',
+      args: functional ? '{"run_in_background":true}' : { run_in_background: true },
     });
     expect(findSubagentDispatch(messages, 'thread')?.message).toBe(message);
     expect(findSubagentDispatch(messages, 'absent')).toBeUndefined();
