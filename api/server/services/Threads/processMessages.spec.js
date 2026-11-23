@@ -981,3 +981,30 @@ These points highlight Harry's initial experiences in the magical world and set 
     expect(result.edited).toBe(true);
   });
 });
+
+describe('processMessages started file writes', () => {
+  it('waits for a file retrieval it started before a later message throws', async () => {
+    /* The retrieval stores the file and creates its record, so it must not outlive the call. */
+    let finishRetrieval;
+    retrieveAndProcessFile.mockReturnValue(new Promise((resolve) => (finishRetrieval = resolve)));
+    const client = { processedFileIds: new Set() };
+    const messages = [
+      { created_at: 1, content: [{ type: 'image_file', image_file: { file_id: 'file-img' } }] },
+      { created_at: 2, content: null },
+    ];
+
+    let settled = false;
+    const processed = processMessages({ openai: {}, client, messages }).finally(
+      () => (settled = true),
+    );
+    processed.catch(() => undefined);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(retrieveAndProcessFile).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+
+    finishRetrieval({ file_id: 'file-img', filepath: '/images/file-img.png' });
+    await expect(processed).rejects.toThrow(TypeError);
+    expect(client.processedFileIds.has('file-img')).toBe(true);
+  });
+});

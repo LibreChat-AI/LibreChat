@@ -1,6 +1,12 @@
 const path = require('path');
 const { v4 } = require('uuid');
-const { countTokens, announceReply, isAnnounceableReply } = require('@librechat/api');
+const {
+  settleAll,
+  countTokens,
+  announceReply,
+  settleStarted,
+  isAnnounceableReply,
+} = require('@librechat/api');
 const { escapeRegExp } = require('@librechat/data-schemas');
 const {
   Constants,
@@ -286,7 +292,7 @@ async function syncMessages({
    * @param {TMessage} params.dbMessage
    * @param {dbMessage} params.apiMessage
    */
-  const processNewMessage = async ({ dbMessage, apiMessage }) => {
+  const processNewMessage = ({ dbMessage, apiMessage }) => {
     const recorded = saveMessage(ctx, { ...dbMessage, user: openai.req.user.id });
     recordPromises.push(recorded);
     if (dbMessage.role === 'assistant') {
@@ -321,71 +327,79 @@ async function syncMessages({
 
   let lastMessage = null;
 
-  for (let i = 0; i < apiMessages.length; i++) {
-    const apiMessage = apiMessages[i];
+  /* Every save and thread update started here settles before this returns or throws, so a
+     failed update or a throw partway through cannot leave a save landing after the caller
+     settled, which on a stopped run would recreate data for an owner being deleted. */
+  await settleStarted(
+    () => {
+      for (let i = 0; i < apiMessages.length; i++) {
+        const apiMessage = apiMessages[i];
 
-    // Check if the message exists in the database based on metadata
-    const dbMessageId = apiMessage.metadata && apiMessage.metadata.messageId;
-    let dbMessage = dbMessageMap.get(dbMessageId);
+        // Check if the message exists in the database based on metadata
+        const dbMessageId = apiMessage.metadata && apiMessage.metadata.messageId;
+        let dbMessage = dbMessageMap.get(dbMessageId);
 
-    if (dbMessage) {
-      // If message exists in DB, use its messageId and update parentMessageId
-      dbMessage.parentMessageId = lastMessage ? lastMessage.messageId : Constants.NO_PARENT;
-      lastMessage = dbMessage;
-      result.push(dbMessage);
-      continue;
-    }
+        if (dbMessage) {
+          // If message exists in DB, use its messageId and update parentMessageId
+          dbMessage.parentMessageId = lastMessage ? lastMessage.messageId : Constants.NO_PARENT;
+          lastMessage = dbMessage;
+          result.push(dbMessage);
+          continue;
+        }
 
-    if (apiMessage.role === 'assistant' && lastMessage && lastMessage.role === 'assistant') {
-      // Aggregate assistant messages
-      lastMessage.content = [...lastMessage.content, ...apiMessage.content];
-      lastMessage.files = [...(lastMessage.files ?? []), ...(apiMessage.files ?? [])];
-      lastMessage.aggregateMessages.push({ id: apiMessage.id });
-    } else {
-      // Handle new or missing message
-      const newMessage = {
-        thread_id,
-        conversationId,
-        messageId: v4(),
-        endpoint,
-        parentMessageId: lastMessage ? lastMessage.messageId : Constants.NO_PARENT,
-        role: apiMessage.role,
-        isCreatedByUser: apiMessage.role === 'user',
-        // TODO: process generated files in content parts
-        content: apiMessage.content,
-        aggregateMessages: [{ id: apiMessage.id }],
-        model: apiMessage.role === 'user' ? null : apiMessage.assistant_id,
-        user: openai.req.user.id,
-        unfinished: false,
-      };
+        if (apiMessage.role === 'assistant' && lastMessage && lastMessage.role === 'assistant') {
+          // Aggregate assistant messages
+          lastMessage.content = [...lastMessage.content, ...apiMessage.content];
+          lastMessage.files = [...(lastMessage.files ?? []), ...(apiMessage.files ?? [])];
+          lastMessage.aggregateMessages.push({ id: apiMessage.id });
+        } else {
+          // Handle new or missing message
+          const newMessage = {
+            thread_id,
+            conversationId,
+            messageId: v4(),
+            endpoint,
+            parentMessageId: lastMessage ? lastMessage.messageId : Constants.NO_PARENT,
+            role: apiMessage.role,
+            isCreatedByUser: apiMessage.role === 'user',
+            // TODO: process generated files in content parts
+            content: apiMessage.content,
+            aggregateMessages: [{ id: apiMessage.id }],
+            model: apiMessage.role === 'user' ? null : apiMessage.assistant_id,
+            user: openai.req.user.id,
+            unfinished: false,
+          };
 
-      if (apiMessage.file_ids?.length) {
-        // TODO: retrieve file objects from API
-        newMessage.files = apiMessage.file_ids.map((file_id) => ({ file_id }));
+          if (apiMessage.file_ids?.length) {
+            // TODO: retrieve file objects from API
+            newMessage.files = apiMessage.file_ids.map((file_id) => ({ file_id }));
+          }
+
+          /* Assign assistant_id if defined */
+          if (assistant_id && apiMessage.role === 'assistant' && !newMessage.model) {
+            apiMessage.model = assistant_id;
+            newMessage.model = assistant_id;
+          }
+
+          result.push(newMessage);
+          lastMessage = newMessage;
+
+          if (apiMessage.role === 'user') {
+            processNewMessage({ dbMessage: newMessage, apiMessage });
+            continue;
+          }
+        }
+
+        const nextMessage = apiMessages[i + 1];
+        const processAssistant = !nextMessage || nextMessage.role === 'user';
+
+        if (apiMessage.role === 'assistant' && processAssistant) {
+          processNewMessage({ dbMessage: lastMessage, apiMessage });
+        }
       }
-
-      /* Assign assistant_id if defined */
-      if (assistant_id && apiMessage.role === 'assistant' && !newMessage.model) {
-        apiMessage.model = assistant_id;
-        newMessage.model = assistant_id;
-      }
-
-      result.push(newMessage);
-      lastMessage = newMessage;
-
-      if (apiMessage.role === 'user') {
-        processNewMessage({ dbMessage: newMessage, apiMessage });
-        continue;
-      }
-    }
-
-    const nextMessage = apiMessages[i + 1];
-    const processAssistant = !nextMessage || nextMessage.role === 'user';
-
-    if (apiMessage.role === 'assistant' && processAssistant) {
-      processNewMessage({ dbMessage: lastMessage, apiMessage });
-    }
-  }
+    },
+    () => [...modifyPromises, ...recordPromises],
+  );
 
   const attached_file_ids = apiMessages.reduce((acc, msg) => {
     if (msg.role === 'user' && msg.file_ids?.length) {
@@ -395,9 +409,7 @@ async function syncMessages({
     return acc;
   }, []);
 
-  await Promise.all(modifyPromises);
   const recordedAssistantReplies = await Promise.all(assistantRecordPromises);
-  await Promise.all(recordPromises);
 
   const savedConvo = await saveConvo(
     ctx,
@@ -628,111 +640,115 @@ async function processMessages({ openai, client, messages = [] }) {
   const sources = new Map();
   const fileRetrievalPromises = [];
 
-  for (const message of sorted) {
-    message.files = [];
-    for (const content of message.content) {
-      const type = content.type;
-      const contentType = content[type];
-      const currentFileId = contentType?.file_id;
+  /* A throw partway through must still wait for the file writes it already started. */
+  await settleStarted(
+    async () => {
+      for (const message of sorted) {
+        message.files = [];
+        for (const content of message.content) {
+          const type = content.type;
+          const contentType = content[type];
+          const currentFileId = contentType?.file_id;
 
-      if (type === ContentTypes.IMAGE_FILE && !client.processedFileIds.has(currentFileId)) {
-        fileRetrievalPromises.push(
-          retrieveAndProcessFile({
-            openai,
-            client,
-            file_id: currentFileId,
-            basename: `${currentFileId}.png`,
-          })
-            .then((file) => {
-              client.processedFileIds.add(currentFileId);
-              message.files.push(file);
-            })
-            .catch((error) => {
-              console.error(`Failed to retrieve file: ${error.message}`);
-            }),
-        );
-        continue;
-      }
+          if (type === ContentTypes.IMAGE_FILE && !client.processedFileIds.has(currentFileId)) {
+            fileRetrievalPromises.push(
+              retrieveAndProcessFile({
+                openai,
+                client,
+                file_id: currentFileId,
+                basename: `${currentFileId}.png`,
+              })
+                .then((file) => {
+                  client.processedFileIds.add(currentFileId);
+                  message.files.push(file);
+                })
+                .catch((error) => {
+                  console.error(`Failed to retrieve file: ${error.message}`);
+                }),
+            );
+            continue;
+          }
 
-      let currentText = contentType?.value ?? '';
+          let currentText = contentType?.value ?? '';
 
-      /** @type {{ annotations: Annotation[] }} */
-      const { annotations } = contentType ?? {};
+          /** @type {{ annotations: Annotation[] }} */
+          const { annotations } = contentType ?? {};
 
-      if (!annotations?.length) {
-        text += currentText;
-        continue;
-      }
+          if (!annotations?.length) {
+            text += currentText;
+            continue;
+          }
 
-      const replacements = [];
-      const annotationPromises = annotations.map(async (annotation) => {
-        const type = annotation.type;
-        const annotationType = annotation[type];
-        const file_id = annotationType?.file_id;
-        const alreadyProcessed = client.processedFileIds.has(file_id);
+          const replacements = [];
+          const annotationPromises = annotations.map(async (annotation) => {
+            const type = annotation.type;
+            const annotationType = annotation[type];
+            const file_id = annotationType?.file_id;
+            const alreadyProcessed = client.processedFileIds.has(file_id);
 
-        let file;
-        let replacementText = '';
+            let file;
+            let replacementText = '';
 
-        try {
-          if (alreadyProcessed) {
-            file = await retrieveAndProcessFile({ openai, client, file_id, unknownType: true });
-          } else if (type === AnnotationTypes.FILE_PATH) {
-            const basename = path.basename(annotation.text);
-            file = await retrieveAndProcessFile({
-              openai,
-              client,
-              file_id,
-              basename,
-            });
-            replacementText = file.filepath;
-          } else if (type === AnnotationTypes.FILE_CITATION && file_id) {
-            file = await retrieveAndProcessFile({
-              openai,
-              client,
-              file_id,
-              unknownType: true,
-            });
-            if (file && file.filename) {
-              if (!sources.has(file.filename)) {
-                sources.set(file.filename, sources.size + 1);
+            try {
+              if (alreadyProcessed) {
+                file = await retrieveAndProcessFile({ openai, client, file_id, unknownType: true });
+              } else if (type === AnnotationTypes.FILE_PATH) {
+                const basename = path.basename(annotation.text);
+                file = await retrieveAndProcessFile({
+                  openai,
+                  client,
+                  file_id,
+                  basename,
+                });
+                replacementText = file.filepath;
+              } else if (type === AnnotationTypes.FILE_CITATION && file_id) {
+                file = await retrieveAndProcessFile({
+                  openai,
+                  client,
+                  file_id,
+                  unknownType: true,
+                });
+                if (file && file.filename) {
+                  if (!sources.has(file.filename)) {
+                    sources.set(file.filename, sources.size + 1);
+                  }
+                  replacementText = `${uniqueCitationStart}${sources.get(
+                    file.filename,
+                  )}${uniqueCitationEnd}`;
+                }
               }
-              replacementText = `${uniqueCitationStart}${sources.get(
-                file.filename,
-              )}${uniqueCitationEnd}`;
+
+              if (file && replacementText) {
+                replacements.push({
+                  start: annotation.start_index,
+                  end: annotation.end_index,
+                  text: replacementText,
+                });
+                edited = true;
+                if (!alreadyProcessed) {
+                  client.processedFileIds.add(file_id);
+                  message.files.push(file);
+                }
+              }
+            } catch (error) {
+              console.error(`Failed to process annotation: ${error.message}`);
             }
+          });
+
+          await settleAll(annotationPromises);
+
+          // Apply replacements in reverse order
+          replacements.sort((a, b) => b.start - a.start);
+          for (const { start, end, text: replacementText } of replacements) {
+            currentText = currentText.slice(0, start) + replacementText + currentText.slice(end);
           }
 
-          if (file && replacementText) {
-            replacements.push({
-              start: annotation.start_index,
-              end: annotation.end_index,
-              text: replacementText,
-            });
-            edited = true;
-            if (!alreadyProcessed) {
-              client.processedFileIds.add(file_id);
-              message.files.push(file);
-            }
-          }
-        } catch (error) {
-          console.error(`Failed to process annotation: ${error.message}`);
+          text += currentText;
         }
-      });
-
-      await Promise.all(annotationPromises);
-
-      // Apply replacements in reverse order
-      replacements.sort((a, b) => b.start - a.start);
-      for (const { start, end, text: replacementText } of replacements) {
-        currentText = currentText.slice(0, start) + replacementText + currentText.slice(end);
       }
-
-      text += currentText;
-    }
-  }
-
-  await Promise.all(fileRetrievalPromises);
+    },
+    () => fileRetrievalPromises,
+  );
 
   // Handle adjacent identical citations with the unique format
   text = text.replace(adjacentCitationRegex, (match, num1, space, num2) => {
