@@ -316,6 +316,7 @@ function MyComponent() {
 - `bg-surface-dialog` - Dialog/modal background
 - `bg-surface-overlay` - Dialog/modal scrim, adapted per theme
 - `bg-surface-media-overlay` - Scrim, chip or progress drawn over the user's own media (lightbox, image preview, upload); `text-text-on-media` is its ink. Black and white in every bundled theme, since they frame the image rather than the page
+- `bg-surface-media-chip` - A source badge pinned over the user's media: the page tone, translucent (white at 75% in light, black at 65% in dark by default; the opacity is the `--surface-media-chip-alpha` property)
 - `bg-surface-chat` - Chat interface background
 - `bg-surface-code` - Code block chrome: toolbar, output and result switcher
 - `bg-surface-code-body` - Code block pane behind the highlighted code
@@ -449,6 +450,14 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `applyTheme` writes on every root it themes, through CSS style queries, so a
   control follows the nearest themed root. A browser without style queries
   (Firefox before 151) keeps the default `ring` and `dim` treatment.
+- `welcomeBackdrop` - What the welcome screen paints behind its greeting and
+  composer, from a closed list. `none` (the default) keeps the plain surface.
+  `dots` names a dot field; the app paints a backdrop only when a component is
+  registered for its value with `registerWelcomeBackdrop`, so a theme that asks
+  for one the build does not provide keeps the plain surface. Read from the
+  `--theme-welcome-backdrop` property `applyTheme` writes on the root, so the
+  backdrop follows a theme swap without any component naming a theme. A
+  backdrop honors `prefers-reduced-motion`.
   `Label` reads `labelSize` (follows `textSm`), `labelLeading` and
   `labelFontWeight` (`inherit` by default, so a label keeps the weight around it).
 - `text-badge-label` - The shared `Badge`'s resting label ink; a hovered or selected

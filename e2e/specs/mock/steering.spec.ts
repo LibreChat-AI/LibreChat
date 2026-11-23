@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page, Response } from '@playwright/test';
 import type { CancelSteerParams } from '../../../client/src/data-provider/SSE/mutations';
 import {
@@ -13,6 +12,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { expect, test, unroute } from './fixtures';
 
 /** Non-spec endpoint from e2e/config/librechat.e2e.yaml — the ephemeral MCP
  *  selection rides the no-spec path, mirroring mcp-ephemeral.spec.ts. */
@@ -426,7 +426,7 @@ test.describe('mid-run steering and queuing', () => {
     expect(secondResponse.status()).toBe(202);
     await secondPosted;
     expect(steersSeen).toBe(2);
-    await page.unroute('**/api/agents/chat/steer');
+    await unroute(page, '**/api/agents/chat/steer');
 
     await expect(appliedSteerParts(page).filter({ hasText: firstSteer })).toHaveCount(1, {
       timeout: 60000,

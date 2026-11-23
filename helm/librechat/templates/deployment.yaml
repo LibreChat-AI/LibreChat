@@ -1,3 +1,4 @@
+{{- $sharedSlack := and .Values.channelGateway.enabled (eq .Values.channelGateway.mode "shared") -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,25 +34,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- with .Values.hostAliases }}
-      hostAliases:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- if .Values.dnsPolicy }}
-      dnsPolicy: {{ .Values.dnsPolicy }}
-      {{- end }}
-      {{- with .Values.dnsConfig }}
-      dnsConfig:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      serviceAccountName: {{ include "librechat.serviceAccountName" . }}
-      {{- if kindIs "bool" .Values.enableServiceLinks }}
-      enableServiceLinks: {{ .Values.enableServiceLinks }}
-      {{- end }}
+      {{- include "librechat.podSettings" . | nindent 6 }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- if .Values.initContainers }}
@@ -104,10 +87,22 @@ spec:
               optional: false
           {{- end }}
           {{- include "librechat.validateBundledPasswords" . }}
-          {{- if or (include "librechat.bundledMongoAuth" .) (include "librechat.bundledRedisAuth" .) .Values.global.librechat.env }}
+          {{- if or (include "librechat.bundledMongoAuth" .) (include "librechat.bundledRedisAuth" .) .Values.global.librechat.env $sharedSlack }}
           env:
           {{- with .Values.global.librechat.env }}
           {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $sharedSlack }}
+          {{- $configEnv := default dict .Values.librechat.configEnv }}
+          {{- $key := "CHANNEL_SERVICE_TOKEN" }}
+          {{- if not (or (include "librechat.userEnvHas" (dict "root" $ "name" $key)) (hasKey $configEnv $key)) }}
+          {{- $secret := .Values.channelGateway.existingSecretName | default .Values.global.librechat.existingSecretName }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "Shared Slack setup requires a service token Secret or explicit API environment" $secret | quote }}
+                  key: {{ $key }}
+          {{- end }}
           {{- end }}
           {{- if include "librechat.bundledMongoAuth" . }}
           {{- if not (include "librechat.userEnvHas" (dict "root" . "name" "MONGODB_ROOT_PASSWORD")) }}
@@ -145,16 +140,4 @@ spec:
       {{- end }}
       {{- if .Values.volumes }}
       {{- toYaml .Values.volumes | nindent 6 }}
-      {{- end }}
-      {{- with .Values.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
       {{- end }}

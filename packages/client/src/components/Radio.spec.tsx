@@ -25,6 +25,28 @@ describe('Radio', () => {
     expect(screen.getByRole('radio', { name: 'Daily' })).toHaveAttribute('aria-checked', 'false');
   });
 
+  it('sits on the deeper secondary surface, with the selected segment lifted on the primary one', () => {
+    const { container } = render(<Radio options={FIVE} value="weekly" aria-labelledby="lbl" />);
+
+    expect(group()).toHaveClass('bg-surface-secondary');
+    expect(group()).not.toHaveClass('bg-surface-tertiary');
+    expect(container.querySelector('.bg-surface-primary')).not.toBeNull();
+  });
+
+  it('lightens the track, with a pill between it and the default, for the raised tone, leaving the default as it was', async () => {
+    const { container, rerender } = render(
+      <Radio options={FIVE} value="weekly" tone="raised" aria-labelledby="lbl" />,
+    );
+    expect(group()).toHaveClass('bg-surface-tertiary');
+    expect(group()).not.toHaveClass('bg-surface-secondary');
+    expect(await screen.findByRole('radio', { name: 'Weekly' })).toBeInTheDocument();
+    expect(container.querySelector('.pointer-events-none')).toHaveClass('bg-surface-primary-alt');
+
+    rerender(<Radio options={FIVE} value="weekly" aria-labelledby="lbl" />);
+    expect(group()).toHaveClass('bg-surface-secondary');
+    expect(container.querySelector('.pointer-events-none')).toHaveClass('bg-surface-primary');
+  });
+
   it('keeps the segments on one row by default', () => {
     // The default must stay exactly as it was: every existing group relies on the
     // single-row layout and its indicator stretched between the container's insets.

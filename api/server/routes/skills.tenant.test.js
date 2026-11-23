@@ -157,7 +157,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
   delete process.env.TENANT_ISOLATION_STRICT;
   jest.clearAllMocks();
 });

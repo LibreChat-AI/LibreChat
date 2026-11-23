@@ -44,7 +44,6 @@ const MarketplaceAdminSettings = () => {
       menuId="marketplace-role-dropdown"
       mutation={mutation}
       trigger={trigger}
-      showAdminWarning={false}
     />
   );
 };

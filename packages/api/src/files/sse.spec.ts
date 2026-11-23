@@ -7,6 +7,8 @@ import {
   startUploadSseStream,
 } from './sse';
 import { ContentFilterInputTooLargeError, UninspectableFileError } from '~/protection/files';
+import { SpreadsheetLimitError } from './documents/workbook';
+import { SpreadsheetBusyError } from './upload/errors';
 
 describe('sse', () => {
   const createMockReq = (accept?: string): Request =>
@@ -20,6 +22,7 @@ describe('sse', () => {
     res.end = jest.fn().mockReturnValue(res);
     res.status = jest.fn().mockReturnValue(res);
     res.json = jest.fn().mockReturnValue(res);
+    res.setHeader = jest.fn().mockReturnValue(res);
     Object.defineProperty(res, 'writableEnded', { value: false, writable: true });
     Object.defineProperty(res, 'destroyed', { value: false, writable: true });
     return res;
@@ -223,6 +226,76 @@ describe('sse', () => {
   });
 
   describe('sendUploadPolicyError', () => {
+    it('returns retryable admission pressure as HTTP 503 with Retry-After', () => {
+      const res = createMockRes();
+      expect(sendUploadPolicyError(res, null, new SpreadsheetBusyError())).toBe(true);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_BUSY',
+        message: 'Spreadsheet processing is busy; retry later.',
+        retryable: true,
+        retry_after: 1,
+      });
+    });
+
+    it('retains the retry contract when SSE headers have already been sent', () => {
+      const res = createMockRes();
+      const stream = { sendData: jest.fn(), sendError: jest.fn(), close: jest.fn() };
+      expect(
+        sendUploadPolicyError(res, stream, new SpreadsheetBusyError(), {
+          tempFileId: 'temp-1',
+          toolResource: 'context',
+        }),
+      ).toBe(true);
+      expect(stream.sendError).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_BUSY',
+        message: 'Spreadsheet processing is busy; retry later.',
+        retryable: true,
+        retry_after: 1,
+        code: 503,
+        temp_file_id: 'temp-1',
+        tool_resource: 'context',
+        display_to_user: true,
+      });
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('returns a stable HTTP 413 for a spreadsheet resource limit', () => {
+      const res = createMockRes();
+      expect(sendUploadPolicyError(res, null, new SpreadsheetLimitError())).toBe(true);
+      expect(res.status).toHaveBeenCalledWith(413);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_LIMIT',
+        message: 'Spreadsheet exceeds the safe processing limits.',
+        retryable: false,
+      });
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('preserves limit rejection in the SSE error contract without retry metadata', () => {
+      const res = createMockRes();
+      const stream = { sendData: jest.fn(), sendError: jest.fn(), close: jest.fn() };
+      expect(
+        sendUploadPolicyError(res, stream, new SpreadsheetLimitError(), {
+          tempFileId: 'temp-1',
+          toolResource: 'context',
+        }),
+      ).toBe(true);
+      expect(stream.sendError).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_LIMIT',
+        message: 'Spreadsheet exceeds the safe processing limits.',
+        retryable: false,
+        code: 413,
+        temp_file_id: 'temp-1',
+        tool_resource: 'context',
+        display_to_user: true,
+      });
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
     it('sends structured policy errors as JSON', () => {
       const res = createMockRes();
 

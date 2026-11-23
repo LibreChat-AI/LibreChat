@@ -34,7 +34,9 @@ import {
   isMCPTransportAuthenticationError,
   MCPTransportAuthenticationError,
   isStandaloneSseConflict,
+  isAuthorizationRequired,
   isMCPInitializationError,
+  MCPOAuthDeferredError,
 } from './errors';
 import {
   withMCPRequestSignal,
@@ -1124,7 +1126,6 @@ export class MCPConnection extends EventEmitter {
   private reportedStandaloneSseConflict = false;
   private agents: Dispatcher[] = [];
   private readonly userId?: string;
-  private lastPingTime: number;
   private lastConnectionCheckAt: number = 0;
   private lastConnectionCheckError?: unknown;
   private lastConnectionCheckCredentialSetId?: string | null;
@@ -1321,7 +1322,6 @@ export class MCPConnection extends EventEmitter {
     this.iconPath = params.serverConfig.iconPath;
     this.timeout = params.serverConfig.timeout;
     this.sseReadTimeout = params.serverConfig.sseReadTimeout;
-    this.lastPingTime = Date.now();
     this.createdAt = Date.now(); // Record creation timestamp for staleness detection
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
@@ -2450,10 +2450,12 @@ export class MCPConnection extends EventEmitter {
               `${this.getLogPrefix()} OAuth handled successfully, connection will be retried`,
             );
             return;
-          } catch {
+          } catch (handlingError) {
             // OAuth failed or timed out
             this.oauthRequired = false;
-            logger.error(`${this.getLogPrefix()} OAuth handling failed`);
+            logger[handlingError instanceof MCPOAuthDeferredError ? 'warn' : 'error'](
+              `${this.getLogPrefix()} OAuth handling failed`,
+            );
             // Re-throw the original authentication error
             throw error;
           }
@@ -2505,12 +2507,6 @@ export class MCPConnection extends EventEmitter {
 
     const originalSend = this.transport.send.bind(this.transport);
     this.transport.send = async (msg) => {
-      if ('result' in msg && !('method' in msg) && Object.keys(msg.result ?? {}).length === 0) {
-        if (Date.now() - this.lastPingTime < FIVE_MINUTES) {
-          throw new Error('Empty result');
-        }
-        this.lastPingTime = Date.now();
-      }
       const method = 'method' in msg ? msg.method : undefined;
       const id = 'id' in msg ? msg.id : undefined;
       if (
@@ -2576,7 +2572,9 @@ export class MCPConnection extends EventEmitter {
         throw new Error('Connection not established');
       }
     } catch (error) {
-      logger.error(`${this.getLogPrefix()} Connection failed`);
+      logger[isAuthorizationRequired(error) ? 'warn' : 'error'](
+        `${this.getLogPrefix()} Connection failed`,
+      );
       throw error;
     }
   }
@@ -3257,6 +3255,11 @@ export class MCPConnection extends EventEmitter {
 
   public setOAuthTokens(tokens: MCPOAuthTokens): void {
     this.oauthTokens = tokens;
+  }
+
+  /** A local observation only; callers must not infer other replicas' transport state. */
+  public getConnectionState(): t.ConnectionState {
+    return this.connectionState;
   }
 
   /** Whether this connection's resolved runtime config uses MCP OAuth. */

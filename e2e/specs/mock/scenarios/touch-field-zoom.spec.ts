@@ -53,6 +53,13 @@ test.describe('focused text fields do not trigger iOS zoom', () => {
           area: make('textarea', 'text-sm'),
           select: make('select', 'text-sm'),
           heading: make('input', 'text-2xl', 'text'),
+          composer: (() => {
+            const node = document.createElement('textarea');
+            node.className = 'composer-text';
+            node.style.setProperty('--markdown-font-size', '12px');
+            document.body.appendChild(node);
+            return parseFloat(getComputedStyle(node).fontSize);
+          })(),
         };
       });
       expect(sizes.small).toBeGreaterThanOrEqual(IOS_ZOOM_THRESHOLD);
@@ -60,6 +67,7 @@ test.describe('focused text fields do not trigger iOS zoom', () => {
       expect(sizes.area).toBeGreaterThanOrEqual(IOS_ZOOM_THRESHOLD);
       expect(sizes.select).toBeGreaterThanOrEqual(IOS_ZOOM_THRESHOLD);
       expect(sizes.heading).toBe(24);
+      expect(sizes.composer).toBeGreaterThanOrEqual(IOS_ZOOM_THRESHOLD);
     });
   });
 

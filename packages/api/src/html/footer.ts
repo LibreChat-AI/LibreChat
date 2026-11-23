@@ -7,7 +7,7 @@ const CONFIGURED_FOOTER_SENTINEL = 'data-librechat-configured-footer="true"';
  *  and the base config's `interface.landingFooter`. */
 export interface ConfiguredFooterSource {
   customFooter?: string | null;
-  landingFooter?: boolean | null;
+  landingFooter?: boolean | 'composer' | null;
 }
 
 /**
@@ -38,6 +38,6 @@ export const injectConfiguredFooterBootstrap = (
       hasConfiguredFooter: hasConfiguredFooter({
         customFooter: source?.customFooter ?? undefined,
       }),
-      landingFooter: source?.landingFooter !== false,
+      landingFooter: source?.landingFooter ?? true,
     },
   });

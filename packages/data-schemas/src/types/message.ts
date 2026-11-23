@@ -29,6 +29,15 @@ export type SubagentTriggerProjection = {
   expectedActionToolName?: string;
 };
 
+type MessageTriggerEvent = { type: string; occurredAt: Date };
+
+/** What started a turn no person sent. See `tMessageTriggerSchema` for the form a client reads. */
+export type MessageTrigger = {
+  event: MessageTriggerEvent;
+  subject?: { kind: string; id: string };
+  origin?: { event: MessageTriggerEvent };
+};
+
 /** Server-private durable receipt for one parent-to-child control invocation. */
 export interface ISubagentTaskControlReceipt {
   invocationId: string;
@@ -82,6 +91,7 @@ export interface IMessage extends Document {
     tag: TFeedbackTag | undefined;
     text?: string;
   };
+  langfuseCentralTraceExportEnabled?: boolean;
   langfuseSampled?: boolean;
   langfuseDestinationIds?: string[];
   /** The run whose trace this response reports, when that run's id is not the message's own (a failed turn's error row). */
@@ -129,6 +139,7 @@ export interface IMessage extends Document {
     controlReceipts?: ISubagentTaskControlReceipt[];
   };
   subagentTriggerProjection?: SubagentTriggerProjection;
+  trigger?: MessageTrigger;
   contextMeta?: Partial<IAgentEventActorContextMeta>;
   attachments?: unknown[];
   /** Skills the user invoked manually via the `$` popover on this turn. UI-only metadata for `SkillPills`. */

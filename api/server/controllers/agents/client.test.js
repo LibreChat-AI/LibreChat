@@ -25,10 +25,12 @@ const { Constants, ContentTypes, EModelEndpoint, ErrorTypes } = require('librech
 const {
   GenerationJobManager,
   createStreamServices,
+  createToolExecuteHandler,
   registerToolApprovalHook,
   clearToolApprovalHooks,
   getPluginHookSource,
   setPluginHookSource,
+  ATTACHMENT_ONLY_TEXT,
 } = require('@librechat/api');
 const BaseClient = require('~/app/clients/BaseClient');
 const AgentClient = require('./client');
@@ -1083,6 +1085,46 @@ describe('AgentClient - interrupt discovery persistence', () => {
   });
 
   it('makes the run discovery snapshot durable when the run pauses', async () => {
+    const skillId = new (require('mongoose').Types.ObjectId)();
+    const authoredSkill = { _id: skillId, name: 'new-skill', body: '# Authored', version: 1 };
+    const authorReq = {
+      user: { id: 'user-123', _id: new (require('mongoose').Types.ObjectId)() },
+      config: {},
+    };
+    const toolHandler = createToolExecuteHandler({
+      loadTools: async () => ({
+        loadedTools: [],
+        configurable: {
+          req: authorReq,
+          accessibleSkillIds: [],
+          skillAuthoringAvailable: true,
+          fileAuthoringToolNames: new Set(['create_file', 'edit_file']),
+        },
+      }),
+      getSkillByName: async () => null,
+      canCreateSkill: async () => true,
+      createSkill: async () => ({ skill: authoredSkill, warnings: [] }),
+      grantSkillOwner: async () => undefined,
+    });
+    const [created] = await new Promise((resolve, reject) =>
+      toolHandler.handle('on_tool_execute', {
+        agentId: 'agent-123',
+        configurable: { req: authorReq },
+        toolCalls: [
+          {
+            id: 'create-skill',
+            name: 'create_file',
+            args: {
+              path: 'skills/new-skill/SKILL.md',
+              content: '---\nname: new-skill\ndescription: Resume\n---\n# Authored\n',
+            },
+          },
+        ],
+        resolve,
+        reject,
+      }),
+    );
+    expect(created.status).toBe('success');
     const streamId = 'conversation-discovered-pause';
     const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
     const client = new AgentClient({
@@ -1103,6 +1145,7 @@ describe('AgentClient - interrupt discovery persistence', () => {
       artifactPromises: [],
     });
     client.conversationId = streamId;
+    client.options.eventHandlers = { on_tool_execute: toolHandler };
     client.responseMessageId = 'response-discovered-pause';
     client.jobCreatedAt = job.createdAt;
     client.compactionSemanticIndexSnapshot = {
@@ -1138,6 +1181,14 @@ describe('AgentClient - interrupt discovery persistence', () => {
     const paused = await GenerationJobManager.getJob(streamId);
     expect(paused?.status).toBe('requires_action');
     expect(paused?.metadata.discoveredTools).toEqual(['save_issue_mcp_linear']);
+    expect(paused?.metadata.authoredSkills).toEqual([
+      {
+        agentId: 'agent-123',
+        name: 'new-skill',
+        id: skillId.toString(),
+        primed: true,
+      },
+    ]);
     expect(paused?.metadata.compactionSemanticIndex).toEqual({
       version: 1,
       entries: client.compactionSemanticIndexSnapshot.entries,
@@ -2350,9 +2401,31 @@ describe('AgentClient - startup telemetry', () => {
     },
   );
 
-  it('refuses scheduled pause-capable runs before provider startup without Redis', async () => {
+  /**
+   * Starts a scheduled run and returns what the run was created with. One that could pause,
+   * on a deployment that cannot hold its pause, starts without the pause wiring, as a caller
+   * with no resume path does.
+   */
+  const startScheduledRun = async (client) => {
+    mockDeleteAgentCheckpoint.mockReset().mockResolvedValue(undefined);
+    const processStream = jest.fn().mockResolvedValue();
+    mockCreateRun.mockResolvedValueOnce({
+      Graph: null,
+      processStream,
+      getCalibrationRatio: jest.fn(() => 0),
+      getInterrupt: jest.fn(() => undefined),
+    });
+    const before = mockCreateRun.mock.calls.length;
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+    client.checkpointNamespace = `${client.conversationId}-generation`;
+    await expect(client.chatCompletion({ payload: [] })).resolves.toBeUndefined();
+    expect(mockCreateRun).toHaveBeenCalledTimes(before + 1);
+    expect(processStream).toHaveBeenCalledTimes(1);
+    return mockCreateRun.mock.calls.at(-1)[0];
+  };
+
+  it('starts a scheduled run that could ask the user without its pause wiring where there is no Redis', async () => {
     mockIsHITLEnabled.mockReturnValue(false);
-    const createRunBefore = mockCreateRun.mock.calls.length;
     const client = new AgentClient({
       req: {
         user: { id: 'user-123' },
@@ -2379,15 +2452,104 @@ describe('AgentClient - startup telemetry', () => {
     client.responseMessageId = 'scheduled-hitl-response';
     client.parentMessageId = 'scheduled-hitl-parent';
 
-    await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-      code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      message: expect.stringContaining('USE_REDIS_STREAMS=true'),
+    expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+    // A checkpointer may exist without Redis, so what an earlier attempt left is still cleared.
+    expect(mockDeleteAgentCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a scheduled run without pruning where Redis is present and no durable checkpointer is', async () => {
+    mockIsHITLEnabled.mockReturnValue(false);
+    const isRedisSpy = jest.spyOn(GenerationJobManager, 'isRedis', 'get').mockReturnValue(true);
+    mockGetAgentCheckpointer.mockResolvedValueOnce(null);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _isScheduledFire: true,
+        _resumableStreamId: 'scheduled-hitl-no-checkpointer',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        tools: [{ name: 'ask_user_question' }],
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
     });
-    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    client.conversationId = 'scheduled-hitl-no-checkpointer';
+    client.responseMessageId = 'scheduled-hitl-no-checkpointer-response';
+    client.parentMessageId = 'scheduled-hitl-no-checkpointer-parent';
+
+    try {
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
+      // With no checkpointer there is nothing to prune, and the prune would fail the run.
+      expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+    } finally {
+      isRedisSpy.mockRestore();
+    }
+  });
+
+  it('tells the run what a scheduled run that cannot pause is missing, and nothing where it can', async () => {
+    mockIsHITLEnabled.mockReturnValue(false);
+    const asker = (id) => {
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: { endpoints: { [EModelEndpoint.agents]: {} } },
+          _isScheduledFire: true,
+          _resumableStreamId: id,
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          tools: [{ name: 'ask_user_question' }],
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = id;
+      client.responseMessageId = `${id}-response`;
+      client.parentMessageId = `${id}-parent`;
+      return client;
+    };
+
+    expect(await startScheduledRun(asker('scheduled-gap-store'))).toMatchObject({
+      hitlCapable: false,
+      pauseGap: 'shared_store',
+    });
+
+    const isRedisSpy = jest.spyOn(GenerationJobManager, 'isRedis', 'get').mockReturnValue(true);
+    try {
+      mockGetAgentCheckpointer.mockResolvedValueOnce(null);
+      expect(await startScheduledRun(asker('scheduled-gap-checkpointer'))).toMatchObject({
+        hitlCapable: false,
+        pauseGap: 'durable_checkpointer',
+      });
+
+      mockGetAgentCheckpointer.mockResolvedValueOnce({});
+      const capable = await startScheduledRun(asker('scheduled-gap-none'));
+      expect(capable.hitlCapable).toBe(true);
+      expect(capable.pauseGap).toBeUndefined();
+    } finally {
+      isRedisSpy.mockRestore();
+    }
   });
 
   it('includes host-generated background tools in scheduled pause admission', async () => {
-    const createRunBefore = mockCreateRun.mock.calls.length;
     const client = new AgentClient({
       req: {
         user: { id: 'user-123' },
@@ -2425,10 +2587,7 @@ describe('AgentClient - startup telemetry', () => {
     client.responseMessageId = 'scheduled-background-response';
     client.parentMessageId = 'scheduled-background-parent';
 
-    await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-      code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-    });
-    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
   });
 
   it.each([
@@ -2586,9 +2745,8 @@ describe('AgentClient - startup telemetry', () => {
       ],
     },
   ])(
-    'rejects scheduled memory-store runs with a $name before provider execution',
+    'starts scheduled memory-store runs with a $name without the pause wiring',
     async (surface) => {
-      const createRunBefore = mockCreateRun.mock.calls.length;
       const client = new AgentClient({
         req: {
           user: { id: 'user-123' },
@@ -2620,10 +2778,7 @@ describe('AgentClient - startup telemetry', () => {
       client.conversationId = 'scheduled-agent-mode';
       client.responseMessageId = 'scheduled-agent-mode-response';
       client.parentMessageId = 'scheduled-agent-mode-parent';
-      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      });
-      expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
     },
   );
 
@@ -2635,7 +2790,6 @@ describe('AgentClient - startup telemetry', () => {
       const unregister = registerToolApprovalHook(() => hook, {
         matcher: `^${prefix}_query_mcp_db$`,
       });
-      const createRunBefore = mockCreateRun.mock.calls.length;
       const client = new AgentClient({
         req: {
           user: { id: 'user-123' },
@@ -2673,10 +2827,7 @@ describe('AgentClient - startup telemetry', () => {
       client.responseMessageId = 'scheduled-legacy-hook-response';
       client.parentMessageId = 'scheduled-legacy-hook-parent';
       try {
-        await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-          code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-        });
-        expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+        expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
         expect(hook).not.toHaveBeenCalled();
       } finally {
         unregister();
@@ -2776,9 +2927,7 @@ describe('AgentClient - startup telemetry', () => {
     client.parentMessageId = 'scheduled-deployment-parent';
 
     try {
-      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
-        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
-      });
+      expect(await startScheduledRun(client)).toMatchObject({ hitlCapable: false });
     } finally {
       setPluginHookSource(previousSource);
     }
@@ -3291,6 +3440,79 @@ describe('AgentClient - startup telemetry', () => {
     expect(client.contentParts).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: ContentTypes.ERROR })]),
     );
+  });
+
+  describe('settles a Gemini output-budget truncation into the response', () => {
+    const think = { type: ContentTypes.THINK, [ContentTypes.THINK]: 'Reasoning so far' };
+    const code = JSON.stringify({ type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED });
+
+    const runTruncatedTurn = async ({ contentParts, ending, continued = false }) => {
+      jest.clearAllMocks();
+      mockCreateRun.mockResolvedValue({
+        Graph: null,
+        processStream: jest.fn().mockResolvedValue(undefined),
+        getCalibrationRatio: jest.fn(() => 0),
+      });
+      mockIsHITLEnabled.mockReturnValue(false);
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: { isContinued: continued },
+          /** A content policy withholds thrown error text; the settled part is code only. */
+          config: {
+            endpoints: { [EModelEndpoint.agents]: {} },
+            messageFilter: { pii: { enabled: true } },
+          },
+          _resumableStreamId: 'conversation-output-budget',
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.google,
+          provider: EModelEndpoint.google,
+          model_parameters: { model: 'gemini-3-pro' },
+          hide_sequential_outputs: false,
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts,
+        collectedUsage: [],
+        artifactPromises: [],
+        truncationSink: { calls: { 'agent=agent-123': ending } },
+      });
+      client.conversationId = 'conversation-output-budget';
+      client.responseMessageId = 'response-output-budget';
+      client.parentMessageId = 'parent-output-budget';
+      client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+      await client.chatCompletion({ payload: [] });
+      return client;
+    };
+
+    it('keeps the reasoning and adds the code when the model answered with nothing', async () => {
+      const client = await runTruncatedTurn({ contentParts: [think], ending: 'exhausted' });
+
+      expect(client.contentParts).toEqual([think, { type: ContentTypes.ERROR, error: code }]);
+      expect(client.metadata).toBeUndefined();
+    });
+
+    it('keeps a partial answer and finishes it as length so Continue is offered', async () => {
+      const answer = { type: ContentTypes.TEXT, text: 'The first half' };
+      const client = await runTruncatedTurn({ contentParts: [think, answer], ending: 'partial' });
+
+      expect(client.contentParts).toEqual([think, answer]);
+      expect(client.metadata).toEqual({ finish_reason: 'length' });
+    });
+
+    it('finishes a completed continuation as stop', async () => {
+      const client = await runTruncatedTurn({
+        contentParts: [{ type: ContentTypes.TEXT, text: 'The rest' }],
+        ending: 'complete',
+        continued: true,
+      });
+
+      expect(client.metadata).toEqual({ finish_reason: 'stop' });
+    });
   });
 
   it('records collected usage as an abort when the run is stopped', async () => {
@@ -5681,6 +5903,86 @@ describe('AgentClient - titleConvo', () => {
       client.maxContextTokens = 4096;
     });
 
+    it('bounds admission and fallback estimates without changing stored history counts', async () => {
+      const getReqData = jest.fn();
+      const messages = [
+        {
+          messageId: 'old-user',
+          parentMessageId: Constants.NO_PARENT,
+          text: 'Old prompt',
+          isCreatedByUser: true,
+          tokenCount: 1000000,
+        },
+        {
+          messageId: 'old-answer',
+          parentMessageId: 'old-user',
+          text: 'Old answer',
+          isCreatedByUser: false,
+          tokenCount: 1277600,
+        },
+        {
+          messageId: 'new-user',
+          parentMessageId: 'old-answer',
+          text: 'Continue',
+          isCreatedByUser: true,
+          tokenCount: 30,
+        },
+      ];
+      client.maxContextTokens = 250000;
+
+      const built = await client.buildMessages(messages, 'new-user', {}, { getReqData });
+
+      expect(built.promptTokens).toBe(250000);
+      expect(getReqData).toHaveBeenCalledWith({ promptTokens: 250000 });
+      expect(built.tokenCountMap).toEqual({
+        'old-user': 1000000,
+        'old-answer': 1277600,
+        'new-user': 30,
+      });
+      expect(built.prompt).toHaveLength(3);
+    });
+
+    it.each([
+      ['the endpoint does not resend files', { resendFiles: false }],
+      ['every file of the turn is left out', { excludedFiles: ['upload-1'] }],
+    ])('keeps the stand-in for an attachment-only turn when %s', async (_case, fileOptions) => {
+      Object.assign(client.options, fileOptions);
+      const messages = [
+        {
+          messageId: 'upload-turn',
+          parentMessageId: Constants.NO_PARENT,
+          text: '',
+          isCreatedByUser: true,
+          files: [{ file_id: 'upload-1', filename: 'report.xlsx' }],
+        },
+        {
+          messageId: 'upload-answer',
+          parentMessageId: 'upload-turn',
+          text: 'The sheet lists three regions.',
+          isCreatedByUser: false,
+        },
+        {
+          messageId: 'follow-up',
+          parentMessageId: 'upload-answer',
+          text: 'Which region grew most?',
+          isCreatedByUser: true,
+        },
+      ];
+
+      const built = await client.buildMessages(
+        BaseClient.prototype.getModelBoundStoredMessages.call(client, messages),
+        'follow-up',
+        {},
+      );
+
+      expect(built.prompt.map((message) => message.content)).toEqual([
+        ATTACHMENT_ONLY_TEXT,
+        'The sheet lists three regions.',
+        'Which region grew most?',
+      ]);
+      expect(messages[0].text).toBe('');
+    });
+
     it('loads RAG, memory, attachment, and MCP context without serial waits', async () => {
       const ragContext = deferred();
       const memoryContext = deferred();
@@ -6435,7 +6737,87 @@ describe('AgentClient - titleConvo', () => {
       expect(client.publishRunContextMeta).toHaveBeenCalledTimes(expectSeed ? 1 : 0);
     });
 
-    it('gives every resent document a unique name before formatting', async () => {
+    it.each([Providers.OPENAI, Providers.ANTHROPIC, Providers.GOOGLE])(
+      'continues a large existing %s chat with a new short message',
+      async (provider) => {
+        client.options.agent.provider = provider;
+        client.agentConfigs = new Map([
+          ['secondary-agent', { ...mockAgent, id: 'secondary-agent', provider: Providers.GOOGLE }],
+        ]);
+        const resolve = jest.fn();
+        client.options.agent.lazySubagentConfigs = [
+          { id: 'lazy-agent', provider: Providers.ANTHROPIC, configId: 'lazy-config', resolve },
+        ];
+        const history = Array.from({ length: 80 }, (_, index) => ({
+          messageId: `history-${index}`,
+          parentMessageId: index === 0 ? null : `history-${index - 1}`,
+          sender: index % 2 === 0 ? 'User' : 'Assistant',
+          isCreatedByUser: index % 2 === 0,
+          content: Array.from({ length: 51 }, () => ({ type: ContentTypes.TEXT, text: 'ok' })),
+        }));
+        const latest = {
+          messageId: 'next-message',
+          parentMessageId: 'history-79',
+          sender: 'User',
+          isCreatedByUser: true,
+          text: 'x',
+        };
+        const messages = [...history, latest];
+        const original = structuredClone(messages);
+        client.setModelBoundStoredMessages(messages);
+
+        const result = await client.buildMessages(messages, latest.messageId, {}, {});
+
+        expect(result.prompt).toHaveLength(messages.length);
+        expect(result.prompt.at(-1).content).toBe('x');
+        expect(messages).toMatchObject(original);
+        expect(resolve).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      'primary',
+      'secondary',
+      'nested subagent',
+      'nested graph member',
+      'lazy subagent',
+      'nested lazy subagent',
+      'lazy graph member',
+    ])('gives every resent document a unique name for a Bedrock %s', async (recipient) => {
+      const bedrockAgent = {
+        ...mockAgent,
+        id: 'bedrock-recipient',
+        provider: Providers.BEDROCK,
+      };
+      const resolve = jest.fn().mockResolvedValue(bedrockAgent);
+      const lazyAgent = { ...bedrockAgent, configId: 'bedrock-config', resolve };
+      if (recipient === 'primary') {
+        client.options.agent.provider = Providers.BEDROCK;
+      } else if (recipient === 'secondary') {
+        client.agentConfigs = new Map([[bedrockAgent.id, bedrockAgent]]);
+      } else if (recipient === 'nested subagent') {
+        client.options.agent.subagentAgentConfigs = [
+          { ...mockAgent, id: 'middle-agent', subagentAgentConfigs: [bedrockAgent] },
+        ];
+      } else if (recipient === 'nested graph member') {
+        client.options.agent.subagentGraphConfigs = [{ memberConfigs: [bedrockAgent] }];
+      } else if (recipient === 'lazy subagent') {
+        client.options.agent.lazySubagentConfigs = [lazyAgent];
+      } else if (recipient === 'nested lazy subagent') {
+        client.options.agent.subagentAgentConfigs = [
+          { ...mockAgent, id: 'middle-agent', lazySubagentConfigs: [lazyAgent] },
+        ];
+      } else {
+        client.options.agent.lazySubagentConfigs = [
+          {
+            id: 'lazy-team',
+            provider: Providers.OPENAI,
+            configId: 'team-config',
+            resolve,
+            subagentGraphMemberMetadata: [bedrockAgent],
+          },
+        ];
+      }
       const bedrockDocument = (name) => ({
         type: 'document',
         document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
@@ -6476,6 +6858,9 @@ describe('AgentClient - titleConvo', () => {
           : [],
       );
       expect(names).toEqual(['Stripe fees', 'Stripe fees (2)']);
+      expect(firstQuestion.documents[0].document.name).toBe('Stripe fees');
+      expect(secondQuestion.documents[0].document.name).toBe('Stripe fees');
+      expect(resolve).not.toHaveBeenCalled();
     });
 
     it('preserves persisted source identity through both agent formatting passes', async () => {
@@ -6831,6 +7216,55 @@ describe('AgentClient - titleConvo', () => {
       },
     );
 
+    it('replays history without a file storage deleted, and tells the model it is gone', async () => {
+      client.options.resendFiles = true;
+      client.options.attachments = [];
+      const gone = makeUploadedFile('history-gone', 'expired.pdf', 'application/pdf');
+      const kept = makeUploadedFile('history-kept', 'kept.pdf', 'application/pdf');
+      require('~/models').getFiles.mockResolvedValue([gone, kept]);
+      client.addDocuments = jest.fn(async (targetMessage, attachments, onMissingFile) => {
+        onMissingFile(gone);
+        targetMessage.documents = [{ type: 'input_file', filename: kept.filename }];
+        return [kept];
+      });
+
+      const [replayed] = await client.addPreviousAttachments([
+        {
+          messageId: 'history-message',
+          isCreatedByUser: true,
+          text: 'Summarize these.',
+          files: [{ file_id: gone.file_id }, { file_id: kept.file_id }],
+        },
+      ]);
+
+      expect(client.addDocuments).toHaveBeenCalledWith(
+        replayed,
+        [gone, kept],
+        expect.any(Function),
+      );
+      expect(replayed.fileContext).toContain('"expired.pdf"');
+      expect(replayed.fileContext).toContain('deleted from storage');
+      expect(replayed.fileContext).not.toContain('kept.pdf');
+      expect(client.message_file_map['history-message'].map((file) => file.file_id)).toEqual([
+        kept.file_id,
+      ]);
+    });
+
+    it('keeps a storage miss on a current attachment fatal', async () => {
+      const current = makeUploadedFile('current-gone', 'current.pdf', 'application/pdf');
+      const missing = new (require('@librechat/api').AttachmentObjectNotFoundError)(
+        current.file_id,
+      );
+      client.addDocuments = jest.fn(async (_message, _attachments, onMissingFile) => {
+        expect(onMissingFile).toBeUndefined();
+        throw missing;
+      });
+
+      await expect(
+        client.processAttachments({ messageId: 'current-message' }, [current]),
+      ).rejects.toBe(missing);
+    });
+
     it('rejects combined historical and current bytes before either batch is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
@@ -6865,6 +7299,198 @@ describe('AgentClient - titleConvo', () => {
       });
       expect(client.addFileContextToMessage).not.toHaveBeenCalled();
       expect(client.processAttachments).not.toHaveBeenCalled();
+    });
+
+    /** A tool-routed file with extracted text reaches an agent that has no tool to read it as
+     *  text, from the transcript, unless it is one of the shared prompt files. A file the
+     *  conversation leaves out is no longer one of those, so it has to be kept out by name. */
+    describe('a left-out file with extracted text', () => {
+      const { resolveTurnDeliveryRouting } = require('@librechat/api');
+      const csv = {
+        ...makeUploadedFile('left-out-csv', 'figures.csv', 'text/csv'),
+        text: 'region,total',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+      };
+      const transcript = () => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'Use the figures.',
+          isCreatedByUser: true,
+          files: [{ file_id: csv.file_id }],
+        },
+      ];
+      const scopedIds = () =>
+        (client.options.agentContextAttachmentsByAgentId.get(mockAgent.id) ?? []).map(
+          ({ file_id }) => file_id,
+        );
+
+      beforeEach(() => {
+        client.options.resendFiles = true;
+        client.options.attachments = [];
+        client.authorizedHistoricalFiles = new Map([[csv.file_id, csv]]);
+        mockAgent.fileConsumers = { executeCode: false, fileSearch: false };
+        mockAgent.deliveryRouting = resolveTurnDeliveryRouting({
+          agent: { provider: 'openAI' },
+          config: {
+            fileConfig: {
+              endpoints: {
+                openAI: {
+                  defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
+                  textFallbackWithoutTools: true,
+                },
+              },
+            },
+          },
+        });
+      });
+
+      it('reaches the agent as text while the conversation includes it', async () => {
+        await client.buildMessages(transcript(), 'msg-1', {});
+
+        expect(scopedIds()).toEqual([csv.file_id]);
+      });
+
+      it('does not reach the agent once the conversation leaves it out', async () => {
+        client.options.excludedFiles = [csv.file_id];
+
+        await client.buildMessages(transcript(), 'msg-1', {});
+
+        expect(scopedIds()).toEqual([]);
+      });
+    });
+
+    /** A file can be sent to the model and placed in the code environment at once (a screenshot
+     *  in a chat whose agent runs code). Agent setup primes every such file of the thread again
+     *  on each turn and hands it over with the request's own, so being in that list does not
+     *  make a file new: ten earlier screenshots and one new one is one new file. */
+    describe('earlier files that agent setup primed again', () => {
+      const screenshot = (id) => ({
+        ...makeUploadedFile(id, `${id}.png`, 'image/png'),
+        llmDeliveryPath: 'provider',
+        metadata: { codeEnvRef: { kind: 'user', id: 'user-123', file_id: `env-${id}` } },
+      });
+      const earlier = Array.from({ length: 10 }, (_, index) => screenshot(`earlier-${index}`));
+      const fresh = screenshot('fresh');
+      const thread = () =>
+        earlier.map((file, index) => ({
+          messageId: `msg-${index}`,
+          isCreatedByUser: true,
+          files: [{ file_id: file.file_id }],
+        }));
+
+      beforeEach(() => {
+        client.options.resendFiles = true;
+        mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 10 } } };
+        require('~/models').getFiles.mockResolvedValue(earlier);
+        client.addFileContextToMessage = jest.fn();
+        client.processAttachments = jest.fn(async (_message, files) => files);
+      });
+
+      it('does not count them toward the limit on files new to the turn', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh];
+
+        await expect(client.addPreviousAttachments(thread())).resolves.toHaveLength(10);
+        expect(client.turnHistoricalAttachmentIds).toEqual(
+          new Set(earlier.map(({ file_id }) => file_id)),
+        );
+        /** Handed over with the request's files, they are sent with it and not replayed twice. */
+        expect(client.processAttachments).not.toHaveBeenCalled();
+      });
+
+      /** The earlier-files set is worked out again once the prompt is built, from the same
+       *  mixed list, and the turn has to pass that admission as well as the replay's. */
+      it('lets the turn through the final admission once the prompt is built', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh];
+        const history = thread().map((message, index) => ({
+          ...message,
+          parentMessageId: index === 0 ? null : `msg-${index - 1}`,
+          sender: 'User',
+          text: `screenshot ${index}`,
+        }));
+        const replayed = await client.addPreviousAttachments(history);
+
+        await expect(
+          client.buildMessages(
+            [
+              ...replayed,
+              {
+                messageId: 'msg-new',
+                parentMessageId: 'msg-9',
+                sender: 'User',
+                text: 'now these',
+                isCreatedByUser: true,
+              },
+            ],
+            'msg-new',
+            {},
+          ),
+        ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+        expect(client.turnHistoricalAttachmentIds).toEqual(
+          new Set(earlier.map(({ file_id }) => file_id)),
+        );
+      });
+
+      it('refuses eleven new files at the final admission as it does at the replay', async () => {
+        const many = Array.from({ length: 11 }, (_, index) => screenshot(`fresh-${index}`));
+        client.options.attachments = [...many, ...earlier];
+        client.options.currentRequestAttachments = many;
+        client.authorizedHistoricalFiles = new Map(earlier.map((file) => [file.file_id, file]));
+
+        await expect(
+          client.buildMessages(
+            [
+              {
+                messageId: 'msg-new',
+                parentMessageId: null,
+                sender: 'User',
+                text: 'now these',
+                isCreatedByUser: true,
+              },
+            ],
+            'msg-new',
+            {},
+          ),
+        ).rejects.toMatchObject({ limitType: 'count', observed: 11, limit: 10 });
+      });
+
+      it('still counts an earlier file the request names again', async () => {
+        mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+        client.options.attachments = [fresh, ...earlier];
+        client.options.currentRequestAttachments = [fresh, earlier[0]];
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+          limitType: 'count',
+          observed: 2,
+        });
+      });
+
+      it('refuses a turn whose own files are too many, whatever came before', async () => {
+        const many = Array.from({ length: 11 }, (_, index) => screenshot(`fresh-${index}`));
+        client.options.attachments = [...many, ...earlier];
+        client.options.currentRequestAttachments = many;
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          limitType: 'count',
+          observed: 11,
+          limit: 10,
+        });
+      });
+
+      it('counts as before for a caller that does not say which files the request named', async () => {
+        client.options.attachments = [fresh, ...earlier];
+        delete client.options.currentRequestAttachments;
+
+        await expect(client.addPreviousAttachments(thread())).rejects.toMatchObject({
+          limitType: 'count',
+          observed: 11,
+        });
+      });
     });
 
     it('rejects combined historical and scoped bytes before history is encoded', async () => {
@@ -7468,7 +8094,7 @@ describe('AgentClient - titleConvo', () => {
 
         const files = await client.processAttachments(message, [currentFile]);
 
-        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile]);
+        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile], undefined);
         expect(message.documents).toEqual([
           expect.objectContaining({
             type: 'input_file',
@@ -8809,9 +9435,56 @@ describe('AgentClient - titleConvo', () => {
       expect(parallelAgent2.additional_instructions ?? '').not.toContain(memoryContent);
     });
 
-    it('tells the primary read-only agent about persistent memory when the store is empty', async () => {
+    it('keeps empty-store memory guidance out of an agent that cannot use memory', async () => {
       const { memoryInstructions } = require('@librechat/api');
       client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      client.agentConfigs = new Map();
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Translate this',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions ?? '').not.toContain(memoryInstructions);
+    });
+
+    it('tells a primary agent with memory tools about persistent memory when the store is empty', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      client.options.agent.memoryToolsRegistered = true;
+      client.agentConfigs = new Map();
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Remember that I like tea',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
+      expect(client.options.agent.additional_instructions).not.toContain('# Existing memory');
+    });
+
+    it('tells the primary read-only agent about persistent memory when the store is empty and automatic extraction is on', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      mockReq.config.memory.agent = { enabled: true, id: 'memory-agent' };
       const parallelAgent = {
         id: 'parallel-agent-1',
         instructions: 'Parallel instructions',
@@ -8836,7 +9509,6 @@ describe('AgentClient - titleConvo', () => {
       expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
       expect(client.options.agent.additional_instructions).not.toContain('# Existing memory');
       expect(client.options.agent.additional_instructions).not.toContain('set_memory');
-      expect(parallelAgent.additional_instructions ?? '').not.toContain(memoryInstructions);
     });
 
     it('keeps memory guidance out of agents when memory was unavailable', async () => {
@@ -9269,6 +9941,106 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    it.each([
+      ['temporary request', { body: { isTemporary: true } }, true],
+      ['stored temporary conversation', { resolvedConversation: { isTemporary: true } }, true],
+      ['ordinary conversation', { body: {} }, false],
+    ])(
+      'forwards the request tracing policy for a %s',
+      async (_name, requestFields, isTemporary) => {
+        Object.assign(mockReq, requestFields);
+        mockReq.config.langfuse = { trace: { userIdField: 'email' } };
+        mockCheckAccess.mockResolvedValue(true);
+        mockInitializeAgent.mockResolvedValue({ ...mockAgent, provider: EModelEndpoint.openAI });
+        mockCreateMemoryProcessor.mockResolvedValue(['', jest.fn()]);
+        client = new AgentClient({
+          ...mockOptions,
+          endpoint: EModelEndpoint.agents,
+          endpointType: EModelEndpoint.agents,
+          traceContext: { modelLabel: 'Chat Model' },
+          spec: 'spec-1',
+        });
+        client.conversationId = 'convo-123';
+        client.responseMessageId = 'response-123';
+
+        await client.useMemory();
+
+        expect(mockCreateMemoryProcessor).toHaveBeenCalledWith(
+          expect.objectContaining({
+            appConfig: mockReq.config,
+            isTemporary,
+            traceContext: {
+              endpoint: EModelEndpoint.agents,
+              endpointType: EModelEndpoint.agents,
+              modelLabel: 'Chat Model',
+              spec: 'spec-1',
+            },
+          }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      'applies policy through useMemory, the real processor, and Run.create (temporary=%s)',
+      async (isTemporary) => {
+        const { Run } = require('@librechat/agents');
+        const { HumanMessage } = require('@librechat/agents/langchain/messages');
+        const originalEnv = process.env;
+        process.env = {
+          ...originalEnv,
+          LANGFUSE_PUBLIC_KEY: 'pk-synthetic',
+          LANGFUSE_SECRET_KEY: 'sk-synthetic',
+          LANGFUSE_BASE_URL: 'https://central.example.com',
+          LANGFUSE_TRACING_ENABLED: 'true',
+          LANGFUSE_SAMPLE_RATE: '1',
+          LANGFUSE_FANOUT_ENABLED: 'false',
+          TENANT_ISOLATION_STRICT: 'false',
+        };
+        const create = jest.spyOn(Run, 'create').mockResolvedValue({
+          processStream: jest.fn().mockResolvedValue('done'),
+        });
+        try {
+          mockReq.body = { isTemporary };
+          mockReq.user.email = 'memory@example.com';
+          mockReq.config.langfuse = {
+            trace: {
+              userIdField: 'email',
+              conversationMetadataFields: ['conversationId', 'endpoint', 'model', 'provider'],
+            },
+          };
+          mockCheckAccess.mockResolvedValue(true);
+          mockInitializeAgent.mockResolvedValue({ ...mockAgent });
+          mockCreateMemoryProcessor.mockImplementation(
+            jest.requireActual('@librechat/api').createMemoryProcessor,
+          );
+          client = new AgentClient({ ...mockOptions, endpoint: EModelEndpoint.agents });
+          client.conversationId = 'convo-123';
+          client.responseMessageId = 'response-123';
+
+          await client.useMemory();
+          await client.processMemory([new HumanMessage('Synthetic memory input')]);
+
+          expect(create).toHaveBeenCalledTimes(1);
+          const run = create.mock.calls[0][0];
+          expect(run.langfuse).toMatchObject({
+            userId: 'memory@example.com',
+            deterministicTraceId: false,
+            metadata: {
+              'librechat.conversation.id': 'convo-123',
+              'librechat.endpoint': EModelEndpoint.agents,
+              'librechat.model': 'gpt-4',
+              'librechat.provider': EModelEndpoint.openAI,
+            },
+          });
+          expect(run.langfuse.enabled === false).toBe(isTemporary);
+        } finally {
+          process.env = originalEnv;
+          create.mockRestore();
+          mockCreateMemoryProcessor.mockReset();
+        }
+      },
+    );
+
     it('should bind memory processing to the current generation epoch', async () => {
       mockReq._resumableStreamId = 'convo-123';
       mockCheckAccess.mockResolvedValue(true);
@@ -9624,6 +10396,63 @@ describe('AgentClient - finalizeSubagentContent', () => {
       expect(buffer.size).toBe(0);
     },
   );
+
+  it('keeps the child of a call made from inside a subagent, with who it ran as', async () => {
+    const nested = (phase, data) => ({
+      ...event(phase, data, 'call_nested'),
+      subagentRunId: 'grandchild-run',
+      subagentType: 'agent_ledger',
+      subagentKind: 'agent',
+      subagentAgentId: 'agent_ledger',
+    });
+    const buffer = await runSubagentEvents([
+      event('run_step', {
+        id: 'step_delegate',
+        index: 0,
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'call_nested', name: Constants.SUBAGENT, args: '{}' }],
+        },
+      }),
+      nested('run_step', {
+        id: 'step_answer',
+        index: 0,
+        stepDetails: { type: 'message_creation' },
+      }),
+      nested('message_delta', {
+        id: 'step_answer',
+        delta: { content: [{ type: 'text', text: 'The total is 4217.' }] },
+      }),
+      event('run_step_completed', {
+        id: 'step_delegate',
+        index: 0,
+        result: {
+          id: 'step_delegate',
+          type: 'tool_call',
+          tool_call: {
+            id: 'call_nested',
+            name: Constants.SUBAGENT,
+            output: 'The total is 4217.',
+            progress: 1,
+          },
+        },
+      }),
+    ]);
+
+    const client = makeClient(buffer);
+    client.contentParts = [
+      { type: 'tool_call', tool_call: { id: 'call_sub', name: Constants.SUBAGENT, args: '{}' } },
+    ];
+    client.finalizeSubagentContent();
+
+    const [delegated] = client.contentParts[0].tool_call.subagent_content;
+    expect(delegated.tool_call).toMatchObject({
+      id: 'call_nested',
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_ledger' },
+      subagent_content: [expect.objectContaining({ type: 'text', text: 'The total is 4217.' })],
+    });
+    expect(buffer.size).toBe(0);
+  });
 
   it('attaches aggregated subagent_content to the matching subagent tool_call part', async () => {
     const buffer = await runSubagentEvents([
@@ -10511,6 +11340,56 @@ describe('AgentClient - resumeCompletion content protection', () => {
     expect(resume).toHaveBeenCalledTimes(1);
   });
 
+  it('does not count history that agent setup primed again as new files on resume', async () => {
+    const historicalFiles = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `resume-primed-${index}`,
+      filename: `screenshot-${index}.png`,
+      source: 'local',
+      type: 'image/png',
+      bytes: 10,
+      llmDeliveryPath: 'provider',
+      metadata: { codeEnvRef: { kind: 'user', id: 'user-123', file_id: `env-${index}` } },
+    }));
+    require('~/models').getMessages.mockResolvedValue(
+      historicalFiles.map((file, index) => ({
+        messageId: index === historicalFiles.length - 1 ? 'parent-123' : `history-${index}`,
+        parentMessageId: index === 0 ? Constants.NO_PARENT : `history-${index - 1}`,
+        isCreatedByUser: true,
+        role: 'user',
+        text: 'inspect file',
+        files: [{ file_id: file.file_id }],
+      })),
+    );
+    require('~/models').getFiles.mockResolvedValue(historicalFiles);
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: historicalFiles.map((file) => ({
+              role: 'human',
+              files: [{ file_id: file.file_id }],
+            })),
+          },
+        },
+      }),
+    });
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
+    const context = makeContext(undefined);
+    context.options.req.body.isTemporary = false;
+    context.options.req.config.fileConfig = {
+      endpoints: { agents: { fileLimit: 10 } },
+    };
+    /** A resumed request names no file of its own; setup hands back the thread's. */
+    context.options.attachments = [...historicalFiles];
+    context.options.currentRequestAttachments = [];
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).resolves.toBeUndefined();
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
   it('counts a restored request file only once when it is already in the checkpoint', async () => {
     const retainedFile = {
       file_id: 'retained-request',
@@ -11226,6 +12105,48 @@ describe('AgentClient - resumeCompletion content protection', () => {
       });
     },
   );
+
+  /** A gateway answering 429 for a spent budget says where to ask for more; the localized rate
+   *  limit copy cannot, so the provider's words ride along as the detail. */
+  it('keeps a gateway explanation on a classified rate limit unless protection is on', async () => {
+    const explanation = 'Budget exhausted. It does not reset by waiting; ask the service desk.';
+    const trackRateLimit = () => {
+      const providerError = Object.assign(new Error(`429 ${explanation}`), {
+        status: 429,
+        lc_error_code: 'MODEL_RATE_LIMIT',
+      });
+      mockCreateRun.mockImplementation(async (options) => {
+        const tracker = options.modelCallbacks.find(
+          (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+        );
+        return {
+          resume: jest.fn(async () => {
+            tracker.handleLLMError(providerError, 'resumed-model-run');
+            throw providerError;
+          }),
+          getCalibrationRatio: jest.fn(() => 0),
+        };
+      });
+    };
+
+    trackRateLimit();
+    const context = makeContext(undefined);
+    await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+    expect(context.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]: JSON.stringify({ type: 'model_rate_limit', info: explanation }),
+    });
+
+    trackRateLimit();
+    const protectedContext = makeContext({
+      messages: { pii: { fields: ['text'], starterPatterns: ['email'] } },
+    });
+    await AgentClient.prototype.resumeCompletion.call(protectedContext, { resumeValue: {} });
+    expect(protectedContext.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]: JSON.stringify({ type: 'model_rate_limit' }),
+    });
+  });
 
   it('preserves provider error detail when content protection is disabled', async () => {
     const providerMessage = 'Legacy provider detail';

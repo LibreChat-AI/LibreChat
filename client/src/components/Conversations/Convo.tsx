@@ -74,6 +74,7 @@ function Conversation({
      serving them, so the row must not advertise one that no longer resolves. */
   const { data: startupConfig } = useGetStartupConfig();
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
+  const showIcon = startupConfig?.interface?.conversationIcons !== false;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
   const projectLabelId = useId();
   const pullRequestLabelId = useId();
@@ -304,6 +305,7 @@ function Conversation({
        archived list, and the previous page's rows stay on screen while the next loads. */
     isArchived: conversation.isArchived === true,
     retainView,
+    toggleNav,
     renameHandler: handleRename,
     canRename,
     isActiveConvo,
@@ -389,6 +391,25 @@ function Conversation({
       style={{ cursor: renaming ? 'default' : 'pointer' }}
       data-testid="convo-item"
     >
+      <span
+        className={cn(
+          'flex shrink-0 items-center',
+          (projectBadgeProjectId || (showPullRequest && pullRequestDescribed)) && 'ps-2',
+        )}
+      >
+        {projectBadgeProjectId && (
+          <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
+        )}
+        {showPullRequest && (
+          <PullRequestRowMark
+            conversationId={conversationId ?? ''}
+            labelId={pullRequestLabelId}
+            onDescribed={setPullRequestDescribed}
+            rowRef={containerRef}
+            selected={isActiveConvo || isPopoverActive}
+          />
+        )}
+      </span>
       {renaming ? (
         <RenameForm
           titleInput={titleInput}
@@ -422,36 +443,42 @@ function Conversation({
           {/* Status sits on the avatar so the row's trailing edge stays free for its badges
               and menu. The ring is 2.125rem around the 1.25rem icon: offset by half the
               difference. Both are rem so the ring follows the icon box at any UI scale. */}
-          <span className="relative flex size-5 shrink-0 items-center justify-center">
-            <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
-            {isGenerating && (
-              <Spinner
-                size={34}
-                strokeWidth={1.9}
-                bgOpacity={0.14}
-                className="pointer-events-none absolute -inset-s-[0.4375rem] -top-[0.4375rem] size-[2.125rem]"
-              />
-            )}
-            {isUnseen && !isGenerating && (
-              /* `ConvoLink`'s aria-label carries the text equivalent of the ring and the dot. */
-              <span
-                aria-hidden="true"
-                className={cn(
-                  'bg-status-info pointer-events-none absolute -inset-e-0.5 -bottom-0.5 size-2 rounded-full ring-2',
-                  isActiveConvo || isPopoverActive
-                    ? 'ring-surface-nav-selected'
-                    : 'ring-surface-sidebar group-hover:ring-surface-nav-hover',
-                )}
-              />
-            )}
-          </span>
+          {(showIcon || isGenerating || isUnseen) && (
+            <span className="relative flex size-5 shrink-0 items-center justify-center">
+              {showIcon && (
+                <ConversationEndpointIcon
+                  conversation={conversation}
+                  size={20}
+                  context="menu-item"
+                />
+              )}
+              {isGenerating && (
+                <Spinner
+                  size={34}
+                  strokeWidth={1.9}
+                  bgOpacity={0.14}
+                  className="pointer-events-none absolute -inset-s-[0.4375rem] -top-[0.4375rem] size-[2.125rem]"
+                />
+              )}
+              {isUnseen && !isGenerating && (
+                /* `ConvoLink`'s aria-label carries the text equivalent of the ring and the dot. */
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'bg-status-info pointer-events-none absolute size-2 rounded-full ring-2',
+                    showIcon ? '-inset-e-0.5 -bottom-0.5' : 'inset-0 m-auto',
+                    isActiveConvo || isPopoverActive
+                      ? 'ring-surface-nav-selected'
+                      : 'ring-surface-sidebar group-hover:ring-surface-nav-hover',
+                  )}
+                />
+              )}
+            </span>
+          )}
         </ConvoLink>
       )}
       {isSharedBadgeVisible && (
         <Link2 className="icon-sm text-text-secondary me-1 shrink-0" aria-hidden="true" />
-      )}
-      {projectBadgeProjectId && (
-        <ProjectBadge projectId={projectBadgeProjectId} labelId={projectLabelId} />
       )}
       {conversation.pinned === true && (
         <UnpinButton
@@ -477,20 +504,6 @@ function Conversation({
         {/* Only render ConvoOptions when user interacts (hover/focus) or for active conversation */}
         {actionContent}
       </div>
-      {/* After the action slot on purpose: that slot grows from zero on hover, and anything before
-          it slides left under the pointer, so the mark would move out from under the cursor that
-          is trying to reach it. The title is the only thing that gives way. */}
-      {showPullRequest && (
-        <span className="flex shrink-0 items-center">
-          <PullRequestRowMark
-            conversationId={conversationId ?? ''}
-            labelId={pullRequestLabelId}
-            onDescribed={setPullRequestDescribed}
-            rowRef={containerRef}
-            selected={isActiveConvo || isPopoverActive}
-          />
-        </span>
-      )}
     </div>
   );
 }

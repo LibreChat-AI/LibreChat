@@ -37,6 +37,15 @@ describe('direction helpers', () => {
     expect(resolveSide('left-end', undefined)).toBe('left-end');
   });
 
+  it('reads no styles for a top or bottom side, which never mirrors', () => {
+    const rtl = mount('rtl');
+    const getComputedStyle = jest.spyOn(window, 'getComputedStyle');
+    expect(resolveSide('top', rtl)).toBe('top');
+    expect(resolveSide('bottom-start', rtl)).toBe('bottom-start');
+    expect(getComputedStyle).not.toHaveBeenCalled();
+    getComputedStyle.mockRestore();
+  });
+
   it('swaps horizontal arrow keys for an RTL element only', () => {
     const rtl = mount('rtl');
     const ltr = mount('ltr');

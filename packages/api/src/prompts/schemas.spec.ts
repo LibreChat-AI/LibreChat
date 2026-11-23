@@ -227,7 +227,7 @@ describe('safeValidatePromptGroupUpdate', () => {
     const result = safeValidatePromptGroupUpdate({ author: 'malicious-id' });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.errors.length).toBeGreaterThan(0);
+      expect(result.error.issues.length).toBeGreaterThan(0);
     }
   });
 });

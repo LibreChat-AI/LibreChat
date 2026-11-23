@@ -77,7 +77,7 @@ export type ConfigOverrideLayer = Pick<Config, 'principalType' | 'priority' | 'o
 const MAX_MERGE_DEPTH = 10;
 const ARRAY_INDEX = /^(?:0|[1-9]\d*)$/;
 /** Schemas whose children the path walk cannot see, so the stored value decides their shape. */
-const OPAQUE_SCHEMA_TYPES = new Set(['ZodAny', 'ZodUnknown', 'ZodIntersection']);
+const OPAQUE_SCHEMA_TYPES = new Set(['any', 'unknown', 'intersection']);
 const MAX_STRIP_PASSES = 16;
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Filters are a fail-closed security boundary even during mixed-package rollouts. */
@@ -626,36 +626,108 @@ function toIssueNumber(value: unknown): number | undefined {
 function getBoundParams(
   bound: 'minimum' | 'maximum',
   value: unknown,
-  issue: { inclusive: boolean; exact?: boolean; type: string },
+  issue: { inclusive?: boolean; exact?: boolean; origin: string },
 ): ConfigIssueParams {
   const number = toIssueNumber(value);
   return {
     ...(number !== undefined && { [bound]: number }),
-    inclusive: issue.inclusive,
+    inclusive: issue.inclusive ?? false,
     exact: issue.exact ?? false,
-    type: issue.type,
+    type: issue.origin,
   };
+}
+
+/** Expected-type names that the reported contract spells differently from zod. */
+const EXPECTED_TYPE_NAMES: Record<string, string> = {
+  int: 'integer',
+  record: 'object',
+  tuple: 'array',
+};
+
+/** String-format names that the reported contract spells as the check that failed. */
+const STRING_FORMAT_NAMES: Record<string, string> = {
+  starts_with: 'startsWith',
+  ends_with: 'endsWith',
+};
+
+/** The kind of the submitted value, by name only, so the value itself is never reported. */
+function getReceivedType(input: unknown, expected: string): string {
+  if (input === null) {
+    return 'null';
+  }
+  if (Array.isArray(input)) {
+    return 'array';
+  }
+  if (input instanceof Date) {
+    return 'date';
+  }
+  if (input instanceof Map) {
+    return 'map';
+  }
+  if (input instanceof Set) {
+    return 'set';
+  }
+  if (typeof input !== 'number') {
+    return typeof input;
+  }
+  if (Number.isNaN(input)) {
+    return 'nan';
+  }
+  return expected === 'int' && !Number.isInteger(input) ? 'float' : 'number';
+}
+
+/** Whether a union issue is the discriminator mismatch of a discriminated union. */
+function isDiscriminatorIssue(issue: SchemaIssue): issue is SchemaIssue & { options: unknown[] } {
+  return (
+    issue.code === 'invalid_union' &&
+    issue.discriminator != null &&
+    Array.isArray((issue as { options?: unknown }).options)
+  );
+}
+
+/**
+ * The stable code an issue is reported under. Codes keep the names the override contract was
+ * published with, so a zod release that renames its issue codes does not change the response.
+ */
+export function getConfigIssueCode(issue: SchemaIssue): string {
+  if (issue.code === 'invalid_value') {
+    return issue.values.length === 1 ? 'invalid_literal' : 'invalid_enum_value';
+  }
+  if (issue.code === 'invalid_format') {
+    return 'invalid_string';
+  }
+  return isDiscriminatorIssue(issue) ? 'invalid_union_discriminator' : issue.code;
 }
 
 /**
  * The parts of a zod issue that describe the schema rather than the submitted value, by an
  * allowlist per issue code: expected types and literals, accepted options, numeric bounds, the
  * failed string check, a multiple, and a refinement's stable `reason`. A value the client sent
- * is never copied (no `received` literal or enum value, no message), so the result is safe to
- * return. `undefined` when the issue carries none of these.
+ * is never copied (only the name of its type, no literal or enum value, no message), so the
+ * result is safe to return. `undefined` when the issue carries none of these.
  */
 export function getConfigIssueParams(issue: SchemaIssue): ConfigIssueParams | undefined {
   let params: ConfigIssueParams | undefined;
   switch (issue.code) {
     case 'invalid_type':
-      params = { expected: String(issue.expected), received: String(issue.received) };
+      params = {
+        expected: EXPECTED_TYPE_NAMES[issue.expected] ?? issue.expected,
+        ...('input' in issue && { received: getReceivedType(issue.input, issue.expected) }),
+      };
       break;
-    case 'invalid_literal':
-      params = isIssuePrimitive(issue.expected) ? { expected: issue.expected } : undefined;
+    case 'invalid_value': {
+      const [expected] = issue.values;
+      if (issue.values.length > 1) {
+        params = { options: issue.values.filter(isIssuePrimitive) };
+      } else {
+        params = isIssuePrimitive(expected) ? { expected } : undefined;
+      }
       break;
-    case 'invalid_enum_value':
-    case 'invalid_union_discriminator':
-      params = { options: (issue.options as unknown[]).filter(isIssuePrimitive) };
+    }
+    case 'invalid_union':
+      params = isDiscriminatorIssue(issue)
+        ? { options: issue.options.filter(isIssuePrimitive) }
+        : undefined;
       break;
     case 'too_small':
       params = getBoundParams('minimum', issue.minimum, issue);
@@ -663,15 +735,11 @@ export function getConfigIssueParams(issue: SchemaIssue): ConfigIssueParams | un
     case 'too_big':
       params = getBoundParams('maximum', issue.maximum, issue);
       break;
-    case 'invalid_string': {
-      const { validation } = issue;
-      params = {
-        validation: typeof validation === 'string' ? validation : Object.keys(validation)[0],
-      };
+    case 'invalid_format':
+      params = { validation: STRING_FORMAT_NAMES[issue.format] ?? issue.format };
       break;
-    }
     case 'not_multiple_of': {
-      const multipleOf = toIssueNumber(issue.multipleOf);
+      const multipleOf = toIssueNumber(issue.divisor);
       params = multipleOf !== undefined ? { multipleOf } : undefined;
       break;
     }
@@ -816,16 +884,35 @@ type SchemaIssue = NonNullable<
   ReturnType<typeof configSchema.safeParse>['error']
 >['issues'][number];
 
+/** A zod issue path as an override path; config keys are never symbols. */
+function toIssuePath(path: readonly PropertyKey[]): IssuePath {
+  return path.filter((segment): segment is string | number => typeof segment !== 'symbol');
+}
+
 /**
- * A union reports one issue at its own path; the branch whose failures are fewest, then
- * deepest, is the shape the value was written for, so its issues locate the actual fault.
+ * Unwrap record-key failures and select the closest union branch by issue count, then depth.
+ * Nested issues have relative paths, so each wrapper's path is prepended before recursing.
  */
-function expandUnionIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
+function expandSchemaIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
   return issues.flatMap((issue) => {
-    if (issue.code !== 'invalid_union' || depth >= MAX_MERGE_DEPTH) {
+    if (depth >= MAX_MERGE_DEPTH) {
       return [issue];
     }
-    const branches = issue.unionErrors.map((error) => error.issues);
+    if (issue.code === 'invalid_key') {
+      return expandSchemaIssues(
+        issue.issues.map((keyIssue) => ({
+          ...keyIssue,
+          path: [...issue.path, ...keyIssue.path],
+        })),
+        depth + 1,
+      );
+    }
+    if (issue.code !== 'invalid_union') {
+      return [issue];
+    }
+    const branches = (issue.errors as SchemaIssue[][]).map((branch) =>
+      branch.map((branchIssue) => ({ ...branchIssue, path: [...issue.path, ...branchIssue.path] })),
+    );
     const closest = branches.reduce<SchemaIssue[] | undefined>((best, branch) => {
       if (!best || branch.length < best.length) {
         return branch;
@@ -833,32 +920,42 @@ function expandUnionIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
       const depthOf = (list: SchemaIssue[]) => Math.max(0, ...list.map((i) => i.path.length));
       return branch.length === best.length && depthOf(branch) > depthOf(best) ? branch : best;
     }, undefined);
-    return closest && closest.length > 0 ? expandUnionIssues(closest, depth + 1) : [issue];
+    return closest && closest.length > 0 ? expandSchemaIssues(closest, depth + 1) : [issue];
   });
 }
 
 /** The parts of a zod schema the shape walk reads, without depending on zod. */
 type SchemaNode = {
-  _def: {
-    typeName?: string;
+  def: {
+    type: string;
     innerType?: SchemaNode;
-    schema?: SchemaNode;
+    in?: SchemaNode;
+    out?: SchemaNode;
     getter?: () => SchemaNode;
-    type?: SchemaNode;
+    element?: SchemaNode;
     valueType?: SchemaNode;
     left?: SchemaNode;
     right?: SchemaNode;
-    options?: SchemaNode[] | Map<unknown, SchemaNode>;
+    options?: SchemaNode[];
   };
   shape?: Record<string, SchemaNode>;
   safeParse: (value: unknown) => { success: boolean };
 };
 
-/** The schema beneath optional, nullable, default, refinement and lazy wrappers. */
+/** The side of a pipe that validates the value: the input, unless it only preprocesses. */
+function getPipeSchema(node: SchemaNode): SchemaNode | undefined {
+  const { in: input, out } = node.def;
+  return input?.def.type === 'transform' ? out : input;
+}
+
+/** The schema beneath optional, nullable, default, transform, preprocess and lazy wrappers. */
 function unwrapSchema(schema: SchemaNode): SchemaNode {
   let node = schema;
   for (let depth = 0; depth < MAX_MERGE_DEPTH; depth++) {
-    const inner = node._def.innerType ?? node._def.schema ?? node._def.getter?.();
+    const inner =
+      node.def.innerType ??
+      (node.def.type === 'pipe' ? getPipeSchema(node) : undefined) ??
+      node.def.getter?.();
     if (!inner) {
       break;
     }
@@ -870,22 +967,18 @@ function unwrapSchema(schema: SchemaNode): SchemaNode {
 /** The schema one segment below `node`, through objects, records, arrays and union options. */
 function getChildSchema(node: SchemaNode, segment: string, depth = 0): SchemaNode | undefined {
   const inner = unwrapSchema(node);
-  const { typeName } = inner._def;
-  if (typeName === 'ZodObject' && inner.shape) {
+  const { type } = inner.def;
+  if (type === 'object' && inner.shape) {
     return hasOwn(inner.shape, segment) ? inner.shape[segment] : undefined;
   }
-  if (typeName === 'ZodRecord') {
-    return inner._def.valueType;
+  if (type === 'record') {
+    return inner.def.valueType;
   }
-  if (typeName === 'ZodArray') {
-    return ARRAY_INDEX.test(segment) ? inner._def.type : undefined;
+  if (type === 'array') {
+    return ARRAY_INDEX.test(segment) ? inner.def.element : undefined;
   }
-  if (
-    (typeName === 'ZodUnion' || typeName === 'ZodDiscriminatedUnion') &&
-    inner._def.options &&
-    depth < MAX_MERGE_DEPTH
-  ) {
-    for (const option of inner._def.options.values()) {
+  if (type === 'union' && inner.def.options && depth < MAX_MERGE_DEPTH) {
+    for (const option of inner.def.options.values()) {
       const child = getChildSchema(option, segment, depth + 1);
       if (child) {
         return child;
@@ -898,18 +991,14 @@ function getChildSchema(node: SchemaNode, segment: string, depth = 0): SchemaNod
 /** Whether {@link getChildSchema} reaches `segment` below `node` through an array. */
 function isArrayStep(node: SchemaNode, segment: string, depth = 0): boolean {
   const inner = unwrapSchema(node);
-  const { typeName } = inner._def;
-  if (typeName === 'ZodArray') {
+  const { type } = inner.def;
+  if (type === 'array') {
     return true;
   }
-  if (
-    (typeName !== 'ZodUnion' && typeName !== 'ZodDiscriminatedUnion') ||
-    !inner._def.options ||
-    depth >= MAX_MERGE_DEPTH
-  ) {
+  if (type !== 'union' || !inner.def.options || depth >= MAX_MERGE_DEPTH) {
     return false;
   }
-  for (const option of inner._def.options.values()) {
+  for (const option of inner.def.options.values()) {
     if (getChildSchema(option, segment, depth + 1)) {
       return isArrayStep(option, segment, depth + 1);
     }
@@ -943,7 +1032,7 @@ function resolveConfigSchemaPath(
     const segment = rest[index];
     /** `from` counts in `segments`, where `rest[index]` is `segments[index + 1]`. */
     const counts = index + 1 >= from;
-    if (!node || OPAQUE_SCHEMA_TYPES.has(unwrapSchema(node)._def.typeName ?? '')) {
+    if (!node || OPAQUE_SCHEMA_TYPES.has(unwrapSchema(node).def.type)) {
       node = undefined;
       throughArray = throughArray || (counts && ARRAY_INDEX.test(segment));
       continue;
@@ -962,7 +1051,7 @@ function resolveConfigSchemaPath(
  */
 export function isConfigRecordPath(segments: readonly string[]): boolean {
   const { node } = resolveConfigSchemaPath(segments);
-  return node != null && unwrapSchema(node)._def.typeName === 'ZodRecord';
+  return node != null && unwrapSchema(node).def.type === 'record';
 }
 
 /**
@@ -992,14 +1081,12 @@ export function isConfigEntryArrayItemPath(
  * side is not an object, so nothing is judged on a shape the walk cannot see whole.
  */
 function getIntersectionShape(node: SchemaNode, depth = 0): Record<string, SchemaNode> | undefined {
-  if (depth >= MAX_MERGE_DEPTH || !node._def.left || !node._def.right) {
+  if (depth >= MAX_MERGE_DEPTH || !node.def.left || !node.def.right) {
     return undefined;
   }
-  const [left, right] = [node._def.left, node._def.right].map((side) => {
+  const [left, right] = [node.def.left, node.def.right].map((side) => {
     const inner = unwrapSchema(side);
-    return inner._def.typeName === 'ZodIntersection'
-      ? getIntersectionShape(inner, depth + 1)
-      : inner.shape;
+    return inner.def.type === 'intersection' ? getIntersectionShape(inner, depth + 1) : inner.shape;
   });
   return left && right ? { ...left, ...right } : undefined;
 }
@@ -1007,15 +1094,11 @@ function getIntersectionShape(node: SchemaNode, depth = 0): Record<string, Schem
 /** Whether a schema accepts arbitrary keys at this level (a record, or a union with one). */
 function isRecordSchema(schema: SchemaNode): boolean {
   const node = unwrapSchema(schema);
-  const { typeName, options } = node._def;
-  if (typeName === 'ZodRecord') {
+  const { type, options } = node.def;
+  if (type === 'record') {
     return true;
   }
-  return (
-    (typeName === 'ZodUnion' || typeName === 'ZodDiscriminatedUnion') &&
-    options != null &&
-    [...options.values()].some(isRecordSchema)
-  );
+  return type === 'union' && options != null && [...options.values()].some(isRecordSchema);
 }
 
 type ShapeIssue = { code: 'union_dropped_key' | 'dotted_key'; path: IssuePath };
@@ -1068,34 +1151,30 @@ function findShapeIssues(
     return [];
   }
   const node = unwrapSchema(schema);
-  const { typeName } = node._def;
-  if (typeName === 'ZodObject' && node.shape && isPlainObject(value)) {
+  const { type } = node.def;
+  if (type === 'object' && node.shape && isPlainObject(value)) {
     return findObjectShapeIssues(node.shape, value, path, depth);
   }
-  if (typeName === 'ZodIntersection' && isPlainObject(value)) {
+  if (type === 'intersection' && isPlainObject(value)) {
     const shape = getIntersectionShape(node);
     return shape ? findObjectShapeIssues(shape, value, path, depth) : [];
   }
-  if (typeName === 'ZodArray' && node._def.type && Array.isArray(value)) {
-    const item = node._def.type;
+  if (type === 'array' && node.def.element && Array.isArray(value)) {
+    const item = node.def.element;
     return value.flatMap((entry, index) =>
       findShapeIssues(item, entry, [...path, index], depth + 1),
     );
   }
-  if (typeName === 'ZodRecord' && node._def.valueType && isPlainObject(value)) {
-    const entrySchema = node._def.valueType;
+  if (type === 'record' && node.def.valueType && isPlainObject(value)) {
+    const entrySchema = node.def.valueType;
     return Object.entries(value).flatMap(([key, entry]) =>
       findShapeIssues(entrySchema, entry, [...path, key], depth + 1),
     );
   }
-  if (
-    (typeName !== 'ZodUnion' && typeName !== 'ZodDiscriminatedUnion') ||
-    !node._def.options ||
-    !isPlainObject(value)
-  ) {
+  if (type !== 'union' || !node.def.options || !isPlainObject(value)) {
     return [];
   }
-  const options = [...node._def.options.values()];
+  const options = [...node.def.options.values()];
   const accepted = options.find((option) => option.safeParse(value).success);
   if (!accepted) {
     /** A strict option fails on the dotted key itself, and parsing reports it only as unrecognized. */
@@ -1178,9 +1257,11 @@ export function getConfigOverrideIssues(
       continue;
     }
     const schema = shape[section as keyof typeof shape] as unknown as SchemaNode;
-    const result = shape[section as keyof typeof shape].safeParse(merged[section]);
+    const result = shape[section as keyof typeof shape].safeParse(merged[section], {
+      reportInput: true,
+    });
     const shapeIssues = findShapeIssues(schema, merged[section], []);
-    const schemaIssues = result.success ? [] : expandUnionIssues(result.error.issues);
+    const schemaIssues = result.success ? [] : expandSchemaIssues(result.error.issues);
     if (result.success && shapeIssues.length === 0) {
       validSections.add(section);
     }
@@ -1189,7 +1270,7 @@ export function getConfigOverrideIssues(
     }
     for (const issue of schemaIssues) {
       if (issue.code !== 'unrecognized_keys') {
-        report([section, ...issue.path], issue.code, issue);
+        report([section, ...toIssuePath(issue.path)], getConfigIssueCode(issue), issue);
       }
     }
   }

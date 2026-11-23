@@ -4,8 +4,11 @@ import {
   bindUpstreamTokenProviderResolver,
   createScheduleUpstreamTokenProviderResolver,
 } from './mcp';
+import {
+  restoreExecutionContext,
+  createScheduleExecutionContext,
+} from '~/agents/authority/context';
 import { createLazyOboUpstreamTokenProvider } from '../mcp/oauth/obo';
-import { restoreScheduledTokenContext } from './context';
 
 const user = { id: 'owner', tenantId: 'tenant' } as IUser;
 const context: ScheduledTokenContext = {
@@ -42,7 +45,12 @@ it.each([false, true])('captures verified root identity for manual=%s', async (m
   const provider = jest.fn().mockResolvedValue({ access_token: 'token' });
   const resolve = jest.fn().mockResolvedValue(provider);
   const signal = new AbortController().signal;
-  const bound = createScheduleUpstreamTokenProviderResolver(req, resolve, signal)!;
+  const bound = createScheduleUpstreamTokenProviderResolver(
+    req,
+    resolve,
+    signal,
+    createScheduleExecutionContext(req),
+  )!;
   req.body.agent_id = 'child-agent';
   req.body.agentTrigger.event.source.id = 'changed';
   await createLazyOboUpstreamTokenProvider(bound, signal, target)();
@@ -52,17 +60,26 @@ it.each([false, true])('captures verified root identity for manual=%s', async (m
 
 it('ignores copied schedule metadata on an ordinary interactive request', () => {
   const resolve = jest.fn();
+  const req = { ...request(), _isAgentTrigger: false };
   expect(
-    createScheduleUpstreamTokenProviderResolver({ ...request(), _isAgentTrigger: false }, resolve),
+    createScheduleUpstreamTokenProviderResolver(
+      req,
+      resolve,
+      undefined,
+      createScheduleExecutionContext(req),
+    ),
   ).toBeUndefined();
   expect(resolve).not.toHaveBeenCalled();
 });
 
 it('leaves context absent for legacy schedule classification without verified metadata', async () => {
   const resolve = jest.fn().mockResolvedValue(jest.fn());
+  const req = { ...request(), _isAgentTrigger: false, _isScheduledFire: true };
   const bound = createScheduleUpstreamTokenProviderResolver(
-    { ...request(), _isAgentTrigger: false, _isScheduledFire: true },
+    req,
     resolve,
+    undefined,
+    createScheduleExecutionContext(req),
   )!;
   await bound();
   expect(resolve).toHaveBeenCalledWith(user, { signal: undefined });
@@ -110,7 +127,7 @@ it('restores a paused run from job identity without trusting resume body fields'
     _isScheduledFire: true,
     body: { scheduleId: 'spoofed', agent_id: 'spoofed' },
   };
-  const restored = restoreScheduledTokenContext(req, {
+  const restored = restoreExecutionContext(req, {
     userId: 'owner',
     tenantId: 'tenant',
     scheduleId: 'schedule',
@@ -126,7 +143,7 @@ it.each([{ userId: 'different' }, { tenantId: 'different' }])(
   'rejects invalid restored identity %j',
   (override) => {
     expect(() =>
-      restoreScheduledTokenContext(
+      restoreExecutionContext(
         { user },
         {
           userId: 'owner',
@@ -144,7 +161,7 @@ it.each([{ agent_id: undefined }, { tenantId: undefined }])(
   'leaves legacy job context absent for %j',
   async (override) => {
     const req = { user, _isScheduledFire: true };
-    const restored = restoreScheduledTokenContext(req, {
+    const restored = restoreExecutionContext(req, {
       userId: 'owner',
       tenantId: 'tenant',
       scheduleId: 'schedule',

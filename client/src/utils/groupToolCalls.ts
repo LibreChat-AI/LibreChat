@@ -1,60 +1,11 @@
 import { Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { getActivityLabelText, getBatchActivityLabelPart } from '@librechat/chat';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
 import type { PartWithIndex } from '~/components/Chat/Messages/Content/ParallelContent';
-import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
 
 export type GroupedPart =
   | { type: 'single'; part: PartWithIndex }
   | { type: 'tool-group'; parts: PartWithIndex[]; labelPart?: PartWithIndex };
-
-type ToolCallWithNestedContent = Agents.ToolCall & {
-  subagent_content?: TMessageContentParts[];
-};
-
-/**
- * True when the part carries an unresolved tool approval — directly or nested
- * in subagent content. Collapsed disclosure bodies retain instead of
- * unmounting while this holds, because `ToolApproval` owns unsent local
- * edit/respond/reason state that an unmount would discard.
- */
-export function hasPendingApprovalInPart(part: TMessageContentParts): boolean {
-  if (part.type !== ContentTypes.TOOL_CALL) {
-    return false;
-  }
-  const toolCall = part[ContentTypes.TOOL_CALL] as ToolCallWithNestedContent | undefined;
-  if (!toolCall) {
-    return false;
-  }
-  if (toolCall.approval != null && (toolCall.output?.length ?? 0) === 0) {
-    return true;
-  }
-  return (
-    Array.isArray(toolCall.subagent_content) &&
-    toolCall.subagent_content.some(hasPendingApprovalInPart)
-  );
-}
-
-/**
- * True while a standard tool call waits on a sign-in. A step the run already
- * closed can never be waiting, whatever its progress says: `ToolCall` hides
- * the sign-in button on a terminal status, so counting it as pending would
- * show a trust warning with no authentication action behind it.
- */
-export function hasPendingAuthInPart(part: TMessageContentParts): boolean {
-  if (part.type !== ContentTypes.TOOL_CALL) {
-    return false;
-  }
-  const toolCall = part[ContentTypes.TOOL_CALL];
-  if (!toolCall || !('args' in toolCall) || toolCall.runStepStatus != null) {
-    return false;
-  }
-  const standardToolCall = toolCall as Agents.ToolCall & { progress?: number };
-  return (
-    typeof standardToolCall.auth === 'string' &&
-    standardToolCall.auth.length > 0 &&
-    (standardToolCall.progress ?? 0.1) < 1
-  );
-}
 
 function isGroupableToolCall(part: TMessageContentParts): boolean {
   if (part.type !== ContentTypes.TOOL_CALL) {
@@ -178,6 +129,16 @@ export function groupSequentialToolCalls(parts: PartWithIndex[]): GroupedPart[] 
   };
 
   for (const item of parts) {
+    const previous = result[result.length - 1];
+    if (
+      isReasoningPart(item.part) &&
+      currentBlock.length === 0 &&
+      previous?.type === 'tool-group' &&
+      previous.labelPart != null
+    ) {
+      previous.parts.push(item);
+      continue;
+    }
     if (
       isGroupableToolCall(item.part) ||
       item.part.type === ContentTypes.THINK ||

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { getAccessToken, requestJson } from '../helpers';
 import { openSidebar } from './sidebar';
+import { unroute } from '../fixtures';
 
 /**
  * The Assistant Builder's delete control confirms through the shared `OGDialog` template.
@@ -119,10 +120,13 @@ test.describe('assistant delete confirmation', () => {
       dialog = await expectConfirmDialog(page);
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden();
-      /** The mobile drawer also collapses on that Escape, for every dialog opened from it
-       *  (berry-13/LibreChat#428), which takes the trigger with it. */
-      if (!isMobile) {
-        await expect(trigger).toBeFocused();
+      /** The dialog takes the Escape, so on mobile the drawer it was opened from stays open
+       *  and the trigger is there to take focus back (berry-13/LibreChat#428). */
+      await expect(trigger).toBeFocused();
+      if (isMobile) {
+        await expect(
+          page.getByRole('button', { name: 'Close sidebar' }).filter({ visible: true }).first(),
+        ).toBeVisible();
       }
 
       expect(await assistantExists(page, assistant.id)).toBe(true);
@@ -154,10 +158,10 @@ test.describe('assistant delete confirmation', () => {
         page.getByText('There was an error deleting the assistant', { exact: true }),
       ).toBeVisible();
 
-      await page.unroute(deleteUrl);
+      await unroute(page, deleteUrl);
       expect(await assistantExists(page, assistant.id)).toBe(true);
     } finally {
-      await page.unroute(deleteUrl);
+      await unroute(page, deleteUrl);
       await deleteAssistant(page, assistant.id);
     }
   });

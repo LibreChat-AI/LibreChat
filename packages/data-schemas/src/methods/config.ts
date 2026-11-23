@@ -500,13 +500,31 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
      * Removes one path, or several in one write, pruning the parents left empty. A path is a
      * dotted field path or `{ segments }`, which can name a key that contains a dot.
      */
-    unsetConfigField: (
+    unsetConfigField: async (
       principalType: PrincipalType,
       principalId: ConfigPrincipalId,
       fieldPaths: ConfigPathInputs,
       _session?: NoSession,
       options?: ConfigWriteOptions,
-    ): Promise<ConfigRecord | null> =>
+    ): Promise<ConfigRecord | null> => {
+      const unset = await operations.unsetFields(
+        toPrincipal(principalType, principalId),
+        fieldPaths,
+        options,
+      );
+      return unset?.config ?? null;
+    },
+
+    /**
+     * Like `unsetConfigField`, but also reports whether this write changed the document: one
+     * that holds none of the paths is returned as stored, unwritten.
+     */
+    unsetConfigFieldTracked: (
+      principalType: PrincipalType,
+      principalId: ConfigPrincipalId,
+      fieldPaths: ConfigPathInputs,
+      options?: ConfigWriteOptions,
+    ): Promise<ConfigWriteOutcome | null> =>
       operations.unsetFields(toPrincipal(principalType, principalId), fieldPaths, options),
 
     deleteConfig: (

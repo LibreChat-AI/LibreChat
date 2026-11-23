@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Provider } from 'jotai';
-import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
+import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
+import { useEventHandlers } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, EModelEndpoint, QueryKeys, LocalStorageKeys } from 'librechat-data-provider';
 import type {
@@ -21,26 +22,20 @@ import {
 import { setFileSearchChoice, getFileSearchChoice, clearFileSearchChoices } from '~/utils/choices';
 import { beginFileSearchUpload, completeFileSearchUpload } from '~/hooks/Files/search';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
-import useEventHandlers from '../useEventHandlers';
+import { StreamHostTestProvider } from 'test/streamHost';
+import store from '~/store';
 
 const mockStatus = jest.fn();
 const mockStartupConfig = jest.fn();
 const mockApplyAgentTemplate = jest.fn();
 const mockQueueTitleGeneration = jest.fn();
 const mockAnnounce = jest.fn();
-const mockReset = jest.fn();
 
 jest.mock('~/hooks/Agents', () => ({ useApplyAgentTemplate: () => mockApplyAgentTemplate }));
 jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({ token: 'test' }) }));
 jest.mock('~/Providers', () => ({
   useLiveAnnouncer: () => ({ announcePolite: mockAnnounce }),
   useAgentsMapContext: () => ({}),
-}));
-jest.mock('~/hooks/SSE/useContentHandler', () => () => ({}));
-jest.mock('~/hooks/SSE/useAttachmentHandler', () => () => jest.fn());
-jest.mock('~/hooks/SSE/useStepHandler', () => () => ({
-  resetSubagentAtoms: mockReset,
-  resetPtcAtoms: mockReset,
 }));
 jest.mock('~/hooks/Agents/workspacePreferences', () => ({
   useWorkspacePreferences: () => ({ get: () => undefined }),
@@ -91,7 +86,9 @@ function setup(
     <QueryClientProvider client={queryClient}>
       <Provider>
         <RecoilRoot>
-          <MemoryRouter initialEntries={['/c/new']}>{children}</MemoryRouter>
+          <MemoryRouter initialEntries={['/c/new']}>
+            <StreamHostTestProvider>{children}</StreamHostTestProvider>
+          </MemoryRouter>
         </RecoilRoot>
       </Provider>
     </QueryClientProvider>
@@ -99,6 +96,7 @@ function setup(
   const hook = renderHook(
     () => {
       const [conversation, setConversation] = useState<TConversation | null>(current);
+      const setActiveConversation = useSetRecoilState(store.conversationByIndex(0));
       const handlers = useEventHandlers({
         isAddedRequest,
         setConversation,
@@ -111,6 +109,7 @@ function setup(
       return {
         conversation,
         setConversation,
+        setActiveConversation,
         workspace: useCodeWorkspace(conversation),
         ...handlers,
       };
@@ -339,6 +338,42 @@ describe('created composer identity', () => {
         queryClient.clear();
         window.history.replaceState({}, '', '/');
       }
+    },
+  );
+
+  it.each(['created', 'final'] as const)(
+    'does not apply the old spec’s tool settings on %s after the pane retargets',
+    (event) => {
+      const currentMessages: TMessage[] = [];
+      const original = { ...initialConversation, conversationId: 'saved-chat', spec: 'spec-a' };
+      const { result, submission, createdData, queryClient } = setup(
+        original,
+        false,
+        currentMessages,
+      );
+      currentMessages.push(submission.userMessage, submission.initialResponse);
+      const current = { ...original, spec: 'spec-b' };
+      act(() => {
+        result.current.setActiveConversation(current);
+        result.current.setConversation(current);
+      });
+      const stale = { ...submission, ephemeralAgent: { web_search: true } };
+      act(() => {
+        if (event === 'created') {
+          result.current.createdHandler(createdData, stale);
+        } else {
+          result.current.finalHandler(
+            {
+              conversation: original,
+              requestMessage: stale.userMessage,
+              responseMessage: { ...stale.initialResponse, text: 'Finished reply' },
+            },
+            stale,
+          );
+        }
+      });
+      expect(mockApplyAgentTemplate).not.toHaveBeenCalled();
+      queryClient.clear();
     },
   );
 

@@ -58,6 +58,7 @@ const {
   createCodeApiRateLimitBudget,
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
+  failUnresolvedFile,
   isLeader,
 } = require('@librechat/api');
 const {
@@ -366,7 +367,7 @@ const processFileURL = async ({
   req,
 }) => {
   const retentionExpiryPromise = getRetentionExpiry(req);
-  const { saveURL, getFileURL } = getStrategyFunctions(fileStrategy);
+  const { saveURL, getFileURL, deleteByPath } = getStrategyFunctions(fileStrategy);
   try {
     const savedFile = await saveURL({ userId, URL, fileName, basePath, tenantId });
     if (!savedFile) {
@@ -388,7 +389,13 @@ const processFileURL = async ({
         : (savedFile.filepath ??
           (await getFileURL({ userId, fileName: fallbackFileName, basePath, tenantId })));
     if (!filepath) {
-      throw new Error(`Strategy "${fileStrategy}" did not return a file URL for "${fileName}"`);
+      await failUnresolvedFile({
+        source: fileStrategy,
+        remove: deleteByPath,
+        userId,
+        fileName,
+        basePath,
+      });
     }
     const storageMetadata = getStorageMetadata({
       filepath,
@@ -1210,6 +1217,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
 
   /* Extracted before storage, which may move the temporary upload the extractors read. */
   const fallbackText = await resolveUploadFallbackText({
+    req,
     file,
     fileId: file_id,
     deliveryPath: llmDeliveryPath,
@@ -1243,6 +1251,11 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     // SECOND: Upload to Vector DB
     const { uploadVectors } = require('./VectorDB/crud');
 
+    /* Vectors live under the entity that embedded them, and priming asks which namespaces
+     * hold them rather than reading the root flag. Omitting it here re-embeds the file on
+     * the first search, and aborts that search if RAG is briefly unavailable. */
+    fileInfoMetadata = entity_id != null ? { embeddedEntities: [entity_id] } : {};
+
     embeddingResult = await withStoredUploadCleanup(
       {
         req,
@@ -1255,6 +1268,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
           source,
           /* The embed request may commit before its response is lost; deleting is idempotent. */
           embedded: true,
+          metadata: fileInfoMetadata,
           filepath: storageResult.filepath,
           ...getStorageMetadata({
             filepath: storageResult.filepath,
@@ -1272,11 +1286,6 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
           entity_id,
         }),
     );
-
-    /* Vectors live under the entity that embedded them, and priming asks which namespaces
-     * hold them rather than reading the root flag. Omitting it here re-embeds the file on
-     * the first search, and aborts that search if RAG is briefly unavailable. */
-    fileInfoMetadata = entity_id != null ? { embeddedEntities: [entity_id] } : {};
   } else if (isImage) {
     /* The conversion is this file's storage step. Uploading the original first left a
      * second object nothing references, and the record's size and dimensions describing

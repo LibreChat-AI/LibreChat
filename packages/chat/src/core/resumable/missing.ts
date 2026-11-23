@@ -4,12 +4,13 @@ import type { TerminalContext } from './terminal';
 import {
   restoreLiveStatus,
   handoffToReplacement,
+  settleOptimisticConversation,
   clearPendingApprovalForTerminal,
   clearAttachedGenerationCreatedAt,
 } from './terminal';
 import { GENERATION_PROTOCOL_VERSION, supportsGenerationProtocolV2 } from '../protocol';
-import { isInitialNewConversation, keepLocalCodeApprovalMode } from './messages';
-import { getRecoverySteerId, toStartGenerationError } from './start';
+import { isInitialNewConversation } from './messages';
+import { getRecoverySteerId } from './start';
 
 /**
  * A 404 from the stream route: the job completed and was cleaned up, and its messages are
@@ -161,38 +162,8 @@ export async function recoverMissingStream(ctx: TerminalContext): Promise<void> 
   host.cache.removeActiveJob(currentStreamId);
   clearAttachedGenerationCreatedAt(ctx);
   clearPendingApprovalForTerminal(ctx, recoveryConvoId);
-  if (!run.createdStreamIds.has(currentStreamId) && run.optimisticStreamIds.has(currentStreamId)) {
-    // Both fresh and resumed subscriptions can miss every event of a fast turn.
-    // A missing job proves neither that the conversation was saved nor that it failed.
-    try {
-      const persisted = await host.cache.fetchConversation(recoveryConvoId);
-      if (!sub.isCurrent()) return;
-      if (persisted?.conversationId === recoveryConvoId) {
-        host.cache.setConversation(recoveryConvoId, persisted);
-        host.cache.upsertConversation(persisted);
-        host.pane.updateConversation?.((current) => {
-          if (
-            current?.conversationId != null &&
-            current.conversationId !== Constants.NEW_CONVO &&
-            current.conversationId !== recoveryConvoId
-          )
-            return current;
-          return keepLocalCodeApprovalMode(
-            { ...current, ...persisted },
-            current,
-            current?.conversationId,
-          );
-        });
-      }
-    } catch (error) {
-      if (!sub.isCurrent()) return;
-      if (toStartGenerationError(error)?.response?.status === 404) {
-        host.cache.removeConversation(currentStreamId);
-      }
-    }
-    // An inconclusive read must not turn a saved chat into a phantom.
-    void host.cache.refreshConversationLists();
-    void host.cache.refreshPinnedConversations();
+  if (!(await settleOptimisticConversation(ctx, recoveryConvoId))) {
+    return;
   }
   if (persistedMessages) {
     host.messages.set(persistedMessages);

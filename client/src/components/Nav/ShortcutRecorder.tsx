@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
-import type { RefObject } from 'react';
-import type { ShortcutBinding } from '~/utils/shortcuts';
 import {
   bindingDisplayKeys,
   bindingHash,
@@ -9,7 +7,9 @@ import {
   isModifierKey,
   isValidBinding,
   normalizeKey,
-} from '~/utils/shortcuts';
+} from '@librechat/chat';
+import type { ShortcutBinding } from '@librechat/chat';
+import type { RefObject } from 'react';
 import { isMac } from '~/hooks/useKeyboardShortcuts';
 import ShortcutKeyCombo from './ShortcutKeyCombo';
 import { useLocalize } from '~/hooks';

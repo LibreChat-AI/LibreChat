@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import path from 'path';
 
-const DEFAULT_BASE_URL = 'http://localhost:3080';
+/** Off 3080, which a standard LibreChat deployment (`.env.example`, Docker) publishes, so the
+ *  harness can start its own server while a normal instance keeps running. */
+const DEFAULT_BASE_URL = 'http://localhost:3180';
 const DEFAULT_MONGO_URI = 'mongodb://127.0.0.1:27017/LibreChat-e2e';
 const DEFAULT_RUNTIME_ENV_PATH = path.resolve(__dirname, '../specs/.test-results/runtime-env.json');
 const GENERATED_CREDS_KEY = crypto.randomBytes(32).toString('hex');
@@ -138,6 +140,8 @@ export function getBaseE2EEnv(): Record<string, string> {
     SESSION_EXPIRY: process.env.SESSION_EXPIRY ?? '3600000',
     ALLOW_REGISTRATION: 'true',
     REFRESH_TOKEN_EXPIRY: process.env.REFRESH_TOKEN_EXPIRY ?? '3600000',
+    /** Playwright's Node-side requests keep idle sockets indefinitely; see `keepalive.js`. */
+    HTTP_KEEP_ALIVE_TIMEOUT_MS: '0',
     ...getStreamStoreEnv(),
   };
 }

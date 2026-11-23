@@ -21,7 +21,7 @@ const MineFilterToggle: React.FC<MineFilterToggleProps> = ({
       description={localize('com_agents_filter_mine')}
       render={
         <Button
-          variant={iconOnly ? 'ghost' : 'outline-toggle'}
+          variant={iconOnly ? 'quiet' : 'outline-toggle'}
           aria-label={localize('com_agents_my_agents')}
           size={iconOnly ? 'icon-sm' : 'compact'}
           aria-pressed={checked}

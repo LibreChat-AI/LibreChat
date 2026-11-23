@@ -1,8 +1,14 @@
 import { nanoid } from 'nanoid';
-import { ResourceType, PermissionBits, normalizeServerName } from 'librechat-data-provider';
+import {
+  ResourceType,
+  PrincipalType,
+  PermissionBits,
+  normalizeServerName,
+} from 'librechat-data-provider';
 import type { Model, RootFilterQuery, Types } from 'mongoose';
 import type { MCPOptions } from 'librechat-data-provider';
 import type { MCPServerDocument } from '../types';
+import { runAsSystem } from '~/config/tenantContext';
 import { permissionBitSupersets } from './aclEntry';
 import logger from '~/config/winston';
 
@@ -60,6 +66,14 @@ export interface MCPServerViewerEntry {
   principalId?: string;
 }
 
+/** A view-ACL principal as stored or as already read by a caller. */
+export interface MCPServerViewerPrincipal {
+  principalType: string;
+  principalId?: { toString(): string } | string | null;
+}
+
+const OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i;
+
 export interface ErasableMCPServer {
   id: string;
   serverName: string;
@@ -103,6 +117,7 @@ export function createMCPServerMethods(
   deleteMCPServersWithAcl: (ids: string[]) => Promise<number>;
   findMCPServerOAuthTokenUserIds: (serverName: string, tenantId?: string) => Promise<string[]>;
   findMCPServerViewerEntries: (serverId: string) => Promise<MCPServerViewerEntry[]>;
+  findMCPServerViewerUserIds: (entries: MCPServerViewerPrincipal[]) => Promise<string[]>;
 } {
   /**
    * Finds the next available server name by checking DB and reserved-name collisions.
@@ -123,7 +138,33 @@ export function createMCPServerMethods(
       .select('serverName')
       .lean<Array<{ serverName: string }>>();
 
+    // Old reservations lost their tenant identity. Treat them as global tombstones;
+    // assigning them to a guessed tenant could resurrect a retired capability name.
+    const [reservations, legacyReservations] = await Promise.all([
+      mongoose.models.MCPName.find({ name: { $regex: matchingNamePattern } })
+        .select('name')
+        .lean<Array<{ name: string }>>(),
+      // Deliberately bypass tenant filtering only for these tenantless rows.
+      runAsSystem(async () =>
+        mongoose.models.MCPName.find({
+          name: { $regex: matchingNamePattern },
+          tenantId: { $in: [null, ''] },
+        })
+          .select('name')
+          .lean<Array<{ name: string }>>(),
+      ),
+    ]);
+    const referenced = await mongoose.models.Agent?.find({
+      mcpServerNames: { $regex: matchingNamePattern },
+    })
+      .select('mcpServerNames')
+      .lean<Array<{ mcpServerNames: string[] }>>();
     const existingNames = new Set([
+      ...(referenced ?? []).flatMap((agent) =>
+        agent.mcpServerNames.filter((name) => matchingNamePattern.test(name)),
+      ),
+      ...reservations.map((entry) => entry.name),
+      ...legacyReservations.map((entry) => entry.name),
       ...existing.map((server) => server.serverName),
       ...Array.from(reservedServerNames).filter((serverName) =>
         matchingNamePattern.test(serverName),
@@ -174,6 +215,8 @@ export function createMCPServerMethods(
           serverName = `mcp-${nanoid(16)}`;
         }
 
+        await mongoose.models.MCPName.init();
+        await mongoose.models.MCPName.create({ name: serverName });
         const newServer = await MCPServer.create({
           serverName,
           normalizedServerName: normalizeServerName(serverName),
@@ -353,6 +396,12 @@ export function createMCPServerMethods(
    */
   async function deleteMCPServer(serverName: string): Promise<MCPServerDocument | null> {
     const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
+    await mongoose.models.MCPName.init();
+    await mongoose.models.MCPName.updateOne(
+      { name: serverName },
+      { $setOnInsert: { name: serverName } },
+      { upsert: true },
+    );
     return await MCPServer.findOneAndDelete({ serverName }).lean<MCPServerDocument>();
   }
 
@@ -454,6 +503,59 @@ export function createMCPServerMethods(
     }));
   }
 
+  /**
+   * Users a server's view ACL names directly or through a group, so its removal can fence viewers
+   * who hold no OAuth credential. Role and public principals are not enumerated.
+   */
+  async function findMCPServerViewerUserIds(
+    entries: MCPServerViewerPrincipal[],
+  ): Promise<string[]> {
+    const userIds = new Set<string>();
+    const groupIds = new Set<string>();
+    for (const entry of entries) {
+      const principalId = entry.principalId?.toString();
+      if (!principalId) {
+        continue;
+      }
+      if (entry.principalType === PrincipalType.USER) {
+        userIds.add(principalId);
+      } else if (
+        entry.principalType === PrincipalType.GROUP &&
+        OBJECT_ID_PATTERN.test(principalId)
+      ) {
+        groupIds.add(principalId);
+      }
+    }
+    if (groupIds.size === 0) {
+      return [...userIds];
+    }
+    const groups = await mongoose.models.Group.find({
+      _id: { $in: [...groupIds].map((id) => new mongoose.Types.ObjectId(id)) },
+    })
+      .select('memberIds')
+      .lean<Array<{ memberIds?: string[] }>>();
+    /** `memberIds` holds `idOnTheSource` for external users and the user id otherwise. */
+    const memberIds = [...new Set(groups.flatMap((group) => group.memberIds ?? []))];
+    if (memberIds.length === 0) {
+      return [...userIds];
+    }
+    const objectIds = memberIds
+      .filter((id) => OBJECT_ID_PATTERN.test(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const members = await mongoose.models.User.find({
+      $or: [
+        { idOnTheSource: { $in: memberIds } },
+        ...(objectIds.length > 0 ? [{ _id: { $in: objectIds } }] : []),
+      ],
+    })
+      .select('_id')
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    for (const member of members) {
+      userIds.add(member._id.toString());
+    }
+    return [...userIds];
+  }
+
   /** Deletes MCP servers by id together with every ACL entry on them. */
   async function deleteMCPServersWithAcl(ids: string[]): Promise<number> {
     if (ids.length === 0) {
@@ -461,6 +563,19 @@ export function createMCPServerMethods(
     }
     const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
     const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+    const servers = await MCPServer.find({ _id: { $in: objectIds } })
+      .select('serverName')
+      .lean<Array<{ serverName: string }>>();
+    await mongoose.models.MCPName.init();
+    await Promise.all(
+      servers.map(({ serverName }) =>
+        mongoose.models.MCPName.updateOne(
+          { name: serverName },
+          { $setOnInsert: { name: serverName } },
+          { upsert: true },
+        ),
+      ),
+    );
     const result = await MCPServer.deleteMany({ _id: { $in: objectIds } });
     /** ACL entries are the retry discovery key for sole-owned servers, so they go last. */
     await mongoose.models.AclEntry.deleteMany({
@@ -475,6 +590,7 @@ export function createMCPServerMethods(
     deleteMCPServersWithAcl,
     findMCPServerOAuthTokenUserIds,
     findMCPServerViewerEntries,
+    findMCPServerViewerUserIds,
     createMCPServer,
     findMCPServerByServerName,
     findMCPServerByObjectId,

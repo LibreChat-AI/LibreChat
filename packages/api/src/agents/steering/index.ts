@@ -35,3 +35,5 @@ export { createSteerIndexOffsetHandlers } from './offset';
 export type { SteerOffsetState } from './offset';
 export { toSteerFileRef } from './refs';
 export type { SteerRequestUser } from './refs';
+export { promoteDrainedSteers, completePromotedSteerHandoff } from './promotion';
+export type { SteerPromotionDeps, SteerPromotionInput, SteerPromotionResult } from './promotion';

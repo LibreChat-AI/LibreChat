@@ -7,6 +7,7 @@
  */
 
 const http = require('node:http');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = Number(process.env.E2E_MCP_OAUTH_PORT || 8767);
 const HOST = '127.0.0.1';
@@ -45,6 +46,7 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
+keepIdleConnections(server);
 server.listen(PORT, HOST, () => {
   console.log(`[e2e] fake OAuth MCP resource listening on http://${HOST}:${PORT}/mcp`);
 });

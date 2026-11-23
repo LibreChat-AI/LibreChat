@@ -108,7 +108,7 @@ async function reachable(
  * the one thing both share. The opener is also mounted a beat after first paint,
  * so the attempt has to be repeated rather than made once.
  */
-async function reachableInSidebar(
+export async function reachableInSidebar(
   page: Page,
   candidates: Locator,
   label: string,

@@ -217,6 +217,40 @@ describe('AgentClient retained answers', () => {
     getMessages.mockResolvedValue([]);
   });
 
+  it.each([false, true])(
+    'builds a first-turn prompt under legacy PII with a large catalog (deferred: %s)',
+    async (deferred) => {
+      const client = makeClient();
+      client.options.req.config.messageFilter = {
+        pii: { starterPatterns: ['sk_prefix', 'bearer_header', 'api_key_header'] },
+      };
+      client.options.agent.toolDefinitions = Array.from({ length: 1_000 }, (_, index) => ({
+        name: `mcp_tool_${index}`,
+        defer_loading: deferred,
+        parameters: {
+          type: 'object',
+          properties: {
+            value: { type: 'string', description: 'A safe value', enum: ['one', 'two'] },
+          },
+        },
+      }));
+      const firstMessage = {
+        ...latestUserMessage(),
+        messageId: 'u1',
+        parentMessageId: null,
+        text: 'Hello',
+      };
+      await expect(client.buildMessages([firstMessage], null, {})).resolves.toEqual(
+        expect.objectContaining({ prompt: expect.any(Array) }),
+      );
+
+      client.options.req.config.filters = { toolArguments: { pii: { fields: ['arguments'] } } };
+      await expect(client.buildMessages([firstMessage], null, {})).rejects.toMatchObject({
+        code: 'content_filter_uninspectable',
+      });
+    },
+  );
+
   it('completes the branch the history read cut at the summary and quotes the answer in the user turn', async () => {
     const client = makeClient();
     client.user = 'user-123';

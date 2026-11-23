@@ -1,4 +1,5 @@
 import React from 'react';
+import { SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';
 import { render, renderHook, screen, fireEvent } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import type {
@@ -8,16 +9,19 @@ import type {
 } from '~/hooks/Chat/contract';
 import type { Artifact, PtcTrace } from '~/common';
 import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { SoleToolContext, useToolAutoExpand } from '../../disclosure';
+import { PtcToolTrace, Text as TextPart } from '../index';
 import ToolArtifactCard from '../ToolArtifactCard';
-import { Text as TextPart } from '../index';
-import PtcToolTrace from '../PtcToolTrace';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
-jest.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
-jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => [] }));
+jest.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
+}));
+jest.mock('~/hooks/MCP', () => ({
+  useMCPIconMap: () => new Map(),
+  useMCPServerNames: () => [],
+}));
 jest.mock('~/hooks/Messages/useSmoothStreaming', () => () => false);
 jest.mock('~/components/Chat/Messages/Content/Markdown', () => ({
   __esModule: true,
@@ -57,6 +61,10 @@ function createHost(overrides: Partial<MessagePartsHost> = {}): MessagePartsHost
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, jest.fn()],
+    useShare: () => ({}),
+    renderContentParts: () => null,
+    renderImage: () => null,
+    renderFilePreview: () => null,
     useMessagesEditing: () => ({
       conversation: null,
       ask: jest.fn(),

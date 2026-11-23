@@ -182,7 +182,13 @@ export interface ProcessedFile<T = IMongoFile> {
 
 /** Subset of storage strategy functions needed by download and delete access flows. */
 export interface StrategyFunctions {
-  getDownloadStream: (req: ServerRequest, filepath: string) => Promise<Readable>;
+  /** Canonical object identity independent of renewable delivery URLs. */
+  getStorageKey?: (file: { filepath: string; storageKey?: string | null }) => string;
+  getDownloadStream: (
+    req: ServerRequest,
+    filepath: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<Readable>;
   getDownloadURL?: (params: DownloadURLParams) => Promise<string>;
   deleteFile?: (
     req: ServerRequest,

@@ -7,3 +7,4 @@ export { default as PromptVariables } from './PromptVariables';
 export { default as PromptDetailHeader } from './PromptDetailHeader';
 export { default as LangfusePromptMeta } from './LangfusePromptMeta';
 export { default as PromptResolvedBody } from './PromptResolvedBody';
+export { default as PromptSourceBadge } from './PromptSourceBadge';

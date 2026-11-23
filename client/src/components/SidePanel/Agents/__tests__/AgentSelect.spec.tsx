@@ -170,11 +170,11 @@ describe('AgentSelect resetAgentForm', () => {
 });
 
 describe('AgentSelect ownership filter', () => {
-  it('renders an icon-only ghost filter with an accessible name', () => {
+  it('renders an icon-only quiet filter with an accessible name', () => {
     render(<Harness agent={createAgent()} onMethods={() => undefined} />);
     const toggle = screen.getByRole('button', { name: 'com_agents_my_agents' });
     expect(toggle.textContent).toBe('');
-    expect(toggle).toHaveAttribute('variant', 'ghost');
+    expect(toggle).toHaveAttribute('variant', 'quiet');
   });
 
   it('changes the icon when ownership filtering is active', () => {

@@ -885,6 +885,8 @@ test.describe('quote references on touch devices', () => {
   }) => {
     test.setTimeout(120000);
     await seedParagraphReply(page);
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
+    await waitForReplyToSettle(page, CLOSING_PARAGRAPH);
 
     // A mouse-less selection is only published once it has been quiet for the
     // settle interval, and nothing is tracked until then — so a scroll inside

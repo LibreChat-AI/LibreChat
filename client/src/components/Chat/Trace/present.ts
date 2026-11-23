@@ -1,8 +1,8 @@
+import { parseToolName } from '@librechat/chat';
 import type { Agent, TTraceRecord, TTraceRecordRole } from 'librechat-data-provider';
 import type { ActivityIndex, ToolCallPreview } from './preview';
 import type { TranslationKeys } from '~/hooks';
 import type { TraceNode } from './model';
-import { parseToolName } from '~/utils/toolLabels';
 
 type Localize = (key: TranslationKeys, values?: Record<string, string | number>) => string;
 

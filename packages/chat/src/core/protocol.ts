@@ -27,3 +27,23 @@ export const supportsGenerationProtocolV2 = (value: unknown): boolean =>
 export const generationProtocolHeaders = (): Record<string, string> => ({
   [GENERATION_PROTOCOL_HEADER]: String(GENERATION_PROTOCOL_VERSION),
 });
+
+/**
+ * The route one generation's events are read from, with the resume cursor and the generation
+ * fence in its query. Every attachment is built here, so two readers of one generation ask the
+ * server the same question.
+ */
+export function generationStreamUrl(
+  baseUrl: string,
+  target: { streamId: string; resume?: boolean; generationCreatedAt?: number },
+): string {
+  const query = new URLSearchParams();
+  if (target.resume === true) {
+    query.set('resume', 'true');
+  }
+  if (target.generationCreatedAt != null) {
+    query.set('generationCreatedAt', String(target.generationCreatedAt));
+  }
+  query.set('generationProtocolVersion', String(GENERATION_PROTOCOL_VERSION));
+  return `${baseUrl}/api/agents/chat/stream/${encodeURIComponent(target.streamId)}?${query.toString()}`;
+}

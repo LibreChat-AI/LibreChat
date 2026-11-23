@@ -15,6 +15,8 @@ import {
   subagentThreadLineageSchema,
   getGoogleThinkingBudgetBounds,
   tPresetSchema,
+  EModelEndpoint,
+  getModelKey,
 } from './schemas';
 
 describe('reasoningOverrideSchema', () => {
@@ -827,5 +829,32 @@ describe('tPresetSchema', () => {
 
     expect(parsed).not.toHaveProperty('createdAt');
     expect(parsed).not.toHaveProperty('updatedAt');
+  });
+});
+
+describe('getModelKey', () => {
+  it.each([
+    ['anthropic.claude-sonnet-4-6-v1:0', 'anthropic'],
+    ['us.anthropic.claude-sonnet-4-6', 'anthropic'],
+    ['us.meta.llama4-maverick-instruct-v1:0', 'meta'],
+    ['amazon.nova-pro-v1:0', 'amazon'],
+    ['amazon.claude-compatible-v1:0', 'amazon'],
+  ])('keys the provider-qualified Bedrock ID %s as %s', (model, expected) => {
+    expect(getModelKey(EModelEndpoint.bedrock, model)).toBe(expected);
+  });
+
+  it.each(['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-3.5-sonnet'])(
+    'keys the bare Bedrock Claude ID %s as anthropic',
+    (model) => {
+      expect(getModelKey(EModelEndpoint.bedrock, model)).toBe('anthropic');
+    },
+  );
+
+  it('keeps a bare Bedrock ID of an unknown family as its own key', () => {
+    expect(getModelKey(EModelEndpoint.bedrock, 'my-profile-alias')).toBe('my-profile-alias');
+  });
+
+  it('keys other endpoints by the model itself', () => {
+    expect(getModelKey(EModelEndpoint.anthropic, 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
   });
 });

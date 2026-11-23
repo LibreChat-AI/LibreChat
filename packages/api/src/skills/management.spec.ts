@@ -57,7 +57,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await mongoose.disconnect();
-  await server.stop();
+  await server?.stop();
   if (originalStrict == null) delete process.env.TENANT_ISOLATION_STRICT;
   else process.env.TENANT_ISOLATION_STRICT = originalStrict;
 });

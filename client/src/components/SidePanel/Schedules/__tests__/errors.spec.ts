@@ -4,6 +4,7 @@ import {
   scheduleMCPErrorOutcomes,
   scheduleMCPCardOutcomes,
   scheduleMCPRecoveryOutcomes,
+  scheduleMCPStatusLabel,
   scheduleMCPNeedsAgentRecovery,
   scheduleDisabledMCPLabel,
 } from '../errors';
@@ -173,4 +174,99 @@ it('does not offer agent reconnection for permission-only recovery', () => {
   expect(scheduleMCPNeedsAgentRecovery([{ server: 'Notion', status: 'mcp_reauth_required' }])).toBe(
     true,
   );
+});
+
+it('sends the owner to the authorization dialog, not the agent, for a missing or stale grant', () => {
+  for (const reason of [
+    'consent_missing',
+    'consent_expired',
+    'consent_revoked',
+    'binding_mismatch',
+  ] as const) {
+    const outcome = { server: 'warehouse', status: 'mcp_reauth_required' as const, reason };
+    const error = Object.assign(new Error('refused'), { response: { data: { mcp: [outcome] } } });
+    expect(scheduleMCPErrorMessage(error, (key) => key)).toBe(
+      'warehouse: com_ui_schedule_mcp_authorization',
+    );
+    expect(scheduleMCPNeedsAgentRecovery([outcome])).toBe(false);
+  }
+  const reconnect = {
+    server: 'warehouse',
+    status: 'mcp_reauth_required' as const,
+    reason: 'credential_rejected' as const,
+  };
+  const error = Object.assign(new Error('refused'), { response: { data: { mcp: [reconnect] } } });
+  expect(scheduleMCPErrorMessage(error, (key) => key)).toBe(
+    'warehouse: com_ui_schedule_mcp_reauth',
+  );
+  expect(scheduleMCPNeedsAgentRecovery([reconnect])).toBe(true);
+  expect(
+    scheduleMCPNeedsAgentRecovery([{ server: 'warehouse', status: 'mcp_reauth_required' }]),
+  ).toBe(true);
+});
+
+it('shows what the last run of a schedule that is on went without, and nothing else', () => {
+  const lastRun = {
+    status: 'success' as const,
+    firedAt: '2026-09-09T12:00:00.000Z',
+    mcp: [
+      { server: 'Notion', status: 'mcp_reauth_required' as const, skipped: true as const },
+      { server: 'Linear', status: 'ready' as const },
+    ],
+  };
+  expect(scheduleMCPRecoveryOutcomes({ enabled: true, lastRun })).toEqual([
+    { server: 'Notion', status: 'mcp_reauth_required', skipped: true },
+  ]);
+  // A server that was ready is nothing to tell the owner about, and neither is a failure
+  // a schedule that is still on has moved past.
+  expect(
+    scheduleMCPRecoveryOutcomes({
+      enabled: true,
+      lastRun: { ...lastRun, mcp: [{ server: 'Notion', status: 'mcp_reauth_required' as const }] },
+    }),
+  ).toEqual([]);
+  expect(scheduleMCPRecoveryOutcomes({ enabled: true })).toEqual([]);
+});
+
+it('says why a run went without a server, without telling the owner to enable anything', () => {
+  for (const [status, key] of [
+    ['mcp_reauth_required', 'com_ui_schedule_mcp_skipped_reauth'],
+    ['mcp_configuration_missing', 'com_ui_schedule_mcp_skipped_configuration'],
+    ['mcp_permission_denied', 'com_ui_schedule_mcp_skipped_permission'],
+    ['mcp_unavailable', 'com_ui_schedule_mcp_skipped_unavailable'],
+  ] as const) {
+    expect(scheduleMCPStatusLabel({ server: 'Notion', status, skipped: true })).toBe(key);
+    expect(scheduleMCPStatusLabel({ server: 'Notion', status })).not.toBe(key);
+  }
+});
+
+it('keeps the specific way out for a server a run went without', () => {
+  const unauthorized = {
+    server: 'Notion',
+    status: 'mcp_reauth_required' as const,
+    reason: 'consent_revoked' as const,
+    recovery: 'authorize' as const,
+    skipped: true as const,
+  };
+  // Reconnecting the server would not renew the schedule's grant.
+  expect(scheduleMCPStatusLabel(unauthorized)).toBe('com_ui_schedule_mcp_authorization');
+  expect(scheduleMCPNeedsAgentRecovery([unauthorized])).toBe(false);
+
+  const unattended = {
+    server: 'Vault',
+    status: 'mcp_configuration_missing' as const,
+    reason: 'provider_missing' as const,
+    skipped: true as const,
+  };
+  expect(scheduleMCPStatusLabel(unattended)).toBe('com_ui_schedule_mcp_unattended_auth');
+  expect(scheduleMCPNeedsAgentRecovery([unattended])).toBe(false);
+
+  // A plain sign-in is the owner's to fix from the agent.
+  const signedOut = {
+    server: 'Linear',
+    status: 'mcp_reauth_required' as const,
+    skipped: true as const,
+  };
+  expect(scheduleMCPStatusLabel(signedOut)).toBe('com_ui_schedule_mcp_skipped_reauth');
+  expect(scheduleMCPNeedsAgentRecovery([signedOut])).toBe(true);
 });

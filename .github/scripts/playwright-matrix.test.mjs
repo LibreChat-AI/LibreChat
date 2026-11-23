@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { condition, interpolate } from './expressions.mjs';
 
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
 const workflow = yaml.load(
@@ -85,18 +86,68 @@ function decision(redis, mcp = true) {
   return { matrix: { 'playwright-mock': { redis_transport: redis, mcp_tool_list_changed: mcp } } };
 }
 
-test('PR selection and fail-open defaults use ten memory shards and two Redis transport shards', () => {
+const REPOSITORY = 'LibreChat-AI/LibreChat';
+const event = (event_name, ref, payload = {}) => ({
+  event_name,
+  ref,
+  repository: REPOSITORY,
+  event: payload,
+});
+const pushToDev = event('push', 'refs/heads/dev');
+const nightly = event('schedule', 'refs/heads/main');
+const manual = event('workflow_dispatch', 'refs/heads/dev');
+const pullRequest = (action, association = 'MEMBER', head = REPOSITORY) =>
+  event('pull_request', 'refs/pull/1/merge', {
+    action,
+    pull_request: { author_association: association, head: { repo: { full_name: head } } },
+  });
+
+/** What the workflow's own expressions resolve to for one event, before any job has run. */
+function resolve(github, { inputs = {}, select = {} } = {}) {
+  const context = { github, inputs, vars: {}, needs: { codegraph_select: { outputs: select } } };
+  const functions = { cancelled: () => false };
+  const runs = (job) => condition(workflow.jobs[job].if, context, functions);
+  return {
+    jobs: {
+      select: runs('codegraph_select'),
+      shards: runs('e2e_shards'),
+      mcp: runs('mcp_tool_list_changed'),
+      apps: runs('mcp_apps'),
+      gate: runs('e2e'),
+    },
+    matrix: interpolate(shards.strategy.matrix, context, functions),
+    group: interpolate(workflow.concurrency.group, context, functions),
+    cancels: interpolate(workflow.concurrency['cancel-in-progress'], context, functions),
+  };
+}
+
+const everyLane = { select: true, shards: true, mcp: true, apps: true, gate: true };
+
+/** True when the gate's only step runs, which is the step that fails the required check. */
+function gateFails(results, mcpRun = '') {
+  return condition(workflow.jobs.e2e.steps[0].if, {
+    needs: {
+      shard_timings: { result: results.timings ?? 'success' },
+      e2e_shards: { result: results.shards ?? 'success' },
+      mcp_apps: { result: results.apps ?? 'success' },
+      mcp_tool_list_changed: { result: results.mcp ?? 'success' },
+      codegraph_select: { outputs: { mcp_run: mcpRun } },
+    },
+  });
+}
+
+test('PR selection and fail-open defaults use fifteen memory shards and two Redis transport shards', () => {
   assert.equal(defaults.length, 2);
   assert.deepEqual(defaults[0], prMatrix);
-  assert.equal(prMatrix.include.length, 12);
-  assertPartition(prMatrix, 'memory', 'full', 10);
+  assert.equal(prMatrix.include.length, 17);
+  assertPartition(prMatrix, 'memory', 'full', 15);
   assertPartition(prMatrix, 'redis', 'transport', 2);
 });
 
 test('nightly and default manual runs retain full-suite coverage on both stores', () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.coverage.default, 'full');
-  assert.equal(defaults[1].include.length, 20);
-  assertPartition(defaults[1], 'memory', 'full', 10);
+  assert.equal(defaults[1].include.length, 25);
+  assertPartition(defaults[1], 'memory', 'full', 15);
   assertPartition(defaults[1], 'redis', 'full', 10);
 });
 
@@ -115,10 +166,8 @@ test('PR and nightly matrices preserve both registered-email change modes on one
 
 test('manual PR coverage opts into the PR fallback matrix without bypassing the PR author gate', () => {
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.coverage.options, ['full', 'pr']);
-  assert.match(
-    shards.strategy.matrix,
-    /github\.event_name == 'pull_request' \|\| inputs\.coverage == 'pr'/,
-  );
+  assert.deepEqual(resolve(manual, { inputs: { coverage: 'pr' } }).matrix, prMatrix);
+  assert.deepEqual(resolve(manual, { inputs: { coverage: 'full' } }).matrix, defaults[1]);
   assert.match(shards.if, /github\.event_name == 'workflow_dispatch'/);
   assert.match(shards.if, /github\.event\.pull_request\.author_association/);
 });
@@ -152,8 +201,8 @@ test('an explicit Redis skip drops both transport shards and no memory shard', (
   const { matrix, outputs } = select(t, decision(false, false));
   assert.equal(outputs.decided, 'true');
   assert.equal(outputs.mcp_run, 'false');
-  assert.equal(matrix.include.length, 10);
-  assertPartition(matrix, 'memory', 'full', 10);
+  assert.equal(matrix.include.length, 15);
+  assertPartition(matrix, 'memory', 'full', 15);
 });
 
 test('missing or non-boolean Redis decisions retain both transport shards', (t) => {
@@ -201,11 +250,76 @@ test('graduated spec skips keep the same pool across shards and remain opt-in', 
   assert.deepEqual(fallback.matrix, prMatrix);
 });
 
+/** What the `shard_timings` hand-off step outputs for one restored cache file, or for none. */
+function handOff(t, cached) {
+  const scratch = mkdtempSync(join(scriptsDir, '.playwright-matrix-test-'));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  if (cached !== undefined) {
+    mkdirSync(join(scratch, 'e2e', '.generated'), { recursive: true });
+    writeFileSync(join(scratch, 'e2e', '.generated', 'shard-timings.json'), cached);
+  }
+  writeFileSync(join(scratch, 'output'), '');
+  const step = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'read');
+  const result = spawnSync('bash', ['-e', '-c', step.run], {
+    cwd: scratch,
+    encoding: 'utf8',
+    timeout: 10000,
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(scratch, 'output') },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  return readFileSync(join(scratch, 'output'), 'utf8');
+}
+
+test('every shard plans from the one copy of the timings its run resolved', (t) => {
+  const resolver = workflow.jobs.shard_timings;
+  assert.equal(resolver.outputs.timings, '${{ steps.read.outputs.timings }}');
+  assert.ok(shards.needs.includes('shard_timings'));
+  const full = shards.steps.find((entry) => entry.if === "matrix.suite == 'full'");
+  assert.equal(full.env.E2E_SHARD_TIMINGS, '${{ needs.shard_timings.outputs.timings }}');
+  assert.match(full.run, /--timings "\$TIMINGS"/);
+  assert.ok(shards.steps.every((step) => !JSON.stringify(step.with ?? {}).includes('timings')));
+  assert.equal(
+    handOff(t, JSON.stringify({ files: { 'a.spec.ts': 1.5, 'b.spec.ts': 'slow' } }, null, 2)),
+    'timings={"files":{"a.spec.ts":1.5}}\n',
+  );
+});
+
+test('missing or malformed recorded timings leave every shard on the committed file', (t) => {
+  const full = shards.steps.find((entry) => entry.if === "matrix.suite == 'full'");
+  assert.match(full.run, /^TIMINGS=e2e\/timings\.mock\.json\nif \[ -n "\$E2E_SHARD_TIMINGS" \]/);
+  for (const cached of [undefined, '', '{not json', '[]', '{"files":[1]}', '{"files":{}}']) {
+    assert.equal(handOff(t, cached), '', String(cached));
+  }
+});
+
+test('timings are saved only by a push, under the path and key prefix the shards restore from', () => {
+  const recorder = yaml.load(
+    readFileSync(new URL('../workflows/playwright-timings.yml', import.meta.url), 'utf8'),
+  ).jobs.record;
+  const find = recorder.steps.find((entry) => entry.id === 'runs');
+  assert.match(find.run, /--workflow playwright-mock\.yml --branch dev --event push/);
+  assert.match(find.run, /--status success/);
+  const restore = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'restore');
+  const save = recorder.steps.find((entry) => entry.uses?.startsWith('actions/cache/save@'));
+  assert.equal(restore['continue-on-error'], true);
+  assert.equal(save.with.path, restore.with.path);
+  assert.ok(save.with.key.startsWith(restore.with['restore-keys']));
+  const saves = (event, built) =>
+    condition(save.if, {
+      github: { event_name: event },
+      steps: { build: { outputs: { built } } },
+    });
+  assert.equal(saves('push', 'true'), true);
+  assert.equal(saves('push', ''), false);
+  assert.equal(saves('pull_request', 'true'), false);
+});
+
 test('the required gate still waits for all shards and rejects failures without fighting cancellation', () => {
   const gate = workflow.jobs.e2e;
   assert.equal(gate.name, 'e2e');
   assert.deepEqual(gate.needs, [
     'codegraph_select',
+    'shard_timings',
     'e2e_shards',
     'mcp_tool_list_changed',
     'mcp_apps',
@@ -218,5 +332,70 @@ test('the required gate still waits for all shards and rejects failures without 
   assert.match(gate.steps[0].if, /needs\.mcp_tool_list_changed\.result != 'success'/);
   assert.match(gate.steps[0].if, /needs\.codegraph_select\.outputs\.mcp_run == 'false'/);
   assert.equal(gate.steps[0].run, 'exit 1');
-  assert.equal(workflow.concurrency['cancel-in-progress'], true);
+  assert.equal(resolve(pullRequest('synchronize')).cancels, true);
+});
+
+test('a push to dev runs every lane on the pull request matrix with nothing narrowed', () => {
+  assert.deepEqual(workflow.on.push.branches, ['dev']);
+  assert.deepEqual(workflow.on.push.paths, workflow.on.pull_request.paths);
+  const { jobs, matrix } = resolve(pushToDev);
+  assert.deepEqual(jobs, { ...everyLane, select: false });
+  assert.deepEqual(matrix, prMatrix);
+  assert.equal(gateFails({}), false);
+  assert.equal(gateFails({ shards: 'failure' }), true);
+  assert.equal(gateFails({ timings: 'failure' }), true);
+  assert.equal(gateFails({ apps: 'failure' }), true);
+  assert.equal(gateFails({ mcp: 'failure' }), true);
+  /** No selector ran on a push, so a skipped MCP lane is a fault there, not a decision. */
+  assert.equal(gateFails({ mcp: 'skipped' }), true);
+  assert.equal(gateFails({ mcp: 'skipped' }, 'false'), false);
+});
+
+test('dev pushes never cancel each other and share no group with any other event', () => {
+  const pushed = resolve(pushToDev);
+  assert.equal(pushed.group, 'playwright-mock-post-merge-refs/heads/dev');
+  assert.equal(pushed.cancels, false);
+  const others = [pullRequest('opened'), pullRequest('synchronize'), nightly, manual].map(
+    (github) => resolve(github),
+  );
+  assert.deepEqual(
+    others.map(({ group }) => group),
+    [
+      'playwright-mock-refs/pull/1/merge',
+      'playwright-mock-refs/pull/1/merge',
+      'playwright-mock-refs/heads/main',
+      'playwright-mock-refs/heads/dev',
+    ],
+  );
+  assert.ok(others.every(({ cancels }) => cancels === true));
+});
+
+test('pull request, nightly and manual runs resolve as they did without the push trigger', () => {
+  const opened = resolve(pullRequest('opened'));
+  assert.deepEqual(opened.jobs, { ...everyLane, select: false });
+  assert.deepEqual(opened.matrix, prMatrix);
+
+  const memoryOnly = { include: prMatrix.include.filter((lane) => lane.suite === 'full') };
+  const narrowed = resolve(pullRequest('synchronize'), {
+    select: { e2e_include: JSON.stringify(memoryOnly), mcp_run: 'false' },
+  });
+  assert.deepEqual(narrowed.jobs, { ...everyLane, mcp: false });
+  assert.deepEqual(narrowed.matrix, memoryOnly);
+
+  const outsider = resolve(pullRequest('synchronize', 'CONTRIBUTOR', 'someone/LibreChat'));
+  assert.deepEqual(outsider.jobs, {
+    select: false,
+    shards: false,
+    mcp: false,
+    apps: false,
+    gate: false,
+  });
+  const sameRepositoryBot = resolve(pullRequest('opened', 'NONE'));
+  assert.deepEqual(sameRepositoryBot.jobs, { ...everyLane, select: false });
+
+  for (const github of [nightly, manual]) {
+    const run = resolve(github);
+    assert.deepEqual(run.jobs, { ...everyLane, select: false });
+    assert.deepEqual(run.matrix, defaults[1]);
+  }
 });

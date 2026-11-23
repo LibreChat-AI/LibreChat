@@ -123,6 +123,26 @@ describe('buildCatalog', () => {
     }
   });
 
+  test('names MCP items by their resolved title while keeping the key as id', () => {
+    const map = new Map();
+    map.set('gh-tools-v2', {
+      serverName: 'gh-tools-v2',
+      isConfigured: true,
+      tools: [],
+      metadata: { name: 'GitHub', pluginKey: 'gh-tools-v2' },
+    });
+    const mcp = buildCatalog({ ...emptyInputs, mcpServersMap: map }).find((i) => i.kind === 'mcp');
+    expect(mcp?.name).toBe('GitHub');
+    expect(mcp?.id).toBe('gh-tools-v2');
+  });
+
+  test('falls back to the server key when an MCP server has no metadata', () => {
+    const map = new Map();
+    map.set('everything', { serverName: 'everything', isConfigured: true, tools: [] });
+    const mcp = buildCatalog({ ...emptyInputs, mcpServersMap: map }).find((i) => i.kind === 'mcp');
+    expect(mcp?.name).toBe('everything');
+  });
+
   test('excludes consume-only MCP servers from the catalog', () => {
     const map = new Map();
     map.set('attachable', { serverName: 'attachable', isConfigured: true, tools: [] });

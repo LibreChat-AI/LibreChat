@@ -6,6 +6,9 @@ import { useLocalize } from '~/hooks';
 type AnalyticsConsentProps = {
   /** The deployment's `ANALYTICS_GTM_ID`, from the startup config of the page shell. */
   gtmId?: string | null;
+  /** False when the deployment set `interface.analyticsConsent: false`: the
+   *  container loads without asking. */
+  consentRequired?: boolean;
 };
 
 /**
@@ -14,8 +17,8 @@ type AnalyticsConsentProps = {
  * the bottom of the viewport: it does not take focus or block the page, and
  * either answer hides it. The choice can be changed later in Settings.
  */
-export default function AnalyticsConsent({ gtmId }: AnalyticsConsentProps) {
-  const { enabled, consent, setConsent } = useAnalytics(gtmId);
+export default function AnalyticsConsent({ gtmId, consentRequired }: AnalyticsConsentProps) {
+  const { enabled, consent, setConsent } = useAnalytics(gtmId, consentRequired);
 
   if (!enabled || consent != null) {
     return null;

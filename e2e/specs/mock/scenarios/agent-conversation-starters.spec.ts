@@ -8,6 +8,7 @@ import {
   uniqueAgentName,
 } from '../agents.helpers';
 import { MOCK_ENDPOINTS, NEW_CHAT_PATH, fetchJson, getAccessToken, requestJson } from '../helpers';
+import { unroute } from '../fixtures';
 
 type StarterAgent = AgentDetail & { conversation_starters?: string[] };
 
@@ -325,7 +326,7 @@ test.describe('agent conversation starters', () => {
       await expect(page.getByText(`Successfully updated ${name}`).first()).toBeVisible();
       await expect(rows).toHaveCount(3);
       await expect(rows.nth(2)).toHaveValue('Typed during the save');
-      await page.unroute(`**/api/agents/${id}`);
+      await unroute(page, `**/api/agents/${id}`);
 
       await saveAgent(form, id);
       expect(await fetchStarters(page, id)).toEqual([
@@ -382,7 +383,7 @@ test.describe('agent conversation starters', () => {
       await switchAgent(form, secondName);
       releaseSave();
       await saved;
-      await page.unroute(`**/api/agents/${id}`);
+      await unroute(page, `**/api/agents/${id}`);
       await expect(form.getByLabel('Agent name')).toHaveValue(secondName);
 
       await form.getByLabel('Agent description').fill('Second agent, unrelated edit.');

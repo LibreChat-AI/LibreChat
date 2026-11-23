@@ -1,4 +1,5 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import * as Menu from '@ariakit/react/menu';
 import { PlusCircle, Maximize2 } from 'lucide-react';
 import { specialVariables } from 'librechat-data-provider';
@@ -44,6 +45,8 @@ interface VariableEditorProps {
   className?: string;
   labelClassName?: string;
   containerClassName?: string;
+  /** Optional host for the editor actions in a surrounding section header. */
+  actionsContainer?: HTMLElement | null;
   /** Whether to expose special-variable insertion controls. Defaults to true. */
   showVariables?: boolean;
   /**
@@ -75,9 +78,11 @@ export default function VariableEditor({
   className,
   labelClassName,
   containerClassName,
+  actionsContainer,
   showVariables = true,
   portal = true,
 }: VariableEditorProps) {
+  const expandRef = useRef<HTMLButtonElement>(null);
   const menuId = useId();
   const dialogMenuId = useId();
   const localize = useLocalize();
@@ -98,53 +103,58 @@ export default function VariableEditor({
     onClick: () => handleAddVariable(option.label, option.value),
   }));
 
+  const actions = (
+    <div className="ms-auto flex items-center gap-0.5">
+      {showVariables && (
+        <DropdownPopup
+          portal={portal}
+          mountByState={true}
+          unmountOnHide={true}
+          preserveTabOrder={true}
+          isOpen={isMenuOpen}
+          setIsOpen={setIsMenuOpen}
+          trigger={
+            <Menu.MenuButton
+              id={`${id}-variables-menu-button`}
+              aria-label={localize('com_ui_variables')}
+              title={localize('com_ui_variables')}
+              className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            >
+              <PlusCircle className="h-4 w-4" strokeWidth={1.75} aria-hidden={true} />
+            </Menu.MenuButton>
+          }
+          items={variableItems}
+          menuId={menuId}
+          className="pointer-events-auto z-30"
+        />
+      )}
+      <TooltipAnchor
+        description={localize('com_ui_expand_editor')}
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            ref={expandRef}
+            onClick={() => setIsDialogOpen(true)}
+            aria-label={localize('com_ui_expand_editor')}
+            className="text-text-secondary hover:bg-surface-secondary h-7 w-7 p-0"
+          >
+            <Maximize2 className="h-4 w-4" strokeWidth={1.75} aria-hidden={true} />
+          </Button>
+        }
+      />
+    </div>
+  );
+
   return (
     <div className={cn('flex flex-col', containerClassName)}>
-      <div className="mb-1 flex items-center justify-between">
+      <div className={actionsContainer ? undefined : 'mb-1 flex items-center justify-between'}>
         <Label className={labelClassName} htmlFor={id}>
           {label}
         </Label>
-        {/* `ms-auto` keeps the actions right-aligned when the label is visually hidden. */}
-        <div className="ms-auto flex items-center gap-0.5">
-          {showVariables && (
-            <DropdownPopup
-              portal={portal}
-              mountByState={true}
-              unmountOnHide={true}
-              preserveTabOrder={true}
-              isOpen={isMenuOpen}
-              setIsOpen={setIsMenuOpen}
-              trigger={
-                <Menu.MenuButton
-                  id={`${id}-variables-menu-button`}
-                  aria-label={localize('com_ui_variables')}
-                  title={localize('com_ui_variables')}
-                  className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
-                >
-                  <PlusCircle className="h-4 w-4" strokeWidth={1.75} aria-hidden={true} />
-                </Menu.MenuButton>
-              }
-              items={variableItems}
-              menuId={menuId}
-              className="pointer-events-auto z-30"
-            />
-          )}
-          <TooltipAnchor
-            description={localize('com_ui_expand_editor')}
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setIsDialogOpen(true)}
-                aria-label={localize('com_ui_expand_editor')}
-                className="text-text-secondary hover:bg-surface-secondary h-7 w-7 p-0"
-              >
-                <Maximize2 className="h-4 w-4" strokeWidth={1.75} aria-hidden={true} />
-              </Button>
-            }
-          />
-        </div>
+        {!actionsContainer && actions}
       </div>
+      {actionsContainer && createPortal(actions, actionsContainer)}
       <Textarea
         id={id}
         ref={inputRef}
@@ -160,7 +170,7 @@ export default function VariableEditor({
         aria-describedby={describedBy}
       />
 
-      <OGDialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+      <OGDialog open={isDialogOpen} onOpenChange={setIsDialogOpen} triggerRef={expandRef}>
         <OGDialogContent
           className="flex h-[85vh] max-h-[85vh] w-11/12 max-w-6xl flex-col gap-4 p-6"
           showCloseButton={false}

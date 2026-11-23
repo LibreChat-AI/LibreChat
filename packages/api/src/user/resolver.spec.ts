@@ -78,8 +78,15 @@ describe('createErasureResolver', () => {
       userId: 'other-user',
       serverName: 'srv',
     });
-    await erasure.mcpOAuth?.uninstallOAuthMCP('other-user', 'mcp_srv', {});
-    expect(mcpOAuth.uninstallOAuthMCP).toHaveBeenCalledWith('other-user', 'mcp_srv', {}, undefined);
+    const teardown = { strictRevocation: true, retainFence: jest.fn() };
+    await erasure.mcpOAuth?.uninstallOAuthMCP('other-user', 'mcp_srv', {}, undefined, teardown);
+    expect(mcpOAuth.uninstallOAuthMCP).toHaveBeenCalledWith(
+      'other-user',
+      'mcp_srv',
+      {},
+      undefined,
+      teardown,
+    );
   });
 
   it('runs id-keyed lookups in the target tenant, not the calling admin tenant', async () => {
@@ -95,8 +102,11 @@ describe('createErasureResolver', () => {
     const { deps } = createDeps({
       db: {
         deleteUserAgents: jest.fn(record('agents')),
+        deleteUserToolFavorites: jest.fn(record('favorites')),
+        cancelUserToolFavoriteDeletion: jest.fn(record('cancelFavorites')),
         findMCPServerOAuthTokenUserIds: jest.fn(record('tokens')),
         findMCPServerViewerEntries: jest.fn(record('viewers')),
+        findMCPServerViewerUserIds: jest.fn(record('viewerUsers')),
       } as unknown as ErasureResolverDeps['db'],
       processDeleteRequest: jest.fn(record('files')),
       invalidateCachedTools: jest.fn(record('fence')),
@@ -110,8 +120,11 @@ describe('createErasureResolver', () => {
 
     await tenantStorage.run({ tenantId: 'admin-tenant' }, async () => {
       await erasure.deleteUserAgents('user-1');
+      await erasure.deleteUserToolFavorites('user-1', 'attempt');
+      await erasure.cancelUserToolFavoriteDeletion?.('user-1', 'attempt');
       await erasure.findMCPServerOAuthTokenUserIds?.('srv');
       await erasure.findMCPServerViewerEntries?.('srv-id');
+      await erasure.findMCPServerViewerUserIds?.([]);
       await erasure.deleteStoredFiles([]);
       await erasure.mcpOAuth?.getServerConfig?.('srv', 'srv-id');
       await erasure.mcpOAuth?.getUserPrincipals('other');
@@ -121,7 +134,7 @@ describe('createErasureResolver', () => {
       await erasure.mcpOAuth?.disconnectUser?.('other', 'srv');
     });
 
-    expect(Object.keys(seen)).toHaveLength(9);
+    expect(Object.keys(seen)).toHaveLength(12);
     expect(Object.values(seen).every((tenant) => tenant === 'tenant-1')).toBe(true);
   });
 

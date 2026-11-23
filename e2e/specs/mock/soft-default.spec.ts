@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
 import { getPrimaryE2EUser } from '../../setup/users.mock';
@@ -11,6 +10,7 @@ import {
   selectModelSpec,
   sendMessage,
 } from './helpers';
+import { expect, test } from './fixtures';
 
 /** Label of the `softDefault: true` spec in e2e/config/librechat.e2e.yaml. */
 const SOFT_DEFAULT_LABEL = 'E2E Soft Default';

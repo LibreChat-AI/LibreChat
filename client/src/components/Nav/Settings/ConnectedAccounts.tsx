@@ -1,18 +1,14 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ExternalLink, Gitlab } from 'lucide-react';
 import { apiBaseUrl } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
+import { ExternalLink, Gitlab, RotateCw } from 'lucide-react';
 import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
+  Alert,
   Button,
   Chip,
+  OGDialog,
+  OGDialogTemplate,
+  OGDialogTrigger,
   GithubIcon,
   Skeleton,
   Spinner,
@@ -29,6 +25,7 @@ import {
   pullRequestSignInSession,
 } from '~/data-provider';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const PROVIDERS: Record<
   PullRequestProvider,
@@ -222,13 +219,17 @@ export default function ConnectedAccounts() {
     });
   };
 
-  let statusContent = <Chip tone="neutral">{localize('com_ui_pr_account_checking')}</Chip>;
-  let action = <Skeleton className="h-9 w-24" aria-hidden="true" />;
+  let statusContent = (
+    <Chip tone="neutral" leading={<Spinner className="shrink-0" size={12} aria-hidden="true" />}>
+      {localize('com_ui_pr_account_checking')}
+    </Chip>
+  );
+  let action = <Skeleton className="h-8 w-24 rounded-lg" aria-hidden="true" />;
 
   const statusError = (
-    <span className="text-text-destructive text-xs">
+    <Chip tone="error" leading={<StatusDot className="bg-status-error" />}>
       {localize('com_ui_pr_account_status_error')}
-    </span>
+    </Chip>
   );
 
   /** A grant known to be removable stays removable while a later status check fails. */
@@ -244,17 +245,25 @@ export default function ConnectedAccounts() {
         aria-busy={status.isFetching}
         onClick={retry}
       >
-        {status.isFetching ? <Spinner className="h-4 w-4" /> : localize('com_ui_retry')}
+        <RotateCw
+          className={cn('size-4', status.isFetching && 'animate-spin motion-reduce:animate-none')}
+          aria-hidden="true"
+        />
+        {localize('com_ui_retry')}
       </Button>
     );
   } else if (status.data?.connected === true) {
     statusContent = unused ? (
-      <Chip tone="neutral">{localize('com_ui_pr_account_not_in_use')}</Chip>
+      <Chip tone="neutral" leading={<StatusDot className="bg-status-neutral" />}>
+        {localize('com_ui_pr_account_not_in_use')}
+      </Chip>
     ) : (
-      <Chip tone="success">{localize('com_ui_pr_account_connected')}</Chip>
+      <Chip tone="success" leading={<StatusDot className="bg-status-success" />}>
+        {localize('com_ui_pr_account_connected')}
+      </Chip>
     );
     action = (
-      <AlertDialogTrigger asChild>
+      <OGDialogTrigger asChild>
         <Button
           ref={bindAction}
           type="button"
@@ -264,25 +273,25 @@ export default function ConnectedAccounts() {
         >
           {localize('com_ui_pr_account_disconnect')}
         </Button>
-      </AlertDialogTrigger>
+      </OGDialogTrigger>
     );
   } else if (status.data != null) {
-    statusContent = <Chip tone="neutral">{localize('com_ui_pr_account_not_connected')}</Chip>;
+    /** No badge for the resting state; the status region still announces it. */
+    statusContent = <span className="sr-only">{localize('com_ui_pr_account_not_connected')}</span>;
     action = (
       <Button
         ref={bindAction}
         type="button"
-        variant="outline"
+        variant="submit"
         size="sm"
         aria-label={localize('com_ui_pr_account_connect_aria', { 0: name })}
         aria-busy={connectMutation.isLoading}
         aria-disabled={connectMutation.isLoading}
         onClick={connect}
       >
-        {connectMutation.isLoading ? (
-          <Spinner className="h-4 w-4" />
-        ) : (
-          localize('com_ui_pr_account_connect')
+        {connectMutation.isLoading && <Spinner className="size-4" aria-hidden="true" />}
+        {localize(
+          connectMutation.isLoading ? 'com_ui_pr_account_connecting' : 'com_ui_pr_account_connect',
         )}
       </Button>
     );
@@ -293,7 +302,7 @@ export default function ConnectedAccounts() {
   }
 
   return (
-    <AlertDialog
+    <OGDialog
       open={confirmOpen}
       onOpenChange={(open) => {
         /** A disconnect already sent cannot be taken back, so it is not dismissed mid-request. */
@@ -314,13 +323,17 @@ export default function ConnectedAccounts() {
         role="group"
         aria-labelledby={labelId}
         aria-describedby={descriptionId}
-        className="flex flex-col gap-2"
+        aria-busy={status.isLoading}
+        className="flex flex-col gap-3"
       >
         <div className="flex items-center gap-3">
-          <span className="text-text-secondary shrink-0" aria-hidden="true">
-            <Icon className="h-5 w-5" />
+          <span
+            className="border-border-light bg-surface-secondary text-text-primary flex size-10 shrink-0 items-center justify-center rounded-lg border"
+            aria-hidden="true"
+          >
+            <Icon className="size-5" />
           </span>
-          <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             {/** The status sits beside the name, not in the row, so the description keeps the
              *  column's width on a phone. */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -337,15 +350,15 @@ export default function ConnectedAccounts() {
           </div>
           <div className="shrink-0">{action}</div>
         </div>
-        {connectError != null && (
-          <p role="alert" className="text-text-destructive text-xs">
-            {localize(connectError)}
-          </p>
-        )}
+        {connectError != null && <Alert variant="error">{localize(connectError)}</Alert>}
       </div>
 
-      <AlertDialogContent
-        className="w-11/12 max-w-md"
+      <OGDialogTemplate
+        title={localize('com_ui_pr_account_disconnect_title', { 0: name })}
+        description={localize('com_ui_pr_account_disconnect_description')}
+        className="max-w-md"
+        mainClassName={disconnectFailed ? undefined : 'hidden'}
+        cancelDisabled={disconnectMutation.isLoading}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           const action = actionRef.current;
@@ -355,26 +368,12 @@ export default function ConnectedAccounts() {
             fallbackRef.current?.focus();
           }
         }}
-      >
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            {localize('com_ui_pr_account_disconnect_title', { 0: name })}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            {localize('com_ui_pr_account_disconnect_description')}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {disconnectFailed && (
-          <p role="alert" className="text-text-destructive text-xs">
-            {localize('com_ui_pr_account_disconnect_error')}
-          </p>
-        )}
-        <AlertDialogFooter className="mt-2">
-          <AlertDialogCancel asChild>
-            <Button type="button" variant="outline" disabled={disconnectMutation.isLoading}>
-              {localize('com_ui_cancel')}
-            </Button>
-          </AlertDialogCancel>
+        main={
+          disconnectFailed ? (
+            <Alert variant="error">{localize('com_ui_pr_account_disconnect_error')}</Alert>
+          ) : null
+        }
+        selection={
           <Button
             type="button"
             variant="destructive"
@@ -382,15 +381,21 @@ export default function ConnectedAccounts() {
             aria-busy={disconnectMutation.isLoading}
             disabled={disconnectMutation.isLoading}
             onClick={disconnect}
+            className="max-sm:order-first max-sm:w-full"
           >
-            {disconnectMutation.isLoading ? (
-              <Spinner className="h-4 w-4" />
-            ) : (
-              localize('com_ui_pr_account_disconnect')
+            {disconnectMutation.isLoading && <Spinner className="size-4" aria-hidden="true" />}
+            {localize(
+              disconnectMutation.isLoading
+                ? 'com_ui_pr_account_disconnecting'
+                : 'com_ui_pr_account_disconnect',
             )}
           </Button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+        }
+      />
+    </OGDialog>
   );
+}
+
+function StatusDot({ className }: { className: string }) {
+  return <span className={cn('size-1.5 shrink-0 rounded-full', className)} aria-hidden="true" />;
 }

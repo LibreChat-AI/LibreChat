@@ -25,7 +25,12 @@ on:
       - 'packages/data-schemas/src/**'
       - 'packages/data-schemas/package.json'
       - '.github/workflows/agents-integration-tests.yml'
+      - '.github/actions/mongodb-binary/**'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -55,10 +60,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -70,7 +75,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -109,6 +114,15 @@ jobs:
         if: steps.cache-api.outputs.cache-hit != 'true'
         run: npm run build:api
 
+      - name: Test MongoDB binary provisioning
+        run: node --test .github/actions/mongodb-binary/prewarm.test.mjs
+
+      # Every suite here runs in one Jest process with 15s hooks. A cold download of the
+      # ~122MB mongod inside the first hook timed it out on a slow mirror day, and the suites
+      # after it then spawned the half-written file (`spawn ETXTBSY`).
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
+
       - name: Run integration tests
         working-directory: packages/api
         env:
@@ -142,3 +156,23 @@ jobs:
         run: >-
           npx jest src/code/setup/compatibility.integration.spec.ts
           --runInBand --coverage=false --forceExit
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: integration
+    needs: [agents_integration_tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every integration job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify

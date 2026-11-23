@@ -97,7 +97,7 @@ describe('MCP Tool Authorization', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {
@@ -146,6 +146,41 @@ describe('MCP Tool Authorization', () => {
       expect(result).toContain(`toolA${d}authorizedServer`);
       expect(result).toContain('web_search');
       expect(result).not.toContain(`toolB${d}forbiddenServer`);
+    });
+
+    test('should run admission checks for distinct servers concurrently and keep tool order', async () => {
+      mockGetAllServerConfigs.mockResolvedValue({
+        serverA: { type: 'sse', source: 'user', dbId: 'a' },
+        serverB: { type: 'sse', source: 'user', dbId: 'b' },
+      });
+      const started = [];
+      const settle = {};
+      const admissions = {};
+      const admitMCPTool = jest.fn((tool, serverName) => {
+        started.push(serverName);
+        admissions[serverName] ??= new Promise((resolve) => {
+          settle[serverName] = resolve;
+        });
+        return admissions[serverName];
+      });
+      const resolvedServerNames = new Set();
+
+      const pending = filterAuthorizedTools({
+        tools: [`one${d}serverA`, 'web_search', `two${d}serverB`, `three${d}serverA`],
+        userId,
+        user: testUser,
+        availableTools,
+        resolvedServerNames,
+        admitMCPTool,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(started).toEqual(['serverA', 'serverB', 'serverA']);
+      settle.serverB(true);
+      settle.serverA(false);
+
+      expect(await pending).toEqual(['web_search', `two${d}serverB`]);
+      expect([...resolvedServerNames]).toEqual(['serverB']);
     });
 
     test('should strip MCP tools when user lacks MCP server use permission', async () => {
@@ -788,6 +823,41 @@ describe('MCP Tool Authorization', () => {
       expect(agentInDb.mcpServerNames).not.toContain('Workspace');
     });
 
+    test.each([true, false])(
+      'does not grant an unindexed Action key with MCP permission: %s',
+      async (canUse) => {
+        const tools = ['lookup_action_x_mcp_pay'];
+        await Agent.updateOne({ id: existingAgentId }, { tools, mcpServerNames: [] });
+        mockReq.user.id = canUse
+          ? existingAgentAuthorId.toString()
+          : new mongoose.Types.ObjectId().toString();
+        mockUserCanUseMCPServers.mockResolvedValue(canUse);
+        mockReq.params.id = existingAgentId;
+        mockReq.body = { tools };
+        await updateAgentHandler(mockReq, mockRes);
+        expect((await Agent.findOne({ id: existingAgentId })).mcpServerNames).toEqual([]);
+      },
+    );
+
+    test('rejects grants revoked after controller authorization', async () => {
+      const db = require('~/models');
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = { tools: ['existingTool_mcp_authorizedServer'] };
+      const update = db.updateAgent;
+      const spy = jest.spyOn(db, 'updateAgent').mockImplementationOnce(async (...args) => {
+        await Agent.updateOne({ id: existingAgentId }, { tools: [], mcpServerNames: [] });
+        return update(...args);
+      });
+      try {
+        await updateAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).toHaveBeenCalledWith(409);
+        expect((await Agent.findOne({ id: existingAgentId })).mcpServerNames).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     test('should let persistence derive when an unindexed agent retains MCP tools', async () => {
       /** A legacy or partially migrated agent can hold MCP tools with no stored
        *  mcpServerNames. Pinning the index to [] here would suppress the derivation
@@ -998,16 +1068,19 @@ describe('MCP Tool Authorization', () => {
       expect(result.tools).toContain(`tool${d}authorizedServer`);
     });
 
-    test('should preserve version MCP tools when registry is unavailable on revert', async () => {
+    test('should keep only MCP tools already on the agent when registry is unavailable on revert', async () => {
       await Agent.updateOne(
         { id: existingAgentId },
         {
           $set: {
+            tools: ['web_search', `validTool${d}authorizedServer`],
+            mcpServerNames: ['authorizedServer'],
             'versions.0.tools': [
               'web_search',
               `validTool${d}authorizedServer`,
               `otherTool${d}anotherServer`,
             ],
+            'versions.0.mcpServerNames': ['authorizedServer', 'anotherServer'],
           },
         },
       );
@@ -1026,11 +1099,11 @@ describe('MCP Tool Authorization', () => {
       const result = mockRes.json.mock.calls[0][0];
       expect(result.tools).toContain('web_search');
       expect(result.tools).toContain(`validTool${d}authorizedServer`);
-      expect(result.tools).toContain(`otherTool${d}anotherServer`);
+      expect(result.tools).not.toContain(`otherTool${d}anotherServer`);
 
       const agentInDb = await Agent.findOne({ id: existingAgentId });
-      expect(agentInDb.tools).toContain(`validTool${d}authorizedServer`);
-      expect(agentInDb.tools).toContain(`otherTool${d}anotherServer`);
+      expect(agentInDb.tools).toEqual(['web_search', `validTool${d}authorizedServer`]);
+      expect(agentInDb.mcpServerNames).toEqual(['authorizedServer']);
     });
   });
 });

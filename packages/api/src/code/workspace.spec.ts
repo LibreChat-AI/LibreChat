@@ -1940,6 +1940,68 @@ describe('executeWorkspaceTool', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  test('sends a detached command unchanged on the synchronous transport', async () => {
+    const request: WorkspaceToolRequest = {
+      protocolVersion: 1,
+      operation: 'execute_command',
+      workspaceId: 'primary',
+      command: 'npm test',
+      timeoutMs: 60_000,
+      detached: true,
+    };
+    const fetchImpl = jest.fn(async (..._args: Parameters<CodeBridgeFetch>) =>
+      Response.json({
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        exitCode: 0,
+        stdout: 'ready',
+        stderr: '',
+        truncated: false,
+        timedOut: false,
+      }),
+    );
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request,
+        fetchImpl,
+      }),
+    ).resolves.toMatchObject({ exitCode: 0, stdout: 'ready' });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://code.example.com/v1/workspace-tools/execute');
+    expect(init?.body).toBe(JSON.stringify(request));
+  });
+
+  test.each<[string, object]>([
+    ['a false flag', { detached: false }],
+    ['a non-boolean flag', { detached: 'true' }],
+    [
+      'an environment action',
+      { detached: true, environmentAction: { name: 'setup', fingerprint: 'c'.repeat(64) } },
+    ],
+  ])('rejects a detached command with %s before dispatch', async (_case, fields) => {
+    const fetchImpl = jest.fn();
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          command: 'setup',
+          ...fields,
+        } as WorkspaceToolRequest,
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test('accepts a bounded command result from the selected attached worker', async () => {
     const fetchImpl = jest.fn(async () =>
       Response.json({

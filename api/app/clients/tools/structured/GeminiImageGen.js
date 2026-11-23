@@ -8,6 +8,8 @@ const { ContentTypes, EImageOutputType } = require('librechat-data-provider');
 const {
   geminiToolkit,
   loadServiceKey,
+  ToolInputError,
+  formatToolError,
   getBalanceConfig,
   getEnvProxyDispatcher,
   getTransactionsConfig,
@@ -110,9 +112,8 @@ async function initializeGeminiClient(options = {}) {
   const serviceKey = await loadServiceKey(credentialsPath);
 
   if (!serviceKey || !serviceKey.project_id) {
-    throw new Error(
-      'Gemini Image Generation requires one of: user-provided API key, GEMINI_API_KEY or GOOGLE_KEY env var, or a valid Google service account. ' +
-        `Service account file not found or invalid at: ${credentialsPath}`,
+    throw new ToolInputError(
+      'Gemini Image Generation requires one of: user-provided API key, GEMINI_API_KEY or GOOGLE_KEY env var, or a valid Google service account.',
     );
   }
 
@@ -335,9 +336,8 @@ function createGeminiImageTool(fields = {}) {
           GOOGLE_KEY,
         });
       } catch (error) {
-        logger.error('[GeminiImageGen] Failed to initialize client:', error);
         return [
-          [{ type: ContentTypes.TEXT, text: `Failed to initialize Gemini: ${error.message}` }],
+          [{ type: ContentTypes.TEXT, text: formatToolError(error, 'Gemini image generation') }],
           { content: [], file_ids: [] },
         ];
       }
@@ -389,9 +389,8 @@ function createGeminiImageTool(fields = {}) {
           config,
         });
       } catch (error) {
-        logger.error('[GeminiImageGen] API error:', error);
         return [
-          [{ type: ContentTypes.TEXT, text: `Image generation failed: ${error.message}` }],
+          [{ type: ContentTypes.TEXT, text: formatToolError(error, 'Gemini image generation') }],
           { content: [], file_ids: [] },
         ];
       } finally {

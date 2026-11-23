@@ -1,7 +1,7 @@
 const express = require('express');
 const { isValidMemoryKey } = require('@librechat/data-schemas');
 const {
-  Tokenizer,
+  countTokens,
   generateCheckAccess,
   getMemoryAgentIdParam,
   createAgentMemoryPartitionMiddleware,
@@ -65,7 +65,7 @@ const opaqueMemoryHandlers = createMemoryManagementHandlers({
   setMemoryById,
   deleteMemoryById,
   projectStoredMemories,
-  countTokens: (value) => Tokenizer.getTokenCount(value, 'o200k_base'),
+  countTokens,
 });
 
 router.use(requireJwtAuth);
@@ -217,7 +217,7 @@ router.post('/', createMemoryMiddleware, async (req, res) => {
   }
 
   try {
-    const tokenCount = Tokenizer.getTokenCount(value, 'o200k_base');
+    const tokenCount = await countTokens(value);
 
     const memories = await getUserMemories({ userId: req.user.id, agentId });
 
@@ -355,7 +355,7 @@ router.patch('/:key', updateMemoryMiddleware, async (req, res) => {
   }
 
   try {
-    const tokenCount = Tokenizer.getTokenCount(value, 'o200k_base');
+    const tokenCount = await countTokens(value);
 
     const memories = await getUserMemories({ userId: req.user.id, agentId });
     const existingMemory = memories.find((m) => m.key === urlKey);

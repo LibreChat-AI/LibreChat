@@ -1,4 +1,4 @@
-import { AuthType, ErrorTypes } from 'librechat-data-provider';
+import { AuthType, ErrorTypes, EModelEndpoint } from 'librechat-data-provider';
 import type { BaseInitializeParams } from '~/types';
 
 const mockValidateEndpointURL = jest.fn();
@@ -353,6 +353,7 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
   const { fetchModels } = jest.requireMock('~/endpoints/models');
 
   function createTokenConfigParams(overrides: {
+    provider?: EModelEndpoint.anthropic;
     apiKey?: string;
     baseURL?: string;
     userBaseURL?: string;
@@ -366,6 +367,7 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
       baseURL,
       models: { fetch: true },
       headers: overrides.headers,
+      provider: overrides.provider,
     });
 
     const db = {
@@ -391,6 +393,21 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     fetchModels.mockReset().mockResolvedValue([]);
+  });
+
+  it('forwards the native provider to token-config discovery', async () => {
+    await initializeCustom(
+      createTokenConfigParams({
+        provider: EModelEndpoint.anthropic,
+        baseURL: 'https://api.anthropic.com',
+      }),
+    );
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: EModelEndpoint.anthropic,
+        baseURL: 'https://api.anthropic.com',
+      }),
+    );
   });
 
   it('forwards configured headers and user object to fetchModels for admin-trusted base URL', async () => {

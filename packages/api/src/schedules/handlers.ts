@@ -10,6 +10,10 @@ import type {
   TCreateSchedule,
   TUpdateSchedule,
   TSchedule,
+  ScheduledMCPIdentity,
+  ScheduleAuthorization,
+  ScheduledMCPEnrollment,
+  ConfirmRunGrant,
 } from 'librechat-data-provider';
 import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -28,7 +32,8 @@ import {
   computeNextRunAt,
   isValidTimezone,
 } from './cadence';
-import { ScheduleMCPError, getScheduleMCPFailureCode } from './mcp';
+import { PreflightError, preflightCode } from '~/agents/authority/preflight';
+import { RunGrantError } from '~/agents/authority/service';
 import { resolveScheduleProjectId } from './types';
 
 export interface SchedulesHandlersDeps {
@@ -37,6 +42,27 @@ export interface SchedulesHandlersDeps {
   getLimits: (user?: ScheduleUserContext) => Promise<ScheduleLimits>;
   /** Agent existence + VIEW access for the requesting user. */
   canViewAgent: (agentId: string, req: ServerRequest) => Promise<boolean>;
+  /**
+   * The grant for a schedule about to be created, from its owner's choice. Throws a
+   * `RunGrantError` when the choice does not fit what can be offered. Absent, a
+   * schedule cannot be authorized as it is created.
+   */
+  grant?: (
+    identity: ScheduledMCPIdentity,
+    choice: ScheduleAuthorization,
+    options: { signal?: AbortSignal; revision?: number },
+  ) => Promise<ScheduledMCPEnrollment>;
+  /**
+   * The grant an edit carries for a schedule that keeps its agent, from the owner's choice of
+   * the schedule's own offer, for the configuration generation the edit makes. Throws a
+   * `RunGrantError` like `grant`. Absent, an edit cannot carry an authorization.
+   */
+  renew?: (
+    identity: ScheduledMCPIdentity,
+    choice: ConfirmRunGrant,
+    revision: number,
+    options: { signal?: AbortSignal },
+  ) => Promise<{ enrollment: ScheduledMCPEnrollment; basis: ScheduledMCPEnrollment | null }>;
   /** Whether the requesting user owns this chat project. Projects are user-owned,
    *  so existence and authorization are the same question. */
   canUseProject: (projectId: string, userId: string) => Promise<boolean>;
@@ -156,6 +182,11 @@ export function computeCreateDigest(payload: TCreateSchedule): string {
     // for the pinned row, i.e. success for the opposite of what it asked. A pre-scope
     // client never sent the field at all, so nothing legacy can carry an explicit null.
     ...(payload.chatProjectId !== undefined && { chatProjectId: payload.chatProjectId }),
+    // Omitted unless sent, for the same reason: a create from before the option existed
+    // must still match its own row.
+    ...(payload.mcpStrict !== undefined && { mcpStrict: payload.mcpStrict }),
+    // Likewise omitted unless sent: what the owner allowed is part of what they asked for.
+    ...(payload.authorization !== undefined && { authorization: payload.authorization }),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
@@ -243,6 +274,7 @@ export type WireSchedule = Pick<
   | 'chatProjectId'
   | 'file_ids'
   | 'enabled'
+  | 'mcpStrict'
   | 'disabledReason'
   | 'nextRunAt'
   | 'lastRun'
@@ -314,6 +346,7 @@ export function toWireSchedule(
     chatProjectId: resolveScheduleProjectId(limits ?? {}, schedule.chatProjectId),
     file_ids: schedule.file_ids,
     enabled: schedule.enabled,
+    ...(schedule.mcpStrict === true && { mcpStrict: true }),
     disabledReason: schedule.disabledReason,
     nextRunAt: schedule.nextRunAt,
     lastRun: schedule.lastRun,
@@ -324,6 +357,13 @@ export function toWireSchedule(
     updatedAt: schedule.updatedAt,
     ...(inFlight.length > 0 && { inFlight: toWireInFlight(inFlight) }),
   };
+}
+
+/** The owner's choice no longer fits what can be offered, or never did. Nothing is written. */
+function refuseAuthorization(res: Response, error: RunGrantError): void {
+  res
+    .status(error.code === 'consent_forbidden' ? 403 : 409)
+    .json({ error: 'Schedule authorization was not accepted', code: error.code });
 }
 
 function requestUser(req: ServerRequest): { id: string; tenantId?: string; role?: string } {
@@ -395,6 +435,13 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     signal: AbortSignal,
     limits: ScheduleLimits,
     scheduleId: string,
+    /** The grant a schedule is being created with: not stored yet, so not found by its id. */
+    grant?: ISchedule['mcpConsent'],
+    /**
+     * The schedule runs only while every server is ready (`mcpStrict`). Otherwise a server
+     * that is not ready does not refuse the write: each run is started without it.
+     */
+    strict = false,
   ): Promise<boolean> {
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
@@ -403,11 +450,14 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         signal,
         concurrency: limits.mcpPreflightConcurrency,
         deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
+        ...(grant && { grant }),
       });
       return true;
     } catch (error) {
       if (signal.aborted) return false;
-      if (error instanceof ScheduleMCPError) {
+      // With no outcome there is no server to leave out: the owner could not be resolved.
+      if (error instanceof PreflightError && !strict && error.outcomes.length > 0) return true;
+      if (error instanceof PreflightError) {
         res.status(error.code === 'mcp_unavailable' ? 503 : 400).json({
           code: error.code,
           error: error.message,
@@ -717,9 +767,53 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       return;
     }
     const id = `sched_${randomUUID()}`;
+    const { authorization, ...fields } = parsed.data;
+    /**
+     * Where consent is on, a schedule is authorized as it is created: the grant is written
+     * in the same insert. One created without a choice needs authorization from the start,
+     * so none of its tools runs until its owner confirms.
+     */
+    let consent: Pick<ISchedule, 'mcpConsent' | 'mcpConsentRequired'> = {};
+    if (limits.mcpConsent?.enabled === true) {
+      if (authorization == null || deps.grant == null) {
+        consent = { mcpConsentRequired: true };
+      } else {
+        try {
+          consent = {
+            mcpConsent: await deps.grant(
+              {
+                scheduleId: id,
+                ownerId: user.id,
+                tenantId: user.tenantId ?? null,
+                agentId: fields.agent_id,
+                invocationMode: 'delegated',
+              },
+              authorization,
+              { signal: mcpSignal },
+            ),
+          };
+        } catch (error) {
+          if (mcpSignal.aborted) return;
+          if (!(error instanceof RunGrantError)) throw error;
+          refuseAuthorization(res, error);
+          return;
+        }
+      }
+    }
+    // After the grant: readiness is about the MCP tools the owner allowed, and a server
+    // they left out is neither connected to nor a reason to refuse the schedule.
     if (
-      parsed.data.enabled &&
-      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits, id))
+      fields.enabled &&
+      !(await validateMCP(
+        fields.agent_id,
+        req,
+        res,
+        mcpSignal,
+        limits,
+        id,
+        consent.mcpConsent,
+        fields.mcpStrict === true,
+      ))
     )
       return;
     // Project policy applies to a NEW insert only, and is therefore resolved AFTER every
@@ -794,7 +888,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // a permanent state.
     const created = await deps.methods.createScheduleWithSlot(
       {
-        ...parsed.data,
+        ...fields,
+        ...consent,
         chatProjectId: chatProjectId ?? undefined,
         id,
         user: user.id as never,
@@ -912,7 +1007,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // The fence input is not a schedule field: strip it before the emptiness check
     // and the update spread below, or it would count as an edit and be written to
     // the row.
-    const { expectedConfigRevision, ...editedFields } = parsed.data;
+    // Nor is the owner's choice of what the schedule may use: it rides with an edit.
+    const { expectedConfigRevision, authorization, ...editedFields } = parsed.data;
     // A field-less PATCH is not a harmless no-op: updateScheduleById rotates the claim
     // token and bumps the config revision on every write, so an empty update would
     // fence a legitimate in-flight occurrence — its terminal bookkeeping revision-
@@ -981,6 +1077,50 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       res.status(400).json({ error: 'Agent not found or not accessible' });
       return;
     }
+    /**
+     * An edit ends the grant the schedule had. Where the owner sent their choice with it, the
+     * grant is made again here and written in the same update, for the revision that update
+     * makes, so the schedule is never left waiting for a second step.
+     */
+    let regrant: ISchedule['mcpConsent'];
+    /** The stored grant `regrant` was decided against: what the write is allowed to replace. */
+    let basis: ISchedule['mcpConsent'] | null = existing.mcpConsent ?? null;
+    if (
+      limits.mcpConsent?.enabled === true &&
+      authorization != null &&
+      deps.grant != null &&
+      deps.renew != null
+    ) {
+      const agentId = parsed.data.agent_id ?? existing.agent_id;
+      const identity: ScheduledMCPIdentity = {
+        scheduleId: existing.id,
+        ownerId: user.id,
+        tenantId: user.tenantId ?? null,
+        agentId,
+        invocationMode: 'delegated',
+      };
+      const revision = (existing.configRevision ?? 0) + 1;
+      const { expectedRevision, ...choice } = authorization;
+      try {
+        // Another agent: there is no stored grant for it, so the choice is made from that
+        // agent's offer, as for a new schedule. The same agent: from the schedule's own.
+        if (agentId === existing.agent_id) {
+          const renewed = await deps.renew(
+            identity,
+            { ...choice, expectedRevision: expectedRevision ?? null },
+            revision,
+            { signal: mcpSignal },
+          );
+          regrant = renewed.enrollment;
+          basis = renewed.basis;
+        } else regrant = await deps.grant(identity, choice, { signal: mcpSignal, revision });
+      } catch (error) {
+        if (mcpSignal.aborted) return;
+        if (!(error instanceof RunGrantError)) throw error;
+        refuseAuthorization(res, error);
+        return;
+      }
+    }
     if (
       enabled &&
       !(await validateMCP(
@@ -990,6 +1130,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         mcpSignal,
         limits,
         existing.id,
+        regrant,
+        (parsed.data.mcpStrict ?? existing.mcpStrict) === true,
       ))
     )
       return;
@@ -1040,6 +1182,16 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // cadence one, or a name/prompt edit would silently leave it dead.
     const needsArming = existing.nextRunAt == null;
     const update: Partial<ISchedule> = { ...editedFields } as Partial<ISchedule>;
+    // Editing a schedule its owner never authorized ends its exemption: from here on its
+    // MCP tools need a grant. Pausing or resuming it is not an edit.
+    if (regrant) update.mcpConsent = regrant;
+    else if (
+      limits.mcpConsent?.enabled === true &&
+      existing.mcpConsent === undefined &&
+      existing.mcpConsentRequired !== true &&
+      Object.keys(editedFields).some((key) => key !== 'enabled')
+    )
+      update.mcpConsentRequired = true;
     // `chatProjectId` is resolved, not copied: an operator pin rewrites it even when
     // this PATCH never mentioned the field, so the row converges on the policy
     // instead of drifting until the owner happens to touch the picker.
@@ -1064,10 +1216,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       update.balanceSkipCount = 0;
     }
     const unset =
-      reEnabled || clearsProject
+      reEnabled || clearsProject || regrant
         ? {
             ...(reEnabled && { disabledReason: 1 as const }),
             ...(clearsProject && { chatProjectId: 1 as const }),
+            // Authorized again in this write: it no longer waits for its owner.
+            ...(regrant && { mcpConsentRequired: 1 as const }),
           }
         : undefined;
     // Retain the new attachments BEFORE committing the edit, so a retention failure
@@ -1114,7 +1268,11 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // loser simply retries against fresh state.
     const schedule = await deps.methods.updateScheduleById(existing.id, user.id, update, unset, {
       expectedConfigRevision: existing.configRevision,
-      ...(existing.mcpConsent &&
+      // Consent writes do not move the edit generation: the new grant replaces the stored
+      // one only if that is still the grant it was decided against, untouched since.
+      ...(regrant && { replacesMCPConsent: basis }),
+      ...(!regrant &&
+        existing.mcpConsent &&
         existing.mcpConsent.scheduleRevision === existing.configRevision &&
         Object.keys(editedFields).every((key) => key === 'enabled') &&
         !clearsProject &&
@@ -1127,6 +1285,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       // them so the owner sees a retryable conflict rather than a phantom 404.
       const stillThere = await deps.methods.getScheduleById(existing.id, user.id);
       if (stillThere != null) {
+        // Same edit generation, so it was the grant that moved: revoked, confirmed again, or
+        // marked by a run. The owner's choice was made from what is no longer stored.
+        if (regrant && stillThere.configRevision === existing.configRevision) {
+          refuseAuthorization(res, new RunGrantError('consent_changed'));
+          return;
+        }
         res.status(409).json({ error: 'Schedule was modified concurrently. Please retry.' });
         return;
       }
@@ -1187,7 +1351,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       // A limiter refusal is the caller's own quota, not a conflicting schedule state,
       // so answer 429 rather than burying it in the generic 409.
       const failedMCP = result.mcp?.filter((outcome) => outcome.status !== 'ready') ?? [];
-      const mcpStatus = failedMCP.length > 0 ? getScheduleMCPFailureCode(failedMCP) : undefined;
+      const mcpStatus = failedMCP.length > 0 ? preflightCode(failedMCP) : undefined;
       let status = 409;
       if (result.skipped === 'rate_limited') status = 429;
       else if (mcpStatus === 'mcp_unavailable' || result.mcpPreflightUnavailable === true)

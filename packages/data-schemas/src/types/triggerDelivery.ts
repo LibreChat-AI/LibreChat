@@ -21,6 +21,10 @@ export const AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3 =
   'background_tool_completion_batch_v3';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1 = 'agent_queued_turn_v1';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2 = 'agent_queued_turn_v2';
+/** v3 workers prove a promoted steer's ownership before running its turn. */
+export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3 = 'agent_queued_turn_v3';
+export const AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1 = 'responses_background_v1';
+export const AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1 = 'responses_resume_v1';
 export const AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS: number = 64 * 1024;
 export type AgentTriggerDeliveryOutcome = 'succeeded' | 'retry' | 'dead';
 
@@ -200,8 +204,9 @@ export interface IAgentTriggerDeliveryDocument
     Document {}
 
 export interface AgentTriggerDeliveryRecord
-  extends Omit<IAgentTriggerDelivery, '_id' | 'createdAt'> {
+  extends Omit<IAgentTriggerDelivery, '_id' | 'createdAt' | 'user'> {
   id: string;
+  user: string;
   createdAt: Date;
 }
 

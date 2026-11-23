@@ -2,15 +2,18 @@ import { useMemo, useState, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { getStreamStartFailureText } from '@librechat/chat';
-import { showStopButtonByIndex } from '@librechat/chat/react';
+import {
+  useUsageHandler,
+  toResumableUsage,
+  useEventHandlers,
+  showStopButtonByIndex,
+} from '@librechat/chat/react';
 import type { ResumableRun, ResumableEvents, ResumableUsage } from '@librechat/chat';
+import type { EventHandlerParams } from '@librechat/chat/react';
 import type { EventSubmission } from 'librechat-data-provider';
-import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
-import { countTrailingOutputChars, markStreamStartFailedMetadata } from '~/utils';
+import { markStreamStartFailedMetadata } from '~/utils';
 import { reopenTermsOnRefusal } from '~/utils/terms';
-import useEventHandlers from './useEventHandlers';
-import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
 
 const getStreamStartFailureData = (errorData?: unknown, termsRefusalText?: string): TResData =>
@@ -95,17 +98,8 @@ export default function useResumableEvents({
     [rawStepHandler, run],
   );
 
-  const {
-    bindResponse,
-    contextHandler,
-    usageHandler,
-    tapStream,
-    tapContent,
-    finalizeUsage,
-    backfillUsage,
-    resetLive,
-    seedLive,
-  } = useUsageHandler();
+  const usageHandlers = useUsageHandler();
+  const { resetLive } = usageHandlers;
 
   const events = useMemo<ResumableEvents>(
     () => ({
@@ -160,29 +154,7 @@ export default function useResumableEvents({
     ],
   );
 
-  const usage = useMemo<ResumableUsage>(
-    () => ({
-      bindResponse,
-      contextHandler,
-      usageHandler,
-      tapStream,
-      tapContent,
-      finalizeUsage,
-      backfillUsage,
-      seedLiveFromContent: (content, usageSubmission) =>
-        seedLive(countTrailingOutputChars(content), usageSubmission),
-    }),
-    [
-      bindResponse,
-      contextHandler,
-      usageHandler,
-      tapStream,
-      tapContent,
-      finalizeUsage,
-      backfillUsage,
-      seedLive,
-    ],
-  );
+  const usage = useMemo<ResumableUsage>(() => toResumableUsage(usageHandlers), [usageHandlers]);
 
   return { events, usage };
 }

@@ -22,6 +22,7 @@ export interface AgentQueuedTurnFileRef {
   type?: string;
   filepath?: string;
   filename?: string;
+  textPreview?: string;
   llmDeliveryPath?: 'provider' | 'text' | 'none';
   height?: number;
   width?: number;
@@ -83,6 +84,8 @@ export interface IAgentQueuedTurn {
   deliveryKey?: string;
   deliveryState?: AgentQueuedTurnDeliveryState;
   scheduledAt?: Date;
+  /** The unapplied steer this row was promoted from; absent on ordinary rows. */
+  steerSource?: AgentQueuedTurnSteerSource;
   claimId?: string;
   claimBy?: string;
   claimUntil?: Date;
@@ -104,6 +107,21 @@ export interface IAgentQueuedTurn {
   terminalReceipt?: AgentQueuedTurnTerminalReceipt;
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+/**
+ * A row promoted from a steer its run accepted but never applied. The row is
+ * the durable record of which steer it replaces, and of whether it owns that
+ * steer's words: `handoffAt` is set only once the job store handed the parked
+ * copy to this row, and a row without it may not run until that is proven.
+ */
+export interface AgentQueuedTurnSteerSource {
+  steerId: string;
+  clientSteerId: string;
+  /** The generation that accepted the steer, which the hand-off is fenced to.
+   * Not the row's queue epoch: a promoted row joins the ended run's lineage. */
+  generationCreatedAt: number;
+  handoffAt?: Date;
 }
 
 export interface IAgentQueuedTurnDocument extends Omit<IAgentQueuedTurn, '_id'>, Document {}
@@ -161,6 +179,7 @@ export type AgentQueuedTurnActiveRecord = Pick<
   | 'deliveryKey'
   | 'deliveryState'
   | 'scheduledAt'
+  | 'steerSource'
   | 'createdAt'
   | 'updatedAt'
   | 'terminalReceipt'

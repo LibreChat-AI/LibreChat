@@ -227,8 +227,10 @@ const ProjectChatList = ({
         );
       }
 
+      /** Keyed by chat so a row's local state stays with its chat when rows move. */
+      const convoKey = item.convo.conversationId ? `convo-${item.convo.conversationId}` : key;
       return (
-        <MeasuredRow key={key} {...rowProps}>
+        <MeasuredRow key={convoKey} {...rowProps} rowKey={convoKey}>
           <ConversationRow
             conversation={item.convo}
             isGenerating={activeJobIds.has(item.convo.conversationId ?? '')}

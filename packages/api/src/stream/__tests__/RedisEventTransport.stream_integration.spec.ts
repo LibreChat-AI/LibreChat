@@ -1127,7 +1127,7 @@ describe('RedisEventTransport Integration Tests', () => {
       let abortReceived = false;
 
       // Register abort callback
-      transport.onAbort(streamId, () => {
+      const disposeAbort = await transport.onAbort(streamId, () => {
         abortReceived = true;
       });
 
@@ -1142,6 +1142,7 @@ describe('RedisEventTransport Integration Tests', () => {
 
       expect(abortReceived).toBe(true);
 
+      disposeAbort();
       transport.destroy();
       subscriber.disconnect();
     });
@@ -1307,10 +1308,10 @@ describe('RedisEventTransport Integration Tests', () => {
       let callback2Called = false;
 
       // Multiple abort callbacks
-      transport.onAbort(streamId, () => {
+      const disposeFirst = await transport.onAbort(streamId, () => {
         callback1Called = true;
       });
-      transport.onAbort(streamId, () => {
+      const disposeSecond = await transport.onAbort(streamId, () => {
         callback2Called = true;
       });
 
@@ -1323,6 +1324,8 @@ describe('RedisEventTransport Integration Tests', () => {
       expect(callback1Called).toBe(true);
       expect(callback2Called).toBe(true);
 
+      disposeFirst();
+      disposeSecond();
       transport.destroy();
       subscriber.disconnect();
     });
@@ -1341,7 +1344,7 @@ describe('RedisEventTransport Integration Tests', () => {
       const streamId = `abort-cleanup-${Date.now()}`;
       let abortReceived = false;
 
-      transport.onAbort(streamId, () => {
+      const disposeAbort = await transport.onAbort(streamId, () => {
         abortReceived = true;
       });
 
@@ -1349,6 +1352,7 @@ describe('RedisEventTransport Integration Tests', () => {
 
       // Cleanup the stream
       transport.cleanup(streamId);
+      disposeAbort();
 
       // Emit abort after cleanup
       transport.emitAbort(streamId);

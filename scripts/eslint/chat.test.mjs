@@ -112,6 +112,39 @@ tester.run('chat/boundary', chat.rules.boundary, {
       options,
     },
     { code: "import x from '~/store';", filename: path.join(root, 'client/src/x.ts'), options },
+    ...[
+      "import { cn } from '@librechat/client'; export const C = () => cn('a');",
+      "import { cn } from '@librechat/client'; export function f() { return cn('a'); }",
+      "import { cn } from '@librechat/client'; export const C = memo(function C() { return cn('a'); });",
+      "import { cn } from '@librechat/client'; class A { value = cn('a'); }",
+      "import type { TShowToast } from '@librechat/client'; export const t = TShowToast;",
+      "import { cn } from './utils'; export const classes = cn('a');",
+      "import { cn } from '@librechat/client'; export const f = (cn: (v: string) => string) => cn('a');",
+      "import { memo, createContext } from 'react'; export const C = memo(() => null); export const Ctx = createContext(null);",
+      "import { atom } from 'jotai'; import { atomFamily } from 'jotai/utils'; export const a = atom(0); export const f = atomFamily(() => a);",
+      "import { FileSources } from 'librechat-data-provider'; export const icon = (s: string) => ({ [FileSources.local]: 'x' })[s];",
+      "import { Search } from 'lucide-react'; export const icons = { search: Search, list: [Search] };",
+    ].map((code) => ({ code, filename: at('components/Probe.tsx'), options })),
+    {
+      code: "import { cn } from '@librechat/client'; const classes = cn('a');",
+      filename: at('components/__tests__/Probe.spec.tsx'),
+      options,
+    },
+    {
+      code: "import path from 'node:path'; export const dir = path.join('a', 'b');",
+      filename: at('__fixtures__/i18n.ts'),
+      options,
+    },
+    {
+      code: "import { cn } from '@librechat/client'; export const classes = cn('a');",
+      filename: at('components/__mocks__/Probe.tsx'),
+      options,
+    },
+    {
+      code: "import path from 'node:path'; export const dir = path.join('a', 'b');",
+      filename: at('react/probe.ts'),
+      options,
+    },
   ],
   invalid: [
     ...cases('core/streaming/probe.ts', entrySpellings, 'entry'),
@@ -137,6 +170,38 @@ tester.run('chat/boundary', chat.rules.boundary, {
       ],
       errors: [{ messageId: 'ui' }],
     },
+    ...[
+      ["import { cn } from '@librechat/client'; export const classes = cn('a');", 'cn'],
+      ["import { cn as join } from '@librechat/client'; export const classes = join('a');", 'join'],
+      [
+        "import * as Client from '@librechat/client'; export const c = Client['cn']('a');",
+        'Client',
+      ],
+      ["import { cva } from '@librechat/client'; export const variants = cva('a', {});", 'cva'],
+      ["import { Store } from '@librechat/client'; export const store = new Store();", 'Store'],
+      ["import { css } from '@librechat/client'; export const rule = css`color: red;`;", 'css'],
+      ["import { cn } from '@librechat/client'; class A { static value = cn('a'); }", 'cn'],
+      ["export const classes = cn('a'); import { cn } from '@librechat/client';", 'cn'],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export const icons = { [FileSources.local]: 'x' };",
+        'FileSources',
+        'librechat-data-provider',
+      ],
+      ["import { v4 } from 'uuid'; export const id = v4();", 'v4', 'uuid'],
+      [
+        "import { atom } from 'jotai'; export const a = atom(0);",
+        'atom',
+        'jotai',
+        { loadSafe: [] },
+      ],
+    ].flatMap(([code, name, source = '@librechat/client', extra = {}]) =>
+      ['components/Probe.tsx', 'react/probe.ts'].map((file) => ({
+        code,
+        filename: at(file),
+        options: [{ ...options[0], ...extra }],
+        errors: [{ messageId: 'load', data: { name, source } }],
+      })),
+    ),
     {
       code: 'export const load = (name: string) => import(name);',
       filename: at('core/probe.ts'),

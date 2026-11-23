@@ -1,4 +1,21 @@
-import { auditCacheStores, formatMemoryUsage } from './audit';
+import { Keyv } from 'keyv';
+import { auditCacheStores, formatMemoryUsage, selectExpiringMemoryStores } from './audit';
+
+describe('selectExpiringMemoryStores', () => {
+  it('selects native non-Redis Keyv stores with positive TTL in registration order', () => {
+    class RedisStore extends Map<string, string> {}
+
+    const expiring = new Keyv({ ttl: 1000 });
+    const roles = new Keyv();
+    const redis = new Keyv({ ttl: 1000, store: new RedisStore() });
+    const candidates = [expiring, { opts: roles.opts }, redis, roles];
+
+    expect(selectExpiringMemoryStores(candidates)).toEqual([expiring]);
+
+    roles.opts.ttl = 1000;
+    expect(selectExpiringMemoryStores(candidates)).toEqual([expiring, roles]);
+  });
+});
 
 describe('auditCacheStores', () => {
   it('puts count and ttl in the message and never reads keys or values', () => {

@@ -47,7 +47,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 
   for (const modelName of modelsToCleanup) {
     if (mongoose.models[modelName]) {

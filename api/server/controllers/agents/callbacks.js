@@ -20,7 +20,9 @@ const {
 const {
   sendEvent,
   getModelEndUsage,
+  collectGoogleThoughtSignatures,
   computeUsageCostUSD,
+  captureResponseAccountingUsage,
   GenerationJobManager,
   waitForGenerationSettled,
   writeAttachmentEvent,
@@ -31,14 +33,17 @@ const {
   isCodeSessionToolName,
   isCodeArtifactToolOutput,
   getModelRefusalInfo,
+  recordModelTruncation,
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
   captureSubagentIdentity,
   feedSubagentAggregator,
   getAttachmentOwnership,
+  getImageAttachmentContent,
   collectToolCallIds,
   createToolTimingAdapter,
   stampCommandExecutor,
+  writeGuarded,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -92,27 +97,26 @@ async function enqueueCodeOutputBatch({
 class ModelEndHandler {
   /**
    * @param {Array<UsageMetadata>} collectedUsage
-   * @param {Record<string, string> | null} [collectedThoughtSignatures] Map of
-   *   `tool_call_id → thoughtSignature` accumulated across `chat_model_end`
-   *   events. Used to persist Vertex Gemini 3 thought signatures across DB
-   *   round-trips so resumed conversations don't 400 on the next API call.
-   *   Each `model_end` may emit multiple tool calls (one per LLM cycle in a
-   *   tool-using turn); per-id storage preserves the mapping so each tool
-   *   call's signature can be restored onto the right reconstructed
-   *   AIMessage rather than being concentrated on the last one.
-   *   Optional; when `null`, the handler is a no-op for signatures. Non-Vertex
-   *   providers don't emit `additional_kwargs.signatures`, so capture is also
-   *   a no-op for them even when the map is provided.
+   * @param {import('@librechat/api').GoogleThoughtSignatures | null} [collectedThoughtSignatures]
+   *   Provider replay metadata accumulated across model calls and saved with the assistant row.
    * @param {(data: Record<string, unknown>) => Promise<void> | void} [emitUsage] Optional
    *   callback to stream per-call token usage to the client.
+   * @param {import('@librechat/api').OutputTruncationSink | null} [truncationSink] Whether the
+   *   latest answer call hit its output limit; the client settles it after the run.
    */
-  constructor(collectedUsage, collectedThoughtSignatures = null, emitUsage = null) {
+  constructor(
+    collectedUsage,
+    collectedThoughtSignatures = null,
+    emitUsage = null,
+    truncationSink = null,
+  ) {
     if (!Array.isArray(collectedUsage)) {
       throw new Error('collectedUsage must be an array');
     }
     this.collectedUsage = collectedUsage;
     this.collectedThoughtSignatures = collectedThoughtSignatures;
     this.emitUsage = emitUsage;
+    this.truncationSink = truncationSink;
   }
 
   finalize(errorMessage) {
@@ -152,7 +156,9 @@ class ModelEndHandler {
           conversationId: metadata.thread_id,
         });
       }
+      recordModelTruncation(this.truncationSink, data?.output, metadata);
 
+      collectGoogleThoughtSignatures(this.collectedThoughtSignatures, data?.output);
       const usage = getModelEndUsage(data?.output);
       if (!usage) {
         return;
@@ -193,6 +199,7 @@ class ModelEndHandler {
                 ? {
                     cache_creation,
                     cache_creation_1h: taggedUsage.input_token_details?.cache_creation_1h,
+                    cache_creation_12h: taggedUsage.input_token_details?.cache_creation_12h,
                     cache_read,
                   }
                 : undefined,
@@ -209,33 +216,8 @@ class ModelEndHandler {
           });
         } catch (err) {
           /** Best-effort telemetry: a failed emit (closed SSE, Redis publish
-           *  error) must not abort the handler before the thought-signature
-           *  capture below, or resumed tool-call requests lose that metadata */
+           *  error) must not abort the handler */
           logger.warn('[ModelEndHandler] Failed to emit token usage', err);
-        }
-      }
-
-      /**
-       * `additional_kwargs.signatures` is a flat array indexed by response
-       * part position (text + functionCall interleaved). `tool_calls` is
-       * just the function calls in their original order. Non-empty
-       * signatures correspond 1:1 with `tool_calls` in order — see
-       * `partsToSignatures` in `@langchain/google-common`. Walk both in a
-       * single pass to map each signature onto the right `tool_call.id`.
-       */
-      const signatures = data?.output?.additional_kwargs?.signatures;
-      const toolCalls = data?.output?.tool_calls;
-      if (
-        this.collectedThoughtSignatures &&
-        Array.isArray(signatures) &&
-        Array.isArray(toolCalls)
-      ) {
-        let toolIdx = 0;
-        for (const sig of signatures) {
-          if (typeof sig !== 'string' || sig.length === 0) continue;
-          if (toolIdx >= toolCalls.length) break;
-          const id = toolCalls[toolIdx++]?.id;
-          if (id) this.collectedThoughtSignatures[id] = sig;
         }
       }
     } catch (error) {
@@ -334,6 +316,8 @@ async function maybeEmitSandboxStarting(emitForJob, data, metadata) {
  *   which usage events and which content parts came after it.
  * @param {Array<TTokenUsageEvent>} [options.usageEmitSink] - Array collecting each emitted
  *   `on_token_usage` payload (incl. cost) so the response's usage rollup can be persisted.
+ * @param {import('@librechat/api').OutputTruncationSink} [options.truncationSink] - Whether the
+ *   latest answer call hit its output limit, settled into the response by the client.
  * @param {(toolName: string, agentId?: string) => string | undefined} [options.resolveMcpServerName]
  * @returns {Record<string, t.EventHandler>} The default handlers.
  * @throws {Error} If the request is not found.
@@ -355,6 +339,7 @@ function getDefaultHandlers({
   usageCost = null,
   contextUsageSink = null,
   usageEmitSink = null,
+  truncationSink = null,
   eventChildActivity = null,
   resolveMcpServerName = null,
   toolTimingReplayEvents = [],
@@ -468,6 +453,7 @@ function getDefaultHandlers({
       collectedUsage,
       collectedThoughtSignatures,
       emitTokenUsage,
+      truncationSink,
     ),
     [GraphEvents.TOOL_END]: createOwnedToolEndHandler(toolEndCallback, logger),
     [GraphEvents.ON_RUN_STEP]: {
@@ -849,7 +835,7 @@ function writeAttachment(res, streamId, attachment, expectedCreatedAt) {
       { expectedCreatedAt },
     );
   } else {
-    res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
 }
 
@@ -1024,7 +1010,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
 
     if (output.artifact.content) {
       /** @type {FormattedContent[]} */
-      const content = output.artifact.content;
+      const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
         const part = content[i];
         if (!part) {
@@ -1390,7 +1376,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
 
     if (output.artifact.content) {
       /** @type {FormattedContent[]} */
-      const content = output.artifact.content;
+      const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
         const part = content[i];
         if (!part) {
@@ -1579,7 +1565,7 @@ function markSummarizationUsage(usage, metadata) {
  * not consistently include it, and cache normalization depends on it.
  */
 function contextualizeModelUsage(usage, metadata, agentContext = {}) {
-  const taggedUsage = { ...usage };
+  const taggedUsage = captureResponseAccountingUsage(usage, metadata, agentContext);
   const context = agentContext ?? {};
   const invokedProvider = metadata?.__invoked_provider;
   const invokedModel = metadata?.__invoked_model;

@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider as JotaiProvider } from 'jotai';
-import type { ChatSurface } from '~/components/Chat/Subagents/surface';
+import type { ChatSurface } from '@librechat/chat/react';
 import type { ReactNode } from 'react';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
+import { ChatSurfaceProvider } from '@librechat/chat/react';
 
 export type JotaiStore = ReturnType<typeof createStore>;
 

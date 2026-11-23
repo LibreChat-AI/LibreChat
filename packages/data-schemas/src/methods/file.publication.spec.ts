@@ -52,6 +52,32 @@ describe('Run artifact persistence', () => {
     },
   });
 
+  it('projects storage authorization without fetching extracted content', async () => {
+    const file = await methods.publishRunArtifactFile({
+      scope,
+      provenance: provenance(),
+      file: content(),
+    });
+    const [metadata] = await methods.getRunFileCandidates([file.file_id], scope.tenantId, {
+      storageOnly: true,
+    });
+    expect(metadata).toMatchObject({
+      file_id: file.file_id,
+      user: scope.userId,
+      filepath: file.filepath,
+      bytes: file.bytes,
+      updatedAt: file.updatedAt,
+    });
+    expect(metadata).not.toHaveProperty('text');
+    expect(metadata).not.toHaveProperty('metadata');
+    expect((await methods.getRunFileCandidates([file.file_id], scope.tenantId))[0].text).toBe(
+      content().text,
+    );
+    expect(
+      await methods.getRunFileCandidates([file.file_id], 'foreign', { storageOnly: true }),
+    ).toEqual([]);
+  });
+
   beforeAll(async () => {
     mongo = await MongoMemoryServer.create();
     await mongoose.connect(mongo.getUri());
@@ -67,7 +93,7 @@ describe('Run artifact persistence', () => {
   afterAll(async () => {
     await mongoose.disconnect();
     mongoose.deleteModel('File');
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   it('claims a stable UUID without exposing an incomplete file record', async () => {
@@ -104,6 +130,7 @@ describe('Run artifact persistence', () => {
     expect(file.metadata.codeEnvRef).toBeUndefined();
     expect(file.metadata.codeEnvRefs).toBeUndefined();
     expect(file.metadata.embeddedEntities).toBeUndefined();
+    expect(file.embeddingOwnersComplete).toBe(true);
     expect(await methods.claimRunArtifactFile(scope)).toEqual({ file_id: file.file_id, file });
     expect(await methods.listRunArtifacts(scope)).toEqual([file]);
     expect(await methods.getRunFileCandidates([file.file_id], scope.tenantId)).toEqual([file]);

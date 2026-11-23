@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useFormContext } from 'react-hook-form';
 import { Input, Label } from '@librechat/client';
 import { AuthTypeEnum } from 'librechat-data-provider';
-import CopyButton from '~/components/Messages/Content/CopyButton';
+import { CopyButton } from '@librechat/chat/components';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 
 export default function ActionCallback({ action_id }: { action_id?: string }) {

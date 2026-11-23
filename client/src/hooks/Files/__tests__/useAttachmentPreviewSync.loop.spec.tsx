@@ -37,8 +37,13 @@ jest.mock('~/data-provider', () => ({
 }));
 jest.mock('~/hooks/useLocalize', () => () => (key: string) => key);
 
-import useAttachments from '~/hooks/Messages/useAttachments';
+import { useAttachments } from '@librechat/chat/components';
+import { setDefaultMessagesHost, useStreamedAttachments } from '@librechat/chat/react';
+import type { MessagesHost } from '@librechat/chat/react';
 import useAttachmentPreviewSync from '../useAttachmentPreviewSync';
+
+/** The one host member `useAttachments` reads: the streamed map this regression writes through. */
+setDefaultMessagesHost({ useStreamedAttachments } as unknown as MessagesHost);
 
 const messageId = 'msg-1';
 const fileId = 'fid-1';

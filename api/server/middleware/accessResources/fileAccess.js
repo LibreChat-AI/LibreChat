@@ -1,72 +1,7 @@
 const { logger } = require('@librechat/data-schemas');
-const { PermissionBits, hasPermissions, ResourceType } = require('librechat-data-provider');
-const { getEffectivePermissions } = require('~/server/services/PermissionService');
+const { hasAgentBasedFileAccess } = require('@librechat/api');
+const { getResourcePermissionsMap } = require('~/server/services/PermissionService');
 const { getAgents, getFiles } = require('~/models');
-
-/**
- * Checks if user has access to a file through agent permissions
- * Files inherit permissions from agents they are attached to.
- */
-const checkAgentBasedFileAccess = async ({ userId, role, fileId, fileOwner }) => {
-  try {
-    const fileOwnerId = fileOwner?.toString();
-    if (!fileOwnerId) {
-      return false;
-    }
-
-    /** Agents that have this file in their tool_resources */
-    const agentsWithFile = await getAgents({
-      $or: [
-        { 'tool_resources.execute_code.file_ids': fileId },
-        { 'tool_resources.file_search.file_ids': fileId },
-        { 'tool_resources.image_edit.file_ids': fileId },
-        { 'tool_resources.context.file_ids': fileId },
-        { 'tool_resources.ocr.file_ids': fileId },
-      ],
-    });
-
-    if (!agentsWithFile || agentsWithFile.length === 0) {
-      return false;
-    }
-
-    const userIdStr = userId.toString();
-    for (const agent of agentsWithFile) {
-      const agentAuthorId = agent.author?.toString();
-      if (!agentAuthorId) {
-        continue;
-      }
-
-      if (agentAuthorId === userIdStr) {
-        logger.debug(`[fileAccess] User is author of agent ${agent.id}`);
-        return true;
-      }
-
-      try {
-        const permissions = await getEffectivePermissions({
-          userId,
-          role,
-          resourceType: ResourceType.AGENT,
-          resourceId: agent._id || agent.id,
-        });
-
-        if (hasPermissions(permissions, PermissionBits.VIEW)) {
-          logger.debug(`[fileAccess] User ${userId} has VIEW permissions on agent ${agent.id}`);
-          return true;
-        }
-      } catch (permissionError) {
-        logger.warn(
-          `[fileAccess] Permission check failed for agent ${agent.id}:`,
-          permissionError.message,
-        );
-      }
-    }
-
-    return false;
-  } catch (error) {
-    logger.error('[fileAccess] Error checking agent-based access:', error);
-    return false;
-  }
-};
 
 const getTenantId = (value) => value?.toString?.() ?? null;
 
@@ -124,12 +59,10 @@ const fileAccess = async (req, res, next) => {
     }
 
     /** Agent-based access (file inherits agent permissions) */
-    const hasAgentAccess = await checkAgentBasedFileAccess({
-      userId,
-      role: userRole,
-      fileId,
-      fileOwner: file.user,
-    });
+    const hasAgentAccess = await hasAgentBasedFileAccess(
+      { userId, role: userRole, fileId, fileOwner: file.user },
+      { getAgents, getResourcePermissionsMap },
+    );
     if (hasAgentAccess) {
       req.fileAccess = { file };
       return next();

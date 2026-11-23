@@ -143,6 +143,11 @@ export function withToolApprovalTransport<T>(
   return execution ? transportContext.run({ execution, invocation }, invoke) : invoke();
 }
 
+/** The tool call a transport is being used for, when an approval session is running. */
+export function getToolApprovalTransportCallId(): string | undefined {
+  return transportContext.getStore()?.invocation.toolCallId;
+}
+
 /** Reconnect and SDK-internal retries cannot change the credential generation a call approved. */
 export async function assertToolApprovalTransportEpoch(
   serverName: string,

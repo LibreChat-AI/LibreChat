@@ -3,22 +3,27 @@ import './renderers';
 export * from './Attachment';
 export * from './OpenAIImageGen';
 
-export { Text, Summary, EmptyText, AgentUpdate, CollapsibleText } from '@librechat/chat/components';
 export {
-  default as Reasoning,
-  ReasoningMarker,
+  Text,
+  Summary,
+  EmptyText,
+  SteerPart,
+  AgentUpdate,
+  CollapsibleText,
+} from '@librechat/chat/components';
+export {
+  Reasoning,
   ReasoningCompact,
+  ReasoningMarker,
   StreamingThoughtPeek,
-} from './Reasoning';
+} from '@librechat/chat/components';
 export { default as LogContent } from './LogContent';
-export { default as ExecuteCode } from './ExecuteCode';
-export { default as SkillCall } from './SkillCall';
-export { default as MemoryCall } from './MemoryCall';
-export { default as ReadFileCall } from './ReadFileCall';
-export { default as FileAuthoringCall } from './FileAuthoringCall';
-export { default as BashCall } from './BashCall';
-export { default as PtcToolTrace } from './PtcToolTrace';
+export { ExecuteCode } from '@librechat/chat/components';
+export { SkillCall } from '@librechat/chat/components';
+export { MemoryCall } from '@librechat/chat/components';
+export { ReadFileCall } from '@librechat/chat/components';
+export { FileAuthoringCall } from '@librechat/chat/components';
+export { BashCall } from '@librechat/chat/components';
+export { PtcToolTrace } from '@librechat/chat/components';
 export { default as SubagentCall } from './SubagentCall';
-export { default as SteerPart } from './SteerPart';
-export { default as AuthorHeader } from './AuthorHeader';
-export { default as ResumeAuthorHeader } from './ResumeAuthorHeader';
+export { AuthorHeader, ResumeAuthorHeader } from '@librechat/chat/components';

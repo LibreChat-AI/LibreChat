@@ -22,6 +22,7 @@
 const http = require('http');
 const busboy = require('busboy');
 const { randomUUID } = require('crypto');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = parseInt(process.env.E2E_CODE_API_PORT || '8790', 10);
 const HOST = '127.0.0.1';
@@ -199,6 +200,9 @@ async function handleExec(req, res) {
     lang: body.lang || '',
     codeLength: typeof body.code === 'string' ? body.code.length : 0,
     fileCount: Array.isArray(body.files) ? body.files.length : 0,
+    /** Which mounted files each exec received, so a spec can tell a read from a later call. */
+    fileNames: Array.isArray(body.files) ? body.files.map((file) => file?.name) : [],
+    code: typeof body.code === 'string' ? body.code.slice(0, 200) : '',
   });
   const versionMarker = body.code?.match(
     /E2E_RUN_FILE_VERSION:([A-Za-z0-9-]+):(write-v1|inspect|write-v2)/,
@@ -341,6 +345,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
+keepIdleConnections(server);
 server.listen(PORT, HOST, () => {
   console.log(`[e2e] fake code API listening on http://${HOST}:${PORT}/v1`);
 });

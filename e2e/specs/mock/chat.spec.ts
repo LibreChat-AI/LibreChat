@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   isAgentsStream,
+  getAccessToken,
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   messagesView,
@@ -341,7 +342,9 @@ test.describe('core chat loop', () => {
 
     await uploadProviderFile(page, csvFixture);
 
-    await expect(page.getByRole('button', { name: filename })).toBeVisible();
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: filename, exact: true }),
+    ).toBeVisible();
 
     const input = page.getByRole('textbox', { name: 'Message input' });
     await input.click();
@@ -364,6 +367,220 @@ test.describe('core chat loop', () => {
     await page.reload({ timeout: 10000 });
     await expect(page).toHaveURL(conversationUrl);
     await expect(fileChip).toBeVisible();
+  });
+
+  test('stops sending a file the conversation leaves out, and sends it again once taken back @scenario:conversation-leaves-file-out', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+
+    const csvFixture: UploadFixture = {
+      name: 'left-out-upload.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('name,value\nalpha,1\n'),
+    };
+    const filename = csvFixture.name;
+    const fileChip = messagesView(page).getByRole('button', { name: filename });
+    const listed = (label: string, names: string) =>
+      messagesView(page).getByText(`E2E provider files (${label}): ${names}`);
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const upload = await uploadProviderFile(page, csvFixture);
+    const { file_id: fileId } = (await upload.json()) as { file_id: string };
+    expect(fileId).toBeTruthy();
+
+    let response = await sendMessageAndWaitForCompletion(
+      page,
+      `E2E_ASSERT_PROVIDER_FILE:${filename}`,
+    );
+    expect(response.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E provider file assertion passed: ${filename}`),
+    ).toBeVisible();
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/);
+    const conversationId = page.url().split('/c/')[1];
+
+    /** A later turn sends the earlier message's file again: that is the cost being controlled. */
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:before');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('before', filename)).toBeVisible();
+
+    const token = await getAccessToken(page);
+    const setExcluded = (excluded: boolean) =>
+      page.request.post(`/api/convos/${conversationId}/files/exclusion`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { fileIds: [fileId], excluded },
+      });
+
+    const left = await setExcluded(true);
+    expect(left.ok()).toBeTruthy();
+    expect(await left.json()).toEqual({ excludedFiles: [fileId] });
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:left-out');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('left-out', 'none')).toBeVisible();
+    /** Left out of what the model is sent, not out of the conversation: the message keeps it. */
+    await expect(fileChip).toBeVisible();
+
+    const back = await setExcluded(false);
+    expect(back.ok()).toBeTruthy();
+    expect(await back.json()).toEqual({ excludedFiles: [] });
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:taken-back');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('taken-back', filename)).toBeVisible();
+  });
+
+  test('lists a chat’s files in the session rail and stops sending one switched off there @scenario:session-rail-files', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+
+    const csvFixture: UploadFixture = {
+      name: 'rail-upload.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('name,value\nalpha,1\n'),
+    };
+    const filename = csvFixture.name;
+    const listed = (label: string, names: string) =>
+      messagesView(page).getByText(`E2E provider files (${label}): ${names}`);
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await uploadProviderFile(page, csvFixture);
+    let response = await sendMessageAndWaitForCompletion(
+      page,
+      `E2E_ASSERT_PROVIDER_FILE:${filename}`,
+    );
+    expect(response.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E provider file assertion passed: ${filename}`),
+    ).toBeVisible();
+
+    await page.getByTestId('header-background-tasks-button').click();
+    const rail = page.getByRole('complementary', { name: 'Session' });
+    const row = rail.getByTestId('session-file').filter({ hasText: filename });
+    await expect(row).toContainText('Sent to the model');
+    const include = row.getByRole('switch', { name: `Use ${filename} in new messages` });
+    await expect(include).toBeChecked();
+    await testInfo.attach('session-rail-files', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+
+    await include.click();
+    await expect(include).not.toBeChecked();
+    await expect(row).toContainText('Left out');
+    await expect(rail).toContainText('1 left out');
+
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:switched-off');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('switched-off', 'none')).toBeVisible();
+    await testInfo.attach('session-rail-files-left-out', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+
+    /** The choice belongs to the conversation, not to this page. */
+    await page.reload({ timeout: 10000 });
+    await expect(rail).toBeVisible();
+    await expect(include).not.toBeChecked();
+
+    await include.click();
+    await expect(include).toBeChecked();
+    response = await sendMessageAndWaitForCompletion(page, 'E2E_LIST_PROVIDER_FILES:switched-on');
+    expect(response.ok()).toBeTruthy();
+    await expect(listed('switched-on', filename)).toBeVisible();
+    await rail.getByRole('button', { name: 'Close session' }).click();
+  });
+
+  test('resizes the session rail from its handle and keeps the width @scenario:session-rail-resize', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const response = await sendMessageAndWaitForCompletion(page, 'ping for the rail');
+    expect(response.ok()).toBeTruthy();
+
+    await page.getByTestId('header-background-tasks-button').click();
+    const rail = page.getByRole('complementary', { name: 'Session' });
+    await expect(rail).toBeVisible();
+    const handle = page.getByRole('separator', { name: 'Resize the session panel' });
+    const thread = messagesView(page);
+    const widthOf = async (target: typeof rail) => (await target.boundingBox())?.width ?? 0;
+    const viewport = page.viewportSize()?.width ?? 0;
+
+    /** It opens at its default width, against the window's edge. */
+    expect(await widthOf(rail)).toBeCloseTo(320, -1);
+    const railBox = await rail.boundingBox();
+    expect((railBox?.x ?? 0) + (railBox?.width ?? 0)).toBeCloseTo(viewport, 0);
+    const threadBefore = await widthOf(thread);
+
+    /** Dragging the handle toward the conversation widens the rail and narrows the thread. */
+    const grip = await handle.boundingBox();
+    const startX = (grip?.x ?? 0) + (grip?.width ?? 0) / 2;
+    const y = (grip?.y ?? 0) + (grip?.height ?? 0) / 2;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX - 120, y, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(() => widthOf(rail)).toBeGreaterThan(420);
+    const dragged = await widthOf(rail);
+    expect(await widthOf(thread)).toBeLessThan(threadBefore - 100);
+
+    /** The handle takes the keyboard too. */
+    await handle.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => widthOf(rail)).toBeLessThan(dragged);
+    const keyed = await widthOf(rail);
+
+    /** The width is the reader's, so it is there after a reload and in a narrower window. */
+    await page.reload({ timeout: 10000 });
+    await expect(rail).toBeVisible();
+    await expect.poll(() => widthOf(rail)).toBeCloseTo(keyed, -1);
+    /** A much narrower window squeezes it to its share of the room, and it does not shrink in
+     *  step with the window before that; given the room back, it returns to the reader's width. */
+    const height = page.viewportSize()?.height ?? 720;
+    await page.setViewportSize({ width: viewport - 300, height });
+    await expect.poll(() => widthOf(rail)).toBeLessThan(keyed - 40);
+    const squeezed = await widthOf(rail);
+    const column = await page
+      .locator('#chat-column')
+      .evaluate((element) => element.parentElement?.getBoundingClientRect().width ?? 0);
+    expect(squeezed).toBeCloseTo(column / 2, -1);
+    await page.setViewportSize({ width: viewport, height });
+    await expect.poll(() => widthOf(rail)).toBeCloseTo(keyed, -1);
+
+    /** A press on the handle that changes nothing is not a choice of width: after a key that
+     *  does not resize, and after a click that does not drag, a squeeze is still not kept. */
+    const squeezeAndRestore = async (chosen: number) => {
+      await page.setViewportSize({ width: viewport - 300, height });
+      await expect.poll(() => widthOf(rail)).toBeLessThan(chosen - 40);
+      await page.setViewportSize({ width: viewport, height });
+      await expect.poll(() => widthOf(rail)).toBeCloseTo(chosen, -1);
+    };
+    await handle.focus();
+    await page.keyboard.press('Tab');
+    await squeezeAndRestore(keyed);
+    const idle = await handle.boundingBox();
+    await page.mouse.click((idle?.x ?? 0) + (idle?.width ?? 0) / 2, y);
+    await squeezeAndRestore(keyed);
+    /** Nor is a resizing key with nowhere to go: Home takes the rail to its widest, and a
+     *  second Home changes nothing. */
+    await handle.focus();
+    await page.keyboard.press('Home');
+    await expect.poll(() => widthOf(rail)).toBeGreaterThan(keyed + 40);
+    const widest = await widthOf(rail);
+    await page.keyboard.press('Home');
+    await squeezeAndRestore(widest);
+
+    /** Closed, the column and its handle are gone and the thread has the room back. */
+    await rail.getByRole('button', { name: 'Close session' }).click();
+    await expect(rail).toHaveCount(0);
+    await expect(handle).toHaveCount(0);
+    await expect.poll(() => widthOf(thread)).toBeGreaterThan(threadBefore);
   });
 
   test('supports attaching, removing, and sending provider files from the composer', async ({

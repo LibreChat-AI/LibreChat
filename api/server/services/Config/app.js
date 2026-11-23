@@ -5,6 +5,8 @@ const {
   isEnabled,
   expandCustomEndpoint,
   createAppConfigService,
+  applySlackWorkspaceEnvironment,
+  applyLoadedConfig,
   clearMcpConfigCache,
   createCodeEnvironmentRegistry,
   createConfigCacheInvalidation,
@@ -47,11 +49,17 @@ const loadBaseConfig = async (mode) => {
     adminIncluded: config.includedTools,
     directory: paths.structuredTools,
   });
-  return AppService({ config, paths, systemTools, expandCustomEndpoint });
+  return AppService({
+    config: applySlackWorkspaceEnvironment(config, process.env),
+    paths,
+    systemTools,
+    expandCustomEndpoint,
+  });
 };
 
 const appConfigService = createAppConfigService({
   loadBaseConfig,
+  onBaseConfigPublished: applyLoadedConfig,
   setCachedTools,
   getCache: getLogStores,
   cacheKeys: CacheKeys,
@@ -86,6 +94,7 @@ const {
 
 // Config owns the reader; models never import this module to obtain it.
 db.initializeMessageBudget(getAppConfig);
+db.initializeChannelStorageConfig(getAppConfig);
 
 /**
  * Admin config writes clear the per-principal override caches, the MCP config-source servers

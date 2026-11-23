@@ -212,3 +212,34 @@ export function withoutRecoveredSteers(
     (item.recoveryClientSteerId != null && settledIds.includes(item.recoveryClientSteerId));
   return prev.some(recovered) ? prev.filter((item) => !recovered(item)) : prev;
 }
+
+/** Client ids of the steers this pane holds outside a live run's ordinary
+ *  flow: recovery rows waiting to send, and chips whose POST failed. The server
+ *  may already have promoted any of them to a durable turn. A chip that is
+ *  still sending or pending belongs to a run in progress, which has not ended
+ *  and so cannot have promoted it yet. */
+export function heldSteerClientIds(
+  chips: readonly PendingSteer[],
+  queue: readonly QueuedMessage[],
+): string[] {
+  return [
+    ...queue.flatMap((item) =>
+      item.server == null && item.recoveryClientSteerId != null ? [item.recoveryClientSteerId] : [],
+    ),
+    ...chips.flatMap((steer) =>
+      steer.status === 'failed' ? [steer.clientSteerId ?? steer.steerId] : [],
+    ),
+  ];
+}
+
+/** A durable promoted turn carries these steers, so every local copy of them
+ *  leaves the queue: recovery-bound rows, and plain rows still keyed by one of
+ *  the steer's ids. Server rows stay. Returns `prev` itself when no row matched. */
+export function withoutPromotedSteers(
+  prev: QueuedMessage[],
+  promotedIds: readonly string[],
+): QueuedMessage[] {
+  const unbound = withoutRecoveredSteers(prev, promotedIds);
+  const local = (item: QueuedMessage) => item.server == null && promotedIds.includes(item.id);
+  return unbound.some(local) ? unbound.filter((item) => !local(item)) : unbound;
+}

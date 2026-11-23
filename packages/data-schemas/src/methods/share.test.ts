@@ -37,6 +37,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: { type: String, index: true },
+        spec: { type: String, select: false },
         user: { type: String, index: true },
         messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
         shareId: { type: String, index: true },
@@ -80,6 +81,7 @@ describe('Share Methods', () => {
         privateTextTokens: { type: [String], select: false, default: undefined },
         isCreatedByUser: Boolean,
         isUserSubmitted: Boolean,
+        trigger: { type: mongoose.Schema.Types.Mixed, select: false, default: undefined },
         userSubmittedPaths: {
           type: [String],
           default: undefined,
@@ -112,6 +114,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: String,
+        spec: String,
         user: String,
         endpoint: String,
         endpointType: String,
@@ -138,7 +141,7 @@ describe('Share Methods', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {
@@ -525,6 +528,33 @@ describe('Share Methods', () => {
     });
   });
 
+  it('reads the published spec only for a fork and refreshes it on republish', async () => {
+    const key = { user: 'owner', conversationId: 'spec-chat' };
+    await Conversation.create({ ...key, title: 'Spec chat', spec: 'specialist' });
+    await Message.create({ ...key, messageId: 'root', text: 'Published message' });
+
+    const { shareId, _id } = await shareMethods.createSharedLink(key.user, key.conversationId);
+    const preflight = jest.fn();
+    const fork = await shareMethods.getSharedForkSnapshot(shareId, _id, { preflight });
+    expect(fork).toMatchObject({ spec: 'specialist', share: { shareId } });
+    expect(fork?.share).not.toHaveProperty('spec');
+    expect(preflight.mock.calls[0][0]).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedMessages(shareId)).not.toHaveProperty('spec');
+
+    await Conversation.updateOne(key, { $set: { spec: 'replacement' } });
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'specialist');
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'replacement');
+
+    await Conversation.updateOne(key, { $unset: { spec: 1 } });
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await SharedLink.findOne({ shareId }).select('+spec').lean()).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toMatchObject({
+      spec: undefined,
+      share: { shareId },
+    });
+  });
+
   describe('getSharedMessages', () => {
     /** Publishes through `createSharedLink` with one response whose stored `sender` is
      *  what the header will render, so what a viewer reads back is the published flag. */
@@ -670,6 +700,10 @@ describe('Share Methods', () => {
           text: 'Hello',
           isCreatedByUser: true,
           parentMessageId: Constants.NO_PARENT,
+          trigger: {
+            event: { type: 'schedule.occurrence', occurredAt: new Date(0) },
+            subject: { kind: 'schedule', id: 'schedule-1' },
+          },
         },
         {
           messageId: `msg_${nanoid()}`,
@@ -727,6 +761,11 @@ describe('Share Methods', () => {
       ]);
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'isUserSubmitted',
+      );
+      /** What started a turn is its owner's to see: a link's viewer is not told. */
+      expect(JSON.stringify(result)).not.toContain('schedule-1');
+      expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
+        'trigger',
       );
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'userSubmittedPaths',

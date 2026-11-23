@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from 'express';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   afterTermsGate,
+  createTermsRouteGate,
   createTermsBlockCheck,
   createTermsAcceptanceGate,
   allowBeforeTermsAcceptance,
@@ -168,6 +169,117 @@ describe('createTermsAcceptanceGate', () => {
   it('resolves the config fail-closed so an override lookup failure cannot fall back to the base', async () => {
     const { getAppConfig } = await run(createRequest('POST', '/api/files'));
     expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ failClosed: true }));
+  });
+});
+
+describe('createTermsRouteGate', () => {
+  async function runRoute(
+    req: Request,
+    config: AppConfig | null = configWith(true),
+    options?: Parameters<typeof createTermsRouteGate>[1],
+  ): Promise<{ res: Response; next: jest.Mock; getAppConfig: jest.Mock }> {
+    const getAppConfig = jest.fn().mockResolvedValue(config ?? undefined);
+    const gate = createTermsRouteGate({ getAppConfig }, options);
+    const res = createResponse();
+    const next = jest.fn();
+    await gate(req, res, next as NextFunction);
+    return { res, next, getAppConfig };
+  }
+
+  it.each(['GET', 'HEAD', 'OPTIONS', 'POST'])(
+    'blocks %s for a user who has not accepted, which the global gate lets a read through',
+    async (method) => {
+      const req = createRequest(method, '/api/mcp/github/oauth/initiate');
+      expect(outcome(await runRoute(req))).toBe('blocked');
+      if (method !== 'POST') {
+        expect(outcome(await run(req))).toBe('allowed');
+      }
+    },
+  );
+
+  it('answers with the same body the global gate gives a write', async () => {
+    const blocked = await runRoute(createRequest('GET', '/api/mcp/github/oauth/initiate'));
+    const write = await run(createRequest('POST', '/api/files'));
+    expect((blocked.res.json as jest.Mock).mock.calls[0]).toEqual(
+      (write.res.json as jest.Mock).mock.calls[0],
+    );
+  });
+
+  it('allows a user who has accepted without reading config', async () => {
+    const req = createRequest('GET', '/api/mcp/github/oauth/initiate', {
+      id: 'user-1',
+      termsAccepted: true,
+    });
+    const result = await runRoute(req);
+    expect(outcome(result)).toBe('allowed');
+    expect(result.getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it('leaves an unauthenticated request to the route authentication', async () => {
+    const req = createRequest('GET', '/api/mcp/github/oauth/initiate', null);
+    expect(outcome(await runRoute(req))).toBe('allowed');
+  });
+
+  it.each([
+    ['disabled', configWith(false)],
+    ['unset', configWith(undefined)],
+    ['missing', {} as AppConfig],
+    ['unresolved', null],
+  ])('is a no-op when modalAcceptance is %s', async (_label, config) => {
+    const req = createRequest('GET', '/api/mcp/github/oauth/initiate');
+    expect(outcome(await runRoute(req, config))).toBe('allowed');
+  });
+
+  it("resolves the config fail-closed for the user's role and tenant", async () => {
+    const req = createRequest('GET', '/api/mcp/github/oauth/initiate', {
+      id: 'user-1',
+      role: 'ADMIN',
+      tenantId: 'tenant-a',
+    });
+    const { getAppConfig } = await runRoute(req);
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: 'ADMIN',
+        userId: 'user-1',
+        tenantId: 'tenant-a',
+        failClosed: true,
+      }),
+    );
+  });
+
+  it('forwards a config failure instead of letting the flow start', async () => {
+    const error = new Error('config unavailable');
+    const gate = createTermsRouteGate({ getAppConfig: jest.fn().mockRejectedValue(error) });
+    const res = createResponse();
+    const next = jest.fn();
+    await gate(createRequest('GET', '/api/mcp/github/oauth/initiate'), res, next);
+    expect(next).toHaveBeenCalledWith(error);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('answers in the nested error envelope when asked to', async () => {
+    const result = await runRoute(createRequest('GET', '/api/agents/v1/models'), configWith(true), {
+      envelope: 'nested',
+    });
+    expect(result.res.status).toHaveBeenCalledWith(403);
+    expect(result.res.json).toHaveBeenCalledWith({
+      error: expect.objectContaining({
+        code: TERMS_NOT_ACCEPTED_CODE,
+        type: 'invalid_request_error',
+      }),
+    });
+  });
+
+  it('is not lifted by the opt-out of the router it sits in', async () => {
+    const req = createRequest('GET', '/admin/config/catalog', {
+      id: 'admin-1',
+      role: 'ADMIN',
+      termsAccepted: false,
+    });
+    req.baseUrl = '/api/admin/config';
+    allowBeforeTermsAcceptance(req, createResponse(), jest.fn() as NextFunction);
+    expect(outcome(await run(req))).toBe('allowed');
+    expect(outcome(await runRoute(req))).toBe('blocked');
   });
 });
 

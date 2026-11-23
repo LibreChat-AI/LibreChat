@@ -14,17 +14,25 @@ import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 jest.mock('~/files/validation', () => ({
   validatePdf: jest.fn(),
   validateBedrockDocument: jest.fn(),
+  getBedrockDocumentLimit: jest.requireActual('~/files/validation').getBedrockDocumentLimit,
 }));
 
 /** Mock the utils module */
 jest.mock('./utils', () => ({
   getFileStream: jest.fn(),
   getConfiguredFileSizeLimit: jest.fn(),
-  isAttachmentObjectNotFoundError: jest.fn(() => false),
+  skipMissingAttachment: jest.requireActual('./utils').skipMissingAttachment,
+  AttachmentObjectNotFoundError: jest.requireActual('./utils').AttachmentObjectNotFoundError,
+  AttachmentSizeError: jest.requireActual('./utils').AttachmentSizeError,
 }));
 
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
-import { getFileStream, getConfiguredFileSizeLimit } from './utils';
+import {
+  getFileStream,
+  AttachmentSizeError,
+  getConfiguredFileSizeLimit,
+  AttachmentObjectNotFoundError,
+} from './utils';
 import { Types } from 'mongoose';
 
 const mockedValidatePdf = validatePdf as jest.MockedFunction<typeof validatePdf>;
@@ -573,6 +581,126 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       });
     });
 
+    it('refuses a Bedrock document over the limit from its recorded size, without reading it', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream).not.toHaveBeenCalled();
+      expect(mockedGetConfiguredFileSizeLimit).toHaveBeenCalledWith(
+        req,
+        expect.objectContaining({ explicit: true }),
+      );
+    });
+
+    it('bounds the Bedrock read at the limit and reports an object larger than its record', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(1);
+      file.type = 'text/csv';
+      const limit = mbToBytes(4.5);
+      mockedGetFileStream.mockRejectedValue(
+        new AttachmentSizeError(file.file_id, 'data.csv', limit),
+      );
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(limit);
+    });
+
+    it('reads a Bedrock document up to a limit the operator set above the provider default', async () => {
+      const req = createMockRequest(10, Providers.BEDROCK) as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('a,b').toString('base64'),
+        metadata: file,
+      });
+      mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(1);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(10));
+    });
+
+    it('leaves out a replayed Bedrock document that is gone, whatever size was recorded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      const onMissingFile = jest.fn();
+      mockedGetFileStream.mockRejectedValue(new AttachmentObjectNotFoundError(file.file_id));
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK, onMissingFile },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(0);
+      expect(onMissingFile).toHaveBeenCalledWith(file);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(4.5));
+    });
+
+    it('reads a document under timeouts.fileFetchMs', async () => {
+      const req = { config: { timeouts: { fileFetchMs: 1_234 } } } as unknown as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][4]).toMatchObject({
+        timeout: 1_234,
+        timeoutErrorMessage: expect.stringContaining('timeouts.fileFetchMs (1234 ms)'),
+      });
+    });
+
+    it('leaves reads for other providers unbounded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][5]).toBeUndefined();
+    });
+
     it('should format Bedrock CSV document', async () => {
       const req = createMockRequest() as ServerRequest;
       const file = createMockDocFile(1, 'text/csv', 'data.csv');
@@ -705,7 +833,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
     it('should reject Bedrock document when validation fails', async () => {
       const req = createMockRequest() as ServerRequest;
-      const file = createMockDocFile(5, 'text/csv', 'big.csv');
+      const file = createMockDocFile(3, 'text/csv', 'big.csv');
 
       const mockContent = Buffer.from('large-csv-content').toString('base64');
       mockedGetFileStream.mockResolvedValue({
@@ -1222,6 +1350,113 @@ describe('dedupeDocumentNames', () => {
     );
   const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
 
+  it.each(Object.values(Providers).filter((provider) => provider !== Providers.BEDROCK))(
+    'does not inspect replay content for %s',
+    (provider) => {
+      const content = jest.fn(() => {
+        throw new Error('Non-Bedrock content must not be traversed');
+      });
+      const messages: Message[] = [
+        {
+          get content() {
+            return content();
+          },
+        },
+      ];
+      messages.length = CONTENT_TRAVERSAL_MAX_NODES + 1;
+
+      dedupeDocumentNames(messages, [{ provider }]);
+
+      expect(content).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stops recipient traversal as soon as Bedrock naming is required', () => {
+    const descendants = jest.fn(() => {
+      throw new Error('Bedrock descendants must not be read');
+    });
+    const recipients = [
+      {
+        provider: Providers.BEDROCK,
+        get lazySubagentConfigs() {
+          return descendants();
+        },
+      },
+    ];
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+
+    dedupeDocumentNames(messages, recipients);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+    expect(descendants).not.toHaveBeenCalled();
+  });
+
+  it('renames documents for a Bedrock recipient after a non-Bedrock primary', () => {
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+    const recipients = new Map([
+      ['primary', { provider: Providers.OPENAI }],
+      ['secondary', { provider: Providers.BEDROCK }],
+    ]);
+
+    dedupeDocumentNames(messages, recipients.values());
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+  });
+
+  it.each(['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const)(
+    'includes Bedrock providers in %s without resolving them',
+    (route) => {
+      const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+      const resolve = jest.fn();
+      const child = { provider: Providers.BEDROCK, resolve };
+      const recipients = [{ provider: Providers.OPENAI, [route]: [child] }];
+
+      dedupeDocumentNames(messages, recipients);
+
+      expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+      expect(resolve).not.toHaveBeenCalled();
+    },
+  );
+
+  it('handles cyclic metadata without losing distinct snapshots of the same agent', () => {
+    const child = { id: 'shared-id', provider: Providers.BEDROCK };
+    const root = {
+      id: 'shared-id',
+      provider: Providers.OPENAI,
+      lazySubagentConfigs: [] as Array<{ provider: Providers }>,
+    };
+    root.lazySubagentConfigs.push(root, child, child);
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+
+    dedupeDocumentNames(messages, [root]);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+  });
+
+  it('leaves a large replay untouched without any Bedrock recipients', () => {
+    const content: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES);
+    const messages: Message[] = [{ content }];
+    const recipients = new Map([
+      ['primary', { provider: Providers.OPENAI }],
+      ['secondary', { provider: Providers.ANTHROPIC }],
+    ]);
+
+    const resolve = jest.fn();
+    const lazy = {
+      provider: Providers.GOOGLE,
+      resolve,
+      subagentGraphMemberMetadata: [{ provider: Providers.ANTHROPIC }],
+      lazySubagentConfigs: [] as Array<{ provider: Providers }>,
+    };
+    lazy.lazySubagentConfigs.push(lazy);
+    const root = { provider: Providers.OPENAI, lazySubagentConfigs: [lazy] };
+
+    dedupeDocumentNames(messages, [...recipients.values(), root]);
+
+    expect(messages[0].content).toBe(content);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('renames repeated Bedrock document names across the payload in order', () => {
     const first = bedrock('Stripe fees');
     const messages: Message[] = [
@@ -1347,21 +1582,56 @@ describe('dedupeDocumentNames', () => {
     const messages: Message[] = [{ content }];
 
     expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    expect(() =>
+      dedupeDocumentNames(messages, [
+        { provider: Providers.OPENAI },
+        { provider: Providers.BEDROCK },
+      ]),
+    ).toThrow(ContentTraversalLimitError);
     expect(messages[0].content).toBe(content);
     expect(content[1].document.name).toBe('notes');
   });
 
-  it('shares the part budget across messages and nested steer media', () => {
-    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 3);
-    const messages: Message[] = [
-      { content: [{ type: 'steer', media }] },
-      { content: [bedrock('x')] },
-    ];
+  it('allows long histories while keeping document names unique across messages', () => {
+    const content: PayloadContentPart[] = [{ type: 'text' }, bedrock('notes')];
+    const messages: Message[] = Array.from({ length: CONTENT_TRAVERSAL_MAX_NODES + 1 }, () => ({
+      content,
+    }));
 
-    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    dedupeDocumentNames(messages, [{ provider: Providers.BEDROCK }]);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes']);
+    expect(names(contentOf(messages[messages.length - 1]))).toEqual([`notes (${messages.length})`]);
+    expect(new Set(messages.flatMap((message) => names(contentOf(message)))).size).toBe(
+      messages.length,
+    );
+    expect(names(content)).toEqual(['notes']);
   });
 
-  it('accepts a replay exactly at the node budget and bounds the message array', () => {
+  it('resets the part budget for each message, including nested steer media', () => {
+    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 2).fill({
+      type: 'text',
+    });
+    const messages: Message[] = [
+      { content: [{ type: 'steer', media }] },
+      { content: [bedrock('x'), bedrock('x')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[1]))).toEqual(['x', 'x (2)']);
+  });
+
+  it('shares a message budget across its top-level parts and nested steer media', () => {
+    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 2);
+    const content = [{ type: 'steer', media }, bedrock('x')];
+    const messages: Message[] = [{ content }];
+
+    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    expect(messages[0].content).toBe(content);
+  });
+
+  it('accepts a message exactly at the node budget and rejects sparse histories', () => {
     const messages: Message[] = [{ content: new Array(CONTENT_TRAVERSAL_MAX_NODES - 1) }];
 
     expect(() => dedupeDocumentNames(messages)).not.toThrow();
@@ -1397,5 +1667,86 @@ describe('dedupeDocumentNames', () => {
     dedupeDocumentNames(messages);
 
     expect(messages[0].content).toBe(content);
+  });
+});
+
+describe('encodeAndFormatDocuments - files missing from storage', () => {
+  const pdf = (file_id: string, filename: string): IMongoFile =>
+    ({
+      _id: new Types.ObjectId(),
+      user: new Types.ObjectId(),
+      file_id,
+      filename,
+      type: 'application/pdf',
+      bytes: 1024,
+      object: 'file',
+      usage: 0,
+      source: 's3',
+      filepath: `/uploads/${filename}`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }) as unknown as IMongoFile;
+  const missing = pdf('missing-1', 'expired.pdf');
+  const present = pdf('present-1', 'kept.pdf');
+  const req = { config: {} } as unknown as ServerRequest;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedValidatePdf.mockResolvedValue({ isValid: true });
+    mockedGetFileStream.mockImplementation(async (_req, file) => {
+      if (file.file_id === missing.file_id) {
+        throw new AttachmentObjectNotFoundError(file.file_id);
+      }
+      return {
+        file,
+        content: Buffer.from('%PDF-1.4').toString('base64'),
+        metadata: {
+          file_id: file.file_id,
+          filepath: file.filepath,
+          filename: file.filename,
+          type: file.type,
+        },
+      };
+    });
+  });
+
+  it('fails the request when the caller did not opt into skipping', async () => {
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [missing, present],
+        { provider: Providers.ANTHROPIC },
+        jest.fn(),
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_OBJECT_NOT_FOUND', fileId: missing.file_id });
+  });
+
+  it('reports the missing file and still encodes the rest', async () => {
+    const onMissingFile = jest.fn();
+    const result = await encodeAndFormatDocuments(
+      req,
+      [missing, present],
+      { provider: Providers.ANTHROPIC, onMissingFile },
+      jest.fn(),
+    );
+
+    expect(onMissingFile).toHaveBeenCalledTimes(1);
+    expect(onMissingFile).toHaveBeenCalledWith(missing);
+    expect(result.documents).toHaveLength(1);
+    expect(result.files.map((file) => file.file_id)).toEqual([present.file_id]);
+  });
+
+  it('still drops other storage failures without reporting them as missing', async () => {
+    mockedGetFileStream.mockRejectedValue(new Error('access denied'));
+    const onMissingFile = jest.fn();
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = await encodeAndFormatDocuments(
+      req,
+      [present],
+      { provider: Providers.ANTHROPIC, onMissingFile },
+      jest.fn(),
+    );
+    expect(onMissingFile).not.toHaveBeenCalled();
+    expect(result.documents).toEqual([]);
   });
 });

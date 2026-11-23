@@ -109,7 +109,9 @@ test.describe('people search over word-prefix tokens', () => {
       agentId = opened.agentId;
       const searchBox = opened.dialog.getByRole('combobox', { name: SEARCH_LABEL });
       await searchBox.fill(`brig quill${id.slice(0, 3)}`);
-      await expect(opened.dialog.getByRole('option').filter({ hasText: user.name })).toBeVisible({
+      await expect(
+        page.getByRole('listbox').getByRole('option').filter({ hasText: user.name }),
+      ).toBeVisible({
         timeout: 10000,
       });
 
@@ -214,13 +216,75 @@ test.describe('people search over word-prefix tokens', () => {
       });
       const searchBox = opened.dialog.getByRole('combobox', { name: SEARCH_LABEL });
       await searchBox.pressSequentially(`pause${id}`, { delay: 40 });
-      await expect(opened.dialog.getByRole('option').filter({ hasText: user.name })).toBeVisible({
+      await expect(
+        page.getByRole('listbox').getByRole('option').filter({ hasText: user.name }),
+      ).toBeVisible({
         timeout: 10000,
       });
       expect(queries).toEqual([`pause${id}`]);
     } finally {
       await cleanupAgent(page, agentId);
       await deleteUsers([user.email]);
+    }
+  });
+
+  test('@scenario:people-picker-scrolls-to-every-match the share dialog lists more matches than fit, and the mouse wheel scrolls the list down to the last one, which can be picked', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await page.setViewportSize({ width: 1280, height: 640 });
+    const id = suffix();
+    const users = Array.from({ length: 25 }, (_, i) => {
+      const member = `member${String(i).padStart(2, '0')}`;
+      return {
+        name: `Scroll${id} ${member}`,
+        email: `${uniqueName(member)}@search.test`,
+        tokens: [`scroll${id}`, member],
+      };
+    });
+    let agentId: string | undefined;
+    try {
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      await withMongo(async (db) => {
+        const primary = await db.collection('users').findOne({}, { sort: { createdAt: 1 } });
+        const now = new Date();
+        await db.collection('users').insertMany(
+          users.map(({ name, email, tokens }) => ({
+            name,
+            email,
+            tenantId: primary?.tenantId,
+            nameTokens: tokens,
+            emailTokens: [email],
+            usernameTokens: [],
+            createdAt: now,
+            updatedAt: now,
+          })),
+        );
+      });
+      const opened = await openShareDialog(page);
+      agentId = opened.agentId;
+
+      await opened.dialog.getByRole('combobox', { name: SEARCH_LABEL }).fill(`scroll${id}`);
+      const list = page.getByRole('listbox');
+      const options = list.getByRole('option');
+      await expect(options).toHaveCount(users.length, { timeout: 10000 });
+      const last = options.last();
+      await expect(last).not.toBeInViewport();
+
+      const box = await list.boundingBox();
+      expect(box).not.toBeNull();
+      await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+      for (let i = 0; i < 6; i++) {
+        await page.mouse.wheel(0, 600);
+      }
+      await expect(last).toBeInViewport({ ratio: 1 });
+
+      const name = users[users.length - 1].name;
+      await last.click();
+      await expect(opened.dialog.getByText(name, { exact: true })).toBeVisible();
+    } finally {
+      await cleanupAgent(page, agentId);
+      await deleteUsers(users.map((user) => user.email));
     }
   });
 });

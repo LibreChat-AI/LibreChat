@@ -3,6 +3,10 @@ import {
   outboundTimeoutMessage,
   getOutboundTimeout,
   getOutboundTimeoutMs,
+  toolRequestBudget,
+  createSpeechBudget,
+  serviceRequestBudget,
+  SERVICE_REQUEST_TIMEOUT_MS,
   outboundRequestBudget,
   DEFAULT_OUTBOUND_TIMEOUTS_MS,
 } from './timeouts';
@@ -15,6 +19,11 @@ describe('outbound timeouts', () => {
     expect(getOutboundTimeoutMs({ timeouts: { ocrMs: 1_000 } }, 'ragMs')).toBe(
       DEFAULT_OUTBOUND_TIMEOUTS_MS.ragMs,
     );
+  });
+
+  it('bounds directory verification by a configurable finite budget', () => {
+    expect(getOutboundTimeoutMs(undefined, 'directoryMs')).toBe(30_000);
+    expect(getOutboundTimeoutMs({ timeouts: { directoryMs: 50 } }, 'directoryMs')).toBe(50);
   });
 
   it('uses the configured value when present', () => {
@@ -125,5 +134,37 @@ describe('logAxiosError on a budget overrun', () => {
     expect(error).not.toHaveBeenCalled();
     warn.mockRestore();
     error.mockRestore();
+  });
+});
+
+describe('toolRequestBudget', () => {
+  it('defaults to the tools budget and honors the configured one', () => {
+    expect(toolRequestBudget().timeout).toBe(DEFAULT_OUTBOUND_TIMEOUTS_MS.toolsMs);
+    const budget = toolRequestBudget({ toolsMs: 2_000 });
+    expect(budget.timeout).toBe(2_000);
+    expect(budget.timeoutErrorMessage).toBe(outboundTimeoutMessage('toolsMs', 2_000));
+  });
+});
+
+describe('createSpeechBudget', () => {
+  it('starts a fresh deadline per request and shares the disconnect signal', () => {
+    const close = new AbortController();
+    const next = createSpeechBudget({ timeouts: { speechMs: 2_000 } }, close.signal);
+    const first = next();
+    const second = next();
+    expect(first.timeout).toBe(2_000);
+    expect(first.signal).not.toBe(second.signal);
+    close.abort();
+    expect(first.signal.aborted).toBe(true);
+    expect(second.signal.aborted).toBe(true);
+    expect(next().signal.aborted).toBe(true);
+  });
+});
+
+describe('serviceRequestBudget', () => {
+  it('bounds a request by the fixed service timeout with a fresh deadline', () => {
+    const first = serviceRequestBudget();
+    expect(first.timeout).toBe(SERVICE_REQUEST_TIMEOUT_MS);
+    expect(first.signal).not.toBe(serviceRequestBudget().signal);
   });
 });

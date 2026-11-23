@@ -39,3 +39,4 @@ export * from './url';
 export * from './message';
 export * from './quotes';
 export * from './tracing';
+export * from './keylock';

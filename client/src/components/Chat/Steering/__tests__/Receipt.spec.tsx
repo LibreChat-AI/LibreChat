@@ -1,16 +1,13 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import Receipt from '../Receipt';
+import { SteerReceipt as Receipt } from '@librechat/chat/components';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => {
     const english: Record<string, string> = jest.requireActual('~/locales/en/translation.json');
     return english[key] ?? key;
   },
-}));
-
-jest.mock('@librechat/client', () => ({
-  ESide: { Top: 'top' },
   InfoHoverCard: ({ text, children }: { text: string; children: React.ReactNode }) => (
     <span aria-label={text}>{children}</span>
   ),

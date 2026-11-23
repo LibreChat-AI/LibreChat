@@ -24,6 +24,8 @@ export type LangfusePromptConnection = {
 
 export type LangfusePromptListQuery = {
   name?: string;
+  /** Also sent as `name` for Langfuse servers without `filter` support. */
+  nameEquals?: string;
   label?: string;
   tag?: string;
   type?: 'text' | 'chat';
@@ -238,31 +240,35 @@ function appendDefined(
   }
 }
 
-/**
- * Lists prompt metadata from Langfuse. Query params are sent as-is, only those
- * defined; every prompt type — including `chat` — is returned unless `type`
- * is given. `type` is not a Langfuse query param itself: it is serialized as
- * the `filter` parameter, the shape the Langfuse list endpoint expects for a
- * column filter. `filter` is omitted entirely when `type` is unset.
- */
+/** `type` and `nameEquals` combine into `filter`, which Langfuse applies ahead of `name`/`label`/`tag`. */
 export async function listLangfusePrompts(
   conn: LangfusePromptConnection,
   query: LangfusePromptListQuery,
   { timeoutMs }: { timeoutMs: number },
 ): Promise<TLangfusePromptListResponse> {
   const params = new URLSearchParams();
-  appendDefined(params, 'name', query.name);
+  appendDefined(params, 'name', query.nameEquals ?? query.name);
   appendDefined(params, 'label', query.label);
   appendDefined(params, 'tag', query.tag);
   appendDefined(params, 'page', query.page);
   appendDefined(params, 'limit', query.limit);
   appendDefined(params, 'fromUpdatedAt', query.fromUpdatedAt);
   appendDefined(params, 'toUpdatedAt', query.toUpdatedAt);
+  const filterConditions: Array<{ type: 'string'; column: string; operator: '='; value: string }> =
+    [];
+  if (query.nameEquals != null) {
+    filterConditions.push({
+      type: 'string',
+      column: 'name',
+      operator: '=',
+      value: query.nameEquals,
+    });
+  }
   if (query.type != null) {
-    params.set(
-      'filter',
-      JSON.stringify([{ type: 'string', column: 'type', operator: '=', value: query.type }]),
-    );
+    filterConditions.push({ type: 'string', column: 'type', operator: '=', value: query.type });
+  }
+  if (filterConditions.length > 0) {
+    params.set('filter', JSON.stringify(filterConditions));
   }
 
   const search = params.size > 0 ? `?${params.toString()}` : '';

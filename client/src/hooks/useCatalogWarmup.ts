@@ -7,7 +7,7 @@ import { useCallback, useEffect, useSyncExternalStore } from 'react';
  * land as one burst. Panels that need a catalog sooner call `activateCatalog`
  * and their own loading states cover the wait.
  */
-export type CatalogId = 'prompts' | 'mcpServers' | 'mcpTools';
+export type CatalogId = 'prompts' | 'mcpServers' | 'mcpTools' | 'models' | 'agents' | 'assistants';
 
 /** Upper bound on how long warmup may wait behind a busy main thread. */
 const IDLE_TIMEOUT_MS = 2000;
@@ -16,6 +16,9 @@ const IDLE_FALLBACK_MS = 200;
 /** Spacing between catalogs, smaller and more commonly used first. */
 const STAGGER_MS: Record<CatalogId, number> = {
   prompts: 0,
+  models: 0,
+  agents: 250,
+  assistants: 500,
   mcpServers: 250,
   mcpTools: 750,
 };
@@ -24,6 +27,9 @@ const MAX_JITTER_MS = 500;
 
 const ready: Record<CatalogId, boolean> = {
   prompts: false,
+  models: false,
+  agents: false,
+  assistants: false,
   mcpServers: false,
   mcpTools: false,
 };

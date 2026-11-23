@@ -1,4 +1,9 @@
-import { messageFilterPiiSchema, setMessageFilterRegexValidator } from 'librechat-data-provider';
+import {
+  filtersConfigSchema,
+  messageFilterPiiSchema,
+  setPiiRegexProgramSizer,
+  setMessageFilterRegexValidator,
+} from 'librechat-data-provider';
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
 import type { Request, Response, NextFunction } from 'express';
 
@@ -772,6 +777,19 @@ describe('configureMessageFilterRegexValidator (RE2 config-load validation)', ()
         })),
       }).success,
     ).toBe(false);
+  });
+
+  it('sizes `filters` PII patterns with RE2 once wired, instead of rejecting them all', () => {
+    const parses = (regex: string) =>
+      filtersConfigSchema.safeParse({
+        messages: { pii: { customPatterns: [{ id: 'a', label: 'A', regex }] } },
+      }).success;
+    setPiiRegexProgramSizer(() => null);
+    expect(parses('\\bORG-[A-Z0-9]{6,}')).toBe(false);
+
+    configureMessageFilterRegexValidator();
+    expect(parses('\\bORG-[A-Z0-9]{6,}')).toBe(true);
+    expect(parses('(a)\\1')).toBe(false);
   });
 
   it('fails closed with 400 when every configured pattern fails to compile', () => {

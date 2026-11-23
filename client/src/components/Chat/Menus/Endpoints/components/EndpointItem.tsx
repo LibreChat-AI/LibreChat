@@ -57,7 +57,9 @@ const SettingsButton = ({
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       className={cn(
-        'group/button flex items-center gap-1.5 rounded-md px-1.5',
+        'group/button -my-0.5 flex min-h-6 items-center justify-center gap-1.5 rounded-md px-1.5',
+        /* Both targets (24px, 32px on touch) spill into the row's padding instead of growing it. */
+        'any-pointer-coarse:-my-1.5 any-pointer-coarse:min-h-8 any-pointer-coarse:min-w-8',
         'text-text-secondary transition-colors duration-150',
         'hover:bg-surface-tertiary hover:text-text-primary',
         'focus-visible:bg-surface-tertiary focus-visible:text-text-primary',
@@ -108,7 +110,7 @@ function EndpointMenuContent({
     return modelSpecs.filter((spec: TModelSpec) => spec.group === endpoint.value);
   }, [modelSpecs, endpoint.value]);
 
-  if (isAssistantsEndpoint(endpoint.value) && endpoint.models === undefined) {
+  if (endpoint.isLoading && !endpoint.models?.length) {
     return (
       <div
         className="flex items-center justify-center p-2"
@@ -163,6 +165,18 @@ function EndpointMenuContent({
           setSize={listboxSetSize}
         />
       ))}
+      {endpoint.isUnavailable && (
+        <MenuItem onClick={endpoint.onRetry}>{localize('com_ui_retry')}</MenuItem>
+      )}
+      {endpoint.isLoading && endpoint.models != null && (
+        <div
+          role="status"
+          aria-label={localize('com_ui_loading')}
+          className="flex justify-center p-2"
+        >
+          <Spinner aria-hidden="true" />
+        </div>
+      )}
       <EndpointModels
         endpoint={endpoint}
         renderedModels={renderedModels}
