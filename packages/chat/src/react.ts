@@ -289,6 +289,8 @@ export type { CodeBlockIndex } from './react/parts/codeIndex';
 export { ArtifactContext, ArtifactProvider, useArtifactContext } from './react/parts/artifactIndex';
 export type { ArtifactIndex } from './react/parts/artifactIndex';
 export { MediaContext, useMediaContext } from './react/parts/media';
+export { SearchContext, useSearchContext } from './react/parts/search';
+export type { SearchResults } from './react/parts/search';
 export type { MediaSources } from './react/parts/media';
 export type { LazyImport } from './react/lazy';
 export { default as useRowHandoff } from './react/parts/handoff';

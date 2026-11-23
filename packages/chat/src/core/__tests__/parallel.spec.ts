@@ -1,6 +1,6 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
-import { groupParallelContent, lastParallelColumnCursorIdx } from '../ParallelContent';
+import { groupParallelContent, lastParallelColumnCursorIdx } from '../parallel';
 
 describe('groupParallelContent', () => {
   const sequentialPart = {
@@ -183,5 +183,42 @@ describe('lastParallelColumnCursorIdx', () => {
         { part: empty, idx: 8 },
       ]),
     ).toBe(7);
+  });
+});
+
+describe('a parallel section’s start', () => {
+  const part = (groupId: number, agentId: string, type: string = ContentTypes.TEXT) =>
+    ({
+      type,
+      text: `${agentId} in ${groupId}`,
+      groupId,
+      agentId,
+    }) as unknown as TMessageContentParts;
+
+  test('is the transcript index of its first part, whichever column holds it', () => {
+    const grouped = groupParallelContent(
+      [part(1, 'agent-2'), part(1, 'agent-1'), part(1, 'agent-2')],
+      10,
+    );
+    expect(grouped.parallelSections).toHaveLength(1);
+    expect(grouped.parallelSections[0]?.start).toBe(10);
+  });
+
+  test('orders sections by where they start, with a placeholder-only section last', () => {
+    const placeholder = (agentId: string) =>
+      ({ type: '', groupId: 9, agentId }) as unknown as TMessageContentParts;
+    const grouped = groupParallelContent([
+      placeholder('agent-1'),
+      placeholder('agent-2'),
+      part(2, 'agent-1'),
+      part(2, 'agent-2'),
+      part(1, 'agent-1'),
+      part(1, 'agent-2'),
+    ]);
+    expect(grouped.parallelSections.map(({ groupId, start }) => [groupId, start])).toEqual([
+      [2, 2],
+      [1, 4],
+      [9, Infinity],
+    ]);
   });
 });

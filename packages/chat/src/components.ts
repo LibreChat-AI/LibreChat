@@ -1,6 +1,12 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
 export { partRenderers, extendPartRenderers } from './components/partRenderers';
+export { ParallelColumns, ParallelContentRenderer } from './components/Parallel';
+export type {
+  ParallelColumnsProps,
+  ParallelColumnHeaderProps,
+  ParallelContentRendererProps,
+} from './components/Parallel';
 export { default as Text } from './components/Text';
 export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';

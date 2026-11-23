@@ -50,5 +50,7 @@ export {
 } from './download';
 export { selectContents } from './selection';
 export { scaleImage } from './scaleImage';
+export { groupParallelContent, lastParallelColumnCursorIdx } from './parallel';
+export type { ParallelColumn, ParallelSection } from './parallel';
 export { cachePreview, deletePreview, getCachedPreview, removePreviewEntry } from './previewCache';
 export * from './url';
