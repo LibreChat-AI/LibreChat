@@ -151,6 +151,36 @@ describe('bind', () => {
     expect(await stored()).toHaveLength(1);
   });
 
+  it.each([
+    ['a caller with no tenant, of an install a tenant holds', TENANT_A, undefined],
+    ['a tenant, of an install held with no tenant', undefined, TENANT_B],
+  ])('refuses a bind by %s', async (_name, holder, caller) => {
+    const scoped = <T>(tenantId: string | undefined, fn: () => Promise<T>) =>
+      tenantId == null ? fn() : as(tenantId, fn);
+    const held = await scoped(holder, async () => connections.bind(install()));
+
+    const result = await scoped(caller, async () =>
+      connections.bind(install({ account: { id: '77', name: 'hijack' } })),
+    );
+
+    expect(result).toEqual({ ok: false, error: { code: 'taken' } });
+    expect(await connections.resolve({ provider: 'github', installation: '1001' })).toEqual(
+      held.ok && held.value,
+    );
+  });
+
+  it('refreshes a connection with no tenant when it is bound again with none', async () => {
+    const first = await connections.bind(install());
+
+    const again = await connections.bind(install({ account: { id: '77', name: 'renamed' } }));
+
+    expect(again).toEqual({
+      ok: true,
+      value: { ...(first.ok && first.value), account: { id: '77', name: 'renamed' } },
+    });
+    expect(await stored()).toHaveLength(1);
+  });
+
   it('stores a connection without a tenant where there is none', async () => {
     const result = await connections.bind(install());
 
@@ -330,6 +360,36 @@ describe('mark', () => {
       as(TENANT_A, async () => connections.mark(held.id, 'removed' as 'active')),
     ).rejects.toThrow(/status/);
     expect(await as(TENANT_A, async () => connections.get(held.id))).toEqual(held);
+  });
+});
+
+describe('a caller with no tenant', () => {
+  it("is not shown a tenant's connection, and cannot change or delete it", async () => {
+    const held = await bound(TENANT_A);
+
+    expect(await connections.get(held.id)).toBeNull();
+    expect(await connections.list()).toEqual([]);
+    expect(await connections.mark(held.id, 'suspended')).toBeNull();
+    expect(await connections.remove(held.id)).toBe(false);
+    expect(await runAsSystem(async () => connections.get(held.id))).toBeNull();
+    expect(await as(TENANT_A, async () => connections.get(held.id))).toEqual(held);
+  });
+
+  it('reads, marks and removes a connection that has none', async () => {
+    await bound(TENANT_A);
+    const result = await connections.bind(install({ installation: '2002' }));
+    const loose = result.ok ? result.value : undefined;
+    if (loose == null) throw new Error('bind refused');
+
+    expect(await connections.get(loose.id)).toEqual(loose);
+    expect(await connections.list()).toEqual([loose]);
+    expect(await connections.mark(loose.id, 'suspended')).toEqual({
+      ...loose,
+      status: 'suspended',
+    });
+    expect(await as(TENANT_A, async () => connections.get(loose.id))).toBeNull();
+    expect(await connections.remove(loose.id)).toBe(true);
+    expect(await stored()).toHaveLength(1);
   });
 });
 

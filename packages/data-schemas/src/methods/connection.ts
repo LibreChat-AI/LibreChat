@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Connection, ConnectionStatus } from 'librechat-data-provider';
 import type { ConnectionRecord } from '~/models/connection';
 import { getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { createAgentEventConnectionModel } from '~/models/connection';
 import { createChannelIndexGate } from './channelIndexes';
 
@@ -13,7 +14,7 @@ export type ConnectionBinding = Pick<
   'provider' | 'installation' | 'account' | 'createdBy'
 >;
 
-/** `taken`: the install is already bound to another tenant. */
+/** `taken`: the install is already bound somewhere the caller cannot see. */
 export type ConnectionBound =
   | { ok: true; value: Connection }
   | { ok: false; error: { code: 'taken' } };
@@ -21,15 +22,20 @@ export type ConnectionBound =
 /** What names a connection before its tenant is known: its id, or the install it holds. */
 export type ConnectionRef = { id: string } | Pick<Connection, 'provider' | 'installation'>;
 
+/**
+ * Every method but `resolve` acts on one side only: the calling tenant's connections, or the
+ * ones with no tenant when the caller has none. A caller with no tenant is never shown a
+ * tenant's connection, even where other collections would let it through.
+ */
 export type Connections = {
   /**
-   * Binds a provider install to the calling tenant. Binding it again from the same tenant
+   * Binds a provider install to the caller's side. Binding it again from the same side
    * refreshes the account and keeps the connection's id, status and first binder.
    */
   bind: (binding: ConnectionBinding) => Promise<ConnectionBound>;
-  /** One of the calling tenant's connections, or `null` when it has none by that id. */
+  /** One of the caller's connections, or `null` when it has none by that id. */
   get: (id: string) => Promise<Connection | null>;
-  /** The calling tenant's connections, newest first. */
+  /** The caller's connections, newest first. */
   list: () => Promise<Connection[]>;
   /**
    * The connection a ref names, whichever tenant holds it, or `null` when none does. This
@@ -61,6 +67,8 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
   const Model = createAgentEventConnectionModel(mongoose);
   // The install index decides who holds an install, with automatic indexing on or off.
   const indexed = createChannelIndexGate(() => [Model]);
+  /** The caller's side, spelled out: the tenant plugin alone lets a caller with no tenant see all. */
+  const mine = () => tenantPartitionFilter('Connection');
 
   async function bind(binding: ConnectionBinding): Promise<ConnectionBound> {
     if (getTenantId() === SYSTEM_TENANT_ID) {
@@ -81,10 +89,10 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
     } catch (error) {
       if ((error as { code?: number }).code !== DUPLICATE_KEY) throw error;
     }
-    // The install index refused the insert, so some tenant already holds this install. The
-    // calling tenant is part of this filter: its own row is refreshed, another's is not seen.
+    // The install index refused the insert, so the install is already held. Only a row on
+    // the caller's own side is refreshed; one held elsewhere is not seen.
     const row = await Model.findOneAndUpdate(
-      install,
+      { ...install, ...mine() },
       { $set: { account } },
       { new: true },
     ).lean<ConnectionRecord>();
@@ -92,11 +100,11 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
   }
 
   async function get(id: string): Promise<Connection | null> {
-    return found(await Model.findOne({ id }).lean<ConnectionRecord>());
+    return found(await Model.findOne({ id, ...mine() }).lean<ConnectionRecord>());
   }
 
   async function list(): Promise<Connection[]> {
-    const rows = await Model.find({}).sort({ createdAt: -1 }).lean<ConnectionRecord[]>();
+    const rows = await Model.find(mine()).sort({ createdAt: -1 }).lean<ConnectionRecord[]>();
     return rows.map(view);
   }
 
@@ -109,7 +117,7 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
   async function mark(id: string, status: ConnectionStatus): Promise<Connection | null> {
     return found(
       await Model.findOneAndUpdate(
-        { id },
+        { id, ...mine() },
         { $set: { status } },
         { new: true, runValidators: true },
       ).lean<ConnectionRecord>(),
@@ -117,7 +125,7 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
   }
 
   async function remove(id: string): Promise<boolean> {
-    const { deletedCount } = await Model.deleteOne({ id });
+    const { deletedCount } = await Model.deleteOne({ id, ...mine() });
     return deletedCount === 1;
   }
 
