@@ -1,7 +1,10 @@
 import { isFileAttachment, isFileContentPart, hasContentPartFiles } from 'librechat-data-provider';
 import type { TConversation, TMessage } from 'librechat-data-provider';
+import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
 
-type MessageFileRefs = Partial<Pick<TMessage, 'files' | 'attachments' | 'tokenCount' | 'content'>>;
+type MessageFileRefs = Partial<
+  Pick<TMessage, 'files' | 'attachments' | 'tokenCount' | 'content' | 'text' | 'isCreatedByUser'>
+>;
 
 type ConversationFileRefs = Partial<Pick<TConversation, 'file_ids'>> & {
   files?: string[] | null;
@@ -224,10 +227,32 @@ export function withoutUnsentFiles<T extends MessageFileRefs>(
   messages: readonly T[],
   { resendFiles, excluded }: { resendFiles?: boolean; excluded?: Excluded },
 ): readonly T[] {
-  if (resendFiles === false) {
-    return messages.map(withoutAnyRefs);
+  const view =
+    resendFiles === false ? messages.map(withoutAnyRefs) : withoutExcludedFiles(messages, excluded);
+  if (view === messages) {
+    return messages;
   }
-  return withoutExcludedFiles(messages, excluded);
+  return view.map((message, index) => withAttachmentOnlyText(messages[index], message));
+}
+
+/**
+ * A user turn sent with nothing but files has no text of its own; while its files are sent, the
+ * formatter gives it the attachment-only stand-in. A view that sends none of them keeps the
+ * stand-in in their place, or the turn reaches the provider empty, which Anthropic rejects on
+ * every later turn that replays it. The stored message keeps its empty text.
+ */
+function withAttachmentOnlyText<T extends MessageFileRefs>(stored: T, view: T): T {
+  if (
+    view === stored ||
+    stored.isCreatedByUser !== true ||
+    stored.text ||
+    Array.isArray(stored.content) ||
+    !stored.files?.length ||
+    view.files?.length
+  ) {
+    return view;
+  }
+  return { ...view, text: ATTACHMENT_ONLY_TEXT };
 }
 
 export interface HistoricalReplayScope {

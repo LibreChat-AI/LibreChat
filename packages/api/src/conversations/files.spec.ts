@@ -8,6 +8,7 @@ import {
   scopeHistoricalReplay,
   withoutConversationFiles,
 } from './files';
+import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
 
 const upload = { file_id: 'upload-1', filename: 'screenshot.png', type: 'image/png' };
 const output = { file_id: 'output-1', filename: 'chart.png', toolCallId: 'call-1' } as TAttachment;
@@ -256,6 +257,44 @@ describe('withoutUnsentFiles', () => {
   it('is the stored messages themselves when files are resent and none is left out', () => {
     expect(withoutUnsentFiles(history, {})).toBe(history);
     expect(withoutUnsentFiles(history, { resendFiles: true, excluded: [] })).toBe(history);
+  });
+
+  describe('an attachment-only turn', () => {
+    const turn: Partial<TMessage> = {
+      messageId: 'upload-turn',
+      isCreatedByUser: true,
+      text: '',
+      files: [upload, kept],
+    };
+
+    it.each([
+      ['earlier files are not sent again', { resendFiles: false }],
+      ['every one of its files is left out', { excluded: ['upload-1', 'kept-1'] }],
+    ])('keeps the stand-in when %s', (_case, options) => {
+      const [view] = withoutUnsentFiles([turn], options);
+
+      expect(view.text).toBe(ATTACHMENT_ONLY_TEXT);
+      expect(view.files ?? []).toEqual([]);
+      expect(turn.text).toBe('');
+    });
+
+    it('stays empty while one of its files is still sent', () => {
+      const [view] = withoutUnsentFiles([turn], { excluded: ['upload-1'] });
+
+      expect(view.text).toBe('');
+      expect(view.files).toEqual([kept]);
+    });
+
+    it.each([
+      ['a turn with text of its own', { text: 'Summarize these' }],
+      ['an assistant turn', { isCreatedByUser: false }],
+      ['a turn with content parts', { content: [] as TMessage['content'] }],
+    ])('leaves the text of %s as it was', (_case, overrides) => {
+      const message = { ...turn, ...overrides };
+      const [view] = withoutUnsentFiles([message], { resendFiles: false });
+
+      expect(view.text).toBe(message.text);
+    });
   });
 });
 
