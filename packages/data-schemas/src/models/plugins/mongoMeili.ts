@@ -1,4 +1,5 @@
 import _ from 'lodash';
+import { randomUUID } from 'crypto';
 import { parseTextParts } from 'librechat-data-provider';
 import { MeiliSearch, MeiliSearchTimeOutError } from 'meilisearch';
 import type {
@@ -87,6 +88,7 @@ export interface SchemaWithMeiliMethods extends Model<DocumentWithMeiliIndex> {
     batchSize: number,
     delayMs: number,
   ): Promise<void>;
+  cleanupOwnerlessMeiliIndex(): Promise<void>;
   setMeiliIndexSettings(settings: Record<string, unknown>): Promise<unknown>;
   meiliSearch(
     q: string,
@@ -128,6 +130,8 @@ const meiliRequestTimeoutMs = 10_000;
 const meiliWriteMaxAttempts = 3;
 const meiliRetryBaseDelayMs = 250;
 const meiliVersionReconcileMaxAttempts = 3;
+/** Matches documents indexed before `user` joined the projection. */
+const ownerlessFilter = 'user NOT EXISTS OR user IS NULL OR user IS EMPTY';
 const completeDetachedOperation: CallbackWithoutResultAndOptionalError = () => undefined;
 
 const retryDetachedMeiliWrite = async (
@@ -741,6 +745,123 @@ const createMeiliMongooseModel = ({
         }
       } catch (error) {
         logger.error('[cleanupMeiliIndex] Error during cleanup:', error);
+      }
+    }
+
+    /**
+     * Reconciles documents indexed before `user` joined the projection, which no
+     * user-scoped search can return. One whose MongoDB record is still indexable and
+     * owned is queued for reindexing rather than deleted, so the next sync replaces it
+     * with its owner; the rest are deleted. Skipped until `user` is filterable, which
+     * the filter needs, or while the index does not exist.
+     */
+    static async cleanupOwnerlessMeiliIndex(this: SchemaWithMeiliMethods): Promise<void> {
+      const { batchSize, delayMs } = syncConfig;
+      let offset = 0;
+      let deleted = 0;
+      let requeued = 0;
+      let previousPage: string | undefined;
+      let expectedTotal: number | undefined;
+
+      let settings: Awaited<ReturnType<typeof index.getSettings>>;
+      try {
+        settings = await index.getSettings();
+      } catch (error) {
+        if ((error as { code?: string }).code === 'index_not_found') {
+          return;
+        }
+        throw error;
+      }
+      if (!settings.filterableAttributes?.includes('user')) {
+        return;
+      }
+
+      /**
+       * Marks the owned, indexable records among `ids` for the next sync. A fresh
+       * version makes an in-flight write's acknowledgement miss, so that writer
+       * reloads and submits the document again instead of marking it indexed.
+       */
+      const requeue = async (ids: string[]): Promise<Set<string>> => {
+        const owned = await this.find({
+          $and: [getIndexableQuery(), { [primaryKey]: { $in: ids }, user: { $nin: [null, ''] } }],
+        })
+          .select(primaryKey)
+          .lean();
+        if (owned.length > 0) {
+          await this.updateMany(
+            { _id: { $in: owned.map((doc: Record<string, unknown>) => doc._id) } },
+            {
+              $set: {
+                _meiliIndex: false,
+                _meiliIndexAttempted: true,
+                _meiliIndexVersion: randomUUID(),
+              },
+            },
+            { timestamps: false },
+          );
+          requeued += owned.length;
+        }
+        return new Set(owned.map((doc: Record<string, unknown>) => String(doc[primaryKey])));
+      };
+
+      while (true) {
+        const batch = await index.getDocuments({
+          filter: ownerlessFilter,
+          fields: [primaryKey],
+          limit: batchSize,
+          offset,
+        });
+        /** Documents repaired by concurrent saves leave the filter and shift later ones back. */
+        const shortfall = expectedTotal == null ? 0 : expectedTotal - batch.total;
+        expectedTotal = batch.total;
+        if (shortfall > 0 && offset > 0) {
+          offset = Math.max(0, offset - shortfall);
+          previousPage = undefined;
+          continue;
+        }
+        if (batch.results.length === 0) {
+          break;
+        }
+
+        const ids = batch.results.map((doc) => String(doc[primaryKey]));
+        const page = `${offset}:${ids.join(',')}`;
+        if (page === previousPage) {
+          throw new Error(`Ownerless cleanup of ${index.uid} made no progress`);
+        }
+        previousPage = page;
+
+        const owned = await requeue(ids);
+        const orphans = ids.filter((id) => !owned.has(id));
+        if (orphans.length > 0) {
+          const deletion = await index.deleteDocuments(orphans);
+          const deletionTask = await client.waitForTask(deletion.taskUid, {
+            timeOutMs: meiliRequestTimeoutMs,
+            intervalMs: 100,
+          });
+          if (deletionTask.status !== 'succeeded') {
+            throw new Error(
+              `Meili cleanup task ${deletion.taskUid} ended with ${deletionTask.status}`,
+            );
+          }
+          deleted += orphans.length;
+          expectedTotal -= orphans.length;
+          /** A record that became indexable meanwhile may have lost a fresh document. */
+          await requeue(orphans);
+        }
+
+        if (batch.results.length < batchSize) {
+          break;
+        }
+        offset += owned.size;
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+
+      if (deleted > 0 || requeued > 0) {
+        logger.info(
+          `[cleanupOwnerlessMeiliIndex] ${index.uid}: deleted ${deleted} orphaned and queued ${requeued} owned documents for reindexing`,
+        );
       }
     }
 
