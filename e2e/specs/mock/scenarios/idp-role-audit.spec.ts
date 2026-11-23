@@ -23,7 +23,7 @@ const PREAMBLE = `
 const mongoose = require('mongoose');
 const { createMethods, createModels } = require('@librechat/data-schemas');
 const { writeIdpRoleChange } = require('@librechat/api');
-const out = (value) => { process.stdout.write('RESULT' + JSON.stringify(value)); };
+const out = (value) => { process.stdout.write('\\nRESULT' + JSON.stringify(value) + '\\n'); };
 const created = [];
 const entries = [];
 let methods;
@@ -84,7 +84,10 @@ ${body}
 );`;
   const result = run('node', ['-e', script], { cwd: resolve(repoRoot, 'api') });
   expect(result.status, result.output).toBe(0);
-  return JSON.parse(result.stdout.slice(result.stdout.indexOf('RESULT') + 'RESULT'.length));
+  /* Loggers share stdout, so the result is the one line that starts with the marker. */
+  const line = result.stdout.split('\n').find((entry) => entry.startsWith('RESULT'));
+  expect(line, result.output).toBeDefined();
+  return JSON.parse((line ?? '').slice('RESULT'.length));
 }
 
 test.describe('IdP role change auditing', () => {

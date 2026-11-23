@@ -1,6 +1,5 @@
 import get from 'lodash/get';
 import { SystemRoles } from 'librechat-data-provider';
-import type { IUser } from '@librechat/data-schemas';
 import type { RecordAuditEntry } from '~/admin/audit';
 import { recordSystemAuditEntry } from '~/admin/audit';
 import { isEnabled } from '~/utils';
@@ -354,21 +353,29 @@ export async function recordIdpRoleChange({
   );
 }
 
-/** How often a role write is retried after a concurrent write moved the stored role first. */
+/**
+ * How many times a role write is attempted before it gives up. This bounds an optimistic
+ * concurrency loop rather than tuning a deployment: it runs out only when other role writes
+ * for the same user land between every read and write, so a configurable value could only make
+ * that login fail sooner or keep contending longer, and it stays a constant.
+ */
 const ROLE_WRITE_ATTEMPTS = 3;
 
-type IdpRoleWriteInput = {
+/** The part of a stored user the role write reads; callers keep their own user record type. */
+type RoleRecord = { role?: string | null };
+
+type IdpRoleWriteInput<T extends RoleRecord> = {
   userId: string;
   /** The fields to persist, `role` included. */
-  update: Partial<IUser>;
+  update: Partial<T>;
   /** The stored role the caller read before deciding `update.role`. */
   observedRole?: string | null;
   updateUser: (
     userId: string,
-    update: Partial<IUser>,
+    update: Partial<T>,
     expectedState: { role: string | null },
-  ) => Promise<IUser | null>;
-  findUser: (filter: { _id: string }, fields: string) => Promise<Pick<IUser, 'role'> | null>;
+  ) => Promise<T | null>;
+  findUser: (filter: { _id: string }, fields: string) => Promise<RoleRecord | null>;
   recordAuditEntry?: RecordAuditEntry;
   source: 'openid_login' | 'remote_agent_oidc';
   tenantId?: string;
@@ -381,7 +388,7 @@ type IdpRoleWriteInput = {
  * role the write replaced, and overlapping logins that make the same change audit it once.
  * Resolves `null` when the user no longer exists.
  */
-export async function writeIdpRoleChange({
+export async function writeIdpRoleChange<T extends RoleRecord>({
   userId,
   update,
   observedRole,
@@ -390,7 +397,7 @@ export async function writeIdpRoleChange({
   recordAuditEntry,
   source,
   tenantId,
-}: IdpRoleWriteInput): Promise<IUser | null> {
+}: IdpRoleWriteInput<T>): Promise<T | null> {
   let previousRole = observedRole ?? null;
   for (let attempt = 0; attempt < ROLE_WRITE_ATTEMPTS; attempt++) {
     const user = await updateUser(userId, update, { role: previousRole });
