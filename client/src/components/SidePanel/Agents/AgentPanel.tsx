@@ -687,6 +687,10 @@ export default function AgentPanel() {
   );
   const agent_id = useWatch({ control, name: 'id' });
   const selectionReady = !isPersistedAgent || agent_id === current_agent_id;
+  // The instructions controller must subscribe after form reset has installed the
+  // selected agent's values. The expanded query may resolve one render earlier.
+  const editorStatus =
+    selectionReady || instructionsPromptStatus !== 'ready' ? instructionsPromptStatus : 'loading';
   const previousVersionRef = useRef<number | undefined>();
   const submittedDirtyRef = useRef(false);
   const submittedRef = useRef<{ payload?: AgentUpdateParams; previous?: Agent }>({});
@@ -1124,48 +1128,52 @@ export default function AgentPanel() {
               </div>
             </div>
           )}
-          {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.model && (
-            <>
-              <ModelPanel
-                models={models}
-                providers={providers}
-                modelsError={modelsError}
-                modelsReady={modelsReady}
-                setActivePanel={setActivePanel}
-              />
-              {providerEndpoints.map((endpoint) => {
-                const query = modelsQuery.endpointQueries[endpoint];
-                if (!query?.isError) {
-                  return null;
-                }
-                return (
-                  <Button
-                    key={endpoint}
-                    type="button"
-                    variant="outline"
-                    disabled={query.isFetching}
-                    onClick={() => {
-                      void query.refetch();
-                    }}
-                  >
-                    {localize('com_ui_retry')} ({endpoint})
-                  </Button>
-                );
-              })}
-            </>
-          )}
+          {canEditAgent &&
+            selectionReady &&
+            !agentQuery.isInitialLoading &&
+            activePanel === Panel.model && (
+              <>
+                <ModelPanel
+                  models={models}
+                  providers={providers}
+                  modelsError={modelsError}
+                  modelsReady={modelsReady}
+                  setActivePanel={setActivePanel}
+                />
+                {providerEndpoints.map((endpoint) => {
+                  const query = modelsQuery.endpointQueries[endpoint];
+                  if (!query?.isError) {
+                    return null;
+                  }
+                  return (
+                    <Button
+                      key={endpoint}
+                      type="button"
+                      variant="outline"
+                      disabled={query.isFetching}
+                      onClick={() => {
+                        void query.refetch();
+                      }}
+                    >
+                      {localize('com_ui_retry')} ({endpoint})
+                    </Button>
+                  );
+                })}
+              </>
+            )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.builder && (
             <AgentConfig
-              instructionsPromptStatus={instructionsPromptStatus}
+              instructionsPromptStatus={editorStatus}
               onRetryInstructionsPrompt={retryInstructionsPrompt}
               channels={channelsSection}
             />
           )}
           {/* Without the editor the builder is not drawn, so a sharer still gets the section here. */}
           {!canEditAgent && channelsSection}
-          {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.advanced && (
-            <AdvancedPanel />
-          )}
+          {canEditAgent &&
+            selectionReady &&
+            !agentQuery.isInitialLoading &&
+            activePanel === Panel.advanced && <AdvancedPanel />}
         </div>
         {canEditAgent && selectionReady && !agentQuery.isInitialLoading && (
           <AgentFooter

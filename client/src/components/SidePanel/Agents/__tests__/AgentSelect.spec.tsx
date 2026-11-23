@@ -1,6 +1,6 @@
 import React from 'react';
-import { useForm, FormProvider } from 'react-hook-form';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useForm, useWatch, Controller, FormProvider } from 'react-hook-form';
 import type { UseMutationResult, QueryObserverResult } from '@tanstack/react-query';
 import type { Agent, AgentCreateParams } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
@@ -54,14 +54,17 @@ function Harness({
   formReady,
   defaultValues,
   selectedAgentId = null,
+  showInstructions = false,
 }: {
   selectedAgentId?: string | null;
   agent: Agent;
   onMethods: (methods: UseFormReturn<AgentForm>) => void;
   formReady?: boolean;
   defaultValues?: Partial<AgentForm>;
+  showInstructions?: boolean;
 }) {
   const methods = useForm<AgentForm>({ defaultValues });
+  const id = useWatch({ control: methods.control, name: 'id' });
   onMethods(methods);
 
   return (
@@ -77,6 +80,15 @@ function Harness({
         defaultStatefulCodeEnvironment="user"
         formReady={formReady}
       />
+      {showInstructions && id === agent.id && (
+        <Controller
+          name="instructions"
+          control={methods.control}
+          render={({ field }) => (
+            <textarea {...field} value={field.value ?? ''} aria-label="Instructions" />
+          )}
+        />
+      )}
     </FormProvider>
   );
 }
@@ -143,19 +155,23 @@ describe('AgentSelect resetAgentForm', () => {
     let methods: UseFormReturn<AgentForm> | undefined;
     const onMethods = (value: UseFormReturn<AgentForm>) => (methods = value);
     const { rerender } = render(
-      <Harness agent={createAgent()} formReady={false} onMethods={onMethods} />,
+      <Harness agent={createAgent()} formReady={false} onMethods={onMethods} showInstructions />,
     );
 
     expect(methods?.getValues('name')).toBeUndefined();
+    expect(screen.queryByRole('textbox', { name: 'Instructions' })).toBeNull();
 
     rerender(
       <Harness
         agent={createAgent({ instructions: 'Saved instructions', tools: ['mock_tool'] })}
         onMethods={onMethods}
+        showInstructions
       />,
     );
 
-    await waitFor(() => expect(methods?.getValues('instructions')).toBe('Saved instructions'));
+    expect(await screen.findByRole('textbox', { name: 'Instructions' })).toHaveValue(
+      'Saved instructions',
+    );
     expect(methods?.getValues('tools')).toEqual(['mock_tool']);
   });
 });
