@@ -7,8 +7,8 @@ import { getE2EUser } from '../../../setup/user';
 
 /**
  * Holding shift swaps the open conversation's menu for archive and delete. Only that row
- * answers to the key, so only that row listens for it: a listener in every row ran for each of
- * them on every key press, and holding shift rendered the whole list.
+ * answers to the key, and the key is tracked once for the page: a listener in every row ran for
+ * each of them on every key press, and holding shift rendered the whole list.
  */
 
 const CHATS = 12;
@@ -78,6 +78,26 @@ test.describe('shift over the sidebar', () => {
     await expect(next.getByRole('button', { name: 'Archive' })).toBeVisible();
     await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(1);
     await page.keyboard.up('Shift');
+  });
+
+  test('opening another conversation with shift still held offers them there at once @scenario:shift-held-across-a-conversation-switch', async ({
+    page,
+  }) => {
+    const history = page.getByRole('region', { name: 'Chat History' });
+    const rows = history.getByTestId('convo-item');
+    await expect(rows).toHaveCount(CHATS);
+    const next = rows.filter({ hasText: chats[5].title });
+
+    /** The key goes down once and is not pressed again: the next row never saw it go down. */
+    await page.keyboard.down('Shift');
+    await next.click();
+    await expect(page).toHaveURL(new RegExp(`/c/${chats[5].conversationId}`));
+
+    await expect(next.getByRole('button', { name: 'Archive' })).toBeVisible();
+    await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(1);
+
+    await page.keyboard.up('Shift');
+    await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(0);
   });
 
   test('the list listens for the key once, however many conversations it holds @scenario:sidebar-listens-for-shift-once', async ({
