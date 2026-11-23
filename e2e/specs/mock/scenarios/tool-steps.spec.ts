@@ -83,6 +83,40 @@ test.describe('tool call steps', () => {
     await expect(toolCard(page)).toHaveCount(1, { timeout: 30_000 });
     await expect(toolOutput(page)).toBeVisible();
   });
+
+  test('a tool row label sets its type at nine tenths of the chat font @scenario:tool-row-label-keeps-chat-type-scale', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('scale');
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await enableCodeInterpreter(page);
+
+    const response = await sendMessageAndWaitForCompletion(page, `E2E_EXECUTE_CODE:${label}`);
+    expect(response.ok()).toBeTruthy();
+    /** The label row wraps the card's toggle, so it is found around the button rather than in it. */
+    const row = messagesView(page)
+      .locator('.progress-text-wrapper', {
+        has: page.getByRole('button', { name: /^Ran command/ }),
+      })
+      .first();
+    await expect(row).toBeVisible({ timeout: 30_000 });
+
+    /** The rule ships in `@librechat/client/style.css`; without it the row falls back to the
+     *  inherited size and line height instead of the chat font scale. */
+    const sizes = await row.evaluate((node) => {
+      const probe = document.createElement('span');
+      probe.style.fontSize = 'var(--markdown-font-size, var(--font-size-base))';
+      node.parentElement?.appendChild(probe);
+      const chat = parseFloat(getComputedStyle(probe).fontSize);
+      probe.remove();
+      const style = getComputedStyle(node);
+      return { chat, row: parseFloat(style.fontSize), lineHeight: parseFloat(style.lineHeight) };
+    });
+    expect(sizes.row).toBeCloseTo(sizes.chat * 0.9, 1);
+    expect(sizes.lineHeight).toBeCloseTo(sizes.chat * 0.9 * 1.25, 1);
+  });
 });
 
 test.describe('tool call groups', () => {

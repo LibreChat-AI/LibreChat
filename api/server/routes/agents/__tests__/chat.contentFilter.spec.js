@@ -21,7 +21,8 @@ jest.mock('@librechat/api', () => ({
   createMessageFilterPii: mockCreateMessageFilterPii,
   generateCheckAccess: jest.fn(() => (_req, _res, next) => next()),
   skipAgentCheck: jest.fn(),
-  applyResumeRequest: jest.fn(),
+  createChatResumeContext: jest.requireActual('../../../../../packages/api/src/agents/hitl/context')
+    .createChatResumeContext,
   GenerationJobManager: {
     getJob: jest.fn(),
   },
@@ -61,24 +62,18 @@ describe('agents chat content filtering', () => {
   it('logs only bounded metadata when resume context restoration fails', async () => {
     const api = require('@librechat/api');
     const router = require('../chat');
-    const restoreResumeContext = router.stack.find(
-      (layer) => layer.handle?.name === 'restoreResumeContext',
-    )?.handle;
+    const app = express();
+    app.use(express.json());
+    app.use(router);
     const rawValue = 'PRIVATE-RESUME-CONTEXT';
     const restoreError = Object.assign(new Error(rawValue), {
       response: { status: 503, data: rawValue },
     });
     api.GenerationJobManager.getJob.mockRejectedValueOnce(restoreError);
-    const next = jest.fn();
-
-    await restoreResumeContext(
-      {
-        path: '/resume',
-        body: { conversationId: 'conversation-1' },
-      },
-      {},
-      next,
-    );
+    await request(app)
+      .post('/resume')
+      .send({ conversationId: 'conversation-1' })
+      .expect(503, { error: 'resume_context_unavailable' });
 
     expect(mockGetSafeErrorMetadata).toHaveBeenCalledWith(restoreError);
     expect(mockLogger.warn).toHaveBeenCalledWith('[agents/chat] Failed to restore resume context', {
@@ -86,7 +81,7 @@ describe('agents chat content filtering', () => {
       status: 503,
     });
     expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain(rawValue);
-    expect(next).toHaveBeenCalledTimes(1);
+    expect(require('~/server/controllers/agents/resume')).not.toHaveBeenCalled();
   });
 });
 

@@ -163,6 +163,7 @@ async function reinitMCPServer({
   mcpApps,
   streamId,
   jobCreatedAt,
+  unattended,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** @type {MCPConnection | null} */
@@ -290,6 +291,7 @@ async function reinitMCPServer({
         onOAuthCredentialsChanging,
         returnOnOAuth,
         oauthEnd,
+        unattended,
         customUserVars,
         requestBody,
         requestScopedConnections,

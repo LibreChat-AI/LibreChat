@@ -13,6 +13,11 @@ on:
       - 'package-lock.json'
       - '.bun-version'
       - '.github/workflows/frontend-review.yml'
+      # The guard spec list, its reader and their test, then every path a frontend guard spec
+      # reads outside the trees above; guard-specs.test.mjs fails when one is missing here.
+      - '.github/guard-specs.json'
+      - '.github/scripts/guard-specs*.mjs'
+      - 'eslint-suppressions.json'
       - '!**.md'
   # Post-merge safety net and full-run baseline for gated selection (same rationale as
   # backend-review.yml stage 1): every dev merge touching frontend paths runs the full suite.
@@ -30,6 +35,15 @@ on:
       - 'package-lock.json'
       - '.bun-version'
       - '.github/workflows/frontend-review.yml'
+      # The guard spec list, its reader and their test, then every path a frontend guard spec
+      # reads outside the trees above; guard-specs.test.mjs fails when one is missing here.
+      - '.github/guard-specs.json'
+      - '.github/scripts/guard-specs*.mjs'
+      - 'eslint-suppressions.json'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
   # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
   workflow_dispatch:
 
@@ -58,13 +72,54 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
-      - run: npm ci
+      # The full workspace tree, under the E2E workflows' exact key and path
+      # list. This job also runs on dev pushes, so it seeds the dev-scoped
+      # entry that every pull request against dev can restore.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            packages/channel-gateway/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        id: install-dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Save node_modules cache
+        if: steps.install-dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            packages/channel-gateway/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
       - run: google-chrome --version
       - run: npm run test:client-build
         env:
           PLAYWRIGHT_CHANNEL: chrome
+      # Here because this job has node_modules, always runs and gates no other job.
+      - name: Test guard spec selection
+        if: ${{ !cancelled() }}
+        run: node --test .github/scripts/guard-specs.test.mjs
 
   # Stage 1.5 of codegraph gating (stage 1 = backend jest, #15132; stage 2 = matrix lanes,
   # #15136). Same mechanism, same record: across 604 finalized shadow receipts the frontend
@@ -73,6 +128,9 @@ jobs:
   # every dev push, and on any doubt. A workspace skips ONLY on an explicit NONE. Kill switch:
   # repo variable CODEGRAPH_GATING=off. Neither frontend workspace defines
   # testPathIgnorePatterns, so --runTestsByPath needs no exclude mirroring here.
+  #
+  # The graph follows imports, so a spec that reads source with fs is invisible to it. Those
+  # guard specs are listed in .github/guard-specs.json and run with every narrowed decision.
   codegraph_select:
     name: Codegraph select
     runs-on: ubuntu-latest
@@ -88,6 +146,14 @@ jobs:
       clientpkg_run: ${{ steps.sel.outputs.clientpkg_run }}
       clientpkg_files: ${{ steps.sel.outputs.clientpkg_files }}
     steps:
+      # The commit under test, for the guard spec list, its reader and the reader's check that
+      # a selection is not stale. Best effort: without it the select step runs every narrowed
+      # workspace FULL, so a failed checkout never fails this job.
+      - uses: actions/checkout@v5
+        continue-on-error: true
+        with:
+          persist-credentials: false
+
       - name: Select tests, fail open on any doubt
         id: sel
         env:
@@ -143,6 +209,23 @@ jobs:
                 if [ "$spaced" != "0" ]; then mode="FULL"; files=""; fi
               fi
             fi
+            # Guard specs read source with fs, so no import edge selects them. A narrowed run
+            # carries its workspace's guards, and a skip becomes a guards-only run when the
+            # change touches what they read (.github/guard-specs.json; the rules are in
+            # .github/scripts/guard-specs.mjs). A list that cannot be read runs FULL. A selection
+            # with no file left in this checkout gets no guards: the test job runs FULL on a
+            # stale selection, and guards that exist would turn that into a guards-only run.
+            guard_note=""
+            if [ "$mode" = "FILES" ] || [ "$mode" = "NONE" ]; then
+              guarded=$(SELECTED="$files" node .github/scripts/guard-specs.mjs "$mode" "$ws" files.json ""); grc=$?
+              if [ "$grc" -ne 0 ]; then
+                mode="FULL"; files=""
+                note "| $ws | guard specs unreadable (exit $grc); running FULL |"
+              elif [ -n "$guarded" ]; then
+                if [ "$mode" = "NONE" ]; then guard_note=", guard specs only"; fi
+                mode="FILES"; files="$guarded"
+              fi
+            fi
             if [ "$mode" = "NONE" ]; then
               echo "${key}_run=false" >> "$GITHUB_OUTPUT"
               note "| $ws | skip (no reachable tests) |"
@@ -150,7 +233,7 @@ jobs:
               n=$(echo "$files" | wc -w | tr -d ' ')
               echo "${key}_run=true" >> "$GITHUB_OUTPUT"
               echo "${key}_files=$files" >> "$GITHUB_OUTPUT"
-              note "| $ws | $n selected files |"
+              note "| $ws | $n selected files$guard_note |"
             else
               echo "${key}_run=true" >> "$GITHUB_OUTPUT"
               note "| $ws | FULL |"
@@ -172,10 +255,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -187,7 +270,7 @@ jobs:
             packages/client/node_modules
             packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -249,10 +332,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -264,7 +347,7 @@ jobs:
             packages/client/node_modules
             packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -306,10 +389,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -321,7 +404,7 @@ jobs:
             packages/client/node_modules
             packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -363,10 +446,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -378,7 +461,7 @@ jobs:
             packages/client/node_modules
             packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -419,9 +502,11 @@ jobs:
           fi
         working-directory: packages/client
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -446,10 +531,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -461,7 +546,7 @@ jobs:
             packages/client/node_modules
             packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -509,9 +594,11 @@ jobs:
           fi
         working-directory: client
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -529,10 +616,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -544,7 +631,7 @@ jobs:
             packages/client/node_modules
             packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -570,3 +657,35 @@ jobs:
 
       - name: Build client
         run: cd client && npm run build:ci
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. A skip passes only where ALLOW_SKIPPED names it.
+  gate:
+    name: frontend
+    needs:
+      - client-build-regression
+      - codegraph_select
+      - build
+      - typecheck
+      - test-packages-chat
+      - test-packages-client
+      - test-ubuntu
+      - build-verify
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every frontend job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          ALLOW_SKIPPED: >-
+            codegraph_select
+            ${{ needs.codegraph_select.outputs.clientpkg_run == 'false' && 'test-packages-client' || '' }}
+            ${{ needs.codegraph_select.outputs.client_run == 'false' && 'test-ubuntu' || '' }}
+        run: node .github/scripts/merge-gate.mjs verify

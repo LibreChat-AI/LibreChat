@@ -109,7 +109,9 @@ test.describe('people search over word-prefix tokens', () => {
       agentId = opened.agentId;
       const searchBox = opened.dialog.getByRole('combobox', { name: SEARCH_LABEL });
       await searchBox.fill(`brig quill${id.slice(0, 3)}`);
-      await expect(opened.dialog.getByRole('option').filter({ hasText: user.name })).toBeVisible({
+      await expect(
+        page.getByRole('listbox').getByRole('option').filter({ hasText: user.name }),
+      ).toBeVisible({
         timeout: 10000,
       });
 
@@ -214,7 +216,9 @@ test.describe('people search over word-prefix tokens', () => {
       });
       const searchBox = opened.dialog.getByRole('combobox', { name: SEARCH_LABEL });
       await searchBox.pressSequentially(`pause${id}`, { delay: 40 });
-      await expect(opened.dialog.getByRole('option').filter({ hasText: user.name })).toBeVisible({
+      await expect(
+        page.getByRole('listbox').getByRole('option').filter({ hasText: user.name }),
+      ).toBeVisible({
         timeout: 10000,
       });
       expect(queries).toEqual([`pause${id}`]);

@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import { getSafeErrorMetadata } from './errors';
 
 /**
  * Check if email configuration is set
@@ -22,4 +23,15 @@ export function checkEmailConfig(): boolean {
   }
 
   return hasMailgunConfig || hasSMTPConfig;
+}
+
+/** Provider failures may echo recovery credentials, so only bounded metadata leaves the mailer. */
+export function handleEmailError(error: unknown, throwError: boolean): Error {
+  const metadata = getSafeErrorMetadata(error);
+  const safeError = Object.assign(new Error('Email delivery failed'), metadata);
+  if (throwError) {
+    throw safeError;
+  }
+  logger.error('[sendEmail]', metadata);
+  return safeError;
 }

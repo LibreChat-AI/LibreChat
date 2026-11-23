@@ -1226,6 +1226,50 @@ describe('getLLMConfig', () => {
         expect(result.llmConfig).not.toHaveProperty('topK');
       });
 
+      it('keeps Mythos 5.2 thinking adaptive when a saved preset disables it', () => {
+        const result = getLLMConfig('test-key', {
+          modelOptions: {
+            model: 'claude-mythos-5-2',
+            thinking: false,
+            temperature: 0.7,
+            topP: 0.9,
+            topK: 40,
+          },
+        });
+
+        expect(result.llmConfig.thinking).toMatchObject({
+          type: 'adaptive',
+          display: 'summarized',
+          block_binding: { prefix_mismatch_behavior: 'drop_block' },
+        });
+        expect(result.llmConfig.maxTokens).toBe(128000);
+        expect(result.llmConfig).not.toHaveProperty('temperature');
+        expect(result.llmConfig).not.toHaveProperty('topP');
+        expect(result.llmConfig).not.toHaveProperty('topK');
+      });
+
+      it('keeps Fable 5.2 thinking adaptive when a saved preset disables it', () => {
+        const result = getLLMConfig('test-key', {
+          modelOptions: {
+            model: 'claude-fable-5-2',
+            thinking: false,
+            temperature: 0.7,
+            topP: 0.9,
+            topK: 40,
+          },
+        });
+
+        expect(result.llmConfig.thinking).toMatchObject({
+          type: 'adaptive',
+          display: 'summarized',
+          block_binding: { prefix_mismatch_behavior: 'drop_block' },
+        });
+        expect(result.llmConfig.maxTokens).toBe(128000);
+        expect(result.llmConfig).not.toHaveProperty('temperature');
+        expect(result.llmConfig).not.toHaveProperty('topP');
+        expect(result.llmConfig).not.toHaveProperty('topK');
+      });
+
       it('should set adaptive thinking with summarized display for Fable 5', () => {
         const result = getLLMConfig('test-key', {
           modelOptions: { model: 'claude-fable-5', thinking: true },
@@ -2569,12 +2613,16 @@ describe('assistant prefill', () => {
     return bodies[0].messages.map((message) => message.role);
   };
 
-  it.each(['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1'])(
-    'drops the trailing assistant turn for %s',
-    async (model) => {
-      expect(await sendAndCaptureMessages(model)).toEqual(['user']);
-    },
-  );
+  it.each([
+    'claude-haiku-5-5',
+    'claude-sonnet-5-5',
+    'claude-opus-5-5',
+    'claude-fable-5-1',
+    'claude-fable-5-2',
+    'claude-mythos-5-2',
+  ])('drops the trailing assistant turn for %s', async (model) => {
+    expect(await sendAndCaptureMessages(model)).toEqual(['user']);
+  });
 
   it('keeps the trailing assistant turn for claude-haiku-4-5', async () => {
     expect(await sendAndCaptureMessages('claude-haiku-4-5')).toEqual(['user', 'assistant']);

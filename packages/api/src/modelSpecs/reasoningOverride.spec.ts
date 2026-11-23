@@ -7,6 +7,7 @@ import {
   type TReasoningOverride,
   type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
+import type { BranchLinkRow, BranchLinks } from '~/messages/history';
 import {
   parseReasoningOverrideRequest,
   resolveReasoningOverride,
@@ -301,7 +302,34 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
     reasoningOverride?: unknown;
   };
   const high = { key: 'reasoning_effort', value: ReasoningEffort.high };
-  const request = (body: Record<string, unknown> = {}) => ({
+  const low = { key: 'reasoning_effort', value: ReasoningEffort.low };
+  const link = (
+    messageId: string,
+    parentMessageId: string,
+    isCreatedByUser: boolean,
+    reasoningOverride?: unknown,
+  ): BranchLinkRow => ({
+    messageId,
+    parentMessageId,
+    isCreatedByUser,
+    ...(reasoningOverride != null && { reasoningOverride }),
+  });
+  /** `user-1` picked high; `user-2` picked low and was regenerated as `user-2b`, which picked none. */
+  const links: BranchLinkRow[] = [
+    link('user-1', '00000000-0000-0000-0000-000000000000', true, high),
+    link('assistant-1', 'user-1', false),
+    link('user-2', 'assistant-1', true, low),
+    link('assistant-2', 'user-2', false),
+    link('user-2b', 'assistant-1', true),
+    link('assistant-2b', 'user-2b', false),
+  ];
+  type BranchRequest = {
+    user: { id: string };
+    branchLinks?: BranchLinks;
+    resumeReplayed?: boolean;
+    body: Record<string, unknown> & { endpointOption: typeof endpointOption };
+  };
+  const request = (body: Record<string, unknown> = {}): BranchRequest => ({
     user: { id: 'user-1' },
     body: {
       conversationId: 'convo-1',
@@ -315,38 +343,89 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
   });
 
   it('applies and records the level the branch last ran at when the turn picks none', async () => {
-    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+    const getBranchLinks = jest.fn().mockResolvedValue(links);
     const req = request();
 
     await expect(
-      applyRequestReasoningOverride(req, { ...withoutPick, getBranchReasoningOverride }),
+      applyRequestReasoningOverride(req, { ...withoutPick, getBranchLinks }),
     ).resolves.toBe(true);
 
-    expect(getBranchReasoningOverride).toHaveBeenCalledWith({
-      user: 'user-1',
-      conversationId: 'convo-1',
-      parentMessageId: 'assistant-1',
-    });
+    expect(getBranchLinks).toHaveBeenCalledTimes(1);
+    expect(getBranchLinks).toHaveBeenCalledWith({ user: 'user-1', conversationId: 'convo-1' });
     expect(req.body.endpointOption.model_parameters).toMatchObject({ reasoning_effort: 'high' });
     expect(req.body.reasoningOverride).toEqual(high);
   });
 
+  it('keeps the rows it read on the request, with the branch head they were read for', async () => {
+    const getBranchLinks = jest.fn().mockResolvedValue(links);
+    const req = request();
+
+    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchLinks });
+
+    expect(req.branchLinks).toEqual({
+      user: 'user-1',
+      conversationId: 'convo-1',
+      parentMessageId: 'assistant-1',
+      rows: links,
+    });
+    expect(req.branchLinks?.rows).toBe(links);
+  });
+
+  it('keeps the rows when no level is found on the branch, because the read still ran', async () => {
+    const unpicked = [link('user-1', '00000000-0000-0000-0000-000000000000', true)];
+    const getBranchLinks = jest.fn().mockResolvedValue(unpicked);
+    const req = request({ parentMessageId: 'user-1' });
+    const before = req.body.endpointOption;
+
+    await expect(
+      applyRequestReasoningOverride(req, { ...withoutPick, getBranchLinks }),
+    ).resolves.toBe(true);
+
+    expect(req.body.endpointOption).toBe(before);
+    expect(req.body).not.toHaveProperty('reasoningOverride');
+    expect(req.branchLinks).toMatchObject({ parentMessageId: 'user-1', rows: unpicked });
+  });
+
+  it.each([
+    ['the nearest message that picked a level', 'assistant-2', low],
+    ['a level picked above, not one a sibling branch picked', 'assistant-2b', high],
+  ])('inherits %s', async (_label, parentMessageId, expected) => {
+    const getBranchLinks = jest.fn().mockResolvedValue(links);
+    const req = request({ parentMessageId });
+
+    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchLinks });
+
+    expect(req.body.reasoningOverride).toEqual(expected);
+  });
+
+  it('inherits nothing from a head the rows do not know', async () => {
+    const getBranchLinks = jest.fn().mockResolvedValue(links);
+    const req = request({ parentMessageId: 'unsaved' });
+
+    await expect(
+      applyRequestReasoningOverride(req, { ...withoutPick, getBranchLinks }),
+    ).resolves.toBe(true);
+
+    expect(req.body).not.toHaveProperty('reasoningOverride');
+  });
+
   it('does not consult the branch when the turn picks a level', async () => {
-    const getBranchReasoningOverride = jest.fn();
+    const getBranchLinks = jest.fn();
     const req = request();
 
     await applyRequestReasoningOverride(req, {
       ...withoutPick,
       reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.low },
-      getBranchReasoningOverride,
+      getBranchLinks,
     });
 
-    expect(getBranchReasoningOverride).not.toHaveBeenCalled();
+    expect(getBranchLinks).not.toHaveBeenCalled();
+    expect(req.branchLinks).toBeUndefined();
     expect(req.body.endpointOption.model_parameters).toMatchObject({ reasoning_effort: 'low' });
   });
 
   it('skips an inherited level the target no longer takes instead of refusing the turn', async () => {
-    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+    const getBranchLinks = jest.fn().mockResolvedValue(links);
     const req = request();
     const before = req.body.endpointOption;
 
@@ -354,12 +433,13 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
       applyRequestReasoningOverride(req, {
         ...withoutPick,
         enforcedModelSpecFields: new Set(['reasoning_effort']),
-        getBranchReasoningOverride,
+        getBranchLinks,
       }),
     ).resolves.toBe(true);
 
     expect(req.body.endpointOption).toBe(before);
     expect(req.body).not.toHaveProperty('reasoningOverride');
+    expect(req.branchLinks?.rows).toBe(links);
   });
 
   it.each([
@@ -369,14 +449,15 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
     ['an edit from the browser', { editedContent: { index: 0, text: 'changed' } }],
     ['a regeneration', { isRegenerate: true }],
     ['a continuation', { isContinued: true }],
-  ])('does not inherit for %s', async (_label, body) => {
-    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+  ])('does not inherit for %s, and keeps no rows', async (_label, body) => {
+    const getBranchLinks = jest.fn().mockResolvedValue(links);
     const req = request(body);
 
-    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchReasoningOverride });
+    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchLinks });
 
-    expect(getBranchReasoningOverride).not.toHaveBeenCalled();
+    expect(getBranchLinks).not.toHaveBeenCalled();
     expect(req.body).not.toHaveProperty('reasoningOverride');
+    expect(req.branchLinks).toBeUndefined();
   });
 
   it.each([
@@ -384,9 +465,13 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
     ['skips it while thinking is switched off', false],
   ])('for an inherited thinking budget, %s', async (_label, thinking) => {
     const model = 'gemini-2.5-pro';
-    const getBranchReasoningOverride = jest
-      .fn()
-      .mockResolvedValue({ key: 'thinkingBudget', value: 32768 });
+    const getBranchLinks = jest.fn().mockResolvedValue([
+      link('user-1', '00000000-0000-0000-0000-000000000000', true, {
+        key: 'thinkingBudget',
+        value: 32768,
+      }),
+      link('assistant-1', 'user-1', false),
+    ]);
     const req = request();
     req.body.endpointOption = {
       model_parameters: { model, thinking },
@@ -397,7 +482,7 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
       applyRequestReasoningOverride(req, {
         ...withoutPick,
         endpoint: EModelEndpoint.google,
-        getBranchReasoningOverride,
+        getBranchLinks,
       }),
     ).resolves.toBe(true);
 
@@ -408,12 +493,21 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
   });
 
   it('does not inherit for a resumed turn, which replays its own parameters', async () => {
-    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+    const getBranchLinks = jest.fn().mockResolvedValue(links);
     const req = { ...request(), resumeReplayed: true };
 
-    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchReasoningOverride });
+    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchLinks });
 
-    expect(getBranchReasoningOverride).not.toHaveBeenCalled();
+    expect(getBranchLinks).not.toHaveBeenCalled();
+    expect(req.branchLinks).toBeUndefined();
+  });
+
+  it('reads nothing when no loader is supplied', async () => {
+    const req = request();
+
+    await expect(applyRequestReasoningOverride(req, withoutPick)).resolves.toBe(true);
+
+    expect(req.branchLinks).toBeUndefined();
   });
 });
 
@@ -646,6 +740,72 @@ describe('applyRequestReasoningOverride', () => {
       value: 'low',
       thinkingHadValue: false,
     });
+  });
+});
+
+describe('resolveReasoningOverride: declared Azure deployment efforts', () => {
+  const endpointsConfig = {
+    [EModelEndpoint.azureOpenAI]: {
+      userProvide: false,
+      order: 0,
+      modelReasoningEfforts: { 'production-west': ['low', 'high'] },
+    },
+  };
+  const direct = (model: string, overrides: Partial<ReasoningOverrideInput> = {}) =>
+    resolve({
+      endpoint: EModelEndpoint.azureOpenAI,
+      isAgent: false,
+      endpointsConfig,
+      endpointOption: { agent: undefined, model_parameters: { model } },
+      ...overrides,
+    });
+
+  it('applies a declared effort to the request for a named deployment', async () => {
+    const result = await direct('production-west');
+    expect(result).toMatchObject({
+      ok: true,
+      modelParameters: { model: 'production-west', reasoning_effort: ReasoningEffort.high },
+    });
+  });
+
+  it('applies a declared effort for an agent on the deployment', async () => {
+    const result = await direct('production-west', {
+      isAgent: true,
+      endpoint: EModelEndpoint.agents,
+      endpointOption: {
+        model_parameters: {},
+        agent: Promise.resolve({
+          provider: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+        }),
+      },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      modelParameters: { reasoning_effort: ReasoningEffort.high },
+    });
+  });
+
+  it('refuses an effort the deployment does not declare', async () => {
+    const result = await direct('production-west', {
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.medium },
+    });
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+
+  it.each(['production-chat', 'constructor'])(
+    'refuses an override for the undeclared model %s',
+    async (model) => {
+      const result = await direct(model);
+      expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+    },
+  );
+
+  it('refuses an override on a deployment whose effort a model spec locks', async () => {
+    const result = await direct('production-west', {
+      enforcedModelSpecFields: new Set(['reasoning_effort']),
+    });
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
   });
 });
 

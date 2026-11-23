@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type { IThemeRGB } from '../../../../packages/data-provider/src/themes/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
@@ -8,6 +7,7 @@ import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import { deleteConversations, seedConversations, seedMessages, withMongo } from '../db';
 import { getE2EUser } from '../../../setup/user';
 import { themeValue } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * `clickHouseTheme` is the reference theme that proves the engine repaints the

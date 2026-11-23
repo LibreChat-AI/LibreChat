@@ -80,6 +80,10 @@ Session behavior:
 const ATTACHED_WORKSPACE_NATIVE_SANDBOX_SCRATCH =
   '- / and /tmp are read-only; write scratch files to $TMPDIR or the workspace. Programs that hardcode /tmp fail.';
 
+/** Shown only when background calls are sent detached, so they stop holding their worktree. */
+const ATTACHED_WORKSPACE_DETACHED_BACKGROUND =
+  '- A run_in_background command runs alongside later commands in the same worktree; do not background one that later commands depend on finishing first (installs, git operations).';
+
 const ATTACHED_WORKSPACE_BASH_RULES = `- Results show the starting directory, not the final one; scripts are not rewritten.
 - Use cwd for directory-scoped commands; keep cd for shell state or root access.
 - Network and file access follow the sandbox policy; network may be unavailable.
@@ -318,10 +322,14 @@ export function buildAttachedWorkspaceBashDescription(
   enableToolOutputReferences: boolean,
   environment?: CodeWorkspaceDescriptor['environment'],
   nativeSandbox = false,
+  detachedCommands = false,
 ): string {
-  const base = nativeSandbox
-    ? ATTACHED_WORKSPACE_NATIVE_SANDBOX_BASH_DESCRIPTION
-    : ATTACHED_WORKSPACE_BASH_DESCRIPTION;
+  const base = [
+    ATTACHED_WORKSPACE_BASH_INTRO,
+    ...(nativeSandbox ? [ATTACHED_WORKSPACE_NATIVE_SANDBOX_SCRATCH] : []),
+    ...(detachedCommands ? [ATTACHED_WORKSPACE_DETACHED_BACKGROUND] : []),
+    ATTACHED_WORKSPACE_BASH_RULES,
+  ].join('\n');
   const description = enableToolOutputReferences
     ? `${base}\n\n${BashToolOutputReferencesGuide}`
     : base;
@@ -472,6 +480,7 @@ export function createAttachedWorkspaceBashTool({
   minCommandAdmissionMs,
   linkedWorktrees = false,
   nativeSandbox = false,
+  detachedCommands = false,
   onLaneGit,
   fetchImpl,
 }: {
@@ -486,6 +495,8 @@ export function createAttachedWorkspaceBashTool({
   linkedWorktrees?: boolean;
   /** The worker advertises its native SRT sandbox profile; describe its read-only filesystem. */
   nativeSandbox?: boolean;
+  /** The worker negotiated detached commands; a background invocation is sent `detached`. */
+  detachedCommands?: boolean;
   environment?: CodeWorkspaceDescriptor['environment'];
   gitIdentity?: AgentGitIdentity | null;
   /** Effective admin/upstream ceiling already intersected with the protocol hard cap. */
@@ -556,11 +567,9 @@ export function createAttachedWorkspaceBashTool({
       const command =
         action ??
         commandWithGitIdentity(commandWithArguments(rawInput.command!, rawInput.args), gitIdentity);
+      const background = config?.configurable?.[BACKGROUND_TOOL_INVOCATION_CONFIG_KEY] === true;
       const timeoutMs =
-        rawInput.timeoutMs ??
-        (config?.configurable?.[BACKGROUND_TOOL_INVOCATION_CONFIG_KEY] === true
-          ? effectiveMaxTimeoutMs
-          : effectiveDefaultTimeoutMs);
+        rawInput.timeoutMs ?? (background ? effectiveMaxTimeoutMs : effectiveDefaultTimeoutMs);
       let selectedTimeoutMs = timeoutMs;
       let selectedMaxTimeoutMs = effectiveMaxTimeoutMs;
       const signal = config?.signal;
@@ -592,6 +601,9 @@ export function createAttachedWorkspaceBashTool({
             ...(rawInput.cwd ? { cwd: rawInput.cwd } : {}),
             timeoutMs,
             maxOutputBytes: DEFAULT_OUTPUT_BYTES,
+            ...(detachedCommands === true && background && action === undefined
+              ? { detached: true }
+              : {}),
           },
           ...(admission?.durableRequests === true && rawInput.timeoutMs == null
             ? {
@@ -646,7 +658,7 @@ export function createAttachedWorkspaceBashTool({
     {
       name: BashExecutionToolDefinition.name,
       description:
-        buildAttachedWorkspaceBashDescription(false, environment, nativeSandbox) +
+        buildAttachedWorkspaceBashDescription(false, environment, nativeSandbox, detachedCommands) +
         (admission?.durableRequests === true
           ? '\nOlder servers may lower omitted timeouts to fit their synchronous transport budget. Explicit timeoutMs is never lowered.'
           : ''),

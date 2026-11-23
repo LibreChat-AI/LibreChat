@@ -20,12 +20,10 @@ import {
   TooltipAnchor,
   ThumbUpIcon,
   ThumbDownIcon,
-  cn,
   useLocalize,
 } from '@librechat/client';
 import type { TFeedback, TFeedbackTag } from 'librechat-data-provider';
 import type { NamedExoticComponent } from 'react';
-import { hoverButtonClasses } from './styles';
 
 interface FeedbackProps {
   handleFeedback: ({ feedback }: { feedback: TFeedback | undefined }) => void;
@@ -60,16 +58,7 @@ function FeedbackOptionButton({
   const label = localize(tag.label as Parameters<typeof localize>[0]);
 
   return (
-    <Button
-      variant="quiet"
-      className={cn(
-        'h-auto w-full justify-start gap-3 rounded-xl p-2 transition-colors duration-200',
-        active && 'bg-surface-hover text-text-primary font-semibold',
-      )}
-      onClick={onClick}
-      aria-label={label}
-      aria-pressed={active}
-    >
+    <Button variant="popover-option" onClick={onClick} aria-label={label} aria-pressed={active}>
       <Icon size="1.1875rem" bold={active} aria-hidden="true" />
       <span>{label}</span>
     </Button>
@@ -151,17 +140,21 @@ function FeedbackButtons({
       <Ariakit.PopoverAnchor
         store={upStore}
         render={
-          <Button
-            variant="ghost"
-            size="icon"
-            className={buttonClasses(feedback?.rating === 'thumbsUp', isLast)}
-            onClick={handleThumbsUpClick}
-            title={localize('com_ui_feedback_positive')}
-            aria-pressed={feedback?.rating === 'thumbsUp'}
-            aria-haspopup="menu"
-          >
-            <ThumbUpIcon size="1.1875rem" bold={feedback?.rating === 'thumbsUp'} />
-          </Button>
+          <TooltipAnchor
+            description={localize('com_ui_feedback_positive')}
+            render={
+              <Button
+                variant={isLast ? 'message-hover' : 'message-hover-reveal'}
+                data-hover-active={feedback?.rating === 'thumbsUp' || undefined}
+                onClick={handleThumbsUpClick}
+                aria-label={localize('com_ui_feedback_positive')}
+                aria-pressed={feedback?.rating === 'thumbsUp'}
+                aria-haspopup="menu"
+              >
+                <ThumbUpIcon size="1.1875rem" bold={feedback?.rating === 'thumbsUp'} />
+              </Button>
+            }
+          />
         }
       />
       <Ariakit.Popover
@@ -169,7 +162,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
+        className="animate-composer-popover border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg motion-reduce:transition-none"
       >
         <div className="flex flex-col items-stretch justify-center">
           {positiveTags.map((tag) => (
@@ -186,17 +179,21 @@ function FeedbackButtons({
       <Ariakit.PopoverAnchor
         store={downStore}
         render={
-          <Button
-            variant="ghost"
-            size="icon"
-            className={buttonClasses(feedback?.rating === 'thumbsDown', isLast)}
-            onClick={handleThumbsDownClick}
-            title={localize('com_ui_feedback_negative')}
-            aria-pressed={feedback?.rating === 'thumbsDown'}
-            aria-haspopup="menu"
-          >
-            <ThumbDownIcon size="1.1875rem" bold={feedback?.rating === 'thumbsDown'} />
-          </Button>
+          <TooltipAnchor
+            description={localize('com_ui_feedback_negative')}
+            render={
+              <Button
+                variant={isLast ? 'message-hover' : 'message-hover-reveal'}
+                data-hover-active={feedback?.rating === 'thumbsDown' || undefined}
+                onClick={handleThumbsDownClick}
+                aria-label={localize('com_ui_feedback_negative')}
+                aria-pressed={feedback?.rating === 'thumbsDown'}
+                aria-haspopup="menu"
+              >
+                <ThumbDownIcon size="1.1875rem" bold={feedback?.rating === 'thumbsDown'} />
+              </Button>
+            }
+          />
         }
       />
       <Ariakit.Popover
@@ -204,7 +201,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
+        className="animate-composer-popover border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg motion-reduce:transition-none"
       >
         <div className="flex flex-col items-stretch justify-center">
           {negativeTags.map((tag) => (
@@ -220,9 +217,6 @@ function FeedbackButtons({
     </>
   );
 }
-
-const buttonClasses = (isActive: boolean, isLast: boolean) =>
-  hoverButtonClasses({ isActive, isLast });
 
 function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }: FeedbackProps) {
   const localize = useLocalize();
@@ -282,9 +276,8 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
         description={label}
         render={
           <Button
-            variant="ghost"
-            size="icon"
-            className={buttonClasses(true, isLast)}
+            variant={isLast ? 'message-hover' : 'message-hover-reveal'}
+            data-hover-active
             onClick={() => {
               if (isThumbsUp) {
                 handleButtonFeedback(undefined);
@@ -320,7 +313,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
             {localize('com_ui_feedback_more_information')}
           </OGDialogTitle>
           <Textarea
-            className="h-auto w-full rounded-xl p-2"
+            variant="note"
             value={feedback?.text || ''}
             onChange={handleTextChange}
             rows={4}

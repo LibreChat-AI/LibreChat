@@ -11,6 +11,7 @@ import type { TokenCountFn } from '~/utils/text';
 import type { ServerRequest } from '~/types';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { AGENT_ATTACHMENT_LIMIT_EXCEEDED } from './errors';
+import { AttachmentSizeError } from '~/files/encode/utils';
 import { countTokens } from '~/utils/tokenizer';
 import { extractFileContext } from '~/files';
 
@@ -44,6 +45,7 @@ export function isToolOwnedAttachment(file: AttachmentTelemetryFile): boolean {
     | undefined;
   return (
     file.context === FileContext.execute_code ||
+    file.context === FileContext.execute_code_snapshot ||
     file.embedded === true ||
     metadata?.searchDestination === true ||
     metadata?.codeDestination === true ||
@@ -234,8 +236,12 @@ export class AgentAttachmentPolicyError extends Error {
 
 export function isAgentAttachmentLimitError(
   error: unknown,
-): error is AgentAttachmentLimitError | AgentAttachmentPolicyError {
-  return error instanceof AgentAttachmentLimitError || error instanceof AgentAttachmentPolicyError;
+): error is AgentAttachmentLimitError | AgentAttachmentPolicyError | AttachmentSizeError {
+  return (
+    error instanceof AgentAttachmentLimitError ||
+    error instanceof AgentAttachmentPolicyError ||
+    error instanceof AttachmentSizeError
+  );
 }
 
 export function collectAgentAttachmentStats(
@@ -539,6 +545,41 @@ export function collectFileIds<TFile extends FileWithId>(
 }
 
 /** Excludes replayed files from count admission unless they are submitted again now. */
+/**
+ * Splits what a turn was handed into the files the request itself named and the earlier files
+ * primed again beside them. Agent setup hands both over in one list: a file that is sent to the
+ * model and also placed in the code environment (a screenshot in a chat whose agent runs code)
+ * is primed for the tools again on every turn. Such a file is in the list on every turn after
+ * the one that attached it, so being there does not make it new, and because the history replay
+ * skips what the list already holds, nothing else says it is old either.
+ *
+ * With `requested` unknown, every attachment is read as named, which is how a caller that does
+ * not report it has always been counted.
+ */
+export function partitionRequestAttachments<T extends FileWithId>(
+  attachments: Iterable<T | null | undefined>,
+  requested: Iterable<FileWithId | null | undefined> | null | undefined,
+): { named: Array<T | null | undefined>; primed: T[] } {
+  if (requested == null) {
+    return { named: [...attachments], primed: [] };
+  }
+  const requestedIds = new Set<string>();
+  for (const file of requested) {
+    if (file?.file_id) {
+      requestedIds.add(file.file_id);
+    }
+  }
+  const named: T[] = [];
+  const primed: T[] = [];
+  for (const file of attachments) {
+    if (!file?.file_id) {
+      continue;
+    }
+    (requestedIds.has(file.file_id) ? named : primed).push(file);
+  }
+  return { named, primed };
+}
+
 export function collectHistoricalAttachmentIds(
   historicalFiles: Iterable<FileWithId | string | null | undefined>,
   currentFiles: Iterable<FileWithId | null | undefined> = [],
@@ -556,6 +597,26 @@ export function collectHistoricalAttachmentIds(
     }
   }
   return fileIds;
+}
+
+/**
+ * The ids of the files a turn carries from earlier ones, for every place that decides it: the
+ * history replay, the final admission once the prompt is built, and a resumed run. `historical`
+ * is what that place knows to be earlier; `attachments` is everything the turn was handed and
+ * `requested` the files the request itself named (see `partitionRequestAttachments`). A file
+ * the request names again is new to the turn wherever else it appears.
+ */
+export function collectTurnHistoricalIds({
+  historical,
+  attachments,
+  requested,
+}: {
+  historical: Iterable<FileWithId | string | null | undefined>;
+  attachments: Iterable<FileWithId | null | undefined>;
+  requested: Iterable<FileWithId | null | undefined> | null | undefined;
+}): Set<string> {
+  const { named, primed } = partitionRequestAttachments(attachments, requested);
+  return collectHistoricalAttachmentIds([...historical, ...primed], named);
 }
 
 interface SteerAttachmentHistory {

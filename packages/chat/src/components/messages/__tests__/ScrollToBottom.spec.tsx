@@ -74,22 +74,27 @@ describe('ScrollToBottom', () => {
     expect(screen.getByRole('button')).toHaveClass('pointer-events-auto');
   });
 
-  /* Pointer events say nothing about the keyboard: keep the control out of the
-     tab order and remove its click handler until the enter transition settles. */
+  /* Pointer events say nothing about the keyboard: an enabled button keeps its
+     place in the tab order and answers Enter however faint it is painted. */
   it('stays out of reach of the keyboard until settled', () => {
     renderButton();
-    const button = screen.getByRole('button');
 
-    expect(button).toHaveAttribute('aria-disabled', 'true');
-    expect(button).toHaveAttribute('tabindex', '-1');
-    expect(button).not.toHaveAttribute('disabled');
+    expect(screen.getByRole('button')).toBeDisabled();
   });
 
   it('answers the keyboard once settled', () => {
     renderButton({ interactive: true });
 
     expect(screen.getByRole('button')).toBeEnabled();
-    expect(screen.getByRole('button')).toHaveAttribute('aria-disabled', 'false');
+  });
+
+  /* The wrapper already fades the control in, so the disabled state must not
+     dim it a second time on the way. */
+  it('does not dim while it is unreachable', () => {
+    renderButton();
+
+    expect(screen.getByRole('button')).toHaveClass('disabled:opacity-100');
+    expect(screen.getByRole('button')).not.toHaveClass('disabled:opacity-50');
   });
 
   it('rests just above the composer when nothing is queued', () => {

@@ -15,6 +15,15 @@ on:
       - '.bun-version'
       - 'config/circular-deps.mjs'
       - '.github/workflows/backend-review.yml'
+      # The guard spec list, its reader and their test, then every path a backend guard spec
+      # reads outside the trees above; guard-specs.test.mjs fails when one is missing here.
+      - '.github/guard-specs.json'
+      - '.github/scripts/guard-specs*.mjs'
+      - '.env.example'
+      - 'librechat.example.yaml'
+      - 'client/public/mcp-sandbox.html'
+      - 'e2e/setup/fake-model.js'
+      - 'vendor/code/**'
       - '!**.md'
   pull_request:
     paths:
@@ -25,7 +34,20 @@ on:
       - '.bun-version'
       - 'config/circular-deps.mjs'
       - '.github/workflows/backend-review.yml'
+      # The guard spec list, its reader and their test, then every path a backend guard spec
+      # reads outside the trees above; guard-specs.test.mjs fails when one is missing here.
+      - '.github/guard-specs.json'
+      - '.github/scripts/guard-specs*.mjs'
+      - '.env.example'
+      - 'librechat.example.yaml'
+      - 'client/public/mcp-sandbox.html'
+      - 'e2e/setup/fake-model.js'
+      - 'vendor/code/**'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
   # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
   workflow_dispatch:
 
@@ -55,10 +77,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -70,7 +92,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -140,6 +162,9 @@ jobs:
   # graph, unclassifiable change, root/lockfile floors => mode FULL per workspace), and this
   # job emits nothing unless the response parses end to end — the worst case at every layer
   # is "CI runs everything", which is the pre-gating behavior.
+  #
+  # The graph follows imports, so a spec that reads source with fs is invisible to it. Those
+  # guard specs are listed in .github/guard-specs.json and run with every narrowed decision.
   codegraph_select:
     name: Codegraph select
     runs-on: ubuntu-latest
@@ -159,6 +184,14 @@ jobs:
       dataschemas_run: ${{ steps.sel.outputs.dataschemas_run }}
       dataschemas_files: ${{ steps.sel.outputs.dataschemas_files }}
     steps:
+      # The commit under test, for the guard spec list, its reader and the reader's check that
+      # a selection is not stale. Best effort: without it the select step runs every narrowed
+      # workspace FULL, so a failed checkout never fails this job.
+      - uses: actions/checkout@v5
+        continue-on-error: true
+        with:
+          persist-credentials: false
+
       - name: Select tests, fail open on any doubt
         id: sel
         env:
@@ -227,6 +260,23 @@ jobs:
                 if [ "$mode" = "FILES" ] && [ -z "$files" ]; then mode="NONE"; fi
               fi
             fi
+            # Guard specs read source with fs, so no import edge selects them. A narrowed run
+            # carries its workspace's guards, and a skip becomes a guards-only run when the
+            # change touches what they read (.github/guard-specs.json; the rules are in
+            # .github/scripts/guard-specs.mjs). A list that cannot be read runs FULL. A selection
+            # with no file left in this checkout gets no guards: the test job runs FULL on a
+            # stale selection, and guards that exist would turn that into a guards-only run.
+            guard_note=""
+            if [ "$mode" = "FILES" ] || [ "$mode" = "NONE" ]; then
+              guarded=$(SELECTED="$files" node .github/scripts/guard-specs.mjs "$mode" "$ws" files.json "$ignore"); grc=$?
+              if [ "$grc" -ne 0 ]; then
+                mode="FULL"; files=""
+                note "| $ws | guard specs unreadable (exit $grc); running FULL |"
+              elif [ -n "$guarded" ]; then
+                if [ "$mode" = "NONE" ]; then guard_note=", guard specs only"; fi
+                mode="FILES"; files="$guarded"
+              fi
+            fi
             if [ "$mode" = "NONE" ]; then
               echo "${key}_run=false" >> "$GITHUB_OUTPUT"
               note "| $ws | skip (no reachable tests) |"
@@ -234,7 +284,7 @@ jobs:
               n=$(echo "$files" | wc -w | tr -d ' ')
               echo "${key}_run=true" >> "$GITHUB_OUTPUT"
               echo "${key}_files=$files" >> "$GITHUB_OUTPUT"
-              note "| $ws | $n selected files |"
+              note "| $ws | $n selected files$guard_note |"
             else
               echo "${key}_run=true" >> "$GITHUB_OUTPUT"
               note "| $ws | FULL |"
@@ -264,10 +314,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -279,7 +329,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -333,10 +383,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -348,7 +398,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -356,6 +406,11 @@ jobs:
 
       - name: Detect circular dependencies
         run: node config/circular-deps.mjs
+
+      # Here because this job has node_modules, always runs and gates no other job.
+      - name: Test guard spec selection
+        if: ${{ !cancelled() }}
+        run: node --test .github/scripts/guard-specs.test.mjs
 
   test-api:
     name: 'Tests: api (shard ${{ matrix.shard }}/3)'
@@ -379,10 +434,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -394,7 +449,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -430,15 +485,10 @@ jobs:
       # ~/.cache/mongodb-binaries on first use — inside a 15s beforeAll hook, which is a
       # timeout on a slow mirror day. Every MISSED verdict the codegraph shadow evaluator has
       # ever recorded (9 across 6 PRs) plus several chronically flaky suites trace to exactly
-      # this download. restore-keys keeps the previous binary warm across lockfile churn; a
-      # genuinely new binary version downloads once and re-saves.
-      - name: Cache MongoDB memory-server binaries
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/mongodb-binaries
-          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            mongodb-binaries-${{ runner.os }}-
+      # this download. The action restores the cached binary and, when it is missing,
+      # downloads it here, once, before Jest forks its workers.
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
       - name: Run unit tests (shard ${{ matrix.shard }}/3)
         env:
           SELECTED: ${{ needs.codegraph_select.outputs.api_files }}
@@ -468,9 +518,11 @@ jobs:
             npm run test:ci -- --shard=${{ matrix.shard }}/3 $JEST_JSON
           fi
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -489,10 +541,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -504,7 +556,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -516,19 +568,6 @@ jobs:
           name: build-data-provider
           path: packages/data-provider/dist
 
-      # mongodb-memory-server cold-downloads a ~122MB MongoDB binary into
-      # ~/.cache/mongodb-binaries on first use — inside a 15s beforeAll hook, which is a
-      # timeout on a slow mirror day. Every MISSED verdict the codegraph shadow evaluator has
-      # ever recorded (9 across 6 PRs) plus several chronically flaky suites trace to exactly
-      # this download. restore-keys keeps the previous binary warm across lockfile churn; a
-      # genuinely new binary version downloads once and re-saves.
-      - name: Cache MongoDB memory-server binaries
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/mongodb-binaries
-          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            mongodb-binaries-${{ runner.os }}-
       - name: Run unit tests
         env:
           SELECTED: ${{ needs.codegraph_select.outputs.dataprovider_files }}
@@ -553,9 +592,11 @@ jobs:
             npm run test:ci -- $JEST_JSON
           fi
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -574,10 +615,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -589,7 +630,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -611,15 +652,10 @@ jobs:
       # ~/.cache/mongodb-binaries on first use — inside a 15s beforeAll hook, which is a
       # timeout on a slow mirror day. Every MISSED verdict the codegraph shadow evaluator has
       # ever recorded (9 across 6 PRs) plus several chronically flaky suites trace to exactly
-      # this download. restore-keys keeps the previous binary warm across lockfile churn; a
-      # genuinely new binary version downloads once and re-saves.
-      - name: Cache MongoDB memory-server binaries
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/mongodb-binaries
-          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            mongodb-binaries-${{ runner.os }}-
+      # this download. The action restores the cached binary and, when it is missing,
+      # downloads it here, once, before Jest forks its workers.
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
       - name: Run unit tests
         env:
           SELECTED: ${{ needs.codegraph_select.outputs.dataschemas_files }}
@@ -644,9 +680,11 @@ jobs:
             npm run test:ci -- $JEST_JSON
           fi
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -673,10 +711,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.22.1
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -688,7 +726,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -716,15 +754,10 @@ jobs:
       # ~/.cache/mongodb-binaries on first use — inside a 15s beforeAll hook, which is a
       # timeout on a slow mirror day. Every MISSED verdict the codegraph shadow evaluator has
       # ever recorded (9 across 6 PRs) plus several chronically flaky suites trace to exactly
-      # this download. restore-keys keeps the previous binary warm across lockfile churn; a
-      # genuinely new binary version downloads once and re-saves.
-      - name: Cache MongoDB memory-server binaries
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/mongodb-binaries
-          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            mongodb-binaries-${{ runner.os }}-
+      # this download. The action restores the cached binary and, when it is missing,
+      # downloads it here, once, before Jest forks its workers.
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
       - name: Run unit tests (shard ${{ matrix.shard }}/4)
         env:
           SELECTED: ${{ needs.codegraph_select.outputs.pkgapi_files }}
@@ -749,9 +782,11 @@ jobs:
             npm run test:ci -- --shard=${{ matrix.shard }}/4 $JEST_JSON
           fi
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
-      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      # Never part of the gate: it cannot fail the job or stall it into its timeout, and a re-run
+      # overwrites its own artifact.
       - name: Upload Jest results
         if: ${{ !cancelled() }}
+        timeout-minutes: 3
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -760,3 +795,37 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
           overwrite: true
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. A skip passes only where ALLOW_SKIPPED names it.
+  gate:
+    name: backend
+    needs:
+      - build
+      - codegraph_select
+      - typecheck
+      - circular-deps
+      - test-api
+      - test-data-provider
+      - test-data-schemas
+      - test-packages-api
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every backend job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          ALLOW_SKIPPED: >-
+            codegraph_select
+            ${{ needs.codegraph_select.outputs.api_run == 'false' && 'test-api' || '' }}
+            ${{ needs.codegraph_select.outputs.dataprovider_run == 'false' && 'test-data-provider' || '' }}
+            ${{ needs.codegraph_select.outputs.dataschemas_run == 'false' && 'test-data-schemas' || '' }}
+            ${{ needs.codegraph_select.outputs.pkgapi_run == 'false' && 'test-packages-api' || '' }}
+        run: node .github/scripts/merge-gate.mjs verify

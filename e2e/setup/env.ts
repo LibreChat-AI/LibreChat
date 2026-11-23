@@ -138,6 +138,8 @@ export function getBaseE2EEnv(): Record<string, string> {
     SESSION_EXPIRY: process.env.SESSION_EXPIRY ?? '3600000',
     ALLOW_REGISTRATION: 'true',
     REFRESH_TOKEN_EXPIRY: process.env.REFRESH_TOKEN_EXPIRY ?? '3600000',
+    /** Playwright's Node-side requests keep idle sockets indefinitely; see `keepalive.js`. */
+    HTTP_KEEP_ALIVE_TIMEOUT_MS: '0',
     ...getStreamStoreEnv(),
   };
 }

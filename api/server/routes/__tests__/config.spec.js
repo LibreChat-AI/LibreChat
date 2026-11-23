@@ -713,7 +713,10 @@ describe('GET /api/config', () => {
         model: 'gpt-4o',
         greeting: 'Hello',
       });
-      expect(response.body.modelSpecs.list[0]).not.toHaveProperty('skills');
+      /** Narrowed to the boolean the chat badge seeds from — an absent field is
+       *  indistinguishable from `skills: false` — while the names stay server-side. */
+      expect(response.body.modelSpecs.list[0].skills).toBe(true);
+      expect(JSON.stringify(response.body.modelSpecs.list[0])).not.toContain('private-skill');
     });
 
     it('should include full interface config', async () => {

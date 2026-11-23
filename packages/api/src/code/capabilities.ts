@@ -195,6 +195,10 @@ export async function resolveCodeExecutionWorkspaceContext({
       ...(status.editFileFeatures?.length
         ? { editFileFeatures: [...status.editFileFeatures] }
         : {}),
+      ...(status.commandFeatures?.includes('detached') === true &&
+      context.codeEnvironmentConfigSchema?.workspaces?.detachedCommands !== false
+        ? { detachedCommands: true }
+        : {}),
       ...(workspace.instructions ? { instructions: workspace.instructions } : {}),
       ...(workspace.environment ? { environment: workspace.environment } : {}),
     },

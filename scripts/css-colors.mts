@@ -32,7 +32,7 @@ export interface AllowedRule {
 }
 
 export const CSS_COLOR_ALLOWED_RULES: Record<string, AllowedRule[]> = {
-  'client/src/mobile.css': [{ selector: '.azure-bg-color' }],
+  'packages/chat/src/style.css': [{ selector: '.azure-bg-color' }],
   'client/src/style.css': [{ selector: 'select', property: 'background-image' }],
 };
 

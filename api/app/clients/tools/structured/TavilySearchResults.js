@@ -1,7 +1,7 @@
 const { fetch } = require('undici');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { getEnvironmentVariable } = require('@librechat/agents/langchain/utils/env');
-const { getEnvProxyDispatcher, toolRequestBudget } = require('@librechat/api');
+const { getEnvProxyDispatcher, runToolRequest, toolRequestBudget } = require('@librechat/api');
 
 const tavilySearchJsonSchema = {
   type: 'object',
@@ -129,16 +129,11 @@ class TavilySearchResults extends Tool {
       fetchOptions.dispatcher = dispatcher;
     }
 
-    const response = await fetch('https://api.tavily.com/search', fetchOptions);
-
-    const json = await response.json();
-    if (!response.ok) {
-      throw new Error(
-        `Request failed with status ${response.status}: ${json?.detail?.error || json?.error}`,
-      );
-    }
-
-    return JSON.stringify(json);
+    return runToolRequest({
+      service: 'Tavily',
+      request: () => fetch('https://api.tavily.com/search', fetchOptions),
+      read: async (response) => JSON.stringify(await response.json()),
+    });
   }
 }
 

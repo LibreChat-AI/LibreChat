@@ -1,6 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import { FileContext, FileSources } from 'librechat-data-provider';
-import type { RunFileProvenance } from 'librechat-data-provider';
+import type { RunFileProvenance, CodeOutputProvenance } from 'librechat-data-provider';
 import type { IMongoFile } from '~/types';
 import { codeEnvRefMapSchema, codeEnvRefSchema } from './codeEnvRef';
 
@@ -15,6 +15,14 @@ const runFileProvenanceSchema = new Schema<RunFileProvenance>(
     sourceFileId: { type: String, required: true },
     publishedAt: { type: String, required: true },
     inputFileIds: { type: [String], required: true },
+  },
+  { _id: false },
+);
+
+const codeOutputProvenanceSchema = new Schema<CodeOutputProvenance>(
+  {
+    messageId: { type: String, required: true },
+    sha256: { type: String, required: true, match: /^[a-f0-9]{64}$/ },
   },
   { _id: false },
 );
@@ -149,6 +157,7 @@ const file: Schema<IMongoFile> = new Schema(
     width: Number,
     height: Number,
     metadata: {
+      codeOutput: { type: codeOutputProvenanceSchema, default: undefined },
       runFile: {
         type: runFileProvenanceSchema,
         default: undefined,
@@ -160,6 +169,10 @@ const file: Schema<IMongoFile> = new Schema(
       },
       codeEnvRefs: {
         type: codeEnvRefMapSchema,
+        default: undefined,
+      },
+      codeEnvSource: {
+        type: codeEnvRefSchema,
         default: undefined,
       },
       /** Dispatch-order stamp of the last writer (or claimant, on insert):

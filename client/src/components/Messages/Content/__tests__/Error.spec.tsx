@@ -1,13 +1,14 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
+  Constants,
   ErrorTypes,
   SystemRoles,
   ContentTypes,
   ViolationTypes,
   EModelEndpoint,
 } from 'librechat-data-provider';
-import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
+import type { Agent, AgentDisplay, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { MessageContext } from '~/Providers/MessageContext';
@@ -48,6 +49,10 @@ jest.mock('~/hooks', () => ({
       );
     },
   useHasAccess: ({ permission }: { permission: string }) => mockAccess[permission] === true,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   /** Mirrors the real hook's contract — a grid style plus a ref — without pulling `useMediaQuery`
    *  and its `matchMedia` dependency into a spec that asserts copy, not motion. */
   useExpandCollapse: (isExpanded: boolean) => ({
@@ -59,6 +64,14 @@ jest.mock('~/hooks', () => ({
     ref: { current: null },
   }),
 }));
+
+let mockPresetTargets: AgentDisplay[] = [];
+jest.mock('~/data-provider/Agents/queries', () => ({
+  useModelSpecHandoffsQuery: () => ({ data: mockPresetTargets }),
+}));
+afterEach(() => {
+  mockPresetTargets = [];
+});
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsData })),
@@ -170,6 +183,15 @@ describe('LibreChat attachment limits', () => {
     expect(screen.getByText(detail)).toBeVisible();
   });
 
+  it('does not blame the provider for a file over the size limit for its model', () => {
+    const detail =
+      'The attached file "big.csv" is over the 4.5 MB limit for a file sent to this model. Remove it or attach a smaller file, then try again.';
+    renderError(detail, providerMessage);
+    expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeVisible();
+  });
+
   it.each(['attachment count', 'total attachment size', 'extracted document text'])(
     'does not blame the provider for the local %s limit',
     (label) => {
@@ -261,6 +283,18 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expect(screen.getByText(prose)).toBeInTheDocument();
     expect(screen.queryByText(catalog.com_error_unknown)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain('{');
+    expectReadable();
+  });
+
+  it.each([
+    [ErrorTypes.MODEL_RATE_LIMIT, 'com_error_model_rate_limit'],
+    [ErrorTypes.MODEL_NOT_FOUND, 'com_error_model_not_found'],
+  ])('keeps the gateway explanation a classified %s carries as its detail', (type, key) => {
+    const info = 'You reached your assigned budget. Ask for more at the service desk.';
+    renderError({ type, info });
+
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(screen.getByText(info)).toBeInTheDocument();
     expectReadable();
   });
 
@@ -1307,5 +1341,24 @@ describe('Error — agent handoffs within a row', () => {
 
     expect(screen.getByText(catalog.com_error_no_user_key_generic)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('Google');
+  });
+});
+
+describe('preset handoff error identity', () => {
+  const id = Constants.MODEL_SPEC_AGENT_PREFIX + 'abc123';
+  const source = { endpoint: EModelEndpoint.agents, model: id } as TMessage;
+  test('uses the actual provider and model rather than the graph hash', () => {
+    mockPresetTargets = [
+      { id, name: 'Preset Specialist', provider: 'openAI', model: 'gpt-4o', avatar: null },
+    ];
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).toContain('gpt-4o');
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
+  });
+  test('does not expose a retired preset hash as an endpoint or model', () => {
+    renderError({ type: ErrorTypes.REFUSAL }, source, { source });
+    expect(document.body.textContent).not.toContain('model_spec');
+    expect(document.body.textContent).not.toContain('abc123');
   });
 });

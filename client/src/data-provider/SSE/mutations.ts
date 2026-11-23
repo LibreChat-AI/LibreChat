@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
+import type { Agents, TMessage, TEphemeralAgent, CodeApprovalMode } from 'librechat-data-provider';
 import type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
-import type { Agents, TMessage, TEphemeralAgent } from 'librechat-data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
@@ -43,8 +43,10 @@ export function useAbortStreamMutation() {
  */
 export interface ResumeAgentFields {
   conversationId: string;
-  /** Exact paused generation being resumed. */
-  generationCreatedAt: number;
+  /** Exact paused generation being resumed. Optional: when the client has not
+   *  observed the epoch, the server resolves against its authoritative job and
+   *  still fences on `actionId`. */
+  generationCreatedAt?: number;
   endpoint?: EModelEndpoint | string | null;
   endpointType?: EModelEndpoint | string | null;
   agent_id?: string | null;
@@ -160,6 +162,11 @@ export interface SteerMessageParams {
    * `preempt: false`, which relabels the chip instead of erroring.
    */
   preempt?: boolean;
+  /** Lets the server promote this steer to a durable queued turn if the run ends
+   *  without applying it; the FINAL event then reports it in `promotedSteers`. */
+  promoteLeftover?: boolean;
+  /** Sent with `promoteLeftover`: the code approval mode a promoted turn starts under. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Successful steer ACK: the server queued the message for mid-run injection. */

@@ -10,12 +10,14 @@ import type {
   AgentTriggerMode,
 } from './envelope';
 import type { AgentTriggerDispatchContext } from './dispatch';
+import type { RunTrigger } from '~/agents/authority/trigger';
 import type { AgentRunPrincipal } from '../envelope';
 import {
   EVENT_ACTOR_DETACHED_COMPLETION_SOURCE,
   EVENT_ACTOR_DETACHED_COMPLETION_TYPE,
   parseAgentEventActorDetachedCompletion,
 } from './detachedAction';
+import { readRunTrigger } from '~/agents/authority/trigger';
 import { dispatchAgentTrigger } from './dispatch';
 
 const DEFAULT_FIRE_TIMEOUT_MS = 30_000;
@@ -24,6 +26,16 @@ const GENERATION_PROTOCOL_HEADER = 'x-librechat-generation-protocol';
 const TRIGGER_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 LibreChat-Agent-Trigger/1';
+
+/** Only server-authenticated automation can supply an already reserved new conversation ID. */
+export function getTrustedNewConversationId(input: {
+  isScheduledFire: boolean;
+  isAgentTrigger: boolean;
+  newConversationId?: string | null;
+}): string | null {
+  if (!input.isScheduledFire && !input.isAgentTrigger) return null;
+  return typeof input.newConversationId === 'string' ? input.newConversationId : null;
+}
 
 const PRE_CONNECT_ERROR_CODES = new Set([
   'ECONNREFUSED',
@@ -124,6 +136,8 @@ export interface AgentTriggerFireResult {
   conversationId: string;
   streamId?: string;
   generationCreatedAt?: number;
+  /** Exact saved reply identity, retained after the generation cache is cleaned. */
+  responseMessageId?: string;
 }
 
 export interface AgentTriggerSteerResult {
@@ -145,6 +159,7 @@ export interface AgentTriggerContinueResult {
   conversationId: string;
   streamId?: string;
   generationCreatedAt?: number;
+  responseMessageId?: string;
 }
 
 export type AgentTriggerExecutionResult =
@@ -203,6 +218,29 @@ function executionError(
   options: AgentTriggerExecutionErrorOptions,
 ): AgentTriggerExecutionError {
   return new AgentTriggerExecutionError(message, options);
+}
+
+/** The deliveries that report work a run sent to the background, each in a turn of its own. */
+const COMPLETION_SOURCES = ['subagent-completion', 'background-tool-completion'];
+
+/**
+ * What the work a delivery reports kept of the run that began it, for the turn to act for the
+ * same subject. Read only from a delivery the server made for itself, whose payload the
+ * server wrote: an event from outside brings a payload of its sender's choosing, and is never
+ * read here. One that cannot be read ends the delivery before anything is claimed for it: its
+ * turn would otherwise run for nobody, under no grant.
+ */
+function keptTrigger(payload: unknown, mode: AgentTriggerMode): RunTrigger | undefined {
+  try {
+    return readRunTrigger(payload);
+  } catch {
+    throw executionError('The run that began this work cannot be read.', {
+      mode,
+      certainty: 'definite',
+      retryable: false,
+      code: 'RUN_TRIGGER_INVALID',
+    });
+  }
 }
 
 function requireTimeout(timeoutMs: number | undefined): number {
@@ -516,12 +554,16 @@ function parseStartResult(
   const generationCreatedAt = requireSafeInteger(
     'generationCreatedAt' in payload ? payload.generationCreatedAt : undefined,
   );
+  const responseMessageId = requireString(
+    'responseMessageId' in payload ? payload.responseMessageId : undefined,
+  );
   return {
     mode,
     status,
     conversationId,
     ...(streamId != null && { streamId }),
     ...(generationCreatedAt != null && { generationCreatedAt }),
+    ...(responseMessageId != null && { responseMessageId }),
   };
 }
 
@@ -585,6 +627,14 @@ async function startRun(
     envelope.event.source.type === 'internal' &&
     envelope.event.source.id === EVENT_ACTOR_DETACHED_COMPLETION_SOURCE
       ? parseAgentEventActorDetachedCompletion(envelope.event.payload)
+      : undefined;
+  const completion =
+    mode === 'continue' &&
+    envelope.event.source.type === 'internal' &&
+    COMPLETION_SOURCES.includes(envelope.event.source.id);
+  const kept =
+    completion || detachedCompletion != null
+      ? keptTrigger(envelope.event.payload, mode)
       : undefined;
   const scope = abortScope(context.signal, timeoutMs);
   let preparation: AgentTriggerContinuePreparation | undefined;
@@ -717,21 +767,30 @@ async function startRun(
                   expectedAction: envelope.expectedAction,
                 }),
                 ...(detachedCompletion == null ? {} : { internalCompletion: detachedCompletion }),
+                ...(kept && { trigger: kept }),
               },
             }),
+          /** Any other continuation names its event here, identity only as above, so the
+           * route can tell what delivery started every run the engine starts. */
           ...(envelope.mode === 'continue' &&
-            envelope.event.source.type === 'internal' &&
-            ['subagent-completion', 'background-tool-completion'].includes(
-              envelope.event.source.id,
-            ) && {
-              agentCompletion: {
-                version: 1,
-                sourceId: envelope.event.source.id,
-                ...(readyPreparation?.scheduleMCPIdentity && {
-                  scheduleMCPIdentity: readyPreparation.scheduleMCPIdentity,
-                }),
+            envelope.target.bindingId == null && {
+              agentEvent: {
+                id: envelope.event.id,
+                type: envelope.event.type,
+                occurredAt: envelope.event.occurredAt,
+                source: envelope.event.source,
               },
             }),
+          ...(completion && {
+            agentCompletion: {
+              version: 1,
+              sourceId: envelope.event.source.id,
+              ...(readyPreparation?.scheduleMCPIdentity && {
+                scheduleMCPIdentity: readyPreparation.scheduleMCPIdentity,
+              }),
+              ...(kept && { trigger: kept }),
+            },
+          }),
           ...(envelope.mode === 'fire' && {
             agentTrigger: {
               version: envelope.version,

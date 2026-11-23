@@ -21,6 +21,16 @@ type FlagAtom = WritableAtom<boolean, [SetStateAction<boolean>], void>;
 export const submissionStartFamily: (index: string | number) => PrimitiveAtom<number | null> =
   atomFamily((_index: string | number) => atom<number | null>(null));
 
+/**
+ * The conversation object of the submission this pane last launched, written by `useTurns` just
+ * before it publishes the submission. An app that ties its composer drafts to a launch subscribes
+ * to it (`store.sub`), which runs synchronously inside the write, so the binding is in place
+ * before the submission's stream can acknowledge it. The object identity is the key: it is the
+ * same `submission.conversation` the stream later reports back.
+ */
+export const launchedConversationFamily: (index: string | number) => PrimitiveAtom<object | null> =
+  atomFamily((_index: string | number) => atom<object | null>(null));
+
 /** Whether the pane at this index shows its Stop control. */
 export const showStopButtonByIndex: (index: string | number) => PrimitiveAtom<boolean> = atomFamily(
   (_index: string | number) => atom<boolean>(false),

@@ -1034,6 +1034,7 @@ describe('importLibreChatConvo', () => {
       langfuseSampled: true,
       langfuseDestinationIds: ['forged-destination'],
       langfuseRunId: 'someone-elses-run',
+      trigger: { event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' } },
       contextMeta: {
         calibrationRatio: 1,
         encoding: 'claude',
@@ -1052,6 +1053,7 @@ describe('importLibreChatConvo', () => {
     await importer(jsonData, 'user-123', () => importBatchBuilder);
 
     expect(importBatchBuilder.messages[0]).not.toHaveProperty('contextMeta');
+    expect(importBatchBuilder.messages[0]).not.toHaveProperty('trigger');
     expect(importBatchBuilder.messages[0].langfuseSampled).toBe(false);
     expect(importBatchBuilder.messages[0]).not.toHaveProperty('langfuseDestinationIds');
     expect(importBatchBuilder.messages[0]).not.toHaveProperty('langfuseRunId');

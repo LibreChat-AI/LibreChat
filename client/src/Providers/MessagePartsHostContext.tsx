@@ -1,6 +1,8 @@
 import { useCallback, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
+import { dataService } from 'librechat-data-provider';
+import { AnimatedText } from '@librechat/chat/components';
 import { setDefaultMessagePartsHost, pendingSteersByConvoId } from '@librechat/chat/react';
 import {
   liveAppliedSteerFamily,
@@ -14,7 +16,8 @@ import {
   useResetRecoilState,
   useSetRecoilState,
 } from 'recoil';
-import type { Agent } from 'librechat-data-provider';
+import type { ToolCallChrome } from '@librechat/chat/react';
+import type { TOptions } from 'i18next';
 import type {
   MessagePartArtifactPanel,
   MessagePartsUserTextPreferences,
@@ -22,27 +25,38 @@ import type {
   MessagePartsHost,
 } from '~/hooks/Chat/contract';
 import type { MessagesEditing } from './MessagesViewContext';
+import type { TranslationKeys } from '~/hooks';
 import type { Artifact } from '~/common';
 import {
   useShareContext,
   useMessageContext,
   useFileMapContext,
-  useAgentsMapContext,
   useMessagesOperations,
   useMessagesConversation,
   useOptionalMessagesOperations,
 } from '~/Providers';
 import {
   getAppContentParts,
+  getAppMarkdownSlots,
+  getAppMarkdownExtensions,
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
+import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
+import { useToolCallPartQuery } from '~/data-provider/Messages/queries';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
+import useTranscriptAgent from '~/hooks/Agents/useTranscriptAgent';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
+import { useFileDownload } from '~/data-provider/Files/queries';
+import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
+import useLoadedSkill from '~/hooks/Skills/useLoadedSkill';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
+import { reportBoundaryError } from '~/lib/rum/logs';
 import { fontSizeAtom } from '~/store/fontSize';
+import { logger, openInNewTab } from '~/utils';
 import { renderAgentAvatar } from '~/utils';
+import { useLocalize } from '~/hooks';
 import store from '~/store';
 
 function useAppMessage(): MessagePartMessage {
@@ -58,11 +72,6 @@ function useAppMessagesEditing(): MessagesEditing {
     () => ({ conversation, ask, getMessages, setMessages }),
     [conversation, ask, getMessages, setMessages],
   );
-}
-
-function useAppAgent(agentId: string): Agent | undefined {
-  const agentsMap = useAgentsMapContext();
-  return useMemo(() => agentsMap?.[agentId], [agentsMap, agentId]);
 }
 
 function useAppUserTextPreferences(): MessagePartsUserTextPreferences {
@@ -124,6 +133,42 @@ function useAppLiveAppliedSteer(steerId: string): [boolean, (steerId: string) =>
   return [isLiveApplied, consume];
 }
 
+/** Service and logging callbacks keep one identity for the page: the card's OAuth bind effect lists
+ *  them as dependencies, so a catalog or locale change must not look like a new bind. */
+const bindMCPOAuth: ToolCallChrome['bindMCPOAuth'] = (serverName) =>
+  dataService.bindMCPOAuth(serverName);
+const bindActionOAuth: ToolCallChrome['bindActionOAuth'] = (actionId) =>
+  dataService.bindActionOAuth(actionId);
+const logToolCallError: ToolCallChrome['logError'] = (message, error) => {
+  logger.error(message, error);
+};
+
+function useAppToolCallChrome(): ToolCallChrome {
+  const localize = useLocalize();
+  const mcpServerNames = useMCPServerNames();
+  const mcpIconMap = useMCPIconMap();
+  return useMemo(
+    () => ({
+      localize: (key, values) => localize(key as TranslationKeys, values as TOptions | undefined),
+      mcpServerNames,
+      mcpIconUrl: (serverName: string) => mcpIconMap.get(serverName),
+      bindMCPOAuth,
+      bindActionOAuth,
+      openUrl: openInNewTab,
+      logError: logToolCallError,
+      renderAttachments: (attachments) => getToolCallAttachments()(attachments),
+    }),
+    [localize, mcpServerNames, mcpIconMap],
+  );
+}
+
+/** Fetches a file the signed-in user owns that a reply links to, as a URL the browser can save. */
+function useAppFileDownload(fileId: string): () => Promise<string | undefined> {
+  const user = useRecoilValue(store.user);
+  const { refetch } = useFileDownload(user?.id ?? '', fileId, { direct: false });
+  return useCallback(async () => (await refetch()).data, [refetch]);
+}
+
 /**
  * The host the app's own views supply: the Recoil and Jotai stores and the app providers. It is
  * registered as the default, so parts rendered outside a provider read the app's stores.
@@ -131,10 +176,11 @@ function useAppLiveAppliedSteer(steerId: string): [boolean, (steerId: string) =>
 export const appMessagePartsHost: MessagePartsHost = {
   useMessage: useAppMessage,
   renderMarkdown: (props) => getAppPartRenderers().renderMarkdown(props),
+  renderStreamingText: (text) => <AnimatedText text={text} />,
   renderImage: (props) => getAppPartRenderers().renderImage(props),
   renderFilePreview: (props) => getAppPartRenderers().renderFilePreview(props),
   useSmoothStreaming,
-  useAgent: useAppAgent,
+  useAgent: useTranscriptAgent,
   renderAgentIcon: (agent) => getAppPartRenderers().renderAgentIcon(agent),
   renderContentParts: (props) => getAppContentParts()(props),
   renderAgentAvatar: (agent) => renderAgentAvatar(agent, { size: 'icon', showBorder: false }),
@@ -166,6 +212,14 @@ export const appMessagePartsHost: MessagePartsHost = {
     const { isSharedConvo, shareId } = useShareContext();
     return useMemo(() => ({ isSharedConvo, shareId }), [isSharedConvo, shareId]);
   },
+  useLoadedSkill,
+  useToolCallChrome: useAppToolCallChrome,
+  renderCodeBlock: (props) => getAppMarkdownSlots()?.renderCodeBlock(props) ?? null,
+  renderMermaid: (props) => getAppMarkdownSlots()?.renderMermaid(props) ?? null,
+  useFileDownload: useAppFileDownload,
+  onBoundaryError: (boundary, error) => reportBoundaryError(boundary, error),
+  markdownExtensions: getAppMarkdownExtensions,
+  useToolCallPart: useToolCallPartQuery,
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

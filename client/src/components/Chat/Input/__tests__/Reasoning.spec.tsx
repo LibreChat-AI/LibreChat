@@ -1,8 +1,8 @@
 import { RecoilRoot } from 'recoil';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { Constants, ReasoningEffort } from 'librechat-data-provider';
 import { submissionByIndex, clearSubmissions } from '@librechat/chat/react';
 import { Provider as JotaiProvider, createStore, getDefaultStore } from 'jotai';
-import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import type {
   SettingDefinition,
@@ -12,10 +12,11 @@ import type {
   TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { ReasoningControl, useComposerReasoning } from '../Reasoning';
+import { useComposerReasoning } from '../Reasoning';
 
 type MockEndpointConfig = {
   type?: string;
+  modelReasoningEfforts?: Record<string, string[]>;
   customParams?: {
     defaultParamsEndpoint?: string;
     paramDefinitions?: SettingDefinition[];
@@ -76,172 +77,8 @@ const enumSetting: SettingDefinition = {
   },
 };
 
-const budgetSetting: SettingDefinition = {
-  key: 'thinkingBudget',
-  label: 'com_endpoint_thinking_budget',
-  labelCode: true,
-  description: 'com_endpoint_google_thinking_budget',
-  descriptionCode: true,
-  type: 'number',
-  component: 'input',
-  range: { min: -1, positiveMin: 128, max: 32768, step: 128 },
-};
-
 afterEach(() => {
   clearSubmissions(getDefaultStore());
-});
-
-describe('ReasoningControl', () => {
-  it('renders a compact, localized disclosure for the next message', async () => {
-    render(
-      <ReasoningControl
-        index={0}
-        setting={enumSetting}
-        value={{ key: 'reasoning_effort', value: 'medium' } as TReasoningOverride}
-        onChange={jest.fn()}
-      />,
-    );
-
-    const trigger = screen.getByRole('button', {
-      name: 'com_ui_composer_thinking com_ui_medium',
-    });
-
-    fireEvent.click(trigger);
-    expect(
-      await screen.findByRole('dialog', { name: 'com_endpoint_reasoning_effort' }),
-    ).toBeVisible();
-    expect(screen.queryByText('com_endpoint_openai_reasoning_effort')).not.toBeInTheDocument();
-  });
-
-  it('stages the next vendor-native enum value from an accessible effort scale', async () => {
-    const onChange = jest.fn();
-    render(
-      <ReasoningControl
-        index={0}
-        setting={enumSetting}
-        value={{ key: 'reasoning_effort', value: 'medium' } as TReasoningOverride}
-        onChange={onChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
-    const slider = screen.getByRole('slider', { name: 'com_endpoint_reasoning_effort' });
-    expect(slider).toHaveAttribute('aria-valuenow', '3');
-    expect(slider).toHaveAttribute('aria-valuetext', 'com_ui_medium');
-    slider.focus();
-    fireEvent.keyDown(slider, { key: 'ArrowRight' });
-
-    await waitFor(() =>
-      expect(onChange).toHaveBeenLastCalledWith({ key: 'reasoning_effort', value: 'high' }),
-    );
-  });
-
-  it('renders a modal dialog with an explicit close control', () => {
-    render(
-      <ReasoningControl
-        index={0}
-        setting={enumSetting}
-        value={{ key: 'reasoning_effort', value: 'medium' } as TReasoningOverride}
-        onChange={jest.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
-    const dialog = screen.getByRole('dialog', { name: 'com_endpoint_reasoning_effort' });
-
-    expect(dialog).toBeVisible();
-    expect(screen.getByRole('button', { name: 'com_ui_close' })).toBeVisible();
-  });
-
-  it('normalizes numeric thinking budgets onto the same scale with exact input and auto', () => {
-    const onChange = jest.fn();
-    render(
-      <ReasoningControl
-        index={0}
-        setting={budgetSetting}
-        value={{ key: 'thinkingBudget', value: 4096 }}
-        onChange={onChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
-    const slider = screen.getByRole('slider', { name: 'com_endpoint_thinking_budget' });
-    expect(slider).toHaveAttribute('aria-valuemin', '128');
-    expect(slider).toHaveAttribute('aria-valuemax', '32768');
-    expect(slider).toHaveAttribute('aria-valuenow', '4096');
-
-    slider.focus();
-    fireEvent.keyDown(slider, { key: 'ArrowRight' });
-    expect(onChange).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: 4224 });
-
-    const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
-    fireEvent.change(input, { target: { value: '8192' } });
-    fireEvent.blur(input);
-    expect(onChange).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: 8192 });
-
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_auto' }));
-    expect(onChange).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: -1 });
-  });
-
-  it('clamps an invalid positive budget to the model-specific floor', () => {
-    const onChange = jest.fn();
-    render(
-      <ReasoningControl
-        index={0}
-        setting={budgetSetting}
-        value={{ key: 'thinkingBudget', value: -1 }}
-        onChange={onChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
-    const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
-    fireEvent.change(input, { target: { value: '16' } });
-    fireEvent.blur(input);
-
-    expect(onChange).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: 128 });
-  });
-
-  it.each([undefined, -1, 4096])('does not stage an unchanged numeric budget (%s)', (value) => {
-    const onChange = jest.fn();
-    render(
-      <ReasoningControl
-        index={0}
-        setting={budgetSetting}
-        value={value == null ? undefined : { key: 'thinkingBudget', value }}
-        onChange={onChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
-    const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
-    fireEvent.focus(input);
-    fireEvent.blur(input);
-
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it.each([-1, 0])(
-    'restores the supported minimum (%s) when the numeric field is cleared',
-    (min) => {
-      const onChange = jest.fn();
-      render(
-        <ReasoningControl
-          index={0}
-          setting={{ ...budgetSetting, range: { ...budgetSetting.range!, min } }}
-          value={{ key: 'thinkingBudget', value: 4096 }}
-          onChange={onChange}
-        />,
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
-      const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
-      fireEvent.change(input, { target: { value: '' } });
-      fireEvent.blur(input);
-
-      expect(onChange).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: min });
-    },
-  );
 });
 
 describe('useComposerReasoning', () => {
@@ -1019,6 +856,39 @@ describe('useComposerReasoning', () => {
       key: 'effort',
       options: expect.arrayContaining(['low', 'high']),
     });
+  });
+
+  it.each([
+    ['production-west', ['', 'low', 'high']],
+    ['production-chat', undefined],
+  ])('offers the efforts the Azure deployment %s declares', (model, options) => {
+    mockEndpointsConfig = {
+      azureOpenAI: { modelReasoningEfforts: { 'production-west': ['low', 'high'] } },
+    };
+    const reasoningStore = createStore();
+    const conversation = {
+      conversationId: 'azure-conversation',
+      endpoint: 'azureOpenAI',
+      model,
+    } as unknown as TConversation;
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation,
+          index: 0,
+          hasAddedConversation: false,
+          enabled: true,
+        }),
+      { wrapper },
+    );
+
+    expect(rendered.result.current?.setting.options).toEqual(options);
   });
 
   it('preserves restored reasoning while custom endpoint capabilities are loading', async () => {

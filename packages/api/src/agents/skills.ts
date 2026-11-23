@@ -455,6 +455,8 @@ export interface InjectSkillCatalogParams {
   workspaceLinkedWorktrees?: boolean;
   /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
   workspaceNativeSandbox?: boolean;
+  /** Background commands are sent detached; tell the model they overlap later commands. */
+  workspaceDetachedCommands?: boolean;
   /** Current user ID — used to determine skill ownership for active-state resolution. */
   userId?: string;
   /** Per-user skill overrides: `{ [skillId]: boolean }`. Missing entries use the default. */
@@ -695,6 +697,7 @@ export async function injectSkillCatalog(
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     workspaceNativeSandbox,
+    workspaceDetachedCommands,
     userId,
     skillStates,
     defaultActiveOnShare = false,
@@ -885,6 +888,7 @@ export async function injectSkillCatalog(
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     workspaceNativeSandbox,
+    workspaceDetachedCommands,
   });
   workingDefs = codeExecResult.toolDefinitions;
 

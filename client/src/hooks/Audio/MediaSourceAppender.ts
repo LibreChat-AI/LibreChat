@@ -6,11 +6,12 @@ export class MediaSourceAppender {
   private objectUrl?: string;
   private sourceBuffer?: SourceBuffer;
   private isClosed = false;
+  private isDisposed = false;
 
   constructor(type: string) {
     this.type = type;
     this.mediaSource.addEventListener('sourceopen', () => {
-      if (this.sourceBuffer != null) {
+      if (this.isDisposed || this.sourceBuffer != null) {
         return;
       }
 
@@ -27,7 +28,7 @@ export class MediaSourceAppender {
   }
 
   private tryAppendNextChunk() {
-    if (this.sourceBuffer == null || this.sourceBuffer.updating) {
+    if (this.isDisposed || this.sourceBuffer == null || this.sourceBuffer.updating) {
       return;
     }
 
@@ -41,7 +42,7 @@ export class MediaSourceAppender {
   }
 
   private tryEndOfStream() {
-    /** `endOfStream()` only throws while the source is not open or a buffer is updating —
+    /** `endOfStream()` only throws while the source is not open or a buffer is updating,
      *  an empty response still has to end, or the element waits on it forever. */
     if (!this.isClosed || this.mediaSource.readyState !== 'open') {
       return;
@@ -60,6 +61,9 @@ export class MediaSourceAppender {
   }
 
   public addData(data: ArrayBuffer) {
+    if (this.isDisposed) {
+      return;
+    }
     this.audioChunks.push(data);
     this.tryAppendNextChunk();
   }
@@ -71,6 +75,12 @@ export class MediaSourceAppender {
   public close() {
     this.isClosed = true;
     this.tryEndOfStream();
+  }
+
+  /** Stops queued appends before the owning audio element detaches. */
+  public dispose() {
+    this.isDisposed = true;
+    this.audioChunks.length = 0;
   }
 
   public get mediaSourceUrl() {

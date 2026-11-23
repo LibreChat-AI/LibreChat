@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, createStore } from 'jotai';
+import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import {
   approvalPanelOpenFamily,
@@ -10,7 +11,7 @@ import {
 } from '@librechat/chat/react';
 import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
-import ApprovalProvider, { useApprovalContext } from '../ApprovalContext';
+import ApprovalProvider, { ResumeSubmitContext, useApprovalContext } from '../ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import ToolApproval from '../ToolApproval';
 
@@ -78,6 +79,27 @@ function DecisionProbe() {
 const decisions = () => JSON.parse(screen.getByTestId('decisions').textContent ?? '[]');
 
 describe('ToolApproval', () => {
+  test("says a coded explanation in the reader's language and shows any other as sent", () => {
+    renderCards(
+      <ToolApproval
+        approval={{ ...approval(), description: SCHEDULE_APPROVAL_REASON }}
+        toolCallId="call-1"
+        args={{}}
+      />,
+    );
+    expect(screen.getByText('com_ui_approval_schedule_owner')).toBeInTheDocument();
+    expect(screen.queryByText(SCHEDULE_APPROVAL_REASON)).not.toBeInTheDocument();
+    cleanup();
+    renderCards(
+      <ToolApproval
+        approval={{ ...approval(), description: 'Deletes a file' }}
+        toolCallId="call-1"
+        args={{}}
+      />,
+    );
+    expect(screen.getByText('Deletes a file')).toBeInTheDocument();
+  });
+
   test('hides Always allow unless the server offered it', () => {
     renderCards(<ToolApproval approval={approval()} toolCallId="call-1" args={{}} />);
     expect(screen.queryByRole('button', { name: 'Always allow' })).not.toBeInTheDocument();
@@ -202,6 +224,62 @@ describe('ToolApproval', () => {
 
     fireEvent.click(approveSecond);
     expect(submit).toBeEnabled();
+  });
+
+  test('hosted cards submit the selected batch and keep decisions locked through acknowledgement', async () => {
+    const first = Promise.withResolvers<void>();
+    const retry = Promise.withResolvers<void>();
+    const send = jest
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => retry.promise);
+    render(
+      <RecoilRoot>
+        <Provider>
+          <ApprovalProvider>
+            <ResumeSubmitContext.Provider
+              value={{ submitToolApproval: send, submitAskAnswer: async () => {} }}
+            >
+              <ToolApproval
+                approval={approval(['edit'])}
+                toolCallId="call-1"
+                args={{ old: true }}
+              />
+              <ToolApproval approval={approval(['reject'])} toolCallId="call-2" args={{}} />
+            </ResumeSubmitContext.Provider>
+          </ApprovalProvider>
+        </Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const editor = screen.getByRole('textbox', { name: 'Edit' });
+    fireEvent.change(editor, { target: { value: '{"path":"new.ts"}' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    const reason = screen.getByRole('textbox', { name: 'Reject' });
+    fireEvent.change(reason, { target: { value: 'Keep the existing file.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit 2 decisions' }));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('action-1', [
+      { tool_call_id: 'call-1', decision: 'edit', editedArguments: { path: 'new.ts' } },
+      { tool_call_id: 'call-2', decision: 'reject', reason: 'Keep the existing file.' },
+    ]);
+    expect(editor).toBeDisabled();
+    expect(reason).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+    await act(async () => {
+      first.reject(new Error('temporary'));
+    });
+    expect(editor).toBeEnabled();
+    expect(reason).toHaveValue('Keep the existing file.');
+    fireEvent.click(screen.getByRole('button', { name: 'Submit 2 decisions' }));
+    expect(send).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      retry.resolve();
+    });
+    expect(editor).toBeDisabled();
+    expect(reason).toBeDisabled();
+    expect(mockMutate).not.toHaveBeenCalled();
   });
 
   test('duplicated review surfaces show and submit the same decision state', () => {

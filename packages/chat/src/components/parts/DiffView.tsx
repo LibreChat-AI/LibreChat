@@ -180,7 +180,7 @@ const DiffRow = memo(function DiffRow({ type, text, num, hasLineNumbers }: DiffR
   return (
     <div
       className={cn(
-        'flex',
+        'flex rounded-sm',
         type === 'add' && 'bg-status-success-subtle',
         type === 'del' && 'bg-status-error-subtle',
       )}
@@ -218,7 +218,7 @@ export default function DiffView({ parsed }: { parsed: ParsedDiff }): ReactNode 
     <div
       data-testid="diff-view"
       dir="ltr"
-      className="bg-surface-code max-h-[300px] overflow-y-auto py-2 font-mono text-xs leading-5"
+      className="bg-surface-code-body max-h-[18.75rem] overflow-y-auto px-2 py-3 font-mono text-sm leading-5"
     >
       {lines.map((line, index) => {
         if (line.type === 'hunk' && (index < firstContentIndex || firstContentIndex === -1)) {

@@ -3,7 +3,7 @@
  */
 import { render, screen, within } from '@testing-library/react';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
-import type { TConversation, TMessage } from 'librechat-data-provider';
+import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
 import type { ContentPartsSlotProps, MessagePartsHost } from '../../../react/host';
 import type { ContentRowProps } from '../ContentRow';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
@@ -94,6 +94,53 @@ function renderRow(
 }
 
 describe('ContentRow', () => {
+  describe('the author the model selector already shows', () => {
+    const agent = { id: 'agent-1', name: 'Research Agent' } as Agent;
+    const convo = { ...conversation, agent_id: 'agent-1' } as TConversation;
+    const nameIsHidden = () => screen.getByText('Research Agent').closest('.sr-only') != null;
+
+    it('keeps only the assistive technology text when the deployment opts in', () => {
+      const parts = renderRow({
+        agent,
+        conversation: convo,
+        hideSelectedAuthor: true,
+        authorHeader: <span>Resume header</span>,
+      });
+      expect(screen.getByRole('heading', { name: /Research Agent/ })).toHaveClass('sr-only');
+      expect(nameIsHidden()).toBe(true);
+      expect(screen.queryByTestId('icon')).not.toBeInTheDocument();
+      expect(parts.mock.calls[0][0].authorHeader).toBeUndefined();
+    });
+
+    it.each([
+      ['the deployment has not opted in', { agent, conversation: convo }],
+      [
+        'another agent wrote the turn',
+        {
+          agent,
+          conversation: { ...convo, agent_id: 'agent-2' } as TConversation,
+          hideSelectedAuthor: true,
+        },
+      ],
+      [
+        'the thread is a read-only subagent thread',
+        {
+          agent,
+          conversation: {
+            ...convo,
+            subagentThread: { parentConversationId: 'parent' },
+          } as TConversation,
+          hideSelectedAuthor: true,
+        },
+      ],
+      ['the turn has no agent', { conversation: convo, hideSelectedAuthor: true }],
+    ])('shows the author when %s', (_case, props) => {
+      renderRow(props);
+      expect(nameIsHidden()).toBe(false);
+      expect(screen.getByTestId('icon')).toBeInTheDocument();
+    });
+  });
+
   it('labels the row and draws its author icon through the messages host', () => {
     renderRow();
 

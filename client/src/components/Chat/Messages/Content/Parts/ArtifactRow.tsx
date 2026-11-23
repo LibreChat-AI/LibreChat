@@ -1,11 +1,6 @@
 import { forwardRef } from 'react';
 import { Button } from '@librechat/client';
 import {
-  ARTIFACT_ROW_NAV_SPACING,
-  ROW_GLYPH_SLOT,
-  TOOL_ROW_CLASSES,
-} from '@librechat/chat/components';
-import {
   AppWindow,
   Download,
   FileCode2,
@@ -14,8 +9,14 @@ import {
   Presentation,
   Workflow,
 } from 'lucide-react';
+import {
+  ARTIFACT_ROW_NAV_SPACING,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
+  LangIcon,
+  hasLangIcon,
+} from '@librechat/chat/components';
 import type { ArtifactGlyph, ArtifactRowKind } from '~/utils/artifacts';
-import LangIcon, { hasLangIcon } from '~/components/Messages/Content/LangIcon';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -30,15 +31,15 @@ const FALLBACK_GLYPHS: Record<ArtifactGlyph, React.ComponentType<{ className?: s
 };
 
 interface ArtifactRowProps {
-  /** Filename for file-backed artifacts, authored title for markdown ones. */
+  /** Filename for file-backed artifacts, title for Mermaid. */
   title: string;
   kind: ArtifactRowKind;
   /** This artifact is the one the panel is currently showing. */
   isSelected: boolean;
   onOpen: () => void;
   /**
-   * Omitted when no real file backs the artifact (model-authored
-   * content). Takes the event because `useAttachmentLink`'s handler
+   * Omitted when no real file backs the artifact.
+   * Takes the event because `useAttachmentLink`'s handler
    * needs it to suppress the anchor default.
    */
   onDownload?: (event: React.MouseEvent<HTMLButtonElement>) => void;
@@ -47,9 +48,7 @@ interface ArtifactRowProps {
 }
 
 /**
- * The single chat-side trigger for every artifact: code-execution output,
- * a model-authored `:::artifact` block, and a mermaid diagram all render
- * through here.
+ * The chat-side trigger for code-execution output and Mermaid artifacts.
  *
  * It is a tool row, not a card. Artifacts arrive interleaved with the
  * rows that produced them, and the previous three-card-variant chip

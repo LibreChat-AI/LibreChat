@@ -200,7 +200,7 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
       items.push({
         kind: 'mcp',
         id: name,
-        name,
+        name: server.metadata?.name ?? name,
         description: server.metadata?.description ?? '',
         iconKey: 'mcp',
         server,

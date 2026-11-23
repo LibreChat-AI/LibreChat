@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import type { TMessage } from 'librechat-data-provider';
 import type { Page, Route } from '@playwright/test';
 import type { AgentDetail } from './agents.helpers';
 import { cleanupAgent, openAgentBuilder, uniqueAgentName } from './agents.helpers';
@@ -13,6 +13,7 @@ import {
   requestJson,
   sendMessage,
 } from './helpers';
+import { expect, test, unroute } from './fixtures';
 
 /** Last chunk streamed by the fake model's slow replies (160 chunks, 0-indexed). */
 const SLOW_REPLY_LAST_CHUNK = 'chunk-159';
@@ -27,6 +28,7 @@ const messageTurns = (page: Page) => messagesView(page).locator('.message-render
 
 const RECEIPTS_ROUTE = /\/api\/agents\/chat\/queued-turns\?/;
 const STATUS_ROUTE = /\/api\/agents\/chat\/status\//;
+const MESSAGES_ROUTE = /\/api\/messages\/[^/?]+(?:\?|$)/;
 
 type ReceiptsBody = { queuedTurns?: Array<{ status?: string }> };
 type StatusBody = { active?: boolean; resumeState?: { userMessage?: { text?: string } } };
@@ -39,8 +41,9 @@ type StatusBody = { active?: boolean; resumeState?: { userMessage?: { text?: str
  * only through the receipt projection and the status it re-arms. While held
  * back, the receipts stay frozen at their pre-admission snapshot and a status
  * that describes the successor reads as inactive, so the next user turn can
- * only come from the completion event itself. Every other request, including
- * the predecessor's own terminal status, passes through untouched.
+ * only come from the completion event itself. History also withholds the admitted
+ * successor and its descendants, so a backfill cannot bypass the hold. Other requests,
+ * including the predecessor's own terminal status, pass through untouched.
  */
 function holdBackSuccessor(page: Page, successorText: string) {
   let holding = false;
@@ -70,18 +73,48 @@ function holdBackSuccessor(page: Page, successorText: string) {
       json: describesSuccessor ? { active: false } : body,
     });
   };
+  const messages = async (route: Route) => {
+    const response = await route.fetch();
+    if (!holding || response.status() !== 200 || route.request().method() !== 'GET') {
+      return route.fulfill({ response });
+    }
+    const body = (await response.json()) as TMessage[];
+    const hidden = new Set<string>();
+    const children = new Map<string, string[]>();
+    for (const message of body) {
+      if (message.isCreatedByUser && message.text === successorText) hidden.add(message.messageId);
+      const parent = message.parentMessageId ?? '';
+      const siblings = children.get(parent) ?? [];
+      siblings.push(message.messageId);
+      children.set(parent, siblings);
+    }
+    const pending = [...hidden];
+    for (const id of pending) {
+      for (const child of children.get(id) ?? []) {
+        if (hidden.has(child)) continue;
+        hidden.add(child);
+        pending.push(child);
+      }
+    }
+    return route.fulfill({
+      response,
+      json: body.filter((message) => !hidden.has(message.messageId)),
+    });
+  };
   return {
     arm: async () => {
       await page.route(RECEIPTS_ROUTE, receipts);
       await page.route(STATUS_ROUTE, status);
+      await page.route(MESSAGES_ROUTE, messages);
     },
     hold: () => {
       holding = true;
     },
     release: async () => {
       holding = false;
-      await page.unroute(RECEIPTS_ROUTE, receipts);
-      await page.unroute(STATUS_ROUTE, status);
+      await unroute(page, RECEIPTS_ROUTE, receipts);
+      await unroute(page, STATUS_ROUTE, status);
+      await unroute(page, MESSAGES_ROUTE, messages);
     },
   };
 }
@@ -124,7 +157,7 @@ async function typeDuringRun(page: Page, text: string) {
 }
 
 test.describe('server-queued follow-up reveal', () => {
-  test('shows the queued follow-up as the next user turn the moment the run completes', async ({
+  test('shows the queued follow-up as the next user turn the moment the run completes @scenario:queued-follow-up-shows-as-the-next-turn', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -166,13 +199,14 @@ test.describe('server-queued follow-up reveal', () => {
       const predecessor = messageTurns(page).nth(3);
       await expect(predecessor).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 60000 });
 
+      const pending = page.getByTestId('pending-turn');
+      await expect(pending).toBeVisible({ timeout: 5000 });
       const queuedTurn = messageTurns(page).nth(4);
       await expect(queuedTurn).toContainText(queueText, { timeout: 5000 });
       await expect(queuedTurn.locator('.user-turn')).toBeVisible();
       /** One visible copy: actions follow the user turn, not a duplicate chip
        * below the composer. Other queued turns still use their ordinary rows. */
       await expect(row).toHaveCount(0);
-      const pending = page.getByTestId('pending-turn');
       await expect(pending).toContainText('Starting as the next turn');
       await expect(pending.getByRole('button', { name: 'Send now' })).toHaveCount(0);
       await expect(pending.getByRole('button', { name: 'Remove message' })).toBeVisible();

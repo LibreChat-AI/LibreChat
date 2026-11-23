@@ -4,10 +4,10 @@ import type { PrimitiveAtom } from 'jotai';
 import type { ReactNode } from 'react';
 
 /**
- * Action ids the user moved into the chat: the popover is hidden and the
- * composer is released, so the chat card is the question's only surface.
+ * Action ids the user moved into the composer popover. A question starts in the chat card, where
+ * it reads in thread order and fits narrow screens; only these ids take over the composer.
  */
-export const collapsedAskActionsAtom: PrimitiveAtom<string[]> = atom<string[]>([]);
+export const expandedAskActionsAtom: PrimitiveAtom<string[]> = atom<string[]>([]);
 
 /** Currently highlighted option row (keyboard cursor), or nothing. */
 export const askAnswerSelectionAtom: PrimitiveAtom<number | null> = atom<number | null>(null);
@@ -38,20 +38,51 @@ export const askSubmitStatusAtom: PrimitiveAtom<Record<string, AskAnswerStatus>>
   Record<string, AskAnswerStatus>
 >({});
 
+/** Live ask pauses already on screen, keyed the way the progress card matches a call. */
+export type LiveAskPauses = {
+  ids: string[];
+  hasUnattributed: boolean;
+};
+
+/** What a card submits, and the free-form draft it restores after a remount. */
+export type AskAnswerSubmit = (
+  actionId: string,
+  resolution: string | Record<string, string>,
+  opts?: { onSuccess?: () => void },
+) => void;
+
 const AskAnswerHostContext = createContext(false);
+
+/** No live pause. A card outside the host stays visible rather than hiding itself. */
+const LiveAskPausesContext = createContext<LiveAskPauses | null>(null);
 
 export function AskAnswerHostProvider({
   saveDrafts,
+  liveAskPauses = null,
   children,
 }: {
   saveDrafts: boolean;
+  /**
+   * Which ask calls already have an interactive pause. The host owns the subscription;
+   * absent data leaves the in-progress card visible.
+   */
+  liveAskPauses?: LiveAskPauses | null;
   children?: ReactNode;
 }): ReactNode {
   return (
-    <AskAnswerHostContext.Provider value={saveDrafts}>{children}</AskAnswerHostContext.Provider>
+    <AskAnswerHostContext.Provider value={saveDrafts}>
+      <LiveAskPausesContext.Provider value={liveAskPauses}>
+        {children}
+      </LiveAskPausesContext.Provider>
+    </AskAnswerHostContext.Provider>
   );
 }
 
 export function useAskAnswerHost(): boolean {
   return useContext(AskAnswerHostContext);
+}
+
+/** The host's live pauses, or none outside a provider. */
+export function useLiveAskPauses(): LiveAskPauses | null {
+  return useContext(LiveAskPausesContext);
 }

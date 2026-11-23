@@ -8,6 +8,21 @@ import { responseParentMessageId } from '../resumable/messages';
 const CONNECTION_ERROR_TEXT = 'Error connecting to server, try refreshing the page.';
 
 /**
+ * A settled error (`final` and `error`) the server sent without saving it. `sendError` attaches the
+ * conversation's reply stamp only after it saves the error turn, so a settled error without one was
+ * never persisted: rebuilding the new-chat pane into its conversation would refetch a copy that has
+ * no error row. Errors that are not settled messages keep the existing recovery.
+ */
+const isUnsavedSettledError = (data: TResData): boolean => {
+  const settled = data as Partial<TResData> & { final?: boolean; error?: boolean };
+  if (settled.final !== true || settled.error !== true) {
+    return false;
+  }
+  const lastResponseAt = settled.conversation?.lastResponseAt;
+  return typeof lastResponseAt !== 'string' || lastResponseAt.length === 0;
+};
+
+/**
  * The parts the in-flight response has streamed so far: the transcript's tail (a user row there
  * means no response was placed), without the holes an interrupted stream leaves. Whether anything
  * streamed is judged without the slots that never received content (a comparison run's
@@ -215,7 +230,7 @@ export const resolveErrorTurn = ({
   }
   return {
     conversationId: receivedConvoId,
-    recover: isNewConversationRoute,
+    recover: isNewConversationRoute && !isUnsavedSettledError(data),
     errorResponse: build(
       tMessageSchema.parse({
         ...data,

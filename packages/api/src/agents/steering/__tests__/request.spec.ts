@@ -1,3 +1,4 @@
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { handleSteerRequest, handleSteerCancel, handleSteerArm } from '../request';
@@ -180,6 +181,30 @@ describe('handleSteerRequest (real in-memory job manager)', () => {
 
     expect(result).toEqual({ status: 403, body: { code: 'UNAUTHORIZED' } });
     await expect(GenerationJobManager.steering.peek(streamId)).resolves.toEqual([]);
+  });
+
+  it('409s for a background child job and queues nothing', async () => {
+    const streamId = 'steer-req-background-child';
+    await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: { subagentTaskId: 'task-1', subagentParentConversationId: 'parent' },
+    });
+
+    const result = await handleSteerRequest(user, { conversationId: streamId, text: 'x' });
+
+    expect(result).toEqual({ status: 409, body: { code: 'CHILD_THREAD_READ_ONLY' } });
+    await expect(GenerationJobManager.steering.peek(streamId)).resolves.toEqual([]);
+  });
+
+  it('403s for another user on a background child job before any other answer', async () => {
+    const streamId = 'steer-req-background-child-owner';
+    await GenerationJobManager.createJob(streamId, 'someone-else', streamId, {
+      initialMetadata: { subagentTaskId: 'task-1', subagentParentConversationId: 'parent' },
+    });
+
+    const result = await handleSteerRequest(user, { conversationId: streamId, text: 'x' });
+
+    expect(result.status).toBe(403);
+    expect(result.body.code).toBe('UNAUTHORIZED');
   });
 
   it('409s while the run is paused for human review', async () => {
@@ -457,6 +482,59 @@ describe('handleSteerRequest (real in-memory job manager)', () => {
           llmDeliveryPath: 'text',
         },
       ]);
+    });
+
+    it('replaces malicious client previews with bounded owner-scoped full-text previews', async () => {
+      const streamId = 'steer-req-trusted-preview';
+      const tenantUser = { ...user, tenantId: 'tenant-1' };
+      await GenerationJobManager.createJob(streamId, user.id, undefined, {
+        initialMetadata: { generationProtocolVersion: 2, tenantId: tenantUser.tenantId },
+      });
+      const text = ` \n${'trusted stored text '.repeat(30)}`;
+      const getFiles = jest.fn(async () => [
+        {
+          ...dbDoc,
+          type: 'text/plain',
+          text,
+          tenantId: tenantUser.tenantId,
+          textPreview: 'stale stored preview',
+        },
+      ]);
+      const result = await handleSteerRequest(
+        tenantUser,
+        {
+          conversationId: streamId,
+          clientSteerId: 'client-trusted-preview',
+          text: 'use the paste',
+          files: [{ file_id: 'f1', text: 'malicious full text', textPreview: 'malicious preview' }],
+        },
+        { getFiles, generationProtocolVersion: 2 },
+      );
+
+      expect(result.status).toBe(202);
+      expect(getFiles).toHaveBeenCalledWith(
+        {
+          file_id: { $in: ['f1'] },
+          user: user.id,
+          tenantId: tenantUser.tenantId,
+        },
+        {},
+        {},
+      );
+      const queued = await GenerationJobManager.steering.peek(streamId);
+      const expected = {
+        ...dbDoc,
+        type: 'text/plain',
+        textPreview: text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH),
+      };
+      const { user: _owner, ...expectedRef } = expected;
+      expect(queued[0].files).toEqual([expectedRef]);
+      const receipt = await GenerationJobManager.steering.getReceipt(
+        streamId,
+        'client-trusted-preview',
+      );
+      expect(receipt?.item.files).toEqual([expectedRef]);
+      expect(queued[0].files?.[0]).not.toHaveProperty('text');
     });
 
     it('skips the resolve for text-only steers', async () => {
@@ -921,7 +999,7 @@ describe('generation protocol bridge for steering mutations', () => {
     expect(plain?.requestedQuotesFingerprint).toBeUndefined();
   });
 
-  it('keeps receipt fingerprints stable when display delivery metadata is added', async () => {
+  it('keeps receipt fingerprints stable when delivery metadata and previews change', async () => {
     const streamId = 'steer-protocol-v2-delivery-path-fingerprint';
     await GenerationJobManager.createJob(streamId, user.id, undefined, {
       initialMetadata: { generationProtocolVersion: 2 },
@@ -944,7 +1022,7 @@ describe('generation protocol bridge for steering mutations', () => {
       {
         ...base,
         clientSteerId: 'client-current-file-ref',
-        files: [{ ...base.files[0], llmDeliveryPath: 'text' }],
+        files: [{ ...base.files[0], llmDeliveryPath: 'text', textPreview: 'original snippet' }],
       },
       { generationProtocolVersion: 2 },
     );
@@ -958,8 +1036,13 @@ describe('generation protocol bridge for steering mutations', () => {
       'client-current-file-ref',
     );
     expect(current?.fingerprint).toBe(legacy?.fingerprint);
+    expect(current?.item.files?.[0].textPreview).toBe('original snippet');
     for (const [clientSteerId, files] of [
-      ['client-legacy-file-ref', [{ ...base.files[0], llmDeliveryPath: 'text' }]],
+      [
+        'client-legacy-file-ref',
+        [{ ...base.files[0], llmDeliveryPath: 'text', textPreview: 'new preview' }],
+      ],
+      ['client-current-file-ref', [{ ...base.files[0], textPreview: 'changed preview' }]],
       ['client-current-file-ref', base.files],
     ] as const) {
       const replay = await handleSteerRequest(

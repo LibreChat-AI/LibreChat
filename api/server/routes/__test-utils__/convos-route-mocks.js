@@ -1,5 +1,7 @@
 const archiveAllHandler = jest.fn();
 const generationJobManager = {
+  getJob: jest.fn().mockResolvedValue(null),
+  getResumeState: jest.fn().mockResolvedValue(null),
   getCleanupJob: jest.fn().mockResolvedValue(null),
   abortJob: jest.fn().mockResolvedValue({ success: true }),
   getCleanupBlockingJobIdsForUser: jest.fn().mockResolvedValue([]),
@@ -59,9 +61,13 @@ const markConvoSeenHandler = jest.fn();
 const markConvoUnreadHandler = jest.fn();
 const renameConversationHandler = jest.fn((_req, res) => res.status(204).end());
 const renameHandlerInputs = [];
+const archiveConversationHandler = jest.fn((_req, res) => res.status(200).json({}));
+const archiveHandlerInputs = [];
 
 module.exports = {
   archiveAllHandler,
+  archiveConversationHandler,
+  archiveHandlerInputs,
   ownerPrefix,
   generationJobManager,
   subagentActivityHandlerInputs,
@@ -79,11 +85,24 @@ module.exports = {
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    createGetConversationHandler: jest.requireActual(
+      '../../../../packages/api/src/conversations/load.ts',
+    ).createGetConversationHandler,
+    createFileExclusionHandler: jest.requireActual(
+      '../../../../packages/api/src/conversations/exclusion.ts',
+    ).createFileExclusionHandler,
+    createFileExclusionReadHandler: jest.requireActual(
+      '../../../../packages/api/src/conversations/exclusion.ts',
+    ).createFileExclusionReadHandler,
     withToolCallPreviews: (_req, result) => result,
     createGeneratedTitleHandler: jest.fn(() => jest.fn()),
     createRenameConversationHandler: jest.fn((deps) => {
       renameHandlerInputs.push(deps);
       return renameConversationHandler;
+    }),
+    createArchiveHandler: jest.fn((deps) => {
+      archiveHandlerInputs.push(deps);
+      return archiveConversationHandler;
     }),
     /** Mirrors the real helper so query-flag parsing (`isArchived`, `pinned`) is exercised. */
     isEnabled: jest.fn((value) => {
@@ -143,6 +162,9 @@ module.exports = {
     }),
     createSubagentThreadViewHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
     createSubagentTaskContentHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
+    createChildThreadMessagesHandler: jest.fn(() => (_req, res) => res.status(200).json([])),
+    createChildThreadToolCallPartHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
+    prepareToolCallPreviews: jest.fn(() => (messages) => messages),
     createSubagentControlHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
     createSubagentControlReceiptHandler: () => jest.fn(),
     createBackgroundTaskIndexHandler: jest.fn(
@@ -231,6 +253,7 @@ module.exports = {
   }),
 
   dataSchemas: () => ({
+    MAX_EXCLUDED_FILES: 500,
     logger: {
       debug: jest.fn(),
       info: jest.fn(),
@@ -276,9 +299,12 @@ module.exports = {
     deleteMessages: jest.fn().mockResolvedValue({ deletedCount: 0 }),
     archiveAllConvos: jest.fn(),
     saveConvo: jest.fn(),
+    getConvoRetention: jest.fn(),
     setConvoPinned: jest.fn(),
     markConvoSeen: jest.fn(),
     markConvoUnread: jest.fn(),
+    setConvoFileExclusion: jest.fn(),
+    getConvoExcludedFiles: jest.fn(),
     deleteAllSharedLinks: jest.fn(),
     deleteConvoSharedLink: jest.fn(),
     deleteToolCalls: jest.fn(),
@@ -295,11 +321,11 @@ module.exports = {
       forkIpLimiter: (req, res, next) => next(),
       forkUserLimiter: (req, res, next) => next(),
     })),
-    configMiddleware: (req, res, next) => next(),
+    configMiddleware: jest.fn((req, res, next) => next()),
     moderateText,
     messageIpLimiter,
     messageUserLimiter,
-    validateConvoAccess: (req, res, next) => next(),
+    validateConvoAccess: jest.fn((req, res, next) => next()),
   }),
 
   forkUtils: () => ({

@@ -17,6 +17,7 @@ const getService = () =>
 module.exports = {
   loadCodeApiKey: (...args) => getService().loadCodeApiKey(...args),
   provisionToCodeEnv: (...args) => getService().provisionToCodeEnv(...args),
+  provisionBatchToCodeEnv: (...args) => getService().provisionBatchToCodeEnv(...args),
   provisionToVectorDB: (...args) => getService().provisionToVectorDB(...args),
   digestFile: (...args) => getService().digestFile(...args),
   checkSessionsAlive: (...args) => getService().checkSessionsAlive(...args),

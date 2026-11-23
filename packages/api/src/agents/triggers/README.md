@@ -111,6 +111,20 @@ child again. A held delivery consumes its wake marker in the same fenced write t
 for ordering or defers readiness. These writes use classic operators for DocumentDB compatibility;
 older workers can ignore the optional marker and fall back to the configured polling interval.
 
+A user's server-owned queued turn goes before completion wake-ups. Parent settlement also
+expedites that conversation's queued-turn deliveries, and a background or subagent wake-up defers
+without consuming an attempt while a queued turn holds an unexpired claim or is the due lane head.
+The wake-up then resumes after the queued turn's generation, on that turn's response. Rows that
+need recovery or a user decision never hold a wake-up: a reservation, an expired claim, an
+indeterminate admission, or a dead head awaiting dismissal. The check reads the active lane first
+and those blockers only afterwards, for a due head, so a blocker that has just cleared (a dismissed
+dead head, for example) cannot let a wake-up past the turn it was blocking; a conversation with no
+due queued turn costs one read. The answer holds for the instant of that last read: a turn that
+becomes admissible later is ordered by the generation predecessor fence, like any later send. A
+failed precedence read is not treated as absence; the wake-up defers on it the same way. Older
+replicas skip the check, so mixed-version fleets keep the earlier first-claim race until every
+replica is upgraded.
+
 Setting a recovery cap to `30000` restores its original fixed recovery frequency. No stored-data
 migration is needed; optional activity reporting preserves the existing numeric/boolean results.
 

@@ -142,11 +142,12 @@ async function disabledLook(page: Page) {
     thumb.remove();
     return fill;
   });
-  /** `InputNumber` styles a wrapper whose disabled input sits inside it. */
+  /** `InputNumber` styles a wrapper whose disabled input sits inside it, and adds the classes
+   *  for its parts itself while that input is disabled. */
   const wrapper = await page.evaluate(() => {
     const box = document.createElement('div');
     box.className =
-      'bg-transparent text-text-primary theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-within:[&_*]:border-border-disabled';
+      'bg-transparent text-text-primary theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-fill:[&_*]:border-border-disabled';
     const field = document.createElement('input');
     field.disabled = true;
     const slot = document.createElement('div');
@@ -233,7 +234,7 @@ const CASES: Array<{
       'the ClickHouse light theme presses and disables in Click UI fills @scenario:state-roles-clickhouse-light',
     mode: 'light',
     definition: clickHouseTheme,
-    pressed: 'rgb(221, 222, 225)',
+    pressed: 'rgb(230, 231, 233)',
     disabled: {
       fill: 'rgb(223, 223, 223)',
       ink: 'rgb(160, 160, 160)',
@@ -249,7 +250,7 @@ const CASES: Array<{
       'the ClickHouse dark theme presses and disables in Click UI fills @scenario:state-roles-clickhouse-dark',
     mode: 'dark',
     definition: clickHouseTheme,
-    pressed: 'rgb(36, 36, 36)',
+    pressed: 'rgb(50, 50, 50)',
     disabled: {
       fill: 'rgb(65, 65, 65)',
       ink: 'rgb(128, 128, 128)',

@@ -8,10 +8,11 @@ import {
   SkillsScope,
   actionDelimiter,
   isActionTool,
+  pruneSubagentReferences,
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
-import type { IAgent, IAclEntry, IUser, ActionQuery, CacheStore } from '~/types';
+import type { IAgent, IAclEntry, IMongoFile, IUser, ActionQuery, CacheStore } from '~/types';
 import { evictAuthUserDocsForUsers, isAuthUserDocCacheEnabled } from '~/utils/eviction';
 import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
@@ -250,6 +251,24 @@ export class AgentSortCursorError extends Error {
   constructor(readonly failure: AgentSortCursorFailure) {
     super(`Agent sort cursor ${failure}`);
     this.name = 'AgentSortCursorError';
+  }
+}
+
+/** Options a caller passes after authorizing a restore against the agent it read. */
+export interface RevertAgentVersionOptions {
+  /** Authorized tools; replace the snapshot's, which were never checked for this user. */
+  tools?: string[];
+  /** Index resolved for `tools`. Derived from the restored tools when omitted. */
+  mcpServerNames?: string[];
+  /** The revision the caller authorized against; the restore is refused once it moves. */
+  expectedUpdatedAt?: Date;
+}
+
+export class AgentRevisionConflictError extends Error {
+  readonly statusCode = 409;
+  constructor(message = 'Agent was modified while reverting; reload and try again') {
+    super(message);
+    this.name = 'AgentRevisionConflictError';
   }
 }
 
@@ -575,13 +594,15 @@ export function pruneEdges(edges: IAgent['edges'], removed: Set<string>): AgentE
 interface GraphEdges {
   _id: Types.ObjectId;
   edges?: IAgent['edges'];
+  agent_ids?: IAgent['agent_ids'];
+  subagents?: IAgent['subagents'];
 }
 
 /**
  * Removes deleted agent references from active graphs in the requested tenant.
  * Graphs are read a page at a time behind an `_id` cursor, and each page's
- * pruned edges are written back behind a compare-and-set on the edges that were
- * read, so a concurrent edit is never overwritten. A graph whose edges changed
+ * active references are written back behind a compare-and-set on the fields that
+ * were read, so a concurrent edit is never overwritten. A graph whose edges changed
  * underneath fails its compare-and-set and is left behind the cursor, so once
  * the cursor is exhausted one more sweep from the top picks up every miss (and
  * any reference added meanwhile); the cleanup ends when a sweep from the top
@@ -600,7 +621,17 @@ async function removeAgentIdsFromEdges(
   const filter: FilterQuery<IAgent> = {
     /** `null` pins the cleanup to tenantless graphs (matches a missing field). */
     ...(tenantId !== undefined ? { tenantId } : {}),
-    $or: [{ 'edges.from': { $in: agentIds } }, { 'edges.to': { $in: agentIds } }],
+    $or: [
+      { 'edges.from': { $in: agentIds } },
+      { 'edges.to': { $in: agentIds } },
+      { agent_ids: { $in: agentIds } },
+      { 'subagents.agent_ids': { $in: agentIds } },
+      { 'subagents.graphs.agent_ids': { $in: agentIds } },
+      { 'subagents.graphs.entry_agent_id': { $in: agentIds } },
+      { 'subagents.graphs.result_agent_id': { $in: agentIds } },
+      { 'subagents.graphs.edges.from': { $in: agentIds } },
+      { 'subagents.graphs.edges.to': { $in: agentIds } },
+    ],
   };
   const removed = new Set(agentIds);
   let stalledPasses = 0;
@@ -610,7 +641,7 @@ async function removeAgentIdsFromEdges(
     const graphs = await Agent.find(after == null ? filter : { ...filter, _id: { $gt: after } })
       .sort({ _id: 1 })
       .limit(EDGE_CLEANUP_BATCH)
-      .select('_id edges')
+      .select('_id edges agent_ids subagents')
       .lean<GraphEdges[]>();
     if (graphs.length === 0) {
       if (after == null) {
@@ -627,12 +658,28 @@ async function removeAgentIdsFromEdges(
     }
     const result = await tenantSafeBulkWrite(
       Agent,
-      graphs.map((graph) => ({
-        updateOne: {
-          filter: { _id: graph._id, edges: graph.edges },
-          update: { $set: { edges: pruneEdges(graph.edges, removed) } },
-        },
-      })),
+      graphs.map((graph) => {
+        const { agent_ids, subagents } = graph;
+        return {
+          updateOne: {
+            filter: {
+              _id: graph._id,
+              edges: graph.edges,
+              ...(agent_ids != null && { agent_ids }),
+              ...(subagents != null && { subagents }),
+            },
+            update: {
+              $set: {
+                edges: pruneEdges(graph.edges, removed),
+                ...(agent_ids != null && { agent_ids: agent_ids.filter((id) => !removed.has(id)) }),
+                ...(subagents != null && {
+                  subagents: pruneSubagentReferences(subagents, removed),
+                }),
+              },
+            },
+          },
+        };
+      }),
       { ordered: false },
     );
     stalledPasses = result.matchedCount === 0 ? stalledPasses + 1 : 0;
@@ -690,6 +737,10 @@ export interface AgentGraphNode {
   agent_ids?: string[];
   edges?: IAgent['edges'];
   subagents?: IAgent['subagents'];
+  /** Whether the agent uses skills, and which: read to tell if it has any to run with. */
+  skills?: IAgent['skills'];
+  skills_enabled?: IAgent['skills_enabled'];
+  skills_scope?: IAgent['skills_scope'];
 }
 
 export interface AgentGraphAccess {
@@ -739,9 +790,13 @@ function extractMCPServerNames(tools: string[] | undefined | null): string[] {
  * ambiguous trailing-segment derivation, which cannot tell a config server's
  * suffix from a real DB server name.
  */
-function rebuildMCPServerNames(tools: string[] | undefined | null, priorNames: string[]): string[] {
+function rebuildMCPServerNames(
+  tools: string[] | undefined | null,
+  priorNames: string[],
+  preserveMCPAccess = false,
+): string[] {
   if (priorNames.length === 0) {
-    return extractMCPServerNames(tools);
+    return preserveMCPAccess ? [] : extractMCPServerNames(tools);
   }
 
   const retained = new Set<string>();
@@ -760,8 +815,10 @@ function rebuildMCPServerNames(tools: string[] | undefined | null, priorNames: s
     }
   }
 
-  for (const name of extractMCPServerNames(unmatched)) {
-    retained.add(name);
+  if (!preserveMCPAccess) {
+    for (const name of extractMCPServerNames(unmatched)) {
+      retained.add(name);
+    }
   }
   return Array.from(retained);
 }
@@ -1059,8 +1116,13 @@ export function createAgentMethods(
   mongoose: typeof import('mongoose'),
   deps: AgentDeps,
 ): {
+  findAgentIdentity: (agentId: string) => Promise<{ _id: string } | null>;
   getAgent: GetAgent;
-  getAgentName: (id: string, tenantId?: string) => Promise<string | undefined>;
+  getAgentName: (
+    id: string,
+    tenantId?: string,
+    viewer?: { userId: string },
+  ) => Promise<string | undefined>;
   getAgentVersions: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent['versions'] | null>;
   getAgentWithVersionCount: (
     searchParameter: FilterQuery<IAgent>,
@@ -1087,6 +1149,9 @@ export function createAgentMethods(
       updatingUserId?: string | null;
       forceVersion?: boolean;
       skipVersioning?: boolean;
+      /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
+      preserveMCPAccess?: boolean;
+      expectedMCPAccess?: { names: string[]; updatedAt?: Date };
     },
   ) => Promise<IAgent | null>;
   updateAgentAvatar: (params: {
@@ -1101,6 +1166,7 @@ export function createAgentMethods(
   revertAgentVersion: (
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options?: RevertAgentVersionOptions,
   ) => Promise<IAgent>;
   countPromotedAgents: () => Promise<number>;
   addAgentResourceFile: ({
@@ -1286,14 +1352,28 @@ export function createAgentMethods(
     return await Agent.findOne(searchParameter, projection).lean<IAgent>();
   };
 
-  /** Storage-neutral display-name lookup for a known execution subject. */
-  async function getAgentName(id: string, tenantId?: string): Promise<string | undefined> {
+  /** Storage-neutral display name; user-facing callers supply a viewer to enforce VIEW ACLs. */
+  async function getAgentName(
+    id: string,
+    tenantId?: string,
+    viewer?: { userId: string },
+  ): Promise<string | undefined> {
     const agent = await getAgent(
       { id, tenantId: tenantId ?? null },
-      { name: 1, tenantId: 1, _id: 0 },
+      { name: 1, tenantId: 1, _id: 1 },
     );
-    if ((agent?.tenantId ?? undefined) !== tenantId) return undefined;
-    return agent?.name || undefined;
+    if (!agent || (agent.tenantId ?? undefined) !== tenantId) return undefined;
+    if (viewer) {
+      const principals = await deps.getUserPrincipals(viewer);
+      const visible = await deps.findAccessibleResources(
+        principals,
+        ResourceType.AGENT,
+        PermissionBits.VIEW,
+        [agent._id],
+      );
+      if (visible.length === 0) return undefined;
+    }
+    return agent.name || undefined;
   }
 
   /**
@@ -1371,6 +1451,9 @@ export function createAgentMethods(
         agent_ids: 1,
         edges: 1,
         subagents: 1,
+        skills: 1,
+        skills_enabled: 1,
+        skills_scope: 1,
       },
     ).lean<
       Array<
@@ -1385,6 +1468,9 @@ export function createAgentMethods(
           | 'agent_ids'
           | 'edges'
           | 'subagents'
+          | 'skills'
+          | 'skills_enabled'
+          | 'skills_scope'
         >
       >
     >();
@@ -1404,7 +1490,7 @@ export function createAgentMethods(
       visible = agents.filter((agent) => allowed.has(String(agent._id)));
     }
     return visible.map(
-      ({ id, provider, model, tools, mcpServerNames, agent_ids, edges, subagents }) => ({
+      ({
         id,
         provider,
         model,
@@ -1413,6 +1499,21 @@ export function createAgentMethods(
         agent_ids,
         edges,
         subagents,
+        skills,
+        skills_enabled,
+        skills_scope,
+      }) => ({
+        id,
+        provider,
+        model,
+        tools,
+        mcpServerNames,
+        agent_ids,
+        edges,
+        subagents,
+        ...(skills_enabled != null && { skills_enabled }),
+        ...(skills_scope != null && { skills_scope }),
+        ...(skills != null && skills.length > 0 && { skills }),
       }),
     );
   }
@@ -1462,6 +1563,9 @@ export function createAgentMethods(
       updatingUserId?: string | null;
       forceVersion?: boolean;
       skipVersioning?: boolean;
+      /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
+      preserveMCPAccess?: boolean;
+      expectedMCPAccess?: { names: string[]; updatedAt?: Date };
     } = {},
   ): Promise<IAgent | null> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
@@ -1472,6 +1576,11 @@ export function createAgentMethods(
     let suppressedVersionEntry = false;
 
     const currentAgent = await Agent.findOne(searchParameter);
+    if (!currentAgent && (options.preserveMCPAccess || options.expectedMCPAccess)) {
+      throw new AgentRevisionConflictError(
+        'Agent changed during Action update; reload and try again',
+      );
+    }
     const currentRevision = (currentAgent as (IAgent & { updatedAt: Date }) | null)?.updatedAt;
     if (currentAgent) {
       const currentObject = currentAgent.toObject() as unknown as Record<string, unknown>;
@@ -1515,11 +1624,13 @@ export function createAgentMethods(
           | string[]
           | undefined;
         const mcpServerNames =
-          supplied ??
-          rebuildMCPServerNames(
-            (directUpdates as Record<string, unknown>).tools as string[],
-            (currentAgent.mcpServerNames as string[] | undefined) ?? [],
-          );
+          !options.preserveMCPAccess && supplied !== undefined
+            ? supplied
+            : rebuildMCPServerNames(
+                (directUpdates as Record<string, unknown>).tools as string[],
+                (currentAgent.mcpServerNames as string[] | undefined) ?? [],
+                options.preserveMCPAccess,
+              );
         (directUpdates as Record<string, unknown>).mcpServerNames = mcpServerNames;
         updateData.mcpServerNames = mcpServerNames;
       }
@@ -1639,14 +1750,40 @@ export function createAgentMethods(
         }),
       );
     }
+    let updateFilter = searchParameter;
+    if (currentAgent && (nextEnvironmentIds.length > 0 || options.preserveMCPAccess)) {
+      updateFilter = { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision };
+    }
+    if (currentAgent && options.preserveMCPAccess) {
+      const priorNames = currentAgent.mcpServerNames ?? [];
+      /** Timestamps can collide within a millisecond; bind the actual grants being retained. */
+      updateFilter = {
+        $and: [
+          updateFilter,
+          priorNames.length > 0
+            ? { mcpServerNames: priorNames }
+            : { $or: [{ mcpServerNames: [] }, { mcpServerNames: null }] },
+        ],
+      };
+    }
+    if (options.expectedMCPAccess) {
+      const { names, updatedAt } = options.expectedMCPAccess;
+      updateFilter = {
+        $and: [
+          updateFilter,
+          ...(updatedAt ? [{ updatedAt }] : []),
+          names.length > 0
+            ? { mcpServerNames: names }
+            : { $or: [{ mcpServerNames: [] }, { mcpServerNames: null }] },
+        ],
+      };
+    }
     const updatedAgent = await withCodeEnvironmentReferences(
       mongoose,
       nextEnvironmentIds,
       async () =>
         (await Agent.findOneAndUpdate(
-          currentAgent == null || nextEnvironmentIds.length === 0
-            ? searchParameter
-            : { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision },
+          updateFilter,
           updateData,
           mongoOptions,
         ).lean()) as IAgent | null,
@@ -1661,6 +1798,12 @@ export function createAgentMethods(
         );
       },
     );
+
+    if (currentAgent && (options.preserveMCPAccess || options.expectedMCPAccess) && !updatedAgent) {
+      throw new AgentRevisionConflictError(
+        'Agent changed during Action update; reload and try again',
+      );
+    }
 
     /** `version` is a response-only field holding the count of `versions`. It is reported
      *  here so a suppressed entry keeps the shape callers saw before the write was fixed.
@@ -1798,6 +1941,11 @@ export function createAgentMethods(
   /**
    * Removes the given file_ids from every agent's `tool_resources.*.file_ids`
    * so file deletion cannot leave orphaned stubs behind (see issue #12776).
+   *
+   * Only ids that no File document holds are removed. `file_id` is not unique on its own, so a
+   * record another owner keeps under the same id still backs that owner's agent references. The
+   * lookup runs in the caller's tenant scope like the update below, and a failed lookup rejects
+   * before any agent is touched instead of reading as "no holder".
    */
   async function removeAgentResourceFilesFromAllAgents({
     file_ids,
@@ -1808,14 +1956,21 @@ export function createAgentMethods(
       return { matchedCount: 0, modifiedCount: 0 };
     }
 
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const held = new Set(await File.distinct('file_id', { file_id: { $in: file_ids } }));
+    const orphaned = file_ids.filter((fileId) => !held.has(fileId));
+    if (orphaned.length === 0) {
+      return { matchedCount: 0, modifiedCount: 0 };
+    }
+
     const Agent = mongoose.models.Agent as Model<IAgent>;
 
     const orQuery = TOOL_RESOURCE_KEYS.map((key) => ({
-      [`tool_resources.${key}.file_ids`]: { $in: file_ids },
+      [`tool_resources.${key}.file_ids`]: { $in: orphaned },
     }));
 
     const pullAllOps = TOOL_RESOURCE_KEYS.reduce<Record<string, string[]>>((acc, key) => {
-      acc[`tool_resources.${key}.file_ids`] = file_ids;
+      acc[`tool_resources.${key}.file_ids`] = orphaned;
       return acc;
     }, {});
 
@@ -1917,9 +2072,9 @@ export function createAgentMethods(
         }),
       ]);
       try {
-        await removeAgentIdsFromEdges(Agent, [deletedAgent.id], deletedAgent.tenantId);
+        await removeAgentIdsFromEdges(Agent, [deletedAgent.id], deletedAgent.tenantId ?? null);
       } catch (error) {
-        logger.error('[deleteAgent] Error removing agent from handoff edges', error);
+        logger.error('[deleteAgent] Error removing agent references', error);
       }
       try {
         const favoritesFilter = {
@@ -2658,10 +2813,15 @@ export function createAgentMethods(
 
   /**
    * Reverts an agent to a specific version in its version history.
+   *
+   * The MCP server index is always rewritten for the restored tools rather than taken from
+   * the snapshot: a snapshot may predate the index or name servers its tools no longer use,
+   * and agent-scoped MCP access is granted from this index.
    */
   async function revertAgentVersion(
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options: RevertAgentVersionOptions = {},
   ): Promise<IAgent> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const agent = await Agent.findOne(searchParameter);
@@ -2675,6 +2835,12 @@ export function createAgentMethods(
 
     const revertToVersion = { ...(agent.versions[versionIndex] as Record<string, unknown>) };
     const originalRevision = (agent as unknown as IAgent & { updatedAt: Date }).updatedAt;
+    if (
+      options.expectedUpdatedAt != null &&
+      new Date(options.expectedUpdatedAt).getTime() !== new Date(originalRevision).getTime()
+    ) {
+      throw new AgentRevisionConflictError();
+    }
     delete revertToVersion._id;
     delete revertToVersion.id;
     delete revertToVersion.versions;
@@ -2700,8 +2866,24 @@ export function createAgentMethods(
       }
     }
 
+    if (options.tools) {
+      revertToVersion.tools = options.tools;
+    }
+    const restoredTools = Array.isArray(revertToVersion.tools)
+      ? (revertToVersion.tools as string[])
+      : (agent.tools ?? []);
+    revertToVersion.mcpServerNames =
+      options.mcpServerNames ??
+      rebuildMCPServerNames(
+        restoredTools,
+        Array.isArray(revertToVersion.mcpServerNames)
+          ? (revertToVersion.mcpServerNames as string[])
+          : (agent.mcpServerNames ?? []),
+      );
+
     const unsetOnRestore: Record<string, 1> = {};
     for (const field of [
+      'sdk_runtime',
       'code_environment_id',
       'code_workspace_id',
       'code_environment_ids',
@@ -2741,7 +2923,8 @@ export function createAgentMethods(
       },
     );
     if (!revertedAgent) {
-      throw new Error('Agent not found');
+      /** The agent was read above, so a miss is the revision filter refusing a newer write. */
+      throw new AgentRevisionConflictError();
     }
     return revertedAgent;
   }
@@ -2778,7 +2961,14 @@ export function createAgentMethods(
     await evictAuthUserDocsForUsers(deps.getCache, userIds);
   }
 
+  async function findAgentIdentity(agentId: string): Promise<{ _id: string } | null> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    const agent = await Agent.findOne({ id: agentId }).select('_id').lean();
+    return agent ? { _id: agent._id.toString() } : null;
+  }
+
   return {
+    findAgentIdentity,
     getAgent,
     getAgentName,
     getAgentVersions,

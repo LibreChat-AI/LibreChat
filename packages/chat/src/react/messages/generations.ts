@@ -18,6 +18,9 @@ export type TUseGenerations = {
    *  would replay, `false` when no such turn is in the thread. `undefined` when the
    *  thread is unavailable (a search or share row), which withholds nothing. */
   parentIsUserMessage?: boolean;
+  /** The reader takes no turn in this conversation, so no rerun, edit or continue is offered.
+   *  A fork still is: it makes a conversation of the reader's own. */
+  readOnly?: boolean;
   /** The turn carries the server's manual-compaction marker. Compact runs on
    *  whatever leaf the branch ends with, so such a turn can hang off a user
    *  message; replaying that message would answer it again instead of redoing the
@@ -29,6 +32,11 @@ export type TUseGenerations = {
 export type Generations = {
   forkingSupported: boolean;
   continueSupported: boolean;
+  /** The row has a rerun to offer at all, whether or not one can start right now. A run in
+   *  flight withholds every row's rerun at once, so a toolbar keeps the control mounted on this
+   *  and conceals it on `regenerateEnabled`, instead of adding and removing a button on every
+   *  row of the thread each time a run starts or ends. */
+  regenerateOffered: boolean;
   regenerateEnabled: boolean;
   isActiveStreamingMessage: boolean;
   isEditableEndpoint: boolean;
@@ -48,6 +56,7 @@ export default function useGenerationsByLatest({
   getHasEditablePart,
   parentIsUserMessage,
   isUserInitiatedCompaction = false,
+  readOnly = false,
 }: TUseGenerations): Generations {
   const isEditableEndpoint = Boolean(
     [
@@ -83,6 +92,7 @@ export default function useGenerationsByLatest({
     !isSubmitting &&
     !searchResult &&
     !hasNoTurnToReplay &&
+    !readOnly &&
     isEditableEndpoint;
 
   const branchingSupported = Boolean(
@@ -97,13 +107,14 @@ export default function useGenerationsByLatest({
     ].find((e) => e === endpoint),
   );
 
-  const regenerateEnabled =
+  const regenerateOffered =
     !isCreatedByUser &&
     !searchResult &&
     !isEditing &&
-    !isSubmitting &&
     !hasNoTurnToReplay &&
+    !readOnly &&
     branchingSupported;
+  const regenerateEnabled = regenerateOffered && !isSubmitting;
 
   const isActiveStreamingMessage =
     isSubmitting && (latestMessageId == null || messageId === latestMessageId);
@@ -114,6 +125,7 @@ export default function useGenerationsByLatest({
    *  finished or persisted an error part instead, would open an editor with no
    *  field and one inert Rerun. */
   const hideEditButton =
+    readOnly ||
     isActiveStreamingMessage ||
     error ||
     searchResult ||
@@ -126,6 +138,7 @@ export default function useGenerationsByLatest({
   return {
     forkingSupported,
     continueSupported,
+    regenerateOffered,
     regenerateEnabled,
     isActiveStreamingMessage,
     isEditableEndpoint,

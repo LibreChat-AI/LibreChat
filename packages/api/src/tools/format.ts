@@ -168,6 +168,56 @@ export function formatToolError(
   return `Error: ${TOOL_ERROR_FALLBACK}`;
 }
 
+/** The part of a fetch response a tool request reads, shared by the global and undici responses. */
+export interface ToolHttpResponse {
+  ok: boolean;
+  status: number;
+  body?: { cancel?: () => Promise<unknown> } | null;
+}
+
+export interface ToolRequestParams<R extends ToolHttpResponse> {
+  /** The upstream service as the model should read it, such as `Google Search`. */
+  service: string;
+  /** Sends the request; a rejection is a transport failure. */
+  request: () => Promise<R>;
+  /** Reads the text a successful response contributes to the tool result. */
+  read: (response: R) => string | Promise<string>;
+  /** Wording for statuses the service documents specifically. */
+  statusOverrides?: Readonly<Partial<Record<number, string>>>;
+}
+
+async function cancelResponseBody(response: ToolHttpResponse): Promise<void> {
+  try {
+    await response.body?.cancel?.();
+  } catch {
+    /** Only the status reaches the model, so a body that will not cancel changes nothing. */
+  }
+}
+
+/**
+ * Runs a tool's upstream request and returns the text for the model: what `read` returns for a
+ * successful response, otherwise the approved error text. A failing response is worded from its
+ * status alone, so its body is cancelled unread to release the connection. `read` may throw a
+ * `ToolInputError` to hand the model guidance the tool wrote itself.
+ */
+export async function runToolRequest<R extends ToolHttpResponse>({
+  service,
+  request,
+  read,
+  statusOverrides,
+}: ToolRequestParams<R>): Promise<string> {
+  try {
+    const response = await request();
+    if (!response.ok) {
+      await cancelResponseBody(response);
+      return formatToolHttpError(service, response.status, statusOverrides);
+    }
+    return await read(response);
+  } catch (error) {
+    return formatToolError(error, service, statusOverrides);
+  }
+}
+
 /** The Wolfram|Alpha LLM API answers 501 when it cannot interpret the input; its body echoes the query. */
 export const WOLFRAM_STATUS_TEXT: Readonly<Partial<Record<number, string>>> = {
   501: 'Wolfram|Alpha could not interpret the input. Rephrase it as a simpler query, such as single keywords or standard math notation, and try again.',

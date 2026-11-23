@@ -1,14 +1,18 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { isDocumentSupportedProvider, isOpenAILikeProvider } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, AudioResult } from '~/types';
+import type { MissingAttachmentHandler } from './utils';
 import {
   getFileStream,
   getAudioFormat,
   getConfiguredFileSizeLimit,
-  isAttachmentObjectNotFoundError,
+  skipMissingAttachment,
   isConfiguredProviderMediaType,
 } from './utils';
+import { configuredRequestBudget } from '~/utils/timeouts';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { validateAudio } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
 
@@ -25,10 +29,10 @@ import { runGuardedEncode } from './memoryGuard';
 export async function encodeAndFormatAudios(
   req: ServerRequest,
   files: IMongoFile[],
-  params: { provider: Providers; endpoint?: string },
+  params: { provider: Providers; endpoint?: string; onMissingFile?: MissingAttachmentHandler },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<AudioResult> {
-  const { provider, endpoint } = params;
+  const { provider, endpoint, onMissingFile } = params;
   if (!files?.length) {
     return { audios: [], files: [] };
   }
@@ -39,17 +43,23 @@ export async function encodeAndFormatAudios(
   const results = await Promise.allSettled(
     files.map((file) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+        ),
       ),
     ),
   );
 
-  for (const settledResult of results) {
+  for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
-      if (isAttachmentObjectNotFoundError(settledResult.reason)) {
-        throw settledResult.reason;
+      if (skipMissingAttachment(settledResult.reason, files[index], onMissingFile)) {
+        continue;
       }
-      console.error('Audio processing failed:', settledResult.reason);
+      logger.error('Audio processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 

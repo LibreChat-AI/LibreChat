@@ -9,6 +9,12 @@ import AgentHandoffs from '../AgentHandoffs';
 let mockSelect: (id: string) => void;
 let mockGetValues: UseFormReturn<AgentForm>['getValues'];
 const mockSubmit = jest.fn();
+const mockHandoffQuery = { data: [], isLoading: false, isError: false, refetch: jest.fn() };
+jest.mock('~/data-provider', () => ({ useModelSpecHandoffsQuery: () => mockHandoffQuery }));
+afterEach(() => {
+  mockHandoffQuery.isLoading = false;
+  mockHandoffQuery.isError = false;
+});
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('../AgentList', () => ({
   AddAgentSelect: ({ onSelect }: { onSelect: (id: string) => void }) => {
@@ -74,4 +80,18 @@ test('shows and removes implicit handoffs while retaining implicit fan-out direc
   expect(mockGetValues('edges')).toEqual([fanout, implicit]);
   fireEvent.click(screen.getByRole('button', { name: 'com_ui_agent_handoff_remove' }));
   expect(mockGetValues('edges')).toEqual([fanout]);
+});
+
+test('announces loading of configured handoff targets', () => {
+  mockHandoffQuery.isLoading = true;
+  render(<Harness />);
+  expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
+});
+
+test('offers a retry when configured targets fail to load', () => {
+  mockHandoffQuery.isError = true;
+  render(<Harness />);
+  expect(screen.getByRole('alert')).toHaveTextContent('com_ui_agent_handoff_load_error');
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+  expect(mockHandoffQuery.refetch).toHaveBeenCalled();
 });

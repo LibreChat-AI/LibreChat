@@ -1,4 +1,8 @@
-import { hoverButtonClasses, revealOnRowHoverClasses } from '../styles';
+import { readFileSync } from 'node:fs';
+import { cn, buttonVariants } from '@librechat/client';
+import { revealOnRowHoverClasses } from '../styles';
+
+const tokens = readFileSync(require.resolve('@librechat/client/theme.css'), 'utf8');
 
 const FADE = 'no-touch:opacity-0';
 
@@ -6,7 +10,7 @@ const FADE = 'no-touch:opacity-0';
  *  `group-[&:is(...)]`: that form makes Tailwind emit a bare `.group$` rule
  *  that lightningcss rejects, which fails the production CSS build. */
 const FOCUS_SELF = 'group-focus-visible';
-const FOCUS_DESCENDANT = 'group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]';
+const FOCUS_DESCENDANT = 'grouped-keyboard-focus';
 
 describe('revealOnRowHoverClasses', () => {
   it('reveals on row hover and on keyboard focus', () => {
@@ -28,9 +32,21 @@ describe('revealOnRowHoverClasses', () => {
   });
 
   /* Text-entry controls match :focus-visible even on a mouse click, and
-     ToolApproval and AskUserQuestion both render textareas inside a row. */
+     ToolApproval and AskUserQuestion both render textareas inside a row. The
+     exclusion lives in the variant the recipe names. */
   it('ignores focus that landed in a text-entry control', () => {
-    expect(revealOnRowHoverClasses).toContain(':not(:is(input,textarea,[contenteditable]))');
+    const variant = tokens.match(/@custom-variant grouped-keyboard-focus \{[^}]*\{/)?.[0] ?? '';
+    expect(variant).toContain(':has(:focus-visible:not(:is(input, textarea, [contenteditable])))');
+  });
+
+  /* Tailwind's own `group-has-[…]` buries `:has()` inside `:is(… *)`, which leaves a browser
+     re-styling the whole row whenever anything under it changes. The variant names its subject
+     instead: the anchor first, the utility's own class last. */
+  it('reads the row through a descendant selector, not group-has', () => {
+    expect(revealOnRowHoverClasses).not.toContain('group-has-');
+    expect(tokens).toMatch(
+      /@custom-variant grouped-keyboard-focus \{\s*:where\(\.group\):has\([^{]*\) & \{/,
+    );
   });
 
   /* A bare `.group$` rule in the emitted CSS fails the lightningcss minify
@@ -45,50 +61,56 @@ describe('revealOnRowHoverClasses', () => {
     expect(revealOnRowHoverClasses).toContain('motion-reduce:transition-none');
   });
 
-  /* `cn` merges the whole `transition-*` group, so a bare `transition-opacity`
-     would replace the `transition-colors` a `Button` contributes and the hover
-     tint would snap. The colour properties have to ride along explicitly. */
-  it('names the colour properties alongside opacity', () => {
-    expect(revealOnRowHoverClasses).toContain('transition-[opacity,color,background-color]');
-    expect(revealOnRowHoverClasses).not.toContain('transition-opacity');
+  /* The hover tint snaps: only opacity transitions, and the reveal replaces the
+     `transition-none` the toolbar buttons carry. */
+  it('transitions opacity only', () => {
+    expect(revealOnRowHoverClasses).toContain('transition-opacity');
+    expect(revealOnRowHoverClasses).not.toContain('transition-reveal');
+  });
+
+  it('does not fade colours when merged onto a Button', () => {
+    const merged = cn(buttonVariants({ variant: 'message-hover-reveal' }));
+    expect(merged).toContain('transition-opacity');
+    expect(merged).not.toContain('transition-colors');
+    expect(cn(buttonVariants({ variant: 'message-hover' }))).toContain('transition-none');
   });
 });
 
-describe('hoverButtonClasses', () => {
+describe('message hover buttons', () => {
+  const idle = buttonVariants({ variant: 'message-hover-reveal' });
+  const last = buttonVariants({ variant: 'message-hover' });
+
   it('fades an idle action out until the row is hovered', () => {
-    expect(hoverButtonClasses()).toContain(FADE);
-    expect(hoverButtonClasses()).toContain('group-hover:opacity-100');
+    expect(idle).toContain(FADE);
+    expect(idle).toContain('group-hover:opacity-100');
   });
 
   it('reveals an idle action on keyboard focus, not on a click parking focus in the row', () => {
-    expect(hoverButtonClasses()).toContain(`${FOCUS_DESCENDANT}:opacity-100`);
-    expect(hoverButtonClasses()).not.toContain('group-focus-within:');
+    expect(idle).toContain(`${FOCUS_DESCENDANT}:opacity-100`);
+    expect(idle).not.toContain('group-focus-within:');
   });
 
   it('marks an active action so the toolbar can key off it', () => {
-    expect(hoverButtonClasses({ isActive: true })).toContain('hover-button-active');
-    expect(hoverButtonClasses({ isActive: true })).toContain('active');
+    expect(idle).toContain('data-[hover-active]:bg-surface-hover');
+    expect(idle).toContain('data-[hover-active]:text-text-primary');
   });
 
   it('keeps every action opaque while any of them is active', () => {
-    expect(hoverButtonClasses()).toContain('group-has-[.hover-button-active]:opacity-100');
-    expect(hoverButtonClasses({ isActive: true })).toContain(
-      'group-has-[.hover-button-active]:opacity-100',
-    );
-    expect(hoverButtonClasses({ isLast: true })).toContain(
-      'group-has-[.hover-button-active]:opacity-100',
-    );
+    expect(idle).toContain('grouped-hover-active:opacity-100');
+    expect(last).toContain('grouped-hover-active:opacity-100');
   });
 
   it('does not use the legacy active class as the marker', () => {
-    expect(hoverButtonClasses()).not.toContain('group-has-[.active]');
+    expect(idle).not.toContain('group-has-[.active]');
+    expect(last).not.toContain('group-has-[.active]');
   });
 
   it('never fades the actions on the last row', () => {
-    expect(hoverButtonClasses({ isLast: true })).not.toContain(FADE);
+    expect(last).not.toContain(FADE);
   });
 
-  it('appends caller classes', () => {
-    expect(hoverButtonClasses({ className: 'ml-0' })).toContain('ml-0');
+  it('keeps the marker the narrow-screen stylesheet reads', () => {
+    expect(idle).toContain('hover-button');
+    expect(last).toContain('hover-button');
   });
 });

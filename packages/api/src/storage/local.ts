@@ -1,10 +1,10 @@
 import path from 'path';
 import crypto from 'node:crypto';
 import { EModelEndpoint } from 'librechat-data-provider';
-import { mkdir, copyFile, rename, unlink, writeFile } from 'fs/promises';
+import { mkdir, access, copyFile, rename, unlink, writeFile } from 'fs/promises';
 import type { TFileConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import { stripCacheBust } from './path';
+import { stripCacheBust, toLocalUrlPath, fromLocalUrlPath } from './path';
 
 export interface LocalStoragePaths {
   publicPath: string;
@@ -62,7 +62,10 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
 
     if (cleanFilepath.startsWith(uploadPrefix)) {
       const userUploadDir = path.join(uploads, ownerId);
-      const filePath = path.join(userUploadDir, cleanFilepath.slice(uploadPrefix.length));
+      const filePath = await resolveLocalFile(
+        userUploadDir,
+        cleanFilepath.slice(uploadPrefix.length),
+      );
       if (!isStrictlyWithin(userUploadDir, filePath)) {
         throw new Error(`Invalid file path: ${cleanFilepath}`);
       }
@@ -82,7 +85,7 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
       logger.warn(`Agent File ${file.file_id} is missing filepath, may have been deleted already`);
       return;
     }
-    const filePath = path.join(publicPath, cleanFilepath);
+    const filePath = await resolveLocalFile(publicPath, cleanFilepath);
     if (!subfolder || !isStrictlyWithin(path.join(publicPath, subfolder, ownerId), filePath)) {
       throw new Error('Invalid file path');
     }
@@ -96,6 +99,36 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
 function isStrictlyWithin(directory: string, filePath: string): boolean {
   const rel = path.relative(path.resolve(directory), path.resolve(filePath));
   return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(`..${path.sep}`);
+}
+
+const exists = (filePath: string): Promise<boolean> =>
+  access(filePath).then(
+    () => true,
+    () => false,
+  );
+
+/**
+ * Resolves a recorded URL path to the file it names under `root`. A segment that reads as encoded
+ * is decoded, unless only the file named by the text as recorded exists: a record from before names
+ * were encoded can hold a literal `%23`, which `toLocalUrlPath` also produces for `#`, and nothing
+ * but the disk tells the two apart. When both names exist the decoded one wins: every writer prefixes
+ * a unique file id or generates the name, so two names that differ only by an escape never share a
+ * directory. Paths outside `root` are returned undecoded and unprobed for the caller's own
+ * containment check to reject.
+ */
+export async function resolveLocalFile(root: string, urlPath: string): Promise<string> {
+  const decoded = path.join(root, fromLocalUrlPath(urlPath));
+  const recorded = path.join(root, urlPath);
+  if (
+    decoded === recorded ||
+    !isStrictlyWithin(root, decoded) ||
+    !isStrictlyWithin(root, recorded) ||
+    !(await exists(recorded)) ||
+    (await exists(decoded))
+  ) {
+    return decoded;
+  }
+  return recorded;
 }
 
 /**
@@ -121,13 +154,19 @@ export async function writeFileAtomic(filePath: string, data: Buffer | string): 
   await replaceAtomically(filePath, (tempPath) => writeFile(tempPath, data));
 }
 
-/** Resolves `fileName` inside `directory`, rejecting a name that would escape it. */
+/**
+ * Resolves `fileName` directly inside `directory`, rejecting a name that would escape it or nest
+ * below it.
+ */
 function resolveContained(directory: string, fileName: string): string {
   const resolvedDir = path.resolve(directory);
   const resolvedPath = path.resolve(resolvedDir, fileName);
   const rel = path.relative(resolvedDir, resolvedPath);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
     throw new Error('Path traversal detected in filename');
+  }
+  if (path.dirname(resolvedPath) !== resolvedDir) {
+    throw new Error('Nested path detected in filename');
   }
   return resolvedPath;
 }
@@ -159,8 +198,9 @@ export async function moveLocalFile(
 
 /**
  * Saves a buffer under `publicPath/images/userId` (served statically) or `uploads/userId`
- * (downloaded through the API) and returns its URL path. Rejects a `fileName` that
- * resolves outside that directory before touching the file system.
+ * (downloaded through the API) and returns its percent-encoded URL path. Rejects a `fileName`
+ * that resolves outside that directory or below it, or that cannot be encoded, before touching the
+ * file system.
  */
 export async function saveLocalBuffer({
   paths,
@@ -179,6 +219,7 @@ export async function saveLocalBuffer({
     basePath === 'images'
       ? path.join(paths.publicPath, basePath, userId)
       : path.join(paths.uploads, userId);
+  const urlPath = toLocalUrlPath(basePath, userId, fileName);
   await writeLocalFile(directory, fileName, buffer);
-  return path.posix.join('/', basePath, userId, fileName);
+  return urlPath;
 }

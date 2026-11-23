@@ -193,10 +193,10 @@ const BODY_PLACEHOLDER_FIELDS = Object.fromEntries(
 ) as Record<string, keyof RequestBody>;
 const RUNTIME_BODY_FIELD_NAMES = Object.keys(BODY_PLACEHOLDER_FIELDS).join('|');
 const RUNTIME_BODY_PLACEHOLDER_PATTERN = new RegExp(
-  `\\{\\{LIBRECHAT_BODY_(?:${RUNTIME_BODY_FIELD_NAMES})\\}\\}`,
+  `\\{\\{LIBRECHAT_(?:BODY_(?:${RUNTIME_BODY_FIELD_NAMES})|AGENT_ID)\\}\\}`,
 );
 const RUNTIME_BODY_PLACEHOLDER_CAPTURE_PATTERN = new RegExp(
-  `\\{\\{LIBRECHAT_BODY_(${RUNTIME_BODY_FIELD_NAMES})\\}\\}`,
+  `\\{\\{LIBRECHAT_(?:BODY_(${RUNTIME_BODY_FIELD_NAMES})|(AGENT_ID))\\}\\}`,
   'g',
 );
 
@@ -347,6 +347,10 @@ function addRuntimeBodyPlaceholderFields(
   if (typeof value === 'string') {
     for (const candidate of new Set([value, extractEnvVariable(value)])) {
       for (const match of candidate.matchAll(RUNTIME_BODY_PLACEHOLDER_CAPTURE_PATTERN)) {
+        if (match[2] === 'AGENT_ID') {
+          fields.add('agentId');
+          continue;
+        }
         const placeholderKey = match[1];
         const field = placeholderKey ? BODY_PLACEHOLDER_FIELDS[placeholderKey] : undefined;
         if (field) {
@@ -413,6 +417,17 @@ export function getMCPRequestScope(config: UserScopedConnectionConfig): MCPReque
   return { requestScoped: fields.length > 0, requiredBodyFields: fields };
 }
 
+/** Keep initialization, tool discovery, and recovery on the same agent's connection. */
+export function getMCPAgentConnectionKey(
+  baseKey: string,
+  config: UserScopedConnectionConfig | undefined,
+  body?: RequestBody,
+): string {
+  return config && getMCPRequestScope(config).requiredBodyFields.includes('agentId')
+    ? `${baseKey}:agent:${JSON.stringify(body?.agentId ?? null)}`
+    : baseKey;
+}
+
 /**
  * Folds the operator's chat-only `requestHeaders` into `headers`, so everything
  * downstream — direct-bearer detection, Graph preprocessing, `processMCPEnv`,
@@ -477,6 +492,7 @@ export function getMissingRuntimeBodyPlaceholderFields(
   requestBody?: RequestBody,
 ): string[] {
   return getMCPRequestScope(config).requiredBodyFields.filter((field) => {
+    if (field === 'agentId') return false;
     const value = requestBody?.[field];
     return value == null || (typeof value === 'string' && value.trim() === '');
   });
@@ -520,14 +536,25 @@ export function isChatSelectableMCPServer(
   return config.chatMenu !== false && config.consumeOnly !== true;
 }
 
+/** How `filterChatSelectableMCPServers` resolves the servers a user can reach. */
+export interface ChatSelectableLookup {
+  userId: string;
+  role?: string;
+  getAccessibleMCPServers?: (
+    userId: string,
+    role?: string,
+  ) => Promise<Record<string, Pick<ParsedServerConfig, 'chatMenu' | 'consumeOnly'>>>;
+}
+
 /**
  * Narrows a chat picker selection to the servers that picker is allowed to
  * offer, so a stale client, a replayed body, or a hand-written request cannot
  * reach a server the menu hides.
  *
- * Pass only the picker's own selection. Servers a model spec pins
- * (`modelSpec.mcpServers`) are the operator's choice and stay attached even
- * when hidden, so they must be added after this call, not through it.
+ * A server this drops was never offered by the picker. When a model spec
+ * configures one (`modelSpec.mcpServers`), it is the operator's choice and stays
+ * attached; `resolveEphemeralMCPServers` classifies spec servers through this
+ * call and keeps the ones it drops.
  *
  * The accessible set comes from the registry — the same resolution that feeds
  * the client's catalog, with its own tier precedence already applied — rather
@@ -548,18 +575,7 @@ export function isChatSelectableMCPServer(
  */
 export async function filterChatSelectableMCPServers(
   selectedServers: string[] | null | undefined,
-  {
-    userId,
-    role,
-    getAccessibleMCPServers,
-  }: {
-    userId: string;
-    role?: string;
-    getAccessibleMCPServers?: (
-      userId: string,
-      role?: string,
-    ) => Promise<Record<string, Pick<ParsedServerConfig, 'chatMenu' | 'consumeOnly'>>>;
-  },
+  { userId, role, getAccessibleMCPServers }: ChatSelectableLookup,
 ): Promise<string[]> {
   if (!Array.isArray(selectedServers) || selectedServers.length === 0) {
     return [];

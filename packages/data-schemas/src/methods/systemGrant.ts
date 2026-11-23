@@ -432,7 +432,8 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     };
 
     const options = session ? { session } : {};
-    const result = await SystemGrant.deleteOne(filter, options);
+    // Legacy databases can contain duplicates when the unique index failed to build.
+    const result = await SystemGrant.deleteMany(filter, options);
     return { deletedCount: result.deletedCount ?? 0 };
   }
 

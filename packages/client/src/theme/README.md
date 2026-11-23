@@ -450,6 +450,14 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `applyTheme` writes on every root it themes, through CSS style queries, so a
   control follows the nearest themed root. A browser without style queries
   (Firefox before 151) keeps the default `ring` and `dim` treatment.
+- `welcomeBackdrop` - What the welcome screen paints behind its greeting and
+  composer, from a closed list. `none` (the default) keeps the plain surface.
+  `dots` names a dot field; the app paints a backdrop only when a component is
+  registered for its value with `registerWelcomeBackdrop`, so a theme that asks
+  for one the build does not provide keeps the plain surface. Read from the
+  `--theme-welcome-backdrop` property `applyTheme` writes on the root, so the
+  backdrop follows a theme swap without any component naming a theme. A
+  backdrop honors `prefers-reduced-motion`.
   `Label` reads `labelSize` (follows `textSm`), `labelLeading` and
   `labelFontWeight` (`inherit` by default, so a label keeps the weight around it).
 - `text-badge-label` - The shared `Badge`'s resting label ink; a hovered or selected

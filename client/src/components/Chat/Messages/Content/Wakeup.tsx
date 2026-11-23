@@ -5,20 +5,22 @@ import {
   useSubagentTaskPanel,
   subagentStatusIcon,
   subagentStatusLabelKey,
+  useLazyCollapseBody,
 } from '@librechat/chat/react';
 import {
   SystemEventHeader,
   SystemEventIcon,
+  BackgroundTaskCard,
   systemEventHeaderClasses,
+  useExpandCollapse,
 } from '@librechat/chat/components';
 import type { WakeupDisplay, WakeupTask } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
-import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import BackgroundTaskCard from './BackgroundTaskCard';
 import { StackedToolIcons } from './ToolOutput';
 import MarkdownLite from './MarkdownLite';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 const SUBAGENT_HEADER_KEYS = {

@@ -8,6 +8,7 @@ const {
   StreamableHTTPServerTransport,
 } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { watchDynamicTool } = require('./dynamic-mcp-tools');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = Number.parseInt(process.env.E2E_MCP_DYNAMIC_PORT || '8766', 10);
 const HOST = '127.0.0.1';
@@ -120,6 +121,7 @@ async function shutdown() {
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
 
+keepIdleConnections(httpServer);
 httpServer.listen(PORT, HOST, () => {
   console.log(`[e2e] dynamic MCP server listening on http://${HOST}:${PORT}`);
 });

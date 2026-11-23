@@ -3,6 +3,7 @@ import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
+import type { LangChainErrorOptions } from '../errors';
 import {
   resolveLangChainError,
   getModelStreamFailure,
@@ -20,9 +21,12 @@ const UPSTREAM_MODEL_ERROR_ORIGIN = 'model_provider';
 const UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE = '_OTHER';
 const UPSTREAM_MODEL_ERROR_FALLBACK = 'The model provider could not complete this request.';
 
-function safelyResolveLangChainError(error: unknown): string | undefined {
+function safelyResolveLangChainError(
+  error: unknown,
+  options: LangChainErrorOptions,
+): string | undefined {
   try {
-    return resolveLangChainError(error);
+    return resolveLangChainError(error, options);
   } catch {
     return undefined;
   }
@@ -110,9 +114,13 @@ export function createTerminalRunErrorObserver({
       }
 
       const { status } = getSafeErrorMetadata(upstreamModelError);
+      const langChainOptions: LangChainErrorOptions = {
+        includeProviderMessage: protectionEnabled === false,
+        maxProviderErrorChars,
+      };
       const classifiedError =
-        safelyResolveLangChainError(error) ??
-        safelyResolveLangChainError(upstreamModelError) ??
+        safelyResolveLangChainError(error, langChainOptions) ??
+        safelyResolveLangChainError(upstreamModelError, langChainOptions) ??
         (status == null || status < 400
           ? (resolveModelStreamError(upstreamModelError) ?? resolveModelStreamError(error))
           : undefined);
@@ -205,12 +213,36 @@ function getSafeTypedErrorText(
 export interface GenerationErrorConfig {
   readonly filters?: FiltersConfig | null;
   readonly messageFilter?: { readonly pii?: MessageFilterPiiConfig | null } | null;
+  readonly endpoints?: {
+    readonly agents?: { readonly maxProviderErrorChars?: number } | null;
+  } | null;
+}
+
+/**
+ * The typed payload of a LangChain-classified provider failure, or `undefined` for any other error.
+ * The provider's message rides along as `info`, bounded by `endpoints.agents.maxProviderErrorChars`,
+ * only while no content policy is active; `formatProviderMessage` applies the caller's redaction.
+ */
+export function resolveClassifiedProviderError(
+  error: unknown,
+  appConfig: GenerationErrorConfig | null | undefined,
+  formatProviderMessage?: (message: string) => string,
+): string | undefined {
+  return safelyResolveLangChainError(error, {
+    includeProviderMessage: !hasModelBoundContentProtection(
+      appConfig?.filters,
+      appConfig?.messageFilter?.pii,
+    ),
+    maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
+    formatProviderMessage,
+  });
 }
 
 /**
  * The error text a failed generation publishes and persists on its error row, under the same rule
  * the run's content error parts follow. Host-authored outcomes keep their wording: a typed
- * `{"type": ...}` payload (redacted, and reduced to its code and numeric fields under a content policy), a LangChain-classified provider failure, or a content policy block.
+ * `{"type": ...}` payload (redacted, and reduced to its code and numeric fields under a content policy), a LangChain-classified provider failure (with the provider's redacted message as `info` when no
+ * content policy is active), or a content policy block.
  * Any other exception may echo submitted content, so while a content policy is active the turn
  * carries `fallback`; otherwise it carries the message with URLs, credentials (API keys, tokens, auth headers) and email
  * addresses redacted. The exception
@@ -234,7 +266,9 @@ export function getUserFacingGenerationError(
   if (message != null && typed != null) {
     return getSafeTypedErrorText(message, typed, protectionEnabled);
   }
-  const classified = safelyResolveLangChainError(error);
+  const classified = resolveClassifiedProviderError(error, appConfig, (text) =>
+    redactMessage(getSafeErrorText(text)),
+  );
   if (classified != null) {
     return classified;
   }

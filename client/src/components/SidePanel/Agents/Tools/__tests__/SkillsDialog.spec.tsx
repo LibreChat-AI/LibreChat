@@ -91,7 +91,14 @@ jest.mock('@librechat/client', () => ({
       {children}
     </button>
   ),
-  Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
+  FilterInput: ({
+    label,
+    inputId,
+    surface: _surface,
+    ...props
+  }: React.ComponentProps<'input'> & { label: string; inputId: string; surface?: string }) => (
+    <input id={inputId} aria-label={label} {...props} />
+  ),
   Label: ({ children, ...props }: React.ComponentProps<'label'>) => (
     <label {...props}>{children}</label>
   ),

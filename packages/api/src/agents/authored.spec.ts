@@ -40,3 +40,38 @@ test('round-trips every valid name shape accepted by skill authoring', () => {
   resumed.restore(original.snapshot());
   expect(resumed.snapshot()).toEqual(original.snapshot());
 });
+
+const scopes = [
+  { agentId: 'a' },
+  { agentId: 'a', executionId: 'child-1' },
+  { agentId: 'a', executionId: 'child-2' },
+  { agentId: 'b', executionId: 'child-1' },
+];
+
+test.each(scopes)(
+  'replays only bindings in scope %j without promoting an unprimed skill',
+  (scope) => {
+    const state = new AuthoredSkillState();
+    for (const candidate of scopes) {
+      state.record(candidate, { name: 'created', id, primed: false });
+    }
+    expect(state.recorded(scope)).toEqual([{ ...scope, name: 'created', id, primed: false }]);
+  },
+);
+
+test.each([true, false])('excludes restored bindings until confirmed (primed=%s)', (primed) => {
+  const state = new AuthoredSkillState();
+  const scope = { agentId: 'a', executionId: 'child-1' };
+  const binding = { ...scope, name: 'created', id, primed };
+  const pending = { ...binding, name: 'unrequested' };
+  state.restore([binding, pending]);
+
+  expect(state.recorded(scope)).toEqual([]);
+  expect(state.take(scope, new Set(['created']))).toEqual([binding]);
+  expect(state.recorded(scope)).toEqual([]);
+
+  state.confirm(scope, 'created');
+  expect(state.recorded(scope)).toEqual([binding]);
+  expect(state.hasPending).toBe(true);
+  expect(state.snapshot()).toEqual([binding, pending]);
+});

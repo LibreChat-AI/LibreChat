@@ -11,7 +11,6 @@ jest.mock('../LogLink', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useExpandCollapse: () => ({ style: {}, ref: { current: null } }),
   useLocalize: () => (key: string, values?: Record<number, string>) => {
     const translations: Record<string, string> = {
       com_ui_download: 'Download',
@@ -21,6 +20,11 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] ?? key;
   },
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: () => ({ style: {}, ref: { current: null } }),
 }));
 
 jest.mock('~/utils', () => ({

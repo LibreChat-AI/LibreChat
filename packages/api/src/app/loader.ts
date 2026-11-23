@@ -4,14 +4,17 @@ import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import {
   configSchema,
+  persistenceConfigSchema,
   EModelEndpoint,
   EImageOutputType,
   getMaxSubagents,
   setMaxSubagents,
+  setPiiRegexProgramSizer,
 } from 'librechat-data-provider';
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
 import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { ZodIssue } from 'zod';
+import { getPiiRegexProgramSize } from '~/protection/programSize';
 import { serviceRequestBudget } from '~/utils/timeouts';
 import { checkConfigPolicyLinks } from './interface';
 import { expandCustomEndpoint } from './params';
@@ -21,6 +24,8 @@ export type CustomConfigLoadMode = 'startup' | 'reload';
 
 export interface CustomConfigLoadOptions {
   mode?: CustomConfigLoadMode;
+  /** Storage initialization must distinguish an absent default from an unreadable source. */
+  storageSelection?: boolean;
 }
 
 export interface LoadedCustomConfig {
@@ -33,7 +38,8 @@ export interface CustomConfigLoaderOptions {
   defaultConfigPath: string;
   loadLocal: (configPath: string) => unknown;
   fetchRemote?: (configPath: string) => Promise<unknown>;
-  redactConfig: (config: TCustomConfig) => TCustomConfig;
+  /** @deprecated Configuration values are no longer logged. */
+  redactConfig?: (config: TCustomConfig) => TCustomConfig;
   /** Runs after each successful load, at startup and on reload, before the config is returned. */
   onLoad?: (loaded: LoadedCustomConfig) => void;
 }
@@ -134,6 +140,54 @@ function reportPolicyLinkCheck(configPath: string, dropped: string[]): void {
   );
 }
 
+/**
+ * `interface.schedules.mcpConsent.readOnlyPolicy` used to decide which MCP tools a scheduled
+ * chat could call. The schedule's owner chooses now, and the schema drops the key without a
+ * word, so an operator who still relies on it is told.
+ */
+function reportRetiredScheduleToolPolicy(configPath: string, config: unknown): void {
+  const schedules = (config as { interface?: { schedules?: unknown } } | null)?.interface
+    ?.schedules;
+  const consent = (schedules as { mcpConsent?: unknown } | null | undefined)?.mcpConsent;
+  if (consent == null || typeof consent !== 'object' || !('readOnlyPolicy' in consent)) {
+    return;
+  }
+  logger.warn(
+    `Ignoring interface.schedules.mcpConsent.readOnlyPolicy in ${configPath}: it no longer limits ` +
+      'which MCP tools a scheduled chat may call. Each schedule owner now chooses the allowed ' +
+      'tools when granting consent. Remove the key.',
+  );
+}
+
+/**
+ * Under `delegated`, an API key run may use only the MCP tools the key's owner granted, and an
+ * owner can grant only servers the operator declared. An operator who chooses that mode and
+ * declares none has every key run's MCP tools refused with nothing to grant, so they are told.
+ */
+function reportUngrantableKeyRuns(configPath: string, config: unknown): void {
+  const root = config as {
+    endpoints?: { agents?: { remoteApi?: { integrations?: unknown } } };
+  } | null;
+  const integrations = root?.endpoints?.agents?.remoteApi?.integrations as
+    | { mode?: unknown; resources?: unknown }
+    | null
+    | undefined;
+  const declared =
+    integrations?.resources != null &&
+    typeof integrations.resources === 'object' &&
+    Object.keys(integrations.resources).length > 0;
+  if (integrations?.mode !== 'delegated' || declared) {
+    return;
+  }
+  logger.warn(
+    `Agent API key runs cannot use MCP tools with the configuration in ${configPath}: ` +
+      'endpoints.agents.remoteApi.integrations.mode is "delegated", so a key may use only the ' +
+      'servers and tools its owner granted it, and no server is declared under ' +
+      'endpoints.agents.remoteApi.integrations.resources. Declare the servers keys may be ' +
+      'granted, or remove the mode to let a key use every server its owner can.',
+  );
+}
+
 function reportThemeCheck(configPath: string, errors: string[], warnings: string[]): void {
   if (errors.length > 0) {
     logger.warn(
@@ -168,7 +222,6 @@ function isFetchTimeout(error: unknown): boolean {
 export function createCustomConfigLoader({
   defaultConfigPath,
   loadLocal,
-  redactConfig,
   onLoad,
   fetchRemote = async (configPath: string): Promise<unknown> =>
     (await axios.get(configPath, serviceRequestBudget())).data,
@@ -192,6 +245,17 @@ export function createCustomConfigLoader({
       cause?: unknown,
       startupLogLevel: 'error' | 'info' = 'error',
     ): null => {
+      if (
+        options.storageSelection &&
+        !(
+          cause instanceof Error &&
+          'code' in cause &&
+          cause.code === 'ENOENT' &&
+          !process.env.CONFIG_PATH
+        )
+      ) {
+        throw new ConfigReloadError('Deployment config unavailable for storage selection');
+      }
       if (mode === 'reload') {
         if (cause == null) {
           logger.error(message);
@@ -261,6 +325,16 @@ export function createCustomConfigLoader({
       }
 
       /** The checks below return copies, but `modelSpecs` is assigned onto this object later. */
+      if (
+        typeof loadedConfig === 'object' &&
+        loadedConfig != null &&
+        'persistence' in loadedConfig
+      ) {
+        const persistence = persistenceConfigSchema.safeParse(loadedConfig.persistence);
+        if (!persistence.success) {
+          throw new ConfigReloadError('Invalid persistence configuration');
+        }
+      }
       const parsedConfig = loadedConfig;
       const themeCheck = checkConfigTheme(loadedConfig);
       loadedConfig = themeCheck.config;
@@ -268,8 +342,13 @@ export function createCustomConfigLoader({
       const linkCheck = checkConfigPolicyLinks(loadedConfig);
       loadedConfig = linkCheck.config;
       reportPolicyLinkCheck(configPath, linkCheck.dropped);
+      reportRetiredScheduleToolPolicy(configPath, loadedConfig);
+      reportUngrantableKeyRuns(configPath, loadedConfig);
 
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
+      /* `filters` PII patterns are sized by RE2, which the shared schema cannot carry. Every
+         entry point loads config through here, the CLI scripts included, so register it here. */
+      setPiiRegexProgramSizer(getPiiRegexProgramSize);
       const result = configSchema.strict().safeParse(loadedConfig);
       if (
         result.error?.issues.some(
@@ -302,6 +381,13 @@ export function createCustomConfigLoader({
           );
         }
 
+        if (
+          typeof loadedConfig === 'object' &&
+          loadedConfig != null &&
+          'persistence' in loadedConfig
+        ) {
+          throw new ConfigReloadError('Invalid configuration containing persistence selection');
+        }
         if (process.env.CONFIG_BYPASS_VALIDATION === 'true') {
           logger.warn(
             'CONFIG_BYPASS_VALIDATION is enabled. Continuing with default configuration despite validation errors.',
@@ -332,10 +418,7 @@ export function createCustomConfigLoader({
       }
 
       if (printConfig) {
-        const loggableConfig = redactConfig(customConfig);
-        logger.info('Custom config file loaded:');
-        logger.info(JSON.stringify(loggableConfig, null, 2));
-        logger.debug('Custom config:', loggableConfig);
+        logger.info(`Custom config file loaded (digest: ${digest})`);
       }
 
       onLoad?.({ config: customConfig, digest });

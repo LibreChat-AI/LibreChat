@@ -4,10 +4,12 @@ import type { TFile } from './types/files';
 import type { TMessage } from './types';
 import {
   buildTree,
+  mergeMessageFile,
   findMessageById,
   isCompactedLeaf,
   isFileAttachment,
   isFileContentPart,
+  messageFileIds,
   messageCarriesFiles,
   hasContentPartFiles,
   isUserInitiatedCompaction,
@@ -299,6 +301,29 @@ describe('isUserInitiatedCompaction', () => {
 
 type Content = NonNullable<TMessage['content']>;
 
+describe('messageFileIds', () => {
+  it('names the files in every shape a later turn collects them from', () => {
+    expect(
+      messageFileIds({
+        files: [{ file_id: 'upload' }],
+        attachments: [{ file_id: 'chart', toolCallId: 't' }, { type: 'web_search' }] as never,
+        content: [
+          { type: ContentTypes.TEXT, text: 'Here:' },
+          { type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'img' } },
+          { type: 'file', file: { file_id: 'doc' } },
+          { type: 'file', file_id: 'direct' },
+          { type: ContentTypes.STEER, steer: 'use this', files: [{ file_id: 'steered' }] },
+        ] as Content,
+      }),
+    ).toEqual(['upload', 'chart', 'img', 'doc', 'direct', 'steered']);
+  });
+
+  it('names none for a message without files', () => {
+    expect(messageFileIds({})).toEqual([]);
+    expect(messageFileIds({ files: [], content: [] as Content })).toEqual([]);
+  });
+});
+
 describe('messageCarriesFiles', () => {
   it('finds uploads, file-backed attachments and file references in content', () => {
     expect(messageCarriesFiles({ files: [{ file_id: 'upload' }] })).toBe(true);
@@ -350,5 +375,37 @@ describe('file reference predicates', () => {
     expect(isFileContentPart(undefined)).toBe(false);
     expect(hasContentPartFiles(null)).toBe(false);
     expect(isFileAttachment(undefined)).toBe(false);
+  });
+});
+
+describe('mergeMessageFile', () => {
+  it('preserves persisted display metadata when the library omits it', () => {
+    const file = {
+      file_id: 'paste',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text' as const,
+    };
+    const stored = {
+      file_id: 'paste',
+      filename: 'pasted-text.txt',
+      type: 'text/plain',
+      llmDeliveryPath: 'none',
+    } as TFile;
+    expect(mergeMessageFile(file, stored)).toMatchObject({
+      filename: 'pasted-text.txt',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text',
+    });
+    expect(stored).not.toHaveProperty('textPreview');
+  });
+
+  it('reuses the stored object when the message adds no display metadata', () => {
+    const stored = { file_id: 'paste', textPreview: 'stored excerpt' } as TFile;
+    expect(mergeMessageFile({ file_id: 'paste' }, stored)).toBe(stored);
+  });
+
+  it('keeps the message ref when no owner record exists', () => {
+    const file = { file_id: 'paste', textPreview: 'persisted excerpt' };
+    expect(mergeMessageFile(file)).toBe(file);
   });
 });

@@ -259,7 +259,22 @@ describe('Landing heading', () => {
     expect(screen.getByText('Welcome')).toBeInTheDocument();
     expect(screen.queryByText('Data Analyst')).not.toBeInTheDocument();
     expect(screen.getByText('Answers SQL questions')).toBeInTheDocument();
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
+  });
+
+  it('keeps the icon in the default entity heading', () => {
+    renderLanding();
+
     expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+  });
+
+  it('keeps the temporary chat icon in greeting mode', () => {
+    mockInterfaceConfig = { landingHeading: 'greeting' };
+
+    const { container } = renderLanding({ isTemporary: true });
+
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
+    expect(container.querySelector('.avatar-stroke')).toBeInTheDocument();
   });
 
   it('uses the configured welcome as the greeting heading', () => {

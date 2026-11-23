@@ -1,5 +1,6 @@
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import {
+  settlePendingDraft,
   applyPendingPastesToDraft,
   clearAllDrafts,
   clearDraft,
@@ -1673,5 +1674,79 @@ describe('logical composer lifetime', () => {
     renewNewConversationDraftToken(8);
     expect(adoptComposerConversation(submissionConversation, 'server-id', 8)).toBe(false);
     release();
+  });
+});
+
+describe('bounded paste draft previews', () => {
+  it('retains only bounded display text for currently attached files', () => {
+    setFilesDraft('preview-draft', {
+      fileIds: ['paste'],
+      pendingPastes: {},
+      textPreviews: { paste: 'p'.repeat(1000), removed: 'do not keep' },
+    });
+    expect(getFilesDraft('preview-draft').textPreviews).toEqual({ paste: 'p'.repeat(240) });
+    setFilesDraft('preview-draft', { fileIds: ['paste'], pendingPastes: {} });
+    expect(getFilesDraft('preview-draft').textPreviews).toEqual({ paste: 'p'.repeat(240) });
+    setFilesDraft('preview-draft', { fileIds: [], pendingPastes: {} });
+    expect(getFilesDraft('preview-draft').textPreviews).toBeUndefined();
+  });
+});
+
+describe('settling a pane’s pending draft onto its conversation', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  const pending = getPendingDraftId(3);
+
+  it('moves the words and attachments written during a run to the conversation', () => {
+    setDraft({ id: pending, value: 'written while it ran' });
+    setFilesDraft(pending, { fileIds: ['file-1'], pendingPastes: {} });
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft('convo-1')).toBe('written while it ran');
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['file-1']);
+    expect(getDraft(pending)).toBe('');
+    expect(getFilesDraft(pending).fileIds).toEqual([]);
+  });
+
+  it('leaves the conversation’s own draft alone when the pane left nothing', () => {
+    setDraft({ id: 'convo-1', value: 'already here' });
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft('convo-1')).toBe('already here');
+  });
+
+  it('leaves a pending record that another open tab owns', () => {
+    /** Every tab's side pane shares the key: this one may be another tab's run in progress. */
+    markTabLive('other-tab');
+    localStorage.setItem(
+      `${LocalStorageKeys.FILES_DRAFT}${pending}`,
+      JSON.stringify({ fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' }),
+    );
+    localStorage.setItem(`${LocalStorageKeys.TEXT_DRAFT}${pending}`, encodeBase64('their words'));
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft(pending)).toBe('their words');
+    expect(getFilesDraft(pending).fileIds).toEqual(['theirs']);
+    expect(getDraft('convo-1')).toBe('');
+  });
+
+  it('leaves everything where it is when another open tab owns the conversation’s draft', () => {
+    setDraft({ id: pending, value: 'written while it ran' });
+    markTabLive('other-tab');
+    localStorage.setItem(
+      `${LocalStorageKeys.FILES_DRAFT}convo-1`,
+      JSON.stringify({ fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' }),
+    );
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft(pending)).toBe('written while it ran');
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['theirs']);
   });
 });

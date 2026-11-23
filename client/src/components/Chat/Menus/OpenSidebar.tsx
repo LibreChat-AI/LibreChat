@@ -1,4 +1,5 @@
 import { TooltipAnchor, Button, Sidebar } from '@librechat/client';
+import type { MouseEvent } from 'react';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { useLocalize } from '~/hooks';
@@ -23,15 +24,18 @@ export default function OpenSidebar({
   const tooltipDescription = useShortcutHint('toggleSidebar', localize('com_nav_open_sidebar'));
   const ariaKey = useShortcutAriaKey('toggleSidebar');
 
-  const handleClick = () => {
+  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
+    const opener = event.currentTarget;
     const mode = setSidebarOpen(true);
     if (mode === 'none') {
       /** Desktop only: the expanded panel claims `CLOSE_SIDEBAR_ID` and has
        * no commit-driven handoff of its own. The mobile drawer focuses its
-       * toggle from the commit itself — a second timer there would steal
+       * toggle from the commit itself; a second timer there would steal
        * focus back from a keyboard user who has already tabbed onward. */
       setTimeout(() => {
-        document.getElementById(CLOSE_SIDEBAR_ID)?.focus();
+        if (document.activeElement === opener || document.activeElement === document.body) {
+          document.getElementById(CLOSE_SIDEBAR_ID)?.focus();
+        }
       }, 250);
     }
   };

@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { TriangleAlert } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import { Button, Label, SecretInput } from '@librechat/client';
 import type { TAgentApiKeyCreateResponse } from 'librechat-data-provider';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 
 type RevealProps = {

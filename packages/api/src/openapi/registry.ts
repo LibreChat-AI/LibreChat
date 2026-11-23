@@ -6,10 +6,11 @@ import {
   messageResponseSchema,
   jsonParseErrorSchema,
 } from './errors';
+import { conversationComponentSchemas, conversationContracts } from './conversations';
 import { agentComponentSchemas, agentContracts } from './agents';
 import { skillComponentSchemas, skillContracts } from './skills';
 
-/** The agent and skill management endpoints authenticate with an OIDC access token (bearer). */
+/** The management endpoints authenticate with an OIDC access token (bearer). */
 export const securitySchemes: Record<string, SecurityScheme> = {
   oidcBearer: {
     type: 'http',
@@ -22,6 +23,7 @@ export const securitySchemes: Record<string, SecurityScheme> = {
 export const componentSchemas: Record<string, ZodTypeAny> = {
   ...agentComponentSchemas,
   ...skillComponentSchemas,
+  ...conversationComponentSchemas,
   ErrorMessage: errorMessageResponseSchema,
   AccountDeletionConflict: accountDeletionResponseSchema,
   MessageError: messageResponseSchema,
@@ -52,4 +54,8 @@ export const componentSchemaOverrides: Record<string, Record<string, unknown>> =
   },
 };
 
-export const contracts: EndpointContract[] = [...agentContracts, ...skillContracts];
+export const contracts: EndpointContract[] = [
+  ...agentContracts,
+  ...skillContracts,
+  ...conversationContracts,
+];

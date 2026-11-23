@@ -1,6 +1,5 @@
 import { useRef } from 'react';
-import { Button, SquirclePlusIcon } from '@librechat/client';
-import CustomIcon from '~/components/ui/CustomIcon';
+import { Button, SquirclePlusIcon, CustomIcon } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
 interface MCPIconProps {

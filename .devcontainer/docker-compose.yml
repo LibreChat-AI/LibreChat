@@ -41,14 +41,14 @@ services:
       - 27017
     # ports:
     #   - 27018:27017
-    image: mongo
+    image: docker.io/library/mongo
     # restart: always
     volumes:
       - ./data-node:/data/db
     command: mongod --noauth
   meilisearch:
     container_name: chat-meilisearch
-    image: getmeili/meilisearch:v1.5
+    image: docker.io/getmeili/meilisearch:v1.5
     # restart: always
     expose:
       - 7700

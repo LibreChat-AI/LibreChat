@@ -7,7 +7,9 @@
     "type": "git",
     "url": "https://github.com/LibreChat-AI/LibreChat"
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "**/*.css"
+  ],
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "./dist/index.d.cts",
@@ -42,6 +44,9 @@
         "default": "./dist/components.cjs"
       }
     },
+    "./locales/*": "./dist/locales/*",
+    "./style.css": "./dist/style.css",
+    "./standalone.css": "./dist/standalone.css",
     "./package.json": "./package.json"
   },
   "files": [
@@ -51,6 +56,9 @@
     "clean": "rimraf dist",
     "b:clean": "bun run rimraf dist",
     "build": "npm run clean && tsdown",
+    "build:locales": "node ../../scripts/i18n-chat.mts",
+    "build:css": "node ../../scripts/css-chat.mts",
+    "prepack": "npm run build && npm run build:locales && npm run build:css",
     "b:build": "bun run b:clean && bun run tsdown",
     "build:watch": "tsdown --watch",
     "typecheck": "node ../../scripts/typecheck.mts && node ../../scripts/typecheck.mts -p test/tsconfig.json",
@@ -62,9 +70,12 @@
     "@librechat/client": "*",
     "@radix-ui/react-dialog": "^1.1.23",
     "@tanstack/react-query": "^4.28.0",
+    "@types/hast": "^3.0.4",
     "framer-motion": "^12.40.0",
     "jotai": "^2.12.5",
+    "katex": "^0.18.10",
     "librechat-data-provider": "*",
+    "lowlight": "^2.9.0",
     "lucide": "^0.528.0",
     "lucide-react": "^0.528.0",
     "mdast-util-directive": "^3.0.0",
@@ -74,13 +85,25 @@
     "micromark-extension-directive": "^3.0.1",
     "micromark-extension-gfm": "^3.0.0",
     "micromark-extension-math": "^3.1.0",
+    "micromark-util-character": "^2.1.0",
+    "micromark-util-symbol": "^2.0.0",
+    "micromark-util-types": "^2.0.0",
     "react": "^18.2.0 || ^19.1.0",
     "react-dnd": "^16.0.1",
     "react-dnd-html5-backend": "^16.0.1",
     "react-dom": "^18.2.0 || ^19.1.0",
+    "react-markdown": "^9.0.1",
+    "rehype-highlight": "^6.0.0",
+    "rehype-katex": "^6.0.3",
+    "remark-directive": "^3.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
+    "remark-supersub": "^1.0.0",
+    "unified": "^11.0.5",
     "uuid": "^11.1.1"
   },
   "dependencies": {
+    "copy-to-clipboard": "^3.3.3",
     "sse.js": "^2.8.0"
   },
   "devDependencies": {
@@ -93,6 +116,7 @@
     "@tanstack/react-query": "^4.28.0",
     "@testing-library/jest-dom": "^5.16.5",
     "@testing-library/react": "^14.0.0",
+    "@types/hast": "^3.0.4",
     "@types/jest": "^29.5.2",
     "@types/react": "^18.2.11",
     "babel-plugin-replace-ts-export-assignment": "^0.0.2",
@@ -101,7 +125,9 @@
     "jest": "^30.2.0",
     "jest-environment-jsdom": "^30.2.0",
     "jotai": "^2.12.5",
+    "katex": "^0.18.10",
     "librechat-data-provider": "*",
+    "lowlight": "^2.9.0",
     "lucide": "^0.528.0",
     "lucide-react": "^0.528.0",
     "mdast-util-directive": "^3.0.0",
@@ -111,14 +137,25 @@
     "micromark-extension-directive": "^3.0.1",
     "micromark-extension-gfm": "^3.0.0",
     "micromark-extension-math": "^3.1.0",
+    "micromark-util-character": "^2.1.0",
+    "micromark-util-symbol": "^2.0.0",
+    "micromark-util-types": "^2.0.0",
     "react": "^18.2.0",
     "react-dnd": "^16.0.1",
     "react-dnd-html5-backend": "^16.0.1",
     "react-dom": "^18.2.0",
     "react-i18next": "^15.4.0",
+    "react-markdown": "^9.0.1",
+    "rehype-highlight": "^6.0.0",
+    "rehype-katex": "^6.0.3",
+    "remark-directive": "^3.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
+    "remark-supersub": "^1.0.0",
     "rimraf": "^6.1.3",
     "tsdown": "0.22.2",
     "typescript": "^5.9.3",
+    "unified": "^11.0.5",
     "uuid": "^11.1.1"
   }
 }

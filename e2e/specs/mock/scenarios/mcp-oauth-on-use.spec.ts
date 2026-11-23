@@ -80,7 +80,16 @@ async function runUntilSignIn(page: Page, serverName: string) {
       token,
     );
     expect(status.active).toBe(true);
-    return { toolId, status, calls: toolCallNames(status.resumeState?.runSteps) };
+    await page.reload();
+    await expect(signIn).toBeVisible({ timeout: 30000 });
+    await expect(signIn).toHaveCount(1);
+    const restoredStatus = await fetchJson<GenerationStatus>(
+      page,
+      `/api/agents/chat/status/${encodeURIComponent(conversationId!)}`,
+      token,
+    );
+    expect(restoredStatus.active).toBe(true);
+    return { toolId, status, restoredStatus, calls: toolCallNames(status.resumeState?.runSteps) };
   } finally {
     const stop = page.getByRole('button', { name: 'Stop generating' });
     if (await stop.isVisible({ timeout: 1000 }).catch(() => false)) {
@@ -96,12 +105,28 @@ test('an on_use OAuth server asks to sign in when its deferred tool is called @s
 }) => {
   test.setTimeout(120000);
   const serverName = 'e2e-oauth-deferred';
-  const { toolId, status, calls } = await runUntilSignIn(page, serverName);
+  const { toolId, status, restoredStatus, calls } = await runUntilSignIn(page, serverName);
 
   /** A turn-start prompt holds the turn before the model runs, so neither call would exist. */
-  expect(calls).toEqual(expect.arrayContaining(['tool_search', toolId]));
-  expect(calls).not.toContain(`oauth_mcp_${serverName}`);
-  expect(status.resumeState?.pendingOAuthPrompts ?? []).toHaveLength(0);
+  expect(calls).toEqual(['tool_search', toolId, `oauth_mcp_${serverName}`]);
+  const toolCall = status.resumeState?.runSteps
+    ?.flatMap((step) => {
+      const details = step.stepDetails as {
+        tool_calls?: Array<{ id?: string; name?: string; output?: string }>;
+      };
+      return details.tool_calls ?? [];
+    })
+    .find((call) => call.name === toolId);
+  expect(toolCall?.id).toBeTruthy();
+  expect(toolCall?.output).toBeUndefined();
+  const pendingPrompt = expect.objectContaining({
+    toolName: `oauth_mcp_${serverName}`,
+    toolCallId: `oauth:${toolCall!.id}`,
+    stepId: `step_oauth_login_${serverName}:oauth:${toolCall!.id}`,
+  });
+  expect(status.resumeState?.pendingOAuthPrompts).toEqual([pendingPrompt]);
+  expect(restoredStatus.resumeState?.pendingOAuthPrompts).toEqual([pendingPrompt]);
+  expect(toolCallNames(restoredStatus.resumeState?.runSteps)).toEqual(calls);
 });
 
 test('a default OAuth server still asks to sign in when the turn starts @scenario:mcp-oauth-default-signs-in-at-turn-start', async ({
@@ -109,10 +134,14 @@ test('a default OAuth server still asks to sign in when the turn starts @scenari
 }) => {
   test.setTimeout(120000);
   const serverName = 'e2e-oauth';
-  const { status, calls } = await runUntilSignIn(page, serverName);
+  const { status, restoredStatus, calls } = await runUntilSignIn(page, serverName);
 
   expect(calls).toEqual([`oauth_mcp_${serverName}`]);
   expect(status.resumeState?.pendingOAuthPrompts).toEqual([
     expect.objectContaining({ toolName: `oauth_mcp_${serverName}` }),
   ]);
+  expect(restoredStatus.resumeState?.pendingOAuthPrompts).toEqual(
+    status.resumeState?.pendingOAuthPrompts,
+  );
+  expect(toolCallNames(restoredStatus.resumeState?.runSteps)).toEqual(calls);
 });

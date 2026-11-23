@@ -788,3 +788,33 @@ describe('validateAzureGroups with modelGroupMap and groupMap', () => {
     });
   });
 });
+
+describe('validateAzureGroups with declared reasoning efforts', () => {
+  const groupWith = (reasoningEfforts: unknown) =>
+    [
+      {
+        group: 'group',
+        apiKey: 'key',
+        instanceName: 'instance',
+        version: '2024-12-01-preview',
+        deploymentName: 'deployment',
+        models: { 'production-west': { reasoningEfforts } },
+      },
+    ] as unknown as TAzureGroups;
+
+  it('keeps the declared efforts on the group map', () => {
+    const { isValid, groupMap } = validateAzureGroups(groupWith(['low', 'high']));
+    expect(isValid).toBe(true);
+    expect(groupMap.group.models['production-west']).toMatchObject({
+      reasoningEfforts: ['low', 'high'],
+    });
+  });
+
+  it('rejects an effort the override schema could never submit', () => {
+    expect(validateAzureGroups(groupWith(['ultra'])).isValid).toBe(false);
+  });
+
+  it('rejects an empty declaration', () => {
+    expect(validateAzureGroups(groupWith([])).isValid).toBe(false);
+  });
+});

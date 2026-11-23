@@ -5,6 +5,7 @@
  * Mirrors the same pattern used in `__tests__/skills.test.ts`.
  */
 jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
   CODE_EXECUTION_TOOLS: new Set(['execute_code', 'bash_tool']),
   Constants: { READ_FILE: 'read_file', WRITE_FILE: 'write_file' },
   ReadFileToolDefinition: {
@@ -315,6 +316,49 @@ describe('buildRunToolSet', () => {
 });
 
 describe('buildHistoricalToolNames', () => {
+  it('predicts tool_search for a wildcard deferral selection', () => {
+    const names = buildHistoricalToolNames({
+      configuredToolNames: ['web_search'],
+      toolOptions: { '*': { defer_loading: true } },
+      deferredToolsAvailable: true,
+    });
+    expect(names.has('tool_search')).toBe(true);
+  });
+
+  it('does not predict tool_search when only always-loaded tools are selected', () => {
+    const wildcardOnSkillOnly = buildHistoricalToolNames({
+      configuredToolNames: [],
+      toolOptions: { '*': { defer_loading: true } },
+      skillsAvailable: true,
+      skillFileAccessAvailable: false,
+      deferredToolsAvailable: true,
+    });
+    const namedSkill = buildHistoricalToolNames({
+      configuredToolNames: ['web_search'],
+      toolOptions: { skill: { defer_loading: true } },
+      skillsAvailable: true,
+      deferredToolsAvailable: true,
+    });
+    expect(wildcardOnSkillOnly.has('tool_search')).toBe(false);
+    expect(namedSkill.has('tool_search')).toBe(false);
+  });
+
+  it('projects capability markers onto the tools they register', () => {
+    const skills = buildHistoricalToolNames({
+      configuredToolNames: [],
+      toolOptions: { '*': { defer_loading: false }, skills: { defer_loading: true } },
+      skillsAvailable: true,
+      deferredToolsAvailable: true,
+    });
+    const codeWithoutSandbox = buildHistoricalToolNames({
+      configuredToolNames: ['execute_code'],
+      toolOptions: { execute_code: { defer_loading: true } },
+      deferredToolsAvailable: true,
+    });
+    expect(skills.has('tool_search')).toBe(true);
+    expect(codeWithoutSandbox.has('tool_search')).toBe(false);
+  });
+
   it('normalizes MCP names and expands toolkits and deferred search', () => {
     expect(
       buildHistoricalToolNames({
@@ -752,6 +796,24 @@ describe('registerCodeExecutionTools', () => {
     expect(bashDescription(false)).toContain(
       'temp files, and background processes are not durable',
     );
+  });
+
+  it('warns that background commands overlap later ones only when they are sent detached', () => {
+    const bashDescription = (workspaceDetachedCommands?: boolean): string | undefined =>
+      registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['execute_command']),
+        workspaceDetachedCommands,
+      }).toolDefinitions.find((def) => def.name === 'bash_tool')?.description;
+
+    const overlap =
+      'A run_in_background command runs alongside later commands in the same worktree; do not background one that later commands depend on finishing first (installs, git operations).';
+    expect(bashDescription(true)).toContain(overlap);
+    expect(bashDescription(false)).not.toContain('runs alongside');
+    expect(bashDescription()).toBe(bashDescription(false));
   });
 
   it.each([

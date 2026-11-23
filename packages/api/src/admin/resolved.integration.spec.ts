@@ -165,19 +165,28 @@ async function createGroup(name: string, memberIds: string[]): Promise<string> {
   return group._id.toString();
 }
 
+const LIFECYCLE_TIMEOUT_MS = 180_000;
+
 beforeAll(async () => {
-  jest.resetModules();
-  dataSchemas = await import('@librechat/data-schemas');
+  const [schemas, readHandlersModule, handlersModule, serviceModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./resolved'),
+    import('./config'),
+    import('~/app/service'),
+    MongoMemoryServer.create(),
+  ]);
+  dataSchemas = schemas;
+  mongoServer = server;
   jest.spyOn(dataSchemas.logger, 'warn').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'error').mockReturnValue(dataSchemas.logger);
-  ({ createAdminConfigReadHandlers } = await import('./resolved'));
-  ({ createAdminConfigHandlers } = await import('./config'));
-  const { createAppConfigService } = await import('~/app/service');
+  ({ createAdminConfigReadHandlers } = readHandlersModule);
+  ({ createAdminConfigHandlers } = handlersModule);
+  const { createAppConfigService } = serviceModule;
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   methods = dataSchemas.createMethods(mongoose);
 
   const appConfig: AppConfig = await dataSchemas.AppService({ config: structuredClone(YAML) });
@@ -197,7 +206,7 @@ beforeAll(async () => {
     getApplicableConfigs: methods.getApplicableConfigs,
     getUserPrincipals: methods.getUserPrincipals,
   });
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 afterEach(async () => {
   await Promise.all(
@@ -208,8 +217,8 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 describe('GET /resolved/:principalType/:principalId', () => {
   it('resolves a profile over librechat.yaml and Base, in merge order and librechat.yaml shape', async () => {

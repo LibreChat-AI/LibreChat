@@ -24,11 +24,22 @@ import {
   useOptionalMessagesOperations,
   useOptionalMessagesConversation,
 } from '~/Providers/MessagesViewContext';
-import { findAttachmentRecovery, isAttachmentError, mayBeAttachmentError } from './attachments';
+import {
+  isCountLimitError,
+  isAttachmentError,
+  collectOlderFileIds,
+  mayBeAttachmentError,
+  findAttachmentRecovery,
+} from './attachments';
+import {
+  useForkConvoMutation,
+  useFileExclusionQuery,
+  useFileExclusionMutation,
+} from '~/data-provider';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useMessageContext } from '~/Providers/MessageContext';
 import { useLocalize, useNavigateToConvo } from '~/hooks';
-import { useForkConvoMutation } from '~/data-provider';
+import { isSubmittableMessage } from '~/utils/messages';
 import { ChatContext } from '~/Providers/ChatContext';
 import { ErrorAction, ErrorActions } from './parts';
 import store from '~/store';
@@ -67,10 +78,13 @@ const getStatus = (error: unknown): number | undefined => {
 
 /**
  * The way out of a turn that fails because of the files its branch carries. Every later turn
- * resends those files, so a plain retry fails the same way; this offers to send the failed message
- * again without its own files, and, when earlier turns carry files too, to continue in a copy of
- * the conversation that has none. Both leave the original untouched: the retry is a new version of
- * the message beside the old one, and the copy is a new conversation.
+ * resends those files, so a plain retry fails the same way. When earlier turns carry files, the
+ * first offer is to leave those out of the conversation and send the failed message again with
+ * its own: the newest files are the ones the reader just asked about, and anything left out can
+ * be switched back on in the session rail. It also offers to send the failed message again
+ * without its own files, and to continue in a copy of the conversation that has none. All leave
+ * the original untouched: a retry is a new version of the message beside the old one, and the
+ * copy is a new conversation.
  */
 function RecoveryActions({
   text,
@@ -83,7 +97,7 @@ function RecoveryActions({
 }) {
   const localize = useLocalize();
   const isSubmitting = useMessagesIsSubmitting();
-  const { ask } = useOptionalMessagesOperations();
+  const { ask, getMessages } = useOptionalMessagesOperations();
   const getAddedConvo = useGetAddedConvo();
   const { navigateToConvo } = useNavigateToConvo();
   const { showToast } = useToastContext();
@@ -153,8 +167,52 @@ function RecoveryActions({
     },
   });
 
-  const { parent, canRetry, branchTargetId } = recovery;
-  const busy = isSubmitting || forkConvo.isLoading;
+  const exclusion = useFileExclusionMutation();
+  const { parent, canRetry, branchTargetId, olderCarryFiles } = recovery;
+  const busy = isSubmitting || forkConvo.isLoading || exclusion.isLoading;
+  const countLimit = isCountLimitError(text);
+  /** A count limit is about the turn's own files, which leaving older ones out does not change. */
+  const mayDropOlder =
+    olderCarryFiles && !countLimit && isSubmittableMessage(parent.text, parent.files?.length ?? 0);
+  /** What is already left out, so a turn that failed again after it is not offered it again. */
+  const { data: excluded } = useFileExclusionQuery(conversationId, { enabled: mayDropOlder });
+  const leftOut = excluded?.excludedFiles;
+  const olderIncluded = (): string[] => {
+    const left = new Set(leftOut ?? []);
+    return collectOlderFileIds(getMessages(), parent).filter((fileId) => !left.has(fileId));
+  };
+  const canDropOlder =
+    mayDropOlder && (leftOut == null || leftOut.length === 0 || olderIncluded().length > 0);
+
+  const retryWithoutOlderFiles = () => {
+    const fileIds = olderIncluded();
+    if (fileIds.length === 0) {
+      return;
+    }
+    exclusion.mutate(
+      { conversationId, fileIds, excluded: true },
+      {
+        onSuccess: () => {
+          ask(
+            { text: parent.text, parentMessageId: parent.parentMessageId, conversationId },
+            {
+              overrideFiles: parent.files ?? [],
+              overrideManualSkills: parent.manualSkills,
+              overrideQuotes: parent.quotes,
+              overrideReasoning: parent.reasoningOverride ?? null,
+              addedConvo: getAddedConvo() || undefined,
+            },
+          );
+        },
+        onError: () => {
+          showToast({
+            message: localize('com_ui_retry_without_older_files_error'),
+            status: 'error',
+          });
+        },
+      },
+    );
+  };
 
   const retryWithoutFiles = () => {
     ask(
@@ -185,12 +243,26 @@ function RecoveryActions({
   return (
     <div className="mt-2 flex flex-col gap-2">
       <p className="text-text-secondary">
-        {isAttachmentError(text) && <>{localize('com_error_attachments_cause')} </>}
-        {localize(getExplanationKey(recovery))}
+        {countLimit && <>{localize('com_error_attachments_count_cause')} </>}
+        {!countLimit && isAttachmentError(text) && <>{localize('com_error_attachments_cause')} </>}
+        {canDropOlder && localize('com_error_attachments_older_info')}
+        {!canDropOlder && localize(getExplanationKey(recovery))}
       </p>
+      {canDropOlder && (
+        <p className="text-text-secondary">{localize(getExplanationKey(recovery))}</p>
+      )}
       <ErrorActions>
+        {canDropOlder && (
+          <ErrorAction onClick={retryWithoutOlderFiles} disabled={busy}>
+            {localize('com_ui_retry_without_older_files')}
+          </ErrorAction>
+        )}
         {canRetry && (
-          <ErrorAction onClick={retryWithoutFiles} disabled={busy}>
+          <ErrorAction
+            onClick={retryWithoutFiles}
+            disabled={busy}
+            variant={canDropOlder ? 'outline' : undefined}
+          >
             {localize('com_ui_retry_without_files')}
           </ErrorAction>
         )}
@@ -198,7 +270,7 @@ function RecoveryActions({
           <ErrorAction
             onClick={branchWithoutFiles}
             disabled={busy}
-            variant={canRetry ? 'outline' : undefined}
+            variant={canRetry || canDropOlder ? 'outline' : undefined}
           >
             {localize('com_ui_branch_without_files')}
           </ErrorAction>

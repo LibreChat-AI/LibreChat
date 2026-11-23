@@ -1,7 +1,5 @@
 import { z } from 'zod';
-import { URL } from 'url';
 import _axios from 'axios';
-import crypto from 'crypto';
 import { load } from 'js-yaml';
 import type { OpenAPIV3 } from 'openapi-types';
 import type { ActionMetadata, ActionMetadataRuntime } from './types/agents';
@@ -45,10 +43,6 @@ type MediaTypeObject =
 type RequestBodyObject = Omit<OpenAPIV3.RequestBodyObject, 'content'> & {
   content: MediaTypeObject;
 };
-
-export function sha1(input: string) {
-  return crypto.createHash('sha1').update(input).digest('hex');
-}
 
 export function createURL(domain: string, path: string) {
   const cleanDomain = domain.replace(/\/$/, '');
@@ -190,7 +184,6 @@ function requestSignal(
 class RequestExecutor {
   path: string;
   params?: Record<string, unknown>;
-  private operationHash?: string;
   private authHeaders: Record<string, string> = {};
   private authToken?: string;
 
@@ -199,7 +192,6 @@ class RequestExecutor {
   }
 
   setParams(params: Record<string, unknown>) {
-    this.operationHash = sha1(JSON.stringify(params));
     this.params = { ...params } as Record<string, unknown>;
     if (this.config.parameterLocations) {
       //Substituting “Path” Parameters:

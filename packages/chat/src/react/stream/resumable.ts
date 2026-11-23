@@ -6,6 +6,7 @@ import {
   ResumableRun,
   mountSubmission,
   releaseSubmission,
+  withStatusDeadline,
   attachResumableStream,
 } from '../../core';
 import { useStreamHost } from './host';
@@ -39,13 +40,14 @@ export default function useResumableSSE(
     setStreamId,
   });
 
-  const buildHost = useCallback(
-    (): ResumableHost => ({
-      ...buildServices(),
+  const buildHost = useCallback((): ResumableHost => {
+    const services = buildServices();
+    return {
+      ...services,
+      fetchStatus: withStatusDeadline(services.fetchStatus, run.scheduler),
       subscribe: (next) => attachResumableStream(run, buildHost(), next),
-    }),
-    [run, buildServices],
-  );
+    };
+  }, [run, buildServices]);
 
   useEffect(() => {
     const host = buildHost();

@@ -1210,6 +1210,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
 
   /* Extracted before storage, which may move the temporary upload the extractors read. */
   const fallbackText = await resolveUploadFallbackText({
+    req,
     file,
     fileId: file_id,
     deliveryPath: llmDeliveryPath,

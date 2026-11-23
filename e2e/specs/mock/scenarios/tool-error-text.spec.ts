@@ -104,6 +104,36 @@ test.describe('approved tool error text', () => {
     expect(JSON.stringify(out)).not.toContain('probe-app-id');
   });
 
+  test('a failing Google, Traversaal or Tavily search returns approved text, not the provider message @scenario:search-tools-approved-error-text', () => {
+    test.setTimeout(300_000);
+    const result = run(
+      'npx',
+      ['jest', 'app/clients/tools/structured/specs/searchErrors.spec.js', '--maxWorkers=1'],
+      { cwd: apiRoot },
+    );
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toMatch(/(?<!\d)19 passed/);
+  });
+
+  test('a failing Flux, Gemini or OpenAI image tool returns approved text, not the provider message @scenario:image-tools-approved-error-text', () => {
+    test.setTimeout(300_000);
+    const result = run(
+      'npx',
+      [
+        'jest',
+        'app/clients/tools/structured/specs/imageTools-agent.spec.js',
+        'app/clients/tools/structured/specs/GeminiImageGen.spec.js',
+        'test/app/clients/tools/structured/OpenAIImageTools.test.js',
+        '-t',
+        'approved error text',
+        '--maxWorkers=1',
+      ],
+      { cwd: apiRoot },
+    );
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toMatch(/(?<!\d)16 passed/);
+  });
+
   test('an Assistants required action whose tool throws submits approved text @scenario:assistant-tool-error-approved-text', () => {
     test.setTimeout(300_000);
     const result = run(

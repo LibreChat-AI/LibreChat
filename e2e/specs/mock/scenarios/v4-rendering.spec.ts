@@ -80,12 +80,12 @@ test.describe('Tailwind v4 rendering', () => {
        *  sites the upgrade touched: v3's `blur-sm` was 4px, v4's is 8px, and the
        *  4px step is now called `blur-xs`. The scrim is always mounted, so its
        *  filter is readable while it is still transparent. */
-      const scrim = page.locator('#artifact-viewer [role="status"]').first();
+      /** The lazy tabs also render a status while loading; only the persistent scrim has aria-hidden. */
+      const scrim = page.locator('#artifact-viewer [role="status"][aria-hidden]');
       await expect(scrim).toBeAttached({ timeout: 30000 });
 
-      const { backdropFilter } = await computedStyles(scrim, ['backdropFilter']);
-      expect(backdropFilter).toBe('blur(4px)');
-      expect(backdropFilter).not.toBe('blur(8px)');
+      await expect(scrim).toHaveCSS('backdrop-filter', 'blur(4px)');
+      await expect(scrim).not.toHaveCSS('backdrop-filter', 'blur(8px)');
     } finally {
       await deleteMessagesByConversation([conversationId]);
       await deleteConversations([conversationId]);

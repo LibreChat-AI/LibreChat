@@ -148,7 +148,11 @@ test.describe('shared links', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await uploadProviderFile(page, fileFixture);
-    await expect(page.getByRole('button', { name: fileFixture.name, exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByTestId('composer-tray')
+        .getByRole('button', { name: fileFixture.name, exact: true }),
+    ).toBeVisible();
 
     const response = await sendMessage(page, userMessage);
     expect(response.ok()).toBeTruthy();

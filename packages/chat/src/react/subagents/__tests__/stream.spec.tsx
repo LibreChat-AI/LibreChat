@@ -78,7 +78,9 @@ const host: StreamHost = {
   useResumableServices: () => () => {
     throw new Error('the activity feed attaches without a resumable binding');
   },
-  useLegacyStream: () => undefined,
+  useLegacyServices: () => {
+    throw new Error('not used by subagent streams');
+  },
   useTransport: () => transport,
   useQueuedTurnReceipts: () => ({ data: undefined, dataUpdatedAt: 0 }),
   useActiveJobs: () => ({ data: undefined, dataUpdatedAt: 0 }),

@@ -17,3 +17,7 @@ export * from './outcome';
 export * from './output';
 export * from './preparation';
 export * from './memory';
+export * from './mapping';
+export * from './activityLabels';
+export * from './reasoningLabels';
+export * from './place';

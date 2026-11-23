@@ -6,7 +6,12 @@ import type {
   ChatTransportOptions,
 } from 'librechat-data-provider';
 import type { PageVisibility, SubscriptionTarget, StreamStatusResponse } from '../resumable';
-import { ResumableRun, ResumableSubscription } from '../resumable';
+import {
+  ResumableRun,
+  withStatusDeadline,
+  ResumableSubscription,
+  STATUS_READ_TIMEOUT_MS,
+} from '../resumable';
 import { createScheduler } from '../__fixtures__/resumable';
 
 const createVisibility = () => {
@@ -162,6 +167,28 @@ describe('ResumableSubscription', () => {
     page.show();
     await new Promise((resolve) => setImmediate(resolve));
     expect(fetchStatus).toHaveBeenLastCalledWith('c-1');
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the next foreground check once an unanswered status read reaches its deadline', async () => {
+    const { sub, clock, page, fetchStatus, subscribe } = setup();
+    sub.host.fetchStatus = withStatusDeadline(fetchStatus, clock.scheduler);
+    sub.claim();
+    sub.connection = { closed: false };
+    sub.watchForeground();
+    fetchStatus.mockReturnValueOnce(new Promise<never>(() => undefined));
+    page.show();
+    await new Promise((resolve) => setImmediate(resolve));
+    page.show();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fetchStatus).toHaveBeenCalledTimes(1);
+
+    clock.advance(STATUS_READ_TIMEOUT_MS);
+    await new Promise((resolve) => setImmediate(resolve));
+    fetchStatus.mockResolvedValueOnce({ active: false, createdAt: 2000 });
+    page.show();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
     expect(subscribe).toHaveBeenCalledTimes(1);
   });
 

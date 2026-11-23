@@ -2,6 +2,7 @@ import {
   parseCompactConvo,
   replaceSpecialVars,
   resolveModelSpecEndpoint,
+  resolveSpecSkillsEnabled,
   type EModelEndpoint,
   type TConversation,
   type TModelSpec,
@@ -260,7 +261,20 @@ export function sanitizeModelSpecs<T extends Partial<TSpecsConfig> | null | unde
 
       const preset = modelSpec?.preset;
       const sanitizedModelSpec = { ...modelSpec };
-      delete (sanitizedModelSpec as { skills?: unknown }).skills;
+      /** Skill NAMES reveal the catalog, so they never reach a client — but the
+       *  fact that a spec enables skills does, because the chat badge is seeded
+       *  from it and an absent field is indistinguishable from `skills: false`.
+       *  Narrowed like `subagents` below rather than deleted, and narrowed
+       *  through the same predicate the loaders resolve with so the badge and
+       *  the server can never disagree — an empty allowlist included, which
+       *  scopes to no skills yet still permits skill authoring. */
+      const specSkills = (sanitizedModelSpec as { skills?: TModelSpec['skills'] }).skills;
+      if (Array.isArray(specSkills)) {
+        (sanitizedModelSpec as { skills?: TModelSpec['skills'] }).skills = resolveSpecSkillsEnabled(
+          undefined,
+          specSkills,
+        );
+      }
       const subagents = sanitizedModelSpec.subagents;
       if (subagents && typeof subagents === 'object') {
         const sanitizedSubagents: TModelSpec['subagents'] = {};

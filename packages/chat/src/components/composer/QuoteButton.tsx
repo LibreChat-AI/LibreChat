@@ -2,7 +2,7 @@ import { memo, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import { useSetAtom } from 'jotai';
 import { createPortal } from 'react-dom';
 import { TextQuote } from 'lucide-react';
-import { cn, useLocalize } from '@librechat/client';
+import { cn, useLocalize, usePortalContainer } from '@librechat/client';
 import type { NamedExoticComponent } from 'react';
 import { pendingQuotesByConvoId } from '../../react/composer';
 import { MAX_QUOTE_COUNT } from '../../core/steer/steer';
@@ -323,6 +323,7 @@ type QuoteButtonProps = { conversationId: string };
 
 function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | null {
   const localize = useLocalize();
+  const portals = usePortalContainer();
   const selectionRef = useRef<SelectionState | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const rangeRef = useRef<Range | null>(null);
@@ -343,15 +344,15 @@ function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | 
       return;
     }
     if (!next) {
-      button.style.display = 'none';
+      button.hidden = true;
       return;
     }
     const touch = String(next.viaTouch);
     if (button.dataset.touch !== touch) {
       button.dataset.touch = touch;
     }
-    if (button.style.display === 'none') {
-      button.style.display = 'inline-flex';
+    if (button.hidden) {
+      button.hidden = false;
     }
     const { width, height } = button.getBoundingClientRect();
     const maxLeft = Math.max(EDGE_MARGIN, window.innerWidth - width - EDGE_MARGIN);
@@ -629,10 +630,10 @@ function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | 
       onClick={addQuote}
       aria-label={localize('com_ui_add_to_chat')}
       data-testid="add-to-chat-button"
+      hidden
       style={{
         top: 0,
         left: 0,
-        display: 'none',
       }}
       className={cn(
         'border-border-chrome bg-surface-secondary text-text-primary hover:bg-surface-tertiary fixed z-50 inline-flex items-center gap-1.5 rounded-full border text-sm font-medium shadow-lg transition-colors',
@@ -643,7 +644,7 @@ function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | 
       <TextQuote className="h-4 w-4" aria-hidden="true" />
       {localize('com_ui_add_to_chat')}
     </button>,
-    document.body,
+    portals ?? document.body,
   );
 }
 

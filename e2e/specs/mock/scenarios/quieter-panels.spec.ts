@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import { FileSources } from 'librechat-data-provider';
 import type {
   TFile,
@@ -9,6 +8,7 @@ import type {
 import type { Page, Locator } from '@playwright/test';
 import type { AgentSummary } from '../agents.helpers';
 import { getAccessToken, requestJson, uniqueName } from '../helpers';
+import { expect, test, unroute } from '../fixtures';
 import { cleanupAgent } from '../agents.helpers';
 import { openPanel } from './panels';
 
@@ -240,8 +240,8 @@ test.describe('quieter management panels', () => {
       await expect(historyLink).toBeVisible();
       await expect(historyLink).toHaveAttribute('href', '/c/historical-schedule-run');
     } finally {
-      await page.unroute('**/api/schedules');
-      await page.unroute('**/api/roles/*');
+      await unroute(page, '**/api/schedules');
+      await unroute(page, '**/api/roles/*');
       await cleanupSchedules(page, fixture);
     }
   });
@@ -303,7 +303,7 @@ test.describe('quieter management panels', () => {
       await expect(create).toBeEnabled();
     } finally {
       releaseLoading();
-      await page.unroute('**/api/schedules');
+      await unroute(page, '**/api/schedules');
       await cleanupSchedules(page, fixture);
     }
   });
@@ -430,7 +430,7 @@ test.describe('quieter management panels', () => {
       await expect(balanceCard.locator('svg.text-status-warning')).toHaveCount(1);
       await expect(overlapCard.locator('svg.text-status-warning')).toHaveCount(0);
     } finally {
-      await page.unroute('**/api/schedules');
+      await unroute(page, '**/api/schedules');
     }
   });
 
@@ -468,7 +468,7 @@ test.describe('quieter management panels', () => {
       expect(await ringIsUnclipped(edit)).toBe(true);
       expect(await hasRing(remove)).toBe(false);
     } finally {
-      await page.unroute('**/api/tags');
+      await unroute(page, '**/api/tags');
     }
   });
 

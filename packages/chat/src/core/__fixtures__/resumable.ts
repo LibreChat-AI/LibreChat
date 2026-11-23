@@ -129,6 +129,7 @@ export const createHost = (
       appliedIds: jest.fn(() => []),
       settleApplied: jest.fn(),
       convertToQueued: jest.fn(),
+      adoptPromoted: jest.fn(() => []),
       convertLocalToQueued: jest.fn(),
     },
     events: {
@@ -153,15 +154,6 @@ export const createHost = (
       set: jest.fn((next: TMessage[]) => {
         messages = next;
       }),
-    },
-    parts: {
-      applySteer: jest.fn((message) => message),
-      findSteerTarget: jest.fn(() => -1),
-      applyActivityLabel: jest.fn((message) => message),
-      findActivityLabelTarget: jest.fn(() => -1),
-      offsetActivityPhaseBoundary: jest.fn((index, prefix) => index + prefix),
-      applyReasoningLabel: jest.fn((message) => message),
-      findReasoningLabelTarget: jest.fn(() => -1),
     },
     usage: {
       bindResponse: jest.fn(),

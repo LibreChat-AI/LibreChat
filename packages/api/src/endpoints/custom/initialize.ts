@@ -307,6 +307,7 @@ export async function initializeCustom(
   ) {
     await fetchModels({
       apiKey,
+      provider: endpointConfig.provider,
       baseURL,
       baseURLIsUserProvided: userProvidesURL,
       allowedAddresses: appConfig?.endpoints?.allowedAddresses,
@@ -364,6 +365,7 @@ export async function initializeCustom(
   } else {
     const finalClientOptions = {
       ...clientOptions,
+      requestIdentity: { userId, tenantId },
       modelOptions,
       inferenceParameters,
     };

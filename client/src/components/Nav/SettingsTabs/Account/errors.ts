@@ -1,8 +1,18 @@
 import { useCallback } from 'react';
 import axios from 'axios';
 import { useToastContext } from '@librechat/client';
+import { CREDENTIAL_RETIREMENT_INCOMPLETE_CODE } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { useLocalize } from '~/hooks';
+
+/** The change committed, but not every earlier session could be signed out. */
+export function isCredentialRetirementIncomplete(error: unknown): boolean {
+  return (
+    axios.isAxiosError(error) &&
+    (error.response?.data as { code?: string } | undefined)?.code ===
+      CREDENTIAL_RETIREMENT_INCOMPLETE_CODE
+  );
+}
 
 export function getTwoFactorError(
   error: unknown,
