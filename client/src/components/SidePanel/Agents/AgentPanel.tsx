@@ -47,6 +47,7 @@ import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
 import { useModelCatalog } from '~/data-provider/Endpoints/models';
 import ResetApprovals from '~/components/Agents/ResetApprovals';
+import { LoadError } from './InstructionsPromptFields';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
 import { Panel, isEphemeralAgent } from '~/common';
@@ -687,10 +688,8 @@ export default function AgentPanel() {
   );
   const agent_id = useWatch({ control, name: 'id' });
   const selectionReady = !isPersistedAgent || agent_id === current_agent_id;
-  // The instructions controller must subscribe after form reset has installed the
-  // selected agent's values. The expanded query may resolve one render earlier.
-  const editorStatus =
-    selectionReady || instructionsPromptStatus !== 'ready' ? instructionsPromptStatus : 'loading';
+  // The builder's fields subscribe after reset installs this selection's values.
+  const selectionLoading = !selectionReady && instructionsPromptStatus !== 'error';
   const previousVersionRef = useRef<number | undefined>();
   const submittedDirtyRef = useRef(false);
   const submittedRef = useRef<{ payload?: AgentUpdateParams; previous?: Agent }>({});
@@ -1106,7 +1105,10 @@ export default function AgentPanel() {
               </div>
             )}
           </div>
-          {agentQuery.isInitialLoading && <AgentPanelSkeleton />}
+          {(agentQuery.isInitialLoading || selectionLoading) && <AgentPanelSkeleton />}
+          {!selectionReady && instructionsPromptStatus === 'error' && (
+            <LoadError onRetry={retryInstructionsPrompt} retrying={expandedAgentQuery.isFetching} />
+          )}
           {!canEditAgent && !agentQuery.isInitialLoading && (
             <div
               className={
@@ -1161,13 +1163,16 @@ export default function AgentPanel() {
                 })}
               </>
             )}
-          {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.builder && (
-            <AgentConfig
-              instructionsPromptStatus={editorStatus}
-              onRetryInstructionsPrompt={retryInstructionsPrompt}
-              channels={channelsSection}
-            />
-          )}
+          {canEditAgent &&
+            selectionReady &&
+            !agentQuery.isInitialLoading &&
+            activePanel === Panel.builder && (
+              <AgentConfig
+                instructionsPromptStatus={instructionsPromptStatus}
+                onRetryInstructionsPrompt={retryInstructionsPrompt}
+                channels={channelsSection}
+              />
+            )}
           {/* Without the editor the builder is not drawn, so a sharer still gets the section here. */}
           {!canEditAgent && channelsSection}
           {canEditAgent &&

@@ -187,6 +187,10 @@ jest.mock('~/common', () => ({
 }));
 
 // Mock child components to simplify testing
+jest.mock('./InstructionsPromptFields', () => ({
+  LoadError: () => <div role="alert" />,
+}));
+
 jest.mock('./AgentPanelSkeleton', () => ({
   __esModule: true,
   default: () => <div>{`Loading...`}</div>,
@@ -1385,9 +1389,15 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         } as any);
         rerender(<AgentPanel />);
 
-        await waitFor(() => expect(mockAgentConfigStatus).toBe('loading'));
+        await screen.findByText('Loading...');
 
         // The form keeps agent A's link; the user edits an unrelated field and saves.
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+        expect(mockUpdateAgent).not.toHaveBeenCalled();
+
         act(() => {
           capturedFormMethods!.setValue('id', 'agent-B', { shouldDirty: false });
           capturedFormMethods!.setValue('name', 'Renamed B', { shouldDirty: true });
@@ -1442,7 +1452,13 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         } as any);
         rerender(<AgentPanel />);
 
-        await waitFor(() => expect(mockAgentConfigStatus).toBe('error'));
+        await screen.findByRole('alert');
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+        expect(mockUpdateAgent).not.toHaveBeenCalled();
 
         act(() => {
           capturedFormMethods!.setValue('id', 'agent-B', { shouldDirty: false });

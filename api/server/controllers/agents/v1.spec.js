@@ -1486,6 +1486,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         author: mockReq.user.id,
         model_parameters: {
           useResponsesApi: true,
+          web_search: true,
+          thinking: false,
+          reasoning_effort: 'low',
+          thinkingLevel: 'private-value',
+          maxContextTokens: 4096,
           temperature: 0.7,
           apiKey: 'secret-value',
         },
@@ -1501,7 +1506,13 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(response).not.toHaveProperty('instructions');
       expect(response).not.toHaveProperty('tool_resources');
       expect(response.tools).toEqual(['file_search', 'execute_code']);
-      expect(response.model_parameters).toEqual({ useResponsesApi: true });
+      expect(response.model_parameters).toEqual({
+        useResponsesApi: true,
+        web_search: true,
+        thinking: false,
+        reasoning_effort: 'low',
+        maxContextTokens: 4096,
+      });
       expect(response.model_parameters.temperature).toBeUndefined();
       expect(response.model_parameters.apiKey).toBeUndefined();
     });
