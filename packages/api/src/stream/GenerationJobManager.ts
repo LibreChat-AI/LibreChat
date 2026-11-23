@@ -2159,10 +2159,14 @@ class GenerationJobManagerClass {
    *
    * A terminal predecessor that stays undrained through `PROVIDER_DRAIN_TIMEOUT_MS`
    * is acknowledged as lost: a process killed between the terminal status and
-   * the drain mark can never record that drain. The bound cannot tell that
-   * process from a live owner whose trailing work is this slow, which is then
-   * no longer waited for. A running predecessor and a wait that could not read
-   * the stores still fail closed. Schedule-owned generations never reach this
+   * the drain mark can never record that drain. The bound runs from the
+   * predecessor's `completedAt`, as terminal host settlement counts it, so an
+   * owner lost longer ago than the bound costs one drain read and no wait. A
+   * receipt without `completedAt` (an older replica wrote it) is bounded from
+   * the start of this handoff. The bound cannot tell a killed process from a
+   * live owner whose trailing work is this slow, which is then no longer waited
+   * for. A running predecessor and a wait that could not read the stores still
+   * fail closed. Schedule-owned generations never reach this
    * path while undrained; the store refuses to replace a job preserved for
    * schedule reconciliation. */
   private async processDurableReplacementReceipts(
@@ -2200,12 +2204,19 @@ class GenerationJobManagerClass {
           delivered = false;
         } else {
           try {
+            const terminal = isTerminalStatus(receipt.status);
+            const bound = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
+            const deadline =
+              terminal && receipt.completedAt != null
+                ? Math.min(bound, receipt.completedAt + PROVIDER_DRAIN_TIMEOUT_MS)
+                : bound;
             const drained = await this.waitForProviderExecutionDrain(
               streamId,
               receipt.createdAt,
               receipt.providerExecutionId,
+              deadline,
             );
-            if (!drained && isTerminalStatus(receipt.status)) {
+            if (!drained && terminal) {
               logger.warn(
                 `[GenerationJobManager] Terminal provider owner treated as lost after ${PROVIDER_DRAIN_TIMEOUT_MS}ms undrained: ${streamId}/${receipt.createdAt}`,
               );
@@ -8830,16 +8841,17 @@ class GenerationJobManagerClass {
   }
 
   /** Resolves true once the exact provider segment recorded its drain and false
-   * when `PROVIDER_DRAIN_TIMEOUT_MS` passes without one. A read failure is not
-   * evidence about the owner: a job store failure rejects at once, and a drain
-   * record that is still unreadable at the deadline rejects instead of
-   * reporting a timeout. An earlier failed poll is retried by the next one. */
+   * when `deadline` passes without one. The drain is read at least once, even
+   * when the deadline has already passed. A read failure is not evidence about
+   * the owner: a job store failure rejects at once, and a drain record that is
+   * still unreadable at the deadline rejects instead of reporting a timeout. An
+   * earlier failed poll is retried by the next one. */
   private async waitForProviderExecutionDrain(
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS,
   ): Promise<boolean> {
-    const deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
     for (;;) {
       let unreadable: { error: unknown } | undefined;
       const recorded = await this.eventTransport

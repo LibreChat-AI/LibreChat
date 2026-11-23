@@ -1,7 +1,7 @@
 /* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis"] }] */
 import type { Redis, Cluster } from 'ioredis';
 import type { ServerSentEvent, StreamEvent, CreatedEvent, StreamSubscription } from '~/types';
-import type { IJobStoreV2 } from '~/stream/interfaces/IJobStore';
+import type { CreatedJobData, IJobStoreV2 } from '~/stream/interfaces/IJobStore';
 import {
   GenerationJobManagerClass,
   GENERATION_RECOVERY_FAILED_ERROR,
@@ -17,10 +17,13 @@ import {
   buildMCPAuthRunStepDeltaEvent,
   buildMCPAuthRunStepCompletedEvent,
 } from '~/mcp/oauth/events';
+import {
+  PROVIDER_DRAIN_TIMEOUT_MS,
+  STEER_ENQUEUE_NOT_RUNNING,
+} from '~/stream/interfaces/IJobStore';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
-import { STEER_ENQUEUE_NOT_RUNNING } from '~/stream/interfaces/IJobStore';
 import { RedisJobStore } from '~/stream/implementations/RedisJobStore';
 import { createStreamServices } from '~/stream/createStreamServices';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
@@ -4094,6 +4097,41 @@ describe('GenerationJobManager Integration Tests', () => {
       const retry = await router.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
       expect(retry.claimed).toBe(true);
       expect(retry.existing?.startedAt).toBeUndefined();
+    }, 40000);
+
+    test('a turn skips the drain wait when its terminal predecessor was lost before the bound', async () => {
+      const owner = createReplica();
+      const survivor = createReplica();
+      const store = survivor.getJobStore();
+      const streamId = `${testPrefix}-lost-owner-${Date.now()}`;
+
+      const predecessor = await owner.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      const providerExecutionId = (await store.getJob(streamId))!.providerExecutionId!;
+      expect(
+        await owner.beginProviderExecution(streamId, predecessor.createdAt, providerExecutionId),
+      ).toBe(true);
+      // The owner stops after this write and never records its provider drain.
+      expect(
+        await store.transitionStatus(streamId, {
+          from: 'running',
+          to: 'complete',
+          expectCreatedAt: predecessor.createdAt,
+          patch: { completedAt: Date.now() - PROVIDER_DRAIN_TIMEOUT_MS - 1_000 },
+        }),
+      ).toBe(true);
+
+      const requested = Date.now();
+      const replacement = await survivor.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+
+      expect(Date.now() - requested).toBeLessThan(PROVIDER_DRAIN_TIMEOUT_MS / 2);
+      expect(replacement.createdAt).toBeGreaterThan(predecessor.createdAt);
+      const durable = (await store.getJob(streamId)) as CreatedJobData;
+      expect(durable).toMatchObject({ status: 'running', createdAt: replacement.createdAt });
+      expect(durable.replacedJobs ?? []).toEqual([]);
     }, 40000);
 
     test('a steer routed to a non-owning replica arms the owner and flips its poll', async () => {
