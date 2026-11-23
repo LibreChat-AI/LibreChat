@@ -119,6 +119,12 @@ describe('excerpt', () => {
     expect(excerpt(near, 100_000)).toBe('x'.repeat(16_384 - 1024));
   });
 
+  it('does not end the part it reads on half of a surrogate pair', () => {
+    const text = excerpt(`x${'😀'.repeat(10_000)}`, 100_000);
+    expect(text).toBe(`x${'😀'.repeat((16_384 - 1024 - 2) / 2)}`);
+    expect(excerpt(`${'😀'.repeat(10_000)}`, 100_000)).toBe('😀'.repeat((16_384 - 1024) / 2));
+  });
+
   it('exposes no fragment of a token when there is no white space to cut at', () => {
     const text = excerpt(`ok${'\u0000'.repeat(16_384 - 12)}${TOKEN}`, 2000);
     expect(text).toBe('ok');

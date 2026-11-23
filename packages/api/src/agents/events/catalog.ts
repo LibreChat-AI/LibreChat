@@ -8,19 +8,29 @@ import { isId } from './item';
 const TITLE = 256;
 /** Longest account name kept; GitHub's own limit is well under it. */
 const LOGIN = 100;
+
 /**
- * Longest copy of a review's or a comment's text. It is an excerpt for the turn's first
- * message, which also links to the full text, and it bounds what a stranger can put in a
- * queued delivery and in front of the model.
+ * The bounds a deployment may want to change. The caller passes them, read from its own
+ * configuration and already validated as positive integers; `LIMITS` is what applies when it
+ * passes none.
  */
-const EXCERPT = 2000;
-/** Most pull requests of one check suite that are read, and the most that become events. */
-const SCANNED = 50;
-const FANOUT = 10;
+export interface Limits {
+  /**
+   * Longest copy of a review's or a comment's text, in characters. It is an excerpt for the
+   * turn's first message, which also links to the full text, and it bounds what a stranger
+   * can put in a queued delivery and in front of the model.
+   */
+  excerpt: number;
+  /** Most pull requests one check suite becomes events for; the rest are left out. */
+  fanout: number;
+}
+
+export const LIMITS: Readonly<Limits> = { excerpt: 2000, fanout: 10 };
 
 const WORD = /^[a-z_]{1,32}$/i;
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
-const REPOSITORY = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
+/** `owner/name`. An owner has no dots, and a name is never `.` or `..`, so it is safe in a path. */
+const REPOSITORY = /^[A-Za-z0-9_-]{1,100}\/(?!\.{1,2}$)[\w.-]{1,100}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /** What each event type is called by its provider: for GitHub, the header and the action. */
@@ -91,7 +101,7 @@ export interface Occurrence {
   state?: string;
   /** The page of the review, the comment or the pull request. */
   url?: string;
-  /** The review's or comment's text, at most 2,000 characters, with credentials removed. */
+  /** The review's or comment's text, at most `Limits.excerpt` characters, credentials removed. */
   text?: string;
   /** The commit a review, a review comment or a check suite applies to. */
   sha?: string;
@@ -184,7 +194,7 @@ function actor(parent: Body, key: string, path: string, association?: unknown): 
   };
 }
 
-function review(body: Body): Part[] {
+function review(body: Body, limits: Limits): Part[] {
   const submitted = record(body, 'review', 'review');
   const pull = record(body, 'pull_request', 'pull_request');
   const state = word(submitted.state);
@@ -199,13 +209,13 @@ function review(body: Body): Part[] {
       title: line(pull.title, TITLE),
       state,
       url: link(submitted.html_url),
-      text: excerpt(submitted.body, EXCERPT),
+      text: excerpt(submitted.body, limits.excerpt),
       sha: sha(submitted.commit_id),
     },
   ];
 }
 
-function reviewComment(body: Body): Part[] {
+function reviewComment(body: Body, limits: Limits): Part[] {
   const comment = record(body, 'comment', 'comment');
   const pull = record(body, 'pull_request', 'pull_request');
   return [
@@ -215,14 +225,14 @@ function reviewComment(body: Body): Part[] {
       occurredAt: time(comment, 'created_at', 'comment.created_at'),
       title: line(pull.title, TITLE),
       url: link(comment.html_url),
-      text: excerpt(comment.body, EXCERPT),
+      text: excerpt(comment.body, limits.excerpt),
       sha: sha(comment.commit_id),
     },
   ];
 }
 
 /** GitHub sends a pull request's conversation comments as issue comments. */
-function issueComment(body: Body): Part[] {
+function issueComment(body: Body, limits: Limits): Part[] {
   const issue = record(body, 'issue', 'issue');
   if (!isRecord(issue.pull_request)) {
     return [];
@@ -235,7 +245,7 @@ function issueComment(body: Body): Part[] {
       occurredAt: time(comment, 'created_at', 'comment.created_at'),
       title: line(issue.title, TITLE),
       url: link(comment.html_url),
-      text: excerpt(comment.body, EXCERPT),
+      text: excerpt(comment.body, limits.excerpt),
     },
   ];
 }
@@ -252,9 +262,9 @@ function page(repository: Body, number: number): string | undefined {
 /**
  * A check suite names the pull requests its commit heads. Only those opened against the
  * delivering repository count: a number means nothing in another repository, and GitHub
- * lists none at all when the branch lives in a fork.
+ * lists none at all when the branch lives in a fork. Reading stops at `limits.fanout` of them.
  */
-function checkSuite(body: Body): Part[] {
+function checkSuite(body: Body, limits: Limits): Part[] {
   const suite = record(body, 'check_suite', 'check_suite');
   const pulls = suite.pull_requests;
   if (!Array.isArray(pulls)) {
@@ -263,7 +273,10 @@ function checkSuite(body: Body): Part[] {
   const repository = record(body, 'repository', 'repository');
   const home = id(repository, 'id', 'repository.id');
   const numbers = new Set<number>();
-  for (const pull of pulls.slice(0, SCANNED)) {
+  for (const pull of pulls) {
+    if (numbers.size >= limits.fanout) {
+      break;
+    }
     if (!isRecord(pull)) {
       throw new Malformed('check_suite.pull_requests');
     }
@@ -273,10 +286,7 @@ function checkSuite(body: Body): Part[] {
       'check_suite.pull_requests.base.repo',
     );
     const number = id(pull, 'number', 'check_suite.pull_requests.number');
-    if (
-      id(base, 'id', 'check_suite.pull_requests.base.repo.id') === home &&
-      numbers.size < FANOUT
-    ) {
+    if (id(base, 'id', 'check_suite.pull_requests.base.repo.id') === home) {
       numbers.add(number);
     }
   }
@@ -309,7 +319,7 @@ function closed(body: Body): Part[] {
   ];
 }
 
-const readers: Readonly<Record<AgentEventType, (body: Body) => Part[]>> = {
+const readers: Readonly<Record<AgentEventType, (body: Body, limits: Limits) => Part[]>> = {
   'github.pull_request_review.submitted': review,
   'github.pull_request_review_comment.created': reviewComment,
   'github.issue_comment.created': issueComment,
@@ -364,13 +374,18 @@ function occurrence(
 /**
  * Reads one verified delivery: the provider's name for the event (GitHub's `X-GitHub-Event`
  * header) and its parsed JSON body. A check suite that heads several pull requests yields one
- * occurrence for each; everything else yields one.
+ * occurrence for each; everything else yields one. `limits` defaults to `LIMITS`.
  *
  * It never throws for what a JSON payload contains and never returns payload text in an error,
  * so a failure is safe to log. The caller must have verified the delivery's signature first:
  * nothing here can tell a forged payload from a real one.
  */
-export function normalize(provider: AgentEventProvider, event: string, body: unknown): Outcome {
+export function normalize(
+  provider: AgentEventProvider,
+  event: string,
+  body: unknown,
+  limits: Limits = LIMITS,
+): Outcome {
   const actions = listed.get(`${provider}.${event}`);
   if (actions == null) {
     return { ok: false, error: { code: 'ignored', reason: 'event' } };
@@ -386,7 +401,7 @@ export function normalize(provider: AgentEventProvider, event: string, body: unk
     return { ok: false, error: { code: 'ignored', reason: 'action' } };
   }
   try {
-    const parts = readers[type](body);
+    const parts = readers[type](body, limits);
     if (parts.length === 0) {
       return { ok: false, error: { code: 'ignored', reason: 'item' } };
     }

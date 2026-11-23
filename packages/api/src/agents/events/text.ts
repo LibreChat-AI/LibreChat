@@ -41,6 +41,12 @@ function isSpace(code: number): boolean {
   return code === SPACE || code === TAB || code === LF || code === CR;
 }
 
+/** `end`, one earlier when a cut there would leave half of a surrogate pair. */
+function whole(value: string, end: number): number {
+  const last = value.charCodeAt(end - 1);
+  return last >= 0xd800 && last <= 0xdbff ? end - 1 : end;
+}
+
 /**
  * The part of `value` that is read. A word the bound would cut in half is dropped whole, so
  * a credential can never survive as a fragment too short to recognise. Text with no white
@@ -56,7 +62,7 @@ function scanned(value: string): string {
   while (end > floor && !isSpace(value.charCodeAt(end - 1))) {
     end -= 1;
   }
-  return value.slice(0, end);
+  return value.slice(0, whole(value, end));
 }
 
 /** Line endings become line feeds; controls that can hide or reorder text are removed. */
@@ -85,12 +91,7 @@ function clip(value: string, max: number): string {
   if (value.length <= max) {
     return value;
   }
-  let end = max - 1;
-  const last = value.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) {
-    end -= 1;
-  }
-  return `${value.slice(0, end).trimEnd()}…`;
+  return `${value.slice(0, whole(value, max - 1)).trimEnd()}…`;
 }
 
 function bounded(value: unknown, max: number, flat: boolean): string | undefined {

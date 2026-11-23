@@ -16,7 +16,7 @@ import {
   checkSuiteCompleted,
   reviewCommentCreated,
 } from './fixtures.helper';
-import { catalog, normalize } from './catalog';
+import { LIMITS, catalog, normalize } from './catalog';
 import { itemKey } from './item';
 
 const TOKEN = `ghp_${'a1B2'.repeat(9)}`;
@@ -354,6 +354,11 @@ describe('normalize', () => {
       ['an empty name', 'example-org/'],
       ['a line break', 'example-org/widgets\nx/y'],
       ['an owner past 100 characters', `${'o'.repeat(101)}/widgets`],
+      ['a name past 100 characters', `example-org/${'w'.repeat(101)}`],
+      ['a parent directory for a name', 'example-org/..'],
+      ['the current directory for a name', 'example-org/.'],
+      ['a dot in the owner', 'example.org/widgets'],
+      ['a parent directory for an owner', '../widgets'],
     ])('reports a repository name with %s', (_name, value) => {
       const body = set(reviewSubmitted(), 'repository.full_name', value);
       expect(read('github.pull_request_review.submitted', body)).toEqual(
@@ -550,6 +555,35 @@ describe('normalize', () => {
       expect(only('github.pull_request_review.submitted', body).occurredAt).toBe(0);
     });
 
+    it('cuts a text where the caller says', () => {
+      const body = set(issueCommentCreated(), 'comment.body', 'b'.repeat(300));
+      const cut = (type: AgentEventType, payload: Payload): string | undefined => {
+        const outcome = normalize('github', catalog[type].event, payload, {
+          ...LIMITS,
+          excerpt: 50,
+        });
+        return outcome.ok ? outcome.value[0].text : undefined;
+      };
+      expect(cut('github.issue_comment.created', body)).toBe(`${'b'.repeat(49)}…`);
+      expect(
+        cut(
+          'github.pull_request_review.submitted',
+          set(reviewSubmitted(), 'review.body', 'r'.repeat(300)),
+        ),
+      ).toBe(`${'r'.repeat(49)}…`);
+      expect(
+        cut(
+          'github.pull_request_review_comment.created',
+          set(reviewCommentCreated(), 'comment.body', 'c'.repeat(300)),
+        ),
+      ).toBe(`${'c'.repeat(49)}…`);
+      expect(only('github.issue_comment.created', body).text).toBe('b'.repeat(300));
+    });
+
+    it('ships with a 2,000 character excerpt and ten events for a check suite', () => {
+      expect(LIMITS).toEqual({ excerpt: 2000, fanout: 10 });
+    });
+
     it('reads a time with an offset and a fraction', () => {
       const body = set(reviewSubmitted(), 'review.submitted_at', '2026-11-20T12:31:02.250+02:00');
       expect(only('github.pull_request_review.submitted', body).occurredAt).toBe(
@@ -595,15 +629,36 @@ describe('normalize', () => {
       ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     });
 
-    it('reads the first fifty pull requests it names', () => {
-      const foreign = (count: number): Payload[] =>
-        Array.from({ length: count }, (_unused, index) => suitePullRequest(index + 1, 700999));
+    it('reads past any number of pull requests of other repositories', () => {
+      const foreign = Array.from({ length: 500 }, (_unused, index) =>
+        suitePullRequest(index + 1, 700999),
+      );
       expect(
-        only('github.check_suite.completed', suite([...foreign(49), suitePullRequest(42)])).item,
+        only('github.check_suite.completed', suite([...foreign, suitePullRequest(42)])).item,
       ).toEqual(shared.item);
-      expect(
-        read('github.check_suite.completed', suite([...foreign(50), suitePullRequest(42)])),
-      ).toEqual(ignored('item'));
+    });
+
+    it('stops reading once it has as many as it may yield', () => {
+      const pulls = Array.from({ length: 10 }, (_unused, index) => suitePullRequest(index + 1));
+      const body = set(suite([...pulls, suitePullRequest(11)]), 'check_suite.pull_requests.10', 7);
+      expect(events('github.check_suite.completed', body)).toHaveLength(10);
+      const early = set(suite([...pulls]), 'check_suite.pull_requests.9', 7);
+      expect(read('github.check_suite.completed', early)).toEqual(
+        malformed('check_suite.pull_requests'),
+      );
+    });
+
+    it('yields as many events as the caller allows', () => {
+      const body = suite(
+        Array.from({ length: 12 }, (_unused, index) => suitePullRequest(index + 1)),
+      );
+      const numbers = (fanout: number): number[] => {
+        const outcome = normalize('github', 'check_suite', body, { ...LIMITS, fanout });
+        return outcome.ok ? outcome.value.map((event) => event.item.number) : [];
+      };
+      expect(numbers(2)).toEqual([1, 2]);
+      expect(numbers(1)).toEqual([1]);
+      expect(numbers(50)).toHaveLength(12);
     });
 
     it('builds the page from the repository address, or leaves it out', () => {
@@ -661,6 +716,16 @@ describe('normalize', () => {
       );
       expect(only('github.issue_comment.created', body).url).toBe(`${PAGE}#issuecomment-3300`);
     });
+  });
+
+  it.each([
+    ['example_emu/.github'],
+    ['o/...'],
+    ['o/.x'],
+    [`${'o'.repeat(100)}/${'w'.repeat(100)}`],
+  ])('accepts the repository name %s', (name) => {
+    const body = set(reviewSubmitted(), 'repository.full_name', name);
+    expect(only('github.pull_request_review.submitted', body).repo.name).toBe(name);
   });
 
   it('names the repository the event was delivered for', () => {
